@@ -71,6 +71,51 @@ describe("event store (file mode)", () => {
     expect(delta.every((event) => event.actorId === "actor-a")).toBe(true);
   });
 
+  it("reads a correlation only inside its tenant and initiating actor boundary", async () => {
+    const store = await import("@/lib/events/store");
+    await store.appendDomainEvent({
+      streamId: "intent:one",
+      type: "intent.captured",
+      tenantId: "tenant-trace",
+      actorId: "actor-one",
+      correlationId: "correlation-one",
+    });
+    await store.appendDomainEvent({
+      streamId: "workflow:one",
+      type: "workflow.completed",
+      tenantId: "tenant-trace",
+      actorId: "actor-one",
+      correlationId: "correlation-one",
+    });
+    await store.appendDomainEvent({
+      streamId: "workflow:private",
+      type: "workflow.private",
+      tenantId: "tenant-trace",
+      actorId: "actor-two",
+      correlationId: "correlation-one",
+    });
+    await store.appendDomainEvent({
+      streamId: "workflow:other-tenant",
+      type: "workflow.private",
+      tenantId: "tenant-other",
+      actorId: "actor-one",
+      correlationId: "correlation-one",
+    });
+
+    const events = await store.listCorrelatedEvents("correlation-one", {
+      tenantId: "tenant-trace",
+      actorId: "actor-one",
+    });
+
+    expect(events.map((event) => event.type)).toEqual([
+      "intent.captured",
+      "workflow.completed",
+    ]);
+    expect(events.every((event) =>
+      event.tenantId === "tenant-trace" && event.actorId === "actor-one"
+    )).toBe(true);
+  });
+
   it("filters recent events by type", async () => {
     const store = await import("@/lib/events/store");
     await store.appendDomainEvent({ streamId: "s:1", type: "trust.outcome.success", tenantId: "default" });

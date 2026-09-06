@@ -331,6 +331,54 @@ export async function listStreamEvents(
     .slice(0, limit);
 }
 
+/**
+ * Reads one correlation boundary without crossing tenant or initiating-actor
+ * ownership. Callers must already know the exact correlation identifier from
+ * a scoped root record; this is not a search endpoint.
+ */
+export async function listCorrelatedEvents(
+  correlationId: string,
+  options: {
+    tenantId: string;
+    actorId: string;
+    limit?: number;
+  },
+): Promise<DomainEvent[]> {
+  const correlation = correlationId.trim();
+  const actorId = options.actorId.trim();
+  if (!correlation || correlation.length > 240) {
+    throw new Error("Correlation id must be between 1 and 240 characters.");
+  }
+  if (!actorId || actorId.length > 320) {
+    throw new Error("Actor id must be between 1 and 320 characters.");
+  }
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(options.limit || 500, 1), 2_000);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT * FROM omni_events
+      WHERE tenant_id = ${tenantId}
+        AND actor_id = ${actorId}
+        AND correlation_id = ${correlation}
+      ORDER BY seq ASC
+      LIMIT ${limit}
+    `;
+    return rows.map(eventFromRow);
+  }
+
+  const ledger = await readLedger();
+  return ledger.events
+    .filter((event) =>
+      event.tenantId === tenantId &&
+      event.actorId === actorId &&
+      event.correlationId === correlation
+    )
+    .sort((left, right) => left.seq - right.seq)
+    .slice(0, limit);
+}
+
 export async function listRecentEvents(
   options: { tenantId: string; limit?: number; type?: string } = { tenantId: "default" },
 ): Promise<DomainEvent[]> {
