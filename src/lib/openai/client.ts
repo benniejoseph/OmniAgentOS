@@ -15,6 +15,10 @@ import {
   type ModelAttemptReceipt,
   type ModelProviderResponseReceipt,
 } from "@/lib/models/types";
+import {
+  renderUntrustedObservation,
+  type ModelConversationSeedItem,
+} from "@/lib/models/conversation";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
 
@@ -262,7 +266,7 @@ export type ResponseFunctionCallItem = {
 };
 
 export type ConversationItem =
-  | { role: "user"; content: string }
+  | ModelConversationSeedItem
   | ResponseFunctionCallItem
   | { type: "function_call_output"; call_id: string; output: string };
 
@@ -346,7 +350,7 @@ export async function streamResponseTurn({
     {
       model: selectedModel,
       ...(instructions ? { instructions } : {}),
-      input: input as never,
+      input: openAIResponseInput(input) as never,
       ...(tools && tools.length ? { tools: tools as never } : {}),
       ...(reasoningEffort && supportsReasoningEffort(selectedModel) ? { reasoning: { effort: reasoningEffort } } : {}),
       ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
@@ -643,6 +647,22 @@ export async function streamResponseTurn({
     usageReceiptRecorded,
     ...(usageRecordId ? { usageReceiptId: usageRecordId } : {}),
   };
+}
+
+export function openAIResponseInput(input: ResponseTurnInput) {
+  if (typeof input === "string") return input;
+  return input.map((item) => {
+    if (item.type === "message") {
+      return { role: item.role, content: item.content };
+    }
+    if (item.type === "observation") {
+      return {
+        role: "user" as const,
+        content: renderUntrustedObservation(item),
+      };
+    }
+    return item;
+  });
 }
 
 function attachResponseTurnAttempts(
