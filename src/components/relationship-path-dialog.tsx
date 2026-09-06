@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, Network, Search, ShieldCheck, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Database, Loader2, Network, Search, ShieldCheck, X } from "lucide-react";
 import { clsx } from "clsx";
 
 import styles from "@/components/memory-workspace.module.css";
@@ -9,6 +9,7 @@ import type {
   GraphRelationshipPath,
   GraphRetrievalReceipt,
 } from "@/lib/entities/graph-retrieval";
+import type { GraphStorageDecisionReport } from "@/lib/entities/graph-query-telemetry";
 
 type RelationshipPathPayload = {
   query: string;
@@ -25,8 +26,30 @@ export function RelationshipPathDialog({
 }) {
   const [query, setQuery] = useState(initialQuery || "");
   const [payload, setPayload] = useState<RelationshipPathPayload>();
+  const [scaleReport, setScaleReport] = useState<GraphStorageDecisionReport>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+
+  const loadScaleReport = useCallback(async () => {
+    try {
+      const response = await fetch(
+        "/api/memory/graph?view=scale_metrics&windowHours=168&sampleLimit=2000",
+        { cache: "no-store" },
+      );
+      if (!response.ok) return;
+      const result = await response.json() as {
+        report?: GraphStorageDecisionReport;
+      };
+      if (result.report) setScaleReport(result.report);
+    } catch {
+      // Scale telemetry is explanatory and must not block relationship search.
+    }
+  }, []);
+
+  useEffect(() => {
+    const task = window.setTimeout(() => void loadScaleReport(), 0);
+    return () => window.clearTimeout(task);
+  }, [loadScaleReport]);
 
   async function search(event: React.FormEvent) {
     event.preventDefault();
@@ -51,6 +74,7 @@ export function RelationshipPathDialog({
         );
       }
       setPayload(result as RelationshipPathPayload);
+      void loadScaleReport();
     } catch (searchError) {
       setError(message(searchError));
     } finally {
@@ -117,6 +141,25 @@ export function RelationshipPathDialog({
             Trace
           </button>
         </form>
+
+        {scaleReport ? (
+          <section className={styles.relationshipScale} aria-label="Graph storage scale decision">
+            <Database size={14} aria-hidden="true" />
+            <div>
+              <strong>{graphStorageDecisionLabel(scaleReport.disposition)}</strong>
+              <span>
+                PostgreSQL · {scaleReport.sampleCount} measured queries · p95 {formatDuration(scaleReport.p95DurationMs)}
+              </span>
+            </div>
+            <small>
+              {scaleReport.shadowPromotionReady
+                ? "Review required"
+                : scaleReport.shadowSampleCount
+                  ? `${scaleReport.shadowParityBasisPoints / 100}% shadow parity`
+                  : "No shadow serving"}
+            </small>
+          </section>
+        ) : null}
 
         {error ? <p className={styles.registryError} role="alert">{error}</p> : null}
         {payload ? (
@@ -206,6 +249,23 @@ function formatDate(value: string) {
     day: "numeric",
     year: "numeric",
   }).format(new Date(value));
+}
+
+function formatDuration(value: number) {
+  return value >= 1_000
+    ? `${Math.round(value / 100) / 10}s`
+    : `${Math.round(value)}ms`;
+}
+
+function graphStorageDecisionLabel(
+  disposition: GraphStorageDecisionReport["disposition"],
+) {
+  if (disposition === "retain_postgres") return "PostgreSQL retained";
+  if (disposition === "evaluate_shadow_adapter") return "Shadow evaluation required";
+  if (disposition === "eligible_for_reviewed_promotion") {
+    return "Eligible for reviewed storage promotion";
+  }
+  return "Collecting scale evidence";
 }
 
 function message(error: unknown) {

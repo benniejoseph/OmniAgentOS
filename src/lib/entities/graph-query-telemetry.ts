@@ -364,7 +364,11 @@ export function summarizeGraphQueryTelemetry(
     correlationId?: string;
   },
 ) {
-  const parsed = samples.map(parseGraphQueryTelemetry);
+  const primaryAdapterId = adapterIdSchema.parse(input.primaryAdapterId);
+  const allParsed = samples.map(parseGraphQueryTelemetry);
+  const parsed = allParsed.filter((sample) =>
+    sample.primaryAdapterId === primaryAdapterId
+  );
   const successful = parsed.filter((sample) => sample.status === "succeeded");
   const durations = successful.map((sample) => sample.totalDurationMs);
   const storageDurations = successful.map((sample) =>
@@ -373,9 +377,18 @@ export function summarizeGraphQueryTelemetry(
   const saturated = successful.filter((sample) =>
     sample.relationLimitSaturated
   ).length;
-  const shadowSamples = parsed.filter((sample) =>
-    sample.shadowState !== "not_configured"
-  );
+  const shadowGroups = new Map<string, GraphQueryTelemetry[]>();
+  for (const sample of parsed) {
+    if (!sample.shadowAdapterId) continue;
+    const group = shadowGroups.get(sample.shadowAdapterId) || [];
+    group.push(sample);
+    shadowGroups.set(sample.shadowAdapterId, group);
+  }
+  const selectedShadow = [...shadowGroups.entries()].sort((left, right) =>
+    right[1].length - left[1].length || left[0].localeCompare(right[0])
+  )[0];
+  const shadowCandidateAdapterId = selectedShadow?.[0] || null;
+  const shadowSamples = selectedShadow?.[1] || [];
   const shadowMatches = shadowSamples.filter((sample) =>
     sample.shadowState === "matched"
   ).length;
@@ -395,7 +408,7 @@ export function summarizeGraphQueryTelemetry(
   const maxEntityCount = Math.max(0, ...successful.map((sample) =>
     sample.entityCount
   ));
-  const enoughSamples = parsed.length >=
+  const enoughSamples = successful.length >=
     GRAPH_STORAGE_DECISION_THRESHOLDS.minimumQuerySamples;
   const scalePressure =
     p95DurationMs >= GRAPH_STORAGE_DECISION_THRESHOLDS.p95DurationMs ||
@@ -423,8 +436,9 @@ export function summarizeGraphQueryTelemetry(
     policyVersion: GRAPH_STORAGE_DECISION_POLICY_VERSION,
     generatedAt: canonicalTimestamp(input.generatedAt),
     windowHours: Math.min(Math.max(Math.round(input.windowHours), 1), 720),
-    primaryAdapterId: adapterIdSchema.parse(input.primaryAdapterId),
+    primaryAdapterId,
     sampleCount: parsed.length,
+    excludedOtherPrimarySampleCount: allParsed.length - parsed.length,
     successfulSampleCount: successful.length,
     failedSampleCount: parsed.length - successful.length,
     p95DurationMs,
@@ -437,6 +451,8 @@ export function summarizeGraphQueryTelemetry(
       ...successful.map((sample) => sample.relationCandidateCount),
     ),
     relationLimitSaturationBasisPoints: saturationBasisPoints,
+    observedShadowAdapterCount: shadowGroups.size,
+    shadowCandidateAdapterId,
     shadowSampleCount: shadowSamples.length,
     shadowMatchCount: shadowMatches,
     shadowMismatchCount: shadowMismatches,
@@ -452,6 +468,10 @@ export function summarizeGraphQueryTelemetry(
     reportSha256: sourceContractSha256(body),
   });
 }
+
+export type GraphStorageDecisionReport = ReturnType<
+  typeof summarizeGraphQueryTelemetry
+>;
 
 async function appendTelemetryEvent(
   telemetry: GraphQueryTelemetry,

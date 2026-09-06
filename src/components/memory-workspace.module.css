@@ -266,6 +266,11 @@
 .relationshipSearch input { min-width: 0; height: 2.5rem; color: var(--day-ink); background: transparent; font-size: .66rem; outline: 0; }
 .relationshipSearch button { display: inline-flex; min-height: 2.45rem; align-items: center; gap: .35rem; border-radius: 999px; padding: 0 .8rem; color: var(--day-primary); background: var(--day-mint); font-size: .58rem; font-weight: 780; }
 .relationshipSearch button:disabled { cursor: not-allowed; opacity: .5; }
+.relationshipScale { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .55rem; margin-top: .6rem; border: 1px solid color-mix(in oklab, var(--day-primary) 20%, var(--day-line)); border-radius: .9rem; padding: .55rem .7rem; color: var(--day-primary); background: color-mix(in oklab, var(--day-mint) 22%, var(--day-paper)); }
+.relationshipScale > div { display: grid; min-width: 0; gap: .12rem; }
+.relationshipScale strong { color: var(--day-ink); font-size: .58rem; }
+.relationshipScale span, .relationshipScale small { color: var(--day-muted); font-size: .5rem; }
+.relationshipScale small { text-align: right; }
 .relationshipEmpty { display: grid; min-height: 18rem; place-items: center; align-content: center; gap: .55rem; color: var(--day-muted); text-align: center; }
 .relationshipEmpty strong { color: var(--day-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.05rem; font-weight: 600; }
 .relationshipEmpty span { max-width: 25rem; font-size: .6rem; }

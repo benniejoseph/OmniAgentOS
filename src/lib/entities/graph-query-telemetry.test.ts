@@ -201,5 +201,32 @@ describe("P5.6 graph query telemetry", () => {
       shadowPromotionReady: false,
       disposition: "evaluate_shadow_adapter",
     });
+
+    const otherShadow = sample({
+      durationMs: 900,
+      shadowState: "matched",
+    });
+    const otherShadowBody = {
+      ...otherShadow,
+      shadowAdapterId: "other-candidate:1",
+    };
+    const mixedCandidates = report([
+      ...Array.from({ length: 999 }, () =>
+        sample({ durationMs: 900, shadowState: "matched" })
+      ),
+      {
+        ...otherShadowBody,
+        telemetrySha256: sourceContractSha256((({
+          telemetrySha256: _digest,
+          ...body
+        }) => body)(otherShadowBody)),
+      },
+    ]);
+    expect(mixedCandidates).toMatchObject({
+      observedShadowAdapterCount: 2,
+      shadowSampleCount: 999,
+      shadowPromotionReady: false,
+      disposition: "evaluate_shadow_adapter",
+    });
   });
 });
