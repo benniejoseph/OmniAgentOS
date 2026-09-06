@@ -1149,9 +1149,11 @@ a user-principal retrieval scope, and the prompt compiler verifies its exact
 tenant, canonical/legacy actor binding, request correlation, purpose, null
 shared coordinates, direct agent principal, and personal `all` memory mode
 before resolving the selected IDs. Automatic retrieval and session/project
-modes do not receive that scope. Workflows, forks, specialist/background
-workers, standing formation, agent-private/shared visibility, and the full
-authority resolver remain closed, so P3.1 is still incomplete.
+modes do not receive that scope. A run carrying private context disables
+sibling council delegation and verification instead of forwarding the context.
+Workflows, forks, specialist/background workers, standing formation,
+agent-private/shared visibility, and the full authority resolver remain closed,
+so P3.1 is still incomplete.
 
 ## Where things live
 

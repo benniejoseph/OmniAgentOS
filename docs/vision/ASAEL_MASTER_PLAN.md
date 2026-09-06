@@ -1794,9 +1794,11 @@ retrieval scope, and the agent runner verifies the exact canonical/legacy actor
 binding, tenant, correlation, purpose, null shared coordinates, direct agent
 principal, and personal `all` memory mode before it independently resolves the
 selected IDs. Automatic retrieval, session/project modes, workflows, forks,
-specialist/background workers, and formation do not receive that scope. Raw
-private content stays out of context manifests; only IDs, hashes, counts, and
-the separately actor-private retrieval trace are persisted.
+specialist/background workers, and formation do not receive that scope. A run
+carrying private context disables sibling council delegation and verification
+instead of forwarding the context. Raw private content stays out of context
+manifests; only IDs, hashes, counts, and the separately actor-private retrieval
+trace are persisted.
 Migration v74 repairs the daily-brief memory-lineage column used by governed
 deletion invalidation. Migrations v75-v76 index immutable deletion barriers and
 remove redundant derived-row read scans after an integrity-gated cutover; the

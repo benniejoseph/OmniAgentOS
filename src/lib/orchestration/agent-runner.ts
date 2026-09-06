@@ -934,7 +934,17 @@ export async function* runAgent(
     });
     const primaryAgentId = asCouncilAgentId(request.agentId || "atlas");
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
-    const councilActive = hasModelProviderFeature("json_schema", "reasoning") && councilAgentIds.length > 1;
+    const councilRequested = hasModelProviderFeature("json_schema", "reasoning") &&
+      councilAgentIds.length > 1;
+    const councilActive = councilRequested && !promptMemoryAccessScope;
+    if (councilRequested && promptMemoryAccessScope) {
+      yield await emit({
+        type: "status",
+        label: "private context isolated",
+        detail:
+          "Explicit private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
+      });
+    }
     const councilCheckpointHooks: CouncilCheckpointHooks | undefined =
       shadowRunContract &&
         isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment)
