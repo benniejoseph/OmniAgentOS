@@ -1191,8 +1191,17 @@ constraint rejects a closed revision without that exact successor, so history
 cannot be overwritten or stranded. Independently evidenced overlaps remain
 separate claims. Forced tenant/actor RLS plus memory and canonical-evidence
 barriers apply before reads, and graph query responses expose neither binding
-contracts nor evidence identifiers. P5.4 will populate and repair this ledger
-transactionally from canonical claim/evidence changes.
+contracts nor evidence identifiers. P5.4 populates and repairs this ledger only
+from explicit, line-bounded canonical user assertions and current canonical
+source evidence. The deterministic planner validates ontology and exact
+actor-private entity identity, while ambiguous, conflicting, cross-scope, and
+untrusted candidates are held. The same reconciliation function drives
+incremental writes, queue repair, and full rebuild, so create, revise, retract,
+and reactivate converge to the same active-state digest. Memory and source
+transactions enqueue actor-scoped repair; entity projection closes the race
+with a second enqueue; and the maintenance worker drains the forced-RLS queue.
+Typed metadata-only events record requests and results without placing source
+text, retrieval traces, or model output into the truth graph.
 
 Migration v81 adds immutable actor ownership to agent runs and applies
 restrictive actor policies to runs, threads, turns, run events, checkpoints,
