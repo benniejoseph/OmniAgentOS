@@ -5,11 +5,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   ENTITY_EXTRACTOR_VERSION_ID,
+  extractEntitiesFromCanonicalEvidence,
   extractEntitiesFromExplicitMemory,
+  projectCanonicalEvidenceEntities,
 } from "@/lib/entities/extraction";
 import { ASAEL_ONTOLOGY_EFFECTIVE_AT } from "@/lib/entities/ontology";
 import { buildEntityAccessBinding } from "@/lib/entities/registry";
-import { readEntityRegistry } from "@/lib/entities/store";
+import {
+  readEntityRegistry,
+  retireEntityEvidenceLineage,
+} from "@/lib/entities/store";
 import { listStreamEvents } from "@/lib/events/store";
 import {
   buildUserPrivateMemoryAccessBindingV1,
@@ -24,6 +29,8 @@ import {
 import type { MemoryRecord } from "@/lib/memory/types";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
+import { buildCanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
 
 const ownerActorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
 const context: SecurityContext = {
@@ -216,6 +223,136 @@ describe("canonical explicit-memory entity extraction", () => {
   });
 });
 
+describe("canonical source-evidence entity extraction", () => {
+  it("retains exact evidence lineage and ignores ordinary capitalization", async () => {
+    const content = [
+      "organization: Acme Corporation; project named \"Phoenix\".",
+      "Ada Lovelace discussed another project with Acme Corporation.",
+    ].join("\n");
+    const sourceWrite = canonicalSourceWrite(content);
+    const extraction = extractEntitiesFromCanonicalEvidence({
+      sourceWrite,
+      chunks: [{ index: 0, content }],
+    });
+    const evidence = sourceWrite.adapterOutput.evidenceUnits[0];
+
+    expect(extraction.candidates.map((candidate) => ({
+      type: candidate.entityTypeId,
+      label: candidate.canonicalLabel,
+      evidenceUnitId: candidate.evidenceUnitId,
+      evidenceUnitSha256: candidate.evidenceUnitSha256,
+    }))).toEqual([
+      {
+        type: "organization",
+        label: "Acme Corporation",
+        evidenceUnitId: evidence.evidenceUnitId,
+        evidenceUnitSha256: evidence.evidenceUnitSha256,
+      },
+      {
+        type: "project",
+        label: "Phoenix",
+        evidenceUnitId: evidence.evidenceUnitId,
+        evidenceUnitSha256: evidence.evidenceUnitSha256,
+      },
+    ]);
+
+    await projectCanonicalEvidenceEntities({
+      sourceWrite,
+      chunks: [{ index: 0, content }],
+    });
+    await projectCanonicalEvidenceEntities({
+      sourceWrite,
+      chunks: [{ index: 0, content }],
+    });
+    const registry = await readRegistry(registryBinding(), "read-source-entities");
+    expect(registry.entities.map((entity) => [
+      entity.entityTypeId,
+      entity.canonicalLabel,
+      entity.lineage[0],
+    ])).toEqual([
+      [
+        "organization",
+        "Acme Corporation",
+        {
+          kind: "evidence_unit",
+          referenceId: evidence.evidenceUnitId,
+          referenceSha256: evidence.evidenceUnitSha256,
+        },
+      ],
+      [
+        "project",
+        "Phoenix",
+        {
+          kind: "evidence_unit",
+          referenceId: evidence.evidenceUnitId,
+          referenceSha256: evidence.evidenceUnitSha256,
+        },
+      ],
+    ]);
+    expect(registry.resolutions).toHaveLength(2);
+    const events = await listStreamEvents(
+      `source:${sourceWrite.adapterOutput.sourceItem.sourceItemId}`,
+      { tenantId: context.tenantId, actorId: ownerActorId },
+    );
+    expect(events.filter((event) =>
+      event.type === "entity.source.extraction.projected"
+    )).toHaveLength(1);
+  });
+
+  it("retires and scrubs entities when their last evidence unit is removed", async () => {
+    const content = "product: Asael";
+    const sourceWrite = canonicalSourceWrite(content);
+    await projectCanonicalEvidenceEntities({
+      sourceWrite,
+      chunks: [{ index: 0, content }],
+    });
+    const retirement = await retireEntityEvidenceLineage({
+      tenantId: context.tenantId,
+      ownerActorId,
+      evidenceUnitIds: sourceWrite.evidenceUnitIdsByChunkIndex,
+      executionScope: createExecutionScope({
+        tenantId: context.tenantId,
+        initiatingActorId: ownerActorId,
+        executingPrincipalType: "user",
+        executingPrincipalId: ownerActorId,
+        correlationId: "source-evidence-retirement",
+        purpose: "entity.source.lifecycle.v1",
+      }),
+      retiredAt: "2026-09-06T00:05:00.000Z",
+    });
+    expect(retirement).toMatchObject({
+      affectedEntityIds: [expect.any(String)],
+      retiredEntityIds: [expect.any(String)],
+    });
+    expect(await readRegistry(
+      registryBinding(),
+      "read-source-entities-after-retirement",
+    )).toMatchObject({ entities: [] });
+    const rawLedger = await readFile(
+      path.join(process.env.OMNIAGENT_DATA_DIR!, "entity-registry.json"),
+      "utf8",
+    );
+    expect(rawLedger).not.toContain("Asael");
+    expect(rawLedger).toContain("[forgotten]");
+  });
+
+  it("does not project shared or coordinate-bound evidence", async () => {
+    const content = "person: Ada Lovelace";
+    const sourceWrite = canonicalSourceWrite(content, {
+      workspaceId: "workspace-a",
+      visibility: "workspace_shared",
+    });
+    await expect(projectCanonicalEvidenceEntities({
+      sourceWrite,
+      chunks: [{ index: 0, content }],
+    })).resolves.toBeNull();
+    expect(await readRegistry(
+      registryBinding(),
+      "read-no-shared-source-entities",
+    )).toMatchObject({ entities: [], resolutions: [] });
+  });
+});
+
 function registryBinding() {
   return buildEntityAccessBinding({
     tenantId: context.tenantId,
@@ -292,4 +429,42 @@ function explicitMemory(content: string): MemoryRecord {
       accessBoundAt: "2026-09-06T00:00:00.000Z",
     }),
   };
+}
+
+function canonicalSourceWrite(
+  content: string,
+  options: {
+    workspaceId?: string | null;
+    visibility?: "user_private" | "workspace_shared";
+  } = {},
+) {
+  const executionScope = createExecutionScope({
+    tenantId: context.tenantId,
+    initiatingActorId: ownerActorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: ownerActorId,
+    workspaceId: options.workspaceId,
+    correlationId: "canonical-source-entity-test",
+    contextGrantIds: ["connection-test"],
+    purpose: "knowledge.ingest.test",
+  });
+  return buildCanonicalTextSourceWrite({
+    lineage: {
+      executionScope,
+      connectionId: "connection-test",
+      adapterId: "test-adapter",
+      externalItemId: `fixture:${sourceContractSha256(content)}`,
+      sourceKind: "document",
+      capturedAt: "2026-09-06T00:00:00.000Z",
+      visibility: options.visibility,
+    },
+    content,
+    normalizedContent: content,
+    chunks: [{
+      index: 0,
+      content,
+      characterStart: 0,
+      characterEnd: content.length,
+    }],
+  });
 }
