@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { retrieveGraphRelationshipPaths } from "@/lib/entities/graph-retrieval";
+import { getGraphStorageDecisionReport } from "@/lib/entities/graph-query-telemetry";
 import {
   entityRelationTypeIdSchema,
 } from "@/lib/entities/ontology";
@@ -52,6 +53,11 @@ const relationshipPathQuerySchema = z.object({
   limit: z.number().int().min(1).max(24),
 }).strict();
 
+const graphScaleQuerySchema = z.object({
+  windowHours: z.number().int().min(1).max(720),
+  sampleLimit: z.number().int().min(1).max(5_000),
+}).strict();
+
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request) {
@@ -67,6 +73,9 @@ async function GETHandler(request: Request) {
   }
   if (view === "relationship_paths") {
     return readRelationshipPaths(request, query, url, Math.min(limit, 24));
+  }
+  if (view === "scale_metrics") {
+    return readGraphScaleMetrics(request, url);
   }
 
   let context;
@@ -120,6 +129,64 @@ async function GETHandler(request: Request) {
   ]);
 
   return Response.json({ nodes, edges, stats });
+}
+
+async function readGraphScaleMetrics(request: Request, url: URL) {
+  const parsed = graphScaleQuerySchema.safeParse({
+    windowHours: Number(url.searchParams.get("windowHours") || 168),
+    sampleLimit: Number(url.searchParams.get("sampleLimit") || 2_000),
+  });
+  if (!parsed.success) {
+    return Response.json(
+      { error: "Invalid graph scale query", details: parsed.error.flatten() },
+      { status: 400, headers: privateNoStoreHeaders },
+    );
+  }
+
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "memory_graph",
+      metadata: {
+        view: "scale_metrics",
+        windowHours: parsed.data.windowHours,
+        sampleLimit: parsed.data.sampleLimit,
+      },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+  const entityAccess = requestEntityAccessFromSecurityContext(context, {
+    purposeId: "entity.read.v1",
+    correlationId: `entity_graph_scale_${randomUUID()}`,
+  });
+  if (!entityAccess) {
+    return Response.json(
+      { error: "Private graph scale metrics are unavailable for this identity." },
+      { status: 403, headers: privateNoStoreHeaders },
+    );
+  }
+
+  try {
+    const report = await getGraphStorageDecisionReport({
+      accessBinding: entityAccess.accessBinding,
+      executionScope: entityAccess.executionScope,
+      windowHours: parsed.data.windowHours,
+      sampleLimit: parsed.data.sampleLimit,
+    });
+    return Response.json({
+      schemaVersion: 1,
+      view: "scale_metrics",
+      report,
+    }, { headers: privateNoStoreHeaders });
+  } catch {
+    return Response.json(
+      { error: "Graph scale metrics could not be loaded." },
+      { status: 500, headers: privateNoStoreHeaders },
+    );
+  }
 }
 
 async function readRelationshipPaths(

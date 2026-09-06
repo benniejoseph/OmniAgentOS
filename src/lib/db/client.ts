@@ -137,6 +137,7 @@ export const tenantRootPolicyTables = [
   "omni_entity_merge_reviews",
   "omni_entity_relation_claims",
   "omni_entity_relation_projection_queue",
+  "omni_graph_query_telemetry",
   "omni_agent_loop_v2_checkpoints",
   "omni_workflow_triggers",
   "omni_operation_jobs",
@@ -1117,6 +1118,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[105],
       up: async (sql) => {
         await ensureEntityRelationProjectionV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[106],
+      up: async (sql) => {
+        await ensureGraphQueryTelemetryV1(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -8250,6 +8258,187 @@ async function ensureEntityRelationProjectionV1(sql: SqlClient) {
         'public.omni_validate_entity_relation_claim_insert()'
       ) IS NULL THEN
         RAISE EXCEPTION 'Entity relation projection boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureGraphQueryTelemetryV1(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_graph_query_telemetry (
+      tenant_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      access_scope_sha256 TEXT NOT NULL,
+      correlation_id TEXT NOT NULL,
+      query_kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      primary_adapter_id TEXT NOT NULL,
+      shadow_adapter_id TEXT,
+      shadow_state TEXT NOT NULL,
+      max_hops SMALLINT NOT NULL,
+      requested_limit SMALLINT NOT NULL,
+      entity_count INTEGER NOT NULL,
+      alias_count INTEGER NOT NULL,
+      relation_candidate_count INTEGER NOT NULL,
+      relation_limit_saturated BOOLEAN NOT NULL,
+      authorized_relation_count INTEGER NOT NULL,
+      rejected_relation_count INTEGER NOT NULL,
+      path_count INTEGER NOT NULL,
+      total_duration_ms DOUBLE PRECISION NOT NULL,
+      recorded_at TIMESTAMPTZ NOT NULL,
+      contract JSONB NOT NULL,
+      telemetry_sha256 TEXT NOT NULL,
+      PRIMARY KEY (tenant_id, id),
+      CHECK (char_length(id) BETWEEN 1 AND 240),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (char_length(correlation_id) BETWEEN 1 AND 240),
+      CHECK (access_scope_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (telemetry_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (query_kind = 'relationship_paths'),
+      CHECK (status IN ('succeeded', 'failed')),
+      CHECK (primary_adapter_id ~ '^[a-z][a-z0-9._-]{1,79}:[1-9][0-9]{0,8}$'),
+      CHECK (
+        shadow_adapter_id IS NULL
+        OR shadow_adapter_id ~ '^[a-z][a-z0-9._-]{1,79}:[1-9][0-9]{0,8}$'
+      ),
+      CHECK (shadow_state IN (
+        'not_configured', 'matched', 'mismatched', 'failed'
+      )),
+      CHECK ((shadow_adapter_id IS NULL) = (shadow_state = 'not_configured')),
+      CHECK (max_hops BETWEEN 1 AND 3),
+      CHECK (requested_limit BETWEEN 1 AND 24),
+      CHECK (entity_count >= 0),
+      CHECK (alias_count >= 0),
+      CHECK (relation_candidate_count >= 0),
+      CHECK (authorized_relation_count >= 0),
+      CHECK (rejected_relation_count >= 0),
+      CHECK (path_count >= 0),
+      CHECK (total_duration_ms >= 0 AND total_duration_ms <= 3600000),
+      CHECK (contract ->> 'version' = 'p5.6-graph-query-telemetry:1'),
+      CHECK (contract ->> 'telemetryId' = id),
+      CHECK (contract ->> 'tenantId' = tenant_id),
+      CHECK (contract ->> 'ownerActorId' = owner_actor_id),
+      CHECK (contract ->> 'accessScopeSha256' = access_scope_sha256),
+      CHECK (contract ->> 'correlationId' = correlation_id),
+      CHECK (contract ->> 'queryKind' = query_kind),
+      CHECK (contract ->> 'status' = status),
+      CHECK (contract ->> 'primaryAdapterId' = primary_adapter_id),
+      CHECK (contract ->> 'shadowAdapterId' IS NOT DISTINCT FROM shadow_adapter_id),
+      CHECK (contract ->> 'shadowState' = shadow_state),
+      CHECK ((contract ->> 'maxHops')::SMALLINT = max_hops),
+      CHECK ((contract ->> 'requestedLimit')::SMALLINT = requested_limit),
+      CHECK ((contract ->> 'entityCount')::INTEGER = entity_count),
+      CHECK ((contract ->> 'aliasCount')::INTEGER = alias_count),
+      CHECK (
+        (contract ->> 'relationCandidateCount')::INTEGER =
+          relation_candidate_count
+      ),
+      CHECK (
+        (contract ->> 'relationLimitSaturated')::BOOLEAN =
+          relation_limit_saturated
+      ),
+      CHECK (
+        (contract ->> 'authorizedRelationCount')::INTEGER =
+          authorized_relation_count
+      ),
+      CHECK (
+        (contract ->> 'rejectedRelationCount')::INTEGER =
+          rejected_relation_count
+      ),
+      CHECK ((contract ->> 'pathCount')::INTEGER = path_count),
+      CHECK (
+        (contract ->> 'totalDurationMs')::DOUBLE PRECISION =
+          total_duration_ms
+      ),
+      CHECK ((contract ->> 'recordedAt')::TIMESTAMPTZ = recorded_at),
+      CHECK (contract ->> 'telemetrySha256' = telemetry_sha256)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_graph_query_telemetry_actor_time_idx
+    ON omni_graph_query_telemetry (
+      tenant_id, owner_actor_id, access_scope_sha256, recorded_at DESC,
+      id COLLATE "C"
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_graph_query_telemetry_adapter_time_idx
+    ON omni_graph_query_telemetry (
+      tenant_id, primary_adapter_id, recorded_at DESC
+    )
+  `;
+  await sql`
+    DO $migration$
+    DECLARE
+      policy_name TEXT;
+    BEGIN
+      ALTER TABLE omni_graph_query_telemetry ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_graph_query_telemetry FORCE ROW LEVEL SECURITY;
+      FOREACH policy_name IN ARRAY ARRAY[
+        'omni_graph_query_telemetry_actor_select',
+        'omni_graph_query_telemetry_actor_insert',
+        'omni_graph_query_telemetry_system_delete'
+      ] LOOP
+        EXECUTE format(
+          'DROP POLICY IF EXISTS %I ON omni_graph_query_telemetry',
+          policy_name
+        );
+      END LOOP;
+      CREATE POLICY omni_graph_query_telemetry_actor_select
+      ON omni_graph_query_telemetry AS RESTRICTIVE FOR SELECT
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      CREATE POLICY omni_graph_query_telemetry_actor_insert
+      ON omni_graph_query_telemetry AS RESTRICTIVE FOR INSERT
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      CREATE POLICY omni_graph_query_telemetry_system_delete
+      ON omni_graph_query_telemetry AS RESTRICTIVE FOR DELETE
+      USING (omni_system_scope_enabled());
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_graph_query_telemetry FROM PUBLIC`;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT ON omni_graph_query_telemetry TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT, DELETE
+        ON omni_graph_query_telemetry TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_graph_query_telemetry'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR (
+        SELECT count(*) FROM pg_policy
+        WHERE polrelid = 'omni_graph_query_telemetry'::regclass
+          AND NOT polpermissive
+      ) <> 3 OR EXISTS (
+        SELECT 1
+        FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_graph_query_telemetry'
+          AND grantee = 'omni_runtime'
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) THEN
+        RAISE EXCEPTION 'Graph query telemetry boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

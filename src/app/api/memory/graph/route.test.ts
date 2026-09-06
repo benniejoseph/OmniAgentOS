@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
+  getGraphStorageDecisionReport: vi.fn(),
   getMemoryGraphStats: vi.fn(async () => ({ nodes: 0, edges: 0 })),
   listMemoryGraphEdges: vi.fn(async () => []),
   listMemoryGraphNodes: vi.fn(async () => []),
@@ -15,6 +16,9 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/entities/graph-retrieval", () => ({
   retrieveGraphRelationshipPaths: mocks.retrieveGraphRelationshipPaths,
+}));
+vi.mock("@/lib/entities/graph-query-telemetry", () => ({
+  getGraphStorageDecisionReport: mocks.getGraphStorageDecisionReport,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -107,6 +111,14 @@ describe("memory graph private-memory boundary", () => {
         version: "p5.5-graph-retrieval:1",
         pathCount: 0,
       },
+    });
+    mocks.getGraphStorageDecisionReport.mockResolvedValue({
+      policyVersion: "p5.6-graph-storage-decision:1",
+      sampleCount: 0,
+      primaryAdapterId: "postgres-temporal-graph:1",
+      disposition: "collect_more_telemetry",
+      scaleJustifiesShadowEvaluation: false,
+      shadowPromotionReady: false,
     });
   });
 
@@ -278,6 +290,39 @@ describe("memory graph private-memory boundary", () => {
         hops: [{ evidence: [{ evidenceId: "memory:memory-a" }] }],
       }],
     });
+  });
+
+  it("returns private actor-scoped graph scale metrics", async () => {
+    const response = await GET(new Request(
+      "http://localhost/api/memory/graph?view=scale_metrics" +
+      "&windowHours=72&sampleLimit=400",
+    ));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.getGraphStorageDecisionReport).toHaveBeenCalledWith({
+      accessBinding: expect.objectContaining({ accessScopeSha256: "private-scope" }),
+      executionScope: expect.objectContaining({ purpose: "entity.read.v1" }),
+      windowHours: 72,
+      sampleLimit: 400,
+    });
+    expect(await response.json()).toMatchObject({
+      schemaVersion: 1,
+      view: "scale_metrics",
+      report: {
+        primaryAdapterId: "postgres-temporal-graph:1",
+        disposition: "collect_more_telemetry",
+      },
+    });
+  });
+
+  it("rejects malformed graph scale windows before reading telemetry", async () => {
+    const response = await GET(new Request(
+      "http://localhost/api/memory/graph?view=scale_metrics&windowHours=0",
+    ));
+
+    expect(response.status).toBe(400);
+    expect(mocks.getGraphStorageDecisionReport).not.toHaveBeenCalled();
   });
 
   it("rejects relationship traversal without a query", async () => {

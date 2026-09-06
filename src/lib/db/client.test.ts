@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the transactional entity relation projection migration", () => {
+  it("pins the actor-scoped graph query telemetry migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 106,
-      name: "entity_relation_projection_v1",
-      checksum: "8272bfc51c9cfef838372618a1880e7fa0cd5eb976e20018b5dc68f718a1b767",
+      version: 107,
+      name: "graph_query_telemetry_v1",
+      checksum: "b827edb34b4b148e950daf528fefed302ba2584eeb8d552cb241e47c7b256383",
     });
   });
 
@@ -733,8 +733,8 @@ describe("ordered database schema versions", () => {
     expect(() => getPendingSchemaMigrationVersions([0])).toThrow(
       /unknown migration versions: 0/i,
     );
-    expect(() => getPendingSchemaMigrationVersions([107])).toThrow(
-      /unknown migration versions: 107/i,
+    expect(() => getPendingSchemaMigrationVersions([108])).toThrow(
+      /unknown migration versions: 108/i,
     );
   });
 

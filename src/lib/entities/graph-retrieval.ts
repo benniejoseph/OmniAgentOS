@@ -17,6 +17,10 @@ import {
 } from "@/lib/entities/registry";
 import { readGraphStorageSnapshot } from "@/lib/entities/graph-storage-adapter";
 import {
+  buildGraphQueryTelemetry,
+  recordGraphQueryTelemetrySafely,
+} from "@/lib/entities/graph-query-telemetry";
+import {
   parseTemporalRelationClaimRecord,
   relationClaimIsVisibleAt,
   type RelationEpistemicKind,
@@ -113,11 +117,14 @@ export async function retrieveGraphRelationshipPaths(
     asOfTime?: string;
   },
 ): Promise<GraphRelationshipPathResult> {
+  const retrievalStartedAt = monotonicNow();
   const entityBinding = parseEntityAccessBinding(
     input.entityAccess.accessBinding,
   );
   const memoryScope = assertRuntimeScopes(input, entityBinding);
   const asOfTime = canonicalTimestamp(input.asOfTime || new Date().toISOString());
+  const maxHops = Math.min(Math.max(Math.trunc(input.maxHops || 2), 1), 3);
+  const limit = Math.min(Math.max(Math.trunc(input.limit || 12), 1), 24);
   const storage = await readGraphStorageSnapshot({
     read: {
       accessBinding: entityBinding,
@@ -128,6 +135,7 @@ export async function retrieveGraphRelationshipPaths(
   });
   const { entities, aliases, relations } = storage.snapshot;
   const lineage = uniqueLineage(relations);
+  const evidenceStartedAt = monotonicNow();
   const [memories, canonicalEvidence] = await Promise.all([
     getActiveMemoriesByIds(
       lineage
@@ -151,17 +159,51 @@ export async function retrieveGraphRelationshipPaths(
       asOfTime,
     ),
   ];
-  return buildGraphRelationshipPaths({
+  const evidenceAuthorizationDurationMs = elapsedMilliseconds(
+    evidenceStartedAt,
+  );
+  const pathExpansionStartedAt = monotonicNow();
+  const result = buildGraphRelationshipPaths({
     query,
     accessBinding: entityBinding,
     entities,
     aliases,
     relations,
     evidence,
-    maxHops: input.maxHops,
-    limit: input.limit,
+    maxHops,
+    limit,
     asOfTime,
   });
+  const pathExpansionDurationMs = elapsedMilliseconds(pathExpansionStartedAt);
+  try {
+    const telemetry = buildGraphQueryTelemetry({
+      accessBinding: entityBinding,
+      executionScope: input.entityAccess.executionScope,
+      shadow: storage.shadow,
+      maxHops,
+      requestedLimit: limit,
+      entityCount: storage.snapshot.entityCount,
+      aliasCount: storage.snapshot.aliasCount,
+      relationCandidateCount: storage.snapshot.relationCount,
+      relationLimitSaturated: storage.snapshot.relationLimitSaturated,
+      authorizedRelationCount: result.receipt.authorizedRelationCount,
+      rejectedRelationCount: result.receipt.rejectedRelationCount,
+      pathCount: result.receipt.pathCount,
+      evidenceAuthorizationDurationMs,
+      pathExpansionDurationMs,
+      totalDurationMs: elapsedMilliseconds(retrievalStartedAt),
+    });
+    await recordGraphQueryTelemetrySafely({
+      telemetry,
+      executionScope: input.entityAccess.executionScope,
+    });
+  } catch (error) {
+    console.warn(
+      "Graph query telemetry could not be prepared.",
+      error instanceof Error ? error.message : error,
+    );
+  }
+  return result;
 }
 
 export function buildGraphRelationshipPaths(input: {
@@ -578,6 +620,14 @@ function canonicalTimestamp(value: string) {
 
 function roundScore(value: number) {
   return Math.round(Math.min(1, Math.max(0, value)) * 1_000) / 1_000;
+}
+
+function monotonicNow() {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
+}
+
+function elapsedMilliseconds(startedAt: number) {
+  return Math.max(0, Math.round((monotonicNow() - startedAt) * 100) / 100);
 }
 
 function deepFreeze<T>(value: T): T {
