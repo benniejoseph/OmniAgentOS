@@ -41,6 +41,7 @@ type AnthropicResponse = {
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
+    cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
   };
   error?: { message?: string };
@@ -104,6 +105,7 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
     const messages = anthropicToolMessages(request, conversation);
     const result = await callAnthropic(request, target, {
       messages,
+      cache_control: { type: "ephemeral" },
       tools: request.tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -330,7 +332,9 @@ function anthropicResponseFailure(
 }
 
 function anthropicUsage(raw: AnthropicResponse["usage"]): ModelUsage {
-  const inputTokens = finite(raw?.input_tokens);
+  const inputTokens = finite(raw?.input_tokens) +
+    finite(raw?.cache_creation_input_tokens) +
+    finite(raw?.cache_read_input_tokens);
   const outputTokens = finite(raw?.output_tokens);
   return {
     inputTokens,

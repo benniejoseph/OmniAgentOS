@@ -17,6 +17,7 @@ import {
   preserveModelProviderResponseReceipt,
 } from "@/lib/models/types";
 import { estimateProviderCost } from "@/lib/models/pricing";
+import { supportsBedrockPromptCache } from "@/lib/models/prompt-cache";
 import type { ModelUsage } from "@/lib/openai/model-router";
 import {
   appendModelTurnToConversation,
@@ -85,6 +86,7 @@ type BedrockConverseResponse = {
     outputTokens?: unknown;
     totalTokens?: unknown;
     cacheReadInputTokens?: unknown;
+    cacheWriteInputTokens?: unknown;
   };
 };
 
@@ -232,7 +234,14 @@ async function callBedrockConverse(input: {
   const payload = {
     ...input.payload,
     ...(input.request.instructions
-      ? { system: [{ text: input.request.instructions }] }
+      ? {
+          system: [
+            { text: input.request.instructions },
+            ...(supportsBedrockPromptCache(input.target.model)
+              ? [{ cachePoint: { type: "default" } }]
+              : []),
+          ],
+        }
       : {}),
     inferenceConfig: {
       maxTokens: boundedInteger(
@@ -1097,7 +1106,9 @@ function bedrockResponseFailure(
 }
 
 function bedrockUsage(raw: BedrockConverseResponse["usage"]): ModelUsage {
-  const inputTokens = finite(raw?.inputTokens);
+  const inputTokens = finite(raw?.inputTokens) +
+    finite(raw?.cacheReadInputTokens) +
+    finite(raw?.cacheWriteInputTokens);
   const outputTokens = finite(raw?.outputTokens);
   const calculatedTotal = inputTokens + outputTokens;
   return {

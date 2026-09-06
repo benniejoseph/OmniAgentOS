@@ -29,12 +29,20 @@ describe("Anthropic model adapter tool turns", () => {
             input: { query: "Ada" },
           },
         ],
-        usage: { input_tokens: 7, output_tokens: 3 },
+        usage: {
+          input_tokens: 7,
+          output_tokens: 3,
+          cache_creation_input_tokens: 100,
+        },
       }), { status: 200, headers: { "content-type": "application/json" } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         model: "claude-test",
         content: [{ type: "text", text: "Ada found." }],
-        usage: { input_tokens: 11, output_tokens: 2 },
+        usage: {
+          input_tokens: 11,
+          output_tokens: 2,
+          cache_read_input_tokens: 100,
+        },
       }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -72,6 +80,13 @@ describe("Anthropic model adapter tool turns", () => {
       description: "Search memory",
       input_schema: { type: "object" },
     }]);
+    expect(firstBody.cache_control).toEqual({ type: "ephemeral" });
+    expect(first.usage).toEqual({
+      inputTokens: 107,
+      outputTokens: 3,
+      cachedInputTokens: 0,
+      totalTokens: 110,
+    });
     expect(firstBody.messages.map((message: { role: string }) => message.role)).toEqual([
       "user",
       "assistant",
@@ -102,6 +117,12 @@ describe("Anthropic model adapter tool turns", () => {
       }],
     }, target);
     expect(second.text).toBe("Ada found.");
+    expect(second.usage).toEqual({
+      inputTokens: 111,
+      outputTokens: 2,
+      cachedInputTokens: 100,
+      totalTokens: 113,
+    });
     const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
     expect(secondBody.messages.at(-1)).toEqual({
       role: "user",

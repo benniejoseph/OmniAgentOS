@@ -20,6 +20,7 @@ import {
   modelConversationForToolTurn,
   type ModelConversationItem,
 } from "@/lib/models/conversation";
+import { promptCacheKeyForScope } from "@/lib/models/prompt-cache";
 
 export const openAIModelAdapter: ModelProviderAdapter = {
   id: "openai",
@@ -43,6 +44,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       maxOutputTokens: request.maxOutputTokens,
       model: target.model,
       apiKey: getModelRuntimeApiKey(request, "openai"),
+      promptCacheKey: promptCacheKeyForScope(request.usageScope),
     });
     return {
       text: turn.text,
@@ -115,6 +117,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       maxOutputTokens: request.maxOutputTokens,
       model: target.model,
       apiKey: getModelRuntimeApiKey(request, "openai"),
+      promptCacheKey: promptCacheKeyForScope(request.usageScope),
     });
     return {
       text: turn.text,
