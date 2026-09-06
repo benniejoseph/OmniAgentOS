@@ -66,6 +66,16 @@ import {
   type MemoryFormationReason,
   type MemoryTier,
 } from "@/lib/memory/tier-policy";
+import {
+  memoryReconciliationDecisionSchema,
+  memoryReconciliationDetectionReason,
+  memoryReconciliationDetectionReasonSchema,
+  memoryReconciliationKindSchema,
+  memoryReconciliationResolution,
+  memoryReconciliationStatusSchema,
+  type MemoryReconciliationDecision,
+  type MemoryReconciliationReview,
+} from "@/lib/memory/reconciliation";
 
 export type CreateMemoryInput = {
   id?: string;
@@ -354,8 +364,13 @@ export async function saveMemoryWithCommitStatus(input: CreateMemoryInput) {
 async function saveMemoryWithCommitStatusInTransaction(
   input: CreateMemoryInput,
   sql: MemorySqlClient,
+  options: { databaseAccessScopeAlreadyEntered?: boolean } = {},
 ) {
-  const result = (await saveMemoriesWithCommitStatus([input], { sql }))[0];
+  const result = (await saveMemoriesWithCommitStatus([input], {
+    sql,
+    databaseAccessScopeAlreadyEntered:
+      options.databaseAccessScopeAlreadyEntered,
+  }))[0];
   if (!result) {
     throw new Error("Memory persistence did not return a result.");
   }
@@ -367,6 +382,7 @@ async function saveMemoriesWithCommitStatus(
   options: {
     captureIngestGuard?: CaptureIngestGuard;
     sql?: MemorySqlClient;
+    databaseAccessScopeAlreadyEntered?: boolean;
   } = {},
 ) {
   if (!inputs.length) {
@@ -544,7 +560,7 @@ async function saveMemoriesWithCommitStatus(
       if (options.captureIngestGuard) {
         await lockActiveCaptureIngest(sql, options.captureIngestGuard!);
       }
-      if (databaseAccessScope) {
+      if (databaseAccessScope && !options.databaseAccessScopeAlreadyEntered) {
         await setTransactionLocalDatabaseMemoryAccessScope(
           sql,
           databaseAccessScope,
@@ -567,6 +583,12 @@ async function saveMemoriesWithCommitStatus(
         inputs,
       );
       await appendMemoryMutationEvents(
+        sql,
+        persistedRows,
+        records,
+        mutationScopes as ExecutionScope[],
+      );
+      await appendMemoryReconciliationReviews(
         sql,
         persistedRows,
         records,
@@ -642,6 +664,10 @@ async function saveMemoriesWithCommitStatus(
     })),
     records,
     mutationScopes,
+  );
+  await appendFileMemoryReconciliationReviews(
+    records,
+    records.map((record) => Boolean(savedById.get(record.id)?.inserted)),
   );
   return records.map((record) => {
     const result = savedById.get(record.id);
@@ -827,6 +853,7 @@ export async function getActiveMemoriesByIds(
 export type CorrectMemoryResult = {
   previous: MemoryRecord;
   corrected: MemoryRecord;
+  review?: MemoryReconciliationReview;
 };
 
 export async function correctMemory(
@@ -840,6 +867,9 @@ export async function correctMemory(
   } = {},
 ): Promise<CorrectMemoryResult | null> {
   const tenantId = normalizeTenantId(options.tenantId);
+  if (correction.contradiction) {
+    return proposeMemoryContradiction(id, correction, options);
+  }
   const oldStatus: NonNullable<MemoryRecord["claimStatus"]> = correction.contradiction ? "contradicted" : "superseded";
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -879,6 +909,7 @@ export async function correctMemory(
       const correctedResult = await saveMemoryWithCommitStatusInTransaction(
         correctionInput(existing, correction, options, executionScope),
         sql,
+        { databaseAccessScopeAlreadyEntered: Boolean(options.accessScope) },
       );
       await sql`
         UPDATE omni_memories
@@ -935,6 +966,489 @@ export async function correctMemory(
     });
   }
   return { previous: { ...existing, claimStatus: oldStatus }, corrected };
+}
+
+export class MemoryReconciliationConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MemoryReconciliationConflictError";
+  }
+}
+
+async function proposeMemoryContradiction(
+  id: string,
+  correction: {
+    title?: string;
+    content?: string;
+    confidence?: number;
+    validTo?: string;
+    contradiction?: boolean;
+    embedding?: number[];
+  },
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+    executionScope?: ExecutionScope;
+  },
+): Promise<CorrectMemoryResult | null> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const executionScope = parsePersistedExecutionScope(options.executionScope);
+    if (!executionScope) {
+      throw new Error("Memory contradiction requires an execution scope.");
+    }
+    assertExecutionScopeTenant(executionScope, tenantId);
+    return getSql().transaction(async (sql: MemorySqlClient) => {
+      if (options.accessScope) {
+        const accessScope = parseDatabaseMemoryAccessScope(options.accessScope);
+        if (
+          accessScope.tenantId !== tenantId ||
+          accessScope.purposeId !== MEMORY_PURPOSE_IDS.correct
+        ) {
+          throw new Error("Memory access scope does not match this operation.");
+        }
+        await setTransactionLocalDatabaseMemoryAccessScope(sql, accessScope);
+      }
+      const existingRows = await sql`
+        SELECT *
+        FROM omni_memories
+        WHERE id = ${id}
+          AND tenant_id = ${tenantId}
+          AND claim_status <> 'forgotten'
+        LIMIT 1
+        FOR UPDATE
+      `;
+      if (!existingRows[0]) return null;
+      const existing = memoryFromRow(existingRows[0]);
+      if (existing.claimStatus !== "active") {
+        throw new MemoryReconciliationConflictError(
+          "Only an active memory can receive a contradiction candidate.",
+        );
+      }
+      if (existing.accessBinding && !options.accessScope) {
+        throw new Error("Scoped memory contradiction requires an access scope.");
+      }
+      const candidateResult = await saveMemoryWithCommitStatusInTransaction({
+        ...correctionInput(
+          existing,
+          { ...correction, contradiction: true },
+          options,
+          executionScope,
+        ),
+        claimStatus: "candidate",
+      }, sql, {
+        databaseAccessScopeAlreadyEntered: Boolean(options.accessScope),
+      });
+      const reviewRows = await sql`
+        SELECT review.*,
+               to_jsonb(candidate) AS candidate_memory,
+               to_jsonb(existing) AS existing_memory
+        FROM omni_memory_reconciliation_reviews review
+        JOIN omni_memories candidate
+          ON candidate.tenant_id = review.tenant_id
+         AND candidate.id = review.candidate_memory_id
+        LEFT JOIN omni_memories existing
+          ON existing.tenant_id = review.tenant_id
+         AND existing.id = review.existing_memory_id
+        WHERE review.tenant_id = ${tenantId}
+          AND review.candidate_memory_id = ${candidateResult.record.id}
+        LIMIT 1
+      `;
+      if (!reviewRows[0]) {
+        throw new Error("Memory contradiction review was not created.");
+      }
+      return {
+        previous: existing,
+        corrected: candidateResult.record,
+        review: memoryReconciliationReviewFromRow(reviewRows[0]),
+      };
+    }) as Promise<CorrectMemoryResult | null>;
+  }
+
+  const existing = await getMemory(id, {
+    tenantId,
+    accessScope: options.accessScope,
+  });
+  if (!existing || existing.claimStatus === "forgotten") return null;
+  if (existing.claimStatus !== "active") {
+    throw new MemoryReconciliationConflictError(
+      "Only an active memory can receive a contradiction candidate.",
+    );
+  }
+  const candidate = await saveMemory({
+    ...correctionInput(
+      existing,
+      { ...correction, contradiction: true },
+      options,
+      options.executionScope,
+    ),
+    claimStatus: "candidate",
+  });
+  const reviews = await listMemoryReconciliationReviews({
+    tenantId,
+    status: "pending",
+    accessScope: options.accessScope,
+  });
+  const review = reviews.find((item) => item.candidate.id === candidate.id);
+  if (!review) throw new Error("Memory contradiction review was not created.");
+  return { previous: existing, corrected: candidate, review };
+}
+
+export async function listMemoryReconciliationReviews(
+  options: {
+    tenantId?: string;
+    status?: "pending" | "resolved" | "all";
+    limit?: number;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
+): Promise<MemoryReconciliationReview[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const status = options.status === "pending" || options.status === "resolved"
+    ? options.status
+    : "all";
+  const limit = Math.min(Math.max(options.limit || 100, 1), 200);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const readRows = (sql: MemorySqlClient) => sql`
+      SELECT review.*,
+             to_jsonb(candidate) AS candidate_memory,
+             to_jsonb(existing) AS existing_memory
+      FROM omni_memory_reconciliation_reviews review
+      JOIN omni_memories candidate
+        ON candidate.tenant_id = review.tenant_id
+       AND candidate.id = review.candidate_memory_id
+      LEFT JOIN omni_memories existing
+        ON existing.tenant_id = review.tenant_id
+       AND existing.id = review.existing_memory_id
+      WHERE review.tenant_id = ${tenantId}
+        AND (${status} = 'all' OR review.status = ${status})
+      ORDER BY
+        CASE WHEN review.status = 'pending' THEN 0 ELSE 1 END,
+        review.updated_at DESC,
+        review.id
+      LIMIT ${limit}
+    `;
+    const rows = options.accessScope
+      ? await runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          readRows,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.correct],
+        )
+      : await readRows(getSql());
+    return rows.map(memoryReconciliationReviewFromRow);
+  }
+
+  const reviews = await readJsonFile<MemoryReconciliationReview[]>(
+    getMemoryReconciliationFile(),
+    [],
+  );
+  const memories = (await readJsonFile<MemoryRecord[]>(getMemoryFile(), []))
+    .map(sanitizeMemoryRecord);
+  const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
+  return reviews
+    .filter((review) => normalizeTenantId(review.tenantId) === tenantId)
+    .filter((review) => status === "all" || review.status === status)
+    .map((review) => ({
+      ...review,
+      candidate: memoryById.get(review.candidate.id) || review.candidate,
+      existing: review.existing
+        ? memoryById.get(review.existing.id) || review.existing
+        : review.candidate.contradictionOfId
+          ? memoryById.get(review.candidate.contradictionOfId)
+          : undefined,
+    }))
+    .filter((review) =>
+      memoryVisibleForScope(review.candidate, options.accessScope)
+    )
+    .sort((left, right) => {
+      if (left.status !== right.status) return left.status === "pending" ? -1 : 1;
+      return right.updatedAt.localeCompare(left.updatedAt);
+    })
+    .slice(0, limit);
+}
+
+export async function resolveMemoryReconciliationReview(
+  reviewId: string,
+  decision: MemoryReconciliationDecision,
+  options: {
+    tenantId?: string;
+    actorId: string;
+    accessScope?: DatabaseMemoryAccessScope;
+    executionScope: ExecutionScope;
+  },
+): Promise<MemoryReconciliationReview | null> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const parsedDecision = memoryReconciliationDecisionSchema.parse(decision);
+  const executionScope = parsePersistedExecutionScope(options.executionScope);
+  if (!executionScope) {
+    throw new Error("Memory reconciliation requires an execution scope.");
+  }
+  assertExecutionScopeTenant(executionScope, tenantId);
+  const resolvedBy = executionScope.initiatingActorId || options.actorId;
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: MemorySqlClient) => {
+      if (options.accessScope) {
+        const accessScope = parseDatabaseMemoryAccessScope(options.accessScope);
+        if (
+          accessScope.tenantId !== tenantId ||
+          accessScope.purposeId !== MEMORY_PURPOSE_IDS.correct
+        ) {
+          throw new Error("Memory access scope does not match this operation.");
+        }
+        await setTransactionLocalDatabaseMemoryAccessScope(sql, accessScope);
+      }
+      const reviewRows = await sql`
+        SELECT *
+        FROM omni_memory_reconciliation_reviews
+        WHERE tenant_id = ${tenantId}
+          AND id = ${reviewId}
+        LIMIT 1
+        FOR UPDATE
+      `;
+      if (!reviewRows[0]) return null;
+      const storedStatus = memoryReconciliationStatusSchema.parse(
+        reviewRows[0].status,
+      );
+      const storedDecision = reviewRows[0].decision
+        ? memoryReconciliationDecisionSchema.parse(reviewRows[0].decision)
+        : undefined;
+      if (storedStatus === "resolved") {
+        if (storedDecision !== parsedDecision) {
+          throw new MemoryReconciliationConflictError(
+            "Memory reconciliation was already resolved with another decision.",
+          );
+        }
+        return loadMemoryReconciliationReview(sql, tenantId, reviewId);
+      }
+
+      const kind = memoryReconciliationKindSchema.parse(reviewRows[0].kind);
+      const candidateId = String(reviewRows[0].candidate_memory_id);
+      const existingId = reviewRows[0].existing_memory_id
+        ? String(reviewRows[0].existing_memory_id)
+        : undefined;
+      const memoryRows = await sql`
+        SELECT *
+        FROM omni_memories
+        WHERE tenant_id = ${tenantId}
+          AND id = ANY(${[candidateId, ...(existingId ? [existingId] : [])]})
+        ORDER BY id
+        FOR UPDATE
+      `;
+      const candidate = memoryRows
+        .map(memoryFromRow)
+        .find((memory) => memory.id === candidateId);
+      const existing = existingId
+        ? memoryRows.map(memoryFromRow).find((memory) => memory.id === existingId)
+        : undefined;
+      if (!candidate || candidate.claimStatus !== "candidate") {
+        throw new MemoryReconciliationConflictError(
+          "Memory reconciliation candidate is no longer pending.",
+        );
+      }
+      if (
+        kind === "contradiction" &&
+        (!existing || existing.claimStatus !== "active")
+      ) {
+        throw new MemoryReconciliationConflictError(
+          "The existing claim changed; review the current memory state again.",
+        );
+      }
+      const resolution = memoryReconciliationResolution(kind, parsedDecision);
+      const now = new Date().toISOString();
+      await sql`
+        UPDATE omni_memories
+        SET claim_status = ${resolution.candidateStatus},
+            valid_from = CASE
+              WHEN ${resolution.candidateStatus} = 'active'
+                THEN COALESCE(valid_from, ${now})
+              ELSE valid_from
+            END,
+            valid_to = CASE
+              WHEN ${resolution.closeCandidateValidity} THEN ${now}
+              ELSE valid_to
+            END,
+            updated_at = ${now}
+        WHERE tenant_id = ${tenantId}
+          AND id = ${candidateId}
+          AND claim_status = 'candidate'
+      `;
+      if (existingId && resolution.existingStatus) {
+        await sql`
+          UPDATE omni_memories
+          SET claim_status = ${resolution.existingStatus},
+              valid_to = CASE
+                WHEN ${resolution.closeExistingValidity} THEN ${now}
+                ELSE valid_to
+              END,
+              updated_at = ${now}
+          WHERE tenant_id = ${tenantId}
+            AND id = ${existingId}
+            AND claim_status = 'active'
+        `;
+      }
+      await sql`
+        UPDATE omni_memory_reconciliation_reviews
+        SET status = 'resolved',
+            decision = ${parsedDecision},
+            resolved_by = ${resolvedBy},
+            resolved_at = ${now},
+            updated_at = ${now}
+        WHERE tenant_id = ${tenantId}
+          AND id = ${reviewId}
+          AND status = 'pending'
+      `;
+      await appendScopedDomainEvent({
+        id: `memory_reconciliation_resolved_${memoryTextSha256(
+          `${reviewId}:${parsedDecision}`,
+        )}`,
+        streamId: `memory-reconciliation:${reviewId}`,
+        type: "memory.reconciliation.resolved",
+        executionScope,
+        payload: {
+          schemaVersion: 1,
+          reviewId,
+          kind,
+          decision: parsedDecision,
+          candidateMemoryId: candidateId,
+          existingMemoryId: existingId || null,
+          candidateClaimStatus: resolution.candidateStatus,
+          existingClaimStatus: resolution.existingStatus || null,
+          candidateTitleSha256: memoryTextSha256(candidate.title),
+          candidateContentSha256: memoryTextSha256(candidate.content),
+        },
+      }, { sql });
+      return loadMemoryReconciliationReview(sql, tenantId, reviewId);
+    }) as Promise<MemoryReconciliationReview | null>;
+  }
+
+  const reviews = await listMemoryReconciliationReviews({
+    tenantId,
+    status: "all",
+    accessScope: options.accessScope,
+  });
+  const current = reviews.find((review) => review.id === reviewId);
+  if (!current) return null;
+  if (current.status === "resolved") {
+    if (current.decision !== parsedDecision) {
+      throw new MemoryReconciliationConflictError(
+        "Memory reconciliation was already resolved with another decision.",
+      );
+    }
+    return current;
+  }
+  const resolution = memoryReconciliationResolution(current.kind, parsedDecision);
+  const now = new Date().toISOString();
+  await updateJsonFile<MemoryRecord[]>(getMemoryFile(), [], (memories) =>
+    memories.map((memory) => {
+      if (memory.id === current.candidate.id) {
+        return {
+          ...sanitizeMemoryRecord(memory),
+          claimStatus: resolution.candidateStatus,
+          validFrom: resolution.candidateStatus === "active"
+            ? memory.validFrom || now
+            : memory.validFrom,
+          validTo: resolution.closeCandidateValidity ? now : memory.validTo,
+          updatedAt: now,
+        };
+      }
+      if (current.existing && memory.id === current.existing.id) {
+        return {
+          ...sanitizeMemoryRecord(memory),
+          claimStatus: resolution.existingStatus || memory.claimStatus,
+          validTo: resolution.closeExistingValidity ? now : memory.validTo,
+          updatedAt: now,
+        };
+      }
+      return memory;
+    })
+  );
+  let resolved: MemoryReconciliationReview | undefined;
+  await updateJsonFile<MemoryReconciliationReview[]>(
+    getMemoryReconciliationFile(),
+    [],
+    (stored) => stored.map((review) => {
+      if (review.id !== reviewId) return review;
+      const updated: MemoryReconciliationReview = {
+        ...review,
+        status: "resolved",
+        decision: parsedDecision,
+        resolvedAt: now,
+        resolvedBy,
+        updatedAt: now,
+        candidate: {
+          ...current.candidate,
+          claimStatus: resolution.candidateStatus,
+          validTo: resolution.closeCandidateValidity
+            ? now
+            : current.candidate.validTo,
+          updatedAt: now,
+        },
+        existing: current.existing
+          ? {
+              ...current.existing,
+              claimStatus: resolution.existingStatus ||
+                current.existing.claimStatus,
+              validTo: resolution.closeExistingValidity
+                ? now
+                : current.existing.validTo,
+              updatedAt: now,
+            }
+          : undefined,
+      };
+      resolved = updated;
+      return updated;
+    }),
+  );
+  if (!resolved) return null;
+  await appendScopedDomainEvent({
+    id: `memory_reconciliation_resolved_${memoryTextSha256(
+      `${reviewId}:${parsedDecision}`,
+    )}`,
+    streamId: `memory-reconciliation:${reviewId}`,
+    type: "memory.reconciliation.resolved",
+    executionScope,
+    payload: {
+      schemaVersion: 1,
+      reviewId,
+      kind: current.kind,
+      decision: parsedDecision,
+      candidateMemoryId: current.candidate.id,
+      existingMemoryId: current.existing?.id || null,
+      candidateClaimStatus: resolution.candidateStatus,
+      existingClaimStatus: resolution.existingStatus || null,
+      candidateTitleSha256: memoryTextSha256(current.candidate.title),
+      candidateContentSha256: memoryTextSha256(current.candidate.content),
+    },
+  });
+  return resolved;
+}
+
+async function loadMemoryReconciliationReview(
+  sql: MemorySqlClient,
+  tenantId: string,
+  reviewId: string,
+) {
+  const rows = await sql`
+    SELECT review.*,
+           to_jsonb(candidate) AS candidate_memory,
+           to_jsonb(existing) AS existing_memory
+    FROM omni_memory_reconciliation_reviews review
+    JOIN omni_memories candidate
+      ON candidate.tenant_id = review.tenant_id
+     AND candidate.id = review.candidate_memory_id
+    LEFT JOIN omni_memories existing
+      ON existing.tenant_id = review.tenant_id
+     AND existing.id = review.existing_memory_id
+    WHERE review.tenant_id = ${tenantId}
+      AND review.id = ${reviewId}
+    LIMIT 1
+  `;
+  return rows[0] ? memoryReconciliationReviewFromRow(rows[0]) : null;
 }
 
 function correctionInput(
@@ -2231,6 +2745,115 @@ async function appendMemoryMutationEvents(
   }
 }
 
+async function appendMemoryReconciliationReviews(
+  sql: MemorySqlClient,
+  rows: readonly Record<string, unknown>[],
+  records: readonly MemoryRecord[],
+  scopes: readonly ExecutionScope[],
+) {
+  const insertedIds = new Set(
+    rows
+      .filter((row) => Boolean(row._inserted))
+      .map((row) => String(row.id)),
+  );
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const executionScope = scopes[index];
+    if (
+      !record ||
+      !executionScope ||
+      !insertedIds.has(record.id) ||
+      record.claimStatus !== "candidate"
+    ) {
+      continue;
+    }
+    const reviewId = memoryReconciliationReviewId(
+      normalizeTenantId(record.tenantId),
+      record.id,
+    );
+    const kind = record.contradictionOfId
+      ? "contradiction"
+      : "confirmation";
+    const detectionReason = memoryReconciliationDetectionReason(record);
+    const inserted = await sql`
+      INSERT INTO omni_memory_reconciliation_reviews (
+        id, tenant_id, owner_actor_id, kind, status, decision,
+        detection_reason, candidate_memory_id, existing_memory_id,
+        resolved_by, resolved_at, created_at, updated_at
+      ) VALUES (
+        ${reviewId}, ${record.tenantId},
+        ${record.accessBinding?.ownerActorId || null}, ${kind},
+        'pending', NULL, ${detectionReason}, ${record.id},
+        ${record.contradictionOfId || null}, NULL, NULL,
+        ${record.createdAt}, ${record.updatedAt}
+      )
+      ON CONFLICT (tenant_id, candidate_memory_id) DO NOTHING
+      RETURNING id
+    `;
+    if (!inserted[0]) continue;
+    await appendScopedDomainEvent({
+      id: `memory_reconciliation_detected_${reviewId}`,
+      streamId: `memory-reconciliation:${reviewId}`,
+      type: "memory.reconciliation.detected",
+      executionScope,
+      payload: {
+        schemaVersion: 1,
+        reviewId,
+        kind,
+        detectionReason,
+        candidateMemoryId: record.id,
+        existingMemoryId: record.contradictionOfId || null,
+        candidateTitleSha256: memoryTextSha256(record.title),
+        candidateContentSha256: memoryTextSha256(record.content),
+        evidenceRefCount: record.evidenceRefs?.length || 0,
+      },
+    }, { sql });
+  }
+}
+
+async function appendFileMemoryReconciliationReviews(
+  records: readonly MemoryRecord[],
+  inserted: readonly boolean[],
+) {
+  const candidates = records.filter((record, index) =>
+    inserted[index] && record.claimStatus === "candidate"
+  );
+  if (!candidates.length) return;
+  await updateJsonFile<MemoryReconciliationReview[]>(
+    getMemoryReconciliationFile(),
+    [],
+    (reviews) => {
+      const next = [...reviews];
+      for (const candidate of candidates) {
+        if (next.some((review) =>
+          normalizeTenantId(review.tenantId) ===
+            normalizeTenantId(candidate.tenantId) &&
+          review.candidate.id === candidate.id
+        )) continue;
+        next.unshift({
+          id: memoryReconciliationReviewId(
+            normalizeTenantId(candidate.tenantId),
+            candidate.id,
+          ),
+          tenantId: normalizeTenantId(candidate.tenantId),
+          ...(candidate.accessBinding?.ownerActorId
+            ? { ownerActorId: candidate.accessBinding.ownerActorId }
+            : {}),
+          kind: candidate.contradictionOfId
+            ? "contradiction"
+            : "confirmation",
+          status: "pending",
+          detectionReason: memoryReconciliationDetectionReason(candidate),
+          candidate,
+          createdAt: candidate.createdAt,
+          updatedAt: candidate.updatedAt,
+        });
+      }
+      return next;
+    },
+  );
+}
+
 async function appendMemoryFormationEvents(
   sql: MemorySqlClient | undefined,
   rows: readonly Record<string, unknown>[],
@@ -2347,6 +2970,56 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     embedding: parseEmbedding(row.embedding),
     ...(accessBinding ? { accessBinding } : {}),
   });
+}
+
+function memoryReconciliationReviewFromRow(
+  row: Record<string, unknown>,
+): MemoryReconciliationReview {
+  const candidateRow = databaseRecord(row.candidate_memory);
+  if (!candidateRow) {
+    throw new Error("Memory reconciliation candidate projection is missing.");
+  }
+  const existingRow = databaseRecord(row.existing_memory);
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    ...(row.owner_actor_id
+      ? { ownerActorId: String(row.owner_actor_id) }
+      : {}),
+    kind: memoryReconciliationKindSchema.parse(row.kind),
+    status: memoryReconciliationStatusSchema.parse(row.status),
+    ...(row.decision
+      ? { decision: memoryReconciliationDecisionSchema.parse(row.decision) }
+      : {}),
+    detectionReason: memoryReconciliationDetectionReasonSchema.parse(
+      row.detection_reason,
+    ),
+    candidate: memoryFromRow(candidateRow),
+    ...(existingRow ? { existing: memoryFromRow(existingRow) } : {}),
+    createdAt: normalizeDate(row.created_at),
+    updatedAt: normalizeDate(row.updated_at),
+    ...(row.resolved_at
+      ? { resolvedAt: normalizeDate(row.resolved_at) }
+      : {}),
+    ...(row.resolved_by ? { resolvedBy: String(row.resolved_by) } : {}),
+  };
+}
+
+function databaseRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function memoryAccessBindingFromRow(
@@ -2549,6 +3222,16 @@ function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchRe
 
 function getMemoryFile() {
   return getDataPath("memory.json");
+}
+
+function getMemoryReconciliationFile() {
+  return getDataPath("memory-reconciliation.json");
+}
+
+function memoryReconciliationReviewId(tenantId: string, candidateId: string) {
+  return `memory_reconciliation_${memoryTextSha256(
+    `${tenantId}:${candidateId}`,
+  ).slice(0, 48)}`;
 }
 
 function normalizeDate(value: unknown) {

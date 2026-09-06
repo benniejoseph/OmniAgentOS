@@ -19,6 +19,9 @@ function createSql(transactionScoped = false) {
         (row) => ({ ...row, _inserted: true }),
       );
     }
+    if (query.includes("INSERT INTO omni_memory_reconciliation_reviews")) {
+      return [{ id: "memory-reconciliation-a" }];
+    }
     if (
       query.includes("SELECT *") &&
       query.includes("FROM omni_memories")
@@ -251,6 +254,34 @@ describe("Postgres memory recall", () => {
     )).toBe(true);
     expect(vi.mocked(appendScopedDomainEvent)).toHaveBeenCalledWith(
       expect.objectContaining({ type: "memory.corrected" }),
+      expect.objectContaining({
+        sql: expect.objectContaining({ transactionScoped: true }),
+      }),
+    );
+  });
+
+  it("projects every inserted candidate into the reconciliation inbox", async () => {
+    await saveMemory({
+      id: "candidate-memory-a",
+      tenantId: "tenant-a",
+      title: "Unconfirmed candidate",
+      content: "This candidate must remain outside recall.",
+      claimStatus: "candidate",
+      assertedBy: "agent",
+      executionScope: executionScope(MEMORY_PURPOSE_IDS.formation),
+    });
+
+    expect(mocks.queries.some((query) =>
+      query.includes("INSERT INTO omni_memory_reconciliation_reviews")
+    )).toBe(true);
+    expect(vi.mocked(appendScopedDomainEvent)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "memory.reconciliation.detected",
+        payload: expect.objectContaining({
+          kind: "confirmation",
+          detectionReason: "unverified_inference",
+        }),
+      }),
       expect.objectContaining({
         sql: expect.objectContaining({ transactionScoped: true }),
       }),
