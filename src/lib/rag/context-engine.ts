@@ -26,6 +26,12 @@ import { searchMemories } from "@/lib/memory/store";
 import { searchKnowledge } from "@/lib/rag/store";
 import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
 import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
+import {
+  allocateContextBudget,
+  annotateContextEvidenceLineage,
+  type BudgetedContextEvidenceItem,
+  type ContextBudgetLimits,
+} from "@/lib/rag/context-budget";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
@@ -85,6 +91,8 @@ export type BuildContextPackOptions = {
   embeddingPolicy?: {
     allowedExternalProviders?: readonly ["openai"] | readonly [];
   };
+  /** Hard P4.5 model/task limits for the formatted retrieval context. */
+  contextBudget?: ContextBudgetLimits;
   /** Governs the optional semantic planning turn; deterministic planning remains available. */
   queryPlanning?: {
     allowSemanticModel?: boolean;
@@ -169,6 +177,11 @@ export async function buildContextPack(
           asOfTime: compilerAsOfTime,
         })
       : undefined;
+    const allocated = allocateContextBudget({
+      items: [],
+      limits: options.contextBudget,
+      render: () => formatContextPack([], profile),
+    });
     const pack: ContextPack = {
       query: normalizedQuery,
       profile,
@@ -176,7 +189,8 @@ export async function buildContextPack(
       memoryResults: [],
       knowledgeResults: [],
       graphResults: [],
-      contextBlock: formatContextPack([], profile),
+      contextBlock: allocated.contextBlock,
+      budget: allocated.receipt,
       ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
       ...(compilerV2Canary ? { compilerV2Canary } : {}),
     };
@@ -189,6 +203,7 @@ export async function buildContextPack(
         selectedCount: 0,
         latencyMs: Date.now() - startedAt,
         results: [],
+        contextBudget: allocated.receipt,
       });
     } else if (options.persistTrace !== false && privateTraceAccessScope) {
       pack.trace = await saveRetrievalTrace({
@@ -199,6 +214,7 @@ export async function buildContextPack(
         selectedCount: 0,
         latencyMs: Date.now() - startedAt,
         results: [],
+        contextBudget: allocated.receipt,
       }, { accessScope: privateTraceAccessScope });
     }
     return sanitizeContextPack(pack);
@@ -288,13 +304,14 @@ export async function buildContextPack(
     embedding: embeddingResult.receipt,
     reranker: reranked.receipt,
   };
+  const lineageEvidence = annotateContextEvidenceLineage(rerankedEvidence);
   const evidenceIdSet = evidenceIds ? new Set(evidenceIds) : undefined;
   const legacySelected = selectDiverseEvidence(
     evidenceIdSet
-      ? rerankedEvidence.filter((item) =>
+      ? lineageEvidence.filter((item) =>
           evidenceIdSet.has(citationIdForEvidence(item))
         )
-      : rerankedEvidence,
+      : lineageEvidence,
     limit,
   );
   const compilerV2Shadow = options.contextCompilerV2Shadow && compilerCandidatesPromise
@@ -324,23 +341,27 @@ export async function buildContextPack(
   const canarySelectedIds = compilerV2Canary
     ? new Set(compilerV2Canary.selectedEvidenceIds)
     : undefined;
-  const selected = canarySelectedIds
+  const authorizedSelected = canarySelectedIds
     ? legacySelected.filter((item) =>
         canarySelectedIds.has(citationIdForEvidence(item))
       )
     : legacySelected;
-  const selectedIdSet = evidenceIdSet
-    ? new Set(selected.map(citationIdForEvidence))
-    : undefined;
-  const selectedMemoryResults = selectedIdSet
-    ? memoryResults.filter((result) => selectedIdSet.has(`memory:${result.record.id}`))
-    : memoryResults;
-  const selectedKnowledgeResults = selectedIdSet
-    ? knowledgeResults.filter((result) => selectedIdSet.has(`knowledge:${result.chunk.id}`))
-    : knowledgeResults;
-  const selectedGraphResults = selectedIdSet
-    ? graphResults.filter((result) => selectedIdSet.has(`graph:${result.node.id}`))
-    : graphResults;
+  const allocated = allocateContextBudget({
+    items: authorizedSelected,
+    limits: options.contextBudget,
+    render: (items) => formatContextPack(items, profile),
+  });
+  const selected = allocated.items;
+  const selectedIdSet = new Set(selected.map(citationIdForEvidence));
+  const selectedMemoryResults = memoryResults.filter((result) =>
+    selectedIdSet.has(`memory:${result.record.id}`)
+  );
+  const selectedKnowledgeResults = knowledgeResults.filter((result) =>
+    selectedIdSet.has(`knowledge:${result.chunk.id}`)
+  );
+  const selectedGraphResults = graphResults.filter((result) =>
+    selectedIdSet.has(`graph:${result.node.id}`)
+  );
   const traceResults = selected.map((item) => ({
     id: item.id,
     kind: item.kind,
@@ -350,6 +371,9 @@ export async function buildContextPack(
     utilityScore: roundScore(item.utilityScore),
     confidence: roundScore(item.confidence),
     reasons: item.reasons.slice(0, 8),
+    lineageRefSha256: item.lineageRefSha256,
+    contextTier: item.contextTier,
+    tokenEstimate: item.tokenEstimate,
   }));
   const privateMemoryIds = new Set(
     scopedMemoryResults.map((result) => result.record.id),
@@ -369,6 +393,7 @@ export async function buildContextPack(
           selectedCount: selected.length,
           latencyMs: Date.now() - startedAt,
           results: traceResults,
+          contextBudget: allocated.receipt,
         })
         : privateTraceAccessScope
           ? await saveRetrievalTrace({
@@ -379,6 +404,7 @@ export async function buildContextPack(
               selectedCount: privateTraceResults.length,
               latencyMs: Date.now() - startedAt,
               results: privateTraceResults,
+              contextBudget: allocated.receipt,
             }, { accessScope: privateTraceAccessScope })
           : undefined;
 
@@ -389,7 +415,8 @@ export async function buildContextPack(
     memoryResults: selectedMemoryResults,
     knowledgeResults: selectedKnowledgeResults,
     graphResults: selectedGraphResults,
-    contextBlock: formatContextPack(selected, profile),
+    contextBlock: allocated.contextBlock,
+    budget: allocated.receipt,
     trace,
     ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
     ...(compilerV2Canary ? { compilerV2Canary } : {}),
@@ -501,6 +528,7 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
   const {
     compilerV2Shadow,
     compilerV2Canary,
+    budget,
     ...redactionInput
   } = pack;
   const { queryPlan, embedding, reranker } = redactionInput.profile;
@@ -523,6 +551,7 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
     },
     ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
     ...(compilerV2Canary ? { compilerV2Canary } : {}),
+    budget,
     memoryResults: sanitized.memoryResults.map(withoutMemoryEmbedding),
     results: sanitized.results.map((item) => item.kind === "memory"
       ? { ...item, result: withoutMemoryEmbedding(item.result) }
@@ -837,24 +866,27 @@ function scoreEvidenceItems({
   return [...memoryItems, ...knowledgeItems, ...graphItems].sort((left, right) => right.utilityScore - left.utilityScore);
 }
 
-function selectDiverseEvidence(items: ContextEvidenceItem[], limit: number) {
-  const selected: ContextEvidenceItem[] = [];
-  const perSource = new Map<string, number>();
+function selectDiverseEvidence(
+  items: BudgetedContextEvidenceItem[],
+  limit: number,
+) {
+  const selected: BudgetedContextEvidenceItem[] = [];
+  const perLineage = new Map<string, number>();
   const perKind = new Map<string, number>();
-  const maxPerSource = Math.max(1, Math.ceil(limit / 2));
+  const maxPerLineage = 2;
 
   for (const item of items) {
     if (selected.length >= limit) {
       break;
     }
 
-    const sourceCount = perSource.get(item.sourceKey) || 0;
+    const lineageCount = perLineage.get(item.lineageRefSha256) || 0;
     const kindCount = perKind.get(item.kind) || 0;
-    if (sourceCount >= maxPerSource && selected.length >= Math.ceil(limit / 2)) {
+    if (lineageCount >= maxPerLineage) {
       continue;
     }
 
-    const sourcePenalty = sourceCount * 0.12;
+    const sourcePenalty = lineageCount * 0.18;
     const kindPenalty = Math.max(0, kindCount - Math.ceil(limit / 2)) * 0.05;
     const diversityScore = clamp01(1 - sourcePenalty - kindPenalty);
     selected.push({
@@ -864,29 +896,22 @@ function selectDiverseEvidence(items: ContextEvidenceItem[], limit: number) {
       confidence: clamp01(item.confidence * (0.86 + diversityScore * 0.14)),
       reasons: [
         ...item.reasons,
-        sourceCount ? "source-diversity penalty applied" : "diverse source",
+        lineageCount
+          ? "shared-lineage diversity penalty applied"
+          : "independent source lineage",
       ],
     });
-    perSource.set(item.sourceKey, sourceCount + 1);
+    perLineage.set(item.lineageRefSha256, lineageCount + 1);
     perKind.set(item.kind, kindCount + 1);
-  }
-
-  if (selected.length < limit) {
-    const selectedIds = new Set(selected.map((item) => item.id));
-    for (const item of items) {
-      if (selected.length >= limit) {
-        break;
-      }
-      if (!selectedIds.has(item.id)) {
-        selected.push(item);
-      }
-    }
   }
 
   return selected.sort((left, right) => right.utilityScore - left.utilityScore);
 }
 
-function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfile) {
+function formatContextPack(
+  items: readonly ContextEvidenceItem[],
+  profile: RetrievalProfile,
+) {
   if (!items.length) {
     return [
       "Context Engine: no retrieval context selected.",
@@ -927,7 +952,7 @@ function formatContextPack(items: ContextEvidenceItem[], profile: RetrievalProfi
   ].join("\n")));
 }
 
-function positionalPack(items: ContextEvidenceItem[]) {
+function positionalPack(items: readonly ContextEvidenceItem[]) {
   if (items.length <= 3) {
     return items;
   }

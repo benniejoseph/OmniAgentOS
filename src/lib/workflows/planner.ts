@@ -193,6 +193,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     limit: 8,
     tenantId,
     evidenceIds: contextSelection?.evidenceIds,
+    contextBudget: { taskContextTokenLimit: 6_144 },
     queryPlanning: { allowSemanticModel: false },
     ...(usageActorId ? {
       usageScope: {
