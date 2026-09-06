@@ -135,12 +135,13 @@ describe("Postgres memory recall", () => {
     const lexicalQuery = mocks.queries.find((query) =>
       query.includes("AS lexical_score"),
     );
-    expect(lexicalQuery).toContain("FROM (\n      SELECT *");
+    expect(lexicalQuery).toContain("FROM (\n      SELECT memory.*");
     expect(lexicalQuery).toContain(") ranked");
     expect(lexicalQuery).toContain("CASE ranked.tier");
+    expect(lexicalQuery).toContain("lifecycle.archived_at IS NULL");
     expect(lexicalQuery).toContain("WHEN 'commitment' THEN 1.15");
     expect(lexicalQuery).toContain(
-      "retention_expires_at IS NULL OR retention_expires_at > NOW()",
+      "memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW()",
     );
     expect(lexicalQuery).not.toContain("ORDER BY (lexical_score *");
   });
