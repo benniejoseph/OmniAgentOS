@@ -140,6 +140,34 @@ type RunFeedback = {
   correction?: string;
   updatedAt: string;
 };
+type ContextLockState = {
+  selection: {
+    query: string;
+    evidenceIds: string[];
+    lockToken: string;
+  };
+  receipt: {
+    lockId: string;
+    selectionSha256: string;
+    issuedAt: string;
+    expiresAt: string;
+  };
+};
+type ContextUseReceipt = {
+  receiptSha256: string;
+  selectionSha256: string;
+  candidateEvidenceIds: string[];
+  userInclusionIds: string[];
+  userExclusionIds: string[];
+  actualEvidenceIds: string[];
+  droppedEvidenceIds: string[];
+  candidateCount: number;
+  includedCount: number;
+  excludedCount: number;
+  actualCount: number;
+  droppedCount: number;
+  recordedAt: string;
+};
 type TrajectoryCheckpoint = {
   checkpointId: string;
   checkpointSha256: string;
@@ -315,6 +343,10 @@ export function AgentRunsWorkspace({
   );
   const [contextQuery, setContextQuery] = useState("");
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
+  const [contextPreviewToken, setContextPreviewToken] = useState("");
+  const [contextLock, setContextLock] = useState<ContextLockState>();
+  const [contextLocking, setContextLocking] = useState(false);
+  const [contextUseReceipt, setContextUseReceipt] = useState<ContextUseReceipt>();
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string>();
   const [workflowPlan, setWorkflowPlan] = useState<JsonRecord>();
@@ -417,6 +449,16 @@ export function AgentRunsWorkspace({
     normalizedGoal && (
       contextScope !== "explicit_selection" ||
       (contextQuery === normalizedGoal && !contextLoading)
+    ),
+  );
+  const contextLockedForGoal = Boolean(
+    contextScope !== "explicit_selection" ||
+    (
+      contextLock?.selection.query === normalizedGoal &&
+      sameOrderedStringValues(
+        contextLock.selection.evidenceIds,
+        selectedContextIds,
+      )
     ),
   );
   const approvalItems = arrayPath(evidence, "approvals.items");
@@ -749,6 +791,7 @@ export function AgentRunsWorkspace({
       try {
         const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(activeAgentRunId)}`, { signal: controller.signal }));
         if (disposed) return;
+        setContextUseReceipt(contextUseReceiptFromPayload(payload));
         const run = asRecord(payload.run);
         const status = stringValue(run.status);
         void refreshBrowserActivity(activeAgentRunId);
@@ -1149,6 +1192,12 @@ export function AgentRunsWorkspace({
     setDetailsOpen(false);
   }
 
+  function clearContextLockState() {
+    setContextPreviewToken("");
+    setContextLock(undefined);
+    setContextLocking(false);
+  }
+
   function changeGoal(nextGoal: string) {
     if (nextGoal === goal) {
       return;
@@ -1160,6 +1209,7 @@ export function AgentRunsWorkspace({
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
+    clearContextLockState();
     contextSelectionReviewedRef.current = contextScope !== "explicit_selection";
     setContextLoading(false);
     setContextError(undefined);
@@ -1177,6 +1227,7 @@ export function AgentRunsWorkspace({
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
+    clearContextLockState();
     setContextLoading(false);
     setContextError(undefined);
     setWorkflowPlan(undefined);
@@ -1232,6 +1283,8 @@ export function AgentRunsWorkspace({
     const controller = new AbortController();
     contextControllerRef.current = controller;
     setContextLoading(true);
+    setContextPreviewToken("");
+    setContextLock(undefined);
     setContextError(undefined);
     if (reveal) openTaskDetails("context");
     setRunAnnouncement("Finding context for this task.");
@@ -1253,6 +1306,8 @@ export function AgentRunsWorkspace({
       setContextPack(nextPack);
       setContextQuery(taskQuery);
       setSelectedContextIds(evidenceIds);
+      setContextPreviewToken(stringPath(nextPack, "preview.token", ""));
+      setContextLock(undefined);
       setWorkflowPlan(undefined);
       setRunAnnouncement(
         evidenceIds.length
@@ -1268,9 +1323,10 @@ export function AgentRunsWorkspace({
       setContextPack(undefined);
       setContextQuery(taskQuery);
       setSelectedContextIds([]);
+      clearContextLockState();
       setContextError(message);
-      setRunAnnouncement("Context could not be loaded. This task will use no saved context.");
-      return { query: taskQuery, evidenceIds: [] };
+      setRunAnnouncement("Context could not be loaded. Refresh or choose a no-saved-context scope.");
+      return undefined;
     } finally {
       if (version === contextVersionRef.current) {
         setContextLoading(false);
@@ -1288,13 +1344,89 @@ export function AgentRunsWorkspace({
     setSelectedContextIds(
       nextIds.filter((id, index, values) => allowed.has(id) && values.indexOf(id) === index),
     );
+    setContextLock(undefined);
     setWorkflowPlan(undefined);
-    setRunAnnouncement("Context selection updated. Only checked items will be used.");
+    setRunAnnouncement("Context selection updated. Lock it before starting the task.");
   }
 
   function contextSelectionForTask(query: string) {
-    if (contextQuery !== query || contextLoading) return undefined;
-    return { query, evidenceIds: selectedContextIds };
+    if (
+      contextQuery !== query ||
+      contextLoading ||
+      !contextLock ||
+      contextLock.selection.query !== query ||
+      !sameOrderedStringValues(
+        contextLock.selection.evidenceIds,
+        selectedContextIds,
+      )
+    ) return undefined;
+    return contextLock.selection;
+  }
+
+  async function lockContextForTask() {
+    const taskQuery = goal.trim();
+    if (
+      contextScope !== "explicit_selection" ||
+      !taskQuery ||
+      contextQuery !== taskQuery ||
+      !contextPreviewToken ||
+      contextLoading ||
+      contextLocking
+    ) return;
+    setContextLocking(true);
+    setContextError(undefined);
+    setRunAnnouncement("Locking the reviewed context selection.");
+    try {
+      const payload = asRecord(await readJson("/api/retrieval/selection-lock", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: taskQuery,
+          evidenceIds: selectedContextIds,
+          previewToken: contextPreviewToken,
+        }),
+      }));
+      const selection = asRecord(payload.selection);
+      const receipt = asRecord(payload.receipt);
+      const nextLock: ContextLockState = {
+        selection: {
+          query: stringValue(selection.query),
+          evidenceIds: Array.isArray(selection.evidenceIds)
+            ? selection.evidenceIds.filter((id): id is string => typeof id === "string")
+            : [],
+          lockToken: stringValue(selection.lockToken),
+        },
+        receipt: {
+          lockId: stringValue(receipt.lockId),
+          selectionSha256: stringValue(receipt.selectionSha256),
+          issuedAt: stringValue(receipt.issuedAt),
+          expiresAt: stringValue(receipt.expiresAt),
+        },
+      };
+      if (
+        !nextLock.selection.lockToken ||
+        !nextLock.receipt.selectionSha256 ||
+        nextLock.selection.query !== taskQuery ||
+        !sameOrderedStringValues(nextLock.selection.evidenceIds, selectedContextIds)
+      ) {
+        throw new Error("The context lock response was incomplete.");
+      }
+      setContextLock(nextLock);
+      setWorkflowPlan(undefined);
+      setRunAnnouncement(
+        `Context locked. ${nextLock.selection.evidenceIds.length} saved item${nextLock.selection.evidenceIds.length === 1 ? "" : "s"} will be eligible for this run.`,
+      );
+    } catch (lockError) {
+      setContextLock(undefined);
+      setContextError(
+        lockError instanceof Error
+          ? lockError.message
+          : "Context could not be locked.",
+      );
+      setRunAnnouncement("Context lock failed. Refresh and review the selection again.");
+    } finally {
+      setContextLocking(false);
+    }
   }
 
   async function buildPlan() {
@@ -1314,11 +1446,17 @@ export function AgentRunsWorkspace({
     }
     const contextSelection = contextScope === "explicit_selection"
       ? contextSelectionForTask(taskQuery)
-      : { query: taskQuery, evidenceIds: [] };
+      : undefined;
     if (contextScope === "explicit_selection" && !contextSelection) {
-      const prepared = await buildContext({ query: taskQuery, reveal: true });
-      if (prepared) {
-        setRunAnnouncement("Context preparation finished. Review the selection, then preview the plan again.");
+      if (contextPreparedForGoal) {
+        contextSelectionReviewedRef.current = true;
+        openTaskDetails("context");
+        setRunAnnouncement("Review and lock the context selection before previewing the plan.");
+      } else {
+        const prepared = await buildContext({ query: taskQuery, reveal: true });
+        if (prepared) {
+          setRunAnnouncement("Context preparation finished. Review and lock the selection, then preview the plan again.");
+        }
       }
       return;
     }
@@ -1333,6 +1471,7 @@ export function AgentRunsWorkspace({
           goal: taskQuery,
           mode,
           requireApproval: approvalRequired,
+          contextScope,
           contextSelection,
         }),
       });
@@ -1380,8 +1519,8 @@ export function AgentRunsWorkspace({
     const taskQuery = goal.trim();
     const contextSelection = contextScope === "explicit_selection"
       ? contextSelectionForTask(taskQuery)
-      : { query: taskQuery, evidenceIds: [] };
-    if (!contextSelection) {
+      : undefined;
+    if (contextScope === "explicit_selection" && !contextSelection) {
       setError("The task changed after this plan was prepared. Review fresh context and generate the plan again.");
       openTaskDetails("context");
       return;
@@ -1390,6 +1529,7 @@ export function AgentRunsWorkspace({
     setError(undefined);
     setAgentResponse("");
     setGrounding(undefined);
+    setContextUseReceipt(undefined);
     setStreamEvents([{ type: "status", label: "Starting workflow", detail: "Preparing durable work." }]);
     setTurns((current) => current.at(-1)?.role === "user" && current.at(-1)?.content === taskQuery
       ? current
@@ -1426,6 +1566,7 @@ export function AgentRunsWorkspace({
           metadata: {
             source: "agent-runs-workspace",
             threadId: workflowThreadId,
+            contextScope,
             contextSelection,
           },
         }),
@@ -1465,21 +1606,22 @@ export function AgentRunsWorkspace({
       setRunAnnouncement("Wait for task context to finish loading, then run the task.");
       return;
     }
-    let contextSelection = contextScope === "explicit_selection" &&
+    const contextSelection = contextScope === "explicit_selection" &&
         contextSelectionReviewedRef.current
       ? contextSelectionForTask(submittedGoal)
       : undefined;
     if (contextScope === "explicit_selection" && !contextSelection) {
-      const prepared = await buildContext({
-        query: submittedGoal,
-        reveal: !options?.prepareContextAutomatically,
-      });
-      if (!prepared) return;
-      if (!options?.prepareContextAutomatically) {
-        setRunAnnouncement("Context preparation finished. Review the selection, then run the task again.");
-        return;
+      if (!contextPreparedForGoal) {
+        const prepared = await buildContext({
+          query: submittedGoal,
+          reveal: true,
+        });
+        if (!prepared) return;
       }
-      contextSelection = prepared;
+      contextSelectionReviewedRef.current = true;
+      openTaskDetails("context");
+      setRunAnnouncement("Review and lock the context selection before running this task.");
+      return;
     }
     const resumeRunId = clarificationRunId || undefined;
     const controller = new AbortController();
@@ -1491,6 +1633,7 @@ export function AgentRunsWorkspace({
     setWorkflowSyncError(undefined);
     setAgentResponse("");
     setGrounding(undefined);
+    if (!resumeRunId) setContextUseReceipt(undefined);
     setActiveAgentRunId(resumeRunId || "");
     currentRunIdRef.current = resumeRunId || "";
     clearBrowserActivity();
@@ -1635,6 +1778,7 @@ export function AgentRunsWorkspace({
       void refreshEvidence();
       if (currentRunIdRef.current) {
         void refreshBrowserActivity(currentRunIdRef.current);
+        void refreshRunContextReceipt(currentRunIdRef.current);
       }
     } catch (agentError) {
       if (controller.signal.aborted) {
@@ -1682,6 +1826,17 @@ export function AgentRunsWorkspace({
       setThreads(arrayPath(result, "threads") as unknown as ThreadSummary[]);
     } catch {
       // Threads are convenience navigation; agent execution reports its own errors.
+    }
+  }
+
+  async function refreshRunContextReceipt(runId: string) {
+    try {
+      const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(runId)}`));
+      if (runId === currentRunIdRef.current || runId === activeAgentRunId) {
+        setContextUseReceipt(contextUseReceiptFromPayload(payload));
+      }
+    } catch {
+      // The receipt remains inspectable from the next run refresh.
     }
   }
 
@@ -1753,6 +1908,7 @@ export function AgentRunsWorkspace({
           const runPayload = asRecord(await readJson(
             `/api/runs/${encodeURIComponent(latestRunId)}`,
           ));
+          setContextUseReceipt(contextUseReceiptFromPayload(runPayload));
           const run = asRecord(runPayload.run);
           if (stringValue(run.status) === "waiting_clarification") {
             waitingClarification = {
@@ -1776,6 +1932,7 @@ export function AgentRunsWorkspace({
       setContextPack(undefined);
       setContextQuery("");
       setSelectedContextIds([]);
+      clearContextLockState();
       contextSelectionReviewedRef.current = contextScope !== "explicit_selection";
       setContextLoading(false);
       setContextError(undefined);
@@ -1801,6 +1958,7 @@ export function AgentRunsWorkspace({
       ] : []);
       setWaitingApproval(undefined);
       setGrounding(undefined);
+      if (!latestRunId) setContextUseReceipt(undefined);
       setActiveTab("execute");
       setDetailsOpen(false);
       setMobileConversationsOpen(false);
@@ -1820,6 +1978,7 @@ export function AgentRunsWorkspace({
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
+    clearContextLockState();
     contextSelectionReviewedRef.current = contextScope !== "explicit_selection";
     setContextLoading(false);
     setContextError(undefined);
@@ -1835,6 +1994,7 @@ export function AgentRunsWorkspace({
     directRunStatusRef.current = "";
     setWaitingApproval(undefined);
     setGrounding(undefined);
+    setContextUseReceipt(undefined);
     setActiveTab("context");
     setDetailsOpen(false);
     setMobileConversationsOpen(false);
@@ -2314,6 +2474,7 @@ export function AgentRunsWorkspace({
               contextLoading={contextLoading}
               contextScope={contextScope}
               contextReady={contextPreparedForGoal}
+              contextLocked={contextLockedForGoal}
               contextSelectedCount={selectedContextIds.length}
               contextTotalCount={contextResultIds.length}
               contextError={contextError}
@@ -2522,11 +2683,38 @@ export function AgentRunsWorkspace({
                     {contextLoading ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Brain size={14} aria-hidden="true" />}
                     Refresh context
                   </button>
+                  {contextScope === "explicit_selection" ? (
+                    <button
+                      type="button"
+                      onClick={() => void lockContextForTask()}
+                      disabled={
+                        Boolean(loading) ||
+                        contextLoading ||
+                        contextLocking ||
+                        workflowInProgress ||
+                        !contextPreviewToken ||
+                        contextQuery !== normalizedGoal ||
+                        contextLockedForGoal
+                      }
+                      className="primary-button"
+                    >
+                      {contextLocking ? (
+                        <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                      ) : contextLockedForGoal ? (
+                        <Check size={14} aria-hidden="true" />
+                      ) : (
+                        <ShieldCheck size={14} aria-hidden="true" />
+                      )}
+                      {contextLockedForGoal ? "Selection locked" : "Lock selection"}
+                    </button>
+                  ) : null}
                   <StatusPill
                     label={contextScope === "explicit_selection"
-                      ? `${selectedContextIds.length} of ${contextResultIds.length} selected`
+                      ? contextLockedForGoal
+                        ? `${selectedContextIds.length} locked`
+                        : `${selectedContextIds.length} of ${contextResultIds.length} selected`
                       : contextScopeOption(contextScope).label}
-                    tone={contextScope === "explicit_selection" && selectedContextIds.length ? "success" : "neutral"}
+                    tone={contextScope === "explicit_selection" && contextLockedForGoal ? "success" : "neutral"}
                   />
                   {contextScope === "explicit_selection" && contextResultIds.length ? (
                     <>
@@ -2554,9 +2742,15 @@ export function AgentRunsWorkspace({
                     Built fresh for: <span className="font-medium text-foreground">{contextQuery}</span>
                   </p>
                 ) : null}
+                {contextScope === "explicit_selection" && contextLock ? (
+                  <div className="mb-3 rounded-md border border-success/35 bg-success/10 px-3 py-2 text-xs leading-5 text-muted" role="status">
+                    <span className="font-semibold text-foreground">Locked for this task.</span>{" "}
+                    Receipt <span className="font-mono">{contextLock.receipt.selectionSha256.slice(0, 12)}</span> binds the checked and excluded items to the next run.
+                  </div>
+                ) : null}
                 {contextScope === "explicit_selection" && contextError ? (
                   <div className="mb-3 rounded-md border border-warning/45 bg-warning/10 p-3 text-xs leading-5 text-muted" role="status">
-                    Saved context could not be loaded. This task will run without it unless you refresh. {contextError}
+                    Saved context could not be loaded. Refresh, or choose Conversation only, Current message only, or No extra context. {contextError}
                   </div>
                 ) : null}
                 {contextScope === "explicit_selection" ? (
@@ -2830,6 +3024,9 @@ export function AgentRunsWorkspace({
                   <Link href="/app/observability" className="action-link">Monitoring</Link>
                 </div>
                 <div className="grid gap-4">
+                  {contextUseReceipt ? (
+                    <ContextUseReceiptCard receipt={contextUseReceipt} />
+                  ) : null}
                   <EvidenceCard title="Agent answers" rows={runRows.map((item) => evidenceRow(item, "prompt", "status"))} empty="No run records loaded." />
                   <EvidenceCard title="Blocked before result" rows={approvalItems.map((item) => evidenceRow(item, "title", "kind"))} empty="No approvals pending." />
                   <EvidenceCard title="Workflow outcomes" rows={arrayPath(evidence, "workflows.runs").map((item) => evidenceRow(item, "goal", "status"))} empty="No workflows loaded." />
@@ -3220,6 +3417,84 @@ function ContextSelectionList({
         );
       })}
     </fieldset>
+  );
+}
+
+function ContextUseReceiptCard({ receipt }: { receipt: ContextUseReceipt }) {
+  return (
+    <section className="overflow-hidden rounded-md border border-line bg-background" aria-label="Context use receipt">
+      <header className="flex flex-col gap-2 border-b border-line px-3 py-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold">Context actually used</h3>
+            <StatusPill label={`${receipt.actualCount} used`} tone="success" />
+          </div>
+          <p className="mt-1 text-xs leading-5 text-muted">
+            The run-bound receipt records the reviewed inclusions, exclusions, and final compiled set.
+          </p>
+        </div>
+        <span className="font-mono text-[10px] text-muted" title={receipt.receiptSha256}>
+          receipt {receipt.receiptSha256.slice(0, 12)}
+        </span>
+      </header>
+      <div className="grid gap-px bg-line sm:grid-cols-4">
+        {[
+          ["Previewed", receipt.candidateCount],
+          ["Included", receipt.includedCount],
+          ["Excluded", receipt.excludedCount],
+          ["Actually used", receipt.actualCount],
+        ].map(([label, count]) => (
+          <div key={String(label)} className="bg-background px-3 py-3">
+            <span className="block text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+            <span className="mt-1 block text-lg font-semibold">{count}</span>
+          </div>
+        ))}
+      </div>
+      <div className="space-y-3 px-3 py-3 text-xs">
+        <ContextReceiptItems label="Used" ids={receipt.actualEvidenceIds} empty="No saved context was compiled into this run." />
+        {receipt.droppedEvidenceIds.length ? (
+          <ContextReceiptItems label="Selected but unavailable" ids={receipt.droppedEvidenceIds} />
+        ) : null}
+        {receipt.userExclusionIds.length ? (
+          <details>
+            <summary className="cursor-pointer font-semibold text-muted">
+              Excluded by you ({receipt.userExclusionIds.length})
+            </summary>
+            <div className="mt-2">
+              <ContextReceiptItems ids={receipt.userExclusionIds} />
+            </div>
+          </details>
+        ) : null}
+        <p className="font-mono text-[10px] text-muted" title={receipt.selectionSha256}>
+          selection {receipt.selectionSha256.slice(0, 12)}
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function ContextReceiptItems({
+  label,
+  ids,
+  empty,
+}: {
+  label?: string;
+  ids: string[];
+  empty?: string;
+}) {
+  return (
+    <div>
+      {label ? <p className="mb-2 font-semibold text-foreground">{label}</p> : null}
+      {ids.length ? (
+        <div className="flex flex-wrap gap-2">
+          {ids.map((id) => (
+            <span key={id} className="rounded-md bg-surface-raised px-2 py-1 font-mono text-[10px] text-muted">
+              {id}
+            </span>
+          ))}
+        </div>
+      ) : empty ? <p className="leading-5 text-muted">{empty}</p> : null}
+    </div>
   );
 }
 
@@ -3904,6 +4179,7 @@ function GoalStage({
   contextLoading,
   contextScope,
   contextReady,
+  contextLocked,
   contextSelectedCount,
   contextTotalCount,
   contextError,
@@ -3937,6 +4213,7 @@ function GoalStage({
   contextLoading: boolean;
   contextScope: ActiveContextScopeId;
   contextReady: boolean;
+  contextLocked: boolean;
   contextSelectedCount: number;
   contextTotalCount: number;
   contextError?: string;
@@ -3969,7 +4246,9 @@ function GoalStage({
       ? "No saved context"
       : contextReady
         ? contextScope === "explicit_selection"
-          ? `Context ${contextSelectedCount}/${contextTotalCount}`
+          ? contextLocked
+            ? `Locked ${contextSelectedCount}/${contextTotalCount}`
+            : `Review ${contextSelectedCount}/${contextTotalCount}`
           : contextScopeOption(contextScope).label
         : "Context";
   return (
@@ -4064,7 +4343,7 @@ function GoalStage({
                 title={goalMissing ? "Write a message first." : readDisabledReason}
                 className={clsx(
                   "inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold transition",
-                  contextReady ? "bg-success/10 text-success" : contextError ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted hover:text-foreground",
+                  contextLocked ? "bg-success/10 text-success" : contextReady || contextError ? "bg-warning/10 text-warning" : "bg-surface-raised text-muted hover:text-foreground",
                 )}
               >
                 {contextLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />}
@@ -4857,6 +5136,35 @@ function contextMatchesTask(item: JsonRecord) {
   const support = numberValue(item.supportScore, 0);
   const confidence = numberValue(item.confidence, 0);
   return support >= 0.2 && confidence >= 0.35;
+}
+
+function contextUseReceiptFromPayload(payload: JsonRecord): ContextUseReceipt | undefined {
+  const receipt = asRecord(payload.contextReceipt);
+  const stringList = (value: unknown) => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+  const receiptSha256 = stringValue(receipt.receiptSha256);
+  const selectionSha256 = stringValue(receipt.selectionSha256);
+  if (!receiptSha256 || !selectionSha256) return undefined;
+  return {
+    receiptSha256,
+    selectionSha256,
+    candidateEvidenceIds: stringList(receipt.candidateEvidenceIds),
+    userInclusionIds: stringList(receipt.userInclusionIds),
+    userExclusionIds: stringList(receipt.userExclusionIds),
+    actualEvidenceIds: stringList(receipt.actualEvidenceIds),
+    droppedEvidenceIds: stringList(receipt.droppedEvidenceIds),
+    candidateCount: numberValue(receipt.candidateCount, 0),
+    includedCount: numberValue(receipt.includedCount, 0),
+    excludedCount: numberValue(receipt.excludedCount, 0),
+    actualCount: numberValue(receipt.actualCount, 0),
+    droppedCount: numberValue(receipt.droppedCount, 0),
+    recordedAt: stringValue(receipt.recordedAt),
+  };
+}
+
+function sameOrderedStringValues(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function asRecord(value: unknown): JsonRecord {

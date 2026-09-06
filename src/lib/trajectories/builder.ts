@@ -200,6 +200,13 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
       receipt.grounded = status === "verified" || status === "not_required";
       receipt.citationCount = citedIds.length;
     }
+  } else if (event.type === "run.context.receipt") {
+    copy(receipt, payload, [
+      "receiptSha256", "selectionSha256", "candidateCount",
+      "includedCount", "excludedCount", "actualCount", "droppedCount",
+      "retrievalTraceId", "contextManifestSha256",
+      "compiledContextSha256", "contextBudgetSha256",
+    ]);
   } else if (event.type === "run.memory") {
     copy(receipt, payload, ["count"]);
   } else if (event.type === "run.council_member") {

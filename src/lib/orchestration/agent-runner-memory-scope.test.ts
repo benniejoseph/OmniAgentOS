@@ -8,6 +8,7 @@ import type { SecurityContext } from "@/lib/security/types";
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
   appendContextCompilerV2ShadowEventSafely: vi.fn(),
+  appendContextUseReceiptEvent: vi.fn(),
   appendRunContractEventSafely: vi.fn(),
   appendRunEvent: vi.fn(),
   bindAgentRunExecutionScope: vi.fn(),
@@ -87,6 +88,7 @@ vi.mock("@/lib/runs/store", () => ({
     mocks.appendContextCompilerV2CanaryEvent,
   appendContextCompilerV2ShadowEventSafely:
     mocks.appendContextCompilerV2ShadowEventSafely,
+  appendContextUseReceiptEvent: mocks.appendContextUseReceiptEvent,
   appendRunContractEventSafely: mocks.appendRunContractEventSafely,
   appendRunEvent: mocks.appendRunEvent,
   bindAgentRunExecutionScope: mocks.bindAgentRunExecutionScope,
@@ -121,6 +123,7 @@ describe("agent memory scope", () => {
     });
     mocks.appendContextCompilerV2CanaryEvent.mockResolvedValue(undefined);
     mocks.appendContextCompilerV2ShadowEventSafely.mockResolvedValue(undefined);
+    mocks.appendContextUseReceiptEvent.mockResolvedValue(undefined);
     mocks.appendRunContractEventSafely.mockResolvedValue(undefined);
     mocks.bindAgentRunExecutionScope.mockResolvedValue({ id: "run-memory-scope" });
     mocks.completeAgentRun.mockResolvedValue({ id: "run-memory-scope" });
@@ -148,6 +151,7 @@ describe("agent memory scope", () => {
       knowledgeResults: [],
       graphResults: [],
       contextBlock: "DURABLE_MEMORY_CONTEXT",
+      budget: {},
       ...(options.contextCompilerV2Canary
         ? {
             compilerV2Canary: {
@@ -338,10 +342,7 @@ describe("agent memory scope", () => {
       correlationId: "agent-private-request",
       purpose: "agent.run",
     });
-    scopedRequest.contextSelection = {
-      query: "hello",
-      evidenceIds: ["memory:private-memory"],
-    };
+    scopedRequest.contextSelection = lockedSelection(["memory:private-memory"]);
     scopedRequest.promptMemoryAccess = promptAccess;
     scopedRequest.specialistIds = ["scout"];
 
@@ -364,6 +365,14 @@ describe("agent memory scope", () => {
       expect.objectContaining({ tenantId: "paid-test-tenant" }),
     );
     expect(mocks.appendContextCompilerV2ShadowEventSafely).not.toHaveBeenCalled();
+    expect(mocks.appendContextUseReceiptEvent).toHaveBeenCalledWith(
+      "run-memory-scope",
+      expect.objectContaining({
+        userInclusionIds: ["memory:private-memory"],
+        actualEvidenceIds: [],
+      }),
+      expect.objectContaining({ tenantId: "paid-test-tenant" }),
+    );
     expect(mocks.runCouncilRound).not.toHaveBeenCalled();
     expect(mocks.loadProgressiveAgentTools).not.toHaveBeenCalled();
     expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
@@ -388,10 +397,7 @@ describe("agent memory scope", () => {
       correlationId: "agent-private-receipt-failure",
       purpose: "agent.run",
     });
-    scopedRequest.contextSelection = {
-      query: "hello",
-      evidenceIds: ["memory:private-memory"],
-    };
+    scopedRequest.contextSelection = lockedSelection(["memory:private-memory"]);
     scopedRequest.promptMemoryAccess = promptAccess;
     mocks.appendContextCompilerV2CanaryEvent.mockRejectedValueOnce(
       new Error("receipt unavailable"),
@@ -401,6 +407,35 @@ describe("agent memory scope", () => {
     expect(events).toContainEqual({
       type: "error",
       message: "receipt unavailable",
+    });
+    expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
+  });
+
+  it("blocks locked context disclosure when its use receipt cannot persist", async () => {
+    const promptAccess = agentPromptMemoryAccessFromSecurityContext(
+      privateOwnerContext,
+      { correlationId: "agent-context-use-receipt-failure" },
+    );
+    const scopedRequest = request("all");
+    scopedRequest.actorId = privateOwnerContext.actorId;
+    scopedRequest.executionScope = createExecutionScope({
+      tenantId: privateOwnerContext.tenantId,
+      initiatingActorId: privateOwnerContext.actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "paid-test-agent",
+      correlationId: "agent-context-use-receipt-failure",
+      purpose: "agent.run",
+    });
+    scopedRequest.contextSelection = lockedSelection(["memory:private-memory"]);
+    scopedRequest.promptMemoryAccess = promptAccess;
+    mocks.appendContextUseReceiptEvent.mockRejectedValueOnce(
+      new Error("context receipt unavailable"),
+    );
+
+    const events = await collectRequest(scopedRequest);
+    expect(events).toContainEqual({
+      type: "error",
+      message: "context receipt unavailable",
     });
     expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
   });
@@ -416,10 +451,7 @@ describe("agent memory scope", () => {
       correlationId: "agent-private-request-b",
       purpose: "agent.run",
     });
-    scopedRequest.contextSelection = {
-      query: "hello",
-      evidenceIds: ["memory:private-memory"],
-    };
+    scopedRequest.contextSelection = lockedSelection(["memory:private-memory"]);
     scopedRequest.promptMemoryAccess =
       agentPromptMemoryAccessFromSecurityContext(privateOwnerContext, {
         correlationId: "agent-private-request-a",
@@ -431,6 +463,25 @@ describe("agent memory scope", () => {
     expect(mocks.buildContextPack).not.toHaveBeenCalled();
   });
 });
+
+function lockedSelection(evidenceIds: string[]): NonNullable<AgentRunRequest["contextSelection"]> {
+  return {
+    schemaVersion: 1,
+    lockId: "ba37bd71-fbda-4fa7-a12c-b03c28772b03",
+    previewId: "cf7b28a6-97ea-4fb0-bb34-5054c3ca7a69",
+    query: "hello",
+    querySha256: "a".repeat(64),
+    candidateEvidenceIds: [...evidenceIds],
+    evidenceIds: [...evidenceIds],
+    excludedEvidenceIds: [],
+    candidateSetSha256: "b".repeat(64),
+    contextPackSha256: "c".repeat(64),
+    previewReceiptSha256: "d".repeat(64),
+    selectionSha256: "e".repeat(64),
+    issuedAt: "2026-09-06T00:00:00.000Z",
+    expiresAt: "2026-09-06T00:30:00.000Z",
+  };
+}
 
 const privateOwnerContext = {
   tenantId: "paid-test-tenant",

@@ -85,6 +85,7 @@ const context = {
 };
 
 beforeEach(() => {
+  vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "agent-route-context-lock-test-secret");
   routeMocks.appendScopedDomainEvent.mockReset().mockResolvedValue(undefined);
   routeMocks.appendThreadTurn.mockReset()
     .mockResolvedValueOnce({ id: "turn-user" })
@@ -193,6 +194,29 @@ describe("agent intent clarification", () => {
 });
 
 describe("agent semantic intent routing", () => {
+  it("rejects an unsigned explicit context selection after authentication", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Summarize the selected context.",
+        contextScope: "explicit_selection",
+        contextSelection: {
+          query: "Summarize the selected context.",
+          evidenceIds: [],
+          lockToken: `${"a".repeat(80)}.bbbb`,
+        },
+      }),
+    }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Context selection lock is invalid.",
+    });
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledTimes(1);
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
   it("rejects authority-held context scopes before execution", async () => {
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",
@@ -219,7 +243,11 @@ describe("agent semantic intent routing", () => {
       body: JSON.stringify({
         message: "Use this conversation.",
         contextScope: "session",
-        contextSelection: { query: "Use this conversation.", evidenceIds: [] },
+        contextSelection: {
+          query: "Use this conversation.",
+          evidenceIds: [],
+          lockToken: `${"a".repeat(80)}.bbbb`,
+        },
       }),
     }));
 

@@ -17,6 +17,7 @@ import {
   appendRunEvent,
   cancelAgentRun,
   getAgentRun,
+  getRunContextUseReceipt,
   recordAgentRunFeedback,
 } from "@/lib/runs/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
@@ -57,8 +58,14 @@ async function GETHandler(
   }
 
   const url = new URL(request.url);
+  const contextReceipt = await getRunContextUseReceipt(id, {
+    tenantId: auth.tenantId,
+  });
   if (url.searchParams.get("replay") !== "true") {
-    return Response.json({ run: publicAgentRun(run) });
+    return Response.json({
+      run: publicAgentRun(run),
+      contextReceipt,
+    });
   }
 
   // Stage-2 (EVENT_LOG.md): rebuild run state by folding `run:<id>`'s events —
@@ -84,6 +91,7 @@ async function GETHandler(
 
   return Response.json({
     run: publicAgentRun(run),
+    contextReceipt,
     eventCount: events.length,
     replayed,
     consistent,

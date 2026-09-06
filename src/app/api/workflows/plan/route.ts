@@ -9,24 +9,25 @@ import {
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats, listWorkflowPlans } from "@/lib/workflows/planner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
+import {
+  contextSelectionRequestSchema,
+  verifyContextSelectionLock,
+} from "@/lib/rag/context-selection-lock";
+import {
+  assertContextScopeRequest,
+  CONTEXT_SCOPE_IDS,
+  getContextScopePolicy,
+} from "@/lib/rag/context-scope";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
-const contextSelectionSchema = z.object({
-  query: z.string().trim().min(1).max(4_000),
-  evidenceIds: z.array(z.string().trim().min(1).max(200).regex(/^(?:memory|knowledge|graph):[^\s]+$/))
-    .max(24)
-    .refine((ids) => new Set(ids).size === ids.length, {
-      message: "Context evidence IDs must be unique.",
-    }),
-}).strict();
-
 const workflowPlanSchema = z.object({
   goal: z.string().min(1).max(4000),
-  contextSelection: contextSelectionSchema.optional(),
+  contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
+  contextSelection: contextSelectionRequestSchema.optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   workflowRunId: z.string().min(1).optional(),
   requireApproval: z.boolean().optional(),
@@ -84,6 +85,22 @@ async function POSTHandler(request: Request) {
       { status: 409 },
     );
   }
+  if (parsed.data.contextScope) {
+    try {
+      assertContextScopeRequest(
+        parsed.data.contextScope,
+        Boolean(parsed.data.contextSelection),
+      );
+    } catch (error) {
+      const policy = getContextScopePolicy(parsed.data.contextScope);
+      return Response.json({
+        error: policy.state === "authority_held"
+          ? "Context scope unavailable"
+          : "Invalid context scope",
+        message: error instanceof Error ? error.message : "Invalid context scope.",
+      }, { status: policy.state === "authority_held" ? 409 : 400 });
+    }
+  }
 
   let context;
   try {
@@ -100,12 +117,34 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  let contextSelection;
+  if (parsed.data.contextSelection) {
+    try {
+      contextSelection = verifyContextSelectionLock({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        selection: parsed.data.contextSelection,
+      });
+    } catch (error) {
+      return Response.json({
+        error: "Context selection lock is invalid.",
+        message: error instanceof Error
+          ? error.message
+          : "Refresh and review context again.",
+      }, {
+        status: 409,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+  }
 
   const plan = await buildDynamicWorkflowPlan({
     tenantId: context.tenantId,
     actorId: context.actorId,
     goal: parsed.data.goal,
-    contextSelection: parsed.data.contextSelection,
+    contextSelection: contextSelection || (parsed.data.contextScope
+      ? { query: parsed.data.goal, evidenceIds: [] }
+      : undefined),
     mode: parsed.data.mode,
     workflowRunId: parsed.data.workflowRunId,
     requireApproval: parsed.data.requireApproval,

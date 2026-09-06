@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -8,7 +8,10 @@ import {
 } from "@/lib/http/body";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
+import { citationIdForEvidence } from "@/lib/rag/citations";
 import { buildContextPack, getContextEngineStats, listRetrievalTraces } from "@/lib/rag/context-engine";
+import { issueContextSelectionPreview } from "@/lib/rag/context-selection-lock";
+import type { ContextPack } from "@/lib/rag/types";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -46,8 +49,7 @@ async function GETHandler(request: Request) {
       auditPurpose: "api.retrieval.plan",
       correlationId: `retrieval_plan_${randomUUID()}`,
     });
-    return Response.json({
-      pack: await buildContextPack(query, {
+    const pack = await buildContextPack(query, {
         tenantId: context.tenantId,
         databaseMemoryAccessScope: requestAccess?.databaseAccessScope,
         limit: Math.min(limit, 24),
@@ -60,7 +62,10 @@ async function GETHandler(request: Request) {
           purpose: "api.retrieval.plan",
           credentialSource: "deployment_environment",
         },
-      }),
+      });
+    return Response.json({
+      pack,
+      preview: contextSelectionPreview(pack, context),
       stats: await getContextEngineStats({
         tenantId: context.tenantId,
         accessScope: requestAccess?.databaseAccessScope,
@@ -121,8 +126,7 @@ async function POSTHandler(request: Request) {
     auditPurpose: "api.retrieval.plan",
     correlationId: `retrieval_plan_${randomUUID()}`,
   });
-  return Response.json({
-    pack: await buildContextPack(parsed.data.query, {
+  const pack = await buildContextPack(parsed.data.query, {
       tenantId: context.tenantId,
       databaseMemoryAccessScope: requestAccess?.databaseAccessScope,
       limit: parsed.data.limit,
@@ -135,10 +139,38 @@ async function POSTHandler(request: Request) {
         purpose: "api.retrieval.plan",
         credentialSource: "deployment_environment",
       },
-    }),
+    });
+  return Response.json({
+    pack,
+    preview: contextSelectionPreview(pack, context),
     stats: await getContextEngineStats({
       tenantId: context.tenantId,
       accessScope: requestAccess?.databaseAccessScope,
     }),
+  });
+}
+
+function contextSelectionPreview(
+  pack: ContextPack,
+  context: { tenantId: string; actorId: string },
+) {
+  const candidateEvidenceIds = pack.results.map(citationIdForEvidence);
+  const contextPackSha256 = createHash("sha256").update(JSON.stringify({
+    querySha256: createHash("sha256").update(pack.query).digest("hex"),
+    results: pack.results.map((item) => ({
+      evidenceId: citationIdForEvidence(item),
+      lineageRefSha256: item.lineageRefSha256 || null,
+      contextTier: item.contextTier || null,
+      tokenEstimate: item.tokenEstimate || 0,
+      contentTruncated: item.contentTruncated === true,
+    })),
+    budget: pack.budget,
+  })).digest("hex");
+  return issueContextSelectionPreview({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    query: pack.query,
+    candidateEvidenceIds,
+    contextPackSha256,
   });
 }

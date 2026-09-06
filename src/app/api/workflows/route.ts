@@ -35,6 +35,15 @@ import {
   publicWorkflowStats,
 } from "@/lib/workflows/public";
 import { getThread } from "@/lib/threads/store";
+import {
+  contextSelectionRequestSchema,
+  verifyContextSelectionLock,
+} from "@/lib/rag/context-selection-lock";
+import {
+  assertContextScopeRequest,
+  CONTEXT_SCOPE_IDS,
+  type ContextScopeId,
+} from "@/lib/rag/context-scope";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -117,7 +126,7 @@ async function POSTHandler(request: Request) {
       { status: 400 },
     );
   }
-  const { budgets: _requestedBudgets, ...workflowStart } = parsed.data;
+  const { budgets: _requestedBudgets, ...requestedWorkflowStart } = parsed.data;
   void _requestedBudgets;
   let idempotencyKey: string | undefined;
   try {
@@ -142,6 +151,76 @@ async function POSTHandler(request: Request) {
         metadataKeys: Object.keys(parsed.data.metadata || {}).slice(0, 50),
       },
     });
+    const rawContextScope = parsed.data.metadata?.contextScope;
+    const contextScope = typeof rawContextScope === "string" &&
+        CONTEXT_SCOPE_IDS.includes(rawContextScope as ContextScopeId)
+      ? rawContextScope as ContextScopeId
+      : undefined;
+    if (rawContextScope !== undefined && !contextScope) {
+      return Response.json(
+        { error: "Workflow metadata contains an invalid context scope." },
+        { status: 400 },
+      );
+    }
+    if (contextScope) {
+      try {
+        assertContextScopeRequest(
+          contextScope,
+          parsed.data.metadata?.contextSelection !== undefined,
+        );
+      } catch (error) {
+        return Response.json({
+          error: "Workflow context boundary is invalid.",
+          message: error instanceof Error ? error.message : "Invalid context scope.",
+        }, { status: 409 });
+      }
+    }
+    let verifiedContextSelection;
+    if (parsed.data.metadata?.contextSelection !== undefined) {
+      const selection = contextSelectionRequestSchema.safeParse(
+        parsed.data.metadata.contextSelection,
+      );
+      if (!selection.success) {
+        return Response.json(
+          { error: "Workflow context selection requires a valid lock." },
+          { status: 400 },
+        );
+      }
+      if (
+        normalizedWorkflowGoal(selection.data.query) !==
+          normalizedWorkflowGoal(parsed.data.goal)
+      ) {
+        return Response.json({
+          error: "Workflow context selection is out of date.",
+          message: "Refresh and review context after changing the workflow goal.",
+        }, { status: 409 });
+      }
+      try {
+        verifiedContextSelection = verifyContextSelectionLock({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          selection: selection.data,
+        });
+      } catch (error) {
+        return Response.json({
+          error: "Workflow context selection lock is invalid.",
+          message: error instanceof Error
+            ? error.message
+            : "Refresh and review context again.",
+        }, { status: 409 });
+      }
+    }
+    const workflowStart = {
+      ...requestedWorkflowStart,
+      metadata: {
+        ...(parsed.data.metadata || {}),
+        ...(verifiedContextSelection
+          ? { contextSelection: verifiedContextSelection }
+          : contextScope
+            ? { contextSelection: { query: parsed.data.goal, evidenceIds: [] } }
+            : {}),
+      },
+    };
     const requestedThreadId = parsed.data.metadata?.threadId;
     if (requestedThreadId !== undefined) {
       if (typeof requestedThreadId !== "string" || !requestedThreadId.trim()) {
