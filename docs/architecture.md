@@ -1481,6 +1481,26 @@ content-free reference, remains explicitly untrusted, and never grants tools or
 capabilities. These delegates remain model-only until P8.2 adds the governed
 broker and attenuated real-tool execution.
 
+P8.2 adds that governed broker. Each contract now names a deterministic,
+short-lived `p8.2-delegated-principal:1` whose audience is only Asael's governed
+tool executor, whose grants/budgets/expiry exactly mirror the contract, and
+which cannot redelegate or contain credential material. The broker rejects a
+different parent scope, an ungranted or inactive tool, credential-shaped tool
+input, budget overflow, expiry, cancellation, or a mismatched governed receipt
+before accepting the result.
+
+Council specialists receive at most three role-appropriate tools from the
+parent's already resolved toolbox. Scout and Mnemosyne receive only safe
+read-only tools; Forge may also receive tools whose effects are already
+approval-gated. A schema-closed planning turn may choose those exact IDs,
+request bounded clarification, or decline tools. Calls execute only through the
+existing governed executor with the delegated principal/scope, parent policy,
+idempotency, checkpoints, and run budget intact. Approval-required or uncertain
+execution stops in `waiting`; completed outputs are redacted, byte-bounded,
+digest-bound artifacts and remain untrusted evidence for the final proposed
+contribution. Content-free broker progress is observable without becoming
+authority.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,

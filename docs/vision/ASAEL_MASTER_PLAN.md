@@ -773,8 +773,8 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.6 | Build external A2A client/server adapters. | Reuse inbound auth/MCP patterns; create A2A boundary. | External agents receive scoped references and delegated tokens; all actions re-enter governed execution. | Compatible external agents can discover, negotiate, stream progress, exchange artifacts, cancel, and resume without a second security path. |
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
-**Implementation status:** P8.1 is complete. P8.2 is the next actionable slice;
-P12 and P13 remain deferred.
+**Implementation status:** P8.1 and P8.2 are complete. P8.3 is the next
+actionable slice; P12 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
 
@@ -2579,6 +2579,29 @@ affected lint, TypeScript, and the 96-route Next 16 production build pass. No
 migration was required. Vercel rejected the complete-feature promotion before
 upload because the team still has an overdue balance, so Fly was intentionally
 left unchanged. P8.2 is next; P12/P13 remain deferred.
+
+P8.2 repository implementation is complete through commit
+`2bf9f09752ce20c8a9d38e6a6f091e21e842e84f`. Each contract now issues a
+digest-bound, expiring `p8.2-delegated-principal:1` for the Asael governed-tool
+executor audience. It carries only the contract's attenuated grants and budgets,
+cannot redelegate, contains no credential material, and must match the exact
+parent scope. The broker fails closed on ungranted/inactive tools,
+credential-shaped or oversized inputs, budget overflow, expiry, cancellation,
+or receipt mismatch.
+
+Internal Council specialists receive a small role-appropriate subset of the
+parent's already resolved toolbox. A closed planning turn can call only those
+exact IDs, request clarification, or use no tool. Every selected call re-enters
+the existing governed executor with the delegated scope, parent policy,
+idempotency, approval, checkpoint, and run-budget boundaries intact. Approval
+stops at `waiting`; successful outputs return as redacted, byte-bounded,
+digest-bound artifacts and untrusted evidence for the final proposed
+contribution. Broker progress is content-free and observable. Thirty-seven
+focused checks across nine affected files, affected lint, TypeScript, and the
+96-route Next 16 production build pass. No migration was required. Vercel
+rejected the complete-feature promotion before upload because the team still
+has an overdue balance, so Fly was intentionally left unchanged. P8.3 is next;
+P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
