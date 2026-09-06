@@ -1367,6 +1367,25 @@ stored in the existing retrieval profile JSON; it contains limits, allocation
 counts, lineage/duplicate counts, tier totals, and a digest, but no query,
 evidence content, raw lineage identifier, or private reasoning.
 
+P4.6 adds a two-step review boundary above that authorized pack. Retrieval Plan
+issues a short-lived HMAC preview bound to the authenticated tenant and actor,
+the exact query, ordered candidate IDs, context-pack digest, and expiry. The
+selection-lock route signs the user's exact include/exclude partition. Direct
+runs and workflow creation verify that lock against their request scope and
+ordered selection; raw lock tokens are request-only and never enter workflow,
+run, event, or trajectory storage. Changing query, scope, or selection requires
+a fresh review and lock.
+
+After the final authorized pack is resolved but before model disclosure, the
+runner appends `run.context.receipt`. Its strict content-free contract records
+the preview, inclusion, exclusion, actually-used, and selected-but-dropped
+evidence IDs together with selection, context-manifest, compiled-context,
+budget, and receipt hashes. The receipt is actor-scoped, available through run
+detail and trajectory projections, and contains no query, evidence content,
+raw token, credential, or private reasoning. Failure to validate or persist it
+blocks the model call. The lock can narrow an already authorized candidate set;
+it cannot grant access, widen retrieval, or bypass the P4.1 compiler.
+
 ## Capture asset object plane
 
 Capture files and recording segments retain database bytes through the rollback
