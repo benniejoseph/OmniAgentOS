@@ -722,13 +722,25 @@ function assertAssetObjectJobBinding(
     throw new AssetObjectError("Asset object job binding is invalid.", "invalid_contract");
   }
   const scope = parsePersistedExecutionScope(job.payload.executionScope);
-  if (!scope || !executionScopesEqual(scope, object.executionScope)) {
+  if (!scope) {
+    throw new AssetObjectError("Asset object job scope is invalid.", "invalid_contract");
+  }
+  requiredOwnerScope(scope, object.tenantId, object.ownerActorId);
+  if (
+    job.type === "asset.object.commit" &&
+    !executionScopesEqual(scope, object.executionScope)
+  ) {
     throw new AssetObjectError("Asset object job scope is invalid.", "invalid_contract");
   }
 }
 
 function workerExecutionScope(job: OperationJobRecord, object: AssetObjectRecord) {
-  const scope = structuredClone(object.executionScope);
+  const persistedScope = parsePersistedExecutionScope(job.payload.executionScope);
+  const scope = structuredClone(
+    persistedScope
+      ? requiredOwnerScope(persistedScope, object.tenantId, object.ownerActorId)
+      : object.executionScope,
+  );
   return {
     ...scope,
     executingPrincipalType: "system" as const,

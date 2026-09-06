@@ -51,6 +51,15 @@ const scope = createExecutionScope({
   capabilityGrantIds: ["first_party.capture"],
   purpose: "capture.asset.ingest",
 });
+const deleteScope = createExecutionScope({
+  tenantId,
+  initiatingActorId: actorId,
+  executingPrincipalType: "user",
+  executingPrincipalId: actorId,
+  correlationId: "capture-delete-request-a",
+  capabilityGrantIds: ["first_party.capture"],
+  purpose: "capture.asset.delete",
+});
 
 type ObjectRow = Record<string, unknown>;
 
@@ -284,7 +293,7 @@ describe("tenant-scoped private asset object plane", () => {
       ownerActorId: actorId,
       sourceKind: "capture_asset",
       sourceId,
-      executionScope: scope,
+      executionScope: deleteScope,
     }, { sql: harness.sql as never });
     await expect(redeemAssetObjectDelivery({
       token: delivery.token,
@@ -294,6 +303,8 @@ describe("tenant-scoped private asset object plane", () => {
       adapter,
     })).rejects.toBeInstanceOf(AssetObjectError);
     const deleteJob = await mocks.enqueueOperationJob.mock.results[1].value;
+    expect(deleteJob.payload.executionScope).toEqual(deleteScope);
+    expect(deleteJob.payload.executionScope).not.toEqual(scope);
     const deleted = await deleteAssetObjectJob(deleteJob, { adapter });
     expect(deleted).toMatchObject({ status: "deleted", scrubbedAt: expect.any(String) });
     expect(adapter.delete).toHaveBeenCalledWith(harness.locator);
