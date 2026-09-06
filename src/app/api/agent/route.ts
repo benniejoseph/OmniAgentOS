@@ -20,6 +20,10 @@ import {
   syncMissionExecutor,
 } from "@/lib/missions/runtime";
 import type { Mission, MissionTask } from "@/lib/missions/types";
+import {
+  formAssistantInferenceCandidate,
+  formExplicitUserAssertionMemory,
+} from "@/lib/memory/evidence-formation";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import { getAgentPerformance } from "@/lib/agents/performance";
@@ -282,6 +286,20 @@ async function POSTHandler(request: Request) {
             threadId = thread.id;
           }
           const userTurn = await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
+          const explicitMemory = await formExplicitUserAssertionMemory({
+            context,
+            requestId,
+            threadId: thread.id,
+            turnId: userTurn.id,
+            message: safeMessage,
+          });
+          if (explicitMemory) {
+            controller.enqueue(encoder.encode(encodeSse({
+              type: "memory",
+              title: "Explicit memory saved",
+              count: 1,
+            })));
+          }
           if (decision.route === "clarify") {
             const ambiguity = decision.ambiguity.state === "detected"
               ? decision.ambiguity
@@ -576,6 +594,24 @@ async function POSTHandler(request: Request) {
               executorId: directExecutorId,
               status: "canceled",
             }, missionOwner);
+          }
+          if (event.type === "done" && directExecutorId) {
+            await formAssistantInferenceCandidate({
+              context,
+              requestId,
+              runId: directExecutorId,
+              threadId,
+              response: event.response,
+            }).catch((error: unknown) => {
+              console.error(
+                "Assistant inference candidate persistence failed.",
+                String(redactSensitive(
+                  error instanceof Error
+                    ? error.message
+                    : "Unknown memory formation error.",
+                )),
+              );
+            });
           }
           controller.enqueue(encoder.encode(encodeSse(event)));
         }
