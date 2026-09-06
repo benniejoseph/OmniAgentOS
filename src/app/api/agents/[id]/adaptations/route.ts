@@ -52,9 +52,10 @@ async function GETHandler(
   const owner = adaptationOwner(auth);
   if (!owner) return canonicalActorUnavailableResponse();
   try {
-    await currentIdentity(id, owner);
+    const identity = await currentIdentity(id, owner);
     return Response.json({
       adaptations: await listAgentAdaptations(id, owner),
+      definitionVersion: identity.definition.definitionVersion,
     }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return adaptationErrorResponse(error);
@@ -120,7 +121,10 @@ async function POSTHandler(
               identity.definition.definitionVersion,
               owner,
             );
-    return Response.json({ adaptations }, { headers: privateNoStoreHeaders });
+    return Response.json({
+      adaptations,
+      definitionVersion: identity.definition.definitionVersion,
+    }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return adaptationErrorResponse(error);
   }

@@ -23,6 +23,7 @@ import type { AgentMemoryGrantViewV1 } from "@/lib/memory/agent-grant-editor";
 import type {
   RequestCustomAgentDefinition,
 } from "@/lib/skills/types";
+import { AgentAdaptationEditor } from "@/components/agents/agent-adaptation-editor";
 import { AgentReleaseEditor } from "@/components/agents/agent-release-editor";
 
 type GrantKind = "context" | "capability";
@@ -474,15 +475,21 @@ export function AgentGrantSettingsPanel() {
       {selected?.releaseState === "retired" ? (
         <AgentReleaseEditor agentId={selected.id} agentName={selected.name} />
       ) : selected?.builtIn || selected?.manageable === false ? (
-        <div className="rounded-xl border border-border/70 bg-surface-raised/45 p-5">
-          <div className="flex items-center gap-2"><Bot size={18} className="text-primary" /><strong>{selected?.name || "Built-in Agent"}</strong></div>
-          <p className="mt-2 text-sm leading-6 text-muted">
-            This Agent uses reviewed server policy and has no user-authored explicit grant IDs. Built-in authority cannot be widened from Settings.
-          </p>
+        <div className="grid gap-5">
+          {selected?.builtIn ? (
+            <AgentAdaptationEditor agentId={selected.id} agentName={selected.name} />
+          ) : null}
+          <div className="rounded-xl border border-border/70 bg-surface-raised/45 p-5">
+            <div className="flex items-center gap-2"><Bot size={18} className="text-primary" /><strong>{selected?.name || "Built-in Agent"}</strong></div>
+            <p className="mt-2 text-sm leading-6 text-muted">
+              This Agent uses reviewed server policy and has no user-authored explicit grant IDs. Built-in authority cannot be widened from Settings.
+            </p>
+          </div>
         </div>
       ) : selected ? (
         <div className="grid gap-5">
           <AgentReleaseEditor agentId={selected.id} agentName={selected.name} />
+          <AgentAdaptationEditor agentId={selected.id} agentName={selected.name} />
           <AgentGrantEditor agentId={selected.id} agentName={selected.name} />
         </div>
       ) : (

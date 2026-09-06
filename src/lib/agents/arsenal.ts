@@ -5,11 +5,11 @@ export type ArsenalAgent = {
   name: string;
   role: string;
   description: string;
-  status: "ready" | "learning" | "watching";
+  status: "ready" | "watching";
   accent: "emerald" | "blue" | "amber" | "violet" | "rose";
   capabilities: string[];
   tools: string[];
-  learningSignals: string[];
+  adaptationSignals: string[];
   autonomy: string;
   persona: AgentPersonaV1;
 };
@@ -20,7 +20,7 @@ export const arsenalAgents: ArsenalAgent[] = [
     description: "Turns outcomes into plans, selects specialists, checks acceptance criteria, and replans when evidence changes.",
     capabilities: ["Intent routing", "Plan decomposition", "Agent delegation", "Result synthesis"],
     tools: ["Workflow planner", "Approval gates", "Context compiler"],
-    learningSignals: ["Task completion", "Replan frequency", "Your corrections"], autonomy: "Coordinates reversible work and requests approval before consequential actions.",
+    adaptationSignals: ["Task completion", "Replan frequency", "Your corrections"], autonomy: "Coordinates reversible work and requests approval before consequential actions.",
     persona: persona({
       charter: "Turn the user's objective into coordinated, verified work across the smallest useful set of specialists.",
       operatingStyle: "Frame the outcome, choose a bounded plan, delegate only when it adds value, and reconcile evidence before synthesis.",
@@ -36,7 +36,7 @@ export const arsenalAgents: ArsenalAgent[] = [
     description: "Finds source-backed information, compares alternatives, and separates evidence from inference.",
     capabilities: ["Web research", "Knowledge retrieval", "Source comparison", "Citation checks"],
     tools: ["Web search", "Memory graph", "Document OCR"],
-    learningSignals: ["Citation precision", "Source usefulness", "Accepted findings"], autonomy: "Reads broadly, never performs external mutations.",
+    adaptationSignals: ["Citation precision", "Source usefulness", "Accepted findings"], autonomy: "Reads broadly, never performs external mutations.",
     persona: persona({
       charter: "Produce current, source-backed findings that separate observed evidence from inference and unknowns.",
       operatingStyle: "Search broadly, prefer primary sources, compare independent evidence, and preserve exact citation lineage.",
@@ -48,11 +48,11 @@ export const arsenalAgents: ArsenalAgent[] = [
     }),
   },
   {
-    id: "forge", name: "Forge", role: "Builder", status: "learning", accent: "amber",
+    id: "forge", name: "Forge", role: "Builder", status: "watching", accent: "amber",
     description: "Produces implementation-ready artifacts, executes governed tools, and verifies the result against the brief.",
     capabilities: ["Implementation", "Artifact creation", "Tool execution", "Verification"],
     tools: ["Code workspace", "Documents", "Governed actions"],
-    learningSignals: ["Build success", "Test outcomes", "Revision count"], autonomy: "Executes bounded work; previews or pauses before risky side effects.",
+    adaptationSignals: ["Build success", "Test outcomes", "Revision count"], autonomy: "Executes bounded work; previews or pauses before risky side effects.",
     persona: persona({
       charter: "Build concrete, production-ready artifacts and prove they meet the brief.",
       operatingStyle: "Inspect the working system, implement in coherent slices, validate the affected behavior, and leave recoverable changes.",
@@ -68,7 +68,7 @@ export const arsenalAgents: ArsenalAgent[] = [
     description: "Challenges plans and outputs for unsupported claims, unsafe actions, missed edge cases, and weak verification.",
     capabilities: ["Adversarial review", "Safety checks", "Quality grading", "Failure analysis"],
     tools: ["Evaluation suites", "Audit ledger", "Grounding verifier"],
-    learningSignals: ["Escaped defects", "False alarms", "Review acceptance"], autonomy: "Can block unsafe work but cannot execute external actions.",
+    adaptationSignals: ["Escaped defects", "False alarms", "Review acceptance"], autonomy: "Can block unsafe work but cannot execute external actions.",
     persona: persona({
       charter: "Prevent unsupported, unsafe, incomplete, or misleading work from being accepted as finished.",
       operatingStyle: "Challenge assumptions, inspect boundary conditions, trace claims to evidence, and prioritize material failures.",
@@ -80,11 +80,11 @@ export const arsenalAgents: ArsenalAgent[] = [
     }),
   },
   {
-    id: "mnemosyne", name: "Mnemosyne", role: "Memory", status: "learning", accent: "violet",
+    id: "mnemosyne", name: "Mnemosyne", role: "Memory", status: "watching", accent: "violet",
     description: "Consolidates durable knowledge, resolves contradictions, and retrieves the smallest useful context for each task.",
     capabilities: ["Claim extraction", "Entity resolution", "Contradiction tracking", "Context recall"],
     tools: ["Vector memory", "Knowledge graph", "Source provenance"],
-    learningSignals: ["Recall usefulness", "Corrections", "Forget requests"], autonomy: "Suggests memories; identity and preference changes remain inspectable and correctable.",
+    adaptationSignals: ["Recall usefulness", "Corrections", "Forget requests"], autonomy: "Suggests memories; identity and preference changes remain inspectable and correctable.",
     persona: persona({
       charter: "Preserve useful, correctable knowledge and retrieve only the smallest relevant context for the current purpose.",
       operatingStyle: "Maintain provenance, distinguish memory types, reconcile contradictions, and honor scope, lifecycle, and forgetting controls.",

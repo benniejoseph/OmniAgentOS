@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowRight,
-  BrainCircuit,
   Check,
+  ClipboardCheck,
   Eye,
   Layers3,
   Loader2,
@@ -23,6 +23,7 @@ import {
   getAgentMascotIdentity,
 } from "@/components/agents/agent-mascot";
 import { AgentGrantEditor } from "@/components/agents/agent-grant-editor";
+import { AgentAdaptationEditor } from "@/components/agents/agent-adaptation-editor";
 import { AgentReleaseEditor } from "@/components/agents/agent-release-editor";
 import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
@@ -74,7 +75,7 @@ export function AgentArsenalWorkspace() {
         role: agent.role,
         description: agent.description,
         persona: agent.persona,
-        status: (agent.status === "paused" ? "watching" : agent.status) as ArsenalAgent["status"],
+        status: agent.status === "ready" ? "ready" as const : "watching" as const,
         accent: agent.accent,
         capabilities: agent.skillIds
           .map((id) => skills.find((skill) => skill.id === id)?.name)
@@ -82,7 +83,7 @@ export function AgentArsenalWorkspace() {
         tools: agent.toolIds.map(
           (id) => tools.find((tool) => tool.id === id)?.name || id,
         ),
-        learningSignals: ["Run outcomes", "Your feedback", "Skill performance"],
+        adaptationSignals: ["Run outcomes", "Your feedback", "Skill performance"],
         autonomy: `${agent.autonomy} · ${agent.approvalPolicy.replaceAll("_", " ")} approvals · ${agent.memoryScope} memory`,
         custom: agent,
       })),
@@ -333,7 +334,7 @@ export function AgentArsenalWorkspace() {
             <span
               className={clsx("agent-status-chip", `status-${selected.status}`)}
             >
-              {selected.custom?.status || selected.status}
+              {statusDisplayLabel(selected.status)}
             </span>
           </div>
           <p className="inspector-description">{selected.description}</p>
@@ -358,6 +359,18 @@ export function AgentArsenalWorkspace() {
             performance={selectedPerformance}
             state={state}
           />
+          {!selected.custom || (
+            selected.custom.manageable === true &&
+            selected.custom.releaseState !== "retired"
+          ) ? (
+            <div className="mt-4">
+              <AgentAdaptationEditor
+                agentId={selected.id}
+                agentName={selected.name}
+                compact
+              />
+            </div>
+          ) : null}
           <InspectorList
             title="Skills"
             items={
@@ -406,8 +419,8 @@ export function AgentArsenalWorkspace() {
             </div>
           )}
           <InspectorList
-            title="Learns from"
-            items={selected.learningSignals}
+            title="Adaptation evidence"
+            items={selected.adaptationSignals}
             icon="spark"
           />
           <div className="autonomy-note">
@@ -1046,6 +1059,9 @@ function agentAfterExactWrite(
 ): RequestCustomAgentDefinition {
   return { ...agent, selectable: true, manageable: true };
 }
+function statusDisplayLabel(status: ArsenalAgent["status"]) {
+  return status === "ready" ? "Ready" : "Observing";
+}
 function RosterButton({
   agent,
   selected,
@@ -1187,7 +1203,7 @@ function AgentPerformancePanel({
       {performance?.latestLessons?.length ? (
         <div className="agent-latest-lessons">
           <strong>
-            <BrainCircuit size={13} /> Recent learning
+            <ClipboardCheck size={13} /> Reviewed outcome notes
           </strong>
           <ul>
             {performance.latestLessons.map((lesson) => (
