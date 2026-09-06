@@ -326,7 +326,8 @@ export function planMemoryMaintenance(
       distinctOccurrences.size >=
         memoryLifecyclePolicyV1.promotion.minimumVerifiedOccurrences
     ) {
-      const sourceMemoryIds = verified.map((record) => record.id).sort(compareIds);
+      const sourceMemoryIds = verified.map((record) => record.id).sort(compareIds)
+        .slice(0, 50);
       const sourceClaimSha256 = memoryClaimFingerprint(canonical);
       promotionReviews.push({
         id: memoryPromotionReviewId({

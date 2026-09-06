@@ -596,10 +596,16 @@ async function listMemoryGraphNodesForTenant(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const legacyRows = await getSql()`
-      SELECT *
-      FROM omni_memory_graph_nodes
-      WHERE tenant_id = ${tenantId}
-      ORDER BY weight DESC, source_count DESC, updated_at DESC
+      SELECT node.*
+      FROM omni_memory_graph_nodes node
+      WHERE node.tenant_id = ${tenantId}
+        AND NOT EXISTS (
+          SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+          WHERE lifecycle.tenant_id = node.tenant_id
+            AND lifecycle.archived_at IS NOT NULL
+            AND lifecycle.memory_id = ANY(node.memory_ids)
+        )
+      ORDER BY node.weight DESC, node.source_count DESC, node.updated_at DESC
       LIMIT ${boundedLimit}
     `;
     const scopedRows = accessScope
@@ -608,10 +614,16 @@ async function listMemoryGraphNodesForTenant(
           tenantId,
           [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
           (sql) => sql`
-            SELECT *
-            FROM omni_memory_graph_nodes
-            WHERE tenant_id = ${tenantId}
-            ORDER BY weight DESC, source_count DESC, updated_at DESC
+            SELECT node.*
+            FROM omni_memory_graph_nodes node
+            WHERE node.tenant_id = ${tenantId}
+              AND NOT EXISTS (
+                SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+                WHERE lifecycle.tenant_id = node.tenant_id
+                  AND lifecycle.archived_at IS NOT NULL
+                  AND lifecycle.memory_id = ANY(node.memory_ids)
+              )
+            ORDER BY node.weight DESC, node.source_count DESC, node.updated_at DESC
             LIMIT ${boundedLimit}
           `,
         )
@@ -653,10 +665,16 @@ async function listMemoryGraphEdgesForTenant(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const legacyRows = await getSql()`
-      SELECT *
-      FROM omni_memory_graph_edges
-      WHERE tenant_id = ${tenantId}
-      ORDER BY weight DESC, evidence_count DESC, updated_at DESC
+      SELECT edge.*
+      FROM omni_memory_graph_edges edge
+      WHERE edge.tenant_id = ${tenantId}
+        AND NOT EXISTS (
+          SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+          WHERE lifecycle.tenant_id = edge.tenant_id
+            AND lifecycle.archived_at IS NOT NULL
+            AND lifecycle.memory_id = ANY(edge.memory_ids)
+        )
+      ORDER BY edge.weight DESC, edge.evidence_count DESC, edge.updated_at DESC
       LIMIT ${boundedLimit}
     `;
     const scopedRows = accessScope
@@ -665,10 +683,16 @@ async function listMemoryGraphEdgesForTenant(
           tenantId,
           [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
           (sql) => sql`
-            SELECT *
-            FROM omni_memory_graph_edges
-            WHERE tenant_id = ${tenantId}
-            ORDER BY weight DESC, evidence_count DESC, updated_at DESC
+            SELECT edge.*
+            FROM omni_memory_graph_edges edge
+            WHERE edge.tenant_id = ${tenantId}
+              AND NOT EXISTS (
+                SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+                WHERE lifecycle.tenant_id = edge.tenant_id
+                  AND lifecycle.archived_at IS NOT NULL
+                  AND lifecycle.memory_id = ANY(edge.memory_ids)
+              )
+            ORDER BY edge.weight DESC, edge.evidence_count DESC, edge.updated_at DESC
             LIMIT ${boundedLimit}
           `,
         )
