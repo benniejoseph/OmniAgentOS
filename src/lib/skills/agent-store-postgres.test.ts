@@ -35,6 +35,7 @@ const identityMocks = vi.hoisted(() => ({
   createCustomAgentIdentityWithSql: vi.fn(async () => undefined),
   revokeCustomAgentIdentityWithSql: vi.fn(async () => undefined),
   updateCustomAgentIdentityWithSql: vi.fn(async () => undefined),
+  versionCustomAgentsForSkillChangeWithSql: vi.fn(async () => 0),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
