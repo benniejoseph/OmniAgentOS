@@ -1091,6 +1091,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[101],
       up: ensureConversationSummaryHierarchyV1,
     },
+    {
+      ...databaseSchemaMigrations[102],
+      up: ensureConversationSummaryDeletionBarrierV1,
+    },
   ];
 }
 
@@ -6735,6 +6739,84 @@ async function ensureConversationSummaryHierarchyV1(sql: SqlClient) {
           AND NOT tgisinternal
       ) THEN
         RAISE EXCEPTION 'Conversation summary hierarchy boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureConversationSummaryDeletionBarrierV1(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_delete_turn_derived_conversation_summaries()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      DELETE FROM public.omni_conversation_summaries summary
+      WHERE summary.tenant_id = OLD.tenant_id
+        AND OLD.id = ANY(summary.source_turn_ids);
+      RETURN OLD;
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_delete_turn_derived_conversation_summaries()
+    FROM PUBLIC
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_thread_turns_delete_summaries
+    ON omni_thread_turns
+  `;
+  await sql`
+    CREATE TRIGGER omni_thread_turns_delete_summaries
+    BEFORE DELETE ON omni_thread_turns
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_delete_turn_derived_conversation_summaries()
+  `;
+
+  await sql`
+    DELETE FROM omni_conversation_summaries summary
+    WHERE EXISTS (
+      SELECT 1
+      FROM unnest(summary.source_turn_ids) source_id
+      WHERE NOT EXISTS (
+        SELECT 1 FROM omni_thread_turns turn
+        JOIN omni_threads thread ON thread.id = turn.thread_id
+        WHERE turn.id = source_id
+          AND turn.tenant_id = summary.tenant_id
+          AND thread.tenant_id = summary.tenant_id
+          AND thread.actor_id = summary.owner_actor_id
+      )
+    )
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_conversation_summaries summary
+        WHERE EXISTS (
+          SELECT 1
+          FROM unnest(summary.source_turn_ids) source_id
+          WHERE NOT EXISTS (
+            SELECT 1 FROM omni_thread_turns turn
+            JOIN omni_threads thread ON thread.id = turn.thread_id
+            WHERE turn.id = source_id
+              AND turn.tenant_id = summary.tenant_id
+              AND thread.tenant_id = summary.tenant_id
+              AND thread.actor_id = summary.owner_actor_id
+          )
+        )
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_thread_turns'::regclass
+          AND tgname = 'omni_thread_turns_delete_summaries'
+          AND NOT tgisinternal
+      ) THEN
+        RAISE EXCEPTION 'Conversation summary deletion barrier is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
