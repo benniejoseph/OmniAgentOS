@@ -9,7 +9,9 @@ const routeMocks = vi.hoisted(() => ({
   getAgentPerformance: vi.fn(),
   getThread: vi.fn(),
   listThreadTurns: vi.fn(),
+  resolveLoopV2ReadOnlyCanaryEnrollment: vi.fn(),
   runAgent: vi.fn(),
+  runLoopV2ReadOnlyCanary: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -47,6 +49,12 @@ vi.mock("@/lib/orchestration/agent-runner", () => ({
   runAgent: routeMocks.runAgent,
 }));
 
+vi.mock("@/lib/orchestration/loop-v2-runtime", () => ({
+  resolveLoopV2ReadOnlyCanaryEnrollment:
+    routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment,
+  runLoopV2ReadOnlyCanary: routeMocks.runLoopV2ReadOnlyCanary,
+}));
+
 import { POST } from "@/app/api/agent/route";
 
 const context = {
@@ -71,7 +79,10 @@ beforeEach(() => {
   routeMocks.getAgentPerformance.mockReset().mockResolvedValue([]);
   routeMocks.getThread.mockReset().mockResolvedValue(null);
   routeMocks.listThreadTurns.mockReset().mockResolvedValue([]);
+  routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockReset()
+    .mockResolvedValue(null);
   routeMocks.runAgent.mockReset();
+  routeMocks.runLoopV2ReadOnlyCanary.mockReset();
 });
 
 describe("agent intent clarification", () => {
@@ -128,5 +139,56 @@ describe("agent intent clarification", () => {
       },
     });
     expect(routeMocks.authorizeRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("agent Loop v2 canary routing", () => {
+  it("uses the pinned canary runner without invoking the legacy loop", async () => {
+    const enrollment = { enginePin: { engineVersionId: "loop-v2-test" } };
+    routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockResolvedValue(
+      enrollment,
+    );
+    routeMocks.runLoopV2ReadOnlyCanary.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-v2", threadId: "thread-a" };
+      yield { type: "done", response: "Here are your recent runs." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Show my recent runs",
+        requestId: "loop-v2-list-runs-a",
+        strategy: "auto",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('event: run');
+    expect(body).toContain('event: done');
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+    expect(
+      routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment,
+    ).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-a",
+      message: "Show my recent runs",
+      mode: "orchestrate",
+      route: "direct",
+      requiresApproval: false,
+      requestUsesMessageField: true,
+    }));
+    expect(routeMocks.runLoopV2ReadOnlyCanary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "Show my recent runs",
+        agentId: "atlas",
+        enrollment,
+        executionScope: expect.objectContaining({
+          purpose: "agent.loop.v2.read_only_canary",
+          initiatingActorId: "actor-a",
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
   });
 });
