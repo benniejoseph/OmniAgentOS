@@ -2772,7 +2772,13 @@ function resolveDatabaseMemoryWriteScope(
       !executionScope ||
       !inputExecutionScope ||
       !executionScopesEqual(executionScope, inputExecutionScope) ||
-      binding.visibility !== "user_private" ||
+      !["user_private", "agent_private"].includes(binding.visibility) ||
+      (
+        binding.visibility === "agent_private" &&
+        !["working", "episodic", "semantic", "procedural"].includes(
+          records[index]?.tier || "",
+        )
+      ) ||
       serializeDatabaseMemoryAccessScope(scope) !== serializedScope ||
       serializeDatabaseMemoryAccessScope(expectedDatabaseScope) !==
         serializedScope ||
@@ -2808,7 +2814,9 @@ async function appendBoundMemoryCreatedEvents(
     await appendScopedDomainEvent({
       id: `memory_access_bound_${record.id}`,
       streamId: `memory:${record.id}`,
-      type: "memory.user_private.created",
+      type: record.accessBinding.visibility === "agent_private"
+        ? "memory.agent_private.created"
+        : "memory.user_private.created",
       executionScope,
       payload: {
         schemaVersion: record.accessBinding.version,
