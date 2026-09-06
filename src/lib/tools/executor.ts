@@ -480,6 +480,7 @@ export async function executeGovernedTool({
         tool,
         preparedInput: parsedForgetInput.data,
         executionScope: scopedForgetRequest.executionScope,
+        context,
       });
       if (reconciled) {
         return { record: reconciled, result: reconciled.output };
@@ -779,6 +780,7 @@ export async function executeGovernedTool({
         tool,
         preparedInput,
         executionScope: scopedRequest.executionScope,
+        context,
       })) ?? (await reconcileExistingGoogleCalendarEffect({
         record: existing,
         tool,
@@ -1198,6 +1200,7 @@ export async function executeGovernedTool({
         tool,
         preparedInput,
         executionScope: scopedRequest.executionScope,
+        context,
       })) ?? (await reconcileExistingGoogleCalendarEffect({
         record: claim.record,
         tool,
@@ -2056,6 +2059,7 @@ async function reconcileExistingMemoryForgetEffect(input: {
   tool: ToolDefinition;
   preparedInput: Record<string, unknown>;
   executionScope?: ExecutionScope;
+  context?: SecurityContext;
 }): Promise<ToolExecutionRecord | undefined> {
   if (
     input.record.status !== "executing" ||
@@ -2071,11 +2075,20 @@ async function reconcileExistingMemoryForgetEffect(input: {
   let receipt: MemoryDeletionReceiptV1 | null = null;
   let memory: MemoryRecord | null = null;
   try {
+    const forgetAccess = memoryToolAccess(input.context, {
+      purposeId: MEMORY_PURPOSE_IDS.forget,
+      auditPurpose: "tool.memory.forget.reconcile",
+      correlationId: input.executionScope.correlationId,
+    });
     receipt = await getMemoryDeletionReceipt(id, {
       tenantId: input.executionScope.tenantId,
+      accessScope: forgetAccess?.databaseAccessScope,
     });
     if (!receipt) return undefined;
-    memory = await getMemory(id, { tenantId: input.executionScope.tenantId });
+    memory = await getMemory(id, {
+      tenantId: input.executionScope.tenantId,
+      accessScope: forgetAccess?.databaseAccessScope,
+    });
     if (!memory) {
       throw new Error(
         "Memory deletion receipt is missing its canonical forgotten shell.",
@@ -3124,6 +3137,7 @@ async function runTool(
       try {
         committedReceipt = await getMemoryDeletionReceipt(id, {
           tenantId: executionScope.tenantId,
+          accessScope: forgetAccess?.databaseAccessScope,
         });
       } catch (receiptLookupError) {
         throw new EffectReceiptFinalizationError({
