@@ -275,6 +275,7 @@ function classifyTraceStage(event: DomainEvent): TraceStageId | undefined {
   ) return "plan";
   if (
     type === "run.model" ||
+    type === "ai.usage.recorded" ||
     type.startsWith("model.") ||
     type.includes("model_call") ||
     type.includes("model.called")
@@ -342,7 +343,7 @@ function toTraceEventReceipt(
 
 function safeEventSummary(event: DomainEvent) {
   const payload = event.payload;
-  if (event.type === "run.model") {
+  if (event.type === "run.model" || event.type === "ai.usage.recorded") {
     const provider = safeToken(payload.provider);
     const model = safeToken(payload.model);
     return provider && model ? `${provider} / ${model}` : "Model turn recorded";
