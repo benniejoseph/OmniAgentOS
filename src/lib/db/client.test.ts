@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the tenant-scoped asset object plane migration", () => {
+  it("pins the asset object backfill receipt migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 97,
-      name: "tenant_scoped_asset_object_plane_v1",
-      checksum: "ff8189b689c62c78e596c35d022f88eac29d02de63c9b3aa9c10ee1d6e2f04d8",
+      version: 98,
+      name: "asset_object_backfill_receipts_v1",
+      checksum: "e10e7e46e2759527ece96ea68a767e6dc75f58f61c868d23b6adcd2117e2141e",
     });
   });
 

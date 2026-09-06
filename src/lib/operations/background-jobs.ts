@@ -50,6 +50,7 @@ import {
   commitAssetObjectJob,
   deleteAssetObjectJob,
 } from "@/lib/storage/object-plane";
+import { executeAssetObjectMigrationJob } from "@/lib/storage/object-migration";
 
 export const evaluationJobRequestSchema = z
   .object({
@@ -406,7 +407,11 @@ function executeBackgroundOperationInAccessScope(
   job: OperationJobRecord,
   abortSignal: AbortSignal,
 ) {
-  if (job.type === "asset.object.commit" || job.type === "asset.object.delete") {
+  if (
+    job.type === "asset.object.commit" ||
+    job.type === "asset.object.delete" ||
+    job.type === "asset.object.backfill"
+  ) {
     const actorId = typeof job.payload.actorId === "string"
       ? normalizeQueuedActorId(job.payload.actorId)
       : undefined;
@@ -538,6 +543,9 @@ async function executeBackgroundOperation(
           scrubbedAt: object.scrubbedAt,
         }
       : object;
+  }
+  if (job.type === "asset.object.backfill") {
+    return executeAssetObjectMigrationJob(job);
   }
   if (job.type === "memory.consolidate") {
     const parsed = memoryConsolidationJobRequestSchema.parse(request);
