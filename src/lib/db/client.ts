@@ -127,6 +127,7 @@ export const tenantRootPolicyTables = [
   "omni_memory_graph_edges",
   "omni_memory_graph_builds",
   "omni_memory_graph_rebuild_queue",
+  "omni_memory_reconciliation_reviews",
   "omni_entity_records",
   "omni_entity_aliases",
   "omni_entity_resolutions",
@@ -1080,6 +1081,13 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[99],
       up: ensureMemoryTierPolicyV1,
+    },
+    {
+      ...databaseSchemaMigrations[100],
+      up: async (sql) => {
+        await ensureMemoryReconciliationInboxV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -6113,6 +6121,282 @@ async function ensureMemoryTierPolicyV1(sql: SqlClient) {
     FOR EACH ROW
     WHEN (cardinality(NEW.memory_ids) > 0)
     EXECUTE FUNCTION omni_record_memory_retrieval_usage()
+  `;
+}
+
+async function ensureMemoryReconciliationInboxV1(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_memory_reconciliation_reviews (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      decision TEXT,
+      detection_reason TEXT NOT NULL,
+      candidate_memory_id TEXT NOT NULL REFERENCES omni_memories(id),
+      existing_memory_id TEXT REFERENCES omni_memories(id),
+      resolved_by TEXT,
+      resolved_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_memory_reconciliation_candidate_key
+        UNIQUE (tenant_id, candidate_memory_id),
+      CONSTRAINT omni_memory_reconciliation_shape_check CHECK (
+        kind IN ('confirmation', 'contradiction')
+        AND status IN ('pending', 'resolved')
+        AND detection_reason IN (
+          'unconfirmed_candidate', 'unverified_inference',
+          'unverified_workflow_output', 'similar_claim_conflict',
+          'explicit_contradiction', 'legacy_candidate'
+        )
+        AND (owner_actor_id IS NULL
+          OR omni_source_contract_id_is_valid(owner_actor_id))
+        AND candidate_memory_id <> COALESCE(existing_memory_id, '')
+        AND (
+          (kind = 'confirmation' AND existing_memory_id IS NULL)
+          OR (kind = 'contradiction' AND existing_memory_id IS NOT NULL)
+        )
+        AND (
+          (
+            status = 'pending'
+            AND decision IS NULL
+            AND resolved_by IS NULL
+            AND resolved_at IS NULL
+          )
+          OR (
+            status = 'resolved'
+            AND decision IN (
+              'confirm_candidate', 'keep_existing', 'keep_both'
+            )
+            AND NOT (kind = 'confirmation' AND decision = 'keep_both')
+            AND omni_source_contract_id_is_valid(resolved_by)
+            AND resolved_at IS NOT NULL
+          )
+        )
+      )
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_reconciliation_pending_idx
+    ON omni_memory_reconciliation_reviews (
+      tenant_id, owner_actor_id, created_at DESC, id
+    )
+    WHERE status = 'pending'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_reconciliation_existing_idx
+    ON omni_memory_reconciliation_reviews (
+      tenant_id, existing_memory_id, created_at DESC
+    )
+    WHERE existing_memory_id IS NOT NULL
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_memory_reconciliation_identity()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      candidate_memory public.omni_memories%ROWTYPE;
+      existing_memory public.omni_memories%ROWTYPE;
+    BEGIN
+      IF TG_OP = 'UPDATE'
+        AND ROW(
+          OLD.tenant_id, OLD.owner_actor_id, OLD.kind,
+          OLD.detection_reason, OLD.candidate_memory_id,
+          OLD.existing_memory_id, OLD.created_at
+        ) IS DISTINCT FROM ROW(
+          NEW.tenant_id, NEW.owner_actor_id, NEW.kind,
+          NEW.detection_reason, NEW.candidate_memory_id,
+          NEW.existing_memory_id, NEW.created_at
+        )
+      THEN
+        RAISE EXCEPTION 'Memory reconciliation identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      SELECT * INTO candidate_memory
+      FROM public.omni_memories memory
+      WHERE memory.tenant_id = NEW.tenant_id
+        AND memory.id = NEW.candidate_memory_id;
+      IF NOT FOUND
+        OR candidate_memory.claim_status = 'forgotten'
+        OR candidate_memory.owner_actor_id IS DISTINCT FROM NEW.owner_actor_id
+      THEN
+        RAISE EXCEPTION 'Memory reconciliation candidate is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.existing_memory_id IS NOT NULL THEN
+        SELECT * INTO existing_memory
+        FROM public.omni_memories memory
+        WHERE memory.tenant_id = NEW.tenant_id
+          AND memory.id = NEW.existing_memory_id;
+        IF NOT FOUND
+          OR existing_memory.claim_status = 'forgotten'
+          OR existing_memory.owner_actor_id IS DISTINCT FROM NEW.owner_actor_id
+        THEN
+          RAISE EXCEPTION 'Memory reconciliation existing claim is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_validate_memory_reconciliation_identity()
+    FROM PUBLIC
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_reconciliation_identity
+    ON omni_memory_reconciliation_reviews
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_reconciliation_identity
+    BEFORE INSERT OR UPDATE
+    ON omni_memory_reconciliation_reviews
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_validate_memory_reconciliation_identity()
+  `;
+
+  await sql`
+    INSERT INTO omni_memory_reconciliation_reviews (
+      id, tenant_id, owner_actor_id, kind, status, decision,
+      detection_reason, candidate_memory_id, existing_memory_id,
+      created_at, updated_at
+    )
+    SELECT
+      'memory_reconciliation_' || md5(
+        candidate.tenant_id || ':' || candidate.id
+      ),
+      candidate.tenant_id,
+      candidate.owner_actor_id,
+      CASE WHEN existing.id IS NULL
+        THEN 'confirmation'
+        ELSE 'contradiction'
+      END,
+      'pending',
+      NULL,
+      'legacy_candidate',
+      candidate.id,
+      existing.id,
+      candidate.created_at,
+      candidate.updated_at
+    FROM omni_memories candidate
+    LEFT JOIN omni_memories existing
+      ON existing.tenant_id = candidate.tenant_id
+     AND existing.id = candidate.contradiction_of_id
+     AND existing.claim_status <> 'forgotten'
+     AND existing.owner_actor_id IS NOT DISTINCT FROM candidate.owner_actor_id
+    WHERE candidate.claim_status = 'candidate'
+      AND NOT omni_memory_ids_have_deletion_barrier(
+        candidate.tenant_id,
+        ARRAY[candidate.id]
+      )
+    ON CONFLICT (tenant_id, candidate_memory_id) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO omni_events (
+      id, stream_id, type, tenant_id, actor_id, payload,
+      causation_id, correlation_id, at
+    )
+    SELECT
+      'memory_reconciliation_backfill_' || md5(
+        review.tenant_id || ':' || review.id
+      ),
+      'memory-reconciliation:' || review.id,
+      'memory.reconciliation.backfilled',
+      review.tenant_id,
+      COALESCE(review.owner_actor_id, 'system'),
+      jsonb_build_object(
+        'schemaVersion', 1,
+        'reviewId', review.id,
+        'kind', review.kind,
+        'candidateMemoryId', review.candidate_memory_id,
+        'existingMemoryId', review.existing_memory_id,
+        'detectionReason', review.detection_reason
+      ),
+      review.candidate_memory_id,
+      'schema-migration:101',
+      review.created_at
+    FROM omni_memory_reconciliation_reviews review
+    ON CONFLICT (id) DO NOTHING
+  `;
+
+  await sql`
+    ALTER TABLE omni_memory_reconciliation_reviews
+    ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_memory_reconciliation_reviews
+    FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_reconciliation_actor_scope
+    ON omni_memory_reconciliation_reviews
+  `;
+  await sql`
+    CREATE POLICY omni_memory_reconciliation_actor_scope
+    ON omni_memory_reconciliation_reviews
+    AS RESTRICTIVE
+    FOR ALL
+    USING (
+      omni_system_scope_enabled()
+      OR owner_actor_id IS NULL
+      OR public.omni_actor_scope_v1_allows_validated(
+        (SELECT public.omni_current_actor_scope_v1()),
+        tenant_id,
+        owner_actor_id
+      )
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR owner_actor_id IS NULL
+      OR public.omni_actor_scope_v1_allows_validated(
+        (SELECT public.omni_current_actor_scope_v1()),
+        tenant_id,
+        owner_actor_id
+      )
+    )
+  `;
+  await sql`REVOKE ALL ON TABLE omni_memory_reconciliation_reviews FROM PUBLIC`;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_memories candidate
+        WHERE candidate.claim_status = 'candidate'
+          AND NOT omni_memory_ids_have_deletion_barrier(
+            candidate.tenant_id,
+            ARRAY[candidate.id]
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM omni_memory_reconciliation_reviews review
+            WHERE review.tenant_id = candidate.tenant_id
+              AND review.candidate_memory_id = candidate.id
+          )
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_memory_reconciliation_reviews'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_memory_reconciliation_reviews'::regclass
+          AND polname = 'omni_memory_reconciliation_actor_scope'
+          AND NOT polpermissive
+      ) THEN
+        RAISE EXCEPTION 'Memory reconciliation inbox boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
   `;
 }
 
