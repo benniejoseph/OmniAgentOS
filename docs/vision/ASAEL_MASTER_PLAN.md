@@ -468,6 +468,25 @@ access remains closed. This gate changes no serving behavior or authority.
 
 **Phase gate:** zero false `succeeded` outcomes in negative/partial/dry-run fixtures; every accepted effect is attributable and idempotent; projection replay parity is 100%.
 
+P1.1 and P1.2 are complete at exact production release
+`342879290bbe7ed2bd17c089d51a3450381ac568`. The runtime mutation registry
+covers all 11 named domains: 10 active evented domains across 13 writer modules
+and 75 typed event forms, plus an explicit `no_mutation_surface` contract for
+Customer Success records until Phase 10 creates that store. Active Postgres
+writers now bind canonical run, workflow, project, mission, governed-tool,
+approval, capture, source-convergence, memory, and notification mutations to
+scoped metadata-only events in the same transaction. Deterministic event IDs
+and idempotency-key digests make replay converge without retaining personal
+content or provider output. The protected `p1-production-phase-gate-v1`
+passed all 7 rows, replayed all 10 active-domain projections at 10,000 basis
+points, retained 15/15 truthful-outcome cases with 14 negative cases and zero
+false success, and verified the effect-receipt, claim-evidence, checkpoint, and
+fresh-authority fork contracts with zero effects. Canonical replay returned the
+same immutable receipt. Vercel deployment
+`dpl_21K1oSf9fnrTCUaTEFDJjTzyNsor`, the Fly protocol-1 gateway/worker and all
+three lanes, and the dedicated Playwright service are healthy. This closes
+P1.1-P1.7 and the Phase 1 gate.
+
 P1.3 is complete at exact production release
 `780adca53b008b3e6eceaf1beeaa1128cec5c254`. New workflow plans persist a
 metadata-only `OutcomeContract` binding before approval or execution; legacy
@@ -481,8 +500,8 @@ terminal-receipt projection. The protected production gate passed 15/15 cases,
 including 14 negative cases, with zero false success, one exactly verified
 success, two rejected tamper cases, zero effects, and immutable replay. Vercel,
 the Fly protocol-1 gateway/worker and all three worker lanes, and the dedicated
-Playwright service are healthy. P1.1 and P1.2 remain open, so the Phase 1 gate
-is not yet complete.
+Playwright service are healthy. This earlier slice is included in the aggregate
+Phase 1 production proof above.
 
 P1.5 is complete for the agent-answer serving path. Every final answer now
 receives deterministic exact-span claim decomposition and a structurally
@@ -2202,7 +2221,7 @@ That is the path from the current governed assistant workspace to a cohesive sec
 The task tables above are the source of truth. A phase is checked only after every listed slice and its phase gate are complete.
 
 - [x] **Phase 0 — contracts and compatibility:** P0.1–P0.6 complete.
-- [ ] **Phase 1 — truthful events and outcomes:** P1.1–P1.7 complete.
+- [x] **Phase 1 — truthful events and outcomes:** P1.1–P1.7 complete.
 - [ ] **Phase 2 — sources, assets, and privacy lifecycle:** P2.1–P2.8 complete.
 - [ ] **Phase 3 — persistent memory:** P3.1–P3.7 complete.
 - [ ] **Phase 4 — Context Management:** P4.1–P4.7 complete.
