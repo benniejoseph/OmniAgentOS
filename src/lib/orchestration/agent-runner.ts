@@ -73,6 +73,7 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
+  appendContextCompilerV2ShadowEventSafely,
   appendRunEvent,
   appendRunContractEventSafely,
   bindAgentRunExecutionScope,
@@ -625,6 +626,10 @@ export async function* runAgent(
               credentialSource: "deployment_environment" as const,
             },
           } : {}),
+          contextCompilerV2Shadow: {
+            runId,
+            executionScope,
+          },
         })
       : Promise.resolve(fallbackContextPack(query));
     const configuredToolIds = request.agentProfile ? [...new Set([
@@ -687,6 +692,13 @@ export async function* runAgent(
           .catch((error: unknown) => ({ error }))
       : undefined;
     const retrieval = await retrievalPromise;
+    if (retrieval.compilerV2Shadow) {
+      await appendContextCompilerV2ShadowEventSafely(
+        runId,
+        retrieval.compilerV2Shadow.receipt,
+        { tenantId: runTenantId, executionScope },
+      );
+    }
     const capabilitySearchQuery = groundToolDiscoveryInMemory
       ? buildCapabilitySearchQuery({
           ...autonomyQuery,

@@ -148,6 +148,8 @@ export type ContextPack = {
   graphResults: import("@/lib/memory/types").MemoryGraphSearchResult[];
   contextBlock: string;
   trace?: RetrievalTraceRecord;
+  /** Additive P4.1 comparison; it never changes the active prompt selection. */
+  compilerV2Shadow?: import("@/lib/rag/context-compiler-v2").ContextCompilerV2Shadow;
 };
 
 export type ContextEngineStats = {
