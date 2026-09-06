@@ -1669,12 +1669,15 @@ export async function previewMemoryDeletion(
 /** Read-only lookup used to reconcile a governed forget after a process loss. */
 export async function getMemoryDeletionReceipt(
   id: string,
-  options: { tenantId?: string } = {},
+  options: {
+    tenantId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
 ): Promise<MemoryDeletionReceiptV1 | null> {
   if (!hasDatabaseUrl()) return null;
   await ensureDatabaseSchema();
   const tenantId = normalizeTenantId(options.tenantId);
-  return getSql().transaction(async (sql: MemorySqlClient) => {
+  const readReceipt = async (sql: MemorySqlClient) => {
     await sql`
       SELECT pg_advisory_xact_lock(
         hashtextextended(${`memory-graph:${tenantId}`}, 0)
@@ -1688,7 +1691,15 @@ export async function getMemoryDeletionReceipt(
       LIMIT 1
     `;
     return rows[0] ? memoryDeletionReceiptFromRow(rows[0]) : null;
-  }) as Promise<MemoryDeletionReceiptV1 | null>;
+  };
+  return options.accessScope
+    ? runWithDatabaseMemoryAccessScope(
+        options.accessScope,
+        tenantId,
+        readReceipt,
+        [MEMORY_PURPOSE_IDS.forget],
+      )
+    : getSql().transaction(readReceipt) as Promise<MemoryDeletionReceiptV1 | null>;
 }
 
 /**
