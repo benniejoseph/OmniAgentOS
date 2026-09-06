@@ -1874,9 +1874,25 @@ of 1.0. A production canary created one entity from one marker, then retired it
 through the reviewed forget path; direct database assertions confirmed the
 receipt, forgotten memory shell, retired state, scrubbed contract label, and
 empty lineage. Web and Fly are healthy at release
-`27af65b18c7768e73aa199bc06f75acffdfb8798`. P3.1 still requires authoritative
-project/shared scopes, and P5.2 still requires canonical source/evidence
-extraction, review UX, and a representative production-like benchmark.
+`27af65b18c7768e73aa199bc06f75acffdfb8798`. At that checkpoint P3.1 still
+required authoritative project/shared scopes, and P5.2 still required
+canonical source/evidence extraction, review UX, and a representative
+production-like benchmark.
+
+The next P5.2 slice makes the actor-private registry operable without widening
+its authority. Authenticated canonical users can read a bounded projection of
+their confidential entities, aliases, resolution decisions, and merge reviews;
+access bindings, contract digests, and actor coordinates never leave the
+server. The Memory workspace presents true two-record ambiguity for explicit
+approve/reject decisions and offers a governed reversal for prior approvals.
+Single-candidate fuzzy matches remain visible but held because no independently
+formed source entity exists to merge. Entity registry loading is isolated from
+the main Memory workspace, and reviewed forget receipts display exact entity
+and alias propagation counts. The authenticated endpoint and browser drawer
+canaries passed in production, and web and Fly report exact healthy release
+`a0417bf0860f4320bae78e7a003fb9b22613dad5`. This completes the registry review
+UX; P5.2 remains open for canonical source/evidence extraction and a
+representative production-like benchmark.
 
 The first P6.1 delivery is active only for an exact, low-risk recent-runs read.
 An exact tenant rollout pins the Loop v2 engine, transition contract, and
