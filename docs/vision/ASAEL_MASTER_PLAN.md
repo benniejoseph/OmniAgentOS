@@ -2053,6 +2053,24 @@ and anonymous agent access remains closed. P6.6 bounded subtree replanning is
 next; P6.1 recovery/fault injection remains separately open, and P12/P13 remain
 deferred.
 
+P6.6 is complete at exact production release
+`376ba9e969cf999e2bfc93d6c5282a07e6ec1eb8`. Failed assumptions,
+observations, tools, and verification now produce a strict schema-v1 subtree
+replan directive that binds the prior plan digest, failure frontier, affected
+descendant closure, and reusable execution hashes. Replans keep the exact node
+set, preserve unaffected definitions, require a material affected-node change,
+and fail closed on incomplete lineage or broadened topology. The runner returns
+to context retrieval, revokes prior approval, allows approval only to tighten,
+and clears context/capability grants before affected execution resumes. The
+production-shaped canary retained three verified upstream executions, replanned
+four affected descendants, and completed the revised plan with
+`reusedNodes: 3`; mechanical verification passed while a separate unavailable
+model-verifier request caused the outer run to fail closed. Matching Vercel and
+Fly services are healthy, all three worker lanes returned HTTP 200, the
+activation marker matches, and anonymous agent access remains closed. P6.7
+complete budgets is next; P6.1 recovery/fault injection remains separately
+open, and P12/P13 remain deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
