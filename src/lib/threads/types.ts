@@ -4,6 +4,7 @@ export type ThreadRecord = {
   id: string;
   tenantId: string;
   actorId: string;
+  projectId?: string;
   title: string;
   mode: AgentMode;
   createdAt: string;
@@ -23,4 +24,5 @@ export type ThreadTurnRecord = {
 export type ThreadLedger = {
   threads: ThreadRecord[];
   turns: ThreadTurnRecord[];
+  summaries?: import("@/lib/threads/summaries").ConversationSummaryRecord[];
 };
