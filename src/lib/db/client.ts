@@ -5889,14 +5889,17 @@ async function ensureCaptureStructuredExtractionV1(sql: SqlClient) {
 }
 
 async function ensureMemoryTierPolicyV1(sql: SqlClient) {
-  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS tier TEXT`;
   await sql`
     ALTER TABLE omni_memories
-    ADD COLUMN IF NOT EXISTS tier_policy_version SMALLINT
+    ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'semantic'
   `;
   await sql`
     ALTER TABLE omni_memories
-    ADD COLUMN IF NOT EXISTS formation_reason TEXT
+    ADD COLUMN IF NOT EXISTS tier_policy_version SMALLINT NOT NULL DEFAULT 1
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS formation_reason TEXT NOT NULL DEFAULT 'legacy_record'
   `;
   await sql`
     ALTER TABLE omni_memories
@@ -5908,7 +5911,7 @@ async function ensureMemoryTierPolicyV1(sql: SqlClient) {
   `;
   await sql`
     ALTER TABLE omni_memories
-    ADD COLUMN IF NOT EXISTS use_count BIGINT
+    ADD COLUMN IF NOT EXISTS use_count BIGINT NOT NULL DEFAULT 0
   `;
   await sql`
     ALTER TABLE omni_memories
@@ -5955,10 +5958,11 @@ async function ensureMemoryTierPolicyV1(sql: SqlClient) {
           ELSE retention_expires_at
         END,
         use_count = COALESCE(use_count, 0)
-    WHERE tier IS NULL
-       OR tier_policy_version IS NULL
-       OR formation_reason IS NULL
-       OR use_count IS NULL
+    WHERE claim_status <> 'forgotten'
+      AND NOT omni_memory_ids_have_deletion_barrier(
+        tenant_id,
+        ARRAY[id]
+      )
   `;
 
   await sql`
@@ -5970,6 +5974,11 @@ async function ensureMemoryTierPolicyV1(sql: SqlClient) {
       JOIN omni_retrieval_traces trace
         ON trace.tenant_id = memory.tenant_id
        AND memory.id = ANY(trace.memory_ids)
+      WHERE memory.claim_status <> 'forgotten'
+        AND NOT omni_memory_ids_have_deletion_barrier(
+          memory.tenant_id,
+          ARRAY[memory.id]
+        )
       GROUP BY memory.id
     )
     UPDATE omni_memories memory
