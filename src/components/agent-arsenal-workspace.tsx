@@ -70,6 +70,7 @@ export function AgentArsenalWorkspace() {
         name: agent.name,
         role: agent.role,
         description: agent.description,
+        persona: agent.persona,
         status: (agent.status === "paused" ? "watching" : agent.status) as ArsenalAgent["status"],
         accent: agent.accent,
         capabilities: agent.skillIds

@@ -1,3 +1,5 @@
+import type { AgentPersonaV1 } from "@/lib/agents/persona";
+
 export type SkillCategory = "research" | "creation" | "analysis" | "memory" | "automation" | "personal";
 export type SkillStatus = "active" | "disabled";
 
@@ -38,6 +40,7 @@ export type CustomAgentDefinition = {
   role: string;
   description: string;
   instructions: string;
+  persona: AgentPersonaV1;
   status: CustomAgentStatus;
   accent: AgentAccent;
   modelPolicy: AgentModelPolicy;

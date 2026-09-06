@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { builtInSkills } from "@/lib/skills/catalog";
+import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import type { CustomAgentDefinition } from "@/lib/skills/types";
 
 const eventMocks = vi.hoisted(() => ({
@@ -296,6 +297,7 @@ function agent(): CustomAgentDefinition {
     role: "Research specialist",
     description: "Finds exact evidence.",
     instructions: "Use exact evidence.",
+    persona: DEFAULT_CUSTOM_AGENT_PERSONA,
     status: "ready",
     accent: "blue",
     modelPolicy: "openai_fast",

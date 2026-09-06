@@ -8,6 +8,7 @@ import {
   type BuiltInAgentId,
 } from "@/lib/orchestration/prompts";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
+import { agentPersonaV1Schema, type AgentPersonaV1 } from "@/lib/agents/persona";
 import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
 
 export const AGENT_IDENTITY_SCHEMA_VERSION = 1 as const;
@@ -51,6 +52,7 @@ const agentDefinitionBodySchema = z.object({
   role: z.string().trim().min(1).max(120),
   description: z.string().trim().min(1).max(700),
   instructions: z.string().max(12_000),
+  persona: agentPersonaV1Schema,
   status: z.enum(["ready", "learning", "watching", "paused"]),
   accent: z.enum(["emerald", "blue", "amber", "violet", "rose"]),
   modelPolicy: z.enum([
@@ -209,6 +211,7 @@ export function buildCustomAgentIdentityV1(input: {
     role: input.agent.role,
     description: input.agent.description,
     instructions: input.agent.instructions,
+    persona: input.agent.persona,
     status: input.agent.status,
     accent: input.agent.accent,
     modelPolicy: input.agent.modelPolicy,
@@ -262,6 +265,7 @@ export function buildBuiltInAgentIdentityV1(input: {
     role: prompt.role,
     description: prompt.mandate,
     instructions: "",
+    persona: display.persona,
     status: display.status,
     accent: display.accent,
     modelPolicy: "auto",
@@ -439,6 +443,7 @@ function buildAgentDefinitionV1(input: {
   role: string;
   description: string;
   instructions: string;
+  persona: AgentPersonaV1;
   status: "ready" | "learning" | "watching" | "paused";
   accent: "emerald" | "blue" | "amber" | "violet" | "rose";
   modelPolicy: CustomAgentDefinition["modelPolicy"];
@@ -452,6 +457,7 @@ function buildAgentDefinitionV1(input: {
     role: input.role,
     description: input.description,
     instructions: input.instructions,
+    persona: input.persona,
     status: input.status,
     accent: input.accent,
   };
@@ -474,6 +480,7 @@ function buildAgentDefinitionV1(input: {
     role: input.role,
     description: input.description,
     instructions: input.instructions,
+    persona: input.persona,
     status: input.status,
     accent: input.accent,
     modelPolicy: input.modelPolicy,
@@ -571,6 +578,7 @@ function personaBody(value: z.infer<typeof agentDefinitionV1Schema>) {
     instructions: value.instructions,
     status: value.status,
     accent: value.accent,
+    persona: value.persona,
   };
 }
 

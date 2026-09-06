@@ -700,10 +700,15 @@ describe("database timing classification", () => {
 
 describe("ordered database schema versions", () => {
   it("pins the split agent identity migration", () => {
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.at(-2)).toEqual({
       version: 108,
       name: "agent_identity_versions_v1",
       checksum: "0061d42b7a5638ffb41b2c51038df6d082c183b08f94aec5d3196920430be476",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 109,
+      name: "agent_definition_persona_v1",
+      checksum: "4c853b38ba5b8a2643c10c9a17789f0c2762feeb4dcc50e7eae1e2b0a086dc89",
     });
   });
 
@@ -733,8 +738,8 @@ describe("ordered database schema versions", () => {
     expect(() => getPendingSchemaMigrationVersions([0])).toThrow(
       /unknown migration versions: 0/i,
     );
-    expect(() => getPendingSchemaMigrationVersions([109])).toThrow(
-      /unknown migration versions: 109/i,
+    expect(() => getPendingSchemaMigrationVersions([110])).toThrow(
+      /unknown migration versions: 110/i,
     );
   });
 

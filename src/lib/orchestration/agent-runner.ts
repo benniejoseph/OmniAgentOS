@@ -5176,6 +5176,7 @@ function buildCompatibilityAgentIdentity(
       role: profile.role,
       description: profile.description,
       instructions: profile.instructions,
+      persona: profile.persona,
       status: "ready",
       accent: "emerald",
       modelPolicy: profile.modelPolicy,

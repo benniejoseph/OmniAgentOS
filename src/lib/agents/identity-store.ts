@@ -16,6 +16,7 @@ import {
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
 import { builtInSkills } from "@/lib/skills/catalog";
+import { parseAgentPersonaV1 } from "@/lib/agents/persona";
 import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
 
 type IdentitySql = ReturnType<typeof getSql>;
@@ -337,7 +338,7 @@ async function appendDefinitionVersion(input: {
     INSERT INTO omni_agent_definition_versions (
       tenant_id, agent_definition_id, definition_version,
       previous_definition_version, owner_actor_id, slug, name, role,
-      description, instructions, status, accent, model_policy, skill_ids,
+      description, instructions, persona_profile, status, accent, model_policy, skill_ids,
       published_at
     ) VALUES (
       ${input.agent.tenantId}, ${input.agent.id},
@@ -347,6 +348,7 @@ async function appendDefinitionVersion(input: {
         : definition.definitionVersion - 1},
       ${input.ownerActorId}, ${definition.slug}, ${definition.name},
       ${definition.role}, ${definition.description}, ${definition.instructions},
+      ${definition.persona}::jsonb,
       ${definition.status}, ${definition.accent}, ${definition.modelPolicy},
       ${definition.declaredSkills.map((skill) => skill.skillId)},
       ${definition.publishedAt}
@@ -634,6 +636,7 @@ function identityFromJoinedRow(
     role: String(row.role),
     description: String(row.description),
     instructions: String(row.instructions),
+    persona: parseAgentPersonaV1(row.persona_profile),
     status: String(row.status) as CustomAgentDefinition["status"],
     accent: String(row.accent) as CustomAgentDefinition["accent"],
     modelPolicy: String(row.model_policy) as CustomAgentDefinition["modelPolicy"],
@@ -690,7 +693,7 @@ export function agentDefinitionChanged(
 ) {
   return fieldsChanged(current, next, [
     "slug", "name", "role", "description", "instructions", "status",
-    "accent", "modelPolicy", "skillIds",
+    "persona", "accent", "modelPolicy", "skillIds",
   ]);
 }
 
@@ -749,6 +752,7 @@ function compatibilityAgentFromRow(
     role: String(row.role),
     description: String(row.description),
     instructions: String(row.instructions),
+    persona: parseAgentPersonaV1(row.persona_profile),
     status: String(row.status) as CustomAgentDefinition["status"],
     accent: String(row.accent) as CustomAgentDefinition["accent"],
     modelPolicy: String(row.model_policy) as CustomAgentDefinition["modelPolicy"],

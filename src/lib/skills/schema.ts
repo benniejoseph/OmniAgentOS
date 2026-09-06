@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  agentPersonaV1Schema,
+  DEFAULT_CUSTOM_AGENT_PERSONA,
+} from "@/lib/agents/persona";
 
 const ids = z.array(z.string().min(1).max(120)).max(50);
 const tags = z.array(z.string().min(1).max(100)).max(30);
@@ -29,6 +33,7 @@ const customAgentFields = {
   role: z.string().min(2).max(120),
   description: z.string().min(2).max(700),
   instructions: z.string().min(10).max(12_000),
+  persona: agentPersonaV1Schema,
   status: z.enum(["ready", "learning", "paused"]),
   accent: z.enum(["emerald", "blue", "amber", "violet", "rose"]),
   modelPolicy: z.enum(["auto", "openai_fast", "openai_reasoning", "gemini_fast", "anthropic_fast", "anthropic_reasoning"]),
@@ -41,6 +46,7 @@ const customAgentFields = {
 
 export const customAgentInputSchema = z.object({
   ...customAgentFields,
+  persona: customAgentFields.persona.default(DEFAULT_CUSTOM_AGENT_PERSONA),
   status: customAgentFields.status.default("ready"),
   accent: customAgentFields.accent.default("emerald"),
   modelPolicy: customAgentFields.modelPolicy.default("auto"),

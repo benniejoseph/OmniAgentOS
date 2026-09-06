@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { arsenalAgents } from "@/lib/agents/arsenal";
+import { parseAgentPersonaV1 } from "@/lib/agents/persona";
 import {
   createAgentIdentityMutationScope,
   createCustomAgentIdentityWithSql,
@@ -17,6 +18,10 @@ import type { AgentBuilderLedger, AgentSkill, CustomAgentDefinition, RequestCust
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 
 type Scope = { tenantId?: string; actorId: string };
+type CustomAgentCreateInput = Omit<
+  CustomAgentDefinition,
+  "id" | "tenantId" | "actorId" | "slug" | "persona" | "createdAt" | "updatedAt"
+> & { persona?: CustomAgentDefinition["persona"] };
 type RequestReadScope = Scope & {
   requestActorBinding?: CanonicalRequestActorBindingV1;
 };
@@ -155,7 +160,10 @@ export async function listCustomAgents(options: Scope) {
     const rows = await getSql()`SELECT * FROM omni_custom_agents WHERE tenant_id=${tenantId} AND actor_id=${actorId} ORDER BY updated_at DESC`;
     return rows.map(agentFromRow);
   }
-  return (await readLedger()).agents.filter((item) => item.tenantId === tenantId && item.actorId === actorId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return (await readLedger()).agents
+    .filter((item) => item.tenantId === tenantId && item.actorId === actorId)
+    .map(agentWithParsedPersona)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function listCustomAgentsForRequest(options: RequestReadScope) {
@@ -239,7 +247,7 @@ export async function getCustomAgentForRequest(
   return customAgentForRequest(agent, exactActorId);
 }
 
-export async function createCustomAgent(input: Omit<CustomAgentDefinition, "id" | "tenantId" | "actorId" | "slug" | "createdAt" | "updatedAt">, options: Scope) {
+export async function createCustomAgent(input: CustomAgentCreateInput, options: Scope) {
   const desiredSlug = slug(input.name);
   if ((await listCustomAgents(options)).some((item) => item.slug === desiredSlug)) throw new Error("An agent with this name already exists.");
   const now = new Date().toISOString();
@@ -257,13 +265,14 @@ export async function createCustomAgent(input: Omit<CustomAgentDefinition, "id" 
         const rows = await sql`
           INSERT INTO omni_custom_agents (
             id, tenant_id, actor_id, slug, name, role, description,
-            instructions, status, accent, model_policy, autonomy,
+            instructions, persona_profile, status, accent, model_policy, autonomy,
             approval_policy, memory_scope, skill_ids, tool_ids,
             created_at, updated_at
           ) VALUES (
             ${agent.id}, ${agent.tenantId}, ${agent.actorId}, ${agent.slug},
             ${agent.name}, ${agent.role}, ${agent.description},
-            ${agent.instructions}, ${agent.status}, ${agent.accent},
+            ${agent.instructions}, ${agent.persona}::jsonb,
+            ${agent.status}, ${agent.accent},
             ${agent.modelPolicy}, ${agent.autonomy}, ${agent.approvalPolicy},
             ${agent.memoryScope}, ${agent.skillIds}, ${agent.toolIds},
             ${now}, ${now}
@@ -327,6 +336,7 @@ export async function updateCustomAgent(id: string, input: Partial<Omit<CustomAg
           UPDATE omni_custom_agents
           SET slug = ${next.slug}, name = ${next.name}, role = ${next.role},
             description = ${next.description}, instructions = ${next.instructions},
+            persona_profile = ${next.persona}::jsonb,
             status = ${next.status}, accent = ${next.accent},
             model_policy = ${next.modelPolicy}, autonomy = ${next.autonomy},
             approval_policy = ${next.approvalPolicy}, memory_scope = ${next.memoryScope},
@@ -656,13 +666,16 @@ function isAgentSkillConstraintError(error: unknown) {
 function readLedger() { return readJsonFile<AgentBuilderLedger>(getDataPath("agent-builder.json"), { skills: [], agents: [] }); }
 function updateLedger(mutate: (ledger: AgentBuilderLedger) => AgentBuilderLedger) { return updateJsonFile<AgentBuilderLedger>(getDataPath("agent-builder.json"), { skills: [], agents: [] }, mutate); }
 function normalizeSkill(input: Pick<AgentSkill, "name" | "description" | "instructions" | "category" | "status" | "toolIds" | "tags" | "knowledgeTags">) { return { name: safe(input.name, 120), description: safe(input.description, 500), instructions: safe(input.instructions, 12_000), category: input.category, status: input.status, toolIds: ids(input.toolIds, 40), tags: ids(input.tags, 30), knowledgeTags: ids(input.knowledgeTags, 30) }; }
-function normalizeAgent(input: Pick<CustomAgentDefinition, "name" | "role" | "description" | "instructions" | "status" | "accent" | "modelPolicy" | "autonomy" | "approvalPolicy" | "memoryScope" | "skillIds" | "toolIds">) { return { name: safe(input.name, 120), role: safe(input.role, 120), description: safe(input.description, 700), instructions: safe(input.instructions, 12_000), status: input.status, accent: input.accent, modelPolicy: input.modelPolicy, autonomy: input.autonomy, approvalPolicy: input.approvalPolicy, memoryScope: input.memoryScope, skillIds: ids(input.skillIds, 30), toolIds: ids(input.toolIds, 50) }; }
+function normalizeAgent(input: Pick<CustomAgentDefinition, "name" | "role" | "description" | "instructions" | "status" | "accent" | "modelPolicy" | "autonomy" | "approvalPolicy" | "memoryScope" | "skillIds" | "toolIds"> & { persona?: CustomAgentDefinition["persona"] }) { return { name: safe(input.name, 120), role: safe(input.role, 120), description: safe(input.description, 700), instructions: safe(input.instructions, 12_000), persona: normalizePersona(input.persona), status: input.status, accent: input.accent, modelPolicy: input.modelPolicy, autonomy: input.autonomy, approvalPolicy: input.approvalPolicy, memoryScope: input.memoryScope, skillIds: ids(input.skillIds, 30), toolIds: ids(input.toolIds, 50) }; }
 function skillFromRow(row: Record<string, unknown>): AgentSkill { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), slug: String(row.slug), name: String(row.name), description: String(row.description), instructions: String(row.instructions), category: String(row.category) as AgentSkill["category"], status: String(row.status) as AgentSkill["status"], version: Number(row.version), toolIds: strings(row.tool_ids), tags: strings(row.tags), knowledgeTags: strings(row.knowledge_tags), createdAt: date(row.created_at), updatedAt: date(row.updated_at) }; }
-function agentFromRow(row: Record<string, unknown>): CustomAgentDefinition { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), slug: String(row.slug), name: String(row.name), role: String(row.role), description: String(row.description), instructions: String(row.instructions), status: String(row.status) as CustomAgentDefinition["status"], accent: String(row.accent) as CustomAgentDefinition["accent"], modelPolicy: String(row.model_policy) as CustomAgentDefinition["modelPolicy"], autonomy: String(row.autonomy) as CustomAgentDefinition["autonomy"], approvalPolicy: String(row.approval_policy) as CustomAgentDefinition["approvalPolicy"], memoryScope: String(row.memory_scope) as CustomAgentDefinition["memoryScope"], skillIds: strings(row.skill_ids), toolIds: strings(row.tool_ids), createdAt: date(row.created_at), updatedAt: date(row.updated_at) }; }
+function agentFromRow(row: Record<string, unknown>): CustomAgentDefinition { return { id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id), slug: String(row.slug), name: String(row.name), role: String(row.role), description: String(row.description), instructions: String(row.instructions), persona: parseAgentPersonaV1(row.persona_profile), status: String(row.status) as CustomAgentDefinition["status"], accent: String(row.accent) as CustomAgentDefinition["accent"], modelPolicy: String(row.model_policy) as CustomAgentDefinition["modelPolicy"], autonomy: String(row.autonomy) as CustomAgentDefinition["autonomy"], approvalPolicy: String(row.approval_policy) as CustomAgentDefinition["approvalPolicy"], memoryScope: String(row.memory_scope) as CustomAgentDefinition["memoryScope"], skillIds: strings(row.skill_ids), toolIds: strings(row.tool_ids), createdAt: date(row.created_at), updatedAt: date(row.updated_at) }; }
 function tenant(value?: string) { return (value || getDatabaseTenantContext() || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120) || "default"; }
 function safe(value: unknown, max: number) { return String(redactSensitive(value || "")).trim().slice(0, max); }
 function slug(value: string) { return safe(value, 120).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || `item-${randomUUID().slice(0, 8)}`; }
 function ids(values: unknown, max: number) { return [...new Set((Array.isArray(values) ? values : []).map((item) => safe(item, 120)).filter(Boolean))].slice(0, max); }
+function normalizePersona(value?: CustomAgentDefinition["persona"]) { const persona = parseAgentPersonaV1(value); return parseAgentPersonaV1({ ...persona, charter: safe(persona.charter, 2_000), operatingStyle: safe(persona.operatingStyle, 2_000), voice: safe(persona.voice, 500), visualIdentity: safe(persona.visualIdentity, 500), allowedDomains: uniqueText(persona.allowedDomains, 20, 120), escalationBehavior: safe(persona.escalationBehavior, 1_000), successMeasures: uniqueText(persona.successMeasures, 20, 200) }); }
+function agentWithParsedPersona(agent: CustomAgentDefinition): CustomAgentDefinition { return { ...agent, persona: parseAgentPersonaV1(agent.persona) }; }
+function uniqueText(values: readonly string[], max: number, maxLength: number) { return [...new Set(values.map((value) => safe(value, maxLength)).filter(Boolean))].slice(0, max); }
 function strings(value: unknown) { return Array.isArray(value) ? value.map(String) : []; }
 function date(value: unknown) { return value instanceof Date ? value.toISOString() : String(value); }
 function monotonicTimestamp(previous: string) { const now = Date.now(); const before = new Date(previous).getTime(); return new Date(Number.isFinite(before) ? Math.max(now, before + 1) : now).toISOString(); }

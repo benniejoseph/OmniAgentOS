@@ -1,4 +1,5 @@
 import type { AgentMode } from "@/lib/orchestration/types";
+import { arsenalAgents } from "@/lib/agents/arsenal";
 import type {
   DurableSpecialistAgentId,
   DurableSpecialistProfile,
@@ -11,41 +12,19 @@ const READ_ONLY_TOOLS = [
   "runs.list",
 ];
 
-const SPECIALISTS: Record<
+const SPECIALISTS = Object.fromEntries(arsenalAgents.map((agent) => [
+  agent.id,
+  {
+    name: agent.name,
+    role: agent.role,
+    description: agent.description,
+    instructions: agent.persona.operatingStyle,
+    persona: agent.persona,
+  },
+])) as Record<
   DurableSpecialistAgentId,
-  { name: string; role: string; description: string; instructions: string }
-> = {
-  atlas: {
-    name: "Atlas",
-    role: "Planning specialist",
-    description: "Decomposes complex outcomes into a reliable execution strategy.",
-    instructions: "Clarify dependencies, sequencing, acceptance criteria, and likely blockers.",
-  },
-  scout: {
-    name: "Scout",
-    role: "Research specialist",
-    description: "Finds evidence, competing explanations, and missing facts.",
-    instructions: "Research the objective, distinguish facts from inference, and cite useful evidence.",
-  },
-  forge: {
-    name: "Forge",
-    role: "Implementation specialist",
-    description: "Designs practical implementation paths without performing writes.",
-    instructions: "Produce an implementation-ready approach, interfaces, tests, and operational risks. Do not modify systems.",
-  },
-  sentinel: {
-    name: "Sentinel",
-    role: "Verification specialist",
-    description: "Challenges assumptions and defines evidence needed for a safe result.",
-    instructions: "Audit the objective for correctness, safety, failure modes, and verification gaps.",
-  },
-  mnemosyne: {
-    name: "Mnemosyne",
-    role: "Memory specialist",
-    description: "Connects durable context, prior decisions, and contradictions.",
-    instructions: "Surface relevant prior context, contradictions, and reusable learning without writing memory.",
-  },
-};
+  Pick<DurableSpecialistProfile, "name" | "role" | "description" | "instructions" | "persona">
+>;
 
 export function durableSpecialistProfile(
   agentId: DurableSpecialistAgentId,
