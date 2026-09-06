@@ -80,6 +80,16 @@ export type DelegationBrokerToolResult = Readonly<{
   output: unknown;
 }>;
 
+export type DelegationBrokerArtifact = Readonly<{
+  artifactId: string;
+  name: string;
+  kind: "result";
+  contentSha256: string;
+  byteCount: number;
+  evidenceIds: readonly string[];
+  content: unknown;
+}>;
+
 export type DelegationBrokerResult = Readonly<{
   version: typeof DELEGATION_BROKER_VERSION;
   status: "completed" | "no_tool_needed" | "waiting" | "clarification_required";
@@ -88,8 +98,22 @@ export type DelegationBrokerResult = Readonly<{
   delegatedPrincipal: DelegatedPrincipalV1;
   executionScope: ExecutionScope;
   toolResults: readonly DelegationBrokerToolResult[];
+  artifacts: readonly DelegationBrokerArtifact[];
   clarification?: string;
 }>;
+
+export type DelegationBrokerExecuteTool = (input: Readonly<{
+  tool: ToolDefinition;
+  callId: string;
+  toolInput: Record<string, unknown>;
+  idempotencyKey: string;
+  executionScope: ExecutionScope;
+  delegatedPrincipal: DelegatedPrincipalV1;
+  abortSignal?: AbortSignal;
+}>) => Promise<Readonly<{
+  record: ToolExecutionRecord;
+  result?: unknown;
+}>>;
 
 export async function runDelegationBroker(input: {
   contract: DelegationContractV1;
@@ -100,18 +124,7 @@ export async function runDelegationBroker(input: {
     delegatedPrincipal: DelegatedPrincipalV1;
     tools: readonly ToolDefinition[];
   }>) => Promise<unknown>;
-  executeTool: (input: Readonly<{
-    tool: ToolDefinition;
-    callId: string;
-    toolInput: Record<string, unknown>;
-    idempotencyKey: string;
-    executionScope: ExecutionScope;
-    delegatedPrincipal: DelegatedPrincipalV1;
-    abortSignal?: AbortSignal;
-  }>) => Promise<Readonly<{
-    record: ToolExecutionRecord;
-    result?: unknown;
-  }>>;
+  executeTool: DelegationBrokerExecuteTool;
   onProgress?: (progress: DelegationBrokerProgress) => Promise<void> | void;
   abortSignal?: AbortSignal;
   now?: () => number;
@@ -197,7 +210,13 @@ export async function runDelegationBroker(input: {
     if (execution.record.toolId !== tool.id) {
       throw new Error("Delegation broker received a mismatched governed tool receipt.");
     }
-    const safeOutput = boundedToolOutput(execution.result);
+    const safeOutput = boundedToolOutput(
+      execution.result,
+      Math.max(
+        256,
+        Math.floor(contract.output.maxBytes / Math.max(1, plan.calls.length)),
+      ),
+    );
     const result = {
       callId: call.callId,
       toolId: tool.id,
@@ -244,6 +263,38 @@ export async function runDelegationBroker(input: {
 
 export function parseDelegationBrokerToolPlan(value: unknown) {
   return deepFreeze(toolPlanSchema.parse(value));
+}
+
+export function delegationBrokerToolPlanJsonSchema(
+  toolIds: readonly string[],
+) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "clarification", "calls"],
+    properties: {
+      status: {
+        type: "string",
+        enum: ["execute", "no_tool_needed", "clarification_required"],
+      },
+      clarification: { type: "string", maxLength: 1_000 },
+      calls: {
+        type: "array",
+        maxItems: DELEGATION_BROKER_MAX_TOOL_CALLS,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["callId", "toolId", "input", "rationale"],
+          properties: {
+            callId: { type: "string", maxLength: 240 },
+            toolId: { type: "string", enum: [...toolIds] },
+            input: { type: "object", additionalProperties: true },
+            rationale: { type: "string", maxLength: 500 },
+          },
+        },
+      },
+    },
+  } as const;
 }
 
 function exactGrantedTools(
@@ -310,18 +361,34 @@ function brokerResult(input: {
     delegatedPrincipal: input.delegatedPrincipal,
     executionScope: input.executionScope,
     toolResults: Object.freeze([...input.toolResults]),
+    artifacts: Object.freeze(input.toolResults.map((result) => Object.freeze({
+      artifactId: `artifact:${canonicalJsonSha256({
+        delegationId: input.contract.delegationId,
+        executionId: result.executionId,
+        outputSha256: result.outputSha256,
+      })}`,
+      name: `${result.toolId} governed result`.slice(0, 160),
+      kind: "result" as const,
+      contentSha256: result.outputSha256,
+      byteCount: Buffer.byteLength(JSON.stringify(result.output), "utf8"),
+      evidenceIds: Object.freeze([result.executionId]),
+      content: result.output,
+    }))),
     ...(input.clarification ? { clarification: input.clarification } : {}),
   });
 }
 
-function boundedToolOutput(value: unknown) {
+function boundedToolOutput(value: unknown, maxBytes: number) {
   const safe = redactSensitive(value ?? null);
   const serialized = JSON.stringify(safe);
-  if (serialized.length <= DELEGATION_BROKER_MAX_RESULT_CHARS) return safe;
+  const boundedBytes = Math.min(maxBytes, DELEGATION_BROKER_MAX_RESULT_CHARS);
+  if (Buffer.byteLength(serialized, "utf8") <= boundedBytes) return safe;
   return {
     truncated: true,
     originalSha256: canonicalJsonSha256(safe),
-    preview: serialized.slice(0, DELEGATION_BROKER_MAX_RESULT_CHARS),
+    preview: Buffer.from(serialized, "utf8")
+      .subarray(0, Math.max(1, boundedBytes - 160))
+      .toString("utf8"),
   };
 }
 
