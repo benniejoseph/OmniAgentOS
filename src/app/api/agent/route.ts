@@ -26,6 +26,7 @@ import {
   syncMissionExecutor,
 } from "@/lib/missions/runtime";
 import type { Mission, MissionTask } from "@/lib/missions/types";
+import { getOwnedProject } from "@/lib/projects/store";
 import {
   formAssistantInferenceCandidate,
   formExplicitUserAssertionMemory,
@@ -53,6 +54,7 @@ import {
 } from "@/lib/orchestration/supervisor";
 import { resolveSemanticIntent } from "@/lib/orchestration/semantic-intent-resolver";
 import { redactSensitive } from "@/lib/security/context";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
@@ -94,6 +96,8 @@ const requestSchema = z.object({
   threadId: z.string().uuid().optional(),
   resumeRunId: z.string().uuid().optional(),
   missionId: z.string().uuid().optional(),
+  projectId: z.string().trim().min(1).max(200)
+    .regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   requestId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9._:-]+$/).optional(),
   message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
@@ -175,6 +179,19 @@ async function POSTHandler(request: Request) {
     });
   } catch (error) {
     return forbiddenResponse(error);
+  }
+  if (parsed.data.projectId) {
+    const project = await getOwnedProject(parsed.data.projectId, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
+    });
+    if (!project) {
+      return Response.json(
+        { error: "Project not found." },
+        { status: 404, headers: { "cache-control": "private, no-store" } },
+      );
+    }
   }
   const promptMemoryAccess = contextSelection?.evidenceIds.length
     ? agentPromptMemoryAccessFromSecurityContext(context, {
@@ -288,6 +305,7 @@ async function POSTHandler(request: Request) {
     executingPrincipalType: "agent",
     executingPrincipalId:
       customAgent?.id || requestedBuiltInAgent || "atlas",
+    projectId: parsed.data.projectId,
     correlationId: requestId,
     purpose: "agent.intent.semantic_resolution",
   });
@@ -380,6 +398,7 @@ async function POSTHandler(request: Request) {
 
   const encoder = new TextEncoder();
   let threadId = parsed.data.threadId;
+  let threadProjectId = parsed.data.projectId;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
@@ -460,6 +479,7 @@ async function POSTHandler(request: Request) {
             executingPrincipalId:
               customAgent?.id || decision.primaryAgentId,
             missionId: parsed.data.missionId,
+            projectId: threadProjectId,
             correlationId: requestId,
             purpose: "mission.orchestrate",
           }),
@@ -472,15 +492,34 @@ async function POSTHandler(request: Request) {
         let missionTask: MissionTask | undefined;
         let durableSpecialists: PreparedDurableSpecialist[] = [];
         if (parsed.data.message || decision.route === "durable_workflow" || decision.route === "clarify") {
-          const { appendThreadTurn, createThread, getThread, listThreadTurns } = await import("@/lib/threads/store");
+          const {
+            appendThreadTurn,
+            createThread,
+            getThread,
+            listConversationSummaries,
+            listThreadTurns,
+          } = await import("@/lib/threads/store");
           const safeMessage = String(redactSensitive(parsed.data.message || requestMessage));
           let thread = threadId ? await getThread(threadId, { tenantId: context.tenantId }) : null;
           if (thread && thread.actorId !== context.actorId) thread = null;
           if (threadId && !thread) throw new Error("Thread not found.");
+          if (
+            thread && parsed.data.projectId &&
+            thread.projectId !== parsed.data.projectId
+          ) {
+            throw new Error("Thread belongs to a different project scope.");
+          }
           if (!thread) {
-            thread = await createThread({ tenantId: context.tenantId, actorId: context.actorId, title: safeMessage, mode: parsed.data.mode || "orchestrate" });
+            thread = await createThread({
+              tenantId: context.tenantId,
+              actorId: context.actorId,
+              projectId: parsed.data.projectId,
+              title: safeMessage,
+              mode: parsed.data.mode || "orchestrate",
+            });
             threadId = thread.id;
           }
+          threadProjectId = thread.projectId;
           const userTurn = await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
           const explicitMemory = await formExplicitUserAssertionMemory({
             context,
@@ -510,6 +549,7 @@ async function POSTHandler(request: Request) {
                 executingPrincipalType: "agent",
                 executingPrincipalId: customAgent?.id || decision.primaryAgentId,
                 missionId: mission?.id,
+                projectId: threadProjectId,
                 correlationId: requestId,
                 causationId: userTurn.id,
                 purpose: "agent.intent.clarification",
@@ -540,6 +580,20 @@ async function POSTHandler(request: Request) {
           }
           const needsMission = Boolean(parsed.data.missionId) || decision.route === "durable_workflow";
           if (needsMission) {
+            if (missionOwner.executionScope.projectId !== (threadProjectId || null)) {
+              missionOwner = {
+                ...missionOwner,
+                executionScope: executionScopeFromSecurityContext(context, {
+                  executingPrincipalType: "agent",
+                  executingPrincipalId:
+                    customAgent?.id || decision.primaryAgentId,
+                  projectId: threadProjectId,
+                  missionId: parsed.data.missionId,
+                  correlationId: requestId,
+                  purpose: "mission.orchestrate",
+                }),
+              };
+            }
             mission = mission || await createMission({
                 ...missionOwner,
                 title: missionTitle(safeMessage),
@@ -547,7 +601,13 @@ async function POSTHandler(request: Request) {
                 priority: decision.route === "durable_workflow" ? "high" : "normal",
                 source: "talk",
                 sourceKey: `agent-request:${requestId}`,
-                metadata: { threadId: thread.id, turnId: userTurn.id, requestId, route: decision.route },
+                metadata: {
+                  threadId: thread.id,
+                  turnId: userTurn.id,
+                  requestId,
+                  route: decision.route,
+                  ...(threadProjectId ? { projectId: threadProjectId } : {}),
+                },
               });
             if (!mission) throw new Error("Mission not found.");
             if (missionOwner.executionScope.missionId !== mission.id) {
@@ -557,6 +617,7 @@ async function POSTHandler(request: Request) {
                   executingPrincipalType: "agent",
                   executingPrincipalId:
                     customAgent?.id || decision.primaryAgentId,
+                  projectId: threadProjectId,
                   missionId: mission.id,
                   correlationId: requestId,
                   purpose: "mission.orchestrate",
@@ -574,6 +635,7 @@ async function POSTHandler(request: Request) {
                   executingPrincipalType: "agent",
                   executingPrincipalId:
                     customAgent?.id || decision.primaryAgentId,
+                  projectId: threadProjectId,
                   missionId: mission.id,
                   correlationId: requestId,
                   purpose: "agent.run",
@@ -627,6 +689,7 @@ async function POSTHandler(request: Request) {
                   executingPrincipalType: "agent",
                   executingPrincipalId:
                     customAgent?.id || decision.primaryAgentId,
+                  projectId: threadProjectId,
                   missionId: mission.id,
                   correlationId: requestId,
                   causationId: missionTask.id,
@@ -643,6 +706,7 @@ async function POSTHandler(request: Request) {
                 threadId: thread.id,
                 requestId,
                 actorId: context.actorId,
+                ...(threadProjectId ? { projectId: threadProjectId } : {}),
                 missionId: mission.id,
                 missionTaskId: missionTask.id,
                 primaryAgentId: customAgent?.id || decision.primaryAgentId,
@@ -706,7 +770,15 @@ async function POSTHandler(request: Request) {
             return;
           }
           const turns = await listThreadTurns(thread.id, { tenantId: context.tenantId, limit: AGENT_MAX_MESSAGES * 2 });
-          safeMessages = compileThreadContext(turns, { maxMessages: AGENT_MAX_MESSAGES }).messages;
+          const summaries = await listConversationSummaries(thread.id, {
+            tenantId: context.tenantId,
+            levels: ["episode"],
+            limit: 500,
+          });
+          safeMessages = compileThreadContext(turns, {
+            maxMessages: AGENT_MAX_MESSAGES,
+            summaries,
+          }).messages;
         }
         if (parsed.data.missionId && (!mission || !missionTask)) {
           if (!mission) throw new Error("Mission not found.");
@@ -728,6 +800,7 @@ async function POSTHandler(request: Request) {
           {
             executingPrincipalType: "agent",
             executingPrincipalId: executingAgentId,
+            projectId: threadProjectId,
             missionId: mission?.id,
             correlationId: requestId,
             purpose: loopV2CanaryEnrollment

@@ -1,5 +1,10 @@
 import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { AgentPerformance } from "@/lib/agents/performance";
+import {
+  renderConversationSummaryContext,
+  selectConversationSummariesForContext,
+  type ConversationSummaryRecord,
+} from "@/lib/threads/summaries";
 import type { ThreadTurnRecord } from "@/lib/threads/types";
 
 export type SupervisorRoute = "direct" | "durable_workflow" | "clarify";
@@ -366,28 +371,97 @@ function agentName(agentId: SupervisorAgentId) {
 
 export function compileThreadContext(
   turns: ThreadTurnRecord[],
-  options: { maxMessages?: number; maxCharacters?: number; maxTokens?: number } = {},
+  options: {
+    maxMessages?: number;
+    maxCharacters?: number;
+    maxTokens?: number;
+    summaries?: readonly ConversationSummaryRecord[];
+  } = {},
 ) {
   const maxMessages = Math.min(Math.max(options.maxMessages || 40, 1), 100);
   const maxCharacters = Math.min(Math.max(options.maxCharacters || 48_000, 2_000), 120_000);
   const maxTokens = Math.min(Math.max(options.maxTokens || 12_000, 500), 30_000);
+  let raw = selectRawThreadContext(turns, {
+    maxMessages,
+    maxCharacters,
+    maxTokens,
+  });
+  let selectedSummaries = selectConversationSummariesForContext({
+    summaries: options.summaries || [],
+    selectedTurnIds: new Set(raw.turnIds),
+    maxCharacters: Math.min(8_000, Math.max(800, Math.floor(maxCharacters / 4))),
+  });
+  let summaryContext = "";
+  if (selectedSummaries.length && maxMessages > 1) {
+    const summaryCharacterBudget = Math.min(
+      8_000,
+      Math.max(800, Math.floor(maxCharacters / 4)),
+    );
+    raw = selectRawThreadContext(turns, {
+      maxMessages: maxMessages - 1,
+      maxCharacters: maxCharacters - summaryCharacterBudget,
+      maxTokens: Math.max(1, maxTokens - Math.ceil(summaryCharacterBudget / 4)),
+    });
+    selectedSummaries = selectConversationSummariesForContext({
+      summaries: options.summaries || [],
+      selectedTurnIds: new Set(raw.turnIds),
+      maxCharacters: summaryCharacterBudget,
+    });
+    summaryContext = renderConversationSummaryContext(
+      selectedSummaries,
+      summaryCharacterBudget,
+    );
+  }
+  const messages: ChatMessage[] = summaryContext
+    ? [{ role: "user", content: summaryContext }, ...raw.messages]
+    : raw.messages;
+  const summaryCharacters = summaryContext.length;
+  const summaryTokens = summaryContext ? estimateTokens(summaryContext) : 0;
+  return {
+    messages,
+    stats: {
+      selected: messages.length,
+      rawSelected: raw.messages.length,
+      omitted: Math.max(0, turns.length - raw.messages.length),
+      characters: raw.characters + summaryCharacters,
+      tokens: raw.tokens + summaryTokens,
+      summariesSelected: selectedSummaries.length,
+      summarizedSourceTurns: new Set(
+        selectedSummaries.flatMap((summary) => summary.sourceTurnIds),
+      ).size,
+    },
+  };
+}
+
+function selectRawThreadContext(
+  turns: ThreadTurnRecord[],
+  options: { maxMessages: number; maxCharacters: number; maxTokens: number },
+) {
   const selected: ChatMessage[] = [];
+  const turnIds: string[] = [];
   let characters = 0;
   let tokens = 0;
-  for (let index = turns.length - 1; index >= 0 && selected.length < maxMessages; index -= 1) {
+  for (
+    let index = turns.length - 1;
+    index >= 0 && selected.length < options.maxMessages;
+    index -= 1
+  ) {
     const turn = turns[index];
-    const remainingCharacters = maxCharacters - characters;
-    const remainingTokenCharacters = (maxTokens - tokens) * 4;
+    const remainingCharacters = options.maxCharacters - characters;
+    const remainingTokenCharacters = (options.maxTokens - tokens) * 4;
     const remaining = Math.min(remainingCharacters, remainingTokenCharacters);
     if (remaining <= 0) break;
     const content = turn.content.length > remaining ? turn.content.slice(-remaining) : turn.content;
     selected.unshift({ role: turn.role, content });
+    turnIds.unshift(turn.id);
     characters += content.length;
     tokens += estimateTokens(content);
   }
   return {
     messages: selected,
-    stats: { selected: selected.length, omitted: Math.max(0, turns.length - selected.length), characters, tokens },
+    turnIds,
+    characters,
+    tokens,
   };
 }
 
