@@ -85,6 +85,43 @@ describe("OpenAI response privacy", () => {
     });
   });
 
+  it("sends an opaque prompt cache bucket while retaining stateless storage", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    openAiMocks.createResponse.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "response.completed",
+          response: {
+            id: "response-1",
+            usage: {
+              input_tokens: 10,
+              output_tokens: 2,
+              total_tokens: 12,
+            },
+          },
+        };
+      },
+    });
+    const { streamResponseTurn } = await import("@/lib/openai/client");
+
+    await streamResponseTurn({
+      input: "private conversation",
+      onDelta: () => undefined,
+      model: "gpt-5",
+      promptCacheKey: "asael-pc-v1-opaque",
+    });
+
+    expect(openAiMocks.createResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        store: false,
+        prompt_cache_key: "asael-pc-v1-opaque",
+      }),
+      { signal: undefined },
+    );
+  });
+
   it("does not expose raw credentials when production gateway configuration is invalid", async () => {
     process.env.OPENAI_API_KEY = "upstream-api-key";
     process.env.VERCEL_ENV = "production";

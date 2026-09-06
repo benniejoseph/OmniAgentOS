@@ -58,7 +58,12 @@ describe("Google AI provider", () => {
         model: "gemini-test",
         status: "completed",
         steps: [{ type: "model_output", content: [{ type: "text", text: "Ada found" }] }],
-        usage: { total_input_tokens: 12, total_output_tokens: 3, total_tokens: 15 },
+        usage: {
+          total_input_tokens: 12,
+          total_output_tokens: 3,
+          total_cached_tokens: 8,
+          total_tokens: 15,
+        },
       }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     const tools = [{
@@ -129,6 +134,7 @@ describe("Google AI provider", () => {
       }],
     });
     expect(second.text).toBe("Ada found");
+    expect(second.usage.cachedInputTokens).toBe(8);
     const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
     expect(secondBody.store).toBe(false);
     expect(secondBody).not.toHaveProperty("previous_interaction_id");

@@ -21,6 +21,7 @@ import {
   type ModelConversationItem,
   type ModelConversationSeedItem,
 } from "@/lib/models/conversation";
+import { promptCacheKeyForScope } from "@/lib/models/prompt-cache";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
 
@@ -292,6 +293,7 @@ export async function streamResponseTurn({
   apiKey,
   usageScope,
   usageRecordId,
+  promptCacheKey,
 }: {
   instructions?: string;
   input: ResponseTurnInput;
@@ -308,6 +310,8 @@ export async function streamResponseTurn({
   usageScope?: AiUsageScope;
   /** Stable receipt id lets a later run-event fallback converge without double counting. */
   usageRecordId?: string;
+  /** Opaque provider cache bucket. Tenant, actor, and content must never appear here. */
+  promptCacheKey?: string;
 }): Promise<{
   responseId: string;
   functionCalls: ResponseFunctionCall[];
@@ -348,6 +352,8 @@ export async function streamResponseTurn({
   }
 
   function createTurnStream(selectedModel: string) {
+    const scopedPromptCacheKey = promptCacheKey ||
+      promptCacheKeyForScope(usageScope);
     return getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
     {
       model: selectedModel,
@@ -358,6 +364,9 @@ export async function streamResponseTurn({
       ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
       stream: true,
       store: false,
+      ...(scopedPromptCacheKey
+        ? { prompt_cache_key: scopedPromptCacheKey }
+        : {}),
     },
     { signal: abortSignal },
   );
