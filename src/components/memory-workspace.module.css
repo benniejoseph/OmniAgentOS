@@ -93,6 +93,8 @@
 .stats > button.entityTrigger > span { display: grid; gap: .05rem; text-align: left; }
 .stats > button.entityTrigger strong { color: var(--day-ink); font-size: .78rem; font-variant-numeric: tabular-nums; line-height: 1; }
 .stats > button.entityTrigger small { color: var(--day-muted); font-size: .53rem; }
+.stats > button.reviewTriggerPending { border-color: color-mix(in oklab, var(--danger) 34%, var(--day-line)); color: var(--danger); background: color-mix(in oklab, var(--danger) 7%, var(--day-paper)); }
+.stats > button.reviewTriggerPending > svg, .stats > button.reviewTriggerPending strong { color: var(--danger); }
 .error { display: flex; min-height: 3.25rem; align-items: center; justify-content: space-between; gap: 1rem; margin: .85rem clamp(1rem, 3vw, 3.4rem) 0; border: 1px solid color-mix(in oklab, var(--danger) 32%, transparent); border-radius: 1.2rem; padding: .65rem .85rem; color: var(--danger); background: color-mix(in oklab, var(--danger) 7%, var(--day-paper)); font-size: .7rem; }
 
 .layout { display: grid; min-height: calc(100svh - 15rem); grid-template-columns: 18rem minmax(29rem, 1fr) 22rem; gap: clamp(.65rem, 1.2vw, 1rem); padding: 1.1rem clamp(.75rem, 1.8vw, 1.8rem) 1.5rem; transition: grid-template-columns 180ms ease; }
@@ -253,6 +255,33 @@
 .registryEntityRow > .registryStateMerged { color: var(--day-muted); background: var(--day-paper-soft); }
 .registryEmpty { padding: 1.4rem 0; color: var(--day-muted); font-size: .62rem; text-align: center; }
 
+.reconciliationDialog { overflow-y: auto; }
+.reconciliationList { display: grid; gap: .85rem; margin-top: .8rem; }
+.reconciliationCard { display: grid; gap: .75rem; border: 1px solid color-mix(in oklab, var(--danger) 25%, var(--day-line)); border-radius: 1.3rem; padding: .9rem; background: color-mix(in oklab, var(--day-peach) 26%, var(--day-paper)); }
+.reconciliationCard > header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.reconciliationCard > header > span { display: inline-flex; align-items: center; gap: .35rem; color: var(--danger); font-size: .59rem; font-weight: 780; letter-spacing: .04em; text-transform: uppercase; }
+.reconciliationCard > header small { color: var(--day-muted); font-size: .53rem; }
+.reconciliationClaims { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.reconciliationClaims > section { min-width: 0; border: 1px solid var(--day-line); border-radius: 1rem; padding: .75rem; background: var(--day-paper-solid); }
+.reconciliationClaims > section:only-child { grid-column: 1 / -1; }
+.reconciliationClaims p { color: var(--day-primary); font-size: .5rem; font-weight: 780; letter-spacing: .09em; text-transform: uppercase; }
+.reconciliationClaims h4 { margin-top: .25rem; color: var(--day-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1rem; }
+.reconciliationClaims blockquote { max-height: 8rem; margin-top: .45rem; overflow-y: auto; border-left: 2px solid var(--day-line-strong); padding-left: .55rem; color: var(--day-muted); font-size: .62rem; line-height: 1.5; white-space: pre-wrap; }
+.reconciliationClaims dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .22rem .5rem; margin-top: .65rem; border-top: 1px solid var(--day-line); padding-top: .5rem; font-size: .54rem; }
+.reconciliationClaims dt { color: var(--day-muted); }
+.reconciliationClaims dd { overflow: hidden; color: var(--day-ink); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.reconciliationClaims section > div { display: flex; gap: .25rem; margin-top: .5rem; overflow-x: auto; }
+.reconciliationClaims code { flex: 0 0 auto; border-radius: 999px; padding: .22rem .4rem; color: var(--day-muted); background: var(--day-paper-soft); font-size: .49rem; }
+.reconciliationActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; }
+.reconciliationActions button { display: inline-flex; min-height: 2.3rem; align-items: center; justify-content: center; gap: .3rem; border: 1px solid var(--day-line); border-radius: 999px; padding: 0 .75rem; color: var(--day-muted); background: var(--day-paper-solid); font-size: .57rem; font-weight: 760; }
+.reconciliationActions button:last-child { border-color: color-mix(in oklab, var(--day-primary) 35%, var(--day-line)); color: var(--day-primary); background: var(--day-mint); }
+.reconciliationActions button:disabled { cursor: wait; opacity: .55; }
+.reconciliationHistory { display: grid; margin-top: .45rem; }
+.reconciliationHistory article { display: flex; align-items: center; justify-content: space-between; gap: .8rem; border-bottom: 1px solid var(--day-line); padding: .6rem .1rem; }
+.reconciliationHistory article > div { display: grid; min-width: 0; gap: .14rem; }
+.reconciliationHistory strong { overflow: hidden; color: var(--day-ink); font-size: .63rem; text-overflow: ellipsis; white-space: nowrap; }
+.reconciliationHistory span, .reconciliationHistory small { color: var(--day-muted); font-size: .54rem; }
+
 @keyframes registry-reveal {
   from { opacity: 0; transform: translateX(1.5rem); }
   to { opacity: 1; transform: translateX(0); }
@@ -298,6 +327,8 @@
   .registryMergeFields { grid-template-columns: 1fr; }
   .registryMergeFields > span { display: none; }
   .registryReviewActions { display: grid; grid-template-columns: 1fr 1fr; }
+  .reconciliationClaims { grid-template-columns: 1fr; }
+  .reconciliationActions { display: grid; grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
   .layout, .stats > button, .index :global(.memory-index-list > button) { transition: none; }
