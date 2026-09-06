@@ -18,10 +18,14 @@ const restingMeter = [0.18, 0.28, 0.42, 0.24, 0.52, 0.34, 0.62, 0.3, 0.48, 0.24,
 export function VoiceMode({
   disabled,
   disabledReason,
+  agentName = "Asael",
+  agentVoice,
   onTranscript,
 }: {
   disabled?: boolean;
   disabledReason?: string;
+  agentName?: string;
+  agentVoice?: string;
   onTranscript: (text: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -306,7 +310,7 @@ export function VoiceMode({
         disabled={disabled}
         title={disabledReason || (disabled ? "Voice mode is unavailable while work is active." : "Start voice mode")}
         className="grid size-9 shrink-0 place-items-center rounded-full text-muted transition hover:bg-surface-raised hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
-        aria-label="Start voice mode"
+        aria-label={`Start voice mode with ${agentName}`}
         aria-haspopup="dialog"
       >
         <AudioLines size={17} aria-hidden="true" />
@@ -326,7 +330,7 @@ export function VoiceMode({
             <header className="relative flex items-center justify-between px-5 py-4">
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-muted">
                 <Mic size={14} className="text-primary" aria-hidden="true" />
-                <span id="voice-mode-title">Voice mode</span>
+                <span id="voice-mode-title">Voice to {agentName}</span>
               </div>
               <button
                 type="button"
@@ -377,6 +381,11 @@ export function VoiceMode({
                 {status.title}
               </p>
               <p id="voice-mode-detail" className={clsx("mt-2 max-w-sm text-sm leading-6", phase === "error" ? "text-danger" : "text-muted")}>{status.detail}</p>
+              {agentVoice ? (
+                <p className="mt-2 max-w-sm text-xs leading-5 text-muted">
+                  {agentName} replies in this style: {agentVoice}
+                </p>
+              ) : null}
               <p role="status" aria-live="polite" className="sr-only">{voiceAnnouncement(phase, error)}</p>
               {transcriptPreview ? (
                 <p className="mt-4 line-clamp-3 max-w-sm rounded-xl bg-surface px-4 py-3 text-left text-sm leading-6 text-foreground">
