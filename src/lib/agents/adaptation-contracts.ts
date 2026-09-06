@@ -57,6 +57,7 @@ export const agentAdaptationV1Schema = z.object({
   adaptationId: idSchema,
   agentId: idSchema,
   ownerBindingSha256: sha256Schema,
+  observedDefinitionVersion: positiveVersionSchema,
   state: z.enum(["observed", "evaluated", "active", "rolled_back"]),
   lifecycleRevision: z.number().int().min(0).max(3),
   evidence: z.array(agentAdaptationEvidenceV1Schema).min(1).max(10),
@@ -106,6 +107,7 @@ export const agentAdaptationV1Schema = z.object({
     value.adaptationId !== `agent-adaptation:${sourceContractSha256({
       agentId: value.agentId,
       ownerBindingSha256: value.ownerBindingSha256,
+      observedDefinitionVersion: value.observedDefinitionVersion,
       evidenceSha256: value.evidenceSha256,
       effectSha256: value.effect.effectSha256,
     })}`
@@ -149,6 +151,7 @@ export function buildObservedAgentAdaptationV1(input: {
   tenantId: string;
   ownerActorId: string;
   agentId: string;
+  definitionVersion: number;
   evidence: readonly AgentAdaptationEvidenceV1[];
   guidance: string;
   confidence: number;
@@ -176,6 +179,7 @@ export function buildObservedAgentAdaptationV1(input: {
   const adaptationId = `agent-adaptation:${sourceContractSha256({
     agentId: input.agentId,
     ownerBindingSha256,
+    observedDefinitionVersion: input.definitionVersion,
     evidenceSha256,
     effectSha256: effect.effectSha256,
   })}`;
@@ -186,6 +190,7 @@ export function buildObservedAgentAdaptationV1(input: {
     adaptationId,
     agentId: input.agentId,
     ownerBindingSha256,
+    observedDefinitionVersion: input.definitionVersion,
     state: "observed",
     lifecycleRevision: 0,
     evidence,
@@ -209,6 +214,9 @@ export function evaluateAgentAdaptationV1(
   const current = parseAgentAdaptationV1(adaptation);
   if (current.state !== "observed") {
     throw new Error("Only an observed Agent adaptation can be evaluated.");
+  }
+  if (definitionVersion !== current.observedDefinitionVersion) {
+    throw new Error("Agent adaptation evaluation requires the observed definition.");
   }
   const body = {
     version: AGENT_ADAPTATION_EVALUATION_VERSION,

@@ -66,6 +66,7 @@ export async function listAgentAdaptations(
 
 export async function observeAgentAdaptationEvidence(
   agentId: string,
+  definitionVersion: number,
   owner: AgentAdaptationOwner,
 ) {
   requireDatabase();
@@ -84,17 +85,24 @@ export async function observeAgentAdaptationEvidence(
       LIMIT 20
     `;
     for (const row of evidenceRows) {
-      const observed = adaptationFromFeedbackRow(row, agentId, owner);
+      const observed = adaptationFromFeedbackRow(
+        row,
+        agentId,
+        definitionVersion,
+        owner,
+      );
       const inserted = await sql`
         INSERT INTO omni_agent_adaptations (
           tenant_id, adaptation_id, agent_definition_id, owner_actor_id,
-          owner_binding_sha256, state, lifecycle_revision, evidence,
+          owner_binding_sha256, observed_definition_version,
+          state, lifecycle_revision, evidence,
           evidence_sha256, confidence, effect_kind, effect_payload,
           created_at, updated_at
         ) VALUES (
           ${owner.tenantId}, ${observed.adaptationId}, ${agentId},
           ${owner.canonicalActorId}, ${observed.ownerBindingSha256},
-          ${observed.state}, ${observed.lifecycleRevision},
+          ${observed.observedDefinitionVersion}, ${observed.state},
+          ${observed.lifecycleRevision},
           ${observed.evidence}::jsonb, ${observed.evidenceSha256},
           ${observed.confidence}, ${observed.effect.kind},
           ${observed.effect}::jsonb, ${observed.createdAt}, ${observed.updatedAt}
@@ -114,6 +122,7 @@ export async function observeAgentAdaptationEvidence(
             adaptationId: persisted.adaptationId,
             evidenceSha256: persisted.evidenceSha256,
             evidenceCount: persisted.evidence.length,
+            observedDefinitionVersion: persisted.observedDefinitionVersion,
             confidence: persisted.confidence,
             effectKind: persisted.effect.kind,
             effectSha256: persisted.effect.effectSha256,
@@ -322,6 +331,7 @@ async function readAdaptationForUpdate(
 function adaptationFromFeedbackRow(
   row: SqlRow,
   agentId: string,
+  definitionVersion: number,
   owner: AgentAdaptationOwner,
 ) {
   const feedback = objectValue(row.feedback);
@@ -347,6 +357,7 @@ function adaptationFromFeedbackRow(
     tenantId: owner.tenantId,
     ownerActorId: owner.canonicalActorId,
     agentId,
+    definitionVersion,
     evidence: [{
       evidenceId: `run-feedback:${sourceId}`,
       kind: "run_feedback",
@@ -376,6 +387,7 @@ function adaptationFromRow(row: SqlRow) {
     adaptationId: row.adaptation_id,
     agentId: row.agent_definition_id,
     ownerBindingSha256: row.owner_binding_sha256,
+    observedDefinitionVersion: Number(row.observed_definition_version),
     state: row.state,
     lifecycleRevision: Number(row.lifecycle_revision),
     evidence: row.evidence,
@@ -397,6 +409,7 @@ function adaptationEventPayload(adaptation: AgentAdaptationV1) {
     adaptationId: adaptation.adaptationId,
     lifecycleRevision: adaptation.lifecycleRevision,
     evidenceSha256: adaptation.evidenceSha256,
+    observedDefinitionVersion: adaptation.observedDefinitionVersion,
     confidence: adaptation.confidence,
     effectKind: adaptation.effect.kind,
     effectSha256: adaptation.effect.effectSha256,
