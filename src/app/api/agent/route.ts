@@ -5,6 +5,7 @@ import {
   AGENT_MAX_MESSAGES,
   AGENT_RUN_BUDGET_LIMITS,
   AGENT_RUNS_PER_MINUTE,
+  WORKFLOW_RUN_BUDGET_LIMITS,
 } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
@@ -181,9 +182,14 @@ async function POSTHandler(request: Request) {
       })
     : undefined;
   let budgetLimits;
+  let workflowBudgetLimits;
   try {
     budgetLimits = narrowRunBudgetLimits(
       AGENT_RUN_BUDGET_LIMITS,
+      parsed.data.budgets,
+    );
+    workflowBudgetLimits = narrowRunBudgetLimits(
+      WORKFLOW_RUN_BUDGET_LIMITS,
       parsed.data.budgets,
     );
   } catch (error) {
@@ -609,6 +615,7 @@ async function POSTHandler(request: Request) {
               goal: executionMessage,
               mode,
               requireApproval: decision.requiresApproval || customAgent?.approvalPolicy === "always",
+              budgetLimits: workflowBudgetLimits,
               metadata: {
                 source: "atomic_supervisor",
                 threadId: thread.id,

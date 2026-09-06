@@ -132,6 +132,7 @@ export async function runCouncilRound(input: {
           reasoningEffort: AGENT_REASONING_EFFORT,
           abortSignal: input.abortSignal,
           tier: "reasoning",
+          maxAttempts: 1,
           ...(input.usageAttribution
             ? {
                 usageScope: {
@@ -259,7 +260,8 @@ export async function reviewCouncilResponse(input: {
     schema: verdictSchema,
     reasoningEffort: AGENT_REASONING_EFFORT,
     abortSignal: input.abortSignal,
-    tier: "reasoning",
+      tier: "reasoning",
+      maxAttempts: 1,
     ...(input.usageAttribution
       ? {
           usageScope: {
@@ -348,7 +350,8 @@ export async function reviseCouncilResponse(input: {
     },
     reasoningEffort: AGENT_REASONING_EFFORT,
     abortSignal: input.abortSignal,
-    tier: "reasoning",
+      tier: "reasoning",
+      maxAttempts: 1,
     ...(input.usageAttribution
       ? {
           usageScope: {

@@ -880,6 +880,16 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         toolId: event.toolId,
         ...hashedTextFields("message", event.message),
       };
+    case "budget_exhausted":
+      return {
+        schemaVersion,
+        type: event.type,
+        dimension: event.dimension,
+        limit: event.limit,
+        attempted: event.attempted,
+        requiresAuthorization: event.requiresAuthorization,
+        ...hashedTextFields("message", event.message),
+      };
     case "done":
       return {
         schemaVersion,

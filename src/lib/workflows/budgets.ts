@@ -31,6 +31,17 @@ export type WorkflowBudgetSession = {
   ): Promise<RunBudgetStateV1>;
 };
 
+export function workflowRunBudgetAbortSignal(
+  budget: WorkflowBudgetSession,
+  external?: AbortSignal,
+) {
+  const wallSignal = AbortSignal.timeout(Math.max(
+    1,
+    budget.remaining().wallTimeMs,
+  ));
+  return external ? AbortSignal.any([external, wallSignal]) : wallSignal;
+}
+
 export function createWorkflowBudgetSession(
   detail: WorkflowRunDetail,
   now = Date.now(),
@@ -39,10 +50,14 @@ export function createWorkflowBudgetSession(
     detail.run.input.budgetLimits || WORKFLOW_RUN_BUDGET_LIMITS,
   );
   const persisted = latestPersistedBudgetState(detail.events, limits);
+  const legacyUsed = detail.run.input.budgetLimits
+    ? undefined
+    : conservativeLegacyUsage(detail, limits);
   const wallTimeMs = workflowActiveWallTimeMs(detail.events, now);
   let state = createRunBudgetState(limits, {
     startedAt: new Date(now - wallTimeMs).toISOString(),
     used: {
+      ...(legacyUsed || {}),
       ...(persisted?.used || {}),
       wallTimeMs: Math.max(persisted?.used.wallTimeMs || 0, wallTimeMs),
     },
@@ -113,6 +128,9 @@ export function workflowActiveWallTimeMs(
         "step.failed",
         "step.interrupted",
         "workflow.waiting_approval",
+        "workflow.plan_execution.requeued",
+        "workflow.paused",
+        "workflow.canceled",
       ].includes(event.type)
     ) {
       total += Math.max(0, at - activeSince);
@@ -123,6 +141,71 @@ export function workflowActiveWallTimeMs(
     total += Math.max(0, now - activeSince);
   }
   return total;
+}
+
+function conservativeLegacyUsage(
+  detail: WorkflowRunDetail,
+  limits: RunBudgetCountersV1,
+): Partial<RunBudgetCountersV1> {
+  const step = (key: string) => detail.steps.find((item) => item.stepKey === key);
+  const executeOutput = step("execute")?.output;
+  const planExecution = executeOutput?.planExecution as
+    | Record<string, unknown>
+    | undefined;
+  const historicalNodes = Math.max(
+    0,
+    Number(planExecution?.completedNodes || 0),
+  );
+  const toolCalls = Math.min(
+    limits.toolCalls,
+    Math.max(0, Number(planExecution?.toolCalls || 0)),
+  );
+  const explicitModelTurns = [
+    step("plan")?.output?.planner &&
+      !["deterministic", "fallback"].includes(String(step("plan")?.output?.planner)),
+    executeOutput?.synthesisProvider,
+    step("verify")?.output?.modelVerdict,
+  ].filter(Boolean).length;
+  const modelTurns = Math.min(
+    limits.modelTurns,
+    explicitModelTurns + historicalNodes,
+  );
+  return {
+    modelTurns,
+    tokens: Math.min(
+      limits.tokens,
+      modelTurns * modelCallShare(limits.tokens, limits.modelTurns),
+    ),
+    costMicrousd: Math.min(
+      limits.costMicrousd,
+      modelTurns * modelCallShare(
+        limits.costMicrousd,
+        limits.modelTurns,
+      ),
+    ),
+    toolCalls,
+    // Old receipts did not persist tool category. Do not silently grant new
+    // browser authority after an upgrade if prior calls may have consumed it.
+    browserActions: toolCalls > 0 ? limits.browserActions : 0,
+    agents: Math.min(limits.agents, 1 + historicalNodes),
+    fanOut: Math.min(
+      limits.fanOut,
+      detail.events
+        .filter((event) => event.type === "workflow.plan_batch.started")
+        .reduce((total, event) =>
+          total + Math.max(0, Number(event.payload.nodeCount || 1) - 1), 0),
+    ),
+    retries: Math.min(
+      limits.retries,
+      detail.events.filter((event) =>
+        ["step.retry_scheduled", "workflow.queue.redelivery_reclaimed"].includes(event.type)
+      ).length,
+    ),
+    replans: Math.min(
+      limits.replans,
+      detail.events.filter((event) => event.type === "workflow.replan_triggered").length,
+    ),
+  };
 }
 
 function latestPersistedBudgetState(
@@ -156,6 +239,5 @@ function budgetLimitsSha256(limits: RunBudgetCountersV1) {
 }
 
 function modelCallShare(total: number, turns: number) {
-  if (total === 0) return 0;
   return Math.max(1, Math.floor(total / Math.max(1, turns)));
 }

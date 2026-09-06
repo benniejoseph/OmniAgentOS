@@ -205,6 +205,7 @@ type StreamEvent =
       executionId?: string;
     }
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
+  | { type: "budget_exhausted"; dimension?: string; limit?: number; attempted?: number; requiresAuthorization?: true; message?: string }
   | { type: "done"; response?: string; grounding?: GroundingReport }
   | { type: "delegated"; threadId?: string; workflowId?: string; missionId?: string; acknowledgement?: string; reason?: string }
   | { type: "clarification"; runId?: string; threadId?: string; message?: string; reasonCode?: "ambiguous_destructive_target" | "ambiguous_known_procedure" | "ambiguous_read_target" }
@@ -3390,6 +3391,11 @@ function TaskProgressTimeline({
   const workflow = asRecord(readPath(workflowRun, "run"));
   if (workflowRun) {
     const completed = workflowSteps.filter((step) => ["completed", "skipped"].includes(stringValue(step.status))).length;
+    const workflowBudgetLimits = asRecord(readPath(workflow, "input.budgetLimits"));
+    const workflowBudgetEvent = [...workflowEvents].reverse().find(
+      (event) => stringValue(event.type) === "workflow.budget_reserved",
+    );
+    const workflowBudgetUsed = asRecord(readPath(workflowBudgetEvent, "payload.used"));
     const planStep = workflowSteps.find((step) => stringValue(step.stepKey) === "plan");
     const planNodes = arrayPath(planStep, "output.plan.nodes");
     const planNodeEvents = new Map<string, JsonRecord>();
@@ -3418,6 +3424,11 @@ function TaskProgressTimeline({
             <WorkflowOutcomePill status={readPath(workflow, "canonicalStatus.status")} />
           </div>
         </header>
+        {Object.keys(workflowBudgetLimits).length ? (
+          <p className="border-b border-line px-3 py-2 text-[11px] leading-5 text-muted">
+            Budget used: {numberValue(workflowBudgetUsed.modelTurns, 0)} / {numberValue(workflowBudgetLimits.modelTurns, 0)} turns · {numberValue(workflowBudgetUsed.toolCalls, 0)} / {numberValue(workflowBudgetLimits.toolCalls, 0)} tools · {numberValue(workflowBudgetUsed.retries, 0)} / {numberValue(workflowBudgetLimits.retries, 0)} retries · {numberValue(workflowBudgetUsed.replans, 0)} / {numberValue(workflowBudgetLimits.replans, 0)} replans
+          </p>
+        ) : null}
         <ol className="divide-y divide-line">
           {workflowSteps.length ? workflowSteps.map((step, index) => {
             const status = stringValue(step.status, "pending");
@@ -4238,6 +4249,9 @@ function streamEventLabel(event: StreamEvent) {
       `Run paused for approval of ${event.toolId || "a gated tool"}. Approving it in the Approvals workspace resumes this run automatically.`
     );
   }
+  if (event.type === "budget_exhausted") {
+    return event.message || "The run stopped before exceeding its authorized budget.";
+  }
   if (event.type === "done") {
     return "Agent run completed.";
   }
@@ -4287,6 +4301,7 @@ function activityTitle(event: StreamEvent) {
   if (event.type === "council_verdict") return "Quality review";
   if (event.type === "tool") return event.toolName || event.toolId || "Tool activity";
   if (event.type === "waiting_approval") return "Waiting for approval";
+  if (event.type === "budget_exhausted") return "Budget authorization required";
   if (event.type === "delegated") return "Moved to workflow";
   if (event.type === "clarification") return "Clarification needed";
   if (event.type === "done") return "Task complete";
@@ -4296,7 +4311,7 @@ function activityTitle(event: StreamEvent) {
 }
 
 function activityDotTone(event: StreamEvent) {
-  if (event.type === "error" || event.type === "canceled") return "bg-danger";
+  if (event.type === "error" || event.type === "canceled" || event.type === "budget_exhausted") return "bg-danger";
   if (event.type === "waiting_approval" || event.type === "clarification") return "bg-warning";
   if (event.type === "done" || event.type === "council_verdict") return "bg-success";
   if (event.type === "tool" && ["failed", "blocked"].includes(event.status || "")) return "bg-danger";
@@ -4336,6 +4351,8 @@ function workflowEventLabel(type: string) {
     "workflow.plan_node.failed": "A plan step failed.",
     "workflow.plan_node.skipped": "A plan step was skipped.",
     "workflow.plan_node.interrupted": "A plan step was interrupted.",
+    "workflow.budget_reserved": "Run-wide budget authority was reserved before work.",
+    "workflow.budget_exhausted": "The workflow stopped before exceeding its authorized budget.",
   };
   return labels[type] || type.replaceAll(".", " · ").replaceAll("_", " ");
 }

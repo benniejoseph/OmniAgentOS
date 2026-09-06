@@ -112,6 +112,8 @@ import {
   RunBudgetExceededError,
   createRunBudgetState,
   isBrowserActionTool,
+  remainingRunBudget,
+  refreshRunBudgetWallTime,
   reserveRunBudget,
   type RunBudgetCountersV1,
   type RunBudgetStateV1,
@@ -255,13 +257,25 @@ export async function* runAgent(
   let runBudgetState = createRunBudgetState(budgetLimits, {
     startedAt: run.startedAt,
   });
+  const budgetWallSignal = AbortSignal.timeout(Math.max(
+    1,
+    budgetLimits.wallTimeMs - Math.max(
+      0,
+      Date.now() - Date.parse(runBudgetState.startedAt),
+    ),
+  ));
+  const runAbortSignal = abortSignal
+    ? AbortSignal.any([abortSignal, budgetWallSignal])
+    : budgetWallSignal;
 
   function reserveBudget(reservation: Partial<RunBudgetCountersV1>) {
     runBudgetState = reserveRunBudget(runBudgetState, reservation);
   }
 
   function reserveModelTurnBudget() {
-    runBudgetState = reserveAgentModelTurn(runBudgetState);
+    const reservation = reserveAgentModelTurn(runBudgetState);
+    runBudgetState = reservation.state;
+    return { maxAttempts: reservation.maxAttempts };
   }
 
   function reserveToolBudget(tools: readonly ToolDefinition[]) {
@@ -446,9 +460,12 @@ export async function* runAgent(
     provider: string;
     model: string;
     tier: "fast" | "reasoning";
+    allowRetry?: boolean;
   }) {
-    reserveModelTurnBudget();
-    if (!shadowRunContract) return;
+    const modelBudget = input.allowRetry === false
+      ? reserveModelTurnWithoutRetry()
+      : reserveModelTurnBudget();
+    if (!shadowRunContract) return modelBudget;
     try {
       await persistModelBeforeCheckpointShadow({
         runId,
@@ -465,6 +482,13 @@ export async function* runAgent(
         error,
       );
     }
+    return modelBudget;
+  }
+
+  function reserveModelTurnWithoutRetry() {
+    const reservation = reserveAgentModelTurn(runBudgetState, false);
+    runBudgetState = reservation.state;
+    return { maxAttempts: reservation.maxAttempts };
   }
 
   async function checkpointAfterFailedModelTurn(input: {
@@ -659,6 +683,13 @@ export async function* runAgent(
     const useLiveWeb = !browserCapabilityIntent.excludeWebSearch &&
       shouldUseLiveWebSearch(query) &&
       hasOpenAIKey();
+    if (durableMemoryEnabled) {
+      reserveBudget({ tokens: 1_024, costMicrousd: 1_000 });
+    }
+    if (useLiveWeb) {
+      reserveModelTurnWithoutRetry();
+      reserveBudget({ toolCalls: 1 });
+    }
     const retrievalQuery = request.contextSelection?.query || automaticRetrievalQuery;
     const retrievalPromise = durableMemoryEnabled
       ? buildContextPack(retrievalQuery, {
@@ -729,7 +760,7 @@ export async function* runAgent(
           query,
           contextSize: "low",
           maxSources: 4,
-          abortSignal,
+          abortSignal: runAbortSignal,
           ...(request.actorId ? {
             usageScope: {
               tenantId: runTenantId,
@@ -1038,7 +1069,7 @@ export async function* runAgent(
           "Explicit private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
       });
     }
-    const councilCheckpointHooks: CouncilCheckpointHooks | undefined =
+    const councilCheckpointHooks: CouncilCheckpointHooks =
       shadowRunContract &&
         isExpandedCheckpointShadowEnrollment(checkpointShadowEnrollment)
         ? {
@@ -1093,11 +1124,22 @@ export async function* runAgent(
                 provider: "model_gateway",
                 model: "auto",
                 tier: "reasoning",
+                allowRetry: false,
               });
             },
             afterModel: checkpointAfterCouncilModel,
           }
-        : undefined;
+        : {
+            beforeModel: async (input) => {
+              await checkpointBeforeModelTurn({
+                attempt: input.attempt,
+                provider: "model_gateway",
+                model: "auto",
+                tier: "reasoning",
+                allowRetry: false,
+              });
+            },
+          };
     let councilContributions: CouncilContribution[] = [];
     if (councilActive) {
       for (const agentId of councilAgentIds.filter((agentId) => agentId !== primaryAgentId)) {
@@ -1116,7 +1158,7 @@ export async function* runAgent(
         specialistIds: councilAgentIds,
         contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
         tenantId: request.tenantId,
-        abortSignal,
+        abortSignal: runAbortSignal,
         checkpointHooks: councilCheckpointHooks,
         ...(request.actorId
           ? {
@@ -1197,7 +1239,7 @@ export async function* runAgent(
           credentialSource: runtimeModel.source === "tenant_assignment"
             ? "tenant_vault"
             : "deployment_environment",
-          abortSignal,
+          abortSignal: runAbortSignal,
           forceApproval: agentToolPolicy?.forceApproval,
           bindModelRequest: (turnRequest) => runtimeModel.bind(turnRequest),
           beforeModelTurn: ({ attempt, provider, tier }) =>
@@ -1369,7 +1411,7 @@ export async function* runAgent(
       for (;;) {
         const turnInput: ResponseTurnInput =
           conversationItems ?? initialConversationItems;
-        await checkpointBeforeModelTurn({
+        const modelBudget = await checkpointBeforeModelTurn({
           attempt: toolSteps + 1,
           provider: "openai",
           model: modelRoute.model,
@@ -1384,11 +1426,13 @@ export async function* runAgent(
             instructions,
             input: turnInput,
             tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
-            abortSignal,
+            abortSignal: runAbortSignal,
             reasoningEffort: AGENT_REASONING_EFFORT,
             maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
             model: modelRoute.model,
-            fallbackModel: modelRoute.fallbackModel,
+            fallbackModel: modelBudget.maxAttempts > 1
+              ? modelRoute.fallbackModel
+              : undefined,
             apiKey,
             onDelta: (text) => channel.push(text),
             ...(request.actorId ? {
@@ -1557,7 +1601,7 @@ export async function* runAgent(
             dryRun: false,
             approved: false,
             context: securityContext,
-            abortSignal,
+            abortSignal: runAbortSignal,
             idempotencyKey: `${run.id}:${item.call.callId}`,
             forceApproval: agentToolPolicy?.forceApproval,
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
@@ -1644,7 +1688,7 @@ export async function* runAgent(
             dryRun: false,
             approved: false,
             context: securityContext,
-            abortSignal,
+            abortSignal: runAbortSignal,
             idempotencyKey: `${run.id}:${call.callId}`,
             forceApproval: agentToolPolicy?.forceApproval,
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
@@ -1759,7 +1803,7 @@ export async function* runAgent(
           response,
           contributions: councilContributions,
           contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
-          abortSignal,
+          abortSignal: runAbortSignal,
           checkpointHooks: councilCheckpointHooks,
           ...(request.actorId
             ? {
@@ -1782,7 +1826,7 @@ export async function* runAgent(
             verdict,
             contributions: councilContributions,
             contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
-            abortSignal,
+            abortSignal: runAbortSignal,
             checkpointHooks: councilCheckpointHooks,
             ...(request.actorId
               ? {
@@ -1835,6 +1879,7 @@ export async function* runAgent(
       }
     }
 
+    runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const grounding = await buildClaimGroundingReport({
       runId: run.id,
       response,
@@ -1887,9 +1932,29 @@ export async function* runAgent(
       yield await emit({ type: "status", label: "Canceled", detail: message });
       return;
     }
-    const message = error instanceof RunBudgetExceededError
-      ? `${error.message} The run stopped before starting more work; increase the limit and start a new run if needed.`
-      : error instanceof Error ? error.message : "Agent run failed.";
+    const failure = budgetWallSignal.aborted
+      ? new RunBudgetExceededError(
+          "wallTimeMs",
+          budgetLimits.wallTimeMs,
+          Math.max(
+            budgetLimits.wallTimeMs + 1,
+            Date.now() - Date.parse(runBudgetState.startedAt),
+          ),
+        )
+      : error;
+    const message = failure instanceof RunBudgetExceededError
+      ? `${failure.message} The run stopped before starting more work; increase the limit and start a new run if needed.`
+      : failure instanceof Error ? failure.message : "Agent run failed.";
+    if (failure instanceof RunBudgetExceededError) {
+      yield await emit({
+        type: "budget_exhausted",
+        dimension: failure.dimension,
+        limit: failure.limit,
+        attempted: failure.attempted,
+        requiresAuthorization: true,
+        message,
+      });
+    }
     await failAgentRun(run.id, message);
     yield await emit({ type: "error", message });
   }
@@ -1959,7 +2024,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     attempt: number;
     provider: "openai" | "google" | "anthropic" | "aws_bedrock";
     tier: "fast" | "reasoning";
-  }) => Promise<void>;
+  }) => Promise<{ maxAttempts?: number } | void>;
   afterModelFailure?: (input: {
     attempt: number;
     provider: "openai" | "google" | "anthropic" | "aws_bedrock";
@@ -2030,7 +2095,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   for (;;) {
     const toolsEnabled = toolSteps < AGENT_MAX_TOOL_STEPS;
     const modelAttempt = modelAttemptOffset + turns + 1;
-    await input.beforeModelTurn?.({
+    const modelBudget = await input.beforeModelTurn?.({
       attempt: modelAttempt,
       provider: activeProvider,
       tier: input.tier,
@@ -2044,6 +2109,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       allowedProviders: [activeProvider],
       allowCrossProviderFallback: false,
       maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      maxAttempts: modelBudget?.maxAttempts,
       abortSignal: input.abortSignal,
       tools: toolsEnabled ? input.tools : [],
       continuation,
@@ -2393,16 +2459,26 @@ function agentToolExecutionScope(
   });
 }
 
-function reserveAgentModelTurn(state: RunBudgetStateV1) {
-  return reserveRunBudget(state, {
-    modelTurns: 1,
-    tokens: Math.ceil(
-      state.limits.tokens / Math.max(1, state.limits.modelTurns),
-    ),
-    costMicrousd: Math.ceil(
-      state.limits.costMicrousd / Math.max(1, state.limits.modelTurns),
-    ),
-  });
+function reserveAgentModelTurn(
+  state: RunBudgetStateV1,
+  allowRetry = true,
+) {
+  const retrySlots = allowRetry && remainingRunBudget(state).retries > 0
+    ? 1
+    : 0;
+  return {
+    state: reserveRunBudget(state, {
+      modelTurns: 1,
+      tokens: Math.max(1, Math.floor(
+        state.limits.tokens / Math.max(1, state.limits.modelTurns),
+      )),
+      costMicrousd: Math.max(1, Math.floor(
+        state.limits.costMicrousd / Math.max(1, state.limits.modelTurns),
+      )),
+      retries: retrySlots,
+    }),
+    maxAttempts: 1 + retrySlots,
+  };
 }
 
 function reserveAgentTools(
@@ -2413,6 +2489,18 @@ function reserveAgentTools(
     toolCalls: tools.length,
     browserActions: tools.filter((tool) => isBrowserActionTool(tool)).length,
   });
+}
+
+function agentBudgetWallAbortSignal(
+  state: RunBudgetStateV1,
+  external?: AbortSignal,
+) {
+  const remainingMs = remainingRunBudget(state).wallTimeMs;
+  const wallSignal = AbortSignal.timeout(Math.max(1, remainingMs));
+  return {
+    wallSignal,
+    signal: external ? AbortSignal.any([external, wallSignal]) : wallSignal,
+  };
 }
 
 function restoreAgentRunBudgetState(
@@ -2438,14 +2526,14 @@ function restoreAgentRunBudgetState(
       modelTurns,
       tokens: Math.min(
         DEFAULT_AGENT_RUN_BUDGET_LIMITS.tokens,
-        modelTurns * Math.ceil(
+        modelTurns * Math.floor(
           DEFAULT_AGENT_RUN_BUDGET_LIMITS.tokens
             / DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
         ),
       ),
       costMicrousd: Math.min(
         DEFAULT_AGENT_RUN_BUDGET_LIMITS.costMicrousd,
-        modelTurns * Math.ceil(
+        modelTurns * Math.floor(
           DEFAULT_AGENT_RUN_BUDGET_LIMITS.costMicrousd
             / DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
         ),
@@ -2455,7 +2543,10 @@ function restoreAgentRunBudgetState(
         continuation.toolSteps * MAX_TOOL_CALLS_PER_TURN,
       ),
       browserActions: DEFAULT_AGENT_RUN_BUDGET_LIMITS.browserActions,
-      agents: 1,
+      agents: DEFAULT_AGENT_RUN_BUDGET_LIMITS.agents,
+      fanOut: DEFAULT_AGENT_RUN_BUDGET_LIMITS.fanOut,
+      retries: DEFAULT_AGENT_RUN_BUDGET_LIMITS.retries,
+      replans: DEFAULT_AGENT_RUN_BUDGET_LIMITS.replans,
     },
   });
 }
@@ -2643,8 +2734,15 @@ async function resumeAgentRunAfterToolApprovalInScope({
   }
 
   let runBudgetState = restoreAgentRunBudgetState(run, continuation);
-  const reserveResumeModelTurn = () => {
-    runBudgetState = reserveAgentModelTurn(runBudgetState);
+  const resumeWallBudget = agentBudgetWallAbortSignal(
+    runBudgetState,
+    abortSignal,
+  );
+  const resumeAbortSignal = resumeWallBudget.signal;
+  const reserveResumeModelTurn = (allowRetry = true) => {
+    const reservation = reserveAgentModelTurn(runBudgetState, allowRetry);
+    runBudgetState = reservation.state;
+    return { maxAttempts: reservation.maxAttempts };
   };
   const reserveResumeTools = (tools: readonly ToolDefinition[]) => {
     runBudgetState = reserveAgentTools(runBudgetState, tools);
@@ -2685,9 +2783,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
     provider: string;
     model: string;
     tier: "fast" | "reasoning";
+    allowRetry?: boolean;
   }) => {
-    reserveResumeModelTurn();
-    if (!executionScope || !continuation.runContractEnvelope) return;
+    const modelBudget = reserveResumeModelTurn(input.allowRetry);
+    if (!executionScope || !continuation.runContractEnvelope) return modelBudget;
     try {
       await persistModelBeforeCheckpointShadow({
         runId: run.id,
@@ -2704,6 +2803,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         error,
       );
     }
+    return modelBudget;
   };
 
   const checkpointBeforeResumeTool = async (
@@ -2933,7 +3033,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           role: continuation.context.role,
           source: "default",
         },
-        abortSignal,
+        abortSignal: resumeAbortSignal,
         idempotencyKey: `${run.id}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
@@ -3031,6 +3131,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         provider: "openai",
         model: resumeModel,
         tier: resumeTier,
+        allowRetry: false,
       });
       const turnStartedAt = Date.now();
       const usageReceiptId = continuation.context.actorId ? randomUUID() : undefined;
@@ -3042,7 +3143,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             instructions: continuation.instructions,
             input: conversationItems,
             tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
-            abortSignal,
+            abortSignal: resumeAbortSignal,
             reasoningEffort: AGENT_REASONING_EFFORT,
             maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
             model: resumeModel,
@@ -3213,7 +3314,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             role: continuation.context.role,
             source: "default",
           },
-          abortSignal,
+          abortSignal: resumeAbortSignal,
           idempotencyKey: `${run.id}:${call.callId}`,
           forceApproval: continuation.toolPolicy?.forceApproval,
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
@@ -3321,6 +3422,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     }
 
     await flushDeltas();
+    runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const grounding = await buildClaimGroundingReport({
       runId: run.id,
       response,
@@ -3373,14 +3475,37 @@ async function resumeAgentRunAfterToolApprovalInScope({
     await consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
-    if (resumeFence && isCheckpointResumeTransportInterruption(error)) {
+    if (
+      !resumeWallBudget.wallSignal.aborted &&
+      resumeFence &&
+      isCheckpointResumeTransportInterruption(error)
+    ) {
       throw new CheckpointResumeInterruptedError();
     }
-    const message = error instanceof Error ? error.message : "Approved agent run resume failed.";
+    const failure = resumeWallBudget.wallSignal.aborted
+      ? new RunBudgetExceededError(
+          "wallTimeMs",
+          runBudgetState.limits.wallTimeMs,
+          runBudgetState.limits.wallTimeMs + 1,
+        )
+      : error;
+    const message = failure instanceof RunBudgetExceededError
+      ? `${failure.message} The run stopped before starting more work; increase the limit and start a new run if needed.`
+      : failure instanceof Error ? failure.message : "Approved agent run resume failed.";
     await flushDeltas().catch(() => undefined);
     const failed = await failAgentRun(run.id, message, runMutationOptions);
     if (!failed) {
       return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
+    if (failure instanceof RunBudgetExceededError) {
+      await appendScopedRunEvent({
+        type: "budget_exhausted",
+        dimension: failure.dimension,
+        limit: failure.limit,
+        attempted: failure.attempted,
+        requiresAuthorization: true,
+        message,
+      });
     }
     await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({
@@ -3418,8 +3543,15 @@ async function resumeProviderBoundAgentRunAfterApproval({
     resumeFence,
   };
   let runBudgetState = restoreAgentRunBudgetState(run, continuation);
+  const resumeWallBudget = agentBudgetWallAbortSignal(
+    runBudgetState,
+    abortSignal,
+  );
+  const resumeAbortSignal = resumeWallBudget.signal;
   const reserveResumeModelTurn = () => {
-    runBudgetState = reserveAgentModelTurn(runBudgetState);
+    const reservation = reserveAgentModelTurn(runBudgetState);
+    runBudgetState = reservation.state;
+    return { maxAttempts: reservation.maxAttempts };
   };
   const reserveResumeTools = (tools: readonly ToolDefinition[]) => {
     runBudgetState = reserveAgentTools(runBudgetState, tools);
@@ -3460,8 +3592,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
     model: string;
     tier: "fast" | "reasoning";
   }) => {
-    reserveResumeModelTurn();
-    if (!executionScope || !continuation.runContractEnvelope) return;
+    const modelBudget = reserveResumeModelTurn();
+    if (!executionScope || !continuation.runContractEnvelope) return modelBudget;
     try {
       await persistModelBeforeCheckpointShadow({
         runId: run.id,
@@ -3478,6 +3610,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         error,
       );
     }
+    return modelBudget;
   };
   const checkpointBeforeResumeTool = async (
     input: GovernedToolCheckpointInput,
@@ -3817,7 +3950,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
           role: continuation.context.role,
           source: "default",
         },
-        abortSignal,
+        abortSignal: resumeAbortSignal,
         idempotencyKey:
           `${run.id}:${providerState.provider}:${call.callId}`,
         forceApproval: continuation.toolPolicy?.forceApproval,
@@ -3888,7 +4021,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       runId: run.id,
       assignmentId: resumeRuntimeModel.assignmentId,
       credentialSource: resumeCredentialSource,
-      abortSignal,
+      abortSignal: resumeAbortSignal,
       forceApproval: continuation.toolPolicy?.forceApproval,
       continuation: providerState.continuation,
       toolResults: carriedResults,
@@ -4022,6 +4155,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       return await parkForApproval(result.waitingApproval);
     }
 
+    runBudgetState = refreshRunBudgetWallTime(runBudgetState);
     const grounding = await buildClaimGroundingReport({
       runId: run.id,
       response,
@@ -4074,16 +4208,39 @@ async function resumeProviderBoundAgentRunAfterApproval({
     await consolidation;
     return { resumed: true, status: "completed" };
   } catch (error) {
-    if (resumeFence && isCheckpointResumeTransportInterruption(error)) {
+    if (
+      !resumeWallBudget.wallSignal.aborted &&
+      resumeFence &&
+      isCheckpointResumeTransportInterruption(error)
+    ) {
       throw new CheckpointResumeInterruptedError();
     }
-    const message = error instanceof Error
-      ? error.message
+    const failure = resumeWallBudget.wallSignal.aborted
+      ? new RunBudgetExceededError(
+          "wallTimeMs",
+          runBudgetState.limits.wallTimeMs,
+          runBudgetState.limits.wallTimeMs + 1,
+        )
+      : error;
+    const message = failure instanceof RunBudgetExceededError
+      ? `${failure.message} The run stopped before starting more work; increase the limit and start a new run if needed.`
+      : failure instanceof Error
+      ? failure.message
       : "Approved provider-bound agent run resume failed.";
     await flushDeltas().catch(() => undefined);
     const failed = await failAgentRun(run.id, message, runMutationOptions);
     if (!failed) {
       return { resumed: false, reason: "Checkpoint resume fence was lost." };
+    }
+    if (failure instanceof RunBudgetExceededError) {
+      await appendScopedRunEvent({
+        type: "budget_exhausted",
+        dimension: failure.dimension,
+        limit: failure.limit,
+        attempted: failure.attempted,
+        requiresAuthorization: true,
+        message,
+      });
     }
     await appendScopedRunEvent({ type: "error", message });
     await syncMissionExecutorSafely({

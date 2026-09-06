@@ -30,6 +30,7 @@ import {
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { getGovernedTool } from "@/lib/tools/registry";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
+import { isBrowserActionTool } from "@/lib/runs/budgets";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import type { AiUsageScope } from "@/lib/usage/types";
 import { resolveWorkflowToolInputBindings } from "@/lib/workflows/dependency-bindings";
@@ -52,6 +53,11 @@ import {
   type WorkflowExecutionAuthority,
 } from "@/lib/workflows/store";
 import { resolveWorkflowReusedNodeExecutions } from "@/lib/workflows/replan";
+import {
+  createWorkflowBudgetSession,
+  workflowRunBudgetAbortSignal,
+  type WorkflowBudgetSession,
+} from "@/lib/workflows/budgets";
 import type {
   WorkflowDynamicPlan,
   WorkflowPlanExecutionSummary,
@@ -168,7 +174,10 @@ export function workflowToolCostUnits(
 
 export async function executeDynamicWorkflowPlan(
   detail: WorkflowRunDetail,
-  options: { abortSignal?: AbortSignal } = {},
+  options: {
+    abortSignal?: AbortSignal;
+    budgetSession?: WorkflowBudgetSession;
+  } = {},
 ): Promise<WorkflowPlanExecutionSummary | null> {
   throwIfAborted(options.abortSignal);
   const parsedPlan = parseWorkflowPlanOutput(stepOutput(detail, "plan"));
@@ -205,20 +214,31 @@ export async function executeDynamicWorkflowPlan(
   const existingByNode = new Map(
     [...reusedRecords, ...planRecords].map((record) => [record.nodeId, record]),
   );
-  const priorToolExecutions = planRecords.flatMap((record) =>
+  const priorToolExecutions = priorRecords.flatMap((record) =>
     parseToolSummaries(record.output)
   );
   const recordsByNode = new Map<string, WorkflowPlanNodeExecutionRecord>();
   const toolCache = new Map<string, Promise<ToolDefinition | undefined>>();
-  const priorElapsedMs = workflowPlanElapsedMs(planRecords);
+  const runBudget = options.budgetSession || createWorkflowBudgetSession(detail);
+  const activeWallTimeMs = runBudget.snapshot().used.wallTimeMs;
   const budget = createWorkflowExecutionBudget({
-    startedAt: Date.now() - priorElapsedMs,
+    startedAt: Date.now() - activeWallTimeMs,
+    maxWallClockMs:
+      detail.run.input.budgetLimits?.wallTimeMs ??
+      WORKFLOW_PLAN_MAX_WALL_CLOCK_MS,
+    maxToolCalls:
+      detail.run.input.budgetLimits?.toolCalls ??
+      WORKFLOW_PLAN_MAX_TOOL_CALLS,
     toolCalls: priorToolExecutions.length,
     costUnits: priorToolExecutions.reduce(
       (total, execution) => total + execution.costUnits,
       0,
     ),
   });
+  const executionAbortSignal = workflowRunBudgetAbortSignal(
+    runBudget,
+    options.abortSignal,
+  );
   let processedNodes = 0;
   let hasPendingNodes = false;
   const pendingNodes = sortedNodes.filter((node) => {
@@ -263,7 +283,7 @@ export async function executeDynamicWorkflowPlan(
         node,
         dependencyRecords,
         nodeInput,
-        abortSignal: options.abortSignal,
+        abortSignal: executionAbortSignal,
         toolCache,
         budget,
         executionAuthority,
@@ -444,6 +464,31 @@ export async function executeDynamicWorkflowPlan(
       .slice(0, remainingCapacity)
       .map((candidate) => candidate.node);
     const concurrent = batch.length > 1;
+    const toolReservation = await workflowBatchToolReservation(
+      batch,
+      toolCache,
+      detail.run.tenantId,
+    );
+    const agentCount = batch.filter((node) =>
+      resolveWorkflowNodeContract(node).executor === "agent"
+    ).length;
+    await runBudget.reserve({
+      ...toolReservation,
+      modelTurns: agentCount,
+      tokens: agentCount * workflowModelCallShare(
+        runBudget.limits.tokens,
+        runBudget.limits.modelTurns,
+      ),
+      costMicrousd: agentCount * workflowModelCallShare(
+        runBudget.limits.costMicrousd,
+        runBudget.limits.modelTurns,
+      ),
+      agents: agentCount,
+      fanOut: concurrent ? batch.length - 1 : 0,
+    }, {
+      phase: "workflow.plan_batch",
+      nodeIds: batch.map((node) => node.id),
+    });
     await appendWorkflowEvent(detail.run.id, "workflow.plan_batch.started", {
       planId: parsedPlan.id,
       nodeIds: batch.map((node) => node.id),
@@ -977,6 +1022,7 @@ export async function executeAgentPlanNode({
       reasoningEffort: "minimal",
       tier: "reasoning",
       maxOutputTokens: 1_800,
+      maxAttempts: 1,
       abortSignal: modelSignal,
       ...(usageScope ? { usageScope } : {}),
     }));
@@ -1180,6 +1226,32 @@ async function isWorkflowNodeParallelSafe(
     getCachedToolDefinition(toolCache, toolId, options)
   ));
   return tools.every(isIndependentReadOnlyTool);
+}
+
+async function workflowBatchToolReservation(
+  nodes: readonly WorkflowPlanNode[],
+  toolCache: Map<string, Promise<ToolDefinition | undefined>>,
+  tenantId?: string,
+) {
+  const toolIds = nodes.flatMap((node) => {
+    const contract = resolveWorkflowNodeContract(node);
+    return contract.executor === "tool"
+      ? contract.grantedToolIds.slice(0, contract.maxToolCalls)
+      : [];
+  });
+  const tools = await Promise.all(toolIds.map((toolId) =>
+    getCachedToolDefinition(toolCache, toolId, { tenantId })
+  ));
+  return {
+    toolCalls: toolIds.length,
+    browserActions: tools.filter((tool) =>
+      Boolean(tool && isBrowserActionTool(tool))
+    ).length,
+  };
+}
+
+function workflowModelCallShare(total: number, turns: number) {
+  return Math.max(1, Math.floor(total / Math.max(1, turns)));
 }
 
 export function isIndependentReadOnlyTool(tool: ToolDefinition | undefined) {

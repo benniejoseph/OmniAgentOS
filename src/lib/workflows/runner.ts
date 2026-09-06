@@ -1,4 +1,5 @@
 import { WORKFLOW_EXECUTOR_TIMEOUT_MS } from "@/lib/config";
+import { RunBudgetExceededError } from "@/lib/runs/budgets";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { formVerifiedEffectMemories } from "@/lib/memory/consolidator";
 import { saveMemory } from "@/lib/memory/store";
@@ -24,6 +25,12 @@ import {
   listWorkflowPlanNodeExecutionsForRun,
   parseWorkflowPlanOutput,
 } from "@/lib/workflows/executor";
+import {
+  createWorkflowBudgetSession,
+  reserveWorkflowModelCall,
+  workflowRunBudgetAbortSignal,
+  type WorkflowBudgetSession,
+} from "@/lib/workflows/budgets";
 import {
   buildWorkflowOutcomeEvaluationV1,
   workflowOutcomeEffectReceiptCandidateExecutionIds,
@@ -166,6 +173,7 @@ export async function tickWorkflowRun(
   }
   await appendWorkflowEvent(detail.run.id, "step.started", { stepKey, attempt });
 
+  let runBudget: WorkflowBudgetSession | undefined;
   try {
     throwIfAborted(options.abortSignal);
     if (stepKey === "approval_gate" && detail.run.approvalRequired && !detail.run.approvedAt) {
@@ -198,7 +206,14 @@ export async function tickWorkflowRun(
     if (!freshDetail) {
       throw new Error("Workflow run disappeared during execution.");
     }
-    const output = await executeStep(stepKey, freshDetail, options.abortSignal);
+    runBudget = createWorkflowBudgetSession(freshDetail);
+    const output = await executeStep(
+      stepKey,
+      freshDetail,
+      options.abortSignal,
+      runBudget,
+    );
+    runBudget.snapshot();
     throwIfAborted(options.abortSignal);
     if (
       stepKey === "execute" &&
@@ -318,6 +333,10 @@ export async function tickWorkflowRun(
     // planning with the failure evidence; a second failure stands.
     const verifyOutput = stepKey === "verify" ? (output as Record<string, unknown>) : undefined;
     if (verifyOutput && verifyOutput.passed === false && !hasReplanned(freshDetail)) {
+      await runBudget.reserve(
+        { replans: 1 },
+        { phase: "workflow.replan" },
+      );
       const verdict = verifyOutput.modelVerdict as { failures?: string[]; assessment?: string } | undefined;
       const previousPlanStepOutput = stepOutput(freshDetail, "plan");
       const previousPlanOutput = parseWorkflowPlanOutput(previousPlanStepOutput);
@@ -531,7 +550,9 @@ export async function tickWorkflowRun(
     if (current.run.status !== "running") {
       return current;
     }
-    const message = error instanceof Error ? error.message : "Workflow step failed.";
+    const message = error instanceof RunBudgetExceededError
+      ? `${error.message} The workflow stopped before starting more work; authorize a larger budget in a new run if needed.`
+      : error instanceof Error ? error.message : "Workflow step failed.";
     const failedStep = await updateWorkflowStepForRunFence(detail.run.id, stepKey, {
       status: "failed",
       error: message,
@@ -545,7 +566,62 @@ export async function tickWorkflowRun(
     }
     await appendWorkflowEvent(detail.run.id, "step.failed", { stepKey, attempt, error: message });
 
+    if (error instanceof RunBudgetExceededError) {
+      await appendWorkflowEvent(detail.run.id, "workflow.budget_exhausted", {
+        schemaVersion: 1,
+        dimension: error.dimension,
+        limit: error.limit,
+        attempted: error.attempted,
+        requiresAuthorization: true,
+        stepKey,
+      });
+      await transitionWorkflowRun(detail.run.id, ["running"], {
+        status: "failed",
+        currentStep: stepKey,
+        attempt: current.run.attempt + 1,
+        error: message,
+        completedAt: new Date().toISOString(),
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedUpdatedAt: runFence,
+      });
+      return getWorkflowRunDetail(runId, {
+        tenantId: options.tenantId,
+      }) as Promise<WorkflowRunDetail>;
+    }
+
     if (attempt < step.maxAttempts) {
+      const retryBudget = runBudget || createWorkflowBudgetSession(current);
+      try {
+        await retryBudget.reserve(
+          { retries: 1 },
+          { phase: "workflow.step_retry" },
+        );
+      } catch (retryError) {
+        if (!(retryError instanceof RunBudgetExceededError)) throw retryError;
+        const retryMessage = `${retryError.message} The workflow stopped before retrying; authorize a larger budget in a new run if needed.`;
+        await appendWorkflowEvent(detail.run.id, "workflow.budget_exhausted", {
+          schemaVersion: 1,
+          dimension: retryError.dimension,
+          limit: retryError.limit,
+          attempted: retryError.attempted,
+          requiresAuthorization: true,
+          stepKey,
+        });
+        await transitionWorkflowRun(detail.run.id, ["running"], {
+          status: "failed",
+          currentStep: stepKey,
+          attempt: current.run.attempt + 1,
+          error: retryMessage,
+          completedAt: new Date().toISOString(),
+        }, {
+          tenantId: detail.run.tenantId,
+          expectedUpdatedAt: runFence,
+        });
+        return getWorkflowRunDetail(runId, {
+          tenantId: options.tenantId,
+        }) as Promise<WorkflowRunDetail>;
+      }
       await transitionWorkflowRun(detail.run.id, ["running"], {
         status: "queued",
         currentStep: stepKey,
@@ -723,9 +799,12 @@ async function executeStep(
   stepKey: WorkflowStepKey,
   detail: WorkflowRunDetail,
   abortSignal?: AbortSignal,
+  budget?: WorkflowBudgetSession,
 ) {
   throwIfAborted(abortSignal);
+  const runBudget = budget || createWorkflowBudgetSession(detail);
   if (stepKey === "preflight") {
+    await runBudget.reserve({ agents: 1 }, { phase: "workflow.preflight" });
     const runtimeModel = await resolveWorkflowRuntimeModel(detail);
     return {
       workflowType: detail.run.workflowType,
@@ -740,6 +819,10 @@ async function executeStep(
   }
 
   if (stepKey === "retrieve_context") {
+    await runBudget.reserve(
+      { tokens: 1_024, costMicrousd: 1_000 },
+      { phase: "workflow.context.retrieve" },
+    );
     const profile = workflowAgentProfile(detail);
     const specialistContext = await buildWorkflowSpecialistContext(detail);
     if (profile?.memoryScope === "session") {
@@ -794,7 +877,7 @@ async function executeStep(
   }
 
   if (stepKey === "plan") {
-    return buildPlan(detail, abortSignal);
+    return buildPlan(detail, abortSignal, runBudget);
   }
 
   if (stepKey === "approval_gate") {
@@ -805,7 +888,7 @@ async function executeStep(
   }
 
   if (stepKey === "execute") {
-    return executeGoal(detail, abortSignal);
+    return executeGoal(detail, abortSignal, runBudget);
   }
 
   if (stepKey === "verify") {
@@ -820,14 +903,22 @@ async function executeStep(
     ];
     const mechanicalPassed = Boolean(executeOutput?.response || executeOutput?.deliverable) &&
       (!planExecution || planExecution.failedNodes === 0);
+    const runtimeModel = await resolveWorkflowRuntimeModel(detail);
+    const modelBudget = runtimeModel.configured
+      ? await reserveWorkflowModelCall(
+          runBudget,
+          { phase: "workflow.verify" },
+        )
+      : { maxAttempts: 1 };
     const modelVerdict = await verifyWithModel({
       detail,
-      runtimeModel: await resolveWorkflowRuntimeModel(detail),
+      runtimeModel,
       goal: detail.run.goal,
       criteria,
       executeOutput,
       planExecution,
-      abortSignal,
+      abortSignal: workflowRunBudgetAbortSignal(runBudget, abortSignal),
+      modelMaxAttempts: modelBudget.maxAttempts,
     });
     return {
       // The model can veto a mechanically-passing run, never rescue a failing one.
@@ -950,6 +1041,7 @@ async function verifyWithModel({
   executeOutput,
   planExecution,
   abortSignal,
+  modelMaxAttempts,
 }: {
   detail: WorkflowRunDetail;
   runtimeModel: RuntimeModelResolution;
@@ -958,6 +1050,7 @@ async function verifyWithModel({
   executeOutput?: Record<string, unknown>;
   planExecution?: ReturnType<typeof parsePlanExecutionOutput>;
   abortSignal?: AbortSignal;
+  modelMaxAttempts: number;
 }): Promise<ModelVerificationVerdict | undefined> {
   if (!runtimeModel.configured) {
     return undefined;
@@ -998,6 +1091,7 @@ async function verifyWithModel({
       },
       abortSignal: combineAbortSignals(controller.signal, abortSignal),
       tier: "reasoning",
+      maxAttempts: modelMaxAttempts,
       ...(usageScope ? { usageScope } : {}),
     }));
     const parsed = JSON.parse(generated.text) as ModelVerificationVerdict;
@@ -1022,7 +1116,11 @@ async function verifyWithModel({
   }
 }
 
-async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
+async function buildPlan(
+  detail: WorkflowRunDetail,
+  abortSignal: AbortSignal | undefined,
+  budget: WorkflowBudgetSession,
+) {
   const profile = workflowAgentProfile(detail);
   const contextSelection = workflowContextSelection(detail);
   const savedProcedure = workflowSavedProcedure(detail);
@@ -1073,6 +1171,12 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
       "The reviewed workflow plan is missing or no longer matches this run.",
     );
   }
+  const modelBudget = selectedPlan || savedProcedure?.toolBindings.length
+    ? { maxAttempts: 1 }
+    : await reserveWorkflowModelCall(
+        budget,
+        { phase: replanDirective ? "workflow.replan.plan" : "workflow.plan" },
+      );
   const record =
     selectedPlan ||
     await buildDynamicWorkflowPlan({
@@ -1110,7 +1214,8 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
           }
         : {}),
       reuseExisting: !replanEvent,
-      abortSignal,
+      abortSignal: workflowRunBudgetAbortSignal(budget, abortSignal),
+      modelMaxAttempts: modelBudget.maxAttempts,
     });
   await appendWorkflowEvent(detail.run.id, "workflow.dynamic_plan.created", {
     planId: record.id,
@@ -1163,10 +1268,18 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
   };
 }
 
-async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
+async function executeGoal(
+  detail: WorkflowRunDetail,
+  abortSignal: AbortSignal | undefined,
+  budget: WorkflowBudgetSession,
+) {
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const planOutput = stepOutput(detail, "plan");
-  const planExecution = await executeDynamicWorkflowPlan(detail, { abortSignal });
+  const budgetAbortSignal = workflowRunBudgetAbortSignal(budget, abortSignal);
+  const planExecution = await executeDynamicWorkflowPlan(detail, {
+    abortSignal: budgetAbortSignal,
+    budgetSession: budget,
+  });
   if (planExecution?.status === "running") {
     return {
       executionPending: true,
@@ -1196,6 +1309,10 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
   }
 
   try {
+    const modelBudget = await reserveWorkflowModelCall(
+      budget,
+      { phase: "workflow.synthesize" },
+    );
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort(new Error("Workflow executor synthesis timed out.")),
@@ -1221,8 +1338,9 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
         },
         required: ["deliverable", "response", "nextAction"],
       },
-      abortSignal: combineAbortSignals(controller.signal, abortSignal),
+      abortSignal: combineAbortSignals(controller.signal, budgetAbortSignal),
       tier: "reasoning",
+      maxAttempts: modelBudget.maxAttempts,
       ...(usageScope ? { usageScope } : {}),
     })).finally(() => clearTimeout(timer));
 
@@ -1233,6 +1351,7 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
       synthesisModel: generated.model,
     };
   } catch (error) {
+    if (error instanceof RunBudgetExceededError) throw error;
     return {
       ...fallback,
       synthesisModel: "fallback-after-model-error",

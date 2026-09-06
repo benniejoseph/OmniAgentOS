@@ -1,5 +1,6 @@
 import { after } from "next/server";
 import { OPERATION_QUEUE_LEASE_SECONDS, WORKFLOW_DRAIN_LIMIT } from "@/lib/config";
+import { RunBudgetExceededError } from "@/lib/runs/budgets";
 import {
   getDatabaseTenantContext,
   runWithDatabaseTenantScope,
@@ -19,9 +20,13 @@ import { tickWorkflowRun } from "@/lib/workflows/runner";
 import {
   appendWorkflowEvent,
   failWorkflowRunForQueueExhaustion,
+  getWorkflowRunDetail,
   listRunnableWorkflowRuns,
   reclaimWorkflowRunForQueueDelivery,
+  transitionWorkflowRun,
+  updateWorkflowStep,
 } from "@/lib/workflows/store";
+import { createWorkflowBudgetSession } from "@/lib/workflows/budgets";
 import type { WorkflowRunDetail } from "@/lib/workflows/types";
 
 type ProcessWorkflowQueueInput = {
@@ -66,6 +71,9 @@ export async function enqueueWorkflowRunTick(
   priority = workflowJobPriority,
   tenantId?: string,
 ) {
+  const detail = await getWorkflowRunDetail(workflowRunId, { tenantId });
+  const authorizedRetries = detail?.run.input.budgetLimits?.retries ??
+    workflowJobMaxAttempts - 1;
   const job = await enqueueOperationJob({
     tenantId,
     type: "workflow.tick",
@@ -75,7 +83,7 @@ export async function enqueueWorkflowRunTick(
       reason,
     },
     priority,
-    maxAttempts: workflowJobMaxAttempts,
+    maxAttempts: Math.min(workflowJobMaxAttempts, 1 + authorizedRetries),
   });
   await appendWorkflowEvent(workflowRunId, "workflow.queue.enqueued", {
     jobId: job.id,
@@ -248,6 +256,70 @@ async function processWorkflowQueueInScope(
 
     let leaseLost = false;
     try {
+      if (job.attempt > 1) {
+        const budgetDetail = await getWorkflowRunDetail(workflowRunId, {
+          tenantId: job.tenantId,
+        });
+        if (budgetDetail) {
+          try {
+            await createWorkflowBudgetSession(budgetDetail).reserve(
+              { retries: 1 },
+              { phase: "workflow.queue_redelivery" },
+            );
+          } catch (error) {
+            if (!(error instanceof RunBudgetExceededError)) throw error;
+            const message = `${error.message} The workflow stopped before queue redelivery; authorize a larger budget in a new run if needed.`;
+            if (budgetDetail.run.currentStep) {
+              await updateWorkflowStep(
+                workflowRunId,
+                budgetDetail.run.currentStep,
+                {
+                  status: "failed",
+                  error: message,
+                  completedAt: new Date().toISOString(),
+                },
+              );
+            }
+            await transitionWorkflowRun(
+              workflowRunId,
+              ["queued", "running"],
+              {
+                status: "failed",
+                error: message,
+                completedAt: new Date().toISOString(),
+              },
+              { tenantId: job.tenantId },
+            );
+            await appendWorkflowEvent(
+              workflowRunId,
+              "workflow.budget_exhausted",
+              {
+                schemaVersion: 1,
+                dimension: error.dimension,
+                limit: error.limit,
+                attempted: error.attempted,
+                requiresAuthorization: true,
+                phase: "workflow.queue_redelivery",
+              },
+            );
+            const completedJob = await completeOperationJob(
+              job.id,
+              job.leaseOwner,
+              job.tenantId,
+            );
+            results.push({
+              job: completedJob || job,
+              workflowRunId,
+              status: completedJob ? "completed" : "stale",
+              detail: await getWorkflowRunDetail(workflowRunId, {
+                tenantId: job.tenantId,
+              }) || budgetDetail,
+              error: message,
+            });
+            continue;
+          }
+        }
+      }
       await appendWorkflowEvent(workflowRunId, "workflow.queue.leased", {
         jobId: job.id,
         attempt: job.attempt,

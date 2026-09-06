@@ -107,6 +107,14 @@ export type AgentEvent =
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | AgentToolEvent
   | { type: "waiting_approval"; executionId: string; toolId: string; message: string }
+  | {
+      type: "budget_exhausted";
+      dimension: string;
+      limit: number;
+      attempted: number;
+      requiresAuthorization: true;
+      message: string;
+    }
   | { type: "done"; response: string; grounding?: GroundingReport }
   | { type: "canceled"; message: string }
   | { type: "error"; message: string };

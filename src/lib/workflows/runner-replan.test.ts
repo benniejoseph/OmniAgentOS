@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import type { WorkflowRunDetail } from "@/lib/workflows/types";
 
 const mocks = vi.hoisted(() => ({
@@ -157,7 +158,7 @@ beforeEach(() => {
       workflowRunId: detail.run.id,
       type,
       payload,
-      createdAt: "2026-09-06T00:01:00.000Z",
+      createdAt: new Date().toISOString(),
     });
   });
 });
@@ -214,6 +215,35 @@ describe("workflow runner bounded replan", () => {
       capabilityGrantIds: [],
       purpose: "workflow.replan",
     });
+  });
+
+  it("stops before a replan when that authority was not granted", async () => {
+    detail.run.input.budgetLimits = {
+      ...WORKFLOW_RUN_BUDGET_LIMITS,
+      replans: 0,
+    };
+
+    const stopped = await tickWorkflowRun(detail.run.id, {
+      tenantId: "tenant-1",
+    });
+
+    expect(stopped.run).toMatchObject({
+      status: "failed",
+      currentStep: "verify",
+      error: expect.stringMatching(/replan budget is exhausted/i),
+    });
+    expect(stopped.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "workflow.budget_exhausted",
+        payload: expect.objectContaining({
+          dimension: "replans",
+          requiresAuthorization: true,
+        }),
+      }),
+    ]));
+    expect(stopped.events.some((event) =>
+      event.type === "workflow.replan_triggered"
+    )).toBe(false);
   });
 });
 
@@ -276,6 +306,7 @@ function workflowDetail(): WorkflowRunDetail {
       goal: plan.objective,
       input: {
         goal: plan.objective,
+        budgetLimits: WORKFLOW_RUN_BUDGET_LIMITS,
         metadata: { actorId: "actor-1" },
         executionAuthorityRequired: true,
       },
