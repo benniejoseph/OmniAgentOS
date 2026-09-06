@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
-import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  enterDatabaseActorContext,
+  getDatabaseActorContext,
+  withDatabaseRequestScope,
+} from "@/lib/db/client";
 import {
   applyObservabilitySloPolicyChange,
   getObservabilitySloPolicyChange,
@@ -220,6 +224,16 @@ async function POSTHandler(
   const record = await getToolExecution(id, { tenantId: securityContext.tenantId });
   if (!record) {
     return Response.json({ error: "Tool approval record not found." }, { status: 404 });
+  }
+  if (record.actorId) {
+    // The initial lookup was already authorized by the actor-private database
+    // policy. Retain that exact owner only for the remainder of this decision
+    // so a distinct risk-3 admin can execute the reviewed action on behalf of
+    // its requester without widening access to any sibling actor's ledger.
+    enterDatabaseActorContext(
+      securityContext.tenantId,
+      [...new Set([...getDatabaseActorContext(), record.actorId])],
+    );
   }
   let approvalMutation;
   try {

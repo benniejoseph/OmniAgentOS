@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   ensureDatabaseSchema,
+  getDatabaseActorContext,
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
@@ -70,10 +71,14 @@ const APPROVAL_MATERIAL_BINDING_OUTPUT_KEY =
 export function createToolExecutionRecord(
   input: Omit<ToolExecutionRecord, "id" | "createdAt">,
 ): ToolExecutionRecord {
+  const actorId = input.actorId?.trim() || getDatabaseActorContext().at(-1);
+  const tenantId = input.tenantId?.trim() || getDatabaseTenantContext();
   return {
     id: randomUUID(),
     createdAt: new Date().toISOString(),
     ...input,
+    ...(tenantId ? { tenantId } : {}),
+    ...(actorId ? { actorId } : {}),
   };
 }
 

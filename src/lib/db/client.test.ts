@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the actor-private run and thread ledger migration", () => {
+  it("pins the actor-private governed tool ledger migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 81,
-      name: "actor_private_run_thread_ledgers",
-      checksum: "054f7272a176fcd7acc2d6f2f79dfc17b6cbbe068d241bf41a0ef87600a6c1b5",
+      version: 82,
+      name: "actor_private_tool_execution_ledgers",
+      checksum: "6f2ebdaaebb87fd3e9cc187d998c5e03fabe634e965418bd7331957f6d7bb273",
     });
   });
 
