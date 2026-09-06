@@ -331,6 +331,42 @@ describe("agent memory scope", () => {
       .toContain("DURABLE_MEMORY_CONTEXT");
   });
 
+  it("retrieves only the assigned agent's memory and blocks sibling delegation", async () => {
+    const scopedRequest = request("all");
+    scopedRequest.contextScope = "agent_private";
+    scopedRequest.specialistIds = ["scout"];
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.buildContextPack).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        accessContext: undefined,
+        databaseMemoryAccessScope: expect.objectContaining({
+          tenantId: "paid-test-tenant",
+          initiatingActorId: "paid-test-actor",
+          executingPrincipalType: "agent",
+          executingPrincipalId: "paid-test-agent",
+          purposeId: "memory.retrieve.v1",
+        }),
+        scopedMemoryOnly: true,
+        persistTrace: false,
+      }),
+    );
+    expect(mocks.getAgentLearningGuidance).not.toHaveBeenCalled();
+    expect(mocks.runCouncilRound).not.toHaveBeenCalled();
+    expect(mocks.enqueueMemoryConsolidationJob).toHaveBeenCalledOnce();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "private context isolated",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      contextScope: "agent_private",
+      contextDecision: "retrieved",
+    }));
+  });
+
   it("compiles explicitly selected owner-private memory into a direct run", async () => {
     const promptAccess = agentPromptMemoryAccessFromSecurityContext(
       privateOwnerContext,

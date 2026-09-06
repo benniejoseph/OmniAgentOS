@@ -65,7 +65,7 @@ type AgentPresentation = {
 };
 type ActiveContextScopeId = Extract<
   ContextScopeId,
-  "none" | "current_turn" | "session" | "explicit_selection"
+  "none" | "current_turn" | "session" | "agent_private" | "explicit_selection"
 >;
 
 const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
@@ -78,6 +78,11 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
     id: "explicit_selection",
     label: "Reviewed saved context",
     description: "Use only the saved items you review and keep selected.",
+  },
+  {
+    id: "agent_private",
+    label: "This agent's memory",
+    description: "Use only memory owned by you and the assigned agent.",
   },
   {
     id: "session",
@@ -95,7 +100,6 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
     description: "Use only this task and governing instructions.",
   },
   { id: "personal", label: "Personal automatic — held", description: "Requires standing personal-memory authority.", disabled: true },
-  { id: "agent_private", label: "Agent private — held", description: "Requires active agent-principal grants.", disabled: true },
   { id: "mission", label: "Mission — held", description: "Requires mission membership and context grants.", disabled: true },
   { id: "project", label: "Project — held", description: "Requires project membership, consent, and grants.", disabled: true },
   { id: "workspace", label: "Workspace — held", description: "Requires workspace membership, consent, and grants.", disabled: true },

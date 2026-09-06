@@ -50,6 +50,7 @@ vi.mock("@/lib/storage/paths", () => ({
 }));
 
 import {
+  buildAgentPrivateMemoryAccessBindingV1,
   buildUserPrivateMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
@@ -74,6 +75,14 @@ function accessScope(purposeId: string = MEMORY_PURPOSE_IDS.retrieve) {
     capabilityGrantIds: [],
     purposeId,
     purpose: "test.context.retrieve",
+  };
+}
+
+function agentAccessScope() {
+  return {
+    ...accessScope(),
+    executingPrincipalType: "agent" as const,
+    executingPrincipalId: "agent:atlas",
   };
 }
 
@@ -109,6 +118,29 @@ function memoryResult(
     },
     score,
     reasons: ["matched preference"],
+  };
+}
+
+function agentMemoryResult(): MemorySearchResult {
+  const result = memoryResult(
+    "agent-private-memory",
+    "Verified deployment procedure",
+    1.2,
+  );
+  return {
+    ...result,
+    record: {
+      ...result.record,
+      type: "procedure",
+      tier: "procedural",
+      accessBinding: buildAgentPrivateMemoryAccessBindingV1({
+        tenantId: "tenant-a",
+        ownerActorId: actorId,
+        ownerAgentId: "agent:atlas",
+        originPurpose: "memory.verified_effect",
+        accessBoundAt: "2026-09-06T00:00:00.000Z",
+      }),
+    },
   };
 }
 
@@ -202,6 +234,40 @@ describe("actor-scoped context retrieval", () => {
       tenantId: "tenant-a",
       databaseMemoryAccessScope: accessScope(MEMORY_PURPOSE_IDS.read),
     })).rejects.toThrow("canonical memory retrieval purpose");
+    expect(mocks.searchMemories).not.toHaveBeenCalled();
+  });
+
+  it("retrieves agent-private memory without consulting tenant-wide stores", async () => {
+    mocks.searchMemories.mockImplementationOnce(async () => [
+      agentMemoryResult(),
+    ]);
+
+    const pack = await buildContextPack("how should I deploy", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: agentAccessScope(),
+      scopedMemoryOnly: true,
+      persistTrace: false,
+    });
+
+    expect(mocks.searchMemories).toHaveBeenCalledOnce();
+    expect(mocks.searchMemories).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ accessScope: agentAccessScope() }),
+    );
+    expect(mocks.searchKnowledge).not.toHaveBeenCalled();
+    expect(mocks.searchMemoryGraph).not.toHaveBeenCalled();
+    expect(pack.memoryResults.map((result) => result.record.id)).toEqual([
+      "agent-private-memory",
+    ]);
+    expect(pack.contextBlock).toContain("Verified deployment procedure");
+    expect(pack.trace).toBeUndefined();
+  });
+
+  it("rejects scoped-only retrieval without an authenticated scope", async () => {
+    await expect(buildContextPack("how should I deploy", {
+      tenantId: "tenant-a",
+      scopedMemoryOnly: true,
+    })).rejects.toThrow("requires a database memory access scope");
     expect(mocks.searchMemories).not.toHaveBeenCalled();
   });
 

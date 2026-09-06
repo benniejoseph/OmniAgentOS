@@ -19,7 +19,6 @@ describe("context scope policy", () => {
 
   it("keeps automatic personal and shared scopes authority-held", () => {
     for (const scopeId of [
-      "agent_private",
       "mission",
       "project",
       "workspace",
@@ -34,11 +33,24 @@ describe("context scope policy", () => {
     expect(contextScopeMemoryMode("none")).toBe("session");
     expect(contextScopeMemoryMode("current_turn")).toBe("session");
     expect(contextScopeMemoryMode("session")).toBe("session");
+    expect(contextScopeMemoryMode("agent_private")).toBe("all");
     expect(contextScopeMemoryMode("explicit_selection")).toBe("all");
     expect(contextScopeUsesThreadHistory("none")).toBe(false);
     expect(contextScopeUsesThreadHistory("current_turn")).toBe(false);
     expect(contextScopeUsesThreadHistory("session")).toBe(true);
+    expect(contextScopeUsesThreadHistory("agent_private")).toBe(true);
     expect(contextScopeUsesThreadHistory("explicit_selection")).toBe(true);
+  });
+
+  it("activates exact agent-private durable context without a selection", () => {
+    expect(assertContextScopeRequest("agent_private", false)).toMatchObject({
+      state: "active",
+      durableContext: "agent_private",
+      requiresSelection: false,
+    });
+    expect(() => assertContextScopeRequest("agent_private", true)).toThrow(
+      /requires the explicit-selection scope/i,
+    );
   });
 
   it("binds reviewed selections only to explicit-selection scope", () => {

@@ -18,7 +18,11 @@ export type ContextScopePolicy = Readonly<{
   id: ContextScopeId;
   state: "active" | "authority_held";
   conversationHistory: "current_turn" | "session";
-  durableContext: "none" | "explicit_selection" | "authority_held";
+  durableContext:
+    | "none"
+    | "agent_private"
+    | "explicit_selection"
+    | "authority_held";
   requiresSelection: boolean;
   reason: string;
 }>;
@@ -50,11 +54,11 @@ export const CONTEXT_SCOPE_POLICIES: readonly ContextScopePolicy[] = Object.free
   },
   {
     id: "agent_private",
-    state: "authority_held",
+    state: "active",
     conversationHistory: "session",
-    durableContext: "authority_held",
+    durableContext: "agent_private",
     requiresSelection: false,
-    reason: "Agent-principal and agent-memory grants are not active.",
+    reason: "Only memory bound to the exact actor and assigned agent is eligible.",
   },
   {
     id: "mission",
@@ -121,7 +125,10 @@ export function contextScopeMemoryMode(
 ): "session" | "all" {
   const policy = getContextScopePolicy(scopeId);
   requireActiveContextScope(policy);
-  return policy.durableContext === "explicit_selection" ? "all" : "session";
+  return policy.durableContext === "explicit_selection" ||
+      policy.durableContext === "agent_private"
+    ? "all"
+    : "session";
 }
 
 export function assertContextScopeRequest(
