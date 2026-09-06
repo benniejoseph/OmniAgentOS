@@ -12,6 +12,7 @@ describe("P8.1 DelegationContract", () => {
     const contract = build();
     expect(contract).toMatchObject({
       version: "p8.1-delegation-contract:1",
+      purpose: "delegation.result.verify",
       objective: "Verify the governed result against its acceptance criterion.",
       budgets: { agents: 1, modelTurns: 1, retries: 1 },
       cancellation: { cancelable: true },
@@ -157,6 +158,7 @@ function build(overrides: Partial<Parameters<typeof buildDelegationContractV1>[0
       tenantId: "tenant-one",
       initiatingActorId: "actor-one",
       parentExecutionId: "run-one",
+      parentPrincipalId: "principal:atlas:1",
       parentDelegationId: null,
       workspaceId: null,
       projectId: null,
@@ -168,7 +170,13 @@ function build(overrides: Partial<Parameters<typeof buildDelegationContractV1>[0
       agentId: "atlas",
       definitionVersion: 1,
     },
-    delegate: { agentId: "sentinel", definitionVersion: 1 },
+    delegate: {
+      principalId: "principal:sentinel:1",
+      agentId: "sentinel",
+      definitionVersion: 1,
+    },
+    purpose: "delegation.result.verify",
+    idempotencyKeySha256: "c".repeat(64),
     objective: "Verify the governed result against its acceptance criterion.",
     acceptanceCriteria: [{
       criterionId: "criterion:one",
