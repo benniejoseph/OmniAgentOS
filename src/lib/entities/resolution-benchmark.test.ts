@@ -1,97 +1,58 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-  buildEntityAccessBinding,
-  buildEntityAlias,
-  buildEntityRecord,
-  resolveEntityIdentity,
-} from "@/lib/entities/registry";
-import { sourceContractSha256 } from "@/lib/sources/contracts";
-
-const at = "2026-09-06T00:00:00.000Z";
-const evidence = {
-  kind: "evidence_unit" as const,
-  referenceId: "synthetic-entity-resolution",
-  referenceSha256: sourceContractSha256("synthetic-entity-resolution"),
-};
+  parseP52EntityResolutionBenchmarkSuite,
+  scoreP52EntityResolutionBenchmark,
+} from "@/lib/entities/resolution-benchmark";
 
 describe("P5.2 entity-resolution precision gate", () => {
-  it("has zero false auto-merges across exact, fuzzy, ambiguous, and cross-scope cases", () => {
-    const owner = binding("actor-owner");
-    const sibling = binding("actor-sibling");
-    const ada = record("entity-ada", "Ada Lovelace", owner);
-    const grace = record("entity-grace", "Grace Hopper", owner);
-    const siblingAda = record("entity-sibling-ada", "Ada Lovelace", sibling);
-    const adaAlias = buildEntityAlias({
-      entity: ada,
-      alias: "A. Lovelace",
-      lineage: evidence,
-      createdAt: at,
+  it("passes the versioned production-like precision and recall suite", async () => {
+    const suite = await loadSuite();
+    const report = scoreP52EntityResolutionBenchmark(suite);
+
+    expect(report).toMatchObject({
+      totalCases: 27,
+      passedCases: 27,
+      autoLinkPrecisionBasisPoints: 10_000,
+      autoLinkRecallBasisPoints: 10_000,
+      reviewRecallBasisPoints: 10_000,
+      decisionAccuracyBasisPoints: 10_000,
+      falseAutoMerges: 0,
+      scopeLeaks: 0,
+      nondeterministicCases: 0,
+      failedCaseIds: [],
+      passed: true,
     });
-    const candidates = [
-      { entity: ada, aliases: [adaAlias] },
-      { entity: grace, aliases: [] },
-      { entity: siblingAda, aliases: [] },
-    ];
-    const cases = [
-      { label: "Ada Lovelace", expected: "entity-ada" },
-      { label: "A. Lovelace", expected: "entity-ada" },
-      { label: "Grace Hopper", expected: "entity-grace" },
-      { label: "Ada", expected: null },
-      { label: "Grace H.", expected: null },
-      { label: "Unknown Person", expected: null },
-    ];
-    const decisions = cases.map((testCase, index) => ({
-      testCase,
-      decision: resolveEntityIdentity({
-        entityTypeId: "person",
-        label: testCase.label,
-        accessBinding: owner,
-        candidates,
-        decidedAt: `2026-09-06T00:0${index}:00.000Z`,
-      }),
-    }));
-    const autoLinks = decisions.filter(({ decision }) =>
-      decision.decision === "auto_link"
+  });
+
+  it("rejects duplicate case identifiers instead of hiding a missing case", async () => {
+    const suite = parseP52EntityResolutionBenchmarkSuite(await loadSuite());
+    const duplicate = structuredClone(suite);
+    duplicate.cases[1].caseId = duplicate.cases[0].caseId;
+
+    expect(() => parseP52EntityResolutionBenchmarkSuite(duplicate)).toThrow(
+      "Duplicate benchmark identifier",
     );
-    const correctAutoLinks = autoLinks.filter(({ decision, testCase }) =>
-      decision.selectedEntityId === testCase.expected
+  });
+
+  it("rejects a weakened suite that drops an isolation dimension", async () => {
+    const suite = parseP52EntityResolutionBenchmarkSuite(await loadSuite());
+    const weakened = structuredClone(suite);
+    weakened.cases = weakened.cases.filter((testCase) =>
+      testCase.dimension !== "actor_isolation"
     );
 
-    expect(autoLinks).toHaveLength(3);
-    expect(correctAutoLinks).toHaveLength(autoLinks.length);
-    expect(Math.round(correctAutoLinks.length / autoLinks.length * 10_000)).toBe(10_000);
-    expect(decisions.filter(({ testCase, decision }) =>
-      testCase.expected === null && decision.decision === "auto_link"
-    )).toEqual([]);
-    expect(decisions.some(({ decision }) =>
-      decision.candidateEntityIds.includes(siblingAda.entityId)
-    )).toBe(false);
+    expect(() => parseP52EntityResolutionBenchmarkSuite(weakened)).toThrow(
+      "Benchmark coverage is missing: actor_isolation",
+    );
   });
 });
 
-function binding(ownerActorId: string) {
-  return buildEntityAccessBinding({
-    tenantId: "tenant-benchmark",
-    ownerActorId,
-    visibility: "user_private",
-    sensitivity: "confidential",
-    allowedPurposeIds: ["entity.read.v1", "entity.resolve.v1"],
-    boundAt: at,
-  });
-}
-
-function record(
-  entityId: string,
-  canonicalLabel: string,
-  accessBinding: ReturnType<typeof binding>,
-) {
-  return buildEntityRecord({
-    entityId,
-    entityTypeId: "person",
-    canonicalLabel,
-    accessBinding,
-    lineage: [evidence],
-    createdAt: at,
-  });
+async function loadSuite() {
+  return JSON.parse(await readFile(
+    path.resolve("evals/p52/entity-resolution.v1.json"),
+    "utf8",
+  )) as unknown;
 }
