@@ -23,6 +23,7 @@ import {
   createMemoryAccessContext,
   usesDurableMemory,
 } from "@/lib/memory/access-context";
+import { resolveAgentPromptMemoryAccess } from "@/lib/memory/request-access";
 import type {
   ModelAttemptReceipt,
   ModelToolCall,
@@ -299,6 +300,15 @@ export async function* runAgent(
     mode: request.agentProfile?.memoryScope || "all",
   });
   const durableMemoryEnabled = usesDurableMemory(memoryAccessContext);
+  const promptMemoryAccessScope = resolveAgentPromptMemoryAccess(
+    request.promptMemoryAccess,
+    {
+      agentExecutionScope: executionScope,
+      explicitEvidenceCount:
+        request.contextSelection?.evidenceIds.length || 0,
+      memoryMode: memoryAccessContext.mode,
+    },
+  );
   let pendingDeltaText = "";
   let lastDeltaFlush = Date.now();
   let deltaWriteChain: Promise<void> = Promise.resolve();
@@ -597,7 +607,10 @@ export async function* runAgent(
       ? buildContextPack(retrievalQuery, {
           limit: 8,
           tenantId: request.tenantId,
-          accessContext: memoryAccessContext,
+          accessContext: promptMemoryAccessScope
+            ? undefined
+            : memoryAccessContext,
+          databaseMemoryAccessScope: promptMemoryAccessScope,
           evidenceIds: request.contextSelection?.evidenceIds,
           ...(request.actorId ? {
             usageScope: {

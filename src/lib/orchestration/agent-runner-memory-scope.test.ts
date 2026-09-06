@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
+import { createExecutionScope } from "@/lib/security/execution-scope";
+import type { SecurityContext } from "@/lib/security/types";
 
 const mocks = vi.hoisted(() => ({
   appendRunEvent: vi.fn(),
@@ -93,7 +96,11 @@ vi.mock("@/lib/web-search/search", () => ({
 describe("agent memory scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.createAgentRun.mockResolvedValue({ id: "run-memory-scope" });
+    mocks.createAgentRun.mockResolvedValue({
+      id: "run-memory-scope",
+      tenantId: "paid-test-tenant",
+      agentId: "paid-test-agent",
+    });
     mocks.appendRunEvent.mockResolvedValue(undefined);
     mocks.bindAgentRunExecutionScope.mockResolvedValue({ id: "run-memory-scope" });
     mocks.completeAgentRun.mockResolvedValue({ id: "run-memory-scope" });
@@ -206,11 +213,87 @@ describe("agent memory scope", () => {
     expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0].input))
       .toContain("DURABLE_MEMORY_CONTEXT");
   });
+
+  it("compiles explicitly selected owner-private memory into a direct run", async () => {
+    const promptAccess = agentPromptMemoryAccessFromSecurityContext(
+      privateOwnerContext,
+      { correlationId: "agent-private-request" },
+    );
+    const scopedRequest = request("all");
+    scopedRequest.actorId = privateOwnerContext.actorId;
+    scopedRequest.executionScope = createExecutionScope({
+      tenantId: privateOwnerContext.tenantId,
+      initiatingActorId: privateOwnerContext.actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "paid-test-agent",
+      correlationId: "agent-private-request",
+      purpose: "agent.run",
+    });
+    scopedRequest.contextSelection = {
+      query: "hello",
+      evidenceIds: ["memory:private-memory"],
+    };
+    scopedRequest.promptMemoryAccess = promptAccess;
+
+    await collectRequest(scopedRequest);
+
+    expect(mocks.buildContextPack).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        accessContext: undefined,
+        databaseMemoryAccessScope: promptAccess?.databaseAccessScope,
+        evidenceIds: ["memory:private-memory"],
+      }),
+    );
+  });
+
+  it("fails closed when private prompt access belongs to another request", async () => {
+    const scopedRequest = request("all");
+    scopedRequest.actorId = privateOwnerContext.actorId;
+    scopedRequest.executionScope = createExecutionScope({
+      tenantId: privateOwnerContext.tenantId,
+      initiatingActorId: privateOwnerContext.actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "paid-test-agent",
+      correlationId: "agent-private-request-b",
+      purpose: "agent.run",
+    });
+    scopedRequest.contextSelection = {
+      query: "hello",
+      evidenceIds: ["memory:private-memory"],
+    };
+    scopedRequest.promptMemoryAccess =
+      agentPromptMemoryAccessFromSecurityContext(privateOwnerContext, {
+        correlationId: "agent-private-request-a",
+      });
+
+    await expect(collectRequest(scopedRequest)).rejects.toThrow(
+      "Explicit private-memory prompt access is invalid.",
+    );
+    expect(mocks.buildContextPack).not.toHaveBeenCalled();
+  });
 });
 
+const privateOwnerContext = {
+  tenantId: "paid-test-tenant",
+  actorId: "owner@example.test",
+  role: "admin",
+  source: "session",
+  auth: {
+    userId: "a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+    email: "owner@example.test",
+    sessionId: "session-private-owner",
+    tenantName: "Paid test tenant",
+  },
+} satisfies SecurityContext;
+
 async function collectRun(memoryScope: "session" | "all") {
+  return collectRequest(request(memoryScope));
+}
+
+async function collectRequest(agentRequest: AgentRunRequest) {
   const events: AgentEvent[] = [];
-  for await (const event of runAgent(request(memoryScope))) events.push(event);
+  for await (const event of runAgent(agentRequest)) events.push(event);
   return events;
 }
 

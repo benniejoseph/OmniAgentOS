@@ -20,6 +20,7 @@ import {
   syncMissionExecutor,
 } from "@/lib/missions/runtime";
 import type { Mission, MissionTask } from "@/lib/missions/types";
+import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import { getAgentPerformance } from "@/lib/agents/performance";
 import {
@@ -138,6 +139,11 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const promptMemoryAccess = contextSelection?.evidenceIds.length
+    ? agentPromptMemoryAccessFromSecurityContext(context, {
+        correlationId: requestId,
+      })
+    : undefined;
 
   let rate;
   try {
@@ -497,6 +503,7 @@ async function POSTHandler(request: Request) {
             threadId,
             messages: safeMessages,
             contextSelection,
+            promptMemoryAccess,
             executionScope: executionScopeFromSecurityContext(context, {
               executingPrincipalType: "agent",
               executingPrincipalId: executingAgentId,
