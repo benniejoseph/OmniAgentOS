@@ -32,6 +32,7 @@
     "benchmark:preview": "node scripts/benchmark-preview.mjs",
     "benchmark:dashboard": "node scripts/benchmark-dashboard.mjs",
     "check:p05-baseline": "tsx scripts/check-p05-baseline.ts",
+    "check:p43-query-planning": "tsx --tsconfig tsconfig.scripts.json scripts/check-p43-query-planning.ts",
     "check:p52-entity-resolution": "tsx scripts/check-p52-entity-resolution.ts",
     "check:p62-semantic-routing": "tsx --tsconfig tsconfig.scripts.json scripts/check-p62-semantic-routing.ts",
     "audit:production": "node scripts/npm-audit-production.mjs",

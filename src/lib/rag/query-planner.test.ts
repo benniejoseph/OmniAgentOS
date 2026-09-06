@@ -67,11 +67,27 @@ describe("P4.3 retrieval query planner", () => {
     expect(misses).toEqual([]);
     expect(result).toMatchObject({
       caseCount: 30,
+      passed: true,
       domainPrecision: 1,
       domainRecall: 1,
       temporalModeAccuracy: 1,
       originalQueryAnchorRate: 1,
     });
+  });
+
+  it("propagates a governed budget refusal before model disclosure", async () => {
+    const deps = dependencies();
+    const beforeSemanticModelCall = vi.fn(() => {
+      throw new Error("model turn budget exhausted");
+    });
+
+    await expect(createRetrievalQueryPlanner(deps)({
+      query: "Find Project Orion",
+      usageScope,
+      beforeSemanticModelCall,
+    })).rejects.toThrow("model turn budget exhausted");
+    expect(beforeSemanticModelCall).toHaveBeenCalledOnce();
+    expect(deps.generateModelText).not.toHaveBeenCalled();
   });
 
   it("adds only validated semantic hints while retaining the original query", async () => {
