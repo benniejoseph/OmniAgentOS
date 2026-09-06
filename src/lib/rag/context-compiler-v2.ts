@@ -25,7 +25,9 @@ export const CONTEXT_COMPILER_V2_VERSION_ID =
 export const CONTEXT_COMPILER_V2_POLICY_VERSION_ID =
   "context-policy:v2-shadow" as const;
 
-const MAX_CANDIDATES = 60;
+// Context engine candidates are independently bounded to 60 memories,
+// 60 knowledge chunks, and 24 graph neighborhoods.
+const MAX_CANDIDATES = 144;
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const idSchema = z.string().trim().min(1).max(240);
 const countSchema = z.number().int().min(0).max(10_000);
