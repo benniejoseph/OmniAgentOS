@@ -47,12 +47,55 @@ import { ConversationCanvas } from "@/components/conversation-canvas";
 import { CouncilExecutionMap } from "@/components/agents/council-execution-map";
 import { VoiceMode } from "@/components/voice/voice-mode";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
+import type { ContextScopeId } from "@/lib/rag/context-scope";
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 type AgentId = string;
+type ActiveContextScopeId = Extract<
+  ContextScopeId,
+  "none" | "current_turn" | "session" | "explicit_selection"
+>;
+
+const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
+  id: ContextScopeId;
+  label: string;
+  description: string;
+  disabled?: boolean;
+}>[] = [
+  {
+    id: "explicit_selection",
+    label: "Reviewed saved context",
+    description: "Use only the saved items you review and keep selected.",
+  },
+  {
+    id: "session",
+    label: "Conversation only",
+    description: "Use this conversation without saved memory or knowledge.",
+  },
+  {
+    id: "current_turn",
+    label: "Current message only",
+    description: "Exclude earlier turns and all saved context.",
+  },
+  {
+    id: "none",
+    label: "No extra context",
+    description: "Use only this task and governing instructions.",
+  },
+  { id: "personal", label: "Personal automatic — held", description: "Requires standing personal-memory authority.", disabled: true },
+  { id: "agent_private", label: "Agent private — held", description: "Requires active agent-principal grants.", disabled: true },
+  { id: "mission", label: "Mission — held", description: "Requires mission membership and context grants.", disabled: true },
+  { id: "project", label: "Project — held", description: "Requires project membership, consent, and grants.", disabled: true },
+  { id: "workspace", label: "Workspace — held", description: "Requires workspace membership, consent, and grants.", disabled: true },
+];
+
+function contextScopeOption(scopeId: ContextScopeId) {
+  return CONTEXT_SCOPE_OPTIONS.find((option) => option.id === scopeId) ||
+    CONTEXT_SCOPE_OPTIONS[0];
+}
 type ClaimSupportState =
   | "supported"
   | "inferred"
@@ -267,6 +310,9 @@ export function AgentRunsWorkspace({
   const [loading, setLoading] = useState<string>();
   const [error, setError] = useState<string>();
   const [contextPack, setContextPack] = useState<JsonRecord>();
+  const [contextScope, setContextScope] = useState<ActiveContextScopeId>(
+    "explicit_selection",
+  );
   const [contextQuery, setContextQuery] = useState("");
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
   const [contextLoading, setContextLoading] = useState(false);
@@ -368,7 +414,10 @@ export function AgentRunsWorkspace({
     .filter((id, index, values) => Boolean(id) && values.indexOf(id) === index);
   const normalizedGoal = goal.trim();
   const contextPreparedForGoal = Boolean(
-    normalizedGoal && contextQuery === normalizedGoal && !contextLoading,
+    normalizedGoal && (
+      contextScope !== "explicit_selection" ||
+      (contextQuery === normalizedGoal && !contextLoading)
+    ),
   );
   const approvalItems = arrayPath(evidence, "approvals.items");
   const runRows = arrayPath(evidence, "runs.runs");
@@ -794,6 +843,7 @@ export function AgentRunsWorkspace({
       normalizedGoal.length < 8 ||
       workflowInProgress ||
       loading === "agent" ||
+      contextScope !== "explicit_selection" ||
       contextLoading ||
       contextQuery === normalizedGoal
     ) {
@@ -808,6 +858,7 @@ export function AgentRunsWorkspace({
   }, [
     contextLoading,
     contextQuery,
+    contextScope,
     loading,
     normalizedGoal,
     readPermission,
@@ -1109,11 +1160,29 @@ export function AgentRunsWorkspace({
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
-    contextSelectionReviewedRef.current = false;
+    contextSelectionReviewedRef.current = contextScope !== "explicit_selection";
     setContextLoading(false);
     setContextError(undefined);
     setWorkflowPlan(undefined);
     agentRequestIdRef.current = "";
+  }
+
+  function changeContextScope(nextScope: ActiveContextScopeId) {
+    if (nextScope === contextScope || workflowInProgress || loading === "agent") {
+      return;
+    }
+    contextControllerRef.current?.abort();
+    contextVersionRef.current += 1;
+    setContextScope(nextScope);
+    setContextPack(undefined);
+    setContextQuery("");
+    setSelectedContextIds([]);
+    setContextLoading(false);
+    setContextError(undefined);
+    setWorkflowPlan(undefined);
+    contextSelectionReviewedRef.current = nextScope !== "explicit_selection";
+    agentRequestIdRef.current = "";
+    setRunAnnouncement(contextScopeOption(nextScope).description);
   }
 
   function changeMode(nextMode: AgentMode) {
@@ -1140,6 +1209,12 @@ export function AgentRunsWorkspace({
     query?: string;
     reveal?: boolean;
   } = {}) {
+    if (contextScope !== "explicit_selection") {
+      contextSelectionReviewedRef.current = true;
+      setRunAnnouncement(contextScopeOption(contextScope).description);
+      if (reveal) openTaskDetails("context");
+      return { query, evidenceIds: [] };
+    }
     if (readPermission) {
       setContextError(readPermission);
       if (reveal) openTaskDetails("context");
@@ -1237,8 +1312,10 @@ export function AgentRunsWorkspace({
       setRunAnnouncement("Wait for task context to finish loading, then preview the plan.");
       return;
     }
-    const contextSelection = contextSelectionForTask(taskQuery);
-    if (!contextSelection) {
+    const contextSelection = contextScope === "explicit_selection"
+      ? contextSelectionForTask(taskQuery)
+      : { query: taskQuery, evidenceIds: [] };
+    if (contextScope === "explicit_selection" && !contextSelection) {
       const prepared = await buildContext({ query: taskQuery, reveal: true });
       if (prepared) {
         setRunAnnouncement("Context preparation finished. Review the selection, then preview the plan again.");
@@ -1301,7 +1378,9 @@ export function AgentRunsWorkspace({
       return;
     }
     const taskQuery = goal.trim();
-    const contextSelection = contextSelectionForTask(taskQuery);
+    const contextSelection = contextScope === "explicit_selection"
+      ? contextSelectionForTask(taskQuery)
+      : { query: taskQuery, evidenceIds: [] };
     if (!contextSelection) {
       setError("The task changed after this plan was prepared. Review fresh context and generate the plan again.");
       openTaskDetails("context");
@@ -1377,22 +1456,30 @@ export function AgentRunsWorkspace({
       setError("Write a message before asking Asael.");
       return;
     }
-    if (contextLoading && !options?.prepareContextAutomatically) {
+    if (
+      contextScope === "explicit_selection" &&
+      contextLoading &&
+      !options?.prepareContextAutomatically
+    ) {
       openTaskDetails("context");
       setRunAnnouncement("Wait for task context to finish loading, then run the task.");
       return;
     }
-    const contextSelection = contextSelectionReviewedRef.current
+    let contextSelection = contextScope === "explicit_selection" &&
+        contextSelectionReviewedRef.current
       ? contextSelectionForTask(submittedGoal)
       : undefined;
-    if (!contextSelection && !options?.prepareContextAutomatically) {
+    if (contextScope === "explicit_selection" && !contextSelection) {
       const prepared = await buildContext({
         query: submittedGoal,
-        reveal: true,
+        reveal: !options?.prepareContextAutomatically,
       });
       if (!prepared) return;
-      setRunAnnouncement("Context preparation finished. Review the selection, then run the task again.");
-      return;
+      if (!options?.prepareContextAutomatically) {
+        setRunAnnouncement("Context preparation finished. Review the selection, then run the task again.");
+        return;
+      }
+      contextSelection = prepared;
     }
     const resumeRunId = clarificationRunId || undefined;
     const controller = new AbortController();
@@ -1436,9 +1523,10 @@ export function AgentRunsWorkspace({
           missionId: initialMissionId || undefined,
           message: submittedGoal,
           requestId,
-          strategy: "auto",
+          strategy: resumeRunId ? "auto" : "direct",
           agentId: preferredAgentId,
-          contextSelection,
+          contextScope: resumeRunId ? undefined : contextScope,
+          contextSelection: resumeRunId ? undefined : contextSelection,
         }),
         signal: controller.signal,
       });
@@ -1688,7 +1776,7 @@ export function AgentRunsWorkspace({
       setContextPack(undefined);
       setContextQuery("");
       setSelectedContextIds([]);
-      contextSelectionReviewedRef.current = false;
+      contextSelectionReviewedRef.current = contextScope !== "explicit_selection";
       setContextLoading(false);
       setContextError(undefined);
       setWorkflowPlan(undefined);
@@ -1732,7 +1820,7 @@ export function AgentRunsWorkspace({
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
-    contextSelectionReviewedRef.current = false;
+    contextSelectionReviewedRef.current = contextScope !== "explicit_selection";
     setContextLoading(false);
     setContextError(undefined);
     setAgentResponse("");
@@ -2224,6 +2312,7 @@ export function AgentRunsWorkspace({
               preferredAgentName={preferredAgentName}
               loading={loading}
               contextLoading={contextLoading}
+              contextScope={contextScope}
               contextReady={contextPreparedForGoal}
               contextSelectedCount={selectedContextIds.length}
               contextTotalCount={contextResultIds.length}
@@ -2241,6 +2330,7 @@ export function AgentRunsWorkspace({
               onApprovalChange={changeApprovalRequired}
               onClearPreferredAgent={() => { setPreferredAgentId(undefined); setPreferredAgentName(undefined); }}
               onContext={() => void buildContext()}
+              onContextScopeChange={changeContextScope}
               onReviewContext={() => {
                 contextSelectionReviewedRef.current = true;
                 openTaskDetails("context");
@@ -2398,11 +2488,34 @@ export function AgentRunsWorkspace({
 
             {activeTab === "context" ? (
               <StagePanel title="Context" description="Choose the saved information Asael may use. Low-match items start excluded, and every unchecked item is excluded server-side.">
+                <div className="mb-4 rounded-xl border border-line bg-background p-3">
+                  <label htmlFor="context-scope" className="text-xs font-semibold text-foreground">
+                    Context scope
+                  </label>
+                  <select
+                    id="context-scope"
+                    value={contextScope}
+                    disabled={Boolean(loading) || workflowInProgress}
+                    onChange={(event) => changeContextScope(
+                      event.currentTarget.value as ActiveContextScopeId,
+                    )}
+                    className="mt-2 min-h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm font-medium text-foreground outline-none focus:border-primary"
+                  >
+                    {CONTEXT_SCOPE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id} disabled={option.disabled}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-2 text-xs leading-5 text-muted">
+                    {contextScopeOption(contextScope).description}
+                  </p>
+                </div>
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => void buildContext()}
-                    disabled={Boolean(loading) || contextLoading || workflowInProgress || Boolean(readPermission)}
+                    disabled={contextScope !== "explicit_selection" || Boolean(loading) || contextLoading || workflowInProgress || Boolean(readPermission)}
                     title={readPermission}
                     className="action-button"
                   >
@@ -2410,10 +2523,12 @@ export function AgentRunsWorkspace({
                     Refresh context
                   </button>
                   <StatusPill
-                    label={`${selectedContextIds.length} of ${contextResultIds.length} selected`}
-                    tone={selectedContextIds.length ? "success" : "neutral"}
+                    label={contextScope === "explicit_selection"
+                      ? `${selectedContextIds.length} of ${contextResultIds.length} selected`
+                      : contextScopeOption(contextScope).label}
+                    tone={contextScope === "explicit_selection" && selectedContextIds.length ? "success" : "neutral"}
                   />
-                  {contextResultIds.length ? (
+                  {contextScope === "explicit_selection" && contextResultIds.length ? (
                     <>
                       <button
                         type="button"
@@ -2434,23 +2549,29 @@ export function AgentRunsWorkspace({
                     </>
                   ) : null}
                 </div>
-                {contextQuery ? (
+                {contextScope === "explicit_selection" && contextQuery ? (
                   <p className="mb-3 line-clamp-3 rounded-md bg-background px-3 py-2 text-xs leading-5 text-muted">
                     Built fresh for: <span className="font-medium text-foreground">{contextQuery}</span>
                   </p>
                 ) : null}
-                {contextError ? (
+                {contextScope === "explicit_selection" && contextError ? (
                   <div className="mb-3 rounded-md border border-warning/45 bg-warning/10 p-3 text-xs leading-5 text-muted" role="status">
                     Saved context could not be loaded. This task will run without it unless you refresh. {contextError}
                   </div>
                 ) : null}
-                <ContextSelectionList
-                  rows={contextResults}
-                  selectedIds={selectedContextIds}
-                  loading={contextLoading}
-                  disabled={workflowInProgress || loading === "agent"}
-                  onChange={updateContextSelection}
-                />
+                {contextScope === "explicit_selection" ? (
+                  <ContextSelectionList
+                    rows={contextResults}
+                    selectedIds={selectedContextIds}
+                    loading={contextLoading}
+                    disabled={workflowInProgress || loading === "agent"}
+                    onChange={updateContextSelection}
+                  />
+                ) : (
+                  <div className="rounded-xl border border-dashed border-line bg-background p-4 text-sm leading-6 text-muted">
+                    Saved memory, knowledge, graph results, and automatic personal context are excluded for this run.
+                  </div>
+                )}
               </StagePanel>
             ) : null}
 
@@ -3781,6 +3902,7 @@ function GoalStage({
   preferredAgentName,
   loading,
   contextLoading,
+  contextScope,
   contextReady,
   contextSelectedCount,
   contextTotalCount,
@@ -3798,6 +3920,7 @@ function GoalStage({
   onApprovalChange,
   onClearPreferredAgent,
   onContext,
+  onContextScopeChange,
   onReviewContext,
   onPlan,
   onAgent,
@@ -3812,6 +3935,7 @@ function GoalStage({
   preferredAgentName?: string;
   loading?: string;
   contextLoading: boolean;
+  contextScope: ActiveContextScopeId;
   contextReady: boolean;
   contextSelectedCount: number;
   contextTotalCount: number;
@@ -3829,6 +3953,7 @@ function GoalStage({
   onApprovalChange: (value: boolean) => void;
   onClearPreferredAgent: () => void;
   onContext: () => void;
+  onContextScopeChange: (scope: ActiveContextScopeId) => void;
   onReviewContext: () => void;
   onPlan: () => void;
   onAgent: () => void;
@@ -3843,7 +3968,9 @@ function GoalStage({
     : contextError
       ? "No saved context"
       : contextReady
-        ? `Context ${contextSelectedCount}/${contextTotalCount}`
+        ? contextScope === "explicit_selection"
+          ? `Context ${contextSelectedCount}/${contextTotalCount}`
+          : contextScopeOption(contextScope).label
         : "Context";
   return (
     <section className={clsx("border-t border-line/70 bg-background/95 px-3 py-2 backdrop-blur sm:px-5", workspaceStyles.composerDock)} aria-labelledby="command-composer-title">
@@ -3914,6 +4041,22 @@ function GoalStage({
                 <ShieldCheck size={12} aria-hidden="true" />
                 <span className="hidden md:inline">Approvals {approvalRequired ? "on" : "off"}</span>
               </button>
+              <label className="sr-only" htmlFor="command-context-scope">Context scope</label>
+              <select
+                id="command-context-scope"
+                value={contextScope}
+                disabled={draftLocked}
+                onChange={(event) => onContextScopeChange(
+                  event.currentTarget.value as ActiveContextScopeId,
+                )}
+                className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-[11px] font-semibold text-muted outline-none hover:text-foreground"
+              >
+                {CONTEXT_SCOPE_OPTIONS.map((option) => (
+                  <option key={option.id} value={option.id} disabled={option.disabled}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <button
                 type="button"
                 onClick={contextReady || contextError ? onReviewContext : onContext}
@@ -3926,7 +4069,13 @@ function GoalStage({
               >
                 {contextLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Brain size={13} aria-hidden="true" />}
                 <span className="hidden md:inline">{contextLabel}</span>
-                {contextReady ? <span className="md:hidden">{contextSelectedCount}/{contextTotalCount}</span> : null}
+                {contextReady ? (
+                  <span className="md:hidden">
+                    {contextScope === "explicit_selection"
+                      ? `${contextSelectedCount}/${contextTotalCount}`
+                      : "Scope"}
+                  </span>
+                ) : null}
               </button>
               <button
                 type="button"

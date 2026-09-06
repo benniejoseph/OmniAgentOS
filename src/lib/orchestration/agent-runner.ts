@@ -1043,6 +1043,7 @@ export async function* runAgent(
       model: providerConfigured ? modelRoute.model : "fallback",
       tier: modelRoute.tier,
       memoryScope: request.agentProfile?.memoryScope || "all",
+      contextScope: request.contextScope,
       contextDecision,
       contextMode: durableMemoryEnabled
         ? retrieval.profile.mode

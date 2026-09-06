@@ -48,6 +48,7 @@ export type AgentHarnessEvent = {
   model: string;
   tier: "fast" | "reasoning";
   memoryScope: "session" | "project" | "all";
+  contextScope?: ContextScopeId;
   contextDecision:
     | "disabled_session"
     | "disabled_project_unavailable"

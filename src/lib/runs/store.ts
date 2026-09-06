@@ -847,6 +847,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         model: event.model,
         tier: event.tier,
         memoryScope: event.memoryScope,
+        contextScope: event.contextScope,
         contextDecision: event.contextDecision,
         contextMode: event.contextMode,
         contextCount: event.contextCount,

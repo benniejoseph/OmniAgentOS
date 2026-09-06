@@ -320,6 +320,12 @@ async function POSTHandler(request: Request) {
     ...message,
     content: String(redactSensitive(message.content)),
   }));
+  if (
+    parsed.data.contextScope === "none" ||
+    parsed.data.contextScope === "current_turn"
+  ) {
+    safeMessages = safeMessages.slice(-1);
+  }
   const semanticConversation = safeMessages.length
     ? safeMessages
     : [{ role: "user" as const, content: safeRequestMessage }];
