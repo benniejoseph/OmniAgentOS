@@ -1343,3 +1343,14 @@ memory. The receipt observes only; it grants no access and does not change the
 legacy prompt pack. New canonical text revisions advertise
 `agent.context.compile.v2`; existing immutable source revisions are not
 backfilled by this event.
+
+## Phase 0 aggregate evaluation
+
+`evaluation.phase_zero.completed` is the content-free terminal receipt for the
+authenticated, idempotent Phase 0 gate. Its bounded payload contains the gate
+and contract schema versions, suite digest, aggregate counts for execution
+scope, run contracts, rollout generation and status, canonical statuses, P0.5
+cases, accepted architecture decisions, failed gate IDs, and the fixed zero
+effect count. It contains no prompt, context, model output, tool data,
+credential, private reasoning, or extensible metadata and grants no runtime
+authority.

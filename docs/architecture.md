@@ -13,6 +13,13 @@ server-authoritative versioned API. Each decision includes additive migration,
 rollback, and security floors. Recording the decisions changes no runtime,
 schema, grant, event, rollout, or held authority.
 
+`src/lib/architecture/decision-registry.ts` is the schema-versioned runtime
+index of those seven accepted decisions. The Phase 0 production gate combines
+that registry with the real execution-scope, run-contract, tenant-rollout,
+canonical-status, and P0.5 observer implementations. It records only a
+content-free scoped receipt and has no model, tool, mutation, or external
+effect authority.
+
 ## System map
 
 ```mermaid
