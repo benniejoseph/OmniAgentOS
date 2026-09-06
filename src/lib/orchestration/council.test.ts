@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
 const mocks = vi.hoisted(() => ({ generateModelStructured: vi.fn() }));
 vi.mock("@/lib/models/gateway", () => ({ generateModelStructured: mocks.generateModelStructured }));
@@ -127,6 +128,59 @@ describe("agent council", () => {
     ]);
   });
 
+  it("brokers an exact governed tool and binds its receipt into the proposal", async () => {
+    mocks.generateModelStructured
+      .mockResolvedValueOnce({
+        ...modelResult("tool plan"),
+        text: JSON.stringify({
+          status: "execute",
+          clarification: "",
+          calls: [{
+            callId: "call-one",
+            toolId: delegatedTool.id,
+            input: { query: "release evidence" },
+            rationale: "Find exact support.",
+          }],
+        }),
+      })
+      .mockResolvedValueOnce(modelResult("Evidence-backed contribution"));
+    const executeDelegatedTool = vi.fn(async ({ tool, executionScope }) => ({
+      record: toolRecord(tool, "executed"),
+      result: { evidenceIds: ["knowledge:one"] },
+      executionScope,
+    }));
+
+    const [contribution] = await runCouncilRound({
+      goal: "Find release evidence",
+      mode: "research",
+      primaryAgentId: "atlas",
+      specialistIds: ["scout"],
+      contextBlock: "Authorized context",
+      delegationAuthority: {
+        ...delegationAuthority,
+        governedToolIds: [delegatedTool.id],
+      },
+      delegatedTools: [delegatedTool],
+      executeDelegatedTool,
+    });
+
+    expect(executeDelegatedTool).toHaveBeenCalledOnce();
+    expect(executeDelegatedTool.mock.calls[0]?.[0]).toMatchObject({
+      tool: { id: delegatedTool.id },
+      executionScope: {
+        executingPrincipalId: contribution.delegation.delegatePrincipalId,
+        delegationId: contribution.delegation.delegationId,
+        purpose: "delegation.tool.execute",
+      },
+    });
+    expect(contribution.delegation).toMatchObject({
+      delegatedPrincipalSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      toolExecutionIds: ["delegated-execution-one"],
+    });
+    expect(String(mocks.generateModelStructured.mock.calls[1]?.[0]?.input))
+      .toContain("<delegated_tool_results");
+  });
+
   it("lets Sentinel fail a response and Atlas revise it", async () => {
     mocks.generateModelStructured
       .mockResolvedValueOnce({ text: JSON.stringify({ passed: false, score: 0.45, assessment: "Evidence is missing.", requiredChanges: ["Cite the source."] }) })
@@ -140,6 +194,7 @@ describe("agent council", () => {
         contractId: `delegation-contract:${"a".repeat(64)}`,
         contractSha256: "a".repeat(64),
         delegatePrincipalId: "principal:scout:test",
+        toolExecutionIds: [],
       },
     }];
     const events: string[] = [];
@@ -221,7 +276,42 @@ const delegationAuthority = {
   },
   parentBudgets: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
   remainingWallTimeMs: 120_000,
+  governedToolIds: [],
+  connectorTargets: [],
 };
+
+const delegatedTool: ToolDefinition = {
+  id: "knowledge.search",
+  name: "Knowledge search",
+  description: "Search authorized knowledge.",
+  category: "knowledge",
+  status: "active",
+  riskLevel: 0,
+  dryRunSupported: true,
+  approvalRequired: false,
+  operationClass: "read_only",
+  inputSchema: { type: "object", properties: { query: { type: "string" } } },
+};
+
+function toolRecord(
+  tool: ToolDefinition,
+  status: ToolExecutionRecord["status"],
+): ToolExecutionRecord {
+  return {
+    id: "delegated-execution-one",
+    tenantId: "personal",
+    actorId: "actor-one",
+    toolId: tool.id,
+    toolName: tool.name,
+    riskLevel: tool.riskLevel,
+    status,
+    dryRun: false,
+    approvalRequired: false,
+    input: { query: "release evidence" },
+    createdAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  };
+}
 
 function modelResult(summary: string) {
   return {

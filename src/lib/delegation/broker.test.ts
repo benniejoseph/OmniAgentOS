@@ -51,6 +51,11 @@ describe("P8.2 delegation broker", () => {
         status: "executed",
         executionId: "execution-one",
       }],
+      artifacts: [{
+        kind: "result",
+        evidenceIds: ["execution-one"],
+        content: { matches: ["evidence-one"] },
+      }],
     });
     expect(executeTool).toHaveBeenCalledOnce();
     expect(executeTool.mock.calls[0]?.[0].executionScope).toMatchObject({
@@ -106,6 +111,7 @@ describe("P8.2 delegation broker", () => {
       status: "clarification_required",
       clarification: "Which release should be inspected?",
       toolResults: [],
+      artifacts: [],
     });
     expect(executeTool).not.toHaveBeenCalled();
   });

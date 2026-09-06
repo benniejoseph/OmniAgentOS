@@ -4,6 +4,7 @@ import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { buildCouncilMemberDelegationContractV1 } from "@/lib/delegation/council-adapter";
 import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import type { ToolDefinition } from "@/lib/tools/types";
 
 describe("P8.1 council delegation adapter", () => {
   it("binds a read-only council contribution to exact parent and child identities", () => {
@@ -52,6 +53,29 @@ describe("P8.1 council delegation adapter", () => {
       attempt: 1,
     })).toThrow(/does not match its execution scope/);
   });
+
+  it("attenuates an exact governed tool set and budgets its planning turn", () => {
+    const contract = buildCouncilMemberDelegationContractV1({
+      authority: {
+        ...authority,
+        governedToolIds: [tool.id],
+      },
+      agentId: "scout",
+      goal: "Find the supporting release evidence.",
+      mode: "research",
+      contextBlock,
+      attempt: 1,
+      tools: [tool],
+      createdAt: "2026-09-07T06:00:00.000Z",
+    });
+    expect(contract).toMatchObject({
+      grants: {
+        governedToolIds: [tool.id],
+        capabilityGrantIds: ["capability-one"],
+      },
+      budgets: { modelTurns: 2, toolCalls: 3, browserActions: 0 },
+    });
+  });
 });
 
 const tenantId = "tenant-one";
@@ -81,5 +105,19 @@ const authority = {
   },
   parentBudgets: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
   remainingWallTimeMs: 120_000,
+  governedToolIds: [],
+  connectorTargets: [],
 };
 const contextBlock = "[memory:one] The first source supports the release boundary.";
+const tool: ToolDefinition = {
+  id: "knowledge.search",
+  name: "Knowledge search",
+  description: "Search authorized knowledge.",
+  category: "knowledge",
+  status: "active",
+  riskLevel: 0,
+  dryRunSupported: true,
+  approvalRequired: false,
+  operationClass: "read_only",
+  inputSchema: { type: "object", properties: { query: { type: "string" } } },
+};

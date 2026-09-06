@@ -8,10 +8,12 @@ import type { CouncilAgentId } from "@/lib/orchestration/council";
 import type { AgentMode } from "@/lib/orchestration/types";
 import {
   runBudgetCountersV1Schema,
+  isBrowserActionTool,
   type RunBudgetCountersV1,
 } from "@/lib/runs/budgets";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import type { ToolDefinition } from "@/lib/tools/types";
 
 export type CouncilDelegationAuthority = Readonly<{
   parentExecutionId: string;
@@ -23,6 +25,8 @@ export type CouncilDelegationAuthority = Readonly<{
   }>;
   parentBudgets: RunBudgetCountersV1;
   remainingWallTimeMs: number;
+  governedToolIds?: readonly string[];
+  connectorTargets?: readonly string[];
 }>;
 
 export const councilContributionJsonSchema = {
@@ -46,6 +50,7 @@ export function buildCouncilMemberDelegationContractV1(input: {
   mode: AgentMode;
   contextBlock: string;
   attempt: number;
+  tools?: readonly ToolDefinition[];
   createdAt?: string;
 }) {
   const scope = input.authority.executionScope;
@@ -90,11 +95,17 @@ export function buildCouncilMemberDelegationContractV1(input: {
     goalSha256: canonicalJsonSha256({ goal: input.goal }),
     contextSha256,
   })}`;
+  const grantedTools = [...(input.tools || [])];
+  const grantedToolIds = [...new Set(grantedTools.map((tool) => tool.id))];
+  const modelTurns = grantedTools.length ? 2 : 1;
+  const maxToolCalls = grantedTools.length
+    ? Math.min(3, parentBudgets.toolCalls)
+    : 0;
   const parentGrants: DelegationContractV1["grants"] = {
     contextGrantIds: [...scope.contextGrantIds],
     capabilityGrantIds: [...scope.capabilityGrantIds],
-    governedToolIds: [],
-    connectorTargets: [],
+    governedToolIds: [...(input.authority.governedToolIds || [])],
+    connectorTargets: [...(input.authority.connectorTargets || [])],
   };
 
   return buildDelegationContractV1({
@@ -166,8 +177,10 @@ export function buildCouncilMemberDelegationContractV1(input: {
     },
     grants: {
       contextGrantIds: [...scope.contextGrantIds],
-      capabilityGrantIds: [],
-      governedToolIds: [],
+      capabilityGrantIds: grantedTools.length
+        ? [...scope.capabilityGrantIds]
+        : [],
+      governedToolIds: grantedToolIds,
       connectorTargets: [],
     },
     parentAuthority: {
@@ -176,15 +189,17 @@ export function buildCouncilMemberDelegationContractV1(input: {
       completeBy,
     },
     budgets: {
-      modelTurns: 1,
-      tokens: budgetShare(parentBudgets.tokens, parentBudgets.modelTurns),
-      costMicrousd: budgetShare(
+      modelTurns,
+      tokens: modelTurns * budgetShare(parentBudgets.tokens, parentBudgets.modelTurns),
+      costMicrousd: modelTurns * budgetShare(
         parentBudgets.costMicrousd,
         parentBudgets.modelTurns,
       ),
       wallTimeMs,
-      toolCalls: 0,
-      browserActions: 0,
+      toolCalls: maxToolCalls,
+      browserActions: grantedTools.some(isBrowserActionTool)
+        ? maxToolCalls
+        : 0,
       agents: 1,
       fanOut: 0,
       retries: 0,

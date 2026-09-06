@@ -1282,6 +1282,8 @@ export async function* runAgent(
           };
     let councilContributions: CouncilContribution[] = [];
     if (councilActive) {
+      const councilDelegatedTools = toolbox.tools.map((entry) => entry.definition);
+      const councilToolIds = councilDelegatedTools.map((tool) => tool.id);
       for (const agentId of councilAgentIds.filter((agentId) => agentId !== primaryAgentId)) {
         yield await emit({
           type: "council_member",
@@ -1309,6 +1311,68 @@ export async function* runAgent(
           },
           parentBudgets: budgetLimits,
           remainingWallTimeMs: remainingRunBudget(runBudgetState).wallTimeMs,
+          governedToolIds: councilToolIds,
+          connectorTargets: [],
+        },
+        delegatedTools: councilDelegatedTools,
+        executeDelegatedTool: async ({
+          tool,
+          toolInput,
+          idempotencyKey,
+          executionScope: delegatedToolScope,
+          delegatedPrincipal,
+          abortSignal: delegatedAbortSignal,
+        }) => {
+          if (
+            !councilToolIds.includes(tool.id) ||
+            !delegatedPrincipal.governedToolIds.includes(tool.id)
+          ) {
+            throw new Error(`Delegated tool ${tool.id} is outside the parent toolbox.`);
+          }
+          reserveToolBudget([tool]);
+          const securityContext = agentToolSecurityContext(request);
+          const execution = await executeGovernedTool({
+            toolId: tool.id,
+            input: toolInput,
+            dryRun: false,
+            approved: false,
+            context: securityContext,
+            abortSignal: delegatedAbortSignal || runAbortSignal,
+            idempotencyKey,
+            forceApproval: agentToolPolicy?.forceApproval,
+            mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
+            executionScope: delegatedToolScope,
+            checkpointBeforeEffect: checkpointBeforeGovernedTool,
+          });
+          await checkpointAfterGovernedTool({
+            record: execution.record,
+            tool,
+            operationClass: governedToolOperationClass(tool, toolInput),
+            executionScope: delegatedToolScope,
+          });
+          return execution;
+        },
+        onDelegationProgress: async (progress) => {
+          await recordRuntimeEventSafely({
+            category: "api",
+            action: "delegation.progress",
+            tenantId: runTenantId,
+            actorId: run.ownerActorId,
+            resourceType: "agent_run",
+            resourceId: run.id,
+            correlationId: executionScope.correlationId,
+            message: `Delegation ${progress.state}.`,
+            metadata: {
+              version: progress.version,
+              delegationId: progress.delegationId,
+              state: progress.state,
+              ...(progress.toolId ? { toolId: progress.toolId } : {}),
+              ...(progress.executionId
+                ? { executionId: progress.executionId }
+                : {}),
+              ...(progress.status ? { status: progress.status } : {}),
+            },
+          });
         },
         abortSignal: runAbortSignal,
         checkpointHooks: councilCheckpointHooks,
