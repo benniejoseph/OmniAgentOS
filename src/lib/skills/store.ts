@@ -5,6 +5,7 @@ import {
   createCustomAgentIdentityWithSql,
   revokeCustomAgentIdentityWithSql,
   updateCustomAgentIdentityWithSql,
+  versionCustomAgentsForSkillChangeWithSql,
 } from "@/lib/agents/identity-store";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { redactSensitive } from "@/lib/security/context";
@@ -107,9 +108,19 @@ export async function updateAgentSkill(id: string, input: Partial<Pick<AgentSkil
   const next = { ...current, ...normalized, slug: input.name ? slug(input.name) : current.slug, version: current.version + 1, updatedAt: new Date().toISOString() };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`UPDATE omni_custom_skills SET slug=${next.slug}, name=${next.name}, description=${next.description}, instructions=${next.instructions}, category=${next.category}, status=${next.status}, version=${next.version}, tool_ids=${next.toolIds}, tags=${next.tags}, knowledge_tags=${next.knowledgeTags}, updated_at=${next.updatedAt}
-      WHERE id=${id} AND tenant_id=${next.tenantId} AND actor_id=${next.actorId} RETURNING *`;
-    return rows[0] ? skillFromRow(rows[0]) : undefined;
+    return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`UPDATE omni_custom_skills SET slug=${next.slug}, name=${next.name}, description=${next.description}, instructions=${next.instructions}, category=${next.category}, status=${next.status}, version=${next.version}, tool_ids=${next.toolIds}, tags=${next.tags}, knowledge_tags=${next.knowledgeTags}, updated_at=${next.updatedAt}
+        WHERE id=${id} AND tenant_id=${next.tenantId} AND actor_id=${next.actorId} RETURNING *`;
+      if (!rows[0]) return undefined;
+      await versionCustomAgentsForSkillChangeWithSql({
+        tenantId: next.tenantId,
+        actorId: next.actorId,
+        skillId: id,
+        removeSkill: false,
+        sql,
+      });
+      return skillFromRow(rows[0]);
+    }) as AgentSkill | undefined;
   }
   await updateLedger((ledger) => ({ ...ledger, skills: ledger.skills.map((item) => item.id === id && item.tenantId === next.tenantId && item.actorId === next.actorId ? next : item) }));
   return next;
@@ -121,7 +132,13 @@ export async function deleteAgentSkill(id: string, options: Scope) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
-      await sql`UPDATE omni_custom_agents SET skill_ids=array_remove(skill_ids, ${id}), updated_at=NOW() WHERE tenant_id=${tenantId} AND actor_id=${actorId} AND ${id}=ANY(skill_ids)`;
+      await versionCustomAgentsForSkillChangeWithSql({
+        tenantId,
+        actorId,
+        skillId: id,
+        removeSkill: true,
+        sql,
+      });
       return sql`DELETE FROM omni_custom_skills WHERE id=${id} AND tenant_id=${tenantId} AND actor_id=${actorId} RETURNING id`;
     }) as Record<string, unknown>[];
     return Boolean(rows[0]);

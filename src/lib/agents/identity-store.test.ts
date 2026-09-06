@@ -19,6 +19,7 @@ import {
   createCustomAgentIdentityWithSql,
   resolveCustomAgentIdentityWithSql,
   updateCustomAgentIdentityWithSql,
+  versionCustomAgentsForSkillChangeWithSql,
 } from "@/lib/agents/identity-store";
 
 const canonicalActorId = "actor:11111111-1111-4111-8111-111111111111";
@@ -215,6 +216,73 @@ describe("P7.1 custom agent identity store", () => {
       ...current,
       toolIds: ["runs.list", "memory.search"],
     })).toBe(true);
+  });
+
+  it("publishes a new agent definition when a referenced skill changes", async () => {
+    const changedAt = "2026-09-07T05:00:00.000Z";
+    const compatibilityRow = {
+      id: "agent-one",
+      tenant_id: "tenant-one",
+      actor_id: "owner@example.test",
+      slug: "researcher",
+      name: "Researcher",
+      role: "Research specialist",
+      description: "Finds exact evidence.",
+      instructions: "Use exact evidence.",
+      status: "ready",
+      accent: "blue",
+      model_policy: "openai_fast",
+      autonomy: "governed",
+      approval_policy: "risk_based",
+      memory_scope: "all",
+      skill_ids: ["skill-one"],
+      tool_ids: ["runs.list"],
+      created_at: "2026-09-07T01:00:00.000Z",
+      updated_at: changedAt,
+    };
+    const customSkill = {
+      id: "skill-one",
+      tenant_id: "tenant-one",
+      actor_id: "owner@example.test",
+      slug: "evidence",
+      name: "Evidence",
+      description: "Find evidence.",
+      instructions: "Use the revised exact process.",
+      category: "research",
+      status: "active",
+      version: 4,
+      tool_ids: ["runs.list"],
+      tags: [],
+      knowledge_tags: [],
+      created_at: "2026-09-07T01:00:00.000Z",
+      updated_at: changedAt,
+    };
+    const database = fakeSql([
+      [compatibilityRow],
+      [compatibilityRow],
+      [customSkill],
+      [{ canonical_actor_id: canonicalActorId }],
+      [{ definition_version: 2 }],
+      [{ definition_version: 3, published_at: changedAt }],
+    ]);
+
+    await expect(versionCustomAgentsForSkillChangeWithSql({
+      tenantId: "tenant-one",
+      actorId: "owner@example.test",
+      skillId: "skill-one",
+      removeSkill: false,
+      sql: database.sql,
+    })).resolves.toBe(1);
+
+    expect(database.statements[1].text).toMatch(/UPDATE omni_custom_agents/);
+    expect(database.statements[2].text).toMatch(/FROM omni_custom_skills/);
+    expect(eventMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: AGENT_IDENTITY_EVENT_TYPES.definitionVersioned,
+        payload: expect.objectContaining({ definitionVersion: 3 }),
+      }),
+      { sql: database.sql },
+    );
   });
 });
 

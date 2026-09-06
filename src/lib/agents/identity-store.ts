@@ -139,6 +139,68 @@ export async function revokeCustomAgentIdentityWithSql(input: {
   });
 }
 
+export async function versionCustomAgentsForSkillChangeWithSql(input: {
+  tenantId: string;
+  actorId: string;
+  skillId: string;
+  removeSkill: boolean;
+  sql: IdentitySql;
+}): Promise<number> {
+  const rows = await input.sql`
+    SELECT *
+    FROM omni_custom_agents
+    WHERE tenant_id = ${input.tenantId}
+      AND actor_id = ${input.actorId}
+      AND ${input.skillId} = ANY(skill_ids)
+    ORDER BY id
+    FOR UPDATE
+  `;
+  for (const row of rows) {
+    const updatedRows = input.removeSkill
+      ? await input.sql`
+          UPDATE omni_custom_agents
+          SET skill_ids = array_remove(skill_ids, ${input.skillId}),
+              updated_at = GREATEST(
+                clock_timestamp(), updated_at + INTERVAL '1 millisecond'
+              )
+          WHERE tenant_id = ${input.tenantId}
+            AND actor_id = ${input.actorId}
+            AND id = ${String(row.id)}
+          RETURNING *
+        `
+      : await input.sql`
+          UPDATE omni_custom_agents
+          SET updated_at = GREATEST(
+            clock_timestamp(), updated_at + INTERVAL '1 millisecond'
+          )
+          WHERE tenant_id = ${input.tenantId}
+            AND actor_id = ${input.actorId}
+            AND id = ${String(row.id)}
+          RETURNING *
+        `;
+    if (!updatedRows[0]) {
+      throw new AgentIdentityResolutionError(
+        "A referenced agent could not be locked for skill versioning.",
+      );
+    }
+    const agent = compatibilityAgentFromRow(updatedRows[0]);
+    const skills = await resolveCompatibilityAgentSkills(agent, input.sql);
+    const ownerActorId = await resolveCanonicalOwnerActorId(
+      agent.tenantId,
+      agent.actorId,
+      input.sql,
+    );
+    await appendDefinitionVersion({
+      agent,
+      skills,
+      ownerActorId,
+      executionScope: createAgentIdentityMutationScope(agent, "skill_update"),
+      sql: input.sql,
+    });
+  }
+  return rows.length;
+}
+
 export async function resolveCustomAgentIdentityWithSql(input: {
   tenantId: string;
   agentId: string;
@@ -469,6 +531,35 @@ async function resolveDefinitionSkills(
   return [...selectedBuiltIns, ...customSkills];
 }
 
+async function resolveCompatibilityAgentSkills(
+  agent: CustomAgentDefinition,
+  sql: IdentitySql,
+) {
+  const selectedBuiltIns = builtInSkills.filter((skill) =>
+    agent.skillIds.includes(skill.id)
+  );
+  const customIds = agent.skillIds.filter((id) =>
+    !selectedBuiltIns.some((skill) => skill.id === id)
+  );
+  const rows = customIds.length
+    ? await sql`
+        SELECT *
+        FROM omni_custom_skills
+        WHERE tenant_id = ${agent.tenantId}
+          AND actor_id = ${agent.actorId}
+          AND id = ANY(${customIds}::text[])
+        ORDER BY id
+        FOR KEY SHARE
+      `
+    : [];
+  if (selectedBuiltIns.length + rows.length !== agent.skillIds.length) {
+    throw new AgentIdentityResolutionError(
+      "One or more referenced skill versions are unavailable.",
+    );
+  }
+  return [...selectedBuiltIns, ...rows.map(skillFromRow)];
+}
+
 function identityFromJoinedRow(
   row: Record<string, unknown>,
   skills: readonly AgentSkill[],
@@ -590,6 +681,31 @@ function skillFromRow(row: Record<string, unknown>): AgentSkill {
     toolIds: stringArray(row.tool_ids),
     tags: stringArray(row.tags),
     knowledgeTags: stringArray(row.knowledge_tags),
+    createdAt: timestamp(row.created_at),
+    updatedAt: timestamp(row.updated_at),
+  };
+}
+
+function compatibilityAgentFromRow(
+  row: Record<string, unknown>,
+): CustomAgentDefinition {
+  return {
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    actorId: String(row.actor_id),
+    slug: String(row.slug),
+    name: String(row.name),
+    role: String(row.role),
+    description: String(row.description),
+    instructions: String(row.instructions),
+    status: String(row.status) as CustomAgentDefinition["status"],
+    accent: String(row.accent) as CustomAgentDefinition["accent"],
+    modelPolicy: String(row.model_policy) as CustomAgentDefinition["modelPolicy"],
+    autonomy: String(row.autonomy) as CustomAgentDefinition["autonomy"],
+    approvalPolicy: String(row.approval_policy) as CustomAgentDefinition["approvalPolicy"],
+    memoryScope: String(row.memory_scope) as CustomAgentDefinition["memoryScope"],
+    skillIds: stringArray(row.skill_ids),
+    toolIds: stringArray(row.tool_ids),
     createdAt: timestamp(row.created_at),
     updatedAt: timestamp(row.updated_at),
   };
