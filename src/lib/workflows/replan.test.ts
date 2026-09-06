@@ -97,6 +97,14 @@ describe("bounded workflow subtree replanning", () => {
       candidatePlan: previousPlan,
       directive,
     })).toThrow("did not materially change");
+    expect(() => applyWorkflowSubtreeReplan({
+      previousPlanId: "plan-old",
+      previousPlan,
+      candidatePlan: plan(nodes.map((item) => item.id === "join"
+        ? { ...item, description: "Changed join." }
+        : item)),
+      directive: { ...directive, reusedNodes: directive.reusedNodes.slice(1) },
+    })).toThrow("does not bind every unaffected node execution");
 
     const changed = plan(nodes.map((item) =>
       item.id === "join" ? { ...item, description: "Changed join." } : item

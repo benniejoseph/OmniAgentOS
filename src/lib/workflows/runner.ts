@@ -319,7 +319,8 @@ export async function tickWorkflowRun(
     const verifyOutput = stepKey === "verify" ? (output as Record<string, unknown>) : undefined;
     if (verifyOutput && verifyOutput.passed === false && !hasReplanned(freshDetail)) {
       const verdict = verifyOutput.modelVerdict as { failures?: string[]; assessment?: string } | undefined;
-      const previousPlanOutput = parseWorkflowPlanOutput(stepOutput(freshDetail, "plan"));
+      const previousPlanStepOutput = stepOutput(freshDetail, "plan");
+      const previousPlanOutput = parseWorkflowPlanOutput(previousPlanStepOutput);
       if (!previousPlanOutput) {
         throw new Error("Workflow verification cannot replan without its prior typed plan.");
       }
@@ -333,11 +334,9 @@ export async function tickWorkflowRun(
         nodeExecutions: priorNodeExecutions,
         verificationFailures: verdict?.failures || [],
         approvalInvalidated: Boolean(freshDetail.run.approvedAt),
-        previousContextTraceId: typeof previousPlanOutput.plan.replan?.previousContextTraceId === "string"
-          ? previousPlanOutput.plan.replan.previousContextTraceId
-          : typeof stepOutput(freshDetail, "plan")?.contextTraceId === "string"
-            ? String(stepOutput(freshDetail, "plan")?.contextTraceId)
-            : undefined,
+        previousContextTraceId: typeof previousPlanStepOutput?.contextTraceId === "string"
+          ? previousPlanStepOutput.contextTraceId
+          : undefined,
       });
       await appendWorkflowEvent(detail.run.id, "workflow.replan_triggered", {
         directive: replanDirective,
