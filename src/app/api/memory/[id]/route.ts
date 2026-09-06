@@ -147,7 +147,10 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
         }),
   });
   if (!result) return Response.json({ error: "Memory not found." }, { status: 404 });
-  if (result.corrected.accessBinding && requestAccess) {
+  if (result.review?.status === "pending") {
+    // Contradictions remain candidates until the dedicated review decision.
+    // Do not project them into graph/entity recall or retire the existing claim.
+  } else if (result.corrected.accessBinding && requestAccess) {
     await indexUserPrivateMemoryGraphRecords(
       [result.corrected],
       "memory.manual.correct",
@@ -173,7 +176,13 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   } else if (!result.corrected.accessBinding) {
     await queueMemoryGraphRebuild({ tenantId: context.tenantId });
   }
-  return Response.json({ previous: publicMemory(result.previous), corrected: publicMemory(result.corrected) });
+  return Response.json({
+    previous: publicMemory(result.previous),
+    corrected: publicMemory(result.corrected),
+    ...(result.review
+      ? { review: publicMemoryReconciliationReview(result.review) }
+      : {}),
+  });
 }
 
 async function DELETEHandler(request: Request, route: { params: Promise<{ id: string }> }) {
@@ -260,4 +269,24 @@ function publicMemory<T extends { embedding?: number[] }>(memory: T) {
   const result = { ...memory };
   delete result.embedding;
   return result;
+}
+
+function publicMemoryReconciliationReview(review: NonNullable<
+  Awaited<ReturnType<typeof correctMemory>>
+>["review"]) {
+  if (!review) return undefined;
+  const {
+    ownerActorId: _ownerActorId,
+    resolvedBy: _resolvedBy,
+    candidate,
+    existing,
+    ...publicReview
+  } = review;
+  void _ownerActorId;
+  void _resolvedBy;
+  return {
+    ...publicReview,
+    candidate: publicMemory(candidate),
+    ...(existing ? { existing: publicMemory(existing) } : {}),
+  };
 }
