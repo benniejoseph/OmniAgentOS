@@ -2097,6 +2097,20 @@ accuracy, and original-query anchoring. The live structured-provider canary
 correctly routed a historical ownership paraphrase to temporal, entity, and
 relationship retrieval while preserving `as_of` and recording model usage.
 
+P4.4 is complete at production release
+`0725b9608b75a3d74a6d78c12ee76130ee741bd5`. Retrieval now has an explicit
+provider-neutral capability contract and immutable vector-space identity. The
+credential-free 384-dimension local multilingual space is the default and
+cannot enter or compare against the legacy OpenAI pgvector space; it computes
+candidate vectors only after bounded authorized reads. External embeddings
+require explicit provider permission, with a same-provider OpenAI option for an
+already-OpenAI direct agent. A deterministic learned pairwise reranker runs
+only over authorized evidence and emits a content-free receipt. The held-out
+16-case multilingual gate improved top-1 accuracy from 6.25% to 93.75% and MRR
+from 0.3177 to 0.9688. A credential-free production canary returned exact local
+embedding and reranker receipts with no external disclosure. P4.5 lineage
+deduplication and tiered token budgeting is next.
+
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
 types and 13 typed relations with mandatory scope, sensitivity, purpose,
