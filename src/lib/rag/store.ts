@@ -17,6 +17,12 @@ import {
 } from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
+import {
+  embedLocalMultilingualTexts,
+  isLocalRetrievalEmbeddingSpace,
+  retrievalEmbeddingCosine,
+  retrievalEmbeddingSpaceSupportsStoredVectorIndex,
+} from "@/lib/rag/retrieval-embedding";
 import { normalizeTextForChunking } from "@/lib/rag/chunk";
 import { jsonbSafeTruncate } from "@/lib/rag/text-safety";
 import type {
@@ -92,6 +98,7 @@ type CreateKnowledgeDocumentInput = {
 type SearchKnowledgeOptions = {
   limit?: number;
   queryEmbedding?: number[];
+  queryEmbeddingSpaceId?: string;
   tags?: string[];
   tenantId?: string;
 };
@@ -1004,9 +1011,28 @@ export async function searchKnowledge(
   options: SearchKnowledgeOptions = {},
 ): Promise<KnowledgeSearchResult[]> {
   const limit = options.limit || 8;
+  if (isLocalRetrievalEmbeddingSpace(options.queryEmbeddingSpaceId)) {
+    const [chunks, documents] = await Promise.all([
+      listKnowledgeChunks(500, { tenantId: options.tenantId }),
+      listKnowledgeDocuments(500, { tenantId: options.tenantId }),
+    ]);
+    return rankChunksInMemory(
+      chunks,
+      new Map(documents.map((document) => [document.id, document])),
+      query,
+      options,
+    ).slice(0, limit);
+  }
 
   if (hasDatabaseUrl()) {
-    return (await searchKnowledgeDb(query, options)).slice(0, limit);
+    return (await searchKnowledgeDb(query, {
+      ...options,
+      queryEmbedding: retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+        options.queryEmbeddingSpaceId,
+      )
+        ? options.queryEmbedding
+        : undefined,
+    })).slice(0, limit);
   }
 
   const ledger = await readKnowledgeLedger();
@@ -1505,8 +1531,24 @@ function rankChunksInMemory(
       const overlap = terms.filter((term) => chunkTerms.includes(term));
       const lexicalScore = terms.length === 0 ? 0 : overlap.length / terms.length;
       const vectorScore =
-        options.queryEmbedding && chunk.embedding
-          ? Math.max(0, cosineSimilarity(options.queryEmbedding, chunk.embedding))
+        options.queryEmbedding &&
+          isLocalRetrievalEmbeddingSpace(options.queryEmbeddingSpaceId)
+          ? Math.max(
+              0,
+              retrievalEmbeddingCosine(
+                options.queryEmbedding,
+                embedLocalMultilingualTexts([text])[0],
+              ),
+            )
+          : options.queryEmbedding &&
+              retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+                options.queryEmbeddingSpaceId,
+              ) &&
+              chunk.embedding
+            ? Math.max(
+                0,
+                cosineSimilarity(options.queryEmbedding, chunk.embedding),
+              )
           : 0;
       const ageMs = Math.max(0, now - new Date(chunk.updatedAt).getTime());
       const recencyScore = 1 / (1 + ageMs / (7 * 24 * 60 * 60 * 1000));
