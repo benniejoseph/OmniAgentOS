@@ -8,9 +8,13 @@ const mocks = vi.hoisted(() => ({
   queryTemporalRelationClaims: vi.fn(
     async (): Promise<Array<Record<string, unknown>>> => [],
   ),
+  retrieveGraphRelationshipPaths: vi.fn(),
   requestEntityAccessFromSecurityContext: vi.fn(),
   requestMemoryAccessFromSecurityContext: vi.fn(),
   searchMemoryGraph: vi.fn(async () => []),
+}));
+vi.mock("@/lib/entities/graph-retrieval", () => ({
+  retrieveGraphRelationshipPaths: mocks.retrieveGraphRelationshipPaths,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -81,7 +85,10 @@ describe("memory graph private-memory boundary", () => {
     mocks.requestMemoryAccessFromSecurityContext.mockImplementation((
       _context: unknown,
       input: { purposeId: string },
-    ) => ({ databaseAccessScope: databaseAccessScope(input.purposeId) }));
+    ) => ({
+      databaseAccessScope: databaseAccessScope(input.purposeId),
+      executionScope: { purpose: "test.memory.graph" },
+    }));
     mocks.requestEntityAccessFromSecurityContext.mockReturnValue({
       actorBinding: {
         canonicalActorId:
@@ -92,6 +99,13 @@ describe("memory graph private-memory boundary", () => {
       },
       executionScope: {
         purpose: "entity.read.v1",
+      },
+    });
+    mocks.retrieveGraphRelationshipPaths.mockResolvedValue({
+      paths: [],
+      receipt: {
+        version: "p5.5-graph-retrieval:1",
+        pathCount: 0,
       },
     });
   });
@@ -201,5 +215,77 @@ describe("memory graph private-memory boundary", () => {
 
     expect(response.status).toBe(400);
     expect(mocks.queryTemporalRelationClaims).not.toHaveBeenCalled();
+  });
+
+  it("returns bounded, no-store relationship paths under both actor scopes", async () => {
+    mocks.retrieveGraphRelationshipPaths.mockResolvedValueOnce({
+      paths: [{
+        pathId: "relationship_path_a",
+        anchor: { entityId: "entity-a", entityTypeId: "person", label: "Ada" },
+        terminal: { entityId: "entity-b", entityTypeId: "project", label: "Phoenix" },
+        hopCount: 1,
+        score: 0.9,
+        explanation: "Ada → Phoenix",
+        hops: [{
+          claimId: "claim-a",
+          revisionId: "revision-a",
+          relationTypeId: "commits_to",
+          relationLabel: "Commits to",
+          direction: "forward",
+          source: { entityId: "entity-a", entityTypeId: "person", label: "Ada" },
+          target: { entityId: "entity-b", entityTypeId: "project", label: "Phoenix" },
+          epistemicKind: "asserted",
+          confidenceBasisPoints: 9_000,
+          validFrom: "2026-09-01T00:00:00.000Z",
+          validTo: null,
+          evidence: [{
+            evidenceId: "memory:memory-a",
+            kind: "memory",
+            title: "Commitment",
+            excerpt: "Ada committed to Phoenix.",
+            source: "manual",
+            observedAt: "2026-09-01T00:00:00.000Z",
+          }],
+        }],
+        pathSha256: "a".repeat(64),
+      }],
+      receipt: { version: "p5.5-graph-retrieval:1", pathCount: 1 },
+    });
+    const response = await GET(new Request(
+      "http://localhost/api/memory/graph?view=relationship_paths" +
+      "&q=How%20is%20Ada%20connected%3F&maxHops=2&limit=12",
+    ));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.retrieveGraphRelationshipPaths).toHaveBeenCalledWith(
+      "How is Ada connected?",
+      expect.objectContaining({
+        entityAccess: expect.objectContaining({
+          executionScope: expect.objectContaining({ purpose: "entity.read.v1" }),
+        }),
+        memoryAccessScope: expect.objectContaining({
+          purposeId: MEMORY_PURPOSE_IDS.retrieve,
+        }),
+        maxHops: 2,
+        limit: 12,
+      }),
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      view: "relationship_paths",
+      paths: [{
+        pathId: "relationship_path_a",
+        hops: [{ evidence: [{ evidenceId: "memory:memory-a" }] }],
+      }],
+    });
+  });
+
+  it("rejects relationship traversal without a query", async () => {
+    const response = await GET(new Request(
+      "http://localhost/api/memory/graph?view=relationship_paths",
+    ));
+
+    expect(response.status).toBe(400);
+    expect(mocks.retrieveGraphRelationshipPaths).not.toHaveBeenCalled();
   });
 });

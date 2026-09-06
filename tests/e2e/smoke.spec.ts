@@ -218,6 +218,26 @@ test("homepage presents the private owner operating story responsively", async (
   ).toBeVisible();
 });
 
+test("Memory traces private evidence-backed relationship paths", async ({ page }) => {
+  await signIn(page);
+  await page.goto("/app/memory", { waitUntil: "networkidle" });
+
+  await page.getByRole("button", { name: "Trace paths" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Relationship paths" }),
+  ).toBeVisible();
+  await page.getByLabel("Entity or relationship question").fill(
+    "How is Ada connected to Project Phoenix?",
+  );
+  await page.getByRole("button", { name: "Trace", exact: true }).click();
+
+  await expect(
+    page.getByText("No evidence-backed path matched an entity in that question."),
+  ).toBeVisible();
+  await expect(page.getByText("0 matched entities")).toBeVisible();
+  await expect(page.getByText("0 eligible relations")).toBeVisible();
+});
+
 test("public and mobile application navigation stay usable", async ({ page }) => {
   await page.goto("/");
   const publicNavigation = page.getByRole("navigation", {
