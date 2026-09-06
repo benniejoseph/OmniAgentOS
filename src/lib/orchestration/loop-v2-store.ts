@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   appendScopedDomainEvent,
   type DomainEvent,
@@ -26,6 +28,15 @@ export type LoopV2CheckpointWriterSql = {
   transaction: (queriesOrFn: unknown, opts?: unknown) => Promise<unknown>;
   readonly transactionScoped: boolean;
 };
+
+export type LoopV2RecoveryFence = Readonly<{
+  tenantId: string;
+  runId: string;
+  claimedCheckpointSha256: string;
+  leaseGeneration: number;
+  claimToken: string;
+  leaseExpiresAt: string;
+}>;
 
 export type RecordLoopV2CheckpointResult = Readonly<{
   checkpoint: LoopV2Checkpoint;
@@ -56,6 +67,7 @@ export async function recordLoopV2Checkpoint(
   input: {
     checkpoint: unknown;
     executionScope: ExecutionScope;
+    recoveryFence?: LoopV2RecoveryFence;
   },
   sql: LoopV2CheckpointWriterSql,
 ): Promise<RecordLoopV2CheckpointResult> {
@@ -75,7 +87,12 @@ export async function recordLoopV2Checkpoint(
   }
 
   const runRows = await sql.query(
-    `SELECT owner_actor_id, status
+    `SELECT owner_actor_id, status, continuation,
+            COALESCE(
+              (continuation #>> '{loopV2Recovery,leaseExpiresAt}')::timestamptz
+                > statement_timestamp(),
+              false
+            ) AS recovery_lease_active
      FROM omni_agent_runs
      WHERE tenant_id = $1 AND id = $2
      LIMIT 2
@@ -89,6 +106,11 @@ export async function recordLoopV2Checkpoint(
   ) {
     throw new Error("Loop v2 checkpoint requires its active actor-owned run.");
   }
+  assertLoopV2RecoveryFence({
+    checkpoint,
+    fence: input.recoveryFence,
+    run,
+  });
 
   const scopeRows = await sql.query(
     `SELECT payload
@@ -235,6 +257,7 @@ export async function finalizeLoopV2Run(
     executionScope: ExecutionScope;
     response?: string;
     error?: string;
+    recoveryFence?: LoopV2RecoveryFence;
   },
   sql: LoopV2CheckpointWriterSql,
 ): Promise<FinalizeLoopV2RunResult> {
@@ -270,9 +293,42 @@ export async function finalizeLoopV2Run(
   const recorded = await recordLoopV2Checkpoint({
     checkpoint,
     executionScope: input.executionScope,
+    recoveryFence: input.recoveryFence,
   }, sql);
-  const rows = await sql.query(
-    `UPDATE omni_agent_runs
+  const rows = input.recoveryFence
+    ? await sql.query(
+      `UPDATE omni_agent_runs
+       SET status = $4,
+           response = $5,
+           grounding = NULL,
+           error = $6,
+           continuation = NULL,
+           completed_at = $7
+       WHERE tenant_id = $1
+         AND id = $2
+         AND owner_actor_id = $3
+         AND status = 'resuming'
+         AND continuation #>> '{loopV2Recovery,checkpointSha256}' = $8
+         AND (continuation #>> '{loopV2Recovery,leaseGeneration}')::bigint = $9
+         AND continuation #>> '{loopV2Recovery,claimTokenSha256}' = $10
+         AND (continuation #>> '{loopV2Recovery,leaseExpiresAt}')::timestamptz
+           > statement_timestamp()
+       RETURNING id`,
+      [
+        checkpoint.tenantId,
+        checkpoint.runId,
+        checkpoint.ownerActorId,
+        runStatus,
+        response,
+        error,
+        checkpoint.transitionedAt,
+        input.recoveryFence.claimedCheckpointSha256,
+        input.recoveryFence.leaseGeneration,
+        loopV2RecoveryClaimTokenSha256(input.recoveryFence.claimToken),
+      ],
+    )
+    : await sql.query(
+      `UPDATE omni_agent_runs
      SET status = $4,
          response = $5,
          grounding = NULL,
@@ -293,9 +349,17 @@ export async function finalizeLoopV2Run(
       error,
       checkpoint.transitionedAt,
     ],
-  );
+    );
   if (rows.length !== 1) {
     throw new Error("Loop v2 terminal run disposition did not commit.");
+  }
+  if (input.recoveryFence) {
+    await appendLoopV2RecoveryCompletionEvent({
+      checkpoint,
+      executionScope: input.executionScope,
+      fence: input.recoveryFence,
+      outcome: runStatus === "completed" ? "resumed" : "failed_closed",
+    }, sql);
   }
   return Object.freeze({ ...recorded, runStatus });
 }
@@ -306,6 +370,7 @@ export async function waitForLoopV2Clarification(
     checkpoint: unknown;
     executionScope: ExecutionScope;
     clarificationPrompt: string;
+    recoveryFence?: LoopV2RecoveryFence;
   },
   sql: LoopV2CheckpointWriterSql,
 ): Promise<WaitForLoopV2ClarificationResult> {
@@ -331,9 +396,40 @@ export async function waitForLoopV2Clarification(
   const recorded = await recordLoopV2Checkpoint({
     checkpoint,
     executionScope: input.executionScope,
+    recoveryFence: input.recoveryFence,
   }, sql);
-  const rows = await sql.query(
-    `UPDATE omni_agent_runs
+  const rows = input.recoveryFence
+    ? await sql.query(
+      `UPDATE omni_agent_runs
+       SET status = 'waiting_clarification',
+           response = $4,
+           grounding = NULL,
+           error = NULL,
+           continuation = NULL,
+           completed_at = NULL
+       WHERE tenant_id = $1
+         AND id = $2
+         AND owner_actor_id = $3
+         AND thread_id IS NOT NULL
+         AND status = 'resuming'
+         AND continuation #>> '{loopV2Recovery,checkpointSha256}' = $5
+         AND (continuation #>> '{loopV2Recovery,leaseGeneration}')::bigint = $6
+         AND continuation #>> '{loopV2Recovery,claimTokenSha256}' = $7
+         AND (continuation #>> '{loopV2Recovery,leaseExpiresAt}')::timestamptz
+           > statement_timestamp()
+       RETURNING id`,
+      [
+        checkpoint.tenantId,
+        checkpoint.runId,
+        checkpoint.ownerActorId,
+        clarificationPrompt,
+        input.recoveryFence.claimedCheckpointSha256,
+        input.recoveryFence.leaseGeneration,
+        loopV2RecoveryClaimTokenSha256(input.recoveryFence.claimToken),
+      ],
+    )
+    : await sql.query(
+      `UPDATE omni_agent_runs
      SET status = 'waiting_clarification',
          response = $4,
          grounding = NULL,
@@ -352,9 +448,17 @@ export async function waitForLoopV2Clarification(
       checkpoint.ownerActorId,
       clarificationPrompt,
     ],
-  );
+    );
   if (rows.length !== 1) {
     throw new Error("Loop v2 clarification run state did not commit.");
+  }
+  if (input.recoveryFence) {
+    await appendLoopV2RecoveryCompletionEvent({
+      checkpoint,
+      executionScope: input.executionScope,
+      fence: input.recoveryFence,
+      outcome: "waiting_clarification",
+    }, sql);
   }
   return Object.freeze({
     ...recorded,
@@ -607,4 +711,83 @@ function plainRecord(value: unknown): Record<string, unknown> {
 
 function boundedTerminalText(value: unknown, maxChars: number) {
   return String(redactSensitive(value || "")).trim().slice(0, maxChars);
+}
+
+export function loopV2RecoveryClaimTokenSha256(claimToken: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(claimToken)) {
+    throw new Error("Loop v2 recovery claim token is invalid.");
+  }
+  return createHash("sha256")
+    .update("asael.loop-v2-recovery-claim.v1\0")
+    .update(claimToken)
+    .digest("hex");
+}
+
+function assertLoopV2RecoveryFence({
+  checkpoint,
+  fence,
+  run,
+}: {
+  checkpoint: LoopV2Checkpoint;
+  fence?: LoopV2RecoveryFence;
+  run: SqlRow;
+}) {
+  const continuation = plainOptionalRecord(run.continuation);
+  const recovery = plainOptionalRecord(continuation?.loopV2Recovery);
+  if (!fence) {
+    if (recovery) {
+      throw new Error("Loop v2 recovery work requires its exact lease fence.");
+    }
+    return;
+  }
+  const leaseGeneration = Number(recovery?.leaseGeneration);
+  if (
+    fence.tenantId !== checkpoint.tenantId ||
+    fence.runId !== checkpoint.runId ||
+    !/^[a-f0-9]{64}$/.test(fence.claimedCheckpointSha256) ||
+    !Number.isSafeInteger(fence.leaseGeneration) ||
+    fence.leaseGeneration < 1 ||
+    run.status !== "resuming" ||
+    run.recovery_lease_active !== true ||
+    recovery?.schemaVersion !== 1 ||
+    recovery.checkpointSha256 !== fence.claimedCheckpointSha256 ||
+    leaseGeneration !== fence.leaseGeneration ||
+    recovery.claimTokenSha256 !==
+      loopV2RecoveryClaimTokenSha256(fence.claimToken) ||
+    recovery.leaseExpiresAt !== fence.leaseExpiresAt
+  ) {
+    throw new Error("Loop v2 recovery lease fence is stale or invalid.");
+  }
+}
+
+function plainOptionalRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+async function appendLoopV2RecoveryCompletionEvent(
+  input: {
+    checkpoint: LoopV2Checkpoint;
+    executionScope: ExecutionScope;
+    fence: LoopV2RecoveryFence;
+    outcome: "resumed" | "failed_closed" | "waiting_clarification";
+  },
+  sql: LoopV2CheckpointWriterSql,
+) {
+  await appendScopedDomainEvent({
+    id: `run-loop-v2-recovery-completed:${input.checkpoint.checkpointSha256}:${input.fence.leaseGeneration}`,
+    streamId: `run:${input.checkpoint.runId}`,
+    type: "run.loop_v2.recovery_completed",
+    executionScope: input.executionScope,
+    payload: {
+      schemaVersion: 1,
+      runId: input.checkpoint.runId,
+      claimedCheckpointSha256: input.fence.claimedCheckpointSha256,
+      terminalCheckpointSha256: input.checkpoint.checkpointSha256,
+      leaseGeneration: input.fence.leaseGeneration,
+      outcome: input.outcome,
+      replayedExternalEffectCount: 0,
+    },
+  }, { sql });
 }
