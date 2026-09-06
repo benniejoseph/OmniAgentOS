@@ -1013,6 +1013,65 @@ export async function getCanonicalKnowledgeEvidenceByChunkIds(
   );
 }
 
+/**
+ * Resolves a bounded exact set of canonical evidence units to their current
+ * knowledge chunks. Authorization is deliberately left to the caller because
+ * the same immutable evidence contract is consumed under several distinct
+ * governed purposes.
+ */
+export async function getCanonicalKnowledgeEvidenceByEvidenceUnitIds(
+  evidenceUnitIds: readonly string[],
+  options: { tenantId?: string } = {},
+): Promise<CanonicalKnowledgeEvidence[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const ids = [...new Set(
+    evidenceUnitIds
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )].slice(0, 128);
+  if (!ids.length) return [];
+
+  const chunkIds = hasDatabaseUrl()
+    ? (await (async () => {
+        await ensureDatabaseSchema();
+        const rows = await getSql()`
+          SELECT id, evidence_unit_id
+          FROM omni_knowledge_chunks
+          WHERE tenant_id = ${tenantId}
+            AND evidence_unit_id = ANY(${ids})
+          ORDER BY evidence_unit_id COLLATE "C", chunk_index, id COLLATE "C"
+        `;
+        return rows.map((row) => String(row.id));
+      })())
+    : (await readKnowledgeLedger()).chunks
+        .filter((chunk) =>
+          normalizeTenantId(chunk.tenantId) === tenantId &&
+          Boolean(chunk.evidenceUnitId) &&
+          ids.includes(chunk.evidenceUnitId!)
+        )
+        .sort((left, right) =>
+          left.evidenceUnitId!.localeCompare(right.evidenceUnitId!) ||
+          left.chunkIndex - right.chunkIndex ||
+          left.id.localeCompare(right.id)
+        )
+        .map((chunk) => chunk.id);
+  const candidates = await getCanonicalKnowledgeEvidenceByChunkIds(
+    chunkIds,
+    { tenantId },
+  );
+  const byEvidenceUnitId = new Map<string, CanonicalKnowledgeEvidence>();
+  for (const candidate of candidates) {
+    if (!byEvidenceUnitId.has(candidate.evidenceUnit.evidenceUnitId)) {
+      byEvidenceUnitId.set(candidate.evidenceUnit.evidenceUnitId, candidate);
+    }
+  }
+  return ids.flatMap((id) => {
+    const candidate = byEvidenceUnitId.get(id);
+    return candidate ? [candidate] : [];
+  });
+}
+
 export async function searchKnowledge(
   query: string,
   options: SearchKnowledgeOptions = {},
