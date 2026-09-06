@@ -780,7 +780,7 @@ function BuilderDialog({
                   }
                 >
                   <option value="all">All approved memory</option>
-                    <option value="project">Project-aware</option>
+                  <option value="project">Project-aware (isolated until authorized)</option>
                   <option value="session">Session only</option>
                 </select>
               </label>

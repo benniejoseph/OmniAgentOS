@@ -196,6 +196,26 @@ describe("agent memory scope", () => {
       .not.toContain("DURABLE_MEMORY_CONTEXT");
   });
 
+  it("fails project mode closed instead of broadening it to tenant memory", async () => {
+    const events = await collectRun("project");
+
+    expect(mocks.buildContextPack).not.toHaveBeenCalled();
+    expect(mocks.getAgentLearningGuidance).not.toHaveBeenCalled();
+    expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "project memory isolated",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      contextDecision: "disabled_project_unavailable",
+      contextMode: "project_unavailable",
+      contextCount: 0,
+    }));
+    expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0].input))
+      .not.toContain("DURABLE_MEMORY_CONTEXT");
+  });
+
   it("preserves durable retrieval and its receipt for persistent memory", async () => {
     const events = await collectRun("all");
 
@@ -321,7 +341,7 @@ const privateOwnerContext = {
   },
 } satisfies SecurityContext;
 
-async function collectRun(memoryScope: "session" | "all") {
+async function collectRun(memoryScope: "session" | "project" | "all") {
   return collectRequest(request(memoryScope));
 }
 
@@ -332,7 +352,7 @@ async function collectRequest(agentRequest: AgentRunRequest) {
 }
 
 function request(
-  memoryScope: "session" | "all",
+  memoryScope: "session" | "project" | "all",
 ): AgentRunRequest {
   return {
     messages: [{ role: "user", content: "hello" }],

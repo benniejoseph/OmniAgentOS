@@ -75,7 +75,10 @@ export function toLegacyTenantOptions(
 }
 
 export function usesDurableMemory(access: MemoryAccessContext): boolean {
-  return access.mode !== "session";
+  // The legacy durable index is tenant-scoped. Treating the requested
+  // "project" mode as durable would silently broaden it to all tenant memory
+  // until P3.1 has a canonical project authority and bound project rows.
+  return access.mode === "all";
 }
 
 export function legacyMemoryAccessDiagnostics(

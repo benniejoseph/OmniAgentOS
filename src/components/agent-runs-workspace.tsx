@@ -154,7 +154,7 @@ type StreamEvent =
       model: string;
       tier: "fast" | "reasoning";
       memoryScope: "session" | "project" | "all";
-      contextDecision: "disabled_session" | "excluded_by_user" | "selected_by_user" | "retrieved" | "skipped";
+      contextDecision: "disabled_session" | "disabled_project_unavailable" | "excluded_by_user" | "selected_by_user" | "retrieved" | "skipped";
       contextMode: string;
       contextCount: number;
       contextTraceId?: string;
@@ -4084,6 +4084,7 @@ function streamEventLabel(event: StreamEvent) {
   if (event.type === "harness") {
     const context = {
       disabled_session: "durable context off for this session",
+      disabled_project_unavailable: "project context isolated until authorized",
       excluded_by_user: "saved context excluded by you",
       selected_by_user: `${event.contextCount} selected context item${event.contextCount === 1 ? "" : "s"} resolved`,
       retrieved: `${event.contextCount} relevant context item${event.contextCount === 1 ? "" : "s"} retrieved`,
