@@ -989,6 +989,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[80],
       up: ensureActorPrivateRunThreadLedgers,
     },
+    {
+      ...databaseSchemaMigrations[81],
+      up: ensureActorPrivateToolExecutionLedgers,
+    },
   ];
 }
 
@@ -4517,6 +4521,374 @@ async function ensureActorPrivateRunThreadLedgers(sql: SqlClient) {
             USING ERRCODE = '55000';
         END IF;
       END LOOP;
+    END
+    $migration$
+  `;
+}
+
+async function ensureActorPrivateToolExecutionLedgers(sql: SqlClient) {
+  await sql`
+    UPDATE omni_tool_executions execution_record
+    SET tenant_id = 'default'
+    WHERE tenant_id IS NULL OR btrim(tenant_id) = ''
+  `;
+  await sql`
+    UPDATE omni_tool_executions execution_record
+    SET actor_id = COALESCE(
+      NULLIF(btrim(execution_record.actor_id), ''),
+      (
+        SELECT NULLIF(
+          btrim(event.payload #>> '{_executionScope,initiatingActorId}'),
+          ''
+        )
+        FROM omni_events event
+        WHERE event.tenant_id = execution_record.tenant_id
+          AND event.stream_id = 'tool_execution:' || execution_record.id
+          AND event.payload ? '_executionScope'
+        ORDER BY
+          CASE WHEN event.type = 'tool.scope_bound' THEN 0 ELSE 1 END,
+          event.seq ASC
+        LIMIT 1
+      ),
+      NULLIF(btrim(execution_record.effect_receipt ->> 'actorId'), ''),
+      (
+        SELECT run.owner_actor_id
+        FROM omni_agent_runs run
+        WHERE run.tenant_id = execution_record.tenant_id
+          AND run.continuation #>> '{pendingToolCall,executionId}' =
+            execution_record.id
+        ORDER BY run.started_at DESC, run.id ASC
+        LIMIT 1
+      ),
+      'quarantine:tool:' || left(execution_record.id, 299)
+    )
+    WHERE execution_record.actor_id IS NULL
+      OR btrim(execution_record.actor_id) = ''
+  `;
+  await sql`
+    ALTER TABLE omni_tool_executions
+    ALTER COLUMN tenant_id SET DEFAULT 'default'
+  `;
+  await sql`
+    ALTER TABLE omni_tool_executions
+    ALTER COLUMN tenant_id SET NOT NULL
+  `;
+  await sql`
+    ALTER TABLE omni_tool_executions
+    ALTER COLUMN actor_id SET NOT NULL
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tool_executions'::regclass
+          AND conname = 'omni_tool_executions_actor_check'
+      ) THEN
+        ALTER TABLE omni_tool_executions
+        ADD CONSTRAINT omni_tool_executions_actor_check CHECK (
+          actor_id = btrim(actor_id)
+          AND char_length(actor_id) BETWEEN 1 AND 320
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_tool_executions
+    VALIDATE CONSTRAINT omni_tool_executions_actor_check
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_tool_executions_actor_created_idx
+    ON omni_tool_executions (tenant_id, actor_id, created_at DESC)
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_bind_tool_execution_actor()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      actor_scope JSONB;
+    BEGIN
+      IF NEW.tenant_id IS NULL OR btrim(NEW.tenant_id) = '' THEN
+        NEW.tenant_id := NULLIF(
+          current_setting('omni.tenant_id', TRUE),
+          ''
+        );
+      END IF;
+      IF NEW.actor_id IS NULL OR btrim(NEW.actor_id) = '' THEN
+        actor_scope := public.omni_current_actor_scope_v1();
+        IF actor_scope IS NOT NULL THEN
+          NEW.actor_id := actor_scope -> 'actorIds' ->>
+            (jsonb_array_length(actor_scope -> 'actorIds') - 1);
+        END IF;
+      END IF;
+      IF NEW.tenant_id IS NULL OR NEW.actor_id IS NULL THEN
+        RAISE EXCEPTION
+          'Governed tool execution requires an actor-bound database scope'
+          USING ERRCODE = '42501';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_tool_executions_bind_actor
+    ON omni_tool_executions
+  `;
+  await sql`
+    CREATE TRIGGER omni_tool_executions_bind_actor
+    BEFORE INSERT
+    ON omni_tool_executions
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_bind_tool_execution_actor()
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_tool_execution_identity_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF ROW(
+        OLD.id,
+        OLD.tenant_id,
+        OLD.actor_id,
+        OLD.tool_id,
+        OLD.tool_name,
+        OLD.risk_level,
+        OLD.dry_run,
+        OLD.approval_required,
+        OLD.input,
+        OLD.created_at
+      ) IS DISTINCT FROM ROW(
+        NEW.id,
+        NEW.tenant_id,
+        NEW.actor_id,
+        NEW.tool_id,
+        NEW.tool_name,
+        NEW.risk_level,
+        NEW.dry_run,
+        NEW.approval_required,
+        NEW.input,
+        NEW.created_at
+      ) THEN
+        RAISE EXCEPTION 'Governed tool execution identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_tool_executions_identity_immutable
+    ON omni_tool_executions
+  `;
+  await sql`
+    CREATE TRIGGER omni_tool_executions_identity_immutable
+    BEFORE UPDATE OF
+      id,
+      tenant_id,
+      actor_id,
+      tool_id,
+      tool_name,
+      risk_level,
+      dry_run,
+      approval_required,
+      input,
+      created_at
+    ON omni_tool_executions
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_reject_tool_execution_identity_change()
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_actor_scope_v1_is_active_admin(
+      actor_scope JSONB,
+      row_tenant_id TEXT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        actor_scope ->> 'tenantId' = row_tenant_id
+        AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(
+            actor_scope -> 'actorIds'
+          ) scoped_actor(actor_id)
+          JOIN public.omni_auth_users auth_user
+            ON auth_user.actor_id COLLATE "C" =
+                scoped_actor.actor_id COLLATE "C"
+              OR auth_user.email COLLATE "C" =
+                scoped_actor.actor_id COLLATE "C"
+          JOIN public.omni_auth_memberships membership
+            ON membership.tenant_id = row_tenant_id
+            AND membership.user_id = auth_user.id
+          WHERE auth_user.status = 'active'
+            AND membership.status = 'active'
+            AND membership.role IN ('admin', 'system')
+        ),
+        FALSE
+      )
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_tool_execution_actor_access_v1(
+      actor_scope JSONB,
+      row_tenant_id TEXT,
+      owner_actor_id TEXT,
+      row_risk_level INTEGER,
+      row_status TEXT,
+      row_approvals JSONB,
+      row_approved_by TEXT
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        public.omni_actor_scope_v1_allows_validated(
+          actor_scope,
+          row_tenant_id,
+          owner_actor_id
+        )
+        OR (
+          row_risk_level >= 3
+          AND public.omni_actor_scope_v1_is_active_admin(
+            actor_scope,
+            row_tenant_id
+          )
+          AND (
+            row_status = 'approval_required'
+            OR EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                CASE
+                  WHEN jsonb_typeof(row_approvals) = 'array'
+                  THEN row_approvals
+                  ELSE '[]'::JSONB
+                END
+              ) approval
+              JOIN jsonb_array_elements_text(
+                actor_scope -> 'actorIds'
+              ) scoped_actor(actor_id)
+                ON (approval ->> 'by') COLLATE "C" =
+                  scoped_actor.actor_id COLLATE "C"
+              WHERE approval ->> 'role' IN ('admin', 'system')
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements_text(
+                actor_scope -> 'actorIds'
+              ) scoped_actor(actor_id)
+              WHERE row_approved_by COLLATE "C" =
+                scoped_actor.actor_id COLLATE "C"
+            )
+          )
+        ),
+        FALSE
+      )
+    $function$
+  `;
+
+  const toolExecutionPredicate = `
+    omni_system_scope_enabled()
+    OR public.omni_tool_execution_actor_access_v1(
+      (SELECT public.omni_current_actor_scope_v1()),
+      tenant_id,
+      actor_id,
+      risk_level,
+      status,
+      approvals,
+      approved_by
+    )
+  `;
+  await sql.query(`
+    DROP POLICY IF EXISTS omni_tool_executions_actor_scope
+    ON omni_tool_executions
+  `);
+  await sql.query(`
+    CREATE POLICY omni_tool_executions_actor_scope
+    ON omni_tool_executions
+    AS RESTRICTIVE
+    FOR ALL
+    USING (${toolExecutionPredicate})
+    WITH CHECK (${toolExecutionPredicate})
+  `);
+
+  const toolEventPredicate = `
+    omni_system_scope_enabled()
+    OR left(stream_id, 15) <> 'tool_execution:'
+    OR public.omni_actor_scope_v1_allows_validated(
+      (SELECT public.omni_current_actor_scope_v1()),
+      tenant_id,
+      actor_id
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM omni_tool_executions parent_execution
+      WHERE parent_execution.tenant_id = omni_events.tenant_id
+        AND parent_execution.id = substr(omni_events.stream_id, 16)
+    )
+  `;
+  await sql.query(`
+    DROP POLICY IF EXISTS omni_tool_events_actor_scope
+    ON omni_events
+  `);
+  await sql.query(`
+    CREATE POLICY omni_tool_events_actor_scope
+    ON omni_events
+    AS RESTRICTIVE
+    FOR ALL
+    USING (${toolEventPredicate})
+    WITH CHECK (${toolEventPredicate})
+  `);
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM omni_tool_executions
+        WHERE tenant_id IS NULL
+          OR actor_id IS NULL
+          OR actor_id IS DISTINCT FROM btrim(actor_id)
+          OR char_length(actor_id) NOT BETWEEN 1 AND 320
+      ) THEN
+        RAISE EXCEPTION 'Governed tool execution ownership backfill is incomplete'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_tool_executions'::regclass
+          AND relrowsecurity
+          AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_tool_executions'::regclass
+          AND polname = 'omni_tool_executions_actor_scope'
+          AND NOT polpermissive
+          AND polcmd = '*'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_events'::regclass
+          AND polname = 'omni_tool_events_actor_scope'
+          AND NOT polpermissive
+          AND polcmd = '*'
+      ) THEN
+        RAISE EXCEPTION 'Actor-private governed tool policy is incomplete'
+          USING ERRCODE = '55000';
+      END IF;
     END
     $migration$
   `;
