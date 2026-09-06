@@ -1813,6 +1813,17 @@ compilation, standing consent-driven formation, private-memory worker
 consumption, and the full authority resolver remain pending. This canary
 therefore advances P3.1 without marking it done.
 
+P3.3 is complete. Memory formation now accepts active records only from an
+explicit user assertion, a canonical source observation, or a terminal tool
+effect carrying a verified receipt and exact run/tool evidence. Every accepted
+record has a metadata-only formation receipt. Assistant responses and
+workflow-generated reports are inactive `candidate` inferences and are absent
+from active retrieval and graph projections. Failed, blocked, approval-held,
+dry-run, cross-actor, and unverified effects form no successful episode.
+Migration v83 quarantines legacy active response-derived memories and removes
+their derived graph and daily-brief projections. This closes P3.3 without
+claiming P3.1, P3.2, or the rest of Phase 3.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
