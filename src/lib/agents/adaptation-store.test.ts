@@ -41,7 +41,7 @@ describe("P7.6 Agent adaptation store", () => {
     const database = fakeAdaptationSql();
     mocks.getSql.mockReturnValue(database.sql);
 
-    const adaptations = await observeAgentAdaptationEvidence("scout", owner);
+    const adaptations = await observeAgentAdaptationEvidence("scout", 1, owner);
 
     expect(adaptations).toHaveLength(1);
     expect(adaptations[0]).toMatchObject({
@@ -61,7 +61,7 @@ describe("P7.6 Agent adaptation store", () => {
   it("evaluates, activates with a numbered version, and rolls back", async () => {
     const database = fakeAdaptationSql();
     mocks.getSql.mockReturnValue(database.sql);
-    const [observed] = await observeAgentAdaptationEvidence("scout", owner);
+    const [observed] = await observeAgentAdaptationEvidence("scout", 1, owner);
 
     const evaluated = await evaluateAgentAdaptation(
       "scout",
@@ -139,19 +139,20 @@ function fakeAdaptationSql() {
           agent_definition_id: params[2],
           owner_actor_id: params[3],
           owner_binding_sha256: params[4],
-          state: params[5],
-          lifecycle_revision: params[6],
-          evidence: params[7],
-          evidence_sha256: params[8],
-          confidence: params[9],
-          effect_kind: params[10],
-          effect_payload: params[11],
+          observed_definition_version: params[5],
+          state: params[6],
+          lifecycle_revision: params[7],
+          evidence: params[8],
+          evidence_sha256: params[9],
+          confidence: params[10],
+          effect_kind: params[11],
+          effect_payload: params[12],
           evaluation: null,
           evaluation_sha256: null,
           evaluated_definition_version: null,
           activation_version: null,
-          created_at: params[12],
-          updated_at: params[13],
+          created_at: params[13],
+          updated_at: params[14],
           evaluated_at: null,
           activated_at: null,
           rolled_back_at: null,

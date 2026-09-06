@@ -95,7 +95,11 @@ async function POSTHandler(
   try {
     const identity = await currentIdentity(id, owner);
     const adaptations = parsed.data.action === "refresh"
-      ? await observeAgentAdaptationEvidence(id, owner)
+      ? await observeAgentAdaptationEvidence(
+          id,
+          identity.definition.definitionVersion,
+          owner,
+        )
       : parsed.data.action === "evaluate"
         ? await evaluateAgentAdaptation(
             id,

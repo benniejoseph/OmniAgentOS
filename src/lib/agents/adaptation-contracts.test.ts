@@ -38,7 +38,7 @@ describe("P7.6 Agent adaptation contract", () => {
 
   it("requires a passed exact-version evaluation before activation", () => {
     const evaluated = evaluateAgentAdaptationV1(
-      observed(),
+      observed(3),
       3,
       "2026-09-07T05:01:00.000Z",
     );
@@ -67,6 +67,7 @@ describe("P7.6 Agent adaptation contract", () => {
       tenantId: "tenant-one",
       ownerActorId: "owner@example.test",
       agentId: "scout",
+      definitionVersion: 1,
       evidence: [evidence],
       guidance: "Prefer primary sources.",
       confidence: 0.5,
@@ -102,11 +103,12 @@ describe("P7.6 Agent adaptation contract", () => {
   });
 });
 
-function observed() {
+function observed(definitionVersion = 1) {
   return buildObservedAgentAdaptationV1({
     tenantId: "tenant-one",
     ownerActorId: "owner@example.test",
     agentId: "scout",
+    definitionVersion,
     evidence: [evidence],
     guidance: "Cite the exact source for material claims.",
     confidence: 0.9,

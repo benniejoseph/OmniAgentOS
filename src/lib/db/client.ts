@@ -10364,6 +10364,7 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
       agent_definition_id TEXT NOT NULL,
       owner_actor_id TEXT NOT NULL,
       owner_binding_sha256 TEXT NOT NULL,
+      observed_definition_version BIGINT NOT NULL,
       state TEXT NOT NULL DEFAULT 'observed',
       lifecycle_revision SMALLINT NOT NULL DEFAULT 0,
       evidence JSONB NOT NULL,
@@ -10383,7 +10384,7 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
       PRIMARY KEY (tenant_id, adaptation_id),
       UNIQUE (
         tenant_id, owner_actor_id, agent_definition_id,
-        effect_kind, evidence_sha256
+        observed_definition_version, effect_kind, evidence_sha256
       ),
       UNIQUE (
         tenant_id, owner_actor_id, agent_definition_id, activation_version
@@ -10392,6 +10393,9 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
       CHECK (char_length(adaptation_id) BETWEEN 1 AND 240),
       CHECK (char_length(agent_definition_id) BETWEEN 1 AND 240),
       CHECK (owner_binding_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (
+        observed_definition_version BETWEEN 1 AND 9007199254740991
+      ),
       CHECK (state IN ('observed', 'evaluated', 'active', 'rolled_back')),
       CHECK (lifecycle_revision BETWEEN 0 AND 3),
       CHECK (
@@ -10495,12 +10499,14 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
       IF ROW(
         NEW.schema_version, NEW.tenant_id, NEW.adaptation_id,
         NEW.agent_definition_id, NEW.owner_actor_id,
-        NEW.owner_binding_sha256, NEW.evidence, NEW.evidence_sha256,
+        NEW.owner_binding_sha256, NEW.observed_definition_version,
+        NEW.evidence, NEW.evidence_sha256,
         NEW.confidence, NEW.effect_kind, NEW.effect_payload, NEW.created_at
       ) IS DISTINCT FROM ROW(
         OLD.schema_version, OLD.tenant_id, OLD.adaptation_id,
         OLD.agent_definition_id, OLD.owner_actor_id,
-        OLD.owner_binding_sha256, OLD.evidence, OLD.evidence_sha256,
+        OLD.owner_binding_sha256, OLD.observed_definition_version,
+        OLD.evidence, OLD.evidence_sha256,
         OLD.confidence, OLD.effect_kind, OLD.effect_payload, OLD.created_at
       ) OR NEW.lifecycle_revision IS DISTINCT FROM OLD.lifecycle_revision + 1
       THEN

@@ -79,7 +79,11 @@ describe("P7.6 Agent adaptation route", () => {
   it("observes evidence only through an explicit refresh", async () => {
     const response = await post({ action: "refresh" });
     expect(response.status).toBe(200);
-    expect(mocks.observe).toHaveBeenCalledWith("scout", expect.anything());
+    expect(mocks.observe).toHaveBeenCalledWith(
+      "scout",
+      3,
+      expect.anything(),
+    );
   });
 
   it("binds evaluation and activation to the current definition", async () => {
