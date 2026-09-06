@@ -140,6 +140,7 @@
 .graph :global(.memory-graph-nodes text) { fill: var(--day-muted); font-size: 9px; }
 .graph :global(.memory-graph-legend) { right: 1rem; bottom: 1rem; border-color: var(--day-line); border-radius: 999px; padding: .55rem .75rem; background: var(--day-paper); backdrop-filter: blur(14px); }
 .graph :global(.memory-graph-legend span) { color: var(--day-muted); font-size: .53rem; }
+.graphActions { display: flex; align-items: center; gap: .35rem; }
 
 .inspector { min-width: 0; overflow-y: auto; border-radius: 2rem 4.6rem 2rem 2rem; padding: 1.25rem; background: linear-gradient(160deg, var(--day-paper), color-mix(in oklab, var(--day-peach) 23%, var(--day-paper))); }
 .inspector :global(.memory-inspector-heading) { border-bottom-color: var(--day-line); }
@@ -259,6 +260,38 @@
 .registryEntityRow > .registryStateMerged { color: var(--day-muted); background: var(--day-paper-soft); }
 .registryEmpty { padding: 1.4rem 0; color: var(--day-muted); font-size: .62rem; text-align: center; }
 
+.relationshipDialog { overflow-y: auto; }
+.relationshipSearch { display: grid; min-height: 3rem; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .55rem; margin-top: 1rem; border: 1px solid var(--day-line); border-radius: 999px; padding: .2rem .25rem .2rem .85rem; color: var(--day-muted); background: var(--day-bg); }
+.relationshipSearch:focus-within { border-color: color-mix(in oklab, var(--day-primary) 56%, var(--day-line)); box-shadow: 0 0 0 4px color-mix(in oklab, var(--day-primary) 8%, transparent); }
+.relationshipSearch input { min-width: 0; height: 2.5rem; color: var(--day-ink); background: transparent; font-size: .66rem; outline: 0; }
+.relationshipSearch button { display: inline-flex; min-height: 2.45rem; align-items: center; gap: .35rem; border-radius: 999px; padding: 0 .8rem; color: var(--day-primary); background: var(--day-mint); font-size: .58rem; font-weight: 780; }
+.relationshipSearch button:disabled { cursor: not-allowed; opacity: .5; }
+.relationshipEmpty { display: grid; min-height: 18rem; place-items: center; align-content: center; gap: .55rem; color: var(--day-muted); text-align: center; }
+.relationshipEmpty strong { color: var(--day-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.05rem; font-weight: 600; }
+.relationshipEmpty span { max-width: 25rem; font-size: .6rem; }
+.relationshipPaths { display: grid; gap: .85rem; margin-top: .8rem; }
+.relationshipPathCard { display: grid; gap: .7rem; border: 1px solid color-mix(in oklab, var(--day-primary) 25%, var(--day-line)); border-radius: 1.3rem; padding: .9rem; background: color-mix(in oklab, var(--day-mint) 22%, var(--day-paper)); }
+.relationshipPathCard > header { display: flex; align-items: flex-start; justify-content: space-between; gap: .7rem; }
+.relationshipPathCard > header span { color: var(--day-primary); font-size: .5rem; font-weight: 780; letter-spacing: .1em; text-transform: uppercase; }
+.relationshipPathCard > header h4 { margin-top: .2rem; color: var(--day-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1rem; }
+.relationshipPathCard > header h4 small { color: var(--day-muted); font: inherit; font-size: .7rem; font-style: italic; }
+.relationshipPathCard > header > strong { flex: 0 0 auto; border-radius: 999px; padding: .3rem .45rem; color: var(--day-primary); background: var(--day-paper-solid); font-size: .56rem; }
+.relationshipPathCard > p { border-left: 2px solid var(--day-primary); padding-left: .55rem; color: var(--day-muted); font-size: .62rem; line-height: 1.5; }
+.relationshipPathCard > ol { display: grid; gap: .65rem; }
+.relationshipPathCard > ol > li { display: grid; gap: .55rem; border-top: 1px solid var(--day-line); padding-top: .65rem; }
+.relationshipHopHeading { display: flex; align-items: flex-start; gap: .5rem; }
+.relationshipHopHeading > span { display: grid; width: 1.5rem; height: 1.5rem; flex: 0 0 auto; place-items: center; border-radius: 50%; color: var(--day-primary); background: var(--day-mint); font-size: .55rem; font-weight: 800; }
+.relationshipHopHeading > div { display: grid; min-width: 0; gap: .12rem; }
+.relationshipHopHeading strong { color: var(--day-ink); font-size: .63rem; line-height: 1.4; }
+.relationshipHopHeading small { color: var(--day-muted); font-size: .52rem; }
+.relationshipEvidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; padding-left: 2rem; }
+.relationshipEvidence section { display: grid; min-width: 0; gap: .3rem; border: 1px solid var(--day-line); border-radius: .9rem; padding: .65rem; background: var(--day-paper-solid); }
+.relationshipEvidence section > header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; color: var(--day-primary); font-size: .49rem; }
+.relationshipEvidence section > header span { display: inline-flex; align-items: center; gap: .25rem; font-weight: 780; text-transform: uppercase; }
+.relationshipEvidence section > strong { overflow: hidden; color: var(--day-ink); font-size: .6rem; text-overflow: ellipsis; white-space: nowrap; }
+.relationshipEvidence blockquote { max-height: 6rem; overflow-y: auto; color: var(--day-muted); font-size: .56rem; line-height: 1.5; white-space: pre-wrap; }
+.relationshipEvidence section > small { color: var(--day-muted); font-size: .49rem; }
+
 .reconciliationDialog { overflow-y: auto; }
 .reconciliationList { display: grid; gap: .85rem; margin-top: .8rem; }
 .reconciliationCard { display: grid; gap: .75rem; border: 1px solid color-mix(in oklab, var(--danger) 25%, var(--day-line)); border-radius: 1.3rem; padding: .9rem; background: color-mix(in oklab, var(--day-peach) 26%, var(--day-paper)); }
@@ -318,6 +351,8 @@
   .graph > svg { height: 31rem; min-height: 31rem; }
 }
 @media (max-width: 40rem) {
+  .graphActions { align-items: stretch; flex-direction: column; }
+  .relationshipEvidence { grid-template-columns: 1fr; padding-left: 0; }
   .header { flex-direction: column; align-items: flex-start; gap: 1rem; padding: 1.2rem .9rem; }
   .headerIntro { align-items: flex-start; }
   .headerIcon { width: 2.8rem; height: 2.8rem; }

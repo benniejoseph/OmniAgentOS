@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { retrieveGraphRelationshipPaths } from "@/lib/entities/graph-retrieval";
 import {
   entityRelationTypeIdSchema,
 } from "@/lib/entities/ontology";
@@ -45,6 +46,12 @@ const temporalRelationQuerySchema = z.object({
   limit: z.number().int().min(1).max(200),
 }).strict();
 
+const relationshipPathQuerySchema = z.object({
+  query: z.string().trim().min(1).max(4_000),
+  maxHops: z.number().int().min(1).max(3),
+  limit: z.number().int().min(1).max(24),
+}).strict();
+
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request) {
@@ -57,6 +64,9 @@ async function GETHandler(request: Request) {
 
   if (view === "temporal_relations") {
     return readTemporalRelations(request, url, limit);
+  }
+  if (view === "relationship_paths") {
+    return readRelationshipPaths(request, query, url, Math.min(limit, 24));
   }
 
   let context;
@@ -110,6 +120,79 @@ async function GETHandler(request: Request) {
   ]);
 
   return Response.json({ nodes, edges, stats });
+}
+
+async function readRelationshipPaths(
+  request: Request,
+  query: string | undefined,
+  url: URL,
+  limit: number,
+) {
+  const parsed = relationshipPathQuerySchema.safeParse({
+    query,
+    maxHops: Number(url.searchParams.get("maxHops") || 2),
+    limit,
+  });
+  if (!parsed.success) {
+    return Response.json(
+      { error: "Invalid relationship path query", details: parsed.error.flatten() },
+      { status: 400, headers: privateNoStoreHeaders },
+    );
+  }
+
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "read",
+      resourceType: "memory_graph",
+      metadata: {
+        view: "relationship_paths",
+        queryLength: parsed.data.query.length,
+        maxHops: parsed.data.maxHops,
+        limit: parsed.data.limit,
+      },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+  const correlationId = `entity_graph_path_${randomUUID()}`;
+  const entityAccess = requestEntityAccessFromSecurityContext(context, {
+    purposeId: "entity.read.v1",
+    correlationId,
+  });
+  const memoryAccess = requestMemoryAccessFromSecurityContext(context, {
+    purposeId: MEMORY_PURPOSE_IDS.retrieve,
+    auditPurpose: "api.memory.graph.relationship_paths",
+    correlationId,
+  });
+  if (!entityAccess || !memoryAccess) {
+    return Response.json(
+      { error: "Private relationship paths are unavailable for this identity." },
+      { status: 403, headers: privateNoStoreHeaders },
+    );
+  }
+
+  try {
+    const result = await retrieveGraphRelationshipPaths(parsed.data.query, {
+      entityAccess,
+      memoryAccessScope: memoryAccess.databaseAccessScope,
+      contextExecutionScope: memoryAccess.executionScope,
+      maxHops: parsed.data.maxHops,
+      limit: parsed.data.limit,
+    });
+    return Response.json({
+      schemaVersion: 1,
+      view: "relationship_paths",
+      query: parsed.data.query,
+      ...result,
+    }, { headers: privateNoStoreHeaders });
+  } catch {
+    return Response.json(
+      { error: "Relationship paths could not be loaded." },
+      { status: 500, headers: privateNoStoreHeaders },
+    );
+  }
 }
 
 async function readTemporalRelations(

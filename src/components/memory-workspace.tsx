@@ -32,6 +32,7 @@ import {
   EntityRegistryDialog,
   type EntityRegistryPayload,
 } from "@/components/entity-registry-dialog";
+import { RelationshipPathDialog } from "@/components/relationship-path-dialog";
 import {
   memoryFormationReasonLabel,
   memoryTierPoliciesV1,
@@ -132,6 +133,7 @@ export function MemoryWorkspace() {
     MemoryReconciliationReview[]
   >([]);
   const [showEntities, setShowEntities] = useState(false);
+  const [showRelationshipPaths, setShowRelationshipPaths] = useState(false);
   const [entityRegistry, setEntityRegistry] = useState<EntityRegistryPayload>();
   const [entityRegistryError, setEntityRegistryError] = useState<string>();
   const [indexCollapsed, setIndexCollapsed] = useState(false);
@@ -567,7 +569,7 @@ export function MemoryWorkspace() {
         </aside>
 
         <section className={clsx("memory-graph", styles.graph)} aria-label="Knowledge graph">
-          <div className="memory-graph-toolbar"><div className={styles.graphTitle}><span><GitMerge size={14} aria-hidden="true" /> Knowledge graph</span><small>{positionedNodes.length} visible concepts · {visibleEdges.length} relationships</small></div><button type="button" onClick={() => void refreshGraph()}><RefreshCw size={13} aria-hidden="true" /> Rebuild</button></div>
+          <div className="memory-graph-toolbar"><div className={styles.graphTitle}><span><GitMerge size={14} aria-hidden="true" /> Knowledge graph</span><small>{positionedNodes.length} visible concepts · {visibleEdges.length} relationships</small></div><div className={styles.graphActions}><button type="button" onClick={() => setShowRelationshipPaths(true)}><Network size={13} aria-hidden="true" /> Trace paths</button><button type="button" onClick={() => void refreshGraph()}><RefreshCw size={13} aria-hidden="true" /> Rebuild</button></div></div>
           <svg viewBox="0 0 760 560" role="img" aria-label={`${positionedNodes.length} memory concepts connected by ${visibleEdges.length} visible relationships`}>
             <g className="memory-graph-edges">{visibleEdges.map((edge) => { const source = positionedNodes.find((node) => node.id === edge.sourceNodeId); const target = positionedNodes.find((node) => node.id === edge.targetNodeId); return source && target ? <line key={edge.id} x1={source.x} y1={source.y} x2={target.x} y2={target.y} style={{ opacity: Math.min(.18 + edge.weight * .12, .65) }} /> : null; })}</g>
             <g className="memory-graph-nodes">{positionedNodes.map((node) => <g key={node.id} role="button" tabIndex={0} aria-label={`${node.label}, ${node.kind}`} className={clsx(selectedNodeId === node.id && "is-selected", node.memoryIds.some((id) => id === selectedMemoryId) && "is-related", `kind-${node.kind}`)} transform={`translate(${node.x} ${node.y})`} onClick={() => selectNode(node)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") selectNode(node); }}><circle r={Math.min(8 + node.weight * 1.8, 20)} /><text y={Math.min(8 + node.weight * 1.8, 20) + 13} textAnchor="middle">{truncate(node.label, 22)}</text></g>)}</g>
@@ -590,6 +592,7 @@ export function MemoryWorkspace() {
         </aside>
       </div>
       {showCreate ? <CreateMemoryDialog onClose={() => setShowCreate(false)} onCreated={(memory, projection) => { setShowCreate(false); setMemories((current) => [memory, ...current]); selectMemory(memory); setAnnouncement(projection?.candidateCount ? `Memory added. ${projection.createdCount} new and ${projection.linkedCount} existing private entities matched; ${projection.reviewRequiredCount} require review.` : "Memory added."); void refreshGraph(); void loadEntityRegistry(); }} /> : null}
+      {showRelationshipPaths ? <RelationshipPathDialog initialQuery={selectedMemory?.title || query} onClose={() => setShowRelationshipPaths(false)} /> : null}
       {showEntities ? <EntityRegistryDialog registry={entityRegistry} loadError={entityRegistryError} onClose={() => setShowEntities(false)} onReload={loadEntityRegistry} onAnnouncement={setAnnouncement} /> : null}
       {showReconciliation ? <MemoryReconciliationDialog reviews={reconciliationReviews} onClose={() => setShowReconciliation(false)} onResolved={recordResolvedReview} /> : null}
       {showMaintenance ? <MemoryMaintenanceDialog reviews={maintenanceReviews} memories={memories} report={maintenanceReport} busyId={maintenanceBusy} onRun={() => void runMaintenance()} onDecision={(review, decision) => void decidePromotion(review, decision)} onClose={() => setShowMaintenance(false)} /> : null}
