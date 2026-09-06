@@ -993,6 +993,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[81],
       up: ensureActorPrivateToolExecutionLedgers,
     },
+    {
+      ...databaseSchemaMigrations[82],
+      up: ensureEvidenceBasedMemoryFormation,
+    },
   ];
 }
 
@@ -4891,6 +4895,104 @@ async function ensureActorPrivateToolExecutionLedgers(sql: SqlClient) {
       END IF;
     END
     $migration$
+  `;
+}
+
+async function ensureEvidenceBasedMemoryFormation(sql: SqlClient) {
+  await sql`DROP TABLE IF EXISTS pg_temp.omni_response_memory_quarantine`;
+  await sql`
+    CREATE TEMP TABLE omni_response_memory_quarantine
+    ON COMMIT DROP
+    AS
+    SELECT tenant_id, id
+    FROM omni_memories
+    WHERE source IN ('agent', 'consolidator')
+      AND asserted_by = 'agent'
+      AND claim_status = 'active'
+  `;
+  await sql`
+    INSERT INTO omni_events (
+      id, stream_id, type, tenant_id, actor_id, payload,
+      causation_id, correlation_id, at
+    )
+    SELECT
+      'memory_response_quarantine_' || md5(
+        quarantine.tenant_id || ':' || quarantine.id
+      ),
+      'memory:' || quarantine.id,
+      'memory.response_derived.quarantined',
+      quarantine.tenant_id,
+      'system',
+      jsonb_build_object(
+        'schemaVersion', 1,
+        'memoryId', quarantine.id,
+        'previousClaimStatus', 'active',
+        'claimStatus', 'candidate',
+        'reasonCode', 'unsupported_response_derived_claim'
+      ),
+      quarantine.id,
+      'schema-migration:83',
+      NOW()
+    FROM omni_response_memory_quarantine quarantine
+    ON CONFLICT (id) DO NOTHING
+  `;
+  await sql`
+    UPDATE omni_memories memory
+    SET claim_status = 'candidate',
+        updated_at = NOW()
+    FROM omni_response_memory_quarantine quarantine
+    WHERE memory.tenant_id = quarantine.tenant_id
+      AND memory.id = quarantine.id
+  `;
+  await sql`
+    DELETE FROM omni_memory_graph_edges edge
+    WHERE EXISTS (
+      SELECT 1
+      FROM omni_response_memory_quarantine quarantine
+      WHERE quarantine.tenant_id = edge.tenant_id
+        AND quarantine.id = ANY(edge.memory_ids)
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM omni_memory_graph_nodes endpoint
+      JOIN omni_response_memory_quarantine quarantine
+        ON quarantine.tenant_id = endpoint.tenant_id
+       AND quarantine.id = ANY(endpoint.memory_ids)
+      WHERE endpoint.tenant_id = edge.tenant_id
+        AND endpoint.id IN (edge.source_node_id, edge.target_node_id)
+    )
+  `;
+  await sql`
+    DELETE FROM omni_memory_graph_nodes node
+    WHERE EXISTS (
+      SELECT 1
+      FROM omni_response_memory_quarantine quarantine
+      WHERE quarantine.tenant_id = node.tenant_id
+        AND quarantine.id = ANY(node.memory_ids)
+    )
+  `;
+  await sql`
+    DELETE FROM omni_daily_briefs brief
+    WHERE EXISTS (
+      SELECT 1
+      FROM omni_response_memory_quarantine quarantine
+      WHERE quarantine.tenant_id = brief.tenant_id
+        AND quarantine.id = ANY(brief.memory_ids)
+    )
+  `;
+  await sql`
+    INSERT INTO omni_memory_graph_rebuild_queue AS rebuild (
+      tenant_id, requested_at, attempts, last_error, updated_at, generation
+    )
+    SELECT DISTINCT
+      quarantine.tenant_id, NOW(), 0, NULL, NOW(), 1
+    FROM omni_response_memory_quarantine quarantine
+    ON CONFLICT (tenant_id) DO UPDATE SET
+      requested_at = NOW(),
+      attempts = 0,
+      last_error = NULL,
+      updated_at = NOW(),
+      generation = rebuild.generation + 1
   `;
 }
 

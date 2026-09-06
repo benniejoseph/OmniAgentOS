@@ -542,7 +542,7 @@ async function executeBackgroundOperation(
       response: run.response || "",
       abortSignal,
     });
-    const learnedCount = 1 + consolidation.saved.length;
+    const learnedCount = consolidation.saved.length;
     const feedbackAdjustedMemoryIds = run.feedback
       ? await applyRunMemoryFeedback(run.id, run.feedback.verdict, {
           tenantId: job.tenantId,
@@ -557,8 +557,10 @@ async function executeBackgroundOperation(
       {
         type: "memory",
         title: consolidation.error
-          ? "memory consolidation failed"
-          : "conversation learned",
+          ? "evidence-based memory formation failed"
+          : learnedCount
+            ? "evidence-backed memory formed"
+            : "no verified effects to learn",
         count: learnedCount,
       },
       { tenantId: job.tenantId },
@@ -569,7 +571,7 @@ async function executeBackgroundOperation(
     return {
       resourceId: parsed.runId,
       saved: learnedCount,
-      episodeId: episode.id,
+      ...(episode ? { episodeId: episode.id } : {}),
       feedbackAdjusted: feedbackAdjustedMemoryIds.length,
       skipped: consolidation.skipped,
       error: consolidation.error,

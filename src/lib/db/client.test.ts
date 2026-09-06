@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the actor-private governed tool ledger migration", () => {
+  it("pins the evidence-based memory formation migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 82,
-      name: "actor_private_tool_execution_ledgers",
-      checksum: "6f2ebdaaebb87fd3e9cc187d998c5e03fabe634e965418bd7331957f6d7bb273",
+      version: 83,
+      name: "evidence_based_memory_formation",
+      checksum: "d34797aa2f52c819226621c673f288f54bfd7d751dadf5c7fa75785a28854e80",
     });
   });
 
