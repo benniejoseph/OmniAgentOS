@@ -93,7 +93,7 @@ beforeEach(() => {
   });
   mocks.listStreamEvents.mockResolvedValue([
     event("workflow-plan", 2, "workflow:workflow-one", "workflow.dynamic_plan.created"),
-    event("workflow-model", 3, "workflow:workflow-one", "model.called"),
+    event("workflow-model", 3, "ai-usage:workflow-model", "ai.usage.recorded"),
     event("workflow-done", 4, "workflow:workflow-one", "workflow.completed"),
   ]);
   mocks.listCorrelatedEvents.mockResolvedValue([
