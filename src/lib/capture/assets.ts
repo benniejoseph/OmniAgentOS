@@ -11,6 +11,11 @@ import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
+import {
+  retireAssetObjectsForSource,
+  stageAssetObject,
+  updateAssetObjectExtractionState,
+} from "@/lib/storage/object-plane";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type {
@@ -156,7 +161,9 @@ export async function saveCaptureAsset(input: ScopedOwner & {
         if (!existing[0]) {
           throw new CaptureAssetError("Capture asset idempotency conflict.");
         }
-        return assetFromRow(existing[0]);
+        const saved = assetFromRow(existing[0]);
+        await stageCaptureAssetObject(saved, executionScope, sql);
+        return saved;
       }
       const saved = assetFromRow(rows[0]);
       await appendCaptureAssetEvent(saved, executionScope, "capture_asset.scope_bound", {
@@ -169,6 +176,7 @@ export async function saveCaptureAsset(input: ScopedOwner & {
         scopeVersion: executionScope.version,
         scopeSha256: sha256Json(executionScope),
       }, { sql });
+      await stageCaptureAssetObject(saved, executionScope, sql);
       return saved;
     }) as Promise<CaptureAsset>;
   }
@@ -493,6 +501,14 @@ export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, i
           updated_at
       `;
       const updated = assetFromRow(rows[0]);
+      await updateAssetObjectExtractionState({
+        tenantId: updated.tenantId,
+        ownerActorId: updated.actorId,
+        sourceKind: "capture_asset",
+        sourceId: updated.id,
+        extractionState: updated.extractionStatus,
+        executionScope,
+      }, { sql });
       await appendCaptureAssetStatusEvent(asset, updated, executionScope, error, { sql });
       return updated;
     }) as Promise<CaptureAsset>;
@@ -516,6 +532,13 @@ export async function deleteCaptureAsset(
     : await requireCaptureAsset(id, owner);
   if (hasDatabaseUrl()) {
     const deleteWithSql = async (sql: ReturnType<typeof getSql>) => {
+      await retireAssetObjectsForSource({
+        tenantId: asset.tenantId,
+        ownerActorId: asset.actorId,
+        sourceKind: "capture_asset",
+        sourceId: asset.id,
+        executionScope,
+      }, { sql });
       const rows = await sql`DELETE FROM omni_capture_assets WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId} RETURNING id`;
       if (!rows[0]) return false;
       await appendCaptureAssetEvent(asset, executionScope, "capture_asset.deleted", {
@@ -549,6 +572,27 @@ export async function deleteCaptureAsset(
     knowledgeDocumentId: asset.knowledgeDocumentId,
   });
   return true;
+}
+
+function stageCaptureAssetObject(
+  asset: CaptureAsset,
+  executionScope: ExecutionScope,
+  sql: ReturnType<typeof getSql>,
+) {
+  return stageAssetObject({
+    tenantId: asset.tenantId,
+    ownerActorId: asset.actorId,
+    sourceKind: "capture_asset",
+    sourceId: asset.id,
+    contentSha256: asset.contentSha256,
+    byteCount: asset.byteCount,
+    mediaType: asset.mediaType,
+    extractionState: asset.extractionStatus,
+    executionScope,
+    permissionGrantIds: ["first_party.capture"],
+    allowedPurposeIds: ["capture.asset.download", "capture.asset.extract"],
+    retentionPolicyId: "retention.capture.owner-controlled",
+  }, { sql });
 }
 
 function exactCaptureAssetForDeletion(
