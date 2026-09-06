@@ -2003,6 +2003,26 @@ The repeated live canary created and rebuilt turn, episode, and lifetime
 records, then removed the canary thread with zero turns, summaries, or dangling
 lineage remaining. This closes P3.5; P3.6 is next.
 
+P3.6 is complete at production release
+`10832461401f1f9cbd18884f0c7d4eba8f1fec54`. Frozen lifecycle policy v1 now
+applies deterministic retrieval-priority decay without changing historical
+truth, protects pinned records, reversibly archives exact duplicates, and
+creates review-required procedural-promotion proposals only from repeated
+verified episodic evidence with exact source lineage. Archived records are
+excluded from memory and graph retrieval while permanent deletion remains a
+separate reviewed barrier.
+
+Migration v104 installed forced-RLS lifecycle and promotion-review projections,
+immutable scope and lineage checks, deletion scrubbing, and five bounded lookup
+indexes under checksum
+`b717c250b1e743cbe103ec0a60686a5bc2029a79845442ee138b34d3dead8e5b`.
+The authenticated production maintenance pass scanned 1,825 records, archived
+19 exact duplicates across 14 groups, and reduced the active exact-duplicate
+rate from 1.0851% to zero; an immediate replay made zero changes. Canonical
+Vercel and Fly protocol 1 are healthy at the same exact release. This closes
+P3.6; P3.7 is next. P3.1 remains externally authority-gated, and P12/P13 remain
+deferred.
+
 The first P4.1 delivery is active only as a shadow comparison. Context Compiler
 v2 independently gates canonical source evidence, bound memory claims and
 summaries, and bound graph neighborhoods by exact tenant, actor, scope, grant,

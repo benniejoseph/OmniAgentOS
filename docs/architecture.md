@@ -1240,6 +1240,17 @@ untrusted bounded episode block only for omitted history. Summary writes emit
 metadata-only change events, and the source-turn deletion trigger removes every
 derived aggregate before the source disappears.
 
+P3.6 adds a separate lifecycle projection instead of mutating memory truth.
+Frozen policy v1 computes tier-aware retrieval multipliers from age and usage,
+then applies an explicit pin multiplier. Exact normalized claim groups select a
+canonical record deterministically and archive only unpinned duplicates; archive
+is reversible and distinct from reviewed deletion. Archived lineage is excluded
+from both direct and graph retrieval. Repeated verified episodic claims can
+create one deterministic procedural-promotion review with exact source IDs, but
+no promoted memory is written until the actor approves it. The maintenance
+worker enumerates tenants, groups private records by their persisted owner, and
+re-enters that exact maintenance scope before changing lifecycle state.
+
 The first P4.1 slice runs Context Compiler v2 beside, not instead of, the
 adaptive context engine. It normalizes the current candidate surfaces into
 canonical evidence, claims, summaries, and graph neighborhoods, then applies

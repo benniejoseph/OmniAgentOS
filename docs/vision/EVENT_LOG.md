@@ -1455,3 +1455,21 @@ the request-scoped compiler must still read it through forced tenant/actor RLS
 for the single `conversation.context.compile.v1` purpose. Deleting any source
 turn removes every directly or transitively derived summary before the turn is
 removed, keeping deletion separate from ordinary rebuilding.
+
+## Memory maintenance lifecycle
+
+P3.6 adds `memory.maintenance.completed`, `memory.lifecycle.pinned`,
+`memory.lifecycle.unpinned`, `memory.lifecycle.archived`,
+`memory.lifecycle.restored`, and `memory.promotion.reviewed`. Their payloads
+contain policy version, bounded action/reason/decision enums, opaque memory or
+review identifiers, exact duplicate/promotion lineage identifiers, aggregate
+counts, rates, and execution-scope coordinates only. They never contain memory
+title, content, tags, embeddings, evidence text, actor identity, or private
+reasoning.
+
+Lifecycle state and its metadata-only event commit together. Maintenance
+decisions are deterministic and idempotent; pin and archive affect retrieval
+priority or eligibility without rewriting the underlying claim. Promotion
+remains a review proposal until the authorized actor decides it, and reviewed
+permanent deletion remains an independent barrier that also scrubs lifecycle
+and promotion projections.
