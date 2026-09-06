@@ -144,17 +144,19 @@ export async function evaluateAgentRelease(
     if (persisted.evaluationSha256 !== evaluation.evaluationSha256) {
       throw new AgentReleaseConflictError();
     }
-    const executionScope = releaseExecutionScope(owner, agentId, "evaluate");
-    await appendReleaseEvent(sql, agentId, executionScope, AGENT_RELEASE_EVENT_TYPES.evaluated, {
-      schemaVersion: 1,
-      evaluationId: persisted.evaluationId,
-      evaluationSha256: persisted.evaluationSha256,
-      definitionVersion: persisted.definitionVersion,
-      baselineDefinitionVersion: persisted.baselineDefinitionVersion,
-      direction: persisted.direction,
-      changedFields: persisted.changedFields,
-      verdict: persisted.verdict,
-    });
+    if (inserted[0]) {
+      const executionScope = releaseExecutionScope(owner, agentId, "evaluate");
+      await appendReleaseEvent(sql, agentId, executionScope, AGENT_RELEASE_EVENT_TYPES.evaluated, {
+        schemaVersion: 1,
+        evaluationId: persisted.evaluationId,
+        evaluationSha256: persisted.evaluationSha256,
+        definitionVersion: persisted.definitionVersion,
+        baselineDefinitionVersion: persisted.baselineDefinitionVersion,
+        direction: persisted.direction,
+        changedFields: persisted.changedFields,
+        verdict: persisted.verdict,
+      });
+    }
     return readAgentRelease(sql, agentId, owner, false);
   }) as Promise<AgentReleaseView>;
 }
