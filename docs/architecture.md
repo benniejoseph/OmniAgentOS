@@ -1176,6 +1176,25 @@ episode. Migration v83 quarantines legacy active response-derived memories as
 `candidate`, removes their graph and brief projections, and schedules graph
 rebuilding.
 
+The first P4.1 slice runs Context Compiler v2 beside, not instead of, the
+adaptive context engine. It normalizes the current candidate surfaces into
+canonical evidence, claims, summaries, and graph neighborhoods, then applies
+scope, grant, purpose, retention, temporal-validity, source-currentness, and
+graph-lineage checks before its own deterministic selection. Explicit empty
+selection still selects nothing. Legacy unbound records and graph projections
+are rejected by v2 rather than silently acquiring authority.
+
+The legacy context block remains the only prompt input during this shadow.
+Each durable direct run compares that selection with v2 and appends
+`run.context_compiler_v2.shadow` to the actor-bound run stream. Its strict
+receipt contains hashed candidate and source-revision references, decision
+enums, counts, version pins, and a receipt digest; it contains no query text,
+evidence content, titles, raw IDs, embeddings, or reasoning. New canonical
+text-source revisions include `agent.context.compile.v2` in their allowed
+purposes. Existing revisions are not mutated and therefore fail the v2 purpose
+gate until independently reauthorized or re-ingested. Promotion and a
+pre-retrieval authorization cutover remain later P4.1 work.
+
 ## Where things live
 
 | Concern | Path |

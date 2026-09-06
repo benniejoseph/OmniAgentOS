@@ -1824,6 +1824,18 @@ Migration v83 quarantines legacy active response-derived memories and removes
 their derived graph and daily-brief projections. This closes P3.3 without
 claiming P3.1, P3.2, or the rest of Phase 3.
 
+The first P4.1 delivery is active only as a shadow comparison. Context Compiler
+v2 independently gates canonical source evidence, bound memory claims and
+summaries, and bound graph neighborhoods by exact tenant, actor, scope, grant,
+purpose, retention, temporal validity, source currentness, and active backing
+memory. Explicit empty selection is preserved. The existing adaptive pack is
+still the only prompt input; v2 records the difference as a digest-verified
+`run.context_compiler_v2.shadow` event with hashed references and counts only.
+New canonical text revisions carry the v2 purpose, while historical revisions
+are not silently rewritten. P4.1 remains open until production comparison
+evidence supports promotion and authorization moves ahead of all candidate
+retrieval/ranking paths.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
