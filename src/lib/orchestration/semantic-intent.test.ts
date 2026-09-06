@@ -40,6 +40,17 @@ const memoryWriteCapability: CapabilityDescriptor = {
   reversible: true,
 };
 
+const memorySearchCapability: CapabilityDescriptor = {
+  id: "memory.search",
+  name: "Search memory",
+  description: "Find durable memories.",
+  category: "memory",
+  source: "native",
+  riskLevel: 0,
+  approvalRequired: false,
+  reversible: true,
+};
+
 function candidate(
   overrides: Partial<SemanticIntentCandidate> = {},
 ): SemanticIntentCandidate {
@@ -202,6 +213,29 @@ describe("semantic intent policy", () => {
     expect(resolution.decision.route).toBe("direct");
     expect(resolution.receipt.matchedCapabilityIds).toEqual([
       "memory.write",
+    ]);
+  });
+
+  it("keeps learn-mode retrieval bound to memory when the model omits its work kind", () => {
+    const resolution = applySemanticIntentPolicy({
+      message: "What did I decide about the September launch?",
+      baseline: routeAgentRequest(
+        "What did I decide about the September launch?",
+        "learn",
+      ),
+      mode: "learn",
+      capabilityCandidates: [memorySearchCapability],
+      candidate: candidate({
+        intent: "question",
+        executionShape: "conversational",
+        workKinds: [],
+        capabilityQueries: ["September launch decision"],
+      }),
+    });
+
+    expect(resolution.decision.route).toBe("direct");
+    expect(resolution.receipt.matchedCapabilityIds).toEqual([
+      "memory.search",
     ]);
   });
 
