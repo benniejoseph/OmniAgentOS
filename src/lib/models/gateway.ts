@@ -18,6 +18,9 @@ import {
   ModelProviderError,
 } from "@/lib/models/types";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
+import {
+  modelConversationSchema,
+} from "@/lib/models/conversation";
 
 const MAX_TARGET_ATTEMPTS = 4;
 const MAX_TOOL_DEFINITIONS = 32;
@@ -87,13 +90,32 @@ export async function generateModelToolTurn(
     allowCrossProviderFallback: crossProviderFirstTurn,
     tools: request.tools,
     toolResults: sanitizeToolResults(request.toolResults),
+    ...(request.conversation
+      ? {
+          conversation: sanitizeModelConversation(
+            request.conversation,
+            request.preferredProvider,
+          ),
+        }
+      : {}),
+    ...(request.continuation?.conversation
+      ? {
+          continuation: {
+            ...request.continuation,
+            conversation: sanitizeModelConversation(
+              request.continuation.conversation,
+              request.preferredProvider,
+            ),
+          },
+        }
+      : {}),
   };
   const runtime = getModelRuntime(request);
   if (runtime) bindModelRuntime(gatewayRequest, runtime);
   return executeGateway(
     gatewayRequest,
     "tools",
-    (adapter, target) => {
+    async (adapter, target) => {
       if (!adapter.generateToolTurn) {
         throw new ModelProviderError(
           `${adapter.id} does not support governed tool turns.`,
@@ -110,9 +132,43 @@ export async function generateModelToolTurn(
         tools: sanitizeToolDefinitions(gatewayRequest.tools, adapter.id),
       };
       if (runtime) bindModelRuntime(candidateRequest, runtime);
-      return adapter.generateToolTurn(candidateRequest, target);
+      const result = await adapter.generateToolTurn(candidateRequest, target);
+      const conversation = modelConversationSchema.safeParse(
+        result.continuation.conversation,
+      );
+      if (!conversation.success) {
+        throw new ModelProviderError(
+          `${adapter.id} returned a continuation without a valid canonical conversation.`,
+          adapter.id,
+          "invalid_request",
+          false,
+        );
+      }
+      return {
+        ...result,
+        continuation: {
+          ...result.continuation,
+          conversation: conversation.data,
+        },
+      };
     },
   );
+}
+
+function sanitizeModelConversation(
+  value: unknown,
+  provider: ModelToolTurnRequest["preferredProvider"],
+) {
+  const parsed = modelConversationSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new ModelProviderError(
+      "The provider conversation contract is invalid.",
+      provider,
+      "invalid_request",
+      false,
+    );
+  }
+  return parsed.data;
 }
 
 async function executeGateway<
