@@ -231,21 +231,17 @@ function semanticRoute(
   candidate: SemanticIntentCandidate,
   baseline: SupervisorDecision,
 ): SupervisorDecision["route"] {
-  if (
-    candidate.workKinds.includes("memory") &&
-    baseline.route === "direct" &&
-    candidate.intent !== "recurring"
-  ) {
-    return "direct";
-  }
-  if (
-    candidate.executionShape === "recurring" ||
-    candidate.executionShape === "background"
-  ) {
+  if (baseline.route === "durable_workflow") {
     return "durable_workflow";
   }
   if (
-    candidate.executionShape === "multi_step"
+    candidate.executionShape === "multi_step" &&
+    candidate.workKinds.includes("build") &&
+    (
+      candidate.workKinds.includes("research") ||
+      candidate.workKinds.includes("verify") ||
+      candidate.workKinds.includes("coordinate")
+    )
   ) {
     return "durable_workflow";
   }

@@ -60,11 +60,11 @@ function candidate(
 describe("semantic intent policy", () => {
   it("routes semantic background coordination durably and selects its team", () => {
     const baseline = routeAgentRequest(
-      "Investigate this and prepare a verified report for later.",
+      "In the background, investigate this and prepare a verified report.",
       "orchestrate",
     );
     const resolution = applySemanticIntentPolicy({
-      message: "Investigate this and prepare a verified report for later.",
+      message: "In the background, investigate this and prepare a verified report.",
       baseline,
       mode: "orchestrate",
       capabilityCandidates: [readCapability],
@@ -218,6 +218,34 @@ describe("semantic intent policy", () => {
       }),
     });
     expect(resolution.decision.route).toBe("durable_workflow");
+  });
+
+  it("rejects unsupported background and multi-step claims", () => {
+    const background = applySemanticIntentPolicy({
+      message: "Remember my release-note preference.",
+      baseline: routeAgentRequest("Remember my release-note preference."),
+      mode: "learn",
+      capabilityCandidates: [memoryWriteCapability],
+      candidate: candidate({
+        intent: "unknown",
+        executionShape: "background",
+        workKinds: [],
+      }),
+    });
+    expect(background.decision.route).toBe("direct");
+
+    const comparison = applySemanticIntentPolicy({
+      message: "Compare these two deployment options.",
+      baseline: routeAgentRequest("Compare these two deployment options."),
+      mode: "research",
+      capabilityCandidates: [],
+      candidate: candidate({
+        intent: "research",
+        executionShape: "multi_step",
+        workKinds: ["research"],
+      }),
+    });
+    expect(comparison.decision.route).toBe("direct");
   });
 
   it("fails back to the deterministic decision without broadening it", () => {
