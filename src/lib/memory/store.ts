@@ -40,11 +40,17 @@ import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type { MemoryRecord, MemorySearchResult, MemoryType } from "@/lib/memory/types";
 import { isTemporalIntervalActive } from "@/lib/memory/temporal";
 import {
+  buildAgentPrivateMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
   memoryAccessBindingAllows,
   memoryAccessBindingV1Schema,
   type MemoryAccessBindingV1,
 } from "@/lib/memory/access-binding";
+import {
+  agentMemoryGrantTargetMemoryId,
+  buildAgentMemoryGrantArtifactV1,
+  type AgentMemoryGrantArtifactV1,
+} from "@/lib/memory/agent-memory-grant";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 import {
   embedLocalMultilingualTexts,
@@ -58,6 +64,7 @@ import {
   type CaptureIngestGuard,
 } from "@/lib/capture/ingest-guard";
 import { invalidateRunsForDeletedContext } from "@/lib/runs/context-invalidation";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
 import {
   buildMemoryFormationEvent,
   type MemoryFormationOrigin,
@@ -376,6 +383,208 @@ export async function saveMemoryWithCommitStatus(input: CreateMemoryInput) {
     throw new Error("Memory persistence did not return a result.");
   }
   return result;
+}
+
+export async function shareAgentPrivateMemory(input: {
+  tenantId?: string;
+  sourceMemoryId: string;
+  targetAgentId: string;
+  idempotencyKey: string;
+  sharedAt: string;
+  executionScope: ExecutionScope;
+}): Promise<{
+  grant: AgentMemoryGrantArtifactV1;
+  memory: MemoryRecord;
+}> {
+  if (!hasDatabaseUrl()) {
+    throw new Error("Agent-private memory sharing requires database storage.");
+  }
+  const tenantId = normalizeTenantId(input.tenantId);
+  const sourceExecutionScope = parsePersistedExecutionScope(
+    input.executionScope,
+  );
+  if (
+    !sourceExecutionScope ||
+    sourceExecutionScope.tenantId !== tenantId ||
+    !sourceExecutionScope.initiatingActorId ||
+    sourceExecutionScope.executingPrincipalType !== "agent" ||
+    !sourceExecutionScope.executingPrincipalId
+  ) {
+    throw new Error(
+      "Agent-private memory sharing requires an exact source-agent scope.",
+    );
+  }
+  const sourceAgentId = sourceExecutionScope.executingPrincipalId;
+  const targetAgentId = input.targetAgentId.trim();
+  if (!targetAgentId || targetAgentId === sourceAgentId) {
+    throw new Error("Agent-private memory sharing requires a sibling target.");
+  }
+  const sourceReadScope = databaseMemoryAccessScopeFromExecutionScope(
+    sourceExecutionScope,
+    {
+      purposeId: MEMORY_PURPOSE_IDS.read,
+      auditPurpose: "Read the source for an explicit agent-memory grant.",
+    },
+  );
+  const sourceMemory = await getMemory(input.sourceMemoryId, {
+    tenantId,
+    accessScope: sourceReadScope,
+  });
+  const sourceTier = sourceMemory
+    ? resolveMemoryTier(sourceMemory.tier, sourceMemory.type)
+    : undefined;
+  if (
+    !sourceMemory ||
+    sourceMemory.claimStatus !== "active" ||
+    !sourceMemory.accessBinding ||
+    sourceMemory.accessBinding.visibility !== "agent_private" ||
+    !memoryAccessBindingAllows(sourceReadScope, sourceMemory.accessBinding) ||
+    !sourceTier ||
+    !["working", "episodic", "semantic", "procedural"].includes(sourceTier)
+  ) {
+    throw new Error("The source agent memory is not eligible for sharing.");
+  }
+  const targetExecutionScope = deriveExecutionScope(sourceExecutionScope, {
+    executingPrincipalType: "agent",
+    executingPrincipalId: targetAgentId,
+    workspaceId: null,
+    projectId: null,
+    missionId: null,
+    causationId: sourceMemory.id,
+    purpose: "memory.agent_private.share",
+  });
+  const targetDatabaseScope = databaseMemoryAccessScopeFromExecutionScope(
+    targetExecutionScope,
+    {
+      purposeId: MEMORY_PURPOSE_IDS.formation,
+      auditPurpose: "Form a target-owned copy from an explicit agent grant.",
+    },
+  );
+  const targetMemoryId = agentMemoryGrantTargetMemoryId({
+    tenantId,
+    ownerActorId: sourceExecutionScope.initiatingActorId,
+    sourceAgentId,
+    sourceMemoryId: sourceMemory.id,
+    targetAgentId,
+    idempotencyKey: input.idempotencyKey,
+  });
+  const targetBinding = buildAgentPrivateMemoryAccessBindingV1({
+    tenantId,
+    ownerActorId: sourceExecutionScope.initiatingActorId,
+    ownerAgentId: targetAgentId,
+    originPurpose: "memory.agent_private.share",
+    accessBoundAt: input.sharedAt,
+  });
+  const grant = buildAgentMemoryGrantArtifactV1({
+    tenantId,
+    ownerActorId: sourceExecutionScope.initiatingActorId,
+    sourceAgentId,
+    sourceMemory,
+    targetAgentId,
+    targetMemoryId,
+    targetAccessBinding: targetBinding,
+    idempotencyKey: input.idempotencyKey,
+    createdAt: input.sharedAt,
+  });
+  await ensureDatabaseSchema();
+  return getSql().transaction(async (sql: MemorySqlClient) => {
+    const targetResult = await saveMemoryWithCommitStatusInTransaction({
+      id: targetMemoryId,
+      tenantId,
+      type: sourceMemory.type,
+      tier: sourceTier,
+      formationReason: "agent_shared_artifact",
+      title: sourceMemory.title,
+      content: sourceMemory.content,
+      tags: [...new Set([...sourceMemory.tags, "agent-shared"])],
+      scope: "user",
+      source: grant.grantId,
+      importance: sourceMemory.importance,
+      confidence: sourceMemory.confidence,
+      claimStatus: "active",
+      assertedBy: "system",
+      evidenceRefs: [...new Set([
+        ...(sourceMemory.evidenceRefs || []).slice(0, 48),
+        `memory:${sourceMemory.id}`,
+        grant.grantId,
+      ])],
+      validFrom: sourceMemory.validFrom,
+      validTo: sourceMemory.validTo,
+      retentionExpiresAt: sourceMemory.retentionExpiresAt,
+      embedding: sourceMemory.embedding,
+      accessBinding: targetBinding,
+      databaseAccessScope: targetDatabaseScope,
+      executionScope: targetExecutionScope,
+      formationOrigin: "agent_shared_artifact",
+    }, sql);
+    const persistedBinding = targetResult.record.accessBinding;
+    if (
+      persistedBinding?.accessScopeSha256 !==
+        grant.targetAccessScopeSha256 ||
+      sourceContractSha256({
+        title: targetResult.record.title,
+        content: targetResult.record.content,
+      }) !== grant.sourceContentSha256
+    ) {
+      throw new Error("Agent memory grant collided with another target copy.");
+    }
+    const inserted = await sql`
+      INSERT INTO omni_agent_memory_grants (
+        tenant_id, grant_id, owner_actor_id, source_agent_id,
+        source_memory_id, target_agent_id, target_memory_id, purpose_id,
+        source_access_scope_sha256, source_content_sha256,
+        target_access_scope_sha256, idempotency_key_sha256,
+        created_by_actor_id, created_at, contract, artifact_sha256
+      ) VALUES (
+        ${tenantId}, ${grant.grantId}, ${grant.ownerActorId},
+        ${grant.sourceAgentId}, ${grant.sourceMemoryId},
+        ${grant.targetAgentId}, ${grant.targetMemoryId}, ${grant.purposeId},
+        ${grant.sourceAccessScopeSha256}, ${grant.sourceContentSha256},
+        ${grant.targetAccessScopeSha256}, ${grant.idempotencyKeySha256},
+        ${grant.createdByActorId}, ${grant.createdAt}, ${grant}::JSONB,
+        ${grant.artifactSha256}
+      )
+      ON CONFLICT (tenant_id, grant_id) DO NOTHING
+      RETURNING grant_id
+    `;
+    if (!inserted[0]) {
+      const existing = await sql`
+        SELECT artifact_sha256, target_memory_id
+        FROM omni_agent_memory_grants
+        WHERE tenant_id = ${tenantId} AND grant_id = ${grant.grantId}
+        LIMIT 1
+      `;
+      if (
+        existing[0]?.artifact_sha256 !== grant.artifactSha256 ||
+        existing[0]?.target_memory_id !== grant.targetMemoryId
+      ) {
+        throw new Error("Agent memory grant idempotency key collided.");
+      }
+    } else {
+      await appendScopedDomainEvent({
+        id: `memory_agent_private_shared_${grant.artifactSha256}`,
+        streamId: `agent-memory-grant:${grant.grantId}`,
+        type: "memory.agent_private.shared",
+        executionScope: targetExecutionScope,
+        payload: {
+          schemaVersion: 1,
+          grantId: grant.grantId,
+          sourceAgentId: grant.sourceAgentId,
+          sourceMemoryId: grant.sourceMemoryId,
+          targetAgentId: grant.targetAgentId,
+          targetMemoryId: grant.targetMemoryId,
+          sourceAccessScopeSha256: grant.sourceAccessScopeSha256,
+          sourceContentSha256: grant.sourceContentSha256,
+          targetAccessScopeSha256: grant.targetAccessScopeSha256,
+          artifactSha256: grant.artifactSha256,
+        },
+      }, { sql });
+    }
+    return { grant, memory: targetResult.record };
+  }) as Promise<{
+    grant: AgentMemoryGrantArtifactV1;
+    memory: MemoryRecord;
+  }>;
 }
 
 async function saveMemoryWithCommitStatusInTransaction(

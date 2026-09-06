@@ -19,6 +19,9 @@ function createSql(transactionScoped = false) {
         (row) => ({ ...row, _inserted: true }),
       );
     }
+    if (query.includes("INSERT INTO omni_agent_memory_grants")) {
+      return [{ grant_id: "agent-memory-grant:inserted" }];
+    }
     if (query.includes("INSERT INTO omni_memory_reconciliation_reviews")) {
       return [{ id: "memory-reconciliation-a" }];
     }
@@ -82,6 +85,7 @@ import {
   correctMemory,
   saveMemory,
   searchMemories,
+  shareAgentPrivateMemory,
 } from "@/lib/memory/store";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -243,6 +247,88 @@ describe("Postgres memory recall", () => {
         "agent:sibling",
       ),
     })).rejects.toThrow("does not authorize this write");
+  });
+
+  it("shares through a target-owned copy and immutable provenance artifact", async () => {
+    const sourceBinding = buildAgentPrivateMemoryAccessBindingV1({
+      tenantId: "tenant-a",
+      ownerActorId,
+      ownerAgentId: "agent:atlas",
+      originPurpose: "memory.verified_effect",
+      accessBoundAt: "2026-09-06T00:00:00.000Z",
+    });
+    mocks.returnedMemoryRows.push({
+      id: "agent-source-memory",
+      tenant_id: "tenant-a",
+      type: "episode",
+      tier: "episodic",
+      tier_policy_version: 1,
+      formation_reason: "verified_effect",
+      title: "Verified deployment",
+      content: "The committed target matched the expected state.",
+      tags: ["verified-effect"],
+      evidence_refs: [
+        "run:one",
+        "tool-execution:one",
+        "effect-receipt:one",
+      ],
+      scope: "user",
+      source: "effect-receipt",
+      importance: 0.8,
+      confidence: 1,
+      claim_status: "active",
+      asserted_by: "system",
+      created_at: "2026-09-06T00:00:00.000Z",
+      updated_at: "2026-09-06T00:00:00.000Z",
+      access_contract_version: sourceBinding.version,
+      access_state: sourceBinding.state,
+      owner_actor_id: sourceBinding.ownerActorId,
+      owner_agent_id: sourceBinding.ownerAgentId,
+      visibility: sourceBinding.visibility,
+      sensitivity: sourceBinding.sensitivity,
+      origin_purpose: sourceBinding.originPurpose,
+      allowed_purpose_ids: sourceBinding.allowedPurposeIds,
+      access_scope_sha256: sourceBinding.accessScopeSha256,
+      access_bound_at: sourceBinding.accessBoundAt,
+    });
+
+    const result = await shareAgentPrivateMemory({
+      tenantId: "tenant-a",
+      sourceMemoryId: "agent-source-memory",
+      targetAgentId: "agent:scout",
+      idempotencyKey: "share-request-one",
+      sharedAt: "2026-09-07T00:00:00.000Z",
+      executionScope: agentExecutionScope(
+        MEMORY_PURPOSE_IDS.read,
+        "agent:atlas",
+      ),
+    });
+
+    expect(result.memory.accessBinding).toMatchObject({
+      visibility: "agent_private",
+      ownerActorId,
+      ownerAgentId: "agent:scout",
+    });
+    expect(result.memory.evidenceRefs).toEqual(expect.arrayContaining([
+      "memory:agent-source-memory",
+      result.grant.grantId,
+    ]));
+    expect(result.grant).toMatchObject({
+      sourceAgentId: "agent:atlas",
+      sourceMemoryId: "agent-source-memory",
+      targetAgentId: "agent:scout",
+      targetMemoryId: result.memory.id,
+    });
+    expect(mocks.events.filter((event) => event === "scope")).toHaveLength(2);
+    expect(mocks.queries.some((query) =>
+      query.includes("INSERT INTO omni_agent_memory_grants")
+    )).toBe(true);
+    expect(vi.mocked(appendScopedDomainEvent)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "memory.agent_private.shared" }),
+      expect.objectContaining({
+        sql: expect.objectContaining({ transactionScoped: true }),
+      }),
+    );
   });
 
   it("owns a scoped read transaction and rejects read purpose for writes", async () => {

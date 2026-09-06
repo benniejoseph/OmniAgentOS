@@ -9,6 +9,7 @@ export const memoryFormationOriginSchema = z.enum([
   "user_assertion",
   "source_observation",
   "verified_effect",
+  "agent_shared_artifact",
   "assistant_inference",
 ]);
 
@@ -144,6 +145,19 @@ function assertFormationBoundary(
     ) {
       throw new Error(
         "Source observations require canonical knowledge and evidence lineage.",
+      );
+    }
+    return;
+  }
+  if (origin === "agent_shared_artifact") {
+    if (
+      assertedBy !== "system" ||
+      record.accessBinding?.visibility !== "agent_private" ||
+      !has("memory:") ||
+      !has("agent-memory-grant:")
+    ) {
+      throw new Error(
+        "Shared agent memory requires a target-private binding and grant lineage.",
       );
     }
     return;

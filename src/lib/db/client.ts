@@ -138,6 +138,7 @@ export const tenantRootPolicyTables = [
   "omni_entity_relation_claims",
   "omni_entity_relation_projection_queue",
   "omni_graph_query_telemetry",
+  "omni_agent_memory_grants",
   "omni_agent_definition_versions",
   "omni_agent_principal_policies",
   "omni_agent_identity_backfill_holds",
@@ -1148,6 +1149,13 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[109],
       up: ensureAgentPrivateMemoryV1,
+    },
+    {
+      ...databaseSchemaMigrations[110],
+      up: async (sql) => {
+        await ensureAgentMemoryGrantsV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -9294,6 +9302,222 @@ async function ensureAgentPrivateMemoryV1(sql: SqlClient) {
           )
       ) THEN
         RAISE EXCEPTION 'Agent-private memory v1 storage boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentMemoryGrantsV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 110
+          AND name = 'agent_private_memory_v1'
+          AND checksum =
+            '7472b7f5f3ce4099e0b74f6a71bd661cc5de465b014b0df06d9e85571d4ce54b'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Agent memory grants v111 predecessor marker is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_agent_memory_grants (
+      tenant_id TEXT NOT NULL,
+      grant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      source_agent_id TEXT NOT NULL,
+      source_memory_id TEXT NOT NULL,
+      target_agent_id TEXT NOT NULL,
+      target_memory_id TEXT NOT NULL,
+      purpose_id TEXT NOT NULL,
+      source_access_scope_sha256 TEXT NOT NULL,
+      source_content_sha256 TEXT NOT NULL,
+      target_access_scope_sha256 TEXT NOT NULL,
+      idempotency_key_sha256 TEXT NOT NULL,
+      created_by_actor_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      contract JSONB NOT NULL,
+      artifact_sha256 TEXT NOT NULL,
+      PRIMARY KEY (tenant_id, grant_id),
+      UNIQUE (tenant_id, target_memory_id),
+      FOREIGN KEY (source_memory_id) REFERENCES omni_memories(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (target_memory_id) REFERENCES omni_memories(id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CHECK (char_length(grant_id) BETWEEN 1 AND 240),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (char_length(source_agent_id) BETWEEN 1 AND 240),
+      CHECK (char_length(target_agent_id) BETWEEN 1 AND 240),
+      CHECK (source_agent_id <> target_agent_id),
+      CHECK (purpose_id = 'memory.retrieve.v1'),
+      CHECK (source_access_scope_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (source_content_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (target_access_scope_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (idempotency_key_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (artifact_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (contract ->> 'version' = 'agent-memory-grant:1'),
+      CHECK (contract ->> 'grantId' = grant_id),
+      CHECK (contract ->> 'tenantId' = tenant_id),
+      CHECK (contract ->> 'ownerActorId' = owner_actor_id),
+      CHECK (contract ->> 'sourceAgentId' = source_agent_id),
+      CHECK (contract ->> 'sourceMemoryId' = source_memory_id),
+      CHECK (contract ->> 'targetAgentId' = target_agent_id),
+      CHECK (contract ->> 'targetMemoryId' = target_memory_id),
+      CHECK (contract ->> 'purposeId' = purpose_id),
+      CHECK (
+        contract ->> 'sourceAccessScopeSha256' =
+          source_access_scope_sha256
+      ),
+      CHECK (contract ->> 'sourceContentSha256' = source_content_sha256),
+      CHECK (
+        contract ->> 'targetAccessScopeSha256' =
+          target_access_scope_sha256
+      ),
+      CHECK (
+        contract ->> 'idempotencyKeySha256' = idempotency_key_sha256
+      ),
+      CHECK (contract ->> 'createdByActorId' = created_by_actor_id),
+      CHECK ((contract ->> 'createdAt')::TIMESTAMPTZ = created_at),
+      CHECK (contract ->> 'artifactSha256' = artifact_sha256)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_memory_grants_source_idx
+    ON omni_agent_memory_grants (
+      tenant_id, owner_actor_id, source_agent_id, source_memory_id,
+      created_at DESC
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_memory_grants_target_idx
+    ON omni_agent_memory_grants (
+      tenant_id, owner_actor_id, target_agent_id, created_at DESC
+    )
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_agent_memory_grant_mutation()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Agent memory grants are append-only'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_agent_memory_grants'::regclass
+          AND tgname = 'omni_agent_memory_grants_immutable'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_agent_memory_grants_immutable
+        BEFORE UPDATE OR DELETE ON omni_agent_memory_grants
+        FOR EACH ROW EXECUTE FUNCTION omni_reject_agent_memory_grant_mutation();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_agent_memory_grants'::regclass
+          AND tgname = 'omni_agent_memory_grants_no_truncate'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_agent_memory_grants_no_truncate
+        BEFORE TRUNCATE ON omni_agent_memory_grants
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION omni_reject_agent_memory_grant_mutation();
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    DECLARE
+      policy_name TEXT;
+    BEGIN
+      ALTER TABLE omni_agent_memory_grants ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_memory_grants FORCE ROW LEVEL SECURITY;
+      FOREACH policy_name IN ARRAY ARRAY[
+        'omni_agent_memory_grants_actor_select',
+        'omni_agent_memory_grants_actor_insert'
+      ] LOOP
+        EXECUTE format(
+          'DROP POLICY IF EXISTS %I ON omni_agent_memory_grants',
+          policy_name
+        );
+      END LOOP;
+      CREATE POLICY omni_agent_memory_grants_actor_select
+      ON omni_agent_memory_grants AS RESTRICTIVE FOR SELECT
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      CREATE POLICY omni_agent_memory_grants_actor_insert
+      ON omni_agent_memory_grants AS RESTRICTIVE FOR INSERT
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR (
+          owner_actor_id = created_by_actor_id
+          AND omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        )
+      );
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_agent_memory_grants FROM PUBLIC`;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_reject_agent_memory_grant_mutation()
+    FROM PUBLIC
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_agent_memory_grants FROM omni_runtime';
+        GRANT SELECT, INSERT ON omni_agent_memory_grants TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_agent_memory_grants FROM omni_maintenance';
+        GRANT SELECT, INSERT ON omni_agent_memory_grants TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_agent_memory_grants'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR (
+        SELECT count(*) FROM pg_trigger
+        WHERE tgrelid = 'omni_agent_memory_grants'::regclass
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) <> 2 OR (
+        SELECT count(*) FROM pg_policy
+        WHERE polrelid = 'omni_agent_memory_grants'::regclass
+          AND NOT polpermissive
+      ) <> 2 OR EXISTS (
+        SELECT 1 FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_agent_memory_grants'
+          AND grantee = 'omni_runtime'
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) THEN
+        RAISE EXCEPTION 'Agent memory grant storage boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

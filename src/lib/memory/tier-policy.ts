@@ -21,6 +21,7 @@ export const memoryFormationReasonSchema = z.enum([
   "explicit_user_request",
   "canonical_source_observation",
   "verified_effect",
+  "agent_shared_artifact",
   "assistant_inference_candidate",
   "correction",
   "project_reflection",
@@ -262,6 +263,8 @@ export function inferMemoryFormationReason(input: {
       return "canonical_source_observation";
     case "verified_effect":
       return "verified_effect";
+    case "agent_shared_artifact":
+      return "agent_shared_artifact";
     case "assistant_inference":
       return "assistant_inference_candidate";
   }
@@ -281,6 +284,7 @@ export function memoryFormationReasonLabel(reason: MemoryFormationReason) {
     explicit_user_request: "Saved because the user explicitly asked Asael to remember it.",
     canonical_source_observation: "Formed from canonical source evidence.",
     verified_effect: "Formed from a verified tool effect receipt.",
+    agent_shared_artifact: "Copied through an explicit provenance-preserving agent grant.",
     assistant_inference_candidate: "Proposed from an assistant inference and awaiting confirmation.",
     correction: "Created as a traceable correction of an earlier memory.",
     project_reflection: "Formed from a project reflection.",
