@@ -58,7 +58,12 @@ import {
   saveObservabilitySloPolicy,
   type ObservabilitySloApprovalPolicyConfig,
 } from "@/lib/observability/slo-policy-store";
-import { getObservabilityStats, listObservabilityEvents, recordRuntimeEvent } from "@/lib/observability/store";
+import {
+  getObservabilityStats,
+  listObservabilityEvents,
+  recordRuntimeEvent,
+  recordRuntimeEventSafely,
+} from "@/lib/observability/store";
 import { getMemoryGraphStats, rebuildMemoryGraph, searchMemoryGraph } from "@/lib/memory/graph";
 import { listMemories, saveMemory, searchMemories } from "@/lib/memory/store";
 import { getApprovalQueue, getOperationsOverview } from "@/lib/operations/queue";
@@ -93,6 +98,7 @@ import type {
   EvalRunSummary,
   EvalSafetyMode,
 } from "@/lib/evaluations/types";
+import { recordEvaluationResultFeedback } from "@/lib/evaluations/failure-feedback-store";
 import type { SecurityRole } from "@/lib/security/types";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
@@ -872,8 +878,7 @@ export async function runEvaluationSuite({
           const result = await runEvalCase(evalCase, abortSignal, usageContext);
           abortSignal?.throwIfAborted();
           const latencyMs = Date.now() - startedAt;
-          savedResults.push(
-            await saveEvalResult({
+          const savedResult = await saveEvalResult({
               tenantId: runTenantId,
               evalRunId: run.id,
               caseId: evalCase.id,
@@ -885,15 +890,21 @@ export async function runEvaluationSuite({
               estimatedCostUsd: result.estimatedCostUsd || estimateCost(evalCase, result.output),
               input: evalCase.input,
               output: result.output,
-            }),
-          );
+            });
+          savedResults.push(savedResult);
+          await recordEvaluationResultFeedbackSafely({
+            tenantId: runTenantId,
+            actorId: usageContext.actorId,
+            suite,
+            evalCase,
+            result: savedResult,
+          });
         } catch (error) {
           if (abortSignal?.aborted) {
             throw abortSignal.reason;
           }
           const latencyMs = Date.now() - startedAt;
-          savedResults.push(
-            await saveEvalResult({
+          const savedResult = await saveEvalResult({
               tenantId: runTenantId,
               evalRunId: run.id,
               caseId: evalCase.id,
@@ -905,8 +916,15 @@ export async function runEvaluationSuite({
               estimatedCostUsd: estimateCost(evalCase, { error: String(error) }),
               input: evalCase.input,
               error: error instanceof Error ? error.message : "Evaluation case failed.",
-            }),
-          );
+            });
+          savedResults.push(savedResult);
+          await recordEvaluationResultFeedbackSafely({
+            tenantId: runTenantId,
+            actorId: usageContext.actorId,
+            suite,
+            evalCase,
+            result: savedResult,
+          });
         }
         await onProgress?.({
           completed: savedResults.length,
@@ -933,6 +951,35 @@ export async function runEvaluationSuite({
 
     return getEvalRunDetail(run.id, { tenantId: runTenantId });
   });
+}
+
+async function recordEvaluationResultFeedbackSafely(input: {
+  tenantId: string;
+  actorId: string;
+  suite: string;
+  evalCase: EvalCaseDefinition;
+  result: EvalResultRecord;
+}) {
+  try {
+    await recordEvaluationResultFeedback(input);
+  } catch {
+    await recordRuntimeEventSafely({
+      level: "error",
+      category: "evaluation",
+      action: "evaluation.failure_feedback_failed",
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      resourceType: "evaluation",
+      resourceId: input.result.evalRunId,
+      correlationId: input.result.evalRunId,
+      message: "Evaluation result persisted but recurring-failure feedback was unavailable.",
+      metadata: {
+        caseId: input.evalCase.id,
+        resultId: input.result.id,
+        resultStatus: input.result.status,
+      },
+    });
+  }
 }
 
 async function runEvalCase(
