@@ -31,7 +31,7 @@ export type TrajectoryCheckpoint = {
 };
 
 export type RunTrajectory = {
-  version: 2;
+  version: 3;
   run: {
     id: string;
     tenantId?: string;
@@ -57,7 +57,7 @@ export type RunTrajectory = {
   models: string[];
   toolExecutionIds: string[];
   checkpoints: TrajectoryCheckpoint[];
-  learning: {
+  outcomeEvidence: {
     feedbackVerdict?: "useful" | "needs_work";
     correctionLength?: number;
     correctionSha256?: string;

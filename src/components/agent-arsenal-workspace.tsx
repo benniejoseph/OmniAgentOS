@@ -1200,13 +1200,13 @@ function AgentPerformancePanel({
           }
         />
       </div>
-      {performance?.latestLessons?.length ? (
+      {performance?.latestOutcomeNotes?.length ? (
         <div className="agent-latest-lessons">
           <strong>
             <ClipboardCheck size={13} /> Reviewed outcome notes
           </strong>
           <ul>
-            {performance.latestLessons.map((lesson) => (
+            {performance.latestOutcomeNotes.map((lesson) => (
               <li key={lesson}>{lesson}</li>
             ))}
           </ul>

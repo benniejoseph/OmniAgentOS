@@ -1,9 +1,9 @@
 import type { RunTrajectory, TrajectoryVerification } from "@/lib/trajectories/types";
 
-export type TrajectoryLearningEvaluation = {
+export type TrajectoryOutcomeEvaluation = {
   status: "pass" | "warn" | "fail";
   score: number;
-  promotionEligible: boolean;
+  retentionEligible: boolean;
   checks: {
     integrity: boolean;
     completed: boolean;
@@ -14,26 +14,26 @@ export type TrajectoryLearningEvaluation = {
   signals: string[];
 };
 
-/** Deterministic replay grade used before a trajectory can reinforce learning. */
-export function evaluateTrajectoryLearning(
+/** Deterministic outcome grade. It can qualify evidence for retention but never activates an Agent adaptation. */
+export function evaluateTrajectoryOutcome(
   trajectory: RunTrajectory,
   verification: TrajectoryVerification,
-): TrajectoryLearningEvaluation {
-  const groundingStatus = trajectory.learning.groundingStatus;
+): TrajectoryOutcomeEvaluation {
+  const groundingStatus = trajectory.outcomeEvidence.groundingStatus;
   const checks = {
     integrity: verification.valid,
     completed: trajectory.run.status === "completed",
     grounded: groundingStatus === "verified" || groundingStatus === "not_required",
-    ownerAccepted: trajectory.learning.feedbackVerdict === undefined
+    ownerAccepted: trajectory.outcomeEvidence.feedbackVerdict === undefined
       ? null
-      : trajectory.learning.feedbackVerdict === "useful",
+      : trajectory.outcomeEvidence.feedbackVerdict === "useful",
     costKnown: trajectory.usage.totalTokens === 0 || trajectory.usage.costKnown,
   };
   const scored = [checks.integrity, checks.completed, checks.grounded, checks.costKnown];
   if (checks.ownerAccepted !== null) scored.push(checks.ownerAccepted);
   const score = Math.round((scored.filter(Boolean).length / scored.length) * 1_000) / 1_000;
   const hardFailure = !checks.integrity || !checks.completed || checks.ownerAccepted === false;
-  const promotionEligible = !hardFailure && checks.grounded && checks.ownerAccepted === true;
+  const retentionEligible = !hardFailure && checks.grounded && checks.ownerAccepted === true;
   const signals = [
     !checks.integrity ? "Trajectory integrity verification failed." : "",
     !checks.completed ? `Run ended as ${trajectory.run.status}.` : "",
@@ -49,7 +49,7 @@ export function evaluateTrajectoryLearning(
   return {
     status: hardFailure ? "fail" : signals.length ? "warn" : "pass",
     score,
-    promotionEligible,
+    retentionEligible,
     checks,
     signals,
   };

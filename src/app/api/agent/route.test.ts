@@ -267,7 +267,7 @@ describe("agent semantic intent routing", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        message: "Use only this agent's learned procedure.",
+        message: "Use only this agent's retained procedure.",
         requestId: "agent-private-scope-a",
         strategy: "direct",
         contextScope: "agent_private",

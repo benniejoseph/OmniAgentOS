@@ -236,7 +236,7 @@ export const productPages: Record<string, ProductPage> = {
       {
         title: "Memory consolidation",
         body: "Successful runs can become durable knowledge with tags, importance, scope, and provenance.",
-        points: ["Learned facts", "Run summaries", "Reusable plans"],
+        points: ["Verified facts", "Run summaries", "Reusable plans"],
       },
       {
         title: "Graph-ready recall",

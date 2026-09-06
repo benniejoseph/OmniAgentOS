@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  adaptSupervisorDecision,
+  measureSupervisorOutcomeEvidence,
   analyzeAgentRequestAmbiguity,
   applySupervisorStrategy,
   compileThreadContext,
@@ -128,7 +128,7 @@ describe("supervisor routing", () => {
 
   it("measures outcome evidence without silently changing routing", () => {
     const decision = routeAgentRequest("Implement the integration.", "execute");
-    const adapted = adaptSupervisorDecision(decision, [{
+    const measured = measureSupervisorOutcomeEvidence(decision, [{
       agentId: "forge",
       primaryAssignments: 5,
       collaborations: 0,
@@ -136,14 +136,14 @@ describe("supervisor routing", () => {
       failed: 3,
       completionRate: 0.4,
       verifiedAnswers: 0,
-      memoriesLearned: 0,
+      memoriesFormed: 0,
       usefulOutcomes: 0,
       needsWorkOutcomes: 0,
       userApprovalRate: null,
     }]);
-    expect(adapted.specialistIds).toEqual(decision.specialistIds);
-    expect(adapted.reasons).toEqual(decision.reasons);
-    expect(adapted.adaptationEvidence).toMatchObject({
+    expect(measured.specialistIds).toEqual(decision.specialistIds);
+    expect(measured.reasons).toEqual(decision.reasons);
+    expect(measured.adaptationEvidence).toMatchObject({
       state: "evidence_ready",
       sampleSize: 5,
       confidence: 0.5,
@@ -152,7 +152,7 @@ describe("supervisor routing", () => {
 
   it("does not turn weak feedback into an implicit specialist policy", () => {
     const decision = routeAgentRequest("Research the options.", "research");
-    const adapted = adaptSupervisorDecision(decision, [{
+    const measured = measureSupervisorOutcomeEvidence(decision, [{
       agentId: "scout",
       primaryAssignments: 4,
       collaborations: 0,
@@ -160,13 +160,13 @@ describe("supervisor routing", () => {
       failed: 0,
       completionRate: 1,
       verifiedAnswers: 4,
-      memoriesLearned: 0,
+      memoriesFormed: 0,
       usefulOutcomes: 1,
       needsWorkOutcomes: 2,
       userApprovalRate: 1 / 3,
     }]);
-    expect(adapted.specialistIds).toEqual(decision.specialistIds);
-    expect(adapted.adaptationEvidence).toMatchObject({
+    expect(measured.specialistIds).toEqual(decision.specialistIds);
+    expect(measured.adaptationEvidence).toMatchObject({
       state: "evidence_ready",
       sampleSize: 4,
       confidence: 0.4,

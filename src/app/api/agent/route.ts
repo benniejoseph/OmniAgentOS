@@ -63,7 +63,7 @@ import {
   resolveAgentIdentityForExecution,
 } from "@/lib/agents/identity-store";
 import {
-  adaptSupervisorDecision,
+  measureSupervisorOutcomeEvidence,
   applySupervisorStrategy,
   compileThreadContext,
   routeAgentRequest,
@@ -499,7 +499,7 @@ async function POSTHandler(request: Request) {
           label: "supervisor routing",
           detail: preliminaryDecision.reasons[0] || "Selecting the right execution path.",
         })));
-        const decision = adaptSupervisorDecision(
+        const decision = measureSupervisorOutcomeEvidence(
           preliminaryDecision,
           await getAgentPerformance(context.tenantId).catch((error: unknown) => {
             console.warn(

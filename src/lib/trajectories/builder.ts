@@ -101,7 +101,7 @@ export function buildRunTrajectory(
   const checkpoints = ordered.flatMap(toTrajectoryCheckpoint);
 
   return {
-    version: 2,
+    version: 3,
     run: {
       id: run.id,
       tenantId: run.tenantId,
@@ -126,7 +126,7 @@ export function buildRunTrajectory(
     models,
     toolExecutionIds,
     checkpoints,
-    learning: {
+    outcomeEvidence: {
       feedbackVerdict: run.feedback?.verdict,
       correctionLength: run.feedback?.correction?.length,
       correctionSha256: run.feedback?.correction

@@ -112,10 +112,10 @@ class AgentPerformance {
     required this.runs,
     required this.successRate,
     required this.averageLatencyMs,
-    required this.memoriesLearned,
+    required this.memoriesFormed,
   });
   final String id, name;
-  final int runs, averageLatencyMs, memoriesLearned;
+  final int runs, averageLatencyMs, memoriesFormed;
   final double successRate;
   factory AgentPerformance.fromJson(Json j) => AgentPerformance(
     id: '${j['id'] ?? j['agentId']}',
@@ -123,7 +123,10 @@ class AgentPerformance {
     runs: (j['runs'] as num?)?.toInt() ?? (j['runCount'] as num?)?.toInt() ?? 0,
     successRate: (j['successRate'] as num?)?.toDouble() ?? 0,
     averageLatencyMs: (j['averageLatencyMs'] as num?)?.toInt() ?? 0,
-    memoriesLearned: (j['memoriesLearned'] as num?)?.toInt() ?? 0,
+    memoriesFormed:
+        (j['memoriesFormed'] as num?)?.toInt() ??
+        (j['memoriesLearned'] as num?)?.toInt() ??
+        0,
   );
 }
 
@@ -447,7 +450,7 @@ class _AgentsViewState extends State<AgentsView>
                   LinearProgressIndicator(value: rate.clamp(0, 1)),
                   const SizedBox(height: 8),
                   Text(
-                    '${p.runs} runs · ${p.averageLatencyMs} ms avg · ${p.memoriesLearned} memories learned',
+                    '${p.runs} runs · ${p.averageLatencyMs} ms avg · ${p.memoriesFormed} memories formed',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -904,8 +907,10 @@ class _Status extends StatelessWidget {
   const _Status(this.value);
   final String value;
   @override
-  Widget build(BuildContext context) =>
-      Chip(label: Text(value), visualDensity: VisualDensity.compact);
+  Widget build(BuildContext context) => Chip(
+    label: Text(value == 'learning' ? 'observing' : value),
+    visualDensity: VisualDensity.compact,
+  );
 }
 
 class _Empty extends StatelessWidget {

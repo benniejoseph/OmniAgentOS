@@ -77,7 +77,7 @@ describe("run trajectory", () => {
       }),
     ]);
 
-    expect(trajectory.version).toBe(2);
+    expect(trajectory.version).toBe(3);
     expect(trajectory.usage).toMatchObject({ totalTokens: 15, estimatedCostUsd: 0.004, costKnown: true });
     expect(trajectory.providers).toEqual(["openai"]);
     expect(trajectory.toolExecutionIds).toEqual(["exec-1"]);
@@ -95,7 +95,7 @@ describe("run trajectory", () => {
     expect(JSON.stringify(trajectory)).not.toContain("private request");
     expect(JSON.stringify(trajectory)).not.toContain("private answer");
     expect(JSON.stringify(trajectory)).not.toContain("private correction");
-    expect(trajectory.learning).toMatchObject({ feedbackVerdict: "needs_work", correctionLength: 18, groundingStatus: "verified" });
+    expect(trajectory.outcomeEvidence).toMatchObject({ feedbackVerdict: "needs_work", correctionLength: 18, groundingStatus: "verified" });
     expect(verifyRunTrajectory(trajectory, run).valid).toBe(true);
   });
 

@@ -286,7 +286,7 @@ export function selectAgentTeam(
   return { primaryAgentId, specialistIds: [...specialistIds] };
 }
 
-export function adaptSupervisorDecision(
+export function measureSupervisorOutcomeEvidence(
   decision: SupervisorDecision,
   performance: AgentPerformance[],
 ): SupervisorDecision {

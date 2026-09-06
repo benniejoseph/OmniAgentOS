@@ -333,7 +333,7 @@ async function runSystemDiagnosticsForTenant(input: DiagnosticsInput) {
       id: "memory",
       name: "Memory",
       status: "healthy",
-      summary: `${memory.total} memory record(s), ${agentRuns.consolidated.memories} learned item(s).`,
+      summary: `${memory.total} memory record(s), ${agentRuns.consolidated.memories} retained item(s).`,
       metrics: {
         memories: memory.total,
         embedded: memory.embedded,
