@@ -49,6 +49,10 @@ import {
   type CaptureIngestGuard,
 } from "@/lib/capture/ingest-guard";
 import { invalidateRunsForDeletedContext } from "@/lib/runs/context-invalidation";
+import {
+  buildMemoryFormationEvent,
+  type MemoryFormationOrigin,
+} from "@/lib/memory/formation-contract";
 
 export type CreateMemoryInput = {
   id?: string;
@@ -72,6 +76,7 @@ export type CreateMemoryInput = {
   accessBinding?: MemoryAccessBindingV1;
   databaseAccessScope?: DatabaseMemoryAccessScope;
   executionScope?: ExecutionScope;
+  formationOrigin?: MemoryFormationOrigin;
 };
 
 type TenantScopedOptions = {
@@ -288,6 +293,7 @@ async function saveMemoriesWithCommitStatus(
       );
     }
   }
+  validateMemoryFormationInputs(records, inputs);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -399,7 +405,14 @@ async function saveMemoriesWithCommitStatus(
     if (options.captureIngestGuard) {
       rows = await getSql().transaction(async (sql: MemorySqlClient) => {
         await lockActiveCaptureIngest(sql, options.captureIngestGuard!);
-        return persistRows(sql);
+        const persistedRows = await persistRows(sql);
+        await appendMemoryFormationEvents(
+          sql,
+          persistedRows,
+          records,
+          inputs,
+        );
+        return persistedRows;
       }) as Array<Record<string, unknown>>;
     } else if (databaseAccessScope) {
       rows = await getSql().transaction(async (sql: MemorySqlClient) => {
@@ -410,6 +423,23 @@ async function saveMemoriesWithCommitStatus(
         const persistedRows = await persistRows(sql);
         await updateInsertedMemoryVectors(sql, persistedRows, records, tenantId);
         await appendBoundMemoryCreatedEvents(
+          sql,
+          persistedRows,
+          records,
+          inputs,
+        );
+        await appendMemoryFormationEvents(
+          sql,
+          persistedRows,
+          records,
+          inputs,
+        );
+        return persistedRows;
+      }) as Array<Record<string, unknown>>;
+    } else if (inputs.some((input) => input.formationOrigin)) {
+      rows = await getSql().transaction(async (sql: MemorySqlClient) => {
+        const persistedRows = await persistRows(sql);
+        await appendMemoryFormationEvents(
           sql,
           persistedRows,
           records,
@@ -466,6 +496,15 @@ async function saveMemoriesWithCommitStatus(
     }
     return next;
   });
+  await appendMemoryFormationEvents(
+    undefined,
+    records.map((record) => ({
+      id: record.id,
+      _inserted: Boolean(savedById.get(record.id)?.inserted),
+    })),
+    records,
+    inputs,
+  );
   return records.map((record) => {
     const result = savedById.get(record.id);
     if (!result) {
@@ -1665,6 +1704,47 @@ async function appendBoundMemoryCreatedEvents(
   }
 }
 
+async function appendMemoryFormationEvents(
+  sql: MemorySqlClient | undefined,
+  rows: readonly Record<string, unknown>[],
+  records: readonly MemoryRecord[],
+  inputs: readonly CreateMemoryInput[],
+) {
+  const insertedIds = new Set(
+    rows
+      .filter((row) => Boolean(row._inserted))
+      .map((row) => String(row.id)),
+  );
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const origin = inputs[index]?.formationOrigin;
+    const executionScope = inputs[index]?.executionScope;
+    if (!record || !origin || !executionScope || !insertedIds.has(record.id)) {
+      continue;
+    }
+    await appendScopedDomainEvent(
+      buildMemoryFormationEvent({ record, origin, executionScope }),
+      sql ? { sql } : undefined,
+    );
+  }
+}
+
+function validateMemoryFormationInputs(
+  records: readonly MemoryRecord[],
+  inputs: readonly CreateMemoryInput[],
+) {
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    const origin = inputs[index]?.formationOrigin;
+    if (!record || !origin) continue;
+    const executionScope = inputs[index]?.executionScope;
+    if (!executionScope) {
+      throw new Error("Traceable memory formation requires an execution scope.");
+    }
+    buildMemoryFormationEvent({ record, origin, executionScope });
+  }
+}
+
 async function updateInsertedMemoryVectors(
   sql: MemorySqlClient,
   rows: readonly Record<string, unknown>[],
@@ -1929,7 +2009,7 @@ function normalizeOptionalId(value?: string) {
 }
 
 function normalizeClaimStatus(value: unknown): NonNullable<MemoryRecord["claimStatus"]> {
-  return value === "superseded" || value === "contradicted" || value === "forgotten" ? value : "active";
+  return value === "candidate" || value === "superseded" || value === "contradicted" || value === "forgotten" ? value : "active";
 }
 
 function normalizeAssertedBy(value: unknown): NonNullable<MemoryRecord["assertedBy"]> {

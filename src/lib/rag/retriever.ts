@@ -130,6 +130,12 @@ export async function ingestTextDocument({
         ...evidenceRefs.map((reference) => String(redactSensitive(reference)).trim().slice(0, 500)).filter(Boolean),
       ],
       embedding: embeddings?.[chunk.index],
+      ...(canonicalSourceWrite
+        ? {
+            executionScope: canonicalSourceWrite.executionScope,
+            formationOrigin: "source_observation" as const,
+          }
+        : {}),
     })),
     { captureIngestGuard },
   );

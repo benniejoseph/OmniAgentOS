@@ -20,7 +20,12 @@ export type MemoryRecord = {
   source: string;
   importance: number;
   confidence?: number;
-  claimStatus?: "active" | "superseded" | "contradicted" | "forgotten";
+  claimStatus?:
+    | "active"
+    | "candidate"
+    | "superseded"
+    | "contradicted"
+    | "forgotten";
   assertedBy?: "user" | "agent" | "system" | "import";
   evidenceRefs?: string[];
   validFrom?: string;

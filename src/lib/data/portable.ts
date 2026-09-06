@@ -238,7 +238,7 @@ function optionalDate(value: unknown) { const parsed = typeof value === "string"
 function sourceType(value: unknown) { return (["manual", "text", "file", "url", "api"] as const).find((item) => item === value) || "text"; }
 function memoryType(value: unknown) { return (["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"] as const).find((item) => item === value) || "fact"; }
 function memoryScope(value: unknown) { return (["user", "workspace", "project"] as const).find((item) => item === value) || "workspace"; }
-function claimStatus(value: unknown) { return (["active", "superseded", "contradicted"] as const).find((item) => item === value) || "active"; }
+function claimStatus(value: unknown) { return (["active", "candidate", "superseded", "contradicted"] as const).find((item) => item === value) || "active"; }
 function assertedBy(value: unknown) { return (["user", "agent", "system", "import"] as const).find((item) => item === value) || "import"; }
 function mode(value: unknown) { return (["orchestrate", "research", "execute", "learn"] as const).find((item) => item === value) || "orchestrate"; }
 function priority(value: unknown) { return (["low", "medium", "high"] as const).find((item) => item === value) || "medium"; }

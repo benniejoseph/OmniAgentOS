@@ -109,6 +109,27 @@ describe("memory persistence safety (file mode)", () => {
     expect(recalled.map((item) => item.record.id)).toEqual([result?.corrected.id]);
   });
 
+  it("keeps inference candidates out of active list and recall", async () => {
+    const store = await import("@/lib/memory/store");
+    const candidate = await store.saveMemory({
+      tenantId: "tenant-candidate",
+      title: "Assistant inference candidate",
+      content: "This has not been confirmed.",
+      claimStatus: "candidate",
+      assertedBy: "agent",
+    });
+
+    await expect(store.listMemories({ tenantId: "tenant-candidate" }))
+      .resolves.toEqual([]);
+    await expect(store.searchMemories("not confirmed", {
+      tenantId: "tenant-candidate",
+    })).resolves.toEqual([]);
+    await expect(store.listMemories({
+      tenantId: "tenant-candidate",
+      includeInactive: true,
+    })).resolves.toEqual([candidate]);
+  });
+
   it("scrubs forgotten content and removes it from list and search", async () => {
     const store = await import("@/lib/memory/store");
     const memory = await store.saveMemory({ tenantId: "tenant-forget", title: "Private preference", content: "Never retain this sentence." });
