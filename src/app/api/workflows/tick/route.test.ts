@@ -7,6 +7,7 @@ const routeMocks = vi.hoisted(() => ({
   processAllTenantWorkflowQueues: vi.fn(),
   processPendingMemoryDeletionScrubs: vi.fn(),
   processPendingMemoryGraphRebuilds: vi.fn(),
+  runTenantMemoryMaintenance: vi.fn(),
   listMaintenanceTenantIds: vi.fn(),
   recoverInterruptedLoopV2Runs: vi.fn(),
   repairStuckAgentRuns: vi.fn(),
@@ -77,6 +78,11 @@ vi.mock("@/lib/memory/deletion-scrub", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/memory/deletion-scrub")>()),
   processPendingMemoryDeletionScrubs:
     routeMocks.processPendingMemoryDeletionScrubs,
+}));
+
+vi.mock("@/lib/memory/maintenance-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/maintenance-store")>()),
+  runTenantMemoryMaintenance: routeMocks.runTenantMemoryMaintenance,
 }));
 
 vi.mock("@/lib/operations/job-queue", async (importOriginal) => ({
@@ -170,6 +176,22 @@ beforeEach(() => {
   routeMocks.processAllTenantAgentResumeQueues
     .mockReset()
     .mockResolvedValue(emptyResumeQueue);
+  routeMocks.runTenantMemoryMaintenance.mockReset().mockResolvedValue({
+    report: {
+      policyVersion: 1,
+      scanned: 0,
+      eligible: 0,
+      exactDuplicateGroups: 0,
+      autoArchivedDuplicates: 0,
+      pinnedDuplicateConflicts: 0,
+      promotionReviewsCreated: 0,
+      expiredArchived: 0,
+      duplicateRateBefore: 0,
+      duplicateRateAfter: 0,
+      duplicateRateTarget: 0.01,
+    },
+    reviews: [],
+  });
   routeMocks.processAllTenantDurableSpecialistQueues
     .mockReset()
     .mockResolvedValue(emptySpecialistQueue);

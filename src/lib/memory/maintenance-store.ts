@@ -40,6 +40,7 @@ type MaintenanceOptions = {
   tenantId: string;
   accessScope?: DatabaseMemoryAccessScope;
   executionScope: ExecutionScope;
+  systemMaintenance?: boolean;
 };
 
 type LifecycleLedger = {
@@ -59,7 +60,12 @@ export async function runActorMemoryMaintenance(
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const executionScope = requireExecutionScope(options.executionScope, tenantId);
-  assertMaintenanceRecords(records, tenantId, options.accessScope);
+  assertMaintenanceRecords(
+    records,
+    tenantId,
+    options.accessScope,
+    options.systemMaintenance,
+  );
   const plan = planMemoryMaintenance(records);
 
   if (hasDatabaseUrl()) {
@@ -161,6 +167,7 @@ export async function runTenantMemoryMaintenance(input: {
       for (const [ownerActorId, actorRecords] of groups) {
         results.push(await runActorMemoryMaintenance(actorRecords, {
           tenantId,
+          systemMaintenance: true,
           executionScope: maintenanceExecutionScope(
             input,
             ownerActorId || undefined,
@@ -323,6 +330,37 @@ export async function listMemoryPromotionReviews(options: {
   ).slice(0, limit);
 }
 
+export async function getMemoryPromotionReview(
+  reviewId: string,
+  options: {
+    tenantId: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const read = (sql: MemorySqlClient) => sql`
+      SELECT * FROM omni_memory_promotion_reviews
+      WHERE tenant_id = ${tenantId} AND id = ${reviewId}
+      LIMIT 1
+    `;
+    const rows = options.accessScope
+      ? await withMemoryScope(options.accessScope, tenantId, read, [
+          MEMORY_PURPOSE_IDS.read,
+          MEMORY_PURPOSE_IDS.maintenance,
+        ])
+      : await read(getSql());
+    return rows[0] ? promotionReviewFromRow(rows[0]) : null;
+  }
+  const reviews = await listMemoryPromotionReviews({
+    tenantId,
+    status: "all",
+    limit: 200,
+  });
+  return reviews.find((review) => review.id === reviewId) || null;
+}
+
 export async function resolveMemoryPromotionReview(
   reviewId: string,
   decision: MemoryPromotionDecision,
@@ -418,6 +456,7 @@ function assertMaintenanceRecords(
   records: readonly MemoryRecord[],
   tenantId: string,
   accessScope?: DatabaseMemoryAccessScope,
+  systemMaintenance = false,
 ) {
   const scope = accessScope
     ? parseDatabaseMemoryAccessScope(accessScope)
@@ -432,7 +471,10 @@ function assertMaintenanceRecords(
       throw new Error("Memory maintenance cannot mix tenants.");
     }
     if (record.accessBinding) {
-      if (!scope || record.accessBinding.ownerActorId !== scope.initiatingActorId) {
+      if (
+        !systemMaintenance &&
+        (!scope || record.accessBinding.ownerActorId !== scope.initiatingActorId)
+      ) {
         throw new Error("Scoped memory maintenance requires its exact owner.");
       }
     } else if (scope) {

@@ -22,6 +22,8 @@ import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { processPendingMemoryGraphRebuilds } from "@/lib/security/retention";
 import { processPendingMemoryDeletionScrubs } from "@/lib/memory/deletion-scrub";
+import { runTenantMemoryMaintenance } from "@/lib/memory/maintenance-store";
+import type { MemoryMaintenanceReport } from "@/lib/memory/lifecycle";
 import type { SecurityContext } from "@/lib/security/types";
 import {
   getOperationJobStats,
@@ -708,6 +710,7 @@ async function runAllTenantScheduledWork({
     personalNotificationsProcessed: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
+    memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
@@ -816,6 +819,7 @@ async function runTenantMaintenance({
     personalNotificationsProcessed: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
+    memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
@@ -842,6 +846,15 @@ async function runTenantMaintenance({
     result.toolClaimsRecovered = (
       await recoverStaleToolExecutionClaims({ tenantId })
     ).length;
+  }
+  if (Date.now() < deadlineAt) {
+    result.memoryMaintenance = (
+      await runTenantMemoryMaintenance({
+        tenantId,
+        executingPrincipalId: actorId,
+        correlationId: `${correlationId}:memory-maintenance`,
+      })
+    ).report;
   }
   if (Date.now() < deadlineAt) {
     result.dailyBriefsGenerated = (
