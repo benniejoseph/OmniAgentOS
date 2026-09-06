@@ -2160,8 +2160,8 @@ Canonical Vercel deployment `dpl_EapYKVX52jW2aJNnRCBwVGQauoB6`, Fly release
 289 image `sha256:b1d49a519f7b1c5853aaacf8c6407dd72ac7855f0ce07100e406b2553ed23d01`,
 protocol 1, the exact activation marker, and all worker lanes are healthy.
 P4.1/P4.2 retain their separately declared authority work; P12/P13 remain
-deferred. The next actionable master-plan slice is the remaining P5.2 entity
-registry integration and benchmark.
+deferred. P5.2 is already complete in the later recorded slices below; the
+next actionable master-plan slice is P5.3 bitemporal claims and typed relations.
 
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
