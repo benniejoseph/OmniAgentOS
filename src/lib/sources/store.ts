@@ -1,5 +1,6 @@
 import type { getSql } from "@/lib/db/client";
 import { retireEntityEvidenceLineage } from "@/lib/entities/store";
+import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   assertExecutionScopeTenant,
@@ -460,6 +461,13 @@ export async function persistCanonicalSourceWrite(
     },
   }, { sql });
 
+  await queueTemporalRelationProjection({
+    tenantId: item.tenantId,
+    ownerActorId: item.ownerActorId,
+    executionScope,
+    sql,
+  });
+
   return {
     sourceItemId: item.sourceItemId,
     sourceRevisionId: revision.sourceRevisionId,
@@ -494,6 +502,12 @@ export async function retireEntityLineageForSourceRevision(
       retiredAliasIds: Object.freeze([] as string[]),
     });
   }
+  await queueTemporalRelationProjection({
+    tenantId: input.tenantId,
+    ownerActorId: input.ownerActorId,
+    executionScope: input.executionScope,
+    sql,
+  });
   const referenced = await sql`
     SELECT 1
     FROM omni_entity_records

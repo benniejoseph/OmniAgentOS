@@ -13,6 +13,7 @@ import {
   resolveAndRecordEntityIdentity,
   saveEntityRecord,
 } from "@/lib/entities/store";
+import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
 import {
   ASAEL_ONTOLOGY_EFFECTIVE_AT,
   entityTypeIdSchema,
@@ -360,6 +361,11 @@ export async function projectCanonicalEvidenceEntities(input: {
       )].sort(),
     },
   });
+  await queueTemporalRelationProjection({
+    tenantId: sourceItem.tenantId,
+    ownerActorId: sourceItem.ownerActorId,
+    executionScope: sourceScope,
+  });
   return projection;
 }
 
@@ -478,6 +484,11 @@ export async function projectExplicitMemoryEntities(input: {
         extraction.candidates.map((candidate) => candidate.entityTypeId),
       )].sort(),
     },
+  });
+  await queueTemporalRelationProjection({
+    tenantId: sourceScope.tenantId,
+    ownerActorId,
+    executionScope: sourceScope,
   });
   return projection;
 }

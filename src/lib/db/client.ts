@@ -136,6 +136,7 @@ export const tenantRootPolicyTables = [
   "omni_entity_resolutions",
   "omni_entity_merge_reviews",
   "omni_entity_relation_claims",
+  "omni_entity_relation_projection_queue",
   "omni_agent_loop_v2_checkpoints",
   "omni_workflow_triggers",
   "omni_operation_jobs",
@@ -1109,6 +1110,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[104],
       up: async (sql) => {
         await ensureEntityBitemporalRelationsV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[105],
+      up: async (sql) => {
+        await ensureEntityRelationProjectionV1(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -7933,6 +7941,315 @@ async function ensureEntityBitemporalRelationsV1(sql: SqlClient) {
           )
       ) <> 4 THEN
         RAISE EXCEPTION 'Entity bitemporal relation boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureEntityRelationProjectionV1(sql: SqlClient) {
+  // Re-assert the v105 boundary before adding its projection outbox and the
+  // narrowly relaxed retraction path used when canonical lineage is removed.
+  await ensureEntityBitemporalRelationsV1(sql);
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_entity_relation_projection_queue (
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      lease_owner TEXT,
+      lease_expires_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      generation BIGINT NOT NULL DEFAULT 1,
+      PRIMARY KEY (tenant_id, owner_actor_id),
+      CHECK (char_length(tenant_id) BETWEEN 1 AND 240),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (attempts BETWEEN 0 AND 1000000),
+      CHECK (generation BETWEEN 1 AND 9007199254740991),
+      CHECK (last_error IS NULL OR char_length(last_error) <= 1000),
+      CHECK ((lease_owner IS NULL) = (lease_expires_at IS NULL)),
+      CHECK (requested_at <= updated_at)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_relation_projection_queue_lease_idx
+    ON omni_entity_relation_projection_queue (
+      lease_expires_at, attempts, requested_at, tenant_id, owner_actor_id
+    )
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_entity_relation_claim_insert()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      contract_memory_ids TEXT[];
+      contract_evidence_ids TEXT[];
+      source_record omni_entity_records%ROWTYPE;
+      target_record omni_entity_records%ROWTYPE;
+      previous_record omni_entity_relation_claims%ROWTYPE;
+      relation_types_are_valid BOOLEAN;
+    BEGIN
+      SELECT COALESCE(array_agg(
+        DISTINCT reference ->> 'referenceId'
+        ORDER BY reference ->> 'referenceId'
+      ), '{}'::TEXT[])
+      INTO contract_memory_ids
+      FROM jsonb_array_elements(NEW.contract -> 'lineage') reference
+      WHERE reference ->> 'kind' = 'memory';
+
+      SELECT COALESCE(array_agg(
+        DISTINCT reference ->> 'referenceId'
+        ORDER BY reference ->> 'referenceId'
+      ), '{}'::TEXT[])
+      INTO contract_evidence_ids
+      FROM jsonb_array_elements(NEW.contract -> 'lineage') reference
+      WHERE reference ->> 'kind' = 'evidence_unit';
+
+      IF NEW.lineage_memory_ids IS DISTINCT FROM contract_memory_ids
+        OR NEW.lineage_evidence_unit_ids IS DISTINCT FROM contract_evidence_ids
+      THEN
+        RAISE EXCEPTION 'Entity relation lineage indexes do not match the contract'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NEW.claim_state <> 'retracted'
+        AND cardinality(NEW.lineage_memory_ids) > 0
+        AND NOT omni_active_memory_lineage_owned_by(
+          NEW.tenant_id, NEW.owner_actor_id, NEW.lineage_memory_ids
+        )
+      THEN
+        RAISE EXCEPTION 'Entity relation references inactive memory evidence'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NEW.claim_state <> 'retracted'
+        AND cardinality(NEW.lineage_evidence_unit_ids) > 0
+        AND NOT omni_active_evidence_lineage_owned_by(
+          NEW.tenant_id, NEW.owner_actor_id,
+          NEW.lineage_evidence_unit_ids
+        )
+      THEN
+        RAISE EXCEPTION 'Entity relation references inactive canonical evidence'
+          USING ERRCODE = '55000';
+      END IF;
+
+      SELECT * INTO source_record
+      FROM omni_entity_records
+      WHERE tenant_id = NEW.tenant_id AND id = NEW.source_entity_id;
+      SELECT * INTO target_record
+      FROM omni_entity_records
+      WHERE tenant_id = NEW.tenant_id AND id = NEW.target_entity_id;
+      IF source_record.id IS NULL OR target_record.id IS NULL
+        OR source_record.owner_actor_id <> NEW.owner_actor_id
+        OR target_record.owner_actor_id <> NEW.owner_actor_id
+        OR source_record.access_scope_sha256 <> NEW.access_scope_sha256
+        OR target_record.access_scope_sha256 <> NEW.access_scope_sha256
+        OR source_record.entity_type_id <> NEW.source_entity_type_id
+        OR target_record.entity_type_id <> NEW.target_entity_type_id
+        OR (
+          NEW.claim_state <> 'retracted'
+          AND (
+            source_record.state <> 'active'
+            OR target_record.state <> 'active'
+            OR NEW.contract #>> '{source,entitySha256}' <>
+              source_record.entity_sha256
+            OR NEW.contract #>> '{target,entitySha256}' <>
+              target_record.entity_sha256
+          )
+        )
+      THEN
+        RAISE EXCEPTION 'Entity relation endpoints are not valid in one scope'
+          USING ERRCODE = '23514';
+      END IF;
+
+      relation_types_are_valid := CASE NEW.relation_type_id
+        WHEN 'affiliated_with' THEN
+          NEW.source_entity_type_id IN ('person', 'organization')
+          AND NEW.target_entity_type_id IN ('organization', 'account')
+        WHEN 'belongs_to' THEN
+          NEW.source_entity_type_id IN (
+            'account', 'project', 'work_item', 'event', 'meeting', 'asset',
+            'decision', 'commitment', 'risk', 'goal', 'product', 'case',
+            'opportunity'
+          ) AND NEW.target_entity_type_id IN (
+            'organization', 'account', 'project'
+          )
+        WHEN 'assigned_to' THEN
+          NEW.source_entity_type_id IN (
+            'work_item', 'case', 'opportunity', 'commitment'
+          ) AND NEW.target_entity_type_id IN ('person', 'organization')
+        WHEN 'attends' THEN
+          NEW.source_entity_type_id IN ('person', 'organization')
+          AND NEW.target_entity_type_id IN ('meeting', 'event')
+        WHEN 'located_at' THEN
+          NEW.source_entity_type_id IN (
+            'person', 'organization', 'event', 'meeting', 'asset'
+          ) AND NEW.target_entity_type_id = 'place'
+        WHEN 'references' THEN
+          NEW.target_entity_type_id IN ('asset', 'decision', 'commitment')
+        WHEN 'decides' THEN
+          NEW.source_entity_type_id IN ('person', 'organization', 'meeting')
+          AND NEW.target_entity_type_id = 'decision'
+        WHEN 'commits_to' THEN
+          NEW.source_entity_type_id IN ('person', 'organization')
+          AND NEW.target_entity_type_id IN ('commitment', 'goal', 'work_item')
+        WHEN 'prefers' THEN
+          NEW.source_entity_type_id IN ('person', 'organization')
+          AND NEW.target_entity_type_id IN ('preference', 'product', 'place')
+        WHEN 'introduces_risk_to' THEN
+          NEW.source_entity_type_id = 'risk'
+          AND NEW.target_entity_type_id IN (
+            'account', 'project', 'work_item', 'event', 'meeting', 'asset',
+            'decision', 'commitment', 'risk', 'goal', 'product', 'case',
+            'opportunity'
+          )
+        WHEN 'targets' THEN
+          NEW.source_entity_type_id IN ('goal', 'opportunity', 'work_item')
+          AND NEW.target_entity_type_id IN (
+            'account', 'project', 'work_item', 'event', 'meeting', 'asset',
+            'decision', 'commitment', 'risk', 'goal', 'product', 'case',
+            'opportunity'
+          )
+        WHEN 'produces' THEN
+          NEW.source_entity_type_id IN (
+            'person', 'organization', 'project', 'work_item', 'event', 'meeting'
+          ) AND NEW.target_entity_type_id IN (
+            'asset', 'decision', 'commitment'
+          )
+        WHEN 'related_to' THEN NEW.source_entity_id < NEW.target_entity_id
+        ELSE FALSE
+      END;
+      IF NOT COALESCE(relation_types_are_valid, FALSE) THEN
+        RAISE EXCEPTION 'Entity relation endpoint types violate the ontology'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.previous_revision_id IS NULL THEN
+        IF NEW.claim_state = 'retracted' THEN
+          RAISE EXCEPTION 'Entity relation retraction requires a prior revision'
+            USING ERRCODE = '23514';
+        END IF;
+        IF EXISTS (
+          SELECT 1 FROM omni_entity_relation_claims
+          WHERE tenant_id = NEW.tenant_id AND claim_id = NEW.claim_id
+        ) THEN
+          RAISE EXCEPTION 'Entity relation claim must append to its prior revision'
+            USING ERRCODE = '23514';
+        END IF;
+      ELSE
+        SELECT * INTO previous_record
+        FROM omni_entity_relation_claims
+        WHERE tenant_id = NEW.tenant_id AND id = NEW.previous_revision_id;
+        IF previous_record.id IS NULL
+          OR previous_record.claim_id <> NEW.claim_id
+          OR previous_record.ontology_version_id <> NEW.ontology_version_id
+          OR previous_record.relation_type_id <> NEW.relation_type_id
+          OR previous_record.source_entity_id <> NEW.source_entity_id
+          OR previous_record.source_entity_type_id <> NEW.source_entity_type_id
+          OR previous_record.target_entity_id <> NEW.target_entity_id
+          OR previous_record.target_entity_type_id <> NEW.target_entity_type_id
+          OR previous_record.owner_actor_id <> NEW.owner_actor_id
+          OR previous_record.access_scope_sha256 <> NEW.access_scope_sha256
+          OR previous_record.superseded_at IS DISTINCT FROM NEW.recorded_at
+          OR NEW.recorded_at <= previous_record.recorded_at
+          OR (
+            NEW.claim_state = 'retracted'
+            AND (
+              previous_record.lineage_memory_ids IS DISTINCT FROM
+                NEW.lineage_memory_ids
+              OR previous_record.lineage_evidence_unit_ids IS DISTINCT FROM
+                NEW.lineage_evidence_unit_ids
+            )
+          )
+        THEN
+          RAISE EXCEPTION 'Entity relation revision chain is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DO $migration$
+    DECLARE
+      policy_name TEXT;
+    BEGIN
+      ALTER TABLE omni_entity_relation_projection_queue ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_entity_relation_projection_queue FORCE ROW LEVEL SECURITY;
+      FOREACH policy_name IN ARRAY ARRAY[
+        'omni_entity_relation_projection_queue_actor_select',
+        'omni_entity_relation_projection_queue_actor_insert',
+        'omni_entity_relation_projection_queue_actor_update',
+        'omni_entity_relation_projection_queue_system_delete'
+      ] LOOP
+        EXECUTE format(
+          'DROP POLICY IF EXISTS %I ON omni_entity_relation_projection_queue',
+          policy_name
+        );
+      END LOOP;
+      CREATE POLICY omni_entity_relation_projection_queue_actor_select
+      ON omni_entity_relation_projection_queue AS RESTRICTIVE FOR SELECT
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      CREATE POLICY omni_entity_relation_projection_queue_actor_insert
+      ON omni_entity_relation_projection_queue AS RESTRICTIVE FOR INSERT
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      CREATE POLICY omni_entity_relation_projection_queue_actor_update
+      ON omni_entity_relation_projection_queue AS RESTRICTIVE FOR UPDATE
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      CREATE POLICY omni_entity_relation_projection_queue_system_delete
+      ON omni_entity_relation_projection_queue AS RESTRICTIVE FOR DELETE
+      USING (omni_system_scope_enabled());
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_entity_relation_projection_queue FROM PUBLIC`;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT, UPDATE
+        ON omni_entity_relation_projection_queue TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE
+        ON omni_entity_relation_projection_queue TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_entity_relation_projection_queue'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR (
+        SELECT count(*) FROM pg_policy
+        WHERE polrelid = 'omni_entity_relation_projection_queue'::regclass
+          AND NOT polpermissive
+      ) <> 4 OR to_regprocedure(
+        'public.omni_validate_entity_relation_claim_insert()'
+      ) IS NULL THEN
+        RAISE EXCEPTION 'Entity relation projection boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
