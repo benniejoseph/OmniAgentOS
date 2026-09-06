@@ -51,6 +51,11 @@ export type ModelConversationObservation = Extract<
   { type: "observation" }
 >;
 
+export type ModelConversationSeedItem = Extract<
+  ModelConversationItem,
+  { type: "message" | "observation" }
+>;
+
 export function parseModelConversation(value: unknown) {
   return modelConversationSchema.parse(value);
 }

@@ -83,7 +83,11 @@ export const openAIModelAdapter: ModelProviderAdapter = {
     }
     const prior = request.continuation?.state.length
       ? request.continuation.state as ConversationItem[]
-      : [{ role: "user", content: request.input } satisfies ConversationItem];
+      : [{
+          type: "message",
+          role: "user",
+          content: request.input,
+        } satisfies ConversationItem];
     const input: ConversationItem[] = [
       ...prior,
       ...(request.toolResults || []).map((result) => ({
