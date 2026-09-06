@@ -252,6 +252,34 @@ describe("agent semantic intent routing", () => {
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 
+  it("admits exact agent-private context without an explicit selection", async () => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-agent-private" };
+      yield { type: "done", response: "Agent memory used." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Use only this agent's learned procedure.",
+        requestId: "agent-private-scope-a",
+        strategy: "direct",
+        contextScope: "agent_private",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextScope: "agent_private",
+        contextSelection: undefined,
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
   it("requires reviewed evidence only for explicit-selection scope", async () => {
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",

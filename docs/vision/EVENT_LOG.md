@@ -1578,3 +1578,18 @@ under the run's original execution scope; validation or persistence failure
 blocks provider disclosure. Run detail and trajectory read the same immutable
 event projection so later UI inspection cannot diverge from execution history.
 No database migration is required.
+
+## Agent-private memory and grant lineage
+
+P7.3 adds `memory.agent_private.created` when a verified Agent effect is stored
+under the exact actor-and-Agent access binding. The event records only memory,
+visibility, purpose, and access-binding metadata; it contains no effect output,
+memory content, prompt, or private reasoning.
+
+An explicit cross-Agent share creates a new target-owned memory and an immutable
+`agent-memory-grant:1` artifact without changing access to the source. The
+transaction emits `memory.agent_private.shared` with source and target Agent and
+memory IDs plus access, content, and artifact digests. The event and artifact do
+not copy the shared content. Retrying the same idempotency key converges on the
+same copy and artifact; changing an authenticated coordinate or digest fails
+closed.

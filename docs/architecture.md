@@ -1285,9 +1285,10 @@ sibling council delegation and verification instead of forwarding the context.
 It also receives an empty toolbox until capability grants can authorize data
 disclosure to individual operations. Legacy prompt/response consolidation is
 skipped so a private answer cannot be reclassified as workspace memory.
-Workflows, forks, specialist/background workers, standing formation,
-agent-private/shared visibility, and the full authority resolver remain closed,
-so P3.1 is still incomplete.
+Workflows, forks, specialist/background workers, shared workspace/project/
+mission visibility, and the full authority resolver remain closed, so P3.1 is
+still incomplete. P7.3 separately activates exact agent-private formation and
+retrieval without granting access to any shared scope.
 
 P3.3 removes model-response prose as an active-memory authority. The formation
 contract admits active memories only from explicit user assertions, canonical
@@ -1342,8 +1343,8 @@ content never enters the model transcript or tool ledger.
 
 The Memory workspace translates access bindings into readable visibility,
 boundary, and sensitivity labels. It does not reinterpret legacy scope or offer
-shared-scope mutation. Agent-, mission-, project-, and workspace-sharing remain
-behind P3.1's unresolved membership, grant, consent, and authority gates.
+shared-scope mutation. Mission-, project-, and workspace-sharing remain behind
+P3.1's unresolved membership, grant, consent, and authority gates.
 
 The first P4.1 slice runs Context Compiler v2 beside, not instead of, the
 adaptive context engine. It normalizes the current candidate surfaces into
@@ -1375,15 +1376,29 @@ candidate retrieval remain outside this canary and keep P4.1 open.
 
 P4.2 adds a request-bound context-scope policy above those compiler paths. A
 direct run can select no extra context, the current turn, the current session,
-or an explicit reviewed selection. The first two discard supplied and stored
-conversation history; session mode retains the actor-owned thread context but
-turns off durable retrieval; explicit selection is the only scope allowed to
-carry a context selection. Personal automatic, agent-private, mission, project,
-and workspace modes remain authority-held and fail before execution. The
-selected scope is persisted as an enum in the content-free harness event.
-Legacy requests without the new field retain their prior behavior. Durable
-workflow and Loop v2 adoption require their own pinned contract changes and are
-not silently enrolled by this direct-run slice.
+the exact assigned Agent's private memory, or an explicit reviewed selection.
+The first two discard supplied and stored conversation history; session mode
+retains the actor-owned thread context but turns off durable retrieval; explicit
+selection is the only scope allowed to carry a context selection. Agent-private
+retrieval uses an exact actor-and-agent database principal and excludes every
+legacy tenant memory, knowledge, and graph store before ranking. Personal
+automatic, mission, project, and workspace modes remain authority-held and fail
+before execution. The selected scope is persisted as an enum in the
+content-free harness event. Legacy requests without the new field retain their
+prior behavior. Durable workflow and Loop v2 adoption require their own pinned
+contract changes and are not silently enrolled by this direct-run slice.
+
+P7.3 forms a durable episodic memory only from an exact verified effect receipt
+and binds it immutably to both the initiating actor and executing logical Agent.
+The same boundary admits working, episodic, semantic, and procedural tiers but
+no personal or shared coordinate. Agent-private context disables sibling
+council delegation, emits no private query trace, and cannot enter the legacy
+graph. Sharing never relaxes the source row: it creates a target-owned copy and
+an append-only `agent-memory-grant:1` artifact containing source/target scope
+digests, the source content digest, and an idempotency digest. The artifact and
+copy are committed together and emit metadata-only
+`memory.agent_private.shared`; the source Agent remains the only principal able
+to read the original.
 
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
