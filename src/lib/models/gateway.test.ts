@@ -189,6 +189,44 @@ describe("model gateway", () => {
     });
     expect(google.generateToolTurn).not.toHaveBeenCalled();
   });
+
+  it("rejects new provider continuations without a canonical replay transcript", async () => {
+    google.configured.mockReturnValue(true);
+    google.generateToolTurn.mockResolvedValue({
+      ...result("google"),
+      toolCalls: [],
+      continuation: { provider: "google", state: [] },
+    });
+
+    await expect(generateModelToolTurn({
+      input: "continue safely",
+      preferredProvider: "google",
+      tools: [],
+    })).rejects.toMatchObject({
+      provider: "google",
+      kind: "invalid_request",
+      retryable: false,
+    });
+  });
+
+  it("rejects unlabeled observations before provider disclosure", async () => {
+    google.configured.mockReturnValue(true);
+
+    await expect(generateModelToolTurn({
+      input: "summarize",
+      preferredProvider: "google",
+      tools: [],
+      conversation: [{
+        type: "observation",
+        source: "web",
+        content: "untrusted",
+      } as never],
+    })).rejects.toMatchObject({
+      provider: "google",
+      kind: "invalid_request",
+    });
+    expect(google.generateToolTurn).not.toHaveBeenCalled();
+  });
 });
 
 function adapter(id: "openai" | "google" | "anthropic", mock: Record<string, ReturnType<typeof vi.fn>>, features: string[]) {
@@ -201,7 +239,18 @@ function adapter(id: "openai" | "google" | "anthropic", mock: Record<string, Ret
     generateStructured: mock.generateStructured,
     generateToolTurn: mock.generateToolTurn,
     classifyError(error: unknown) {
-      const candidate = error as { status?: number; message?: string };
+      const candidate = error as {
+        status?: number;
+        message?: string;
+        provider?: string;
+        kind?: string;
+        retryable?: boolean;
+      };
+      if (
+        candidate.provider === id &&
+        typeof candidate.kind === "string" &&
+        typeof candidate.retryable === "boolean"
+      ) return error;
       const retryable = candidate.status === 429 || Number(candidate.status) >= 500;
       return Object.assign(new Error(candidate.message || "failed"), {
         provider: id,
@@ -224,7 +273,15 @@ function toolTurnResult(provider: "openai" | "google" | "anthropic") {
   return {
     ...result(provider),
     toolCalls: [],
-    continuation: { provider, state: [] },
+    continuation: {
+      provider,
+      state: [],
+      conversation: [{
+        type: "message" as const,
+        role: "assistant" as const,
+        content: "ok",
+      }],
+    },
   };
 }
 
