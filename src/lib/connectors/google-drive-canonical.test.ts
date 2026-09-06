@@ -1,8 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
+  GOOGLE_DRIVE_CANONICAL_ADAPTER_CONFIG_SHA256,
+  GOOGLE_DRIVE_CANONICAL_ADAPTER_VERSION,
+  GOOGLE_DRIVE_CANONICAL_ENGINE_VERSION,
+  GOOGLE_DRIVE_CANONICAL_ROLLOUT_GENERATION,
   canonicalDriveMetadataSha256,
   canonicalDriveSourceTimestamps,
 } from "@/lib/connectors/google-drive-canonical";
+
+describe("canonical Drive rollout identity", () => {
+  it("assigns the move-aware adapter its own immutable generation", () => {
+    expect({
+      rolloutGeneration: GOOGLE_DRIVE_CANONICAL_ROLLOUT_GENERATION,
+      engineVersion: GOOGLE_DRIVE_CANONICAL_ENGINE_VERSION,
+      adapterVersion: GOOGLE_DRIVE_CANONICAL_ADAPTER_VERSION,
+      adapterConfigSha256: GOOGLE_DRIVE_CANONICAL_ADAPTER_CONFIG_SHA256,
+    }).toEqual({
+      rolloutGeneration: 3,
+      engineVersion: "source-sync.p2.3-drive-v2",
+      adapterVersion: "google-drive.metadata-canonical.v2",
+      adapterConfigSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+});
 
 describe("canonical Drive source timestamps", () => {
   it("preserves a valid provider timestamp sequence", () => {

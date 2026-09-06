@@ -33,7 +33,7 @@ const EMPTY_CONTENT_SHA256 = createHash("sha256").update("").digest("hex");
 
 export const GOOGLE_DRIVE_CANONICAL_CAPABILITY_ID =
   "source.google-drive.canonical-metadata";
-export const GOOGLE_DRIVE_CANONICAL_ROLLOUT_GENERATION = 2;
+export const GOOGLE_DRIVE_CANONICAL_ROLLOUT_GENERATION = 3;
 export const GOOGLE_DRIVE_CANONICAL_ENGINE_VERSION = "source-sync.p2.3-drive-v2";
 export const GOOGLE_DRIVE_CANONICAL_ADAPTER_ID =
   "google-drive.metadata-canonical";
