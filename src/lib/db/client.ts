@@ -5991,6 +5991,10 @@ async function ensureMemoryTierPolicyV1(sql: SqlClient) {
         OR memory.use_count IS DISTINCT FROM usage.use_count
       )
   `;
+  // The permanent deletion and graph barriers use deferred constraint
+  // triggers. Validate the backfill before issuing more ALTER TABLE commands
+  // in this same atomic migration.
+  await sql`SET CONSTRAINTS ALL IMMEDIATE`;
 
   await sql`ALTER TABLE omni_memories ALTER COLUMN tier SET NOT NULL`;
   await sql`ALTER TABLE omni_memories ALTER COLUMN tier SET DEFAULT 'semantic'`;
