@@ -250,7 +250,7 @@ and its events remain unchanged.
 
 ## Durable workflows
 
-Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed node-by-node through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Approval nodes pause until signaled. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.
+Goals submitted to `/api/workflows` are planned into typed DAGs (LLM structured output), persisted, and executed in bounded ready-node waves through queue leases (`omni_operation_jobs`): lease → tick → retry with backoff (max 5 attempts) → recovery for stale leases. Model-only and proven read-only branches may overlap; approval gates and possible mutations remain serialized. Downstream governed-tool inputs can bind only typed artifacts from declared direct dependencies through restricted content-field JSON Pointers. Approval nodes pause until signaled. The daily cron plus `after()` drains advance work; see [deployment.md](deployment.md) for cadence options.
 
 ## Storage
 
