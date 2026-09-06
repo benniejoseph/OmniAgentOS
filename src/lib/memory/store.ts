@@ -14,6 +14,7 @@ import {
   type DatabaseMemoryAccessScope,
 } from "@/lib/db/memory-access-scope";
 import { appendScopedDomainEvent } from "@/lib/events/store";
+import { retireEntityMemoryLineage } from "@/lib/entities/store";
 import {
   buildMemoryDeletionReceiptV1,
   canonicalizeMemoryDeletionIds,
@@ -29,6 +30,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  deriveExecutionScope,
   executionScopesEqual,
   parsePersistedExecutionScope,
   type ExecutionScope,
@@ -742,6 +744,9 @@ export type ForgetMemoryWithReceiptResult = {
   invalidatedAgentRunCount: number;
   invalidatedWorkflowRunCount: number;
   invalidatedDailyBriefCount: number;
+  affectedEntityCount: number;
+  retiredEntityCount: number;
+  retiredEntityAliasCount: number;
 };
 
 export class MemoryDeletionPreviewConflictError extends Error {
@@ -962,6 +967,9 @@ export async function forgetMemoryWithReceipt(
           invalidatedAgentRunCount: 0,
           invalidatedWorkflowRunCount: 0,
           invalidatedDailyBriefCount: 0,
+          affectedEntityCount: 0,
+          retiredEntityCount: 0,
+          retiredEntityAliasCount: 0,
         };
       }
       if (!memoryRows[0]) {
@@ -1011,6 +1019,16 @@ export async function forgetMemoryWithReceipt(
         tenantId,
         canonicalizeMemoryDeletionIds([id, ...descendantMemoryIds]),
       );
+      const entityRetirement = await retireEntityMemoryLineage({
+        tenantId,
+        ownerActorId: executionScope.initiatingActorId!,
+        memoryIds: canonicalizeMemoryDeletionIds([id, ...descendantMemoryIds]),
+        executionScope: deriveExecutionScope(executionScope, {
+          purpose: "memory.forget.v1",
+        }),
+        retiredAt: receipt.forgottenAt,
+        sql,
+      });
       // The receipt trigger verifies and deletes this exact graph/trace
       // snapshot before NEW becomes visible to the restrictive barrier policy.
       await insertMemoryDeletionReceipt(receipt, sql);
@@ -1079,6 +1097,9 @@ export async function forgetMemoryWithReceipt(
           invalidatedAgentRunCount: invalidatedRuns.agentRunIds.length,
           invalidatedWorkflowRunCount: invalidatedRuns.workflowRunIds.length,
           invalidatedDailyBriefCount,
+          affectedEntityCount: entityRetirement.affectedEntityIds.length,
+          retiredEntityCount: entityRetirement.retiredEntityIds.length,
+          retiredEntityAliasCount: entityRetirement.retiredAliasIds.length,
           descendantManifestSha256: receipt.descendantManifestSha256,
           executionScopeSha256: receipt.executionScopeSha256,
           receiptSha256: receipt.receiptSha256,
@@ -1108,6 +1129,9 @@ export async function forgetMemoryWithReceipt(
         invalidatedAgentRunCount: invalidatedRuns.agentRunIds.length,
         invalidatedWorkflowRunCount: invalidatedRuns.workflowRunIds.length,
         invalidatedDailyBriefCount,
+        affectedEntityCount: entityRetirement.affectedEntityIds.length,
+        retiredEntityCount: entityRetirement.retiredEntityIds.length,
+        retiredEntityAliasCount: entityRetirement.retiredAliasIds.length,
       };
     };
     return options.accessScope
@@ -1173,6 +1197,18 @@ export async function forgetMemoryWithReceipt(
     }),
   );
   if (!forgotten) return null;
+  const fileExecutionScope = parsePersistedExecutionScope(options.executionScope);
+  const entityRetirement = fileExecutionScope?.initiatingActorId
+    ? await retireEntityMemoryLineage({
+        tenantId,
+        ownerActorId: fileExecutionScope.initiatingActorId,
+        memoryIds: [...affectedFileMemoryIds],
+        executionScope: deriveExecutionScope(fileExecutionScope, {
+          purpose: "memory.forget.v1",
+        }),
+        retiredAt: forgottenAt,
+      })
+    : { affectedEntityIds: [], retiredEntityIds: [], retiredAliasIds: [] };
   const { queueMemoryGraphRebuild } = await import("@/lib/memory/graph");
   await queueMemoryGraphRebuild({ tenantId });
   return {
@@ -1183,6 +1219,9 @@ export async function forgetMemoryWithReceipt(
     invalidatedAgentRunCount: 0,
     invalidatedWorkflowRunCount: 0,
     invalidatedDailyBriefCount: 0,
+    affectedEntityCount: entityRetirement.affectedEntityIds.length,
+    retiredEntityCount: entityRetirement.retiredEntityIds.length,
+    retiredEntityAliasCount: entityRetirement.retiredAliasIds.length,
   };
 }
 

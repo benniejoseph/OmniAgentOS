@@ -102,6 +102,9 @@ describe("memory deletion route", () => {
       invalidatedAgentRunCount: 0,
       invalidatedWorkflowRunCount: 0,
       invalidatedDailyBriefCount: 0,
+      affectedEntityCount: 1,
+      retiredEntityCount: 1,
+      retiredEntityAliasCount: 0,
     });
   });
 
@@ -142,6 +145,11 @@ describe("memory deletion route", () => {
     );
 
     expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      affectedEntityCount: 1,
+      retiredEntityCount: 1,
+      retiredEntityAliasCount: 0,
+    });
     expect(routeMocks.forgetMemoryWithReceipt).toHaveBeenCalledWith(
       "memory-a",
       expect.objectContaining({

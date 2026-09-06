@@ -11,6 +11,8 @@ import {
   parseEntityMergeReview,
   parseEntityRecord,
   parseEntityResolutionDecision,
+  retireEntityAlias,
+  reviseEntityLineage,
   resolveEntityIdentity,
   transitionEntityRecord,
   type EntityAccessBinding,
@@ -61,18 +63,25 @@ export async function saveEntityRecord(input: {
     await ensureDatabaseSchema();
     return runWithDatabaseActorScope(scope.tenantId, [scope.initiatingActorId], () =>
       getSql().transaction(async (sql: EntitySqlClient) => {
+        await lockAndAssertActiveMemoryLineage(
+          sql,
+          scope.tenantId,
+          entity.lineage,
+        );
         const rows = await sql`
           INSERT INTO omni_entity_records (
             tenant_id, id, owner_actor_id, ontology_version_id,
             entity_type_id, canonical_label, normalized_label_sha256,
-            state, merged_into_entity_id, access_scope_sha256, contract,
+            state, merged_into_entity_id, access_scope_sha256,
+            lineage_memory_ids, contract,
             entity_sha256, created_at, updated_at
           ) VALUES (
             ${scope.tenantId}, ${entity.entityId}, ${scope.initiatingActorId},
             ${entity.ontologyVersionId}, ${entity.entityTypeId},
             ${entity.canonicalLabel}, ${entity.normalizedLabelSha256},
             ${entity.state}, ${entity.mergedIntoEntityId},
-            ${entity.accessBinding.accessScopeSha256}, ${entity}::jsonb,
+            ${entity.accessBinding.accessScopeSha256},
+            ${lineageMemoryIds(entity.lineage)}, ${entity}::jsonb,
             ${entity.entitySha256}, ${entity.createdAt}, ${entity.updatedAt}
           )
           ON CONFLICT (tenant_id, id) DO NOTHING
@@ -155,17 +164,23 @@ export async function saveEntityAlias(input: {
     await ensureDatabaseSchema();
     return runWithDatabaseActorScope(scope.tenantId, [scope.initiatingActorId], () =>
       getSql().transaction(async (sql: EntitySqlClient) => {
+        await lockAndAssertActiveMemoryLineage(
+          sql,
+          scope.tenantId,
+          [alias.lineage],
+        );
         const parent = await loadEntityRecord(sql, scope.tenantId, entity.entityId);
         assertSameDigest(parent?.entitySha256, entity.entitySha256, "entity");
         const rows = await sql`
           INSERT INTO omni_entity_aliases (
             tenant_id, id, owner_actor_id, entity_id,
             normalized_alias_sha256, access_scope_sha256, state,
-            contract, alias_sha256, created_at
+            lineage_memory_ids, contract, alias_sha256, created_at
           ) VALUES (
             ${scope.tenantId}, ${alias.aliasId}, ${scope.initiatingActorId},
             ${alias.entityId}, ${alias.normalizedAliasSha256},
-            ${alias.accessScopeSha256}, ${alias.state}, ${alias}::jsonb,
+            ${alias.accessScopeSha256}, ${alias.state},
+            ${lineageMemoryIds([alias.lineage])}, ${alias}::jsonb,
             ${alias.aliasSha256}, ${alias.createdAt}
           )
           ON CONFLICT (tenant_id, id) DO NOTHING
@@ -230,6 +245,218 @@ export async function saveEntityAlias(input: {
     });
   }
   return stored;
+}
+
+export async function addEntityLineage(input: {
+  entityId: string;
+  lineage: EntityRecord["lineage"][number];
+  accessBinding: EntityAccessBinding;
+  executionScope: ExecutionScope;
+  updatedAt?: string;
+}): Promise<EntityRecord> {
+  const accessBinding = parseEntityAccessBinding(input.accessBinding);
+  const scope = assertEntityScope(
+    input.executionScope,
+    accessBinding,
+    "entity.write.v1",
+  );
+  const update = (entity: EntityRecord) => {
+    assertEntityScope(scope, entity.accessBinding, "entity.write.v1");
+    if (entity.lineage.some((reference) =>
+      reference.kind === input.lineage.kind &&
+      reference.referenceId === input.lineage.referenceId &&
+      reference.referenceSha256 === input.lineage.referenceSha256
+    )) return entity;
+    const requestedUpdatedAt = new Date(
+      input.updatedAt || entity.updatedAt,
+    ).toISOString();
+    return reviseEntityLineage({
+      entity,
+      lineage: [...entity.lineage, input.lineage],
+      updatedAt: requestedUpdatedAt < entity.updatedAt
+        ? entity.updatedAt
+        : requestedUpdatedAt,
+    });
+  };
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseActorScope(scope.tenantId, [scope.initiatingActorId], () =>
+      getSql().transaction(async (sql: EntitySqlClient) => {
+        await lockAndAssertActiveMemoryLineage(
+          sql,
+          scope.tenantId,
+          [input.lineage],
+        );
+        const entity = await loadEntityRecord(
+          sql,
+          scope.tenantId,
+          input.entityId,
+          true,
+        );
+        if (!entity) throw new Error("Entity was not found in scope.");
+        const next = update(entity);
+        if (next.entitySha256 === entity.entitySha256) return entity;
+        await updateEntityRecord(sql, entity, next);
+        await appendRegistryEvent({
+          id: `entity-lineage-added:${next.entitySha256}`,
+          type: "entity.lineage.added",
+          streamId: `entity:${entity.entityId}`,
+          executionScope: scope,
+          payload: {
+            schemaVersion: 1,
+            entityId: entity.entityId,
+            lineageKind: input.lineage.kind,
+            lineageReferenceSha256: input.lineage.referenceSha256,
+            entitySha256: next.entitySha256,
+          },
+        }, sql);
+        return next;
+      }) as Promise<EntityRecord>,
+    );
+  }
+
+  let result: EntityRecord | undefined;
+  await updateLedger((ledger) => {
+    const index = ledger.entities.findIndex((entity) =>
+      entity.entityId === input.entityId &&
+      entity.accessBinding.tenantId === scope.tenantId &&
+      entity.accessBinding.ownerActorId === scope.initiatingActorId
+    );
+    if (index < 0) throw new Error("Entity was not found in scope.");
+    const current = parseEntityRecord(ledger.entities[index]);
+    result = update(current);
+    if (result.entitySha256 === current.entitySha256) return ledger;
+    const entities = [...ledger.entities];
+    entities[index] = result;
+    return { ...ledger, entities };
+  });
+  return result!;
+}
+
+export async function retireEntityMemoryLineage(input: {
+  tenantId: string;
+  ownerActorId: string;
+  memoryIds: readonly string[];
+  executionScope: ExecutionScope;
+  retiredAt?: string;
+  sql?: EntitySqlClient;
+}) {
+  const scope = parsePersistedExecutionScope(input.executionScope);
+  const memoryIds = [...new Set(input.memoryIds.map((id) => id.trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  if (
+    !scope ||
+    !input.executionScope ||
+    scope.tenantId !== input.tenantId ||
+    scope.initiatingActorId !== input.ownerActorId ||
+    scope.executingPrincipalType !== "user" ||
+    scope.executingPrincipalId !== input.ownerActorId ||
+    !["memory.correct.v1", "memory.forget.v1"].includes(scope.purpose) ||
+    memoryIds.length === 0
+  ) {
+    throw new Error("Entity lineage retirement requires an exact owner scope.");
+  }
+  const retiredAt = new Date(input.retiredAt || Date.now()).toISOString();
+
+  if (hasDatabaseUrl() || input.sql) {
+    if (!input.sql) await ensureDatabaseSchema();
+    const operation = async (sql: EntitySqlClient) => {
+      const rows = await sql`
+        SELECT contract
+        FROM omni_entity_records
+        WHERE tenant_id = ${input.tenantId}
+          AND owner_actor_id = ${input.ownerActorId}
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(contract -> 'lineage') reference
+            WHERE reference ->> 'kind' = 'memory'
+              AND reference ->> 'referenceId' = ANY(${memoryIds}::TEXT[])
+          )
+        ORDER BY id COLLATE "C"
+        FOR UPDATE
+      `;
+      const affectedEntityIds: string[] = [];
+      const retiredEntityIds: string[] = [];
+      for (const row of rows) {
+        const current = parseEntityRecord(row.contract);
+        const lineage = current.lineage.filter((reference) =>
+          reference.kind !== "memory" ||
+          !memoryIds.includes(reference.referenceId)
+        );
+        if (lineage.length === current.lineage.length) continue;
+        const next = reviseEntityLineage({
+          entity: current,
+          lineage,
+          updatedAt: retiredAt,
+        });
+        await updateEntityRecord(sql, current, next);
+        affectedEntityIds.push(current.entityId);
+        if (next.state === "retired") retiredEntityIds.push(current.entityId);
+      }
+      const retiredAliasIds = await retireAffectedAliases(
+        sql,
+        input.tenantId,
+        input.ownerActorId,
+        memoryIds,
+        retiredEntityIds,
+      );
+      return frozenRetirement(
+        affectedEntityIds,
+        retiredEntityIds,
+        retiredAliasIds,
+      );
+    };
+    if (input.sql) return operation(input.sql);
+    return runWithDatabaseActorScope(input.tenantId, [input.ownerActorId], () =>
+      getSql().transaction(operation) as Promise<ReturnType<typeof frozenRetirement>>
+    );
+  }
+
+  let retirement = frozenRetirement([], [], []);
+  await updateLedger((ledger) => {
+    const affectedEntityIds: string[] = [];
+    const retiredEntityIds: string[] = [];
+    const entities = ledger.entities.map((candidate) => {
+      const current = parseEntityRecord(candidate);
+      if (
+        current.accessBinding.tenantId !== input.tenantId ||
+        current.accessBinding.ownerActorId !== input.ownerActorId
+      ) return current;
+      const lineage = current.lineage.filter((reference) =>
+        reference.kind !== "memory" ||
+        !memoryIds.includes(reference.referenceId)
+      );
+      if (lineage.length === current.lineage.length) return current;
+      const next = reviseEntityLineage({ entity: current, lineage, updatedAt: retiredAt });
+      affectedEntityIds.push(current.entityId);
+      if (next.state === "retired") retiredEntityIds.push(current.entityId);
+      return next;
+    });
+    const retiredAliasIds: string[] = [];
+    const aliases = ledger.aliases.map((candidate) => {
+      const alias = parseEntityAlias(candidate);
+      if (
+        alias.state === "retired" ||
+        (
+          !retiredEntityIds.includes(alias.entityId) &&
+          !(
+            alias.lineage.kind === "memory" &&
+            memoryIds.includes(alias.lineage.referenceId)
+          )
+        )
+      ) return alias;
+      retiredAliasIds.push(alias.aliasId);
+      return retireEntityAlias({ alias });
+    });
+    retirement = frozenRetirement(
+      affectedEntityIds,
+      retiredEntityIds,
+      retiredAliasIds,
+    );
+    return { ...ledger, entities, aliases };
+  });
+  return retirement;
 }
 
 export async function resolveAndRecordEntityIdentity(input: {
@@ -516,6 +743,7 @@ export async function readEntityRegistry(input: {
               AND owner_actor_id = ${scope.initiatingActorId}
               AND access_scope_sha256 = ${accessBinding.accessScopeSha256}
               AND entity_type_id = ${input.entityTypeId}
+              AND state <> 'retired'
             ORDER BY id COLLATE "C"
           `
         : await sql`
@@ -523,6 +751,7 @@ export async function readEntityRegistry(input: {
             WHERE tenant_id = ${scope.tenantId}
               AND owner_actor_id = ${scope.initiatingActorId}
               AND access_scope_sha256 = ${accessBinding.accessScopeSha256}
+              AND state <> 'retired'
             ORDER BY id COLLATE "C"
           `;
       const entities = entityRows.map((row) => parseEntityRecord(row.contract));
@@ -533,6 +762,7 @@ export async function readEntityRegistry(input: {
           WHERE tenant_id = ${scope.tenantId}
             AND owner_actor_id = ${scope.initiatingActorId}
             AND access_scope_sha256 = ${accessBinding.accessScopeSha256}
+            AND state = 'active'
           ORDER BY id COLLATE "C"
         `,
         sql`
@@ -576,6 +806,7 @@ export async function readEntityRegistry(input: {
       entity.accessBinding.tenantId === scope.tenantId &&
       entity.accessBinding.ownerActorId === scope.initiatingActorId &&
       entity.accessBinding.accessScopeSha256 === accessBinding.accessScopeSha256 &&
+      entity.state !== "retired" &&
       (!input.entityTypeId || entity.entityTypeId === input.entityTypeId)
     );
   const entityIds = new Set(entities.map((entity) => entity.entityId));
@@ -583,7 +814,7 @@ export async function readEntityRegistry(input: {
     schemaVersion: 1,
     entities,
     aliases: ledger.aliases.map(parseEntityAlias).filter((alias) =>
-      entityIds.has(alias.entityId)
+      alias.state === "active" && entityIds.has(alias.entityId)
     ),
     resolutions: ledger.resolutions.map(parseEntityResolutionDecision).filter((resolution) =>
       resolution.tenantId === scope.tenantId &&
@@ -691,6 +922,125 @@ async function loadEntityRecord(
     [tenantId, entityId],
   );
   return rows[0] ? parseEntityRecord(rows[0].contract) : undefined;
+}
+
+async function updateEntityRecord(
+  sql: EntitySqlClient,
+  current: EntityRecord,
+  next: EntityRecord,
+) {
+  const rows = await sql`
+    UPDATE omni_entity_records
+    SET canonical_label = ${next.canonicalLabel},
+        state = ${next.state},
+        merged_into_entity_id = ${next.mergedIntoEntityId},
+        lineage_memory_ids = ${lineageMemoryIds(next.lineage)},
+        contract = ${next}::jsonb,
+        entity_sha256 = ${next.entitySha256},
+        updated_at = ${next.updatedAt}
+    WHERE tenant_id = ${current.accessBinding.tenantId}
+      AND id = ${current.entityId}
+      AND entity_sha256 = ${current.entitySha256}
+    RETURNING id
+  `;
+  if (!rows[0]) throw new Error("Entity changed concurrently.");
+}
+
+async function lockAndAssertActiveMemoryLineage(
+  sql: EntitySqlClient,
+  tenantId: string,
+  lineage: readonly EntityRecord["lineage"][number][],
+) {
+  const memoryIds = lineageMemoryIds(lineage);
+  if (!memoryIds.length) return;
+  // Memory deletion takes this tenant-wide lock before it captures and retires
+  // descendants. Sharing it makes projection-before-delete visible to the
+  // deletion transaction and projection-after-delete fail closed.
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${`memory-graph:${tenantId}`}, 0)
+    )
+  `;
+  const rows = await sql`
+    SELECT id
+    FROM omni_memories
+    WHERE tenant_id = ${tenantId}
+      AND id = ANY(${memoryIds}::TEXT[])
+      AND claim_status = 'active'
+    ORDER BY id COLLATE "C"
+    FOR SHARE
+  `;
+  const activeIds = new Set(rows.map((row) => String(row.id)));
+  if (memoryIds.some((memoryId) => !activeIds.has(memoryId))) {
+    throw new Error(
+      "Entity projection requires active, actor-visible memory lineage.",
+    );
+  }
+}
+
+async function retireAffectedAliases(
+  sql: EntitySqlClient,
+  tenantId: string,
+  ownerActorId: string,
+  memoryIds: readonly string[],
+  retiredEntityIds: readonly string[],
+) {
+  const rows = await sql`
+    SELECT contract
+    FROM omni_entity_aliases
+    WHERE tenant_id = ${tenantId}
+      AND owner_actor_id = ${ownerActorId}
+      AND state = 'active'
+      AND (
+        entity_id = ANY(${retiredEntityIds}::TEXT[])
+        OR (
+          contract #>> '{lineage,kind}' = 'memory'
+          AND contract #>> '{lineage,referenceId}' = ANY(${memoryIds}::TEXT[])
+        )
+      )
+    ORDER BY id COLLATE "C"
+    FOR UPDATE
+  `;
+  const retiredAliasIds: string[] = [];
+  for (const row of rows) {
+    const current = parseEntityAlias(row.contract);
+    const next = retireEntityAlias({ alias: current });
+    const updated = await sql`
+      UPDATE omni_entity_aliases
+      SET state = ${next.state},
+          lineage_memory_ids = '{}'::TEXT[],
+          contract = ${next}::jsonb,
+          alias_sha256 = ${next.aliasSha256}
+      WHERE tenant_id = ${tenantId}
+        AND id = ${current.aliasId}
+        AND alias_sha256 = ${current.aliasSha256}
+      RETURNING id
+    `;
+    if (!updated[0]) throw new Error("Entity alias changed concurrently.");
+    retiredAliasIds.push(current.aliasId);
+  }
+  return retiredAliasIds;
+}
+
+function frozenRetirement(
+  affectedEntityIds: readonly string[],
+  retiredEntityIds: readonly string[],
+  retiredAliasIds: readonly string[],
+) {
+  return Object.freeze({
+    affectedEntityIds: Object.freeze([...affectedEntityIds]),
+    retiredEntityIds: Object.freeze([...retiredEntityIds]),
+    retiredAliasIds: Object.freeze([...retiredAliasIds]),
+  });
+}
+
+function lineageMemoryIds(
+  lineage: readonly EntityRecord["lineage"][number][],
+) {
+  return [...new Set(lineage
+    .filter((reference) => reference.kind === "memory")
+    .map((reference) => reference.referenceId))]
+    .sort((left, right) => left.localeCompare(right));
 }
 
 async function loadEntityAlias(

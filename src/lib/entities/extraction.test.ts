@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,8 +11,16 @@ import { ASAEL_ONTOLOGY_EFFECTIVE_AT } from "@/lib/entities/ontology";
 import { buildEntityAccessBinding } from "@/lib/entities/registry";
 import { readEntityRegistry } from "@/lib/entities/store";
 import { listStreamEvents } from "@/lib/events/store";
-import { buildUserPrivateMemoryAccessBindingV1 } from "@/lib/memory/access-binding";
+import {
+  buildUserPrivateMemoryAccessBindingV1,
+  MEMORY_PURPOSE_IDS,
+} from "@/lib/memory/access-binding";
 import { formExplicitUserAssertionMemory } from "@/lib/memory/evidence-formation";
+import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
+import {
+  forgetMemoryWithReceipt,
+  previewMemoryDeletion,
+} from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -159,7 +167,106 @@ describe("canonical explicit-memory entity extraction", () => {
       reviewRequiredCount: 0,
     });
   });
+
+  it("retains shared lineage and scrubs the entity after its last memory is forgotten", async () => {
+    const first = await formExplicitUserAssertionMemory({
+      context,
+      requestId: "remember-acme-one",
+      threadId: "thread-acme",
+      turnId: "turn-acme-one",
+      message: "Remember that organization: Acme Corporation",
+    });
+    const second = await formExplicitUserAssertionMemory({
+      context,
+      requestId: "remember-acme-two",
+      threadId: "thread-acme",
+      turnId: "turn-acme-two",
+      message: "Remember that organization named \"Acme Corporation\"",
+    });
+    const binding = registryBinding();
+    let registry = await readRegistry(binding, "read-acme-before-forget");
+    expect(registry.entities).toHaveLength(1);
+    expect(registry.entities[0].lineage.map((reference) =>
+      reference.referenceId
+    ).sort()).toEqual([first!.id, second!.id].sort());
+
+    const firstResult = await forget(first!.id, "forget-acme-one");
+    expect(firstResult).toMatchObject({
+      affectedEntityCount: 1,
+      retiredEntityCount: 0,
+    });
+    registry = await readRegistry(binding, "read-acme-after-first-forget");
+    expect(registry.entities).toHaveLength(1);
+    expect(registry.entities[0].lineage).toHaveLength(1);
+    expect(registry.entities[0].lineage[0].referenceId).toBe(second!.id);
+
+    const secondResult = await forget(second!.id, "forget-acme-two");
+    expect(secondResult).toMatchObject({
+      affectedEntityCount: 1,
+      retiredEntityCount: 1,
+    });
+    registry = await readRegistry(binding, "read-acme-after-second-forget");
+    expect(registry.entities).toEqual([]);
+    const rawLedger = await readFile(
+      path.join(process.env.OMNIAGENT_DATA_DIR!, "entity-registry.json"),
+      "utf8",
+    );
+    expect(rawLedger).not.toContain("Acme Corporation");
+    expect(rawLedger).toContain("[forgotten]");
+  });
 });
+
+function registryBinding() {
+  return buildEntityAccessBinding({
+    tenantId: context.tenantId,
+    ownerActorId,
+    visibility: "user_private",
+    sensitivity: "confidential",
+    allowedPurposeIds: [
+      "entity.read.v1",
+      "entity.resolve.v1",
+      "entity.review.v1",
+      "entity.write.v1",
+    ],
+    boundAt: ASAEL_ONTOLOGY_EFFECTIVE_AT,
+  });
+}
+
+function readRegistry(
+  accessBinding: ReturnType<typeof registryBinding>,
+  correlationId: string,
+) {
+  return readEntityRegistry({
+    accessBinding,
+    executionScope: createExecutionScope({
+      tenantId: context.tenantId,
+      initiatingActorId: ownerActorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: ownerActorId,
+      correlationId,
+      purpose: "entity.read.v1",
+    }),
+  });
+}
+
+async function forget(memoryId: string, correlationId: string) {
+  const access = requestMemoryAccessFromSecurityContext(context, {
+    purposeId: MEMORY_PURPOSE_IDS.forget,
+    auditPurpose: "test.memory.forget",
+    correlationId,
+  })!;
+  const preview = await previewMemoryDeletion(memoryId, {
+    tenantId: context.tenantId,
+    accessScope: access.databaseAccessScope,
+  });
+  return forgetMemoryWithReceipt(memoryId, {
+    tenantId: context.tenantId,
+    accessScope: access.databaseAccessScope,
+    executionScope: access.executionScope,
+    expectedDescendantManifestSha256:
+      preview!.expectedReceiptManifestSha256,
+  });
+}
 
 function explicitMemory(content: string): MemoryRecord {
   return {

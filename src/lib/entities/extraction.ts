@@ -8,6 +8,7 @@ import {
   type EntityResolutionDecision,
 } from "@/lib/entities/registry";
 import {
+  addEntityLineage,
   resolveAndRecordEntityIdentity,
   saveEntityRecord,
 } from "@/lib/entities/store";
@@ -260,6 +261,13 @@ async function settleResolution(input: {
   createdAt: string;
 }) {
   if (input.resolution.decision === "auto_link") {
+    await addEntityLineage({
+      entityId: input.resolution.selectedEntityId!,
+      lineage: input.lineage,
+      accessBinding: input.accessBinding,
+      executionScope: input.writeScope,
+      updatedAt: input.createdAt,
+    });
     input.linkedEntityIds.push(input.resolution.selectedEntityId!);
     return;
   }
@@ -281,7 +289,10 @@ async function settleResolution(input: {
 function assertCanonicalExplicitMemory(memory: MemoryRecord) {
   if (
     !memory.tenantId ||
-    !["manual", "user-assertion"].includes(memory.source) ||
+    !(
+      ["manual", "user-assertion"].includes(memory.source) ||
+      memory.source.startsWith("correction:")
+    ) ||
     memory.assertedBy !== "user" ||
     memory.claimStatus !== "active" ||
     !memory.content.trim() ||
