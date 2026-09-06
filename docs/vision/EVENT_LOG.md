@@ -1610,3 +1610,25 @@ principal policy, and then activates them. Revocation is terminal; changing any
 authority coordinate requires another generation. The events describe the
 transition but never grant authority independently of the database record and
 principal-policy pin.
+
+## Agent release lifecycle
+
+P7.5 adds `agent.release.initialized`, `agent.release.evaluated`,
+`agent.release.promoted`, `agent.release.rolled_back`, and
+`agent.release.retired` to the exact Agent stream. Initialization records the
+release revision and active definition version. Evaluation records only the
+immutable evaluation ID and digest, candidate and baseline versions, direction,
+changed-field names, and verdict. Promotion and rollback record the exact prior
+and next versions, release revision, and evaluation coordinates. Retirement
+records the terminal release revision, active definition version, and retirement
+time. Payloads contain no instructions, persona prose, Skill content, tool
+output, credential, tenant/actor identity, or private reasoning.
+
+Definition publication does not emit a release transition and cannot change the
+active channel. An exact passed evaluation must bind the current active baseline
+before the same transaction may advance the channel and append its event.
+Retries converge on the deterministic evaluation/event identity. Retirement is
+terminal and preserves all prior definition, evaluation, run-manifest, and
+release events. Migration v114's initial-channel enrollment trigger is a
+database compatibility invariant and emits no event; the current application
+appends `agent.release.initialized` in its governed creation transaction.
