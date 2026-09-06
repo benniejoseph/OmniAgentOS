@@ -1296,6 +1296,18 @@ provider call. Receipt validation or persistence failure aborts the run before
 model disclosure. Automatic retrieval, shared scopes, and authorization before
 candidate retrieval remain outside this canary and keep P4.1 open.
 
+P4.2 adds a request-bound context-scope policy above those compiler paths. A
+direct run can select no extra context, the current turn, the current session,
+or an explicit reviewed selection. The first two discard supplied and stored
+conversation history; session mode retains the actor-owned thread context but
+turns off durable retrieval; explicit selection is the only scope allowed to
+carry a context selection. Personal automatic, agent-private, mission, project,
+and workspace modes remain authority-held and fail before execution. The
+selected scope is persisted as an enum in the content-free harness event.
+Legacy requests without the new field retain their prior behavior. Durable
+workflow and Loop v2 adoption require their own pinned contract changes and are
+not silently enrolled by this direct-run slice.
+
 ## Capture asset object plane
 
 Capture files and recording segments retain database bytes through the rollback
