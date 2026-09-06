@@ -8,6 +8,10 @@ import {
   updateCustomAgentIdentityWithSql,
   versionCustomAgentsForSkillChangeWithSql,
 } from "@/lib/agents/identity-store";
+import {
+  initializeAgentReleaseChannelWithSql,
+  retireAgentReleaseChannelWithSql,
+} from "@/lib/agents/release-store";
 import { ensureDatabaseSchema, getDatabaseTenantContext, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { redactSensitive } from "@/lib/security/context";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
@@ -280,10 +284,18 @@ export async function createCustomAgent(input: CustomAgentCreateInput, options: 
           RETURNING *
         `;
         const saved = agentFromRow(rows[0]);
-        await createCustomAgentIdentityWithSql({
+        const executionScope = createAgentIdentityMutationScope(saved, "create");
+        const identity = await createCustomAgentIdentityWithSql({
           agent: saved,
           skills,
-          executionScope: createAgentIdentityMutationScope(saved, "create"),
+          executionScope,
+          sql,
+        });
+        await initializeAgentReleaseChannelWithSql({
+          agent: saved,
+          definitionVersion: identity.definition.definitionVersion,
+          canonicalActorId: identity.definition.ownerActorId,
+          executionScope,
           sql,
         });
         return saved;
@@ -408,9 +420,27 @@ export async function deleteCustomAgent(id: string, options: Scope) {
       `;
       if (!currentRows[0]) return false;
       const current = agentFromRow(currentRows[0]);
+      const releaseRows = await sql`
+        SELECT owner_actor_id
+        FROM omni_agent_release_channels
+        WHERE tenant_id = ${tenantId}
+          AND agent_definition_id = ${id}
+        LIMIT 1
+        FOR UPDATE
+      `;
+      if (!releaseRows[0]) {
+        throw new Error("The Agent release channel is unavailable.");
+      }
+      const executionScope = createAgentIdentityMutationScope(current, "delete");
       await revokeCustomAgentIdentityWithSql({
         agent: current,
-        executionScope: createAgentIdentityMutationScope(current, "delete"),
+        executionScope,
+        sql,
+      });
+      await retireAgentReleaseChannelWithSql({
+        agent: current,
+        canonicalActorId: String(releaseRows[0].owner_actor_id),
+        executionScope,
         sql,
       });
       const rows = await sql`

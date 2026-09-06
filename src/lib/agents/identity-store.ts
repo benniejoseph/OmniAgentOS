@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   buildBuiltInAgentIdentityV1,
+  buildCustomAgentDefinitionV1,
   buildCustomAgentIdentityV1,
   isBuiltInAgentIdentityId,
   parseAgentDefinitionV1,
@@ -139,22 +140,23 @@ export async function updateCustomAgentIdentityWithSql(input: {
     input.next.actorId,
     input.sql,
   );
-  const definitionVersion = definitionChanged
-    ? (await appendDefinitionVersion({
-        agent: input.next,
-        skills: input.skills,
-        ownerActorId,
-        executionScope: input.executionScope,
-        sql: input.sql,
-      })).definitionVersion
-    : Number((await readLatestDefinitionRow(
-        input.next.tenantId,
-        input.next.id,
-        ownerActorId,
-        input.sql,
-      )).definition_version);
+  if (definitionChanged) {
+    await appendDefinitionVersion({
+      agent: input.next,
+      skills: input.skills,
+      ownerActorId,
+      executionScope: input.executionScope,
+      sql: input.sql,
+    });
+  }
 
   if (authorityChanged) {
+    const definitionVersion = Number((await readActiveDefinitionRow(
+      input.next.tenantId,
+      input.next.id,
+      ownerActorId,
+      input.sql,
+    )).active_definition_version);
     await revokeCurrentPrincipal({
       tenantId: input.next.tenantId,
       agentId: input.next.id,
@@ -206,12 +208,12 @@ export async function rotateCustomAgentGrantAuthorityWithSql(input: {
     input.agent.actorId,
     input.sql,
   );
-  const definitionVersion = Number((await readLatestDefinitionRow(
+  const definitionVersion = Number((await readActiveDefinitionRow(
     input.agent.tenantId,
     input.agent.id,
     ownerActorId,
     input.sql,
-  )).definition_version);
+  )).active_definition_version);
   await revokeCurrentPrincipal({
     tenantId: input.agent.tenantId,
     agentId: input.agent.id,
@@ -316,8 +318,15 @@ export async function resolveCustomAgentIdentityWithSql(input: {
       policy.context_grant_ids,
       policy.capability_grant_ids,
       policy.budget_policy_version_id,
-      policy.expires_at
+      policy.expires_at,
+      release_evaluation.definition_snapshot
     FROM omni_agent_definition_versions definition
+    JOIN omni_agent_release_channels release
+      ON release.tenant_id = definition.tenant_id
+      AND release.agent_definition_id = definition.agent_definition_id
+      AND release.owner_actor_id = definition.owner_actor_id
+      AND release.active_definition_version = definition.definition_version
+      AND release.state = 'active'
     JOIN omni_tenant_execution_principals principal
       ON principal.tenant_id = definition.tenant_id
       AND principal.agent_definition_id = definition.agent_definition_id
@@ -327,22 +336,88 @@ export async function resolveCustomAgentIdentityWithSql(input: {
       ON policy.tenant_id = principal.tenant_id
       AND policy.principal_id = principal.principal_id
       AND policy.principal_generation = principal.principal_generation
+    LEFT JOIN omni_agent_release_evaluations release_evaluation
+      ON release_evaluation.tenant_id = release.tenant_id
+      AND release_evaluation.evaluation_id = release.last_evaluation_id
+      AND release_evaluation.agent_definition_id = release.agent_definition_id
+      AND release_evaluation.definition_version =
+        release.active_definition_version
     WHERE definition.tenant_id = ${input.tenantId}
       AND definition.agent_definition_id = ${input.agentId}
       AND definition.owner_actor_id = ${input.ownerActorId}
-      AND definition.definition_version = (
-        SELECT MAX(candidate.definition_version)
-        FROM omni_agent_definition_versions candidate
-        WHERE candidate.tenant_id = definition.tenant_id
-          AND candidate.agent_definition_id = definition.agent_definition_id
-      )
     LIMIT 1
   `;
   if (!rows[0]) throw new AgentIdentityResolutionError();
-  return identityFromJoinedRow(rows[0], await resolveDefinitionSkills(
+  const releaseSnapshot = rows[0].definition_snapshot === null ||
+      rows[0].definition_snapshot === undefined
+    ? undefined
+    : parseAgentDefinitionV1(rows[0].definition_snapshot);
+  if (releaseSnapshot && (
+    releaseSnapshot.tenantId !== input.tenantId ||
+    releaseSnapshot.ownerActorId !== input.ownerActorId ||
+    releaseSnapshot.logicalAgentId !== input.agentId ||
+    releaseSnapshot.definitionVersion !== Number(rows[0].definition_version)
+  )) {
+    throw new AgentIdentityResolutionError(
+      "The active Agent release snapshot is inconsistent.",
+    );
+  }
+  const identity = identityFromJoinedRow(
     rows[0],
-    input.sql,
-  ));
+    releaseSnapshot ? [] : await resolveDefinitionSkills(rows[0], input.sql),
+  );
+  return releaseSnapshot
+    ? Object.freeze({ definition: releaseSnapshot, principal: identity.principal })
+    : identity;
+}
+
+export async function resolveCustomAgentDefinitionVersionWithSql(input: {
+  tenantId: string;
+  agentId: string;
+  ownerActorId: string;
+  definitionVersion: number;
+  sql: IdentitySql;
+}) {
+  const rows = await input.sql`
+    SELECT *
+    FROM omni_agent_definition_versions
+    WHERE tenant_id = ${input.tenantId}
+      AND agent_definition_id = ${input.agentId}
+      AND owner_actor_id = ${input.ownerActorId}
+      AND definition_version = ${input.definitionVersion}
+    LIMIT 1
+  `;
+  if (!rows[0]) throw new AgentIdentityResolutionError();
+  const row = rows[0];
+  const skills = await resolveDefinitionSkills(row, input.sql);
+  const agent: CustomAgentDefinition = {
+    id: String(row.agent_definition_id),
+    tenantId: String(row.tenant_id),
+    actorId: String(row.owner_actor_id),
+    slug: String(row.slug),
+    name: String(row.name),
+    role: String(row.role),
+    description: String(row.description),
+    instructions: String(row.instructions),
+    persona: parseAgentPersonaV1(row.persona_profile),
+    status: String(row.status) as CustomAgentDefinition["status"],
+    accent: String(row.accent) as CustomAgentDefinition["accent"],
+    modelPolicy: String(row.model_policy) as CustomAgentDefinition["modelPolicy"],
+    autonomy: "governed",
+    approvalPolicy: "risk_based",
+    memoryScope: "all",
+    skillIds: stringArray(row.skill_ids),
+    toolIds: [],
+    createdAt: timestamp(row.published_at),
+    updatedAt: timestamp(row.published_at),
+  };
+  return buildCustomAgentDefinitionV1({
+    agent,
+    skills,
+    definitionVersion: input.definitionVersion,
+    ownerActorId: input.ownerActorId,
+    definitionPublishedAt: timestamp(row.published_at),
+  });
 }
 
 async function appendDefinitionVersion(input: {
@@ -582,19 +657,19 @@ async function resolveCanonicalOwnerActorId(
   return String(rows[0].canonical_actor_id);
 }
 
-async function readLatestDefinitionRow(
+async function readActiveDefinitionRow(
   tenantId: string,
   agentId: string,
   ownerActorId: string,
   sql: IdentitySql,
 ) {
   const rows = await sql`
-    SELECT *
-    FROM omni_agent_definition_versions
+    SELECT active_definition_version
+    FROM omni_agent_release_channels
     WHERE tenant_id = ${tenantId}
       AND agent_definition_id = ${agentId}
       AND owner_actor_id = ${ownerActorId}
-    ORDER BY definition_version DESC
+      AND state = 'active'
     LIMIT 1
     FOR UPDATE
   `;

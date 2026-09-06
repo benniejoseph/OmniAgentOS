@@ -121,7 +121,7 @@ describe("P7.1 custom agent identity store", () => {
     const next = { ...current, autonomy: "execute" as const };
     const database = fakeSql([
       [{ canonical_actor_id: canonicalActorId }],
-      [{ definition_version: 4 }],
+      [{ active_definition_version: 4 }],
       [{ principal_generation: 2, state: "revoked" }],
       [{ next_generation: 3 }],
       [{ created_at: "2026-09-07T03:00:00.000Z" }],
@@ -153,7 +153,7 @@ describe("P7.1 custom agent identity store", () => {
     const onPrincipalHeld = vi.fn(async () => undefined);
     const database = fakeSql([
       [{ canonical_actor_id: canonicalActorId }],
-      [{ definition_version: 4 }],
+      [{ active_definition_version: 4 }],
       [{ principal_generation: 2, state: "revoked" }],
       [{ next_generation: 3 }],
       [{ created_at: "2026-09-07T03:00:00.000Z" }],

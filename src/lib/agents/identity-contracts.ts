@@ -190,34 +190,12 @@ export function buildCustomAgentIdentityV1(input: {
   principalRevokedAt?: string | null;
 }) {
   const ownerActorId = input.ownerActorId || input.agent.actorId;
-  const definitionId = `definition:custom:${input.agent.id}`;
   const principalId = input.principalId || scopedPrincipalId(
     input.agent.id,
     input.agent.tenantId,
     ownerActorId,
   );
-  const definition = buildAgentDefinitionV1({
-    definitionId,
-    definitionVersion: input.definitionVersion,
-    previousDefinitionVersionId: input.previousDefinitionVersionId === undefined
-      ? previousVersionId(definitionId, "v", input.definitionVersion)
-      : input.previousDefinitionVersionId,
-    origin: "custom",
-    tenantId: input.agent.tenantId,
-    ownerActorId,
-    logicalAgentId: input.agent.id,
-    slug: input.agent.slug,
-    name: input.agent.name,
-    role: input.agent.role,
-    description: input.agent.description,
-    instructions: input.agent.instructions,
-    persona: input.agent.persona,
-    status: input.agent.status,
-    accent: input.agent.accent,
-    modelPolicy: input.agent.modelPolicy,
-    skills: input.skills,
-    publishedAt: input.definitionPublishedAt || input.agent.updatedAt,
-  });
+  const definition = buildCustomAgentDefinitionV1(input);
   const principal = buildAgentPrincipalDefinitionV1({
     principalId,
     principalGeneration: input.principalGeneration,
@@ -243,6 +221,40 @@ export function buildCustomAgentIdentityV1(input: {
     createdAt: input.principalCreatedAt || input.agent.createdAt,
   });
   return deepFreeze({ definition, principal });
+}
+
+export function buildCustomAgentDefinitionV1(input: {
+  agent: CustomAgentDefinition;
+  skills: readonly AgentSkill[];
+  definitionVersion: number;
+  previousDefinitionVersionId?: string | null;
+  ownerActorId?: string;
+  definitionPublishedAt?: string;
+}): AgentDefinitionV1 {
+  const ownerActorId = input.ownerActorId || input.agent.actorId;
+  const definitionId = `definition:custom:${input.agent.id}`;
+  return buildAgentDefinitionV1({
+    definitionId,
+    definitionVersion: input.definitionVersion,
+    previousDefinitionVersionId: input.previousDefinitionVersionId === undefined
+      ? previousVersionId(definitionId, "v", input.definitionVersion)
+      : input.previousDefinitionVersionId,
+    origin: "custom",
+    tenantId: input.agent.tenantId,
+    ownerActorId,
+    logicalAgentId: input.agent.id,
+    slug: input.agent.slug,
+    name: input.agent.name,
+    role: input.agent.role,
+    description: input.agent.description,
+    instructions: input.agent.instructions,
+    persona: input.agent.persona,
+    status: input.agent.status,
+    accent: input.agent.accent,
+    modelPolicy: input.agent.modelPolicy,
+    skills: input.skills,
+    publishedAt: input.definitionPublishedAt || input.agent.updatedAt,
+  });
 }
 
 export function buildBuiltInAgentIdentityV1(input: {
