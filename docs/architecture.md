@@ -1442,6 +1442,26 @@ security-invoker definition-insert trigger so both current and rollback-window
 application versions enroll each initial Agent release, and the application
 initializer converges idempotently with that database invariant.
 
+P7.6 replaces implicit correction reuse with an actor-controlled adaptation
+lifecycle. An explicit evidence refresh may create an immutable `observed`
+candidate only from the exact owner's completed, corrected run. The candidate
+binds its evidence and non-authority instruction effect to the Agent and exact
+observed definition version, carries a measurable confidence, and cannot enter
+a prompt until a versioned evaluation passes and the owner activates it. An
+active adaptation receives a monotonically numbered activation version; a
+rollback is terminal for that record. A new Agent release requires a new
+observation and evaluation, while rollback stays available for an older active
+record.
+
+Only active adaptations evaluated for the exact execution definition are
+compiled as clearly labelled untrusted behavior guidance. They cannot add
+tools, context, budgets, grants, approvals, or destructive authority. Council
+members do not inherit another Agent's adaptation, project outcome notes are
+not prompt inputs, and performance evidence no longer changes supervisor
+routing. Migration v115 installs the append-only forced-RLS ledger, exact actor
+policy, one-active-effect index, lifecycle and truncate guards, and serving-role
+grants limited to select, insert, and the ten transition columns.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,
