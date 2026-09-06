@@ -81,4 +81,39 @@ describe("P4.4 local multilingual retrieval", () => {
     expect(results[0]?.chunk.id).toBe(relevant.chunks[0].id);
     expect(results[0]?.reasons).toContain("semantic match");
   });
+
+  it("builds a complete context pack when the OpenAI key is absent", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const [{ saveMemory }, { buildContextPack }] = await Promise.all([
+      import("@/lib/memory/store"),
+      import("@/lib/rag/context-engine"),
+    ]);
+    const relevant = await saveMemory({
+      tenantId: "tenant-local-context",
+      title: "Worker deployment failure",
+      content: "Restart the worker after a failed deployment.",
+      importance: 0.8,
+    });
+
+    const pack = await buildContextPack("implantacao falha do processador", {
+      tenantId: "tenant-local-context",
+      limit: 2,
+      persistTrace: false,
+      queryPlanning: { allowSemanticModel: false },
+    });
+
+    expect(pack.results[0]).toMatchObject({
+      kind: "memory",
+      id: relevant.id,
+    });
+    expect(pack.profile.embedding).toMatchObject({
+      provider: "local",
+      requiresCredential: false,
+      externalDisclosure: false,
+    });
+    expect(pack.profile.reranker).toMatchObject({
+      algorithm: "pairwise_logistic_regression",
+      externalDisclosure: false,
+    });
+  });
 });
