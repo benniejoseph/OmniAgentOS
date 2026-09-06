@@ -599,6 +599,13 @@ export async function* runAgent(
     });
     if (durableMemoryEnabled) {
       yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
+    } else if (memoryAccessContext.mode === "project") {
+      yield await emit({
+        type: "status",
+        label: "project memory isolated",
+        detail:
+          "Project memory is not loaded until a canonical project authority is bound; this run remains session-only.",
+      });
     }
     const useLiveWeb = !browserCapabilityIntent.excludeWebSearch &&
       shouldUseLiveWebSearch(query) &&
@@ -838,6 +845,7 @@ export async function* runAgent(
     ).length;
     const contextDecision = contextDecisionForRun({
       durableMemoryEnabled,
+      memoryMode: memoryAccessContext.mode,
       evidenceIds: request.contextSelection?.evidenceIds,
       shouldRetrieve: retrieval.profile.shouldRetrieve,
     });
@@ -845,6 +853,7 @@ export async function* runAgent(
       .map((source) => source.citationId);
     const contextRationale = contextRationaleForRun({
       durableMemoryEnabled,
+      memoryMode: memoryAccessContext.mode,
       evidenceIds: request.contextSelection?.evidenceIds,
       rationale: retrieval.profile.rationale,
     });
@@ -925,7 +934,11 @@ export async function* runAgent(
       tier: modelRoute.tier,
       memoryScope: request.agentProfile?.memoryScope || "all",
       contextDecision,
-      contextMode: durableMemoryEnabled ? retrieval.profile.mode : "session",
+      contextMode: durableMemoryEnabled
+        ? retrieval.profile.mode
+        : memoryAccessContext.mode === "project"
+          ? "project_unavailable"
+          : "session",
       contextCount: retrieval.results.length,
       contextTraceId: retrieval.trace?.id,
       contextEvidenceIds,
@@ -4587,9 +4600,11 @@ async function settleOptionalWithin<T>(
 
 function contextDecisionForRun(input: {
   durableMemoryEnabled: boolean;
+  memoryMode: "session" | "project" | "all";
   evidenceIds?: string[];
   shouldRetrieve: boolean;
 }): Extract<AgentEvent, { type: "harness" }>["contextDecision"] {
+  if (input.memoryMode === "project") return "disabled_project_unavailable";
   if (!input.durableMemoryEnabled) return "disabled_session";
   if (input.evidenceIds?.length === 0) return "excluded_by_user";
   if (input.evidenceIds !== undefined) return "selected_by_user";
@@ -4598,9 +4613,15 @@ function contextDecisionForRun(input: {
 
 function contextRationaleForRun(input: {
   durableMemoryEnabled: boolean;
+  memoryMode: "session" | "project" | "all";
   evidenceIds?: string[];
   rationale: string[];
 }) {
+  if (input.memoryMode === "project") {
+    return [
+      "Project memory stayed isolated because this run has no canonical project authority.",
+    ];
+  }
   if (!input.durableMemoryEnabled) {
     return ["This agent uses session-only memory, so durable context was not loaded."];
   }
@@ -4622,7 +4643,10 @@ function runContractInteractionMode(mode: AgentRunRequest["mode"]) {
 function runContractScopeDecision(
   decision: Extract<AgentEvent, { type: "harness" }>["contextDecision"],
 ) {
-  if (decision === "disabled_session") return "disabled" as const;
+  if (
+    decision === "disabled_session" ||
+    decision === "disabled_project_unavailable"
+  ) return "disabled" as const;
   if (decision === "excluded_by_user") return "user_excluded" as const;
   if (decision === "selected_by_user") return "user_selected" as const;
   if (decision === "retrieved") return "automatic" as const;

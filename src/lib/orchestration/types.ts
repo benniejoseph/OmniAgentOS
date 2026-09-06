@@ -44,6 +44,7 @@ export type AgentHarnessEvent = {
   memoryScope: "session" | "project" | "all";
   contextDecision:
     | "disabled_session"
+    | "disabled_project_unavailable"
     | "excluded_by_user"
     | "selected_by_user"
     | "retrieved"
