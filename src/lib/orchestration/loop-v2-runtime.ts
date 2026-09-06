@@ -300,7 +300,7 @@ export async function* runLoopV2ReadOnlyCanary(
       dryRun: execution.record.dryRun,
       riskLevel: execution.record.riskLevel,
       approvalRequired: execution.record.approvalRequired,
-      resultSha256: sourceContractSha256(execution.result),
+      resultSha256: sourceContractSha256(jsonCompatibleReceipt(execution.result)),
     });
     yield await emit({
       type: "tool",
@@ -518,6 +518,14 @@ function safeErrorMessage(error: unknown) {
       error instanceof Error ? error.message : "Loop v2 execution failed.",
     ),
   ).slice(0, 1_000);
+}
+
+function jsonCompatibleReceipt(value: unknown) {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) {
+    throw new Error("Loop v2 tool output cannot be bound to a JSON receipt.");
+  }
+  return JSON.parse(serialized) as unknown;
 }
 
 async function persistCheckpoint(
