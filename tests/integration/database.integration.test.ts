@@ -1059,19 +1059,21 @@ databaseDescribe("Postgres schema integration", () => {
   test("prunes expired terminal payloads without deleting active work", async () => {
     await admin`
       INSERT INTO omni_agent_runs (
-        id, tenant_id, mode, status, prompt, messages, started_at, completed_at
+        id, tenant_id, owner_actor_id, mode, status, prompt, messages,
+        started_at, completed_at
       )
       VALUES
         (
-          'expired-run', 'tenant_a', 'orchestrate', 'completed', 'sensitive',
+          'expired-run', 'tenant_a', 'retention_actor', 'orchestrate', 'completed', 'sensitive',
           '[]'::jsonb, NOW() - INTERVAL '4000 days', NOW() - INTERVAL '4000 days'
         ),
         (
-          'active-run', 'tenant_a', 'orchestrate', 'waiting_approval', 'keep',
+          'active-run', 'tenant_a', 'retention_actor', 'orchestrate', 'waiting_approval', 'keep',
           '[]'::jsonb, NOW() - INTERVAL '4000 days', NULL
         ),
         (
-          'expired-waiting-run', 'tenant_a', 'orchestrate', 'waiting_approval', 'redact',
+          'expired-waiting-run', 'tenant_a', 'retention_actor', 'orchestrate',
+          'waiting_approval', 'redact',
           '[]'::jsonb, NOW() - INTERVAL '4000 days', NULL
         )
     `;
@@ -1082,15 +1084,17 @@ databaseDescribe("Postgres schema integration", () => {
     `;
     await admin`
       INSERT INTO omni_tool_executions (
-        id, tool_id, tool_name, risk_level, status, tenant_id, input, created_at, completed_at
+        id, tool_id, tool_name, risk_level, status, tenant_id, actor_id,
+        input, created_at, completed_at
       )
       VALUES
         (
-          'expired-tool', 'tool', 'Tool', 1, 'executed', 'tenant_a',
+          'expired-tool', 'tool', 'Tool', 1, 'executed', 'tenant_a', 'retention_actor',
           '{"secret":"value"}'::jsonb, NOW() - INTERVAL '4000 days', NOW() - INTERVAL '4000 days'
         ),
         (
           'expired-approval', 'tool', 'Tool', 2, 'approval_required', 'tenant_a',
+          'retention_actor',
           '{"secret":"pending"}'::jsonb, NOW() - INTERVAL '4000 days', NULL
         )
     `;
@@ -1260,6 +1264,12 @@ databaseDescribe("Postgres schema integration", () => {
           NULL, NOW() - INTERVAL '4000 days', NOW() - INTERVAL '4000 days'
         )
     `;
+
+    await expect(admin`
+      UPDATE omni_tool_executions
+      SET input = '{"tampered":true}'::jsonb
+      WHERE id = 'expired-tool'
+    `).rejects.toThrow("Governed tool execution identity is immutable");
 
     const result = await sweepExpiredSensitiveData({
       tenantId: "tenant_a",
