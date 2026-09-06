@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DomainEvent } from "@/lib/events/store";
 import type { AgentRunRecord, RunStatus } from "@/lib/runs/types";
+import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
 export const traceStageIds = [
   "intent",
@@ -106,13 +107,59 @@ export function buildRunTraceHierarchy(
   domainEvents: DomainEvent[],
   correlationId: string,
 ): RunTraceHierarchy {
-  const tenantId = run.tenantId || "default";
+  return buildTraceHierarchy({
+    id: run.id,
+    tenantId: run.tenantId || "default",
+    ownerActorId: run.ownerActorId,
+    rootStreamId: `run:${run.id}`,
+    status: run.status,
+    startedAt: run.startedAt,
+    completedAt: run.completedAt,
+    evidenceExpected: run.memoryContextCount > 0 || Boolean(run.grounding?.sources.length),
+  }, domainEvents, correlationId);
+}
+
+export function buildWorkflowTraceHierarchy(
+  run: WorkflowRunRecord,
+  ownerActorId: string,
+  domainEvents: DomainEvent[],
+  correlationId: string,
+): RunTraceHierarchy {
+  return buildTraceHierarchy({
+    id: run.id,
+    tenantId: run.tenantId || "default",
+    ownerActorId,
+    rootStreamId: `workflow:${run.id}`,
+    status: run.status,
+    startedAt: run.createdAt,
+    completedAt: run.completedAt,
+    evidenceExpected: false,
+  }, domainEvents, correlationId);
+}
+
+type TraceSubject = {
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  rootStreamId: string;
+  status: RunStatus | WorkflowRunRecord["status"];
+  startedAt: string;
+  completedAt?: string;
+  evidenceExpected: boolean;
+};
+
+function buildTraceHierarchy(
+  subject: TraceSubject,
+  domainEvents: DomainEvent[],
+  correlationId: string,
+): RunTraceHierarchy {
+  const tenantId = subject.tenantId;
   const ordered = dedupeEvents(domainEvents)
     .filter((event) =>
       event.tenantId === tenantId &&
       (
-        event.actorId === run.ownerActorId ||
-        event.streamId === `run:${run.id}`
+        event.actorId === subject.ownerActorId ||
+        event.streamId === subject.rootStreamId
       )
     )
     .sort((left, right) => left.seq - right.seq);
@@ -129,8 +176,8 @@ export function buildRunTraceHierarchy(
     stageEvents.get(stage)?.push(toTraceEventReceipt(event, knownEventIds));
   }
 
-  const terminal = isTerminal(run.status);
-  const requirements = requiredStages(run, ordered);
+  const terminal = isTerminal(subject.status);
+  const requirements = requiredStages(subject, ordered);
   const stages = traceStageIds.map((id, ordinal): TraceStage => {
     const events = stageEvents.get(id) || [];
     const required = requirements.has(id);
@@ -158,12 +205,12 @@ export function buildRunTraceHierarchy(
 
   return {
     version: 1,
-    traceId: sha256(`${tenantId}:${run.ownerActorId}:${correlationId}`),
+    traceId: sha256(`${tenantId}:${subject.ownerActorId}:${correlationId}`),
     correlationSha256,
-    runId: run.id,
-    outcome: runOutcome(run.status),
-    startedAt: run.startedAt,
-    completedAt: run.completedAt,
+    runId: subject.id,
+    outcome: runOutcome(subject.status),
+    startedAt: subject.startedAt,
+    completedAt: subject.completedAt,
     summary: {
       eventCount: ordered.length,
       observedStageCount: countStatus(stages, "observed"),
@@ -175,7 +222,7 @@ export function buildRunTraceHierarchy(
   };
 }
 
-function requiredStages(run: AgentRunRecord, events: DomainEvent[]) {
+function requiredStages(subject: TraceSubject, events: DomainEvent[]) {
   const required = new Set<TraceStageId>([
     "intent",
     "plan",
@@ -184,8 +231,7 @@ function requiredStages(run: AgentRunRecord, events: DomainEvent[]) {
     "verification",
   ]);
   if (
-    run.memoryContextCount > 0 ||
-    run.grounding?.sources.length ||
+    subject.evidenceExpected ||
     events.some((event) => classifyTraceStage(event) === "evidence")
   ) {
     required.add("evidence");
@@ -380,15 +426,19 @@ function countStatus(stages: TraceStage[], status: TraceStageStatus) {
   return stages.filter((stage) => stage.status === status).length;
 }
 
-function isTerminal(status: RunStatus) {
+function isTerminal(status: TraceSubject["status"]) {
   return status === "completed" || status === "failed" || status === "canceled";
 }
 
-function runOutcome(status: RunStatus): RunTraceHierarchy["outcome"] {
+function runOutcome(status: TraceSubject["status"]): RunTraceHierarchy["outcome"] {
   if (status === "completed") return "succeeded";
   if (status === "failed") return "failed";
   if (status === "canceled") return "canceled";
-  if (status === "waiting_approval" || status === "waiting_clarification") return "waiting";
+  if (
+    status === "waiting_approval" ||
+    status === "waiting_clarification" ||
+    status === "paused"
+  ) return "waiting";
   return "running";
 }
 
