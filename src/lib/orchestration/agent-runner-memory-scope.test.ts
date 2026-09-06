@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getAgentLearningGuidance: vi.fn(),
   loadProgressiveAgentTools: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
+  runCouncilRound: vi.fn(),
   streamResponseTurn: vi.fn(),
   updateRunContextCount: vi.fn(),
 }));
@@ -38,7 +39,8 @@ vi.mock("@/lib/capabilities/toolbox", () => ({
 }));
 
 vi.mock("@/lib/models/registry", () => ({
-  hasModelProviderFeature: (feature: string) => feature === "text",
+  hasModelProviderFeature: (feature: string) =>
+    feature === "text" || feature === "json_schema",
 }));
 
 vi.mock("@/lib/openai/client", () => ({
@@ -66,7 +68,7 @@ vi.mock("@/lib/orchestration/council", () => ({
   formatCouncilContributions: () => "",
   reviewCouncilResponse: vi.fn(),
   reviseCouncilResponse: vi.fn(),
-  runCouncilRound: vi.fn(),
+  runCouncilRound: mocks.runCouncilRound,
 }));
 
 vi.mock("@/lib/rag/context-engine", () => ({
@@ -234,8 +236,9 @@ describe("agent memory scope", () => {
       evidenceIds: ["memory:private-memory"],
     };
     scopedRequest.promptMemoryAccess = promptAccess;
+    scopedRequest.specialistIds = ["scout"];
 
-    await collectRequest(scopedRequest);
+    const events = await collectRequest(scopedRequest);
 
     expect(mocks.buildContextPack).toHaveBeenCalledWith(
       "hello",
@@ -245,6 +248,11 @@ describe("agent memory scope", () => {
         evidenceIds: ["memory:private-memory"],
       }),
     );
+    expect(mocks.runCouncilRound).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "private context isolated",
+    }));
   });
 
   it("fails closed when private prompt access belongs to another request", async () => {
