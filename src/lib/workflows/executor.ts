@@ -193,7 +193,6 @@ export async function executeDynamicWorkflowPlan(
     parseToolSummaries(record.output)
   );
   const recordsByNode = new Map<string, WorkflowPlanNodeExecutionRecord>();
-  const nodeExecutions: WorkflowPlanNodeExecutionRecord[] = [];
   const toolCache = new Map<string, Promise<ToolDefinition | undefined>>();
   const priorElapsedMs = workflowPlanElapsedMs(planRecords);
   const budget = createWorkflowExecutionBudget({
@@ -206,49 +205,17 @@ export async function executeDynamicWorkflowPlan(
   });
   let processedNodes = 0;
   let hasPendingNodes = false;
-
-  for (const node of sortedNodes) {
-    throwIfAborted(options.abortSignal);
-    assertWorkflowWallClockBudget(budget);
+  const pendingNodes = sortedNodes.filter((node) => {
     const existing = existingByNode.get(node.id);
     if (existing && isReusableNodeExecution(existing)) {
       recordsByNode.set(node.id, existing);
-      nodeExecutions.push(existing);
-      continue;
+      return false;
     }
-    if (processedNodes >= WORKFLOW_PLAN_NODES_PER_TICK) {
-      hasPendingNodes = true;
-      continue;
-    }
-    processedNodes += 1;
+    return true;
+  });
 
-    const blockedDependencies = node.dependsOn
-      .map((dependencyId) => recordsByNode.get(dependencyId))
-      .filter((record) => record && record.status !== "completed");
-
-    if (blockedDependencies.length) {
-      const record = await saveWorkflowPlanNodeExecution({
-        ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing }),
-        status: "skipped",
-        output: {
-          skipped: true,
-          blockedDependencies: blockedDependencies.map((record) => ({
-            nodeId: record?.nodeId,
-            status: record?.status,
-          })),
-        },
-        completedAt: new Date().toISOString(),
-      });
-      recordsByNode.set(node.id, record);
-      nodeExecutions.push(record);
-      await appendWorkflowEvent(detail.run.id, "workflow.plan_node.skipped", {
-        planId: parsedPlan.id,
-        nodeId: node.id,
-        blockedDependencies: blockedDependencies.length,
-      });
-      continue;
-    }
-
+  const executeScheduledNode = async (node: WorkflowPlanNode) => {
+    const existing = existingByNode.get(node.id);
     const dependencyRecords = node.dependsOn
       .map((dependencyId) => recordsByNode.get(dependencyId))
       .filter((record): record is WorkflowPlanNodeExecutionRecord => Boolean(record));
@@ -314,13 +281,13 @@ export async function executeDynamicWorkflowPlan(
         completedAt: new Date().toISOString(),
       });
       recordsByNode.set(node.id, record);
-      nodeExecutions.push(record);
       await appendWorkflowEvent(detail.run.id, "workflow.plan_node.completed", {
         planId: parsedPlan.id,
         nodeId: node.id,
         status: record.status,
         toolExecutionIds: record.toolExecutionIds,
       });
+      return { record, haltScheduling: false };
     } catch (error) {
       if (options.abortSignal?.aborted) {
         await saveWorkflowPlanNodeExecution({
@@ -359,7 +326,6 @@ export async function executeDynamicWorkflowPlan(
             completedAt: undefined,
           });
           recordsByNode.set(node.id, pendingRecord);
-          nodeExecutions.push(pendingRecord);
           hasPendingNodes = true;
           await appendWorkflowEvent(
             detail.run.id,
@@ -369,10 +335,10 @@ export async function executeDynamicWorkflowPlan(
               nodeId: node.id,
             },
           );
+          return { record: pendingRecord, haltScheduling: true };
         } catch (pendingError) {
           throw new EffectReceiptFinalizationError({ cause: pendingError });
         }
-        break;
       }
       const message = error instanceof Error ? error.message : "Plan node execution failed.";
       const record = await saveWorkflowPlanNodeExecution({
@@ -383,15 +349,124 @@ export async function executeDynamicWorkflowPlan(
         completedAt: new Date().toISOString(),
       });
       recordsByNode.set(node.id, record);
-      nodeExecutions.push(record);
       await appendWorkflowEvent(detail.run.id, "workflow.plan_node.failed", {
         planId: parsedPlan.id,
         nodeId: node.id,
         error: message,
       });
+      return { record, haltScheduling: false };
+    }
+  };
+
+  while (pendingNodes.length > 0) {
+    throwIfAborted(options.abortSignal);
+    assertWorkflowWallClockBudget(budget);
+    const remainingCapacity = WORKFLOW_PLAN_NODES_PER_TICK - processedNodes;
+    if (remainingCapacity <= 0) {
+      hasPendingNodes = true;
+      break;
+    }
+
+    const blockedNodes = pendingNodes.filter((node) => node.dependsOn.some(
+      (dependencyId) => {
+        const record = recordsByNode.get(dependencyId);
+        return Boolean(record && record.status !== "completed");
+      },
+    ));
+    if (blockedNodes.length > 0) {
+      for (const node of blockedNodes.slice(0, remainingCapacity)) {
+        const blockedDependencies = node.dependsOn
+          .map((dependencyId) => recordsByNode.get(dependencyId))
+          .filter((record) => record && record.status !== "completed");
+        const record = await saveWorkflowPlanNodeExecution({
+          ...baseNodeExecutionRecord({
+            detail,
+            planId: parsedPlan.id,
+            node,
+            existing: existingByNode.get(node.id),
+          }),
+          status: "skipped",
+          output: {
+            skipped: true,
+            blockedDependencies: blockedDependencies.map((record) => ({
+              nodeId: record?.nodeId,
+              status: record?.status,
+            })),
+          },
+          completedAt: new Date().toISOString(),
+        });
+        recordsByNode.set(node.id, record);
+        pendingNodes.splice(pendingNodes.indexOf(node), 1);
+        processedNodes += 1;
+        await appendWorkflowEvent(detail.run.id, "workflow.plan_node.skipped", {
+          planId: parsedPlan.id,
+          nodeId: node.id,
+          blockedDependencies: blockedDependencies.length,
+        });
+      }
+      continue;
+    }
+
+    const readyNodes = pendingNodes.filter((node) => node.dependsOn.every(
+      (dependencyId) => recordsByNode.get(dependencyId)?.status === "completed",
+    ));
+    if (readyNodes.length === 0) {
+      hasPendingNodes = true;
+      break;
+    }
+
+    const parallelSafety = await Promise.all(readyNodes.map(async (node) => ({
+      node,
+      parallelSafe: await isWorkflowNodeParallelSafe(node, toolCache, {
+        tenantId: detail.run.tenantId,
+      }),
+    })));
+    const firstReady = parallelSafety[0];
+    const batch = (firstReady.parallelSafe
+      ? parallelSafety.filter((candidate) => candidate.parallelSafe)
+      : [firstReady])
+      .slice(0, remainingCapacity)
+      .map((candidate) => candidate.node);
+    const concurrent = batch.length > 1;
+    await appendWorkflowEvent(detail.run.id, "workflow.plan_batch.started", {
+      planId: parsedPlan.id,
+      nodeIds: batch.map((node) => node.id),
+      nodeCount: batch.length,
+      concurrent,
+    });
+    processedNodes += batch.length;
+    const settled = await Promise.allSettled(batch.map(executeScheduledNode));
+    let haltScheduling = false;
+    for (let index = 0; index < settled.length; index += 1) {
+      const outcome = settled[index];
+      if (outcome.status === "rejected") {
+        throw outcome.reason;
+      }
+      recordsByNode.set(batch[index].id, outcome.value.record);
+      haltScheduling ||= outcome.value.haltScheduling;
+    }
+    for (const node of batch) {
+      pendingNodes.splice(pendingNodes.indexOf(node), 1);
+    }
+    await appendWorkflowEvent(detail.run.id, "workflow.plan_batch.completed", {
+      planId: parsedPlan.id,
+      nodeIds: batch.map((node) => node.id),
+      nodeCount: batch.length,
+      concurrent,
+    });
+    if (haltScheduling) {
+      hasPendingNodes = true;
+      break;
     }
   }
 
+  if (pendingNodes.length > 0) {
+    hasPendingNodes = true;
+  }
+  const nodeExecutions = sortedNodes.flatMap((node) => {
+    const record = recordsByNode.get(node.id);
+    return record ? [record] : [];
+  });
   const summary = summarizePlanExecution({
     workflowRunId: detail.run.id,
     planId: parsedPlan.id,
@@ -1072,11 +1147,30 @@ function getCachedToolDefinition(
   return pending;
 }
 
+async function isWorkflowNodeParallelSafe(
+  node: WorkflowPlanNode,
+  toolCache: Map<string, Promise<ToolDefinition | undefined>>,
+  options: { tenantId?: string },
+) {
+  const contract = resolveWorkflowNodeContract(node);
+  if (contract.executor === "agent") {
+    return true;
+  }
+  if (contract.executor !== "tool" || contract.grantedToolIds.length === 0) {
+    return false;
+  }
+  const tools = await Promise.all(contract.grantedToolIds.map((toolId) =>
+    getCachedToolDefinition(toolCache, toolId, options)
+  ));
+  return tools.every(isIndependentReadOnlyTool);
+}
+
 export function isIndependentReadOnlyTool(tool: ToolDefinition | undefined) {
   return Boolean(
     tool &&
       tool.riskLevel === 0 &&
       !tool.approvalRequired &&
+      tool.operationClass !== "mutation" &&
       ["memory", "knowledge", "runs", "missions", "web"].includes(tool.category) &&
       !["memory.write", "knowledge.ingest"].includes(tool.id),
   );
