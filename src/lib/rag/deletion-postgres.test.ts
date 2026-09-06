@@ -10,6 +10,9 @@ const dbMocks = vi.hoisted(() => {
     if (text.includes("SELECT id FROM omni_knowledge_documents")) {
       return Promise.resolve([{ id: "document-1" }]);
     }
+    if (text.includes("JOIN omni_evidence_units")) {
+      return Promise.resolve([]);
+    }
     if (text.includes("SELECT id") && text.includes("FROM omni_memories")) {
       return Promise.resolve([{ id: "memory-1" }]);
     }
