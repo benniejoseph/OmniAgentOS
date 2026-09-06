@@ -125,6 +125,7 @@ export function buildRelationProjectionPlan(input: {
   const entities = input.entities.map(parseEntityRecord);
   const aliases = (input.aliases || []).map(parseEntityAlias);
   const desiredClaims = new Map<string, TemporalRelationClaimRevision>();
+  const conflictingClaimIds = new Set<string>();
   let markerCount = 0;
   let rejectedMarkerCount = 0;
   let unresolvedMarkerCount = 0;
@@ -181,7 +182,14 @@ export function buildRelationProjectionPlan(input: {
         validTo: candidate.validTo,
         recordedAt: source.recordedAt,
       });
-      desiredClaims.set(claim.claimId, claim);
+      const existing = desiredClaims.get(claim.claimId);
+      if (existing && existing.claimSha256 !== claim.claimSha256) {
+        desiredClaims.delete(claim.claimId);
+        conflictingClaimIds.add(claim.claimId);
+        unresolvedMarkerCount += 1;
+      } else if (!conflictingClaimIds.has(claim.claimId)) {
+        desiredClaims.set(claim.claimId, claim);
+      }
     }
   }
 
@@ -271,7 +279,7 @@ function parseRelationLine(
     source,
     target,
     validFrom,
-    validTo,
+    validTo: validTo || null,
   };
   return deepFreeze({
     ...candidateBody,

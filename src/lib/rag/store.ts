@@ -7,6 +7,7 @@ import {
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { retireEntityEvidenceLineage } from "@/lib/entities/store";
+import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
 import { getDataPath } from "@/lib/storage/paths";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -493,6 +494,12 @@ async function retireKnowledgeEntityEvidence(input: {
       purpose: "entity.source.lifecycle.v1",
     }),
     retiredAt: input.retiredAt,
+    sql: input.sql,
+  });
+  await queueTemporalRelationProjection({
+    tenantId: input.tenantId,
+    ownerActorId: scope.initiatingActorId,
+    executionScope: input.executionScope,
     sql: input.sql,
   });
 }

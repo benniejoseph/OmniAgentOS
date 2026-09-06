@@ -21,6 +21,7 @@ import { recordSecurityAudit } from "@/lib/security/audit-store";
 import { SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { processPendingMemoryGraphRebuilds } from "@/lib/security/retention";
+import { processPendingTemporalRelationProjections } from "@/lib/entities/relation-projection-queue";
 import { processPendingMemoryDeletionScrubs } from "@/lib/memory/deletion-scrub";
 import { runTenantMemoryMaintenance } from "@/lib/memory/maintenance-store";
 import type { MemoryMaintenanceReport } from "@/lib/memory/lifecycle";
@@ -554,6 +555,8 @@ function summarizeScheduledOutcome(
     backgroundJobsCompleted: scheduled.backgroundJobs?.completed || 0,
     backgroundJobsFailed: scheduled.backgroundJobs?.failed || 0,
     memoryGraphRebuilds: scheduled.memoryGraphRebuilds?.processed || 0,
+    temporalRelationProjections:
+      scheduled.temporalRelationProjections?.processed || 0,
     memoryDeletionScrubs: scheduled.memoryDeletionScrubs?.scrubbedMemories || 0,
     loopV2RecoveriesClaimed: scheduled.maintenance.reduce(
       (total, item) => total + item.loopV2Recovery.claimed,
@@ -686,10 +689,11 @@ async function runAllTenantScheduledWork({
           jobs: [],
         }),
   ]);
-  const [memoryGraphRebuilds, memoryDeletionScrubs, page] =
+  const [memoryGraphRebuilds, temporalRelationProjections, memoryDeletionScrubs, page] =
     runMaintenance && Date.now() < deadlineAt
     ? await Promise.all([
         processPendingMemoryGraphRebuilds({ limit: 1 }),
+        processPendingTemporalRelationProjections({ limit: 1 }),
         processPendingMemoryDeletionScrubs({
           receiptLimit: Math.min(maintenanceTenantLimit, 10),
           memoryLimit: 100,
@@ -699,7 +703,7 @@ async function runAllTenantScheduledWork({
           limit: Math.min(maintenanceTenantLimit + 1, 101),
         }),
       ])
-    : [undefined, undefined, [] as string[]];
+    : [undefined, undefined, undefined, [] as string[]];
   const maintenanceCandidates = page.slice(0, maintenanceTenantLimit);
   const maintenanceTenantIds: string[] = [];
   const maintenance: Array<{
@@ -752,6 +756,7 @@ async function runAllTenantScheduledWork({
     durableSpecialists,
     backgroundJobs,
     memoryGraphRebuilds,
+    temporalRelationProjections,
     memoryDeletionScrubs,
     maintenanceTenantIds,
     nextTenantCursor,

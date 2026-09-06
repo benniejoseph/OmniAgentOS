@@ -15,6 +15,7 @@ import {
   type EntityRecord,
 } from "@/lib/entities/registry";
 import { readEntityRegistry } from "@/lib/entities/store";
+import { reconcileRelationProjectionState } from "@/lib/entities/relation-reconciliation";
 import {
   parseTemporalRelationClaimRecord,
   parseTemporalRelationClaimRevision,
@@ -30,6 +31,7 @@ import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 
@@ -60,26 +62,24 @@ export type TemporalRelationClaimQuery = Readonly<{
 export async function saveTemporalRelationClaimRevision(input: {
   claim: TemporalRelationClaimRevision;
   executionScope: ExecutionScope;
+  sql?: TemporalClaimSqlClient;
 }): Promise<TemporalRelationClaimRecord> {
   const claim = parseTemporalRelationClaimRevision(input.claim);
   const scope = assertTemporalClaimScope(
     input.executionScope,
     claim.accessBinding,
-    "entity.write.v1",
+    input.sql ? "entity.relation.project.v1" : "entity.write.v1",
+    Boolean(input.sql),
   );
 
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    return runWithDatabaseActorScope(
-      scope.tenantId,
-      [scope.initiatingActorId],
-      () => getSql().transaction(async (sql: TemporalClaimSqlClient) => {
+  if (hasDatabaseUrl() || input.sql) {
+    if (!input.sql) await ensureDatabaseSchema();
+    const operation = async (sql: TemporalClaimSqlClient) => {
         const existing = await loadRevision(sql, scope.tenantId, claim.revisionId);
         if (existing) {
           assertSameClaimDigest(existing.claim, claim);
           return existing;
         }
-        await assertStoredEndpoints(sql, claim);
         const current = await loadCurrentClaim(
           sql,
           scope.tenantId,
@@ -98,6 +98,13 @@ export async function saveTemporalRelationClaimRevision(input: {
           if (claim.recordedAt <= current.claim.recordedAt) {
             throw new Error("Entity relation revision must advance system time.");
           }
+          if (
+            claim.claimState === "retracted" &&
+            sourceContractSha256(claim.lineage) !==
+              sourceContractSha256(current.claim.lineage)
+          ) {
+            throw new Error("Entity relation retraction must preserve lineage.");
+          }
           const closed = await sql`
             UPDATE omni_entity_relation_claims
             SET superseded_at = ${claim.recordedAt}
@@ -110,6 +117,13 @@ export async function saveTemporalRelationClaimRevision(input: {
             throw new Error("Entity relation claim changed concurrently.");
           }
         }
+        if (claim.claimState === "retracted") {
+          if (claim.previousRevisionId === null) {
+            throw new Error("Entity relation retraction requires a prior revision.");
+          }
+        } else {
+          await assertStoredEndpoints(sql, claim);
+        }
         await insertRevision(sql, claim);
         const record = parseTemporalRelationClaimRecord({
           claim,
@@ -117,11 +131,22 @@ export async function saveTemporalRelationClaimRevision(input: {
         });
         await appendRelationEvent(claim, scope, sql);
         return record;
-      }) as Promise<TemporalRelationClaimRecord>,
+      };
+    if (input.sql) return operation(input.sql);
+    return runWithDatabaseActorScope(
+      scope.tenantId,
+      [scope.initiatingActorId],
+      () => getSql().transaction(operation) as Promise<TemporalRelationClaimRecord>,
     );
   }
 
-  await assertStoredFileEndpoints(claim, scope);
+  if (claim.claimState === "retracted") {
+    if (claim.previousRevisionId === null) {
+      throw new Error("Entity relation retraction requires a prior revision.");
+    }
+  } else {
+    await assertStoredFileEndpoints(claim, scope);
+  }
   let stored: TemporalRelationClaimRecord | undefined;
   let created = false;
   await updateJsonFile<TemporalClaimLedger>(
@@ -152,6 +177,13 @@ export async function saveTemporalRelationClaimRevision(input: {
         if (claim.recordedAt <= current.claim.recordedAt) {
           throw new Error("Entity relation revision must advance system time.");
         }
+        if (
+          claim.claimState === "retracted" &&
+          sourceContractSha256(claim.lineage) !==
+            sourceContractSha256(current.claim.lineage)
+        ) {
+          throw new Error("Entity relation retraction must preserve lineage.");
+        }
       }
       const nextRecords = records.map((record) =>
         record.claim.revisionId === claim.previousRevisionId
@@ -168,6 +200,101 @@ export async function saveTemporalRelationClaimRevision(input: {
   );
   if (created) await appendRelationEvent(claim, scope);
   return stored!;
+}
+
+export async function reconcileTemporalRelationClaimProjection(input: {
+  tenantId: string;
+  ownerActorId: string;
+  desiredClaims: readonly TemporalRelationClaimRevision[];
+  projectionSha256: string;
+  executionScope: ExecutionScope;
+  reconciledAt?: string;
+  sql?: TemporalClaimSqlClient;
+}) {
+  const scope = assertProjectionScope(input);
+  const desiredClaims = input.desiredClaims.map((claim) => {
+    const parsed = parseTemporalRelationClaimRevision(claim);
+    if (
+      parsed.accessBinding.tenantId !== input.tenantId ||
+      parsed.accessBinding.ownerActorId !== input.ownerActorId
+    ) {
+      throw new Error("Relation projection desired claim crosses its owner scope.");
+    }
+    return parsed;
+  });
+  if (!/^[a-f0-9]{64}$/.test(input.projectionSha256)) {
+    throw new Error("Relation projection digest is invalid.");
+  }
+  const reconciledAt = canonicalTimestamp(
+    input.reconciledAt || new Date().toISOString(),
+  );
+
+  if (hasDatabaseUrl() || input.sql) {
+    if (!input.sql) await ensureDatabaseSchema();
+    const operation = async (sql: TemporalClaimSqlClient) => {
+      await sql`
+        SELECT pg_advisory_xact_lock(
+          hashtext(${input.tenantId}),
+          hashtext(${`entity-relations:${input.ownerActorId}`})
+        )
+      `;
+      const rows = await sql`
+        SELECT contract, superseded_at
+        FROM omni_entity_relation_claims
+        WHERE tenant_id = ${input.tenantId}
+          AND owner_actor_id = ${input.ownerActorId}
+        ORDER BY recorded_at, id COLLATE "C"
+        FOR UPDATE
+      `;
+      const reconciliation = reconcileRelationProjectionState({
+        desiredClaims,
+        currentRecords: rows.map(recordFromRow),
+        reconciledAt,
+      });
+      for (const claim of reconciliation.appendedRevisions) {
+        await saveTemporalRelationClaimRevision({
+          claim,
+          executionScope: scope,
+          sql,
+        });
+      }
+      await appendProjectionEvent({
+        ...input,
+        executionScope: scope,
+        reconciliation,
+        reconciledAt,
+      }, sql);
+      return reconciliation;
+    };
+    if (input.sql) return operation(input.sql);
+    return getSql().transaction(operation) as Promise<
+      ReturnType<typeof reconcileRelationProjectionState>
+    >;
+  }
+
+  const ledger = await readJsonFile<TemporalClaimLedger>(
+    getTemporalClaimsFile(),
+    emptyLedger,
+  );
+  const reconciliation = reconcileRelationProjectionState({
+    desiredClaims,
+    currentRecords: ledger.records.filter((record) => {
+      const claim = parseTemporalRelationClaimRecord(record).claim;
+      return claim.accessBinding.tenantId === input.tenantId &&
+        claim.accessBinding.ownerActorId === input.ownerActorId;
+    }),
+    reconciledAt,
+  });
+  for (const claim of reconciliation.appendedRevisions) {
+    await saveTemporalRelationClaimRevision({ claim, executionScope: scope });
+  }
+  await appendProjectionEvent({
+    ...input,
+    executionScope: scope,
+    reconciliation,
+    reconciledAt,
+  });
+  return reconciliation;
 }
 
 export async function queryTemporalRelationClaims(
@@ -356,8 +483,7 @@ function assertEndpointRecords(
       entity.entityTypeId !== endpoint.entityTypeId ||
       entity.accessBinding.accessScopeSha256 !==
         claim.accessBinding.accessScopeSha256 ||
-      (claim.previousRevisionId === null &&
-        entity.entitySha256 !== endpoint.entitySha256)
+      entity.entitySha256 !== endpoint.entitySha256
     ) {
       throw new Error("Entity relation endpoint is not active in the claim scope.");
     }
@@ -463,14 +589,24 @@ function assertSameClaimDigest(
 function assertTemporalClaimScope(
   value: ExecutionScope,
   binding: EntityAccessBinding,
-  purpose: "entity.read.v1" | "entity.write.v1",
+  purpose:
+    | "entity.read.v1"
+    | "entity.write.v1"
+    | "entity.relation.project.v1",
+  allowGovernedSystem = false,
 ) {
   const scope = parsePersistedExecutionScope(value);
+  const exactUser =
+    scope?.executingPrincipalType === "user" &&
+    scope.executingPrincipalId === scope.initiatingActorId;
+  const governedSystem =
+    allowGovernedSystem &&
+    scope?.executingPrincipalType === "system" &&
+    Boolean(scope.executingPrincipalId);
   if (
     !scope?.initiatingActorId ||
     scope.purpose !== purpose ||
-    scope.executingPrincipalType !== "user" ||
-    scope.executingPrincipalId !== scope.initiatingActorId ||
+    (!exactUser && !governedSystem) ||
     scope.tenantId !== binding.tenantId ||
     scope.initiatingActorId !== binding.ownerActorId ||
     scope.workspaceId !== binding.workspaceId ||
@@ -481,11 +617,40 @@ function assertTemporalClaimScope(
     binding.workspaceId !== null ||
     binding.projectId !== null ||
     binding.missionId !== null ||
-    !binding.allowedPurposeIds.includes(purpose)
+    !(governedSystem || binding.allowedPurposeIds.includes(purpose))
   ) {
     throw new Error("Entity relation scope does not match its access binding.");
   }
   return scope as ExecutionScope & { initiatingActorId: string };
+}
+
+function assertProjectionScope(input: {
+  tenantId: string;
+  ownerActorId: string;
+  executionScope: ExecutionScope;
+  sql?: TemporalClaimSqlClient;
+}) {
+  const scope = parsePersistedExecutionScope(input.executionScope);
+  const exactUser =
+    scope?.executingPrincipalType === "user" &&
+    scope.executingPrincipalId === input.ownerActorId;
+  const governedSystem =
+    Boolean(input.sql) &&
+    scope?.executingPrincipalType === "system" &&
+    Boolean(scope.executingPrincipalId);
+  if (
+    !scope ||
+    scope.tenantId !== input.tenantId ||
+    scope.initiatingActorId !== input.ownerActorId ||
+    scope.purpose !== "entity.relation.project.v1" ||
+    (!exactUser && !governedSystem) ||
+    scope.workspaceId !== null ||
+    scope.projectId !== null ||
+    scope.missionId !== null
+  ) {
+    throw new Error("Relation projection requires an exact governed owner scope.");
+  }
+  return scope;
 }
 
 function lineageIds(
@@ -524,6 +689,41 @@ function appendRelationEvent(
       validTo: claim.validTo,
       claimSha256: claim.claimSha256,
       accessScopeSha256: claim.accessBinding.accessScopeSha256,
+    },
+  }, sql ? { sql } : {});
+}
+
+function appendProjectionEvent(
+  input: {
+    tenantId: string;
+    ownerActorId: string;
+    projectionSha256: string;
+    executionScope: ExecutionScope;
+    reconciledAt: string;
+    reconciliation: ReturnType<typeof reconcileRelationProjectionState>;
+  },
+  sql?: TemporalClaimSqlClient,
+) {
+  return appendScopedDomainEvent({
+    id: `entity-relation-projection:${sourceContractSha256({
+      tenantId: input.tenantId,
+      ownerActorId: input.ownerActorId,
+      projectionSha256: input.projectionSha256,
+      stateSha256: input.reconciliation.stateSha256,
+    })}`,
+    streamId: `entity-relations:${input.ownerActorId}`,
+    type: "entity.relation_projection.reconciled",
+    executionScope: input.executionScope,
+    payload: {
+      schemaVersion: 1,
+      projectionSha256: input.projectionSha256,
+      stateSha256: input.reconciliation.stateSha256,
+      createdCount: input.reconciliation.createdCount,
+      revisedCount: input.reconciliation.revisedCount,
+      retractedCount: input.reconciliation.retractedCount,
+      unchangedCount: input.reconciliation.unchangedCount,
+      activeClaimCount: input.reconciliation.activeClaims.length,
+      reconciledAt: input.reconciledAt,
     },
   }, sql ? { sql } : {});
 }

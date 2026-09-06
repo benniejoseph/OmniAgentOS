@@ -15,6 +15,7 @@ import {
 } from "@/lib/db/memory-access-scope";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { retireEntityMemoryLineage } from "@/lib/entities/store";
+import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
 import {
   buildMemoryDeletionReceiptV1,
   canonicalizeMemoryDeletionIds,
@@ -610,6 +611,33 @@ async function saveMemoriesWithCommitStatus(
         records,
         mutationScopes as ExecutionScope[],
       );
+      for (let index = 0; index < records.length; index += 1) {
+        const record = records[index];
+        const mutationScope = mutationScopes[index];
+        const persisted = persistedRows.find((row) => row.id === record?.id);
+        if (
+          !record?.accessBinding ||
+          !mutationScope ||
+          !persisted?._inserted ||
+          record.accessBinding.visibility !== "user_private" ||
+          record.accessBinding.ownerAgentId !== null ||
+          record.accessBinding.workspaceId !== null ||
+          record.accessBinding.projectId !== null ||
+          record.accessBinding.missionId !== null ||
+          record.assertedBy !== "user" ||
+          record.claimStatus !== "active" ||
+          !(
+            ["manual", "user-assertion"].includes(record.source) ||
+            record.source.startsWith("correction:")
+          )
+        ) continue;
+        await queueTemporalRelationProjection({
+          tenantId,
+          ownerActorId: record.accessBinding.ownerActorId,
+          executionScope: mutationScope,
+          sql,
+        });
+      }
       return persistedRows;
     };
     const rows = options.sql
@@ -1884,6 +1912,12 @@ export async function forgetMemoryWithReceipt(
           purpose: "memory.forget.v1",
         }),
         retiredAt: receipt.forgottenAt,
+        sql,
+      });
+      await queueTemporalRelationProjection({
+        tenantId,
+        ownerActorId: executionScope.initiatingActorId!,
+        executionScope,
         sql,
       });
       // The receipt trigger verifies and deletes this exact graph/trace

@@ -22,6 +22,13 @@ function createSql(transactionScoped = false) {
     if (query.includes("INSERT INTO omni_memory_reconciliation_reviews")) {
       return [{ id: "memory-reconciliation-a" }];
     }
+    if (query.includes("INSERT INTO omni_entity_relation_projection_queue")) {
+      return [{
+        tenant_id: "tenant-a",
+        owner_actor_id: ownerActorId,
+        generation: "1",
+      }];
+    }
     if (
       (query.includes("SELECT *") || query.includes("SELECT memory.*")) &&
       query.includes("FROM omni_memories")
