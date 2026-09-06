@@ -214,8 +214,23 @@ describe("personal notification center", () => {
       tenantId,
       actorId,
     });
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    const dueEvents = events.filter((event) =>
+      event.type === "notification.due_upserted"
+    );
+    const actionEvents = events.filter((event) =>
+      event.type === "notification.updated"
+    );
+    expect(dueEvents).toHaveLength(1);
+    expect(dueEvents[0]).toMatchObject({
+      payload: {
+        schemaVersion: 1,
+        notificationId: notification.id,
+        operation: "created",
+        status: "unread",
+      },
+    });
+    expect(actionEvents).toHaveLength(1);
+    expect(actionEvents[0]).toMatchObject({
       type: "notification.updated",
       tenantId,
       actorId,
@@ -230,7 +245,9 @@ describe("personal notification center", () => {
         status: "acted",
       },
     });
-    expect(JSON.stringify(events[0].payload)).not.toContain("Private launch review");
+    expect(JSON.stringify(events.map((event) => event.payload))).not.toContain(
+      "Private launch review",
+    );
     await expect(listTodayItems(10, { tenantId, actorId })).resolves.toEqual([
       expect.objectContaining({ status: "done" }),
     ]);

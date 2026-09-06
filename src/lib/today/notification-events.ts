@@ -25,6 +25,19 @@ export const notificationBulkMutationEventPayloadSchema = z.object({
   idempotencyKeySha256: sha256Schema,
 }).strict();
 
+export const notificationDueMutationEventPayloadSchema = z.object({
+  schemaVersion: z.literal(NOTIFICATION_EVENT_SCHEMA_VERSION),
+  notificationId: opaqueIdSchema,
+  sourceType: z.literal("today_item"),
+  sourceId: opaqueIdSchema,
+  occurrenceKeySha256: sha256Schema,
+  titleSha256: sha256Schema,
+  operation: z.enum(["created", "refreshed"]),
+  status: z.enum(["unread", "read", "snoozed", "dismissed", "acted"]),
+  urgency: z.enum(["due_soon", "overdue"]),
+  idempotencyKeySha256: sha256Schema,
+}).strict();
+
 export type NotificationMutationContext = Readonly<{
   executionScope: ExecutionScope;
   idempotencyKey: string;

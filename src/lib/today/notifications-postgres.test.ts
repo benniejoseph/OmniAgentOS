@@ -54,6 +54,8 @@ vi.mock("@/lib/today/store", () => ({
 import {
   getNotificationCenter,
   listNotifications,
+  markAllNotificationsRead,
+  updatePersonalNotification,
 } from "@/lib/today/notifications";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
@@ -100,6 +102,18 @@ beforeEach(() => {
 });
 
 describe("Postgres personal notification owner reads", () => {
+  it("rejects production notification mutations without an event envelope", async () => {
+    await expect(updatePersonalNotification("notification-a", "read", {
+      tenantId: "tenant-a",
+      actorId,
+    })).rejects.toThrow("require a mutation envelope");
+    await expect(markAllNotificationsRead({
+      tenantId: "tenant-a",
+      actorId,
+    })).rejects.toThrow("require a mutation envelope");
+    expect(dbMocks.sql).not.toHaveBeenCalled();
+  });
+
   it("merges readable partitions before globally ordering and limiting", async () => {
     dbMocks.rows.push(
       notificationRow("canonical-notification", canonicalActorId),
