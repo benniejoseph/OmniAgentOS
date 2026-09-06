@@ -1019,7 +1019,7 @@ export async function executeAgentPlanNode({
       input: `<workflow_node_input schema_version="1" provenance="admitted_plan_and_dependency_receipts">\n${escapeUntrustedNodeText(JSON.stringify(nodeInput))}\n</workflow_node_input>`,
       name: "workflow_node_result_v1",
       schema: workflowNodeAgentResultJsonSchema,
-      reasoningEffort: "minimal",
+      reasoningEffort: "low",
       tier: "reasoning",
       maxOutputTokens: 1_800,
       maxAttempts: 1,

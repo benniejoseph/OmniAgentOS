@@ -584,7 +584,7 @@ async function generatePlan({
         abortSignal: abortSignal
           ? AbortSignal.any([controller.signal, abortSignal])
           : controller.signal,
-        reasoningEffort: "minimal",
+        reasoningEffort: "low",
         tier: "reasoning",
         maxAttempts: modelMaxAttempts,
         ...(actorId
