@@ -1632,3 +1632,21 @@ terminal and preserves all prior definition, evaluation, run-manifest, and
 release events. Migration v114's initial-channel enrollment trigger is a
 database compatibility invariant and emits no event; the current application
 appends `agent.release.initialized` in its governed creation transaction.
+
+## Agent adaptation lifecycle
+
+P7.6 adds `agent.adaptation.observed`, `agent.adaptation.evaluated`,
+`agent.adaptation.activated`, and `agent.adaptation.rolled_back` to the exact
+Agent stream. Observation carries only the deterministic adaptation ID,
+evidence/effect digests and count, observed definition version, confidence, and
+effect kind. Evaluation adds its policy-bound digest, exact definition version,
+and `passed` or `held` verdict. Activation adds a monotonic activation version;
+rollback retains that version and closes the record. Payloads contain no
+correction text, prompt guidance, run content, credential, tenant/actor
+identity, tool output, or private reasoning.
+
+Events are observable receipts, never activation authority. Serving behavior
+comes only from an exact-owner database record in `active` state whose
+evaluation definition matches the immutable run identity. Evidence refresh,
+evaluation, activation, and rollback are separate owner actions. Failed or
+stale evaluation cannot be skipped, and rolled-back records never reactivate.

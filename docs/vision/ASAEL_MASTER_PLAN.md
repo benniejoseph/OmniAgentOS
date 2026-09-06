@@ -2535,6 +2535,26 @@ complete-feature deployment for the team's overdue balance; Fly remains on the
 last paired release. P7.6 measurable adaptation states is next, and P12/P13
 remain deferred.
 
+P7.6 repository implementation is complete through commit
+`e33e743167e760019e6212fd930cbe422fb21dd2`. Corrections now enter an explicit
+`observed -> evaluated -> active -> rolled_back` lifecycle bound to the
+canonical owner and exact Agent release. Every record has immutable evidence,
+confidence, a versioned evaluation, and—only after owner activation—a monotonic
+activation version. Active effects are non-authority instruction guidance;
+they cannot add tools, context, grants, budgets, approvals, or destructive
+power. Council inheritance, project-note prompt injection, and performance-
+driven routing changes are removed. Arsenal and Settings expose the complete
+review/activation/rollback lifecycle, and trajectory v3 plus product labels no
+longer describe prompt hints as learning. Production migration 115 has the
+exact marker, forced RLS, restrictive actor policy, both lifecycle guards,
+security-invoker/no-public-execute function boundary, unique active-effect
+index, lifecycle-only serving updates, and an empty initial ledger. The focused
+feature suite passes 118 checks across 17 files with affected lint, TypeScript,
+Dart analysis, and the Next 16 production build. Vercel rejected the completed
+feature deployment because the team still has an overdue balance, so Fly was
+intentionally left unchanged. Phase 7 is complete; P8.1 is next, and P12/P13
+remain deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
@@ -2565,7 +2585,7 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [ ] **Phase 4 — Context Management:** P4.1–P4.7 complete.
 - [ ] **Phase 5 — Graph Engineering:** P5.1–P5.6 complete.
 - [x] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
-- [ ] **Phase 7 — agent identity and lifecycle:** P7.1–P7.6 complete.
+- [x] **Phase 7 — agent identity and lifecycle:** P7.1–P7.6 complete.
 - [ ] **Phase 8 — delegation and A2A:** P8.1–P8.7 complete.
 - [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.19 complete.
 - [ ] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete.
