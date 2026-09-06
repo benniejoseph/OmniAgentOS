@@ -115,6 +115,34 @@ describe("bounded workflow subtree replanning", () => {
     expect(() => resolveWorkflowReusedNodeExecutions(replanned, tampered))
       .toThrow("failed lineage validation");
   });
+
+  it("classifies failed governed-tool work and targets its descendants", () => {
+    const toolNodes = nodes.map((item) => item.id === "join"
+      ? {
+          ...item,
+          kind: "tool" as const,
+          toolIds: ["knowledge.search"],
+        }
+      : item);
+    const toolPlan = plan(toolNodes);
+    const toolExecutions = executions.map((record) => record.nodeId === "join"
+      ? { ...record, nodeKind: "tool" as const, status: "failed" as const }
+      : record);
+
+    const directive = createWorkflowReplanDirective({
+      previousPlanId: "plan-old",
+      previousPlan: toolPlan,
+      nodeExecutions: toolExecutions,
+      verificationFailures: ["The governed read did not return usable evidence."],
+      approvalInvalidated: false,
+    });
+
+    expect(directive).toMatchObject({
+      trigger: "tool",
+      failureNodeIds: ["join"],
+      affectedNodeIds: ["join", "report"],
+    });
+  });
 });
 
 function node(id: string, dependsOn: string[]): WorkflowPlanNode {

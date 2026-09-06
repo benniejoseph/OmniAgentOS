@@ -290,8 +290,13 @@ function classifyReplanTrigger({
 
 function mentionsNodeId(value: string, nodeId: string) {
   if (nodeId.length < 3) return false;
-  return new RegExp(`(^|[^a-z0-9_-])${escapeRegExp(nodeId)}([^a-z0-9_-]|$)`, "i")
-    .test(value);
+  const escaped = escapeRegExp(nodeId);
+  return [
+    new RegExp(`^\\s*${escaped}([^a-z0-9_-]|$)`, "i"),
+    new RegExp(`[\u0060'\"]${escaped}[\u0060'\"]`, "i"),
+    new RegExp(`(^|[^a-z0-9_-])node\\s+${escaped}([^a-z0-9_-]|$)`, "i"),
+    new RegExp(`(^|[^a-z0-9_-])${escaped}\\s+node([^a-z0-9_-]|$)`, "i"),
+  ].some((pattern) => pattern.test(value));
 }
 
 function escapeRegExp(value: string) {

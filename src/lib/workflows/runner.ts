@@ -6,6 +6,7 @@ import { generateModelStructured } from "@/lib/models/gateway";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { deriveExecutionScope } from "@/lib/security/execution-scope";
 import {
   resolveRuntimeModelAssignment,
   type RuntimeModelResolution,
@@ -18,7 +19,11 @@ import {
   buildWorkflowSpecialistContext,
   inspectWorkflowSpecialistDependencies,
 } from "@/lib/subagents/context";
-import { executeDynamicWorkflowPlan, parseWorkflowPlanOutput } from "@/lib/workflows/executor";
+import {
+  executeDynamicWorkflowPlan,
+  listWorkflowPlanNodeExecutionsForRun,
+  parseWorkflowPlanOutput,
+} from "@/lib/workflows/executor";
 import {
   buildWorkflowOutcomeEvaluationV1,
   workflowOutcomeEffectReceiptCandidateExecutionIds,
@@ -28,6 +33,10 @@ import {
   buildDynamicWorkflowPlan,
   getWorkflowPlanById,
 } from "@/lib/workflows/planner";
+import {
+  createWorkflowReplanDirective,
+  parseWorkflowReplanDirective,
+} from "@/lib/workflows/replan";
 import { parseWorkflowProcedureSnapshot } from "@/lib/workflows/saved-procedures";
 import {
   approveWorkflowRun,
@@ -129,6 +138,7 @@ export async function tickWorkflowRun(
     return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
   }
   let runFence = claimedRun.updatedAt;
+  let replanRestartKey: WorkflowStepKey | undefined;
   if (!stepKey) {
     await completeWorkflow(detail.run.id, detail.run.tenantId, runFence);
     return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
@@ -267,17 +277,81 @@ export async function tickWorkflowRun(
     }
     await appendWorkflowEvent(detail.run.id, "step.completed", { stepKey, attempt });
 
+    if (
+      stepKey === "plan" &&
+      output &&
+      typeof output === "object" &&
+      "approvalRequired" in output &&
+      output.approvalRequired === true &&
+      !beforeCommit.run.approvalRequired
+    ) {
+      const tightened = await transitionWorkflowRun(detail.run.id, ["running"], {
+        status: "running",
+        approvalRequired: true,
+        approvedAt: undefined,
+      }, {
+        tenantId: detail.run.tenantId,
+        expectedUpdatedAt: runFence,
+      });
+      if (!tightened) {
+        return getWorkflowRunDetail(runId, {
+          tenantId: options.tenantId,
+        }) as Promise<WorkflowRunDetail>;
+      }
+      runFence = tightened.updatedAt;
+      await updateWorkflowStep(detail.run.id, "approval_gate", {
+        status: "pending",
+        attempt: 0,
+        output: undefined,
+        error: undefined,
+        startedAt: undefined,
+        completedAt: undefined,
+      });
+      await appendWorkflowEvent(detail.run.id, "workflow.approval_required_by_plan", {
+        planId: typeof (output as Record<string, unknown>).id === "string"
+          ? (output as Record<string, unknown>).id
+          : undefined,
+      });
+    }
+
     // Bounded replanning: one failed verification sends the workflow back to
     // planning with the failure evidence; a second failure stands.
     const verifyOutput = stepKey === "verify" ? (output as Record<string, unknown>) : undefined;
     if (verifyOutput && verifyOutput.passed === false && !hasReplanned(freshDetail)) {
       const verdict = verifyOutput.modelVerdict as { failures?: string[]; assessment?: string } | undefined;
+      const previousPlanOutput = parseWorkflowPlanOutput(stepOutput(freshDetail, "plan"));
+      if (!previousPlanOutput) {
+        throw new Error("Workflow verification cannot replan without its prior typed plan.");
+      }
+      const priorNodeExecutions = await listWorkflowPlanNodeExecutionsForRun(
+        detail.run.id,
+        250,
+      );
+      const replanDirective = createWorkflowReplanDirective({
+        previousPlanId: previousPlanOutput.id,
+        previousPlan: previousPlanOutput.plan,
+        nodeExecutions: priorNodeExecutions,
+        verificationFailures: verdict?.failures || [],
+        approvalInvalidated: Boolean(freshDetail.run.approvedAt),
+        previousContextTraceId: typeof previousPlanOutput.plan.replan?.previousContextTraceId === "string"
+          ? previousPlanOutput.plan.replan.previousContextTraceId
+          : typeof stepOutput(freshDetail, "plan")?.contextTraceId === "string"
+            ? String(stepOutput(freshDetail, "plan")?.contextTraceId)
+            : undefined,
+      });
       await appendWorkflowEvent(detail.run.id, "workflow.replan_triggered", {
+        directive: replanDirective,
         failures: verdict?.failures || [],
         assessment: verdict?.assessment || "Mechanical verification failed.",
         mechanicalPassed: verifyOutput.mechanicalPassed,
       });
-      for (const resetKey of ["plan", "execute", "verify"] as const) {
+      for (const resetKey of [
+        "retrieve_context",
+        "plan",
+        "approval_gate",
+        "execute",
+        "verify",
+      ] as const) {
         await updateWorkflowStep(detail.run.id, resetKey, {
           status: "pending",
           attempt: 0,
@@ -291,7 +365,7 @@ export async function tickWorkflowRun(
       // The human approved the OLD plan. A replanned workflow produces a new
       // plan the approver never saw, so the approval is revoked and the
       // approval gate re-opens before any side-effecting tool can execute.
-      if (freshDetail.run.approvalRequired && freshDetail.run.approvedAt) {
+      if (freshDetail.run.approvedAt) {
         const revoked = await transitionWorkflowRun(detail.run.id, ["running"], {
           status: "running",
           approvedAt: undefined,
@@ -303,18 +377,17 @@ export async function tickWorkflowRun(
           return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
         }
         runFence = revoked.updatedAt;
-        await updateWorkflowStep(detail.run.id, "approval_gate", {
-          status: "pending",
-          attempt: 0,
-          output: undefined,
-          error: undefined,
-          startedAt: undefined,
-          completedAt: undefined,
-        });
         await appendWorkflowEvent(detail.run.id, "workflow.approval_revoked_on_replan", {
           reason: "Replanning produced a new plan; prior approval applied to the old plan only.",
         });
       }
+      await appendWorkflowEvent(detail.run.id, "workflow.replan_authority_invalidated", {
+        previousPlanId: replanDirective.previousPlanId,
+        contextGrantsInvalidated: true,
+        capabilityGrantsInvalidated: true,
+        previousContextTraceId: replanDirective.previousContextTraceId,
+      });
+      replanRestartKey = "retrieve_context";
     } else if (
       verifyOutput &&
       verifyOutput.passed === false &&
@@ -357,7 +430,7 @@ export async function tickWorkflowRun(
       }) as Promise<WorkflowRunDetail>;
     }
 
-    const nextKey = nextStepKey(
+    const nextKey = replanRestartKey || nextStepKey(
       await getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as WorkflowRunDetail,
     );
     if (nextKey) {
@@ -832,7 +905,17 @@ async function workflowAttribution(detail: WorkflowRunDetail) {
   const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
     tenantId: detail.run.tenantId,
   });
-  const executionScope = authority?.executionScope;
+  const replanEvent = [...detail.events]
+    .reverse()
+    .find((event) => event.type === "workflow.replan_triggered");
+  const executionScope = authority?.executionScope && replanEvent
+    ? deriveExecutionScope(authority.executionScope, {
+        causationId: `workflow.replan:${replanEvent.id}`,
+        contextGrantIds: [],
+        capabilityGrantIds: [],
+        purpose: "workflow.replan",
+      })
+    : authority?.executionScope;
   const scopedActorId = executionScope?.initiatingActorId?.trim() || "";
   if (scopedActorId && metadataActorId && scopedActorId !== metadataActorId) {
     throw new Error(
@@ -948,6 +1031,20 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
   const replanEvent = [...detail.events]
     .reverse()
     .find((event) => event.type === "workflow.replan_triggered");
+  const replanDirective = replanEvent
+    ? parseWorkflowReplanDirective(replanEvent.payload.directive)
+    : undefined;
+  const previousPlan = replanDirective
+    ? await getWorkflowPlanById(replanDirective.previousPlanId, {
+        tenantId: detail.run.tenantId,
+      })
+    : undefined;
+  if (
+    replanDirective &&
+    (!previousPlan || previousPlan.status !== "planned")
+  ) {
+    throw new Error("Workflow subtree replan is missing its bound previous plan.");
+  }
   const replanFeedback = replanEvent
     ? `\n\nIMPORTANT: a previous plan for this goal failed verification. Address these failures in the new plan:\n${JSON.stringify(replanEvent.payload || {}, null, 2).slice(0, 2000)}`
     : "";
@@ -1004,6 +1101,15 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
         profile ? [profile.instructions, ...profile.skills.map((skill) => `${skill.name}: ${skill.instructions}`)].join("\n\n") : "",
         replanFeedback.trim(),
       ].filter(Boolean).join("\n\n") || undefined,
+      ...(replanDirective && previousPlan
+        ? {
+            replan: {
+              previousPlanId: previousPlan.id,
+              previousPlan: previousPlan.plan,
+              directive: replanDirective,
+            },
+          }
+        : {}),
       reuseExisting: !replanEvent,
       abortSignal,
     });
@@ -1014,7 +1120,30 @@ async function buildPlan(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
     highestRiskLevel: record.highestRiskLevel,
     approvalRequired: record.approvalRequired,
     savedProcedureId: savedProcedure?.id,
+    previousPlanId: record.plan.replan?.previousPlanId,
+    affectedNodeCount: record.plan.replan?.affectedNodeIds.length,
+    reusedNodeCount: record.plan.replan?.reusedNodes.length,
   });
+  if (record.plan.replan) {
+    await appendWorkflowEvent(detail.run.id, "workflow.subtree_replanned", {
+      previousPlanId: record.plan.replan.previousPlanId,
+      planId: record.id,
+      trigger: record.plan.replan.trigger,
+      failureNodeIds: record.plan.replan.failureNodeIds,
+      affectedNodeIds: record.plan.replan.affectedNodeIds,
+      reusedExecutions: record.plan.replan.reusedNodes.map((reference) => ({
+        nodeId: reference.nodeId,
+        executionId: reference.executionId,
+        sourcePlanId: reference.sourcePlanId,
+        outputSha256: reference.outputSha256,
+      })),
+      approvalInvalidated: record.plan.replan.approvalInvalidated,
+      contextGrantsInvalidated: true,
+      capabilityGrantsInvalidated: true,
+      previousContextTraceId: record.plan.replan.previousContextTraceId,
+      contextTraceId: record.contextTraceId,
+    });
+  }
   return {
     id: record.id,
     planner: record.planner,
