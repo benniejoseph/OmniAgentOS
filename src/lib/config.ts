@@ -208,6 +208,51 @@ export const AGENT_MAX_OUTPUT_TOKENS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS,
   2_000,
 );
+export const AGENT_MAX_TOTAL_TOKENS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_TOTAL_TOKENS,
+  64_000,
+);
+export const AGENT_MAX_COST_MICROUSD = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_COST_MICROUSD,
+  2_500_000,
+);
+export const AGENT_MAX_WALL_CLOCK_MS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_WALL_CLOCK_MS,
+  240_000,
+);
+export const AGENT_MAX_BROWSER_ACTIONS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_BROWSER_ACTIONS,
+  12,
+);
+export const AGENT_MAX_AGENTS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_AGENTS,
+  5,
+);
+export const AGENT_MAX_FAN_OUT = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_FAN_OUT,
+  4,
+);
+export const AGENT_MAX_RETRIES = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_RETRIES,
+  2,
+);
+export const AGENT_MAX_REPLANS = normalizePositiveInteger(
+  process.env.OMNIAGENT_AGENT_MAX_REPLANS,
+  1,
+);
+
+export const AGENT_RUN_BUDGET_LIMITS = Object.freeze({
+  modelTurns: AGENT_MAX_TOOL_STEPS + 1,
+  tokens: AGENT_MAX_TOTAL_TOKENS,
+  costMicrousd: AGENT_MAX_COST_MICROUSD,
+  wallTimeMs: AGENT_MAX_WALL_CLOCK_MS,
+  toolCalls: AGENT_MAX_TOOL_STEPS * 5,
+  browserActions: AGENT_MAX_BROWSER_ACTIONS,
+  agents: AGENT_MAX_AGENTS,
+  fanOut: AGENT_MAX_FAN_OUT,
+  retries: AGENT_MAX_RETRIES,
+  replans: AGENT_MAX_REPLANS,
+});
 
 function normalizePositiveInteger(value: string | undefined, fallback: number) {
   const parsed = Number(value);

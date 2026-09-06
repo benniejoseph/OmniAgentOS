@@ -34,6 +34,20 @@ export const runBudgetStateV1Schema = z.object({
 export type RunBudgetCountersV1 = z.infer<typeof runBudgetCountersV1Schema>;
 export type RunBudgetStateV1 = z.infer<typeof runBudgetStateV1Schema>;
 
+/** Safe compatibility limits for internal callers that predate request budgets. */
+export const DEFAULT_AGENT_RUN_BUDGET_LIMITS: RunBudgetCountersV1 = Object.freeze({
+  modelTurns: 7,
+  tokens: 64_000,
+  costMicrousd: 2_500_000,
+  wallTimeMs: 240_000,
+  toolCalls: 30,
+  browserActions: 12,
+  agents: 5,
+  fanOut: 4,
+  retries: 2,
+  replans: 1,
+});
+
 export class RunBudgetExceededError extends Error {
   readonly code = "run_budget_exhausted";
   readonly requiresAuthorization = true;
