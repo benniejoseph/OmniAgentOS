@@ -335,7 +335,10 @@ export async function appendAgentRunIdentityPin(
     throw new Error("Agent run identity pin scope does not match the run binding.");
   }
   return appendScopedDomainEvent({
-    id: `run-agent-identity:${runId}:${pin.pinSha256.slice(0, 48)}`,
+    // The event id is deliberately run-scoped rather than pin-scoped. The
+    // event store's idempotency check accepts an exact retry but rejects a
+    // different payload, including concurrent attempts to rebind the run.
+    id: `run-agent-identity:${runId}`,
     streamId: `run:${runId}`,
     type: "run.agent_identity.bound",
     payload: agentRunIdentityPinV1Schema.parse(pin),

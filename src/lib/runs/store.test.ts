@@ -319,6 +319,69 @@ describe("agent run approval continuations (file mode)", () => {
     expect(event.payload.responseSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("binds exactly one immutable agent identity to a run", async () => {
+    const store = await import("@/lib/runs/store");
+    const { buildAgentRunIdentityPinV1, buildBuiltInAgentIdentityV1 } =
+      await import("@/lib/agents/identity-contracts");
+    const { createExecutionScope } = await import("@/lib/security/execution-scope");
+    const tenantId = "identity-binding";
+    const actorId = "actor-1";
+    const run = await store.createAgentRun({
+      tenantId,
+      actorId,
+      mode: "orchestrate",
+      prompt: "bind identity",
+      messages: [{ role: "user", content: "bind identity" }],
+      agentId: "atlas",
+    });
+    const scope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "atlas",
+      correlationId: `run:${run.id}`,
+      purpose: "agent.run",
+    });
+    await store.bindAgentRunExecutionScope(run.id, scope, {
+      tenantId,
+    });
+    const original = buildAgentRunIdentityPinV1({
+      runId: run.id,
+      identity: buildBuiltInAgentIdentityV1({
+        agentId: "atlas",
+        tenantId,
+        controllerActorId: actorId,
+      }),
+    });
+
+    await store.appendAgentRunIdentityPin(run.id, original, {
+      tenantId,
+      executionScope: scope,
+    });
+    await store.appendAgentRunIdentityPin(run.id, original, {
+      tenantId,
+      executionScope: scope,
+    });
+    await expect(
+      store.getAgentRunIdentityPin(run.id, { tenantId }),
+    ).resolves.toEqual(original);
+
+    const conflicting = buildAgentRunIdentityPinV1({
+      runId: run.id,
+      identity: buildBuiltInAgentIdentityV1({
+        agentId: "atlas",
+        tenantId,
+        controllerActorId: "actor-2",
+      }),
+    });
+    await expect(
+      store.appendAgentRunIdentityPin(run.id, conflicting, {
+        tenantId,
+        executionScope: scope,
+      }),
+    ).rejects.toThrow("already bound to a different event");
+  });
+
   it("keeps non-terminal run prose out of the long-lived domain event log", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({
