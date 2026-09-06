@@ -32,6 +32,10 @@ import {
   resolveMemoryTier,
   type MemoryTier,
 } from "@/lib/memory/tier-policy";
+import type {
+  MemoryReconciliationDecision,
+  MemoryReconciliationReview,
+} from "@/lib/memory/reconciliation";
 import type { MemoryGraphEdge, MemoryGraphNode, MemoryGraphStats, MemoryRecord, MemoryType } from "@/lib/memory/types";
 import styles from "@/components/memory-workspace.module.css";
 
@@ -99,6 +103,10 @@ export function MemoryWorkspace() {
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [draft, setDraft] = useState<{ title: string; content: string; confidence: number }>();
   const [showCreate, setShowCreate] = useState(false);
+  const [showReconciliation, setShowReconciliation] = useState(false);
+  const [reconciliationReviews, setReconciliationReviews] = useState<
+    MemoryReconciliationReview[]
+  >([]);
   const [showEntities, setShowEntities] = useState(false);
   const [entityRegistry, setEntityRegistry] = useState<EntityRegistryPayload>();
   const [entityRegistryError, setEntityRegistryError] = useState<string>();
@@ -112,17 +120,26 @@ export function MemoryWorkspace() {
   const load = useCallback(async () => {
     setLoadState("loading");
     try {
-      const [memoryResponse, graphResponse] = await Promise.all([
+      const [memoryResponse, graphResponse, reconciliationResponse] = await Promise.all([
         fetch("/api/memory?limit=100", { cache: "no-store" }),
         fetch("/api/memory/graph?limit=100", { cache: "no-store" }),
+        fetch("/api/memory/reconciliation?status=all&limit=100", {
+          cache: "no-store",
+        }),
       ]);
-      if (!memoryResponse.ok || !graphResponse.ok) throw new Error("Memory workspace could not be loaded.");
+      if (!memoryResponse.ok || !graphResponse.ok || !reconciliationResponse.ok) {
+        throw new Error("Memory workspace could not be loaded.");
+      }
       const memoryPayload = await memoryResponse.json() as { memories?: MemoryRecord[] };
       const graphPayload = await graphResponse.json() as { nodes?: MemoryGraphNode[]; edges?: MemoryGraphEdge[]; stats?: MemoryGraphStats };
+      const reconciliationPayload = await reconciliationResponse.json() as {
+        reviews?: MemoryReconciliationReview[];
+      };
       setMemories(memoryPayload.memories || []);
       setNodes(graphPayload.nodes || []);
       setEdges(graphPayload.edges || []);
       setStats(graphPayload.stats);
+      setReconciliationReviews(reconciliationPayload.reviews || []);
       setLoadState("ready");
       setError(undefined);
     } catch (loadError) {
@@ -176,6 +193,9 @@ export function MemoryWorkspace() {
   const visibleNodeIds = useMemo(() => new Set(positionedNodes.map((node) => node.id)), [positionedNodes]);
   const visibleEdges = edges.filter((edge) => visibleNodeIds.has(edge.sourceNodeId) && visibleNodeIds.has(edge.targetNodeId)).slice(0, 90);
   const pendingEntityReviews = countPendingEntityMergeReviews(entityRegistry);
+  const pendingMemoryReviews = reconciliationReviews.filter(
+    (review) => review.status === "pending",
+  ).length;
 
   function selectMemory(memory: MemoryRecord) {
     setSelectedMemoryId(memory.id);
@@ -197,18 +217,46 @@ export function MemoryWorkspace() {
     }
   }
 
-  async function saveCorrection() {
+  async function saveCorrection(contradiction = false) {
     if (!selectedMemory || !draft) return;
     setSaveState("saving");
     try {
       const response = await fetch(`/api/memory/${encodeURIComponent(selectedMemory.id)}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: draft.title, content: draft.content, confidence: draft.confidence }),
+        body: JSON.stringify({
+          title: draft.title,
+          content: draft.content,
+          confidence: draft.confidence,
+          ...(contradiction ? { contradiction: true } : {}),
+        }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.message || payload.error || "Correction failed.");
       const corrected = payload.corrected as MemoryRecord;
+      const review = payload.review as MemoryReconciliationReview | undefined;
+      if (review?.status === "pending") {
+        setMemories((current) => [
+          corrected,
+          ...current.filter((item) => item.id !== corrected.id),
+        ]);
+        setReconciliationReviews((current) => [
+          review,
+          ...current.filter((item) => item.id !== review.id),
+        ]);
+        setSelectedMemoryId(selectedMemory.id);
+        setDraft({
+          title: selectedMemory.title,
+          content: selectedMemory.content,
+          confidence: selectedMemory.confidence ?? 0.7,
+        });
+        setSaveState("idle");
+        setShowReconciliation(true);
+        setAnnouncement(
+          "Contradiction held for review. The existing claim remains active.",
+        );
+        return;
+      }
       setMemories((current) => [corrected, ...current.map((item) => item.id === selectedMemory.id ? { ...item, claimStatus: "superseded" as const } : item)]);
       setSelectedMemoryId(corrected.id);
       setDraft({ title: corrected.title, content: corrected.content, confidence: corrected.confidence ?? 0.7 });
@@ -220,6 +268,34 @@ export function MemoryWorkspace() {
       setSaveState("error");
       setError(message(saveError));
     }
+  }
+
+  function recordResolvedReview(review: MemoryReconciliationReview) {
+    setReconciliationReviews((current) => current.map((item) =>
+      item.id === review.id ? review : item
+    ));
+    setMemories((current) => {
+      const replacements = new Map<string, MemoryRecord>([
+        [review.candidate.id, review.candidate],
+        ...(review.existing
+          ? [[review.existing.id, review.existing] as [string, MemoryRecord]]
+          : []),
+      ]);
+      const seen = new Set<string>();
+      const next = current.map((memory) => {
+        const replacement = replacements.get(memory.id);
+        if (!replacement) return memory;
+        seen.add(memory.id);
+        return replacement;
+      });
+      for (const [id, memory] of replacements) {
+        if (!seen.has(id)) next.unshift(memory);
+      }
+      return next;
+    });
+    setAnnouncement(reconciliationDecisionAnnouncement(review));
+    void refreshGraph();
+    void loadEntityRegistry();
   }
 
   async function requestForgetPreview() {
@@ -297,6 +373,7 @@ export function MemoryWorkspace() {
           <div className={styles.stat}><Brain size={14} aria-hidden="true" /><span><strong>{stats?.nodes || 0}</strong><small>Concepts</small></span></div>
           <div className={styles.stat}><Network size={14} aria-hidden="true" /><span><strong>{stats?.edges || 0}</strong><small>Links</small></span></div>
           <button type="button" className={clsx(styles.stat, styles.entityTrigger)} onClick={() => setShowEntities(true)}><GitMerge size={14} aria-hidden="true" /><span><strong>{entityRegistry?.entities.length || 0}</strong><small>{pendingEntityReviews ? `${pendingEntityReviews} to review` : "Entities"}</small></span></button>
+          <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingMemoryReviews > 0 && styles.reviewTriggerPending)} onClick={() => setShowReconciliation(true)}><AlertTriangle size={14} aria-hidden="true" /><span><strong>{pendingMemoryReviews}</strong><small>{pendingMemoryReviews === 1 ? "Claim to review" : "Claims to review"}</small></span></button>
           <button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> Add memory</button>
         </div>
       </header>
@@ -336,12 +413,13 @@ export function MemoryWorkspace() {
             <div className="memory-provenance"><p><ShieldCheck size={13} aria-hidden="true" /> Why this memory exists</p><span>{memoryFormationReasonLabel(selectedMemory.formationReason || "legacy_record")}</span><dl><dt>Tier</dt><dd>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)}</dd><dt>Asserted by</dt><dd>{selectedMemory.assertedBy || "unknown"}</dd><dt>Source</dt><dd>{selectedMemory.source}</dd><dt>Scope</dt><dd>{selectedMemory.scope}</dd><dt>Last used</dt><dd>{selectedMemory.lastUsedAt ? formatDate(selectedMemory.lastUsedAt) : "Never"}</dd><dt>Use count</dt><dd>{selectedMemory.useCount || 0}</dd><dt>Valid from</dt><dd>{selectedMemory.validFrom ? formatDate(selectedMemory.validFrom) : "Immediately"}</dd><dt>Valid until</dt><dd>{selectedMemory.validTo ? formatDate(selectedMemory.validTo) : "No claim expiry"}</dd><dt>Retained until</dt><dd>{selectedMemory.retentionExpiresAt ? formatDate(selectedMemory.retentionExpiresAt) : "Policy controlled"}</dd><dt>Updated</dt><dd>{formatDate(selectedMemory.updatedAt)}</dd></dl>{selectedMemory.evidenceRefs?.length ? <div>{selectedMemory.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</div>
             <MemoryTierPolicySummary tier={resolveMemoryTier(selectedMemory.tier, selectedMemory.type)} />
             {forgetPreview ? <DeletionPreview preview={forgetPreview} /> : null}
-            <div className="memory-inspector-actions"><button type="button" className="memory-save" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection()}>{saveState === "saving" && forgetState !== "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : saveState === "saved" ? <Check size={13} aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{saveState === "saved" ? "Corrected" : "Save correction"}</button><button type="button" className={clsx("memory-forget", forgetState === "ready" && "is-confirming")} disabled={forgetState === "previewing" || forgetState === "deleting"} onClick={() => forgetState === "ready" ? void forgetSelected() : void requestForgetPreview()}>{forgetState === "previewing" || forgetState === "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}{forgetState === "previewing" ? "Checking impact" : forgetState === "deleting" ? "Committing deletion" : forgetState === "ready" ? "Forget permanently" : "Review forget impact"}</button>{forgetState === "ready" ? <button type="button" className="memory-cancel" onClick={() => { setForgetState("idle"); setForgetPreview(undefined); }}><X size={13} aria-hidden="true" /> Cancel</button> : null}</div>
+            <div className="memory-inspector-actions"><button type="button" className="memory-save" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection()}>{saveState === "saving" && forgetState !== "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : saveState === "saved" ? <Check size={13} aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{saveState === "saved" ? "Corrected" : "Save correction"}</button><button type="button" className="memory-cancel" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection(true)}><AlertTriangle size={13} aria-hidden="true" /> Flag contradiction</button><button type="button" className={clsx("memory-forget", forgetState === "ready" && "is-confirming")} disabled={forgetState === "previewing" || forgetState === "deleting"} onClick={() => forgetState === "ready" ? void forgetSelected() : void requestForgetPreview()}>{forgetState === "previewing" || forgetState === "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}{forgetState === "previewing" ? "Checking impact" : forgetState === "deleting" ? "Committing deletion" : forgetState === "ready" ? "Forget permanently" : "Review forget impact"}</button>{forgetState === "ready" ? <button type="button" className="memory-cancel" onClick={() => { setForgetState("idle"); setForgetPreview(undefined); }}><X size={13} aria-hidden="true" /> Cancel</button> : null}</div>
           </> : deletionResult ? <DeletionReceipt result={deletionResult} onClose={() => setDeletionResult(undefined)} /> : selectedNode ? <div className="memory-node-inspector"><CircleDot size={22} aria-hidden="true" /><p>{selectedNode.kind}</p><h2>{selectedNode.label}</h2><span>{selectedNode.summary}</span><dl><dt>Sources</dt><dd>{selectedNode.sourceCount}</dd><dt>Weight</dt><dd>{selectedNode.weight.toFixed(1)}</dd><dt>Memories</dt><dd>{selectedNode.memoryIds.length}</dd></dl></div> : <div className="memory-inspector-empty"><Brain size={26} aria-hidden="true" /><h2>Select a memory</h2><p>Inspect provenance, correct a claim, or forget information that should no longer influence your agents.</p></div>}
         </aside>
       </div>
       {showCreate ? <CreateMemoryDialog onClose={() => setShowCreate(false)} onCreated={(memory, projection) => { setShowCreate(false); setMemories((current) => [memory, ...current]); selectMemory(memory); setAnnouncement(projection?.candidateCount ? `Memory added. ${projection.createdCount} new and ${projection.linkedCount} existing private entities matched; ${projection.reviewRequiredCount} require review.` : "Memory added."); void refreshGraph(); void loadEntityRegistry(); }} /> : null}
       {showEntities ? <EntityRegistryDialog registry={entityRegistry} loadError={entityRegistryError} onClose={() => setShowEntities(false)} onReload={loadEntityRegistry} onAnnouncement={setAnnouncement} /> : null}
+      {showReconciliation ? <MemoryReconciliationDialog reviews={reconciliationReviews} onClose={() => setShowReconciliation(false)} onResolved={recordResolvedReview} /> : null}
     </main>
   );
 }
@@ -354,6 +432,92 @@ function DeletionPreview({ preview }: { preview: MemoryDeletionPreview }) {
 function DeletionReceipt({ result, onClose }: { result: MemoryDeletionResult; onClose: () => void }) {
   const receipt = result.deletionReceipt;
   return <div className={styles.deletionReceipt}><ShieldCheck size={25} aria-hidden="true" /><p>Deletion committed</p><h2>{receipt ? "Receipt verified" : "Best-effort local deletion"}</h2><span>{receipt ? `The permanent barrier was recorded ${formatDate(receipt.forgottenAt)}.` : "The memory was removed from the local development store."}</span>{receipt ? <><dl><dt>Descendant memories</dt><dd>{receipt.descendantMemoryCount}</dd><dt>Retrieval traces</dt><dd>{receipt.retrievalTraceCount}</dd><dt>Graph projections</dt><dd>{receipt.graphNodeCount + receipt.graphEdgeCount}</dd><dt>Entity records affected</dt><dd>{result.affectedEntityCount}</dd><dt>Entities retired</dt><dd>{result.retiredEntityCount}</dd><dt>Aliases retired</dt><dd>{result.retiredEntityAliasCount}</dd><dt>Briefs invalidated</dt><dd>{result.invalidatedDailyBriefCount}</dd><dt>Runs canceled</dt><dd>{result.invalidatedAgentRunCount + result.invalidatedWorkflowRunCount}</dd></dl><code title={receipt.receiptSha256 || receipt.id}>{receipt.receiptSha256 || receipt.id}</code></> : null}<button type="button" onClick={onClose}>Back to memory</button></div>;
+}
+
+function MemoryReconciliationDialog({
+  reviews,
+  onClose,
+  onResolved,
+}: {
+  reviews: MemoryReconciliationReview[];
+  onClose: () => void;
+  onResolved: (review: MemoryReconciliationReview) => void;
+}) {
+  const [resolvingId, setResolvingId] = useState<string>();
+  const [error, setError] = useState<string>();
+  const pending = reviews.filter((review) => review.status === "pending");
+  const resolved = reviews.filter((review) => review.status === "resolved")
+    .slice(0, 20);
+
+  async function resolve(
+    review: MemoryReconciliationReview,
+    decision: MemoryReconciliationDecision,
+  ) {
+    setResolvingId(review.id);
+    setError(undefined);
+    try {
+      const response = await fetch("/api/memory/reconciliation", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reviewId: review.id, decision }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          payload.message || payload.error || "Memory review failed.",
+        );
+      }
+      onResolved(payload.review as MemoryReconciliationReview);
+    } catch (reviewError) {
+      setError(message(reviewError));
+    } finally {
+      setResolvingId(undefined);
+    }
+  }
+
+  return <div className={clsx("memory-dialog-backdrop", styles.dialogBackdrop, styles.registryBackdrop)} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className={clsx("memory-dialog", styles.dialog, styles.registryDialog, styles.reconciliationDialog)} role="dialog" aria-modal="true" aria-labelledby="memory-reconciliation-title"><header className={styles.registryHeader}><div><p>Claim control</p><h2 id="memory-reconciliation-title">Confirmations & contradictions</h2><span>Unverified candidates stay outside recall. Compare their source and validity before choosing what Asael may believe.</span></div><div className={styles.registryHeaderActions}><button type="button" onClick={onClose} aria-label="Close memory review"><X size={16} aria-hidden="true" /></button></div></header>{error ? <p className={styles.registryError} role="alert">{error}</p> : null}<div className={styles.registrySummary}><span><strong>{pending.length}</strong> pending</span><span><strong>{resolved.length}</strong> recent decisions</span></div><section className={styles.registrySection}><div className={styles.registrySectionHeading}><div><p>Needs your decision</p><h3>Pending claims</h3></div><span>{pending.length}</span></div>{pending.length ? <div className={styles.reconciliationList}>{pending.map((review) => <MemoryReconciliationCard key={review.id} review={review} busy={resolvingId === review.id} onResolve={(decision) => void resolve(review, decision)} />)}</div> : <p className={styles.registryEmpty}>No claims are waiting for confirmation.</p>}</section>{resolved.length ? <section className={styles.registrySection}><div className={styles.registrySectionHeading}><div><p>Review history</p><h3>Recent decisions</h3></div><span>{resolved.length}</span></div><div className={styles.reconciliationHistory}>{resolved.map((review) => <article key={review.id}><div><strong>{review.candidate.title}</strong><span>{review.kind.replaceAll("_", " ")} · {review.decision ? reconciliationDecisionLabel(review.decision) : "resolved"}</span></div><small>{review.resolvedAt ? formatDate(review.resolvedAt) : formatDate(review.updatedAt)}</small></article>)}</div></section> : null}</section></div>;
+}
+
+function MemoryReconciliationCard({
+  review,
+  busy,
+  onResolve,
+}: {
+  review: MemoryReconciliationReview;
+  busy: boolean;
+  onResolve: (decision: MemoryReconciliationDecision) => void;
+}) {
+  return <article className={styles.reconciliationCard}><header><span><AlertTriangle size={13} aria-hidden="true" /> {review.kind === "contradiction" ? "Conflicting claim" : "Confirmation needed"}</span><small>{formatDate(review.createdAt)}</small></header><div className={styles.reconciliationClaims}>{review.existing ? <MemoryReviewClaim label="Current active claim" memory={review.existing} /> : null}<MemoryReviewClaim label="Candidate · not used yet" memory={review.candidate} /></div><div className={styles.reconciliationActions}>{review.existing ? <button type="button" disabled={busy} onClick={() => onResolve("keep_existing")}>Keep current</button> : <button type="button" disabled={busy} onClick={() => onResolve("keep_existing")}>Dismiss candidate</button>}{review.kind === "contradiction" ? <button type="button" disabled={busy} onClick={() => onResolve("keep_both")}>Both are valid</button> : null}<button type="button" disabled={busy} onClick={() => onResolve("confirm_candidate")}>{busy ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />} Confirm candidate</button></div></article>;
+}
+
+function MemoryReviewClaim({
+  label,
+  memory,
+}: {
+  label: string;
+  memory: MemoryRecord;
+}) {
+  return <section><p>{label}</p><h4>{memory.title}</h4><blockquote>{memory.content}</blockquote><dl><dt>Source</dt><dd>{memory.source}</dd><dt>Confidence</dt><dd>{Math.round((memory.confidence ?? 0.7) * 100)}%</dd><dt>Valid from</dt><dd>{memory.validFrom ? formatDate(memory.validFrom) : "Immediately"}</dd><dt>Valid until</dt><dd>{memory.validTo ? formatDate(memory.validTo) : "Open"}</dd></dl>{memory.evidenceRefs?.length ? <div>{memory.evidenceRefs.slice(0, 4).map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</section>;
+}
+
+function reconciliationDecisionLabel(decision: MemoryReconciliationDecision) {
+  if (decision === "confirm_candidate") return "candidate confirmed";
+  if (decision === "keep_existing") return "existing claim kept";
+  return "both claims kept";
+}
+
+function reconciliationDecisionAnnouncement(review: MemoryReconciliationReview) {
+  if (review.decision === "confirm_candidate") {
+    return review.existing
+      ? "Candidate confirmed. The previous claim is now contradicted and excluded from recall."
+      : "Candidate confirmed and added to active recall.";
+  }
+  if (review.decision === "keep_both") {
+    return "Both claims were confirmed with their separate source and validity context.";
+  }
+  return review.existing
+    ? "Existing claim kept. The candidate is excluded from recall."
+    : "Candidate dismissed and excluded from recall.";
 }
 
 function CreateMemoryDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (memory: MemoryRecord, entityProjection?: EntityProjectionSummary) => void }) {
