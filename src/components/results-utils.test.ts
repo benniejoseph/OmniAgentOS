@@ -94,4 +94,25 @@ describe("result timeline", () => {
     expect(item.meta).toContain("1/2 claims supported");
     expect(item.meta).not.toContain("citation");
   });
+
+  it("shows the exact pinned Agent identity when the run detail supplies it", () => {
+    const [item] = buildResultTimeline({
+      agentRuns: [{
+        id: "agent-pinned",
+        agentId: "forge",
+        prompt: "Build it",
+        status: "completed",
+        response: "Built.",
+        completedAt: "2026-09-07T01:00:00.000Z",
+        agentIdentity: {
+          state: "ready",
+          card: { name: "Forge", role: "Builder" },
+        },
+      }],
+      workflowRuns: [],
+      approvalItems: [],
+    });
+
+    expect(item.meta).toContain("Forge (Builder)");
+  });
 });

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { projectAgentIdentityCardV1 } from "@/lib/agents/card";
 import {
+  projectAgentIdentityCardV1,
+  projectPinnedAgentIdentityCardV1,
+} from "@/lib/agents/card";
+import {
+  buildAgentRunIdentityPinV1,
   buildBuiltInAgentIdentityV1,
   buildCustomAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
@@ -56,6 +60,28 @@ describe("P7.2 agent identity card", () => {
       expect(serialized).not.toContain(forbidden);
     }
     expect(Object.isFrozen(card.persona.allowedDomains)).toBe(true);
+  });
+
+  it("reconstructs the same identity card from an immutable run pin", () => {
+    const identity = buildBuiltInAgentIdentityV1({
+      agentId: "forge",
+      tenantId: "tenant-one",
+      controllerActorId: "actor-one",
+    });
+    const pin = buildAgentRunIdentityPinV1({
+      runId: "run-one",
+      identity,
+    });
+    const pinnedCard = projectPinnedAgentIdentityCardV1({
+      pin,
+      presentation: identity.definition,
+    });
+
+    expect(pinnedCard).toEqual(projectAgentIdentityCardV1(identity.definition));
+    expect(() => projectPinnedAgentIdentityCardV1({
+      pin,
+      presentation: { ...identity.definition, name: "Tampered" },
+    })).toThrow(/persona digest/i);
   });
 });
 

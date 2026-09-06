@@ -47,11 +47,19 @@ function agentTimelineItem(item: ResultRecord): ResultTimelineItem {
     title: stringValue(item.prompt, "Agent run"),
     status,
     body: fullText(item.response || item.error, finalState(status) ? "No result text was stored." : "This run has not produced a final result yet."),
-    meta: `${stringValue(item.mode, "agent")} / ${groundingSummary(item.grounding)} / ${formatResultTime(timestampValue)}`,
+    meta: `${agentIdentitySummary(item)} / ${stringValue(item.mode, "agent")} / ${groundingSummary(item.grounding)} / ${formatResultTime(timestampValue)}`,
     href: `/app/results?run=${encodeURIComponent(key)}`,
     tone: toneForResultStatus(status),
     timestamp: parsedTime(timestampValue),
   };
+}
+
+function agentIdentitySummary(item: ResultRecord) {
+  const card = asRecord(readPath(item, "agentIdentity.card"));
+  const name = stringValue(card.name);
+  return name
+    ? `${name} (${stringValue(card.role, "Agent")})`
+    : stringValue(item.agentId, "Agent identity unavailable");
 }
 
 function groundingSummary(value: unknown) {

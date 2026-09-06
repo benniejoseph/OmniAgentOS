@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { getAgentIdentityCardForRun } from "@/lib/agents/card-store";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -58,13 +59,15 @@ async function GETHandler(
   }
 
   const url = new URL(request.url);
-  const contextReceipt = await getRunContextUseReceipt(id, {
-    tenantId: auth.tenantId,
-  });
+  const [contextReceipt, agentIdentity] = await Promise.all([
+    getRunContextUseReceipt(id, { tenantId: auth.tenantId }),
+    getAgentIdentityCardForRun(id, { tenantId: auth.tenantId }),
+  ]);
   if (url.searchParams.get("replay") !== "true") {
     return Response.json({
       run: publicAgentRun(run),
       contextReceipt,
+      agentIdentity,
     });
   }
 
@@ -92,6 +95,7 @@ async function GETHandler(
   return Response.json({
     run: publicAgentRun(run),
     contextReceipt,
+    agentIdentity,
     eventCount: events.length,
     replayed,
     consistent,

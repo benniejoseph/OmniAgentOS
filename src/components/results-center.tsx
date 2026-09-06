@@ -472,7 +472,7 @@ export function ResultsCenter() {
               key: `agent:${stringValue(run.id)}`,
               title: stringValue(run.prompt, "Agent run"),
               status: stringValue(run.status, "unknown"),
-              meta: `${stringValue(run.mode, "agent")} / ${formatResultTime(stringValue(run.completedAt || run.startedAt))}`,
+              meta: agentResultMeta(run),
               body: resultPreview(run.response || run.error),
             }))}
             empty="No agent answers found."
@@ -769,12 +769,7 @@ async function loadSelectedResult(
 ) {
   if (requestedResultKey?.startsWith("agent:")) {
     const runId = requestedResultKey.slice("agent:".length);
-    if (
-      runId &&
-      !arrayPath(runsPayload, "runs").some(
-        (run) => stringValue(run.id) === runId,
-      )
-    ) {
+    if (runId) {
       const direct = asRecord(
         await readJson(`/api/runs/${encodeURIComponent(runId)}`, {
           signal,
@@ -782,7 +777,13 @@ async function loadSelectedResult(
       );
       const directRun = asRecord(direct.run);
       if (stringValue(directRun.id) === runId) {
-        runsPayload.runs = [directRun, ...arrayPath(runsPayload, "runs")];
+        directRun.agentIdentity = direct.agentIdentity;
+        runsPayload.runs = [
+          directRun,
+          ...arrayPath(runsPayload, "runs").filter(
+            (run) => stringValue(run.id) !== runId,
+          ),
+        ];
       }
     }
   }
@@ -877,6 +878,18 @@ function workflowMeta(run: JsonRecord) {
     outcome ? `Outcome: ${outcome}` : "",
     formatResultTime(stringValue(run.completedAt || run.updatedAt || run.createdAt)),
   ].filter(Boolean).join(" / ");
+}
+
+function agentResultMeta(run: JsonRecord) {
+  const card = asRecord(readPath(run, "agentIdentity.card"));
+  const identity = stringValue(card.name)
+    ? `${stringValue(card.name)} (${stringValue(card.role, "Agent")})`
+    : stringValue(run.agentId, "Agent");
+  return [
+    identity,
+    stringValue(run.mode, "agent"),
+    formatResultTime(stringValue(run.completedAt || run.startedAt)),
+  ].join(" / ");
 }
 
 function withWorkflowOutcomeMetadata(
