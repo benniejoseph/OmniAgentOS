@@ -207,17 +207,23 @@ export function buildWorkflowNodeInput({
     throw new Error(`Workflow node ${node.id} received an undeclared dependency artifact.`);
   }
   const recordsByNode = new Map(dependencyRecords.map((record) => [record.nodeId, record]));
+  let remainingDependencyChars = WORKFLOW_NODE_MAX_DEPENDENCY_CHARS;
   const dependencies = contract.dependencyNodeIds.map((nodeId) => {
     const record = recordsByNode.get(nodeId);
     if (!record || record.status !== "completed" || !record.output) {
       throw new Error(`Workflow node ${node.id} is missing completed dependency artifact ${nodeId}.`);
     }
     const safeOutput = redactSensitive(record.output) as Record<string, unknown>;
+    const artifacts = dependencyArtifacts(safeOutput, remainingDependencyChars);
+    remainingDependencyChars -= artifacts.reduce(
+      (total, artifact) => total + artifact.content.length,
+      0,
+    );
     return Object.freeze({
       nodeId,
       executionId: record.id,
       outputSha256: canonicalJsonSha256(safeOutput),
-      artifacts: dependencyArtifacts(safeOutput),
+      artifacts,
     });
   });
   return Object.freeze({
@@ -342,7 +348,7 @@ export function assertWorkflowNodeExecutionReceipt(
   }
 }
 
-function dependencyArtifacts(output: Record<string, unknown>) {
+function dependencyArtifacts(output: Record<string, unknown>, maxChars: number) {
   const nodeResult = recordValue(output.nodeResult);
   const artifacts = Array.isArray(nodeResult?.artifacts)
     ? nodeResult.artifacts
@@ -356,7 +362,7 @@ function dependencyArtifacts(output: Record<string, unknown>) {
         }))
         .filter((artifact) => artifact.content)
     : [];
-  if (artifacts.length) return boundDependencyArtifacts(artifacts);
+  if (artifacts.length) return boundDependencyArtifacts(artifacts, maxChars);
   const legacyArtifact = typeof output.artifact === "string" ? output.artifact : "";
   return boundDependencyArtifacts(legacyArtifact
     ? [{
@@ -370,11 +376,11 @@ function dependencyArtifacts(output: Record<string, unknown>) {
         kind: "result",
         content: boundedText(JSON.stringify(output), 4_000),
         evidenceIds: [],
-      }]);
+      }], maxChars);
 }
 
-function boundDependencyArtifacts<T extends { content: string }>(artifacts: T[]) {
-  let remaining = WORKFLOW_NODE_MAX_DEPENDENCY_CHARS;
+function boundDependencyArtifacts<T extends { content: string }>(artifacts: T[], maxChars: number) {
+  let remaining = Math.max(0, maxChars);
   const bounded: T[] = [];
   for (const artifact of artifacts.slice(0, 8)) {
     if (remaining <= 0) break;
