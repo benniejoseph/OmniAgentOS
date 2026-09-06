@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the Loop v2 clarification wait migration", () => {
+  it("pins the Loop v2 model-text engine migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 90,
-      name: "loop_v2_clarification_wait",
-      checksum: "881b5d103e0a13591ad1171cc187754497ba3daa16a3a144649b56027353b9b2",
+      version: 91,
+      name: "loop_v2_model_text_engine",
+      checksum: "dfe634d3f616d2e7bdc95e353fbbba9981bd586766a2a3deafb8c29551c432f4",
     });
   });
 
