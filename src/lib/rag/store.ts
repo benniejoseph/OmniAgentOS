@@ -34,6 +34,7 @@ import {
   sourceAdapterUpsertV1Schema,
   sourceContractSha256,
   type EvidenceUnitV1,
+  type SourceAdapterUpsertV1,
 } from "@/lib/sources/contracts";
 import {
   assertCanonicalAdapterOutputReceipt,
@@ -59,6 +60,11 @@ type RagSqlClient = ReturnType<typeof getSql>;
 export type CanonicalKnowledgeEvidence = Readonly<{
   chunk: KnowledgeChunk;
   evidenceUnit: EvidenceUnitV1;
+  sourceState: Readonly<{
+    currentRevisionId: string | null;
+    operation: "upsert" | "delete";
+    isCurrent: boolean;
+  }>;
 }>;
 
 type CreateKnowledgeDocumentInput = {
@@ -680,12 +686,19 @@ export async function getCanonicalKnowledgeEvidenceByChunkIds(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
-      SELECT chunk.*, to_jsonb(evidence) AS canonical_evidence
+      SELECT
+        chunk.*,
+        to_jsonb(evidence) AS canonical_evidence,
+        source_item.current_revision_id AS canonical_current_revision_id,
+        source_item.adapter_operation AS canonical_adapter_operation
       FROM omni_knowledge_chunks AS chunk
       INNER JOIN omni_evidence_units AS evidence
         ON evidence.tenant_id = chunk.tenant_id
        AND evidence.id = chunk.evidence_unit_id
        AND evidence.source_revision_id = chunk.source_revision_id
+      INNER JOIN omni_source_items AS source_item
+        ON source_item.tenant_id = evidence.tenant_id
+       AND source_item.id = evidence.source_item_id
       WHERE chunk.tenant_id = ${tenantId}
         AND chunk.id = ANY(${ids})
     `;
@@ -695,6 +708,11 @@ export async function getCanonicalKnowledgeEvidenceByChunkIds(
         evidenceUnit: evidenceUnitFromStoredRow(
           storedRecord(row.canonical_evidence),
         ),
+        sourceState: canonicalSourceState({
+          currentRevisionId: row.canonical_current_revision_id,
+          operation: row.canonical_adapter_operation,
+          sourceRevisionId: row.source_revision_id,
+        }),
       })),
       ids,
       tenantId,
@@ -711,6 +729,16 @@ export async function getCanonicalKnowledgeEvidenceByChunkIds(
     }
   }
   const idSet = new Set(ids);
+  const currentOutputBySourceItemId = new Map<string, SourceAdapterUpsertV1>();
+  for (const outputCandidate of ledger.sourceLineage?.adapterOutputs || []) {
+    const output = sourceAdapterUpsertV1Schema.parse(outputCandidate);
+    if (
+      output.tenantId === tenantId &&
+      !currentOutputBySourceItemId.has(output.sourceItem.sourceItemId)
+    ) {
+      currentOutputBySourceItemId.set(output.sourceItem.sourceItemId, output);
+    }
+  }
   return orderCanonicalKnowledgeEvidence(
     ledger.chunks
       .filter((chunk) =>
@@ -720,8 +748,20 @@ export async function getCanonicalKnowledgeEvidenceByChunkIds(
       )
       .flatMap((chunk) => {
         const evidenceUnit = evidenceById.get(chunk.evidenceUnitId!);
-        return evidenceUnit
-          ? [{ chunk: sanitizeKnowledgeChunk(chunk), evidenceUnit }]
+        const currentOutput = evidenceUnit
+          ? currentOutputBySourceItemId.get(evidenceUnit.sourceItemId)
+          : undefined;
+        return evidenceUnit && currentOutput
+          ? [{
+              chunk: sanitizeKnowledgeChunk(chunk),
+              evidenceUnit,
+              sourceState: canonicalSourceState({
+                currentRevisionId:
+                  currentOutput.sourceRevision.sourceRevisionId,
+                operation: currentOutput.operation,
+                sourceRevisionId: evidenceUnit.sourceRevisionId,
+              }),
+            }]
           : [];
       }),
     ids,
@@ -1683,6 +1723,25 @@ function orderCanonicalKnowledgeEvidence(
   return chunkIds.flatMap((chunkId) => {
     const candidate = byChunkId.get(chunkId);
     return candidate ? [candidate] : [];
+  });
+}
+
+function canonicalSourceState(input: {
+  currentRevisionId: unknown;
+  operation: unknown;
+  sourceRevisionId: unknown;
+}): CanonicalKnowledgeEvidence["sourceState"] {
+  const currentRevisionId = typeof input.currentRevisionId === "string"
+    ? input.currentRevisionId
+    : null;
+  const operation = input.operation === "delete" ? "delete" : "upsert";
+  return Object.freeze({
+    currentRevisionId,
+    operation,
+    isCurrent:
+      operation === "upsert" &&
+      currentRevisionId !== null &&
+      currentRevisionId === input.sourceRevisionId,
   });
 }
 
