@@ -42,6 +42,7 @@ import {
   formAssistantInferenceCandidate,
   formExplicitUserAssertionMemory,
 } from "@/lib/memory/evidence-formation";
+import { requestEntityAccessFromSecurityContext } from "@/lib/entities/request-access";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import {
@@ -232,6 +233,14 @@ async function POSTHandler(request: Request) {
   }
   const promptMemoryAccess = contextSelection?.evidenceIds.length
     ? agentPromptMemoryAccessFromSecurityContext(context, {
+        correlationId: requestId,
+      })
+    : undefined;
+  const promptEntityGraphAccess = contextSelection?.evidenceIds.some((id) =>
+    id.startsWith("graph:relationship_path_")
+  )
+    ? requestEntityAccessFromSecurityContext(context, {
+        purposeId: "entity.read.v1",
         correlationId: requestId,
       })
     : undefined;
@@ -925,6 +934,7 @@ async function POSTHandler(request: Request) {
                 contextScope: parsed.data.contextScope,
                 contextSelection,
                 promptMemoryAccess,
+                promptEntityGraphAccess,
                 executionScope: directExecutionScope,
                 tenantId: context.tenantId,
                 actorId: context.actorId,

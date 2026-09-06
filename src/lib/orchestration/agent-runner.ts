@@ -711,6 +711,7 @@ export async function* runAgent(
             ? undefined
             : memoryAccessContext,
           databaseMemoryAccessScope: promptMemoryAccessScope,
+          entityGraphAccess: request.promptEntityGraphAccess,
           ...(request.threadId
             ? { workingMemoryReference: `thread:${request.threadId}` as const }
             : {}),

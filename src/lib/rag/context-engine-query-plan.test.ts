@@ -3,9 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   embedTexts: vi.fn(async () => [[0.2, 0.4]]),
   planRetrievalQuery: vi.fn(),
+  retrieveGraphRelationshipPaths: vi.fn(),
   searchKnowledge: vi.fn(async () => []),
   searchMemoryGraph: vi.fn(),
   searchMemories: vi.fn(async () => []),
+}));
+
+vi.mock("@/lib/entities/graph-retrieval", () => ({
+  retrieveGraphRelationshipPaths: mocks.retrieveGraphRelationshipPaths,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -94,6 +99,20 @@ describe("context-engine P4.3 query-plan integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.planRetrievalQuery.mockResolvedValue(semanticRelationshipPlan());
+    mocks.retrieveGraphRelationshipPaths.mockResolvedValue({
+      paths: [],
+      receipt: {
+        version: "p5.5-graph-retrieval:1",
+        querySha256: "a".repeat(64),
+        asOfTime: "2026-09-07T00:00:00.000Z",
+        maxHops: 2,
+        anchorCount: 0,
+        authorizedRelationCount: 0,
+        rejectedRelationCount: 0,
+        pathCount: 0,
+        receiptSha256: "b".repeat(64),
+      },
+    });
     mocks.searchMemoryGraph.mockResolvedValue([{
       node: {
         id: "graph-orion",
@@ -188,5 +207,85 @@ describe("context-engine P4.3 query-plan integration", () => {
     expect(mocks.searchMemories).not.toHaveBeenCalled();
     expect(pack.results).toEqual([]);
     expect(pack.profile.queryPlan.source).toBe("deterministic");
+  });
+
+  it("adds an evidenced temporal path only when exact graph authority is supplied", async () => {
+    const path = {
+      pathId: "relationship_path_authorized",
+      anchor: { entityId: "entity-orion", entityTypeId: "project" as const, label: "Project Orion" },
+      terminal: { entityId: "entity-alice", entityTypeId: "person" as const, label: "Alice" },
+      hopCount: 1,
+      score: 0.97,
+      explanation: "Project Orion → Assigned to → Alice",
+      hops: [{
+        claimId: "claim-orion",
+        revisionId: "revision-orion",
+        relationTypeId: "assigned_to" as const,
+        relationLabel: "Assigned to",
+        direction: "forward" as const,
+        source: { entityId: "entity-orion", entityTypeId: "project" as const, label: "Project Orion" },
+        target: { entityId: "entity-alice", entityTypeId: "person" as const, label: "Alice" },
+        epistemicKind: "asserted" as const,
+        confidenceBasisPoints: 9_700,
+        validFrom: "2026-09-01T00:00:00.000Z",
+        validTo: null,
+        evidence: [{
+          evidenceId: "memory:memory-orion-owner",
+          kind: "memory" as const,
+          title: "Orion assignment",
+          excerpt: "Alice owns Project Orion.",
+          source: "manual",
+          observedAt: "2026-09-01T00:00:00.000Z",
+        }],
+      }],
+      pathSha256: "c".repeat(64),
+    };
+    mocks.retrieveGraphRelationshipPaths.mockResolvedValueOnce({
+      paths: [path],
+      receipt: {
+        version: "p5.5-graph-retrieval:1",
+        querySha256: "a".repeat(64),
+        asOfTime: "2026-09-07T00:00:00.000Z",
+        maxHops: 2,
+        anchorCount: 1,
+        authorizedRelationCount: 1,
+        rejectedRelationCount: 0,
+        pathCount: 1,
+        receiptSha256: "b".repeat(64),
+      },
+    });
+    const entityGraphAccess = {
+      accessBinding: { tenantId: "tenant-a" },
+      executionScope: {
+        tenantId: "tenant-a",
+        initiatingActorId: "actor-a",
+        purpose: "entity.read.v1",
+      },
+    } as never;
+
+    const pack = await buildContextPack("Who manages Project Orion?", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope,
+      entityGraphAccess,
+      persistTrace: false,
+    });
+
+    expect(mocks.retrieveGraphRelationshipPaths).toHaveBeenCalledWith(
+      "Who manages Project Orion?",
+      expect.objectContaining({
+        entityAccess: entityGraphAccess,
+        memoryAccessScope: accessScope,
+        maxHops: 2,
+      }),
+    );
+    expect(pack.graphRelationshipPaths).toEqual([path]);
+    expect(pack.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "graph",
+        id: "relationship_path_authorized",
+      }),
+    ]));
+    expect(pack.contextBlock).toContain("[memory:memory-orion-owner]");
+    expect(pack.contextBlock).toContain("live evidence verified at every hop");
   });
 });

@@ -514,6 +514,15 @@ function lineageKeysForItem(item: ContextEvidenceItem) {
       }
     }
   } else {
+    if ("pathId" in item.result) {
+      for (const hop of item.result.hops) {
+        keys.add(`graph-claim:${hop.claimId}:${hop.revisionId}`);
+        for (const evidence of hop.evidence) {
+          keys.add(evidence.evidenceId);
+        }
+      }
+      return [...keys];
+    }
     const memoryIds = [
       ...item.result.node.memoryIds,
       ...item.result.neighborhood.flatMap((neighbor) => neighbor.node.memoryIds),

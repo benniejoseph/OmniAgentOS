@@ -1146,7 +1146,7 @@ async function evaluateRetrieval(
       contextCount,
       memoryCount: retrieval.memoryResults.length,
       knowledgeCount: retrieval.knowledgeResults.length,
-      topReasons: retrieval.results.slice(0, 3).flatMap((item) => item.result.reasons).slice(0, 6),
+      topReasons: retrieval.results.slice(0, 3).flatMap((item) => item.reasons).slice(0, 6),
     },
     estimatedCostUsd: estimateTextCost(query),
   };
