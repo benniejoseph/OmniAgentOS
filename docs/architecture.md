@@ -42,7 +42,7 @@ flowchart TD
     EXEC[Plan executor]
     GOV[Governed tool executor]
     RAGL[RAG + adaptive context engine + graph memory]
-    MEMC[Memory consolidator]
+    MEMC[Evidence-based memory formation]
   end
 
   subgraph Infra
@@ -91,7 +91,7 @@ sequenceDiagram
     R->>M: full conversation + function_call_output
   end
   M-->>U: final streamed answer
-  R->>R: consolidate memory (non-trivial runs only)
+  R->>R: form explicit assertions and verified effects only
 ```
 
 Key properties:
@@ -1157,6 +1157,24 @@ skipped so a private answer cannot be reclassified as workspace memory.
 Workflows, forks, specialist/background workers, standing formation,
 agent-private/shared visibility, and the full authority resolver remain closed,
 so P3.1 is still incomplete.
+
+P3.3 removes model-response prose as an active-memory authority. The formation
+contract admits active memories only from explicit user assertions, canonical
+source observations, or exact terminal tool executions carrying a verified
+effect receipt. Assistant output and workflow-generated reports may be retained
+as inactive `candidate` inferences, but active search and graph projections do
+not consume them. Each accepted formation writes a metadata-only
+`memory.formation.recorded` receipt that binds its origin, scope, hashes, and
+exact evidence references without copying private content or tool output.
+
+The direct agent route recognizes a deliberately narrow explicit “remember”
+instruction and binds it to the authenticated actor, request, thread, and turn.
+The workflow and background consolidation paths inspect persisted tool events
+and exact audit records instead of prompts or responses; failed, blocked,
+approval-held, dry-run, cross-actor, and unverified executions form no success
+episode. Migration v83 quarantines legacy active response-derived memories as
+`candidate`, removes their graph and brief projections, and schedules graph
+rebuilding.
 
 ## Where things live
 

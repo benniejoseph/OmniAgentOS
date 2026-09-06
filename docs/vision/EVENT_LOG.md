@@ -1309,3 +1309,20 @@ transaction. It emits no second semantic memory event: the projection carries
 immutable owner and purpose metadata, while the existing memory event remains
 the authoritative fact. Owner-scoped graph reads and Retrieval Plan searches
 may consume that projection; unscoped workers and sibling actors cannot.
+
+## Evidence-based memory formation
+
+P3.3 adds `memory.formation.recorded`, a metadata-only receipt emitted for each
+accepted formation. It records the validated origin, memory identity and scope,
+claim status, content/evidence hashes, evidence-reference kinds and IDs, and a
+deterministic receipt digest. It never copies memory content, source passages,
+assistant prose, tool input/output, or private reasoning.
+
+Active formation is restricted to explicit user assertions, canonical source
+observations, and verified effects. Assistant responses and workflow reports
+are retained only as inactive inference candidates. Failed, blocked,
+approval-held, dry-run, cross-actor, or unverified tool records emit no active
+success memory. Migration v83 records
+`memory.response_derived.quarantined` for each legacy active response-derived
+record before changing it to `candidate`, deleting its graph and daily-brief
+projections, and queuing a graph rebuild.
