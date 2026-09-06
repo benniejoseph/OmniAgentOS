@@ -55,6 +55,15 @@ describe("portable archive v2 contract", () => {
     const tampered = structuredClone(archive);
     tampered.data.knowledge[0]!.content = "tampered";
     expect(() => verifyPortableArchiveV2(tampered)).toThrow(/failed manifest or content verification/i);
+
+    const duplicated = structuredClone(archive);
+    duplicated.data.knowledge.push(duplicated.data.knowledge[0]!);
+    expect(() => buildPortableArchiveV2({
+      exportedAt: duplicated.exportedAt,
+      sourceOwnerActorId: "owner-a",
+      sourceTenantId: "tenant-a",
+      data: duplicated.data,
+    })).toThrow(/sourceId values must be unique/i);
   });
 
   it("encrypts assets with metadata-bound authenticated encryption", () => {

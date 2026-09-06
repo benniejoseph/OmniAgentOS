@@ -771,6 +771,132 @@ export async function listKnowledgeChunks(limit = 20, options: { tenantId?: stri
 }
 
 /**
+ * P2.8 export boundary. Only canonical knowledge attributed to the exact
+ * owner is portable; legacy tenant-wide rows are disclosed as excluded rather
+ * than silently assigned to the requesting user.
+ */
+export async function listActorOwnedKnowledgeForPortableArchive(options: {
+  tenantId: string;
+  actorId: string;
+  documentLimit?: number;
+  chunkLimit?: number;
+}) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const actorId = String(options.actorId).trim().slice(0, 320);
+  const documentLimit = Math.min(Math.max(options.documentLimit || 5_000, 1), 5_000);
+  const chunkLimit = Math.min(Math.max(options.chunkLimit || 50_000, 1), 50_000);
+  if (!actorId) throw new Error("Portable knowledge export requires an exact actor.");
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT document.*, COUNT(*) OVER()::int AS portable_total_count
+      FROM omni_knowledge_documents AS document
+      INNER JOIN omni_source_items AS source_item
+        ON source_item.tenant_id = document.tenant_id
+        AND source_item.id = document.source_item_id
+        AND source_item.current_revision_id = document.source_revision_id
+        AND source_item.adapter_operation = 'upsert'
+      WHERE document.tenant_id = ${tenantId}
+        AND source_item.owner_actor_id = ${actorId}
+      ORDER BY document.updated_at DESC, document.id COLLATE "C" ASC
+      LIMIT ${documentLimit}
+    `;
+    const totalDocumentCount = Number(rows[0]?.portable_total_count || 0);
+    const selectedRows: Record<string, unknown>[] = [];
+    let selectedChunkCount = 0;
+    for (const row of rows) {
+      const chunkCount = Math.max(0, Number(row.chunk_count || 0));
+      if (selectedChunkCount + chunkCount > chunkLimit) break;
+      selectedRows.push(row);
+      selectedChunkCount += chunkCount;
+    }
+    const documents = selectedRows.map(documentFromRow);
+    const documentIds = documents.map((document) => document.id);
+    const chunkRows = documentIds.length
+      ? await getSql()`
+          SELECT chunk.*
+          FROM omni_knowledge_chunks AS chunk
+          INNER JOIN omni_evidence_units AS evidence
+            ON evidence.tenant_id = chunk.tenant_id
+            AND evidence.id = chunk.evidence_unit_id
+            AND evidence.source_revision_id = chunk.source_revision_id
+          WHERE chunk.tenant_id = ${tenantId}
+            AND chunk.document_id = ANY(${documentIds}::text[])
+            AND evidence.owner_actor_id = ${actorId}
+          ORDER BY chunk.document_id COLLATE "C" ASC, chunk.chunk_index ASC,
+            chunk.id COLLATE "C" ASC
+          LIMIT ${chunkLimit}
+        `
+      : [];
+    const chunks = chunkRows.map(chunkFromRow);
+    const chunkCountsByDocument = countChunksByDocument(chunks);
+    const exactDocumentIds = new Set(documents
+      .filter((document) => chunkCountsByDocument.get(document.id) === document.chunkCount)
+      .map((document) => document.id));
+    return {
+      documents: documents.filter((document) => exactDocumentIds.has(document.id)),
+      chunks: chunks.filter((chunk) => exactDocumentIds.has(chunk.documentId)),
+      totalDocumentCount,
+      excludedDocumentCount: totalDocumentCount - exactDocumentIds.size,
+    };
+  }
+
+  const ledger = await readKnowledgeLedger();
+  const currentOwnedRevisionIds = new Set<string>();
+  const settledSourceItemIds = new Set<string>();
+  for (const candidate of ledger.sourceLineage?.adapterOutputs || []) {
+    const output = sourceAdapterUpsertV1Schema.parse(candidate);
+    if (settledSourceItemIds.has(output.sourceItem.sourceItemId)) continue;
+    settledSourceItemIds.add(output.sourceItem.sourceItemId);
+    if (
+      output.tenantId === tenantId &&
+      output.sourceItem.ownerActorId === actorId &&
+      output.operation === "upsert"
+    ) {
+      currentOwnedRevisionIds.add(output.sourceRevision.sourceRevisionId);
+    }
+  }
+  const ownedDocuments = ledger.documents
+    .filter((document) =>
+      normalizeTenantId(document.tenantId) === tenantId &&
+      Boolean(document.sourceRevisionId) &&
+      currentOwnedRevisionIds.has(document.sourceRevisionId!),
+    )
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
+  const selectedDocuments = [] as KnowledgeDocument[];
+  let selectedChunkCount = 0;
+  for (const document of ownedDocuments.slice(0, documentLimit)) {
+    if (selectedChunkCount + document.chunkCount > chunkLimit) break;
+    selectedDocuments.push(sanitizeKnowledgeDocument(document));
+    selectedChunkCount += document.chunkCount;
+  }
+  const selectedIds = new Set(selectedDocuments.map((document) => document.id));
+  const chunks = ledger.chunks
+    .filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId && selectedIds.has(chunk.documentId))
+    .sort((left, right) => left.documentId.localeCompare(right.documentId) || left.chunkIndex - right.chunkIndex)
+    .map(sanitizeKnowledgeChunk);
+  const chunkCountsByDocument = countChunksByDocument(chunks);
+  const exactDocumentIds = new Set(selectedDocuments
+    .filter((document) => chunkCountsByDocument.get(document.id) === document.chunkCount)
+    .map((document) => document.id));
+  return {
+    documents: selectedDocuments.filter((document) => exactDocumentIds.has(document.id)),
+    chunks: chunks.filter((chunk) => exactDocumentIds.has(chunk.documentId)),
+    totalDocumentCount: ownedDocuments.length,
+    excludedDocumentCount: ownedDocuments.length - exactDocumentIds.size,
+  };
+}
+
+function countChunksByDocument(chunks: KnowledgeChunk[]) {
+  const counts = new Map<string, number>();
+  for (const chunk of chunks) {
+    counts.set(chunk.documentId, (counts.get(chunk.documentId) || 0) + 1);
+  }
+  return counts;
+}
+
+/**
  * Resolves only tenant-scoped knowledge chunks that retain an exact immutable
  * EvidenceUnitV1 binding. Missing or legacy chunks are deliberately omitted.
  */

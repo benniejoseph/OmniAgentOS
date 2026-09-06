@@ -233,7 +233,103 @@ const portableArchiveV2BaseSchema = z.object({
   archiveSha256: sha256Schema,
 }).strict();
 
+const portableSectionCountsSchema = z.object(Object.fromEntries(
+  portableArchiveSectionNames.map((name) => [name, z.number().int().min(0)]),
+) as Record<PortableArchiveSectionName, z.ZodNumber>).strict();
+
+const portableSectionHashesSchema = z.object(Object.fromEntries(
+  portableArchiveSectionNames.map((name) => [name, sha256Schema]),
+) as Record<PortableArchiveSectionName, typeof sha256Schema>).strict();
+
+const portableRestoredCountsSchema = portableSectionCountsSchema.extend({
+  turns: z.number().int().min(0),
+}).strict();
+
+const portableRestoreReceiptV1BaseSchema = z.object({
+  schemaVersion: z.literal(1),
+  contractId: z.literal(PORTABLE_RESTORE_RECEIPT_CONTRACT_ID),
+  archiveSha256: sha256Schema,
+  manifestSha256: sha256Schema,
+  sourceOwnerActorIdSha256: sha256Schema,
+  sourceTenantIdSha256: sha256Schema,
+  targetOwnerActorIdSha256: sha256Schema,
+  targetTenantIdSha256: sha256Schema,
+  ownershipRebound: z.literal(true),
+  provenancePreserved: z.literal(true),
+  archiveIntegrityVerified: z.literal(true),
+  countsVerified: z.literal(true),
+  hashesVerified: z.literal(true),
+  declaredCounts: portableSectionCountsSchema,
+  restoredCounts: portableRestoredCountsSchema,
+  declaredSectionSha256: portableSectionHashesSchema,
+  restoredInputSha256: portableSectionHashesSchema,
+  connectionsReauthorizationRequired: z.number().int().min(0),
+  verifiedAt: z.string().datetime(),
+  receiptSha256: sha256Schema,
+}).strict();
+
+export const portableRestoreReceiptV1Schema = portableRestoreReceiptV1BaseSchema.superRefine(
+  (value, context) => {
+    for (const name of portableArchiveSectionNames) {
+      const expectedRestoredCount = name === "connections"
+        ? 0
+        : value.declaredCounts[name];
+      if (value.restoredCounts[name] !== expectedRestoredCount) {
+        context.addIssue({
+          code: "custom",
+          message: `${name} restored count does not match its declared disposition.`,
+          path: ["restoredCounts", name],
+        });
+      }
+      if (value.restoredInputSha256[name] !== value.declaredSectionSha256[name]) {
+        context.addIssue({
+          code: "custom",
+          message: `${name} restored input digest does not match.`,
+          path: ["restoredInputSha256", name],
+        });
+      }
+    }
+    if (
+      value.connectionsReauthorizationRequired !==
+      value.declaredCounts.connections
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Connector reauthorization count does not match.",
+        path: ["connectionsReauthorizationRequired"],
+      });
+    }
+    const { receiptSha256, ...body } = value;
+    if (portableJsonSha256(body) !== receiptSha256) {
+      context.addIssue({
+        code: "custom",
+        message: "Portable restore receipt digest does not match.",
+        path: ["receiptSha256"],
+      });
+    }
+  },
+);
+
 export const portableArchiveV2Schema = portableArchiveV2BaseSchema.superRefine((value, context) => {
+  addUniquePortableFieldIssues(context, value.data.knowledge, "sourceId", ["data", "knowledge"]);
+  addUniquePortableFieldIssues(context, value.data.memories, "sourceId", ["data", "memories"]);
+  addUniquePortableFieldIssues(context, value.data.threads, "sourceIdSha256", ["data", "threads"]);
+  addUniquePortableFieldIssues(context, value.data.today, "sourceIdSha256", ["data", "today"]);
+  addUniquePortableFieldIssues(context, value.data.projects, "sourceIdSha256", ["data", "projects"]);
+  addUniquePortableFieldIssues(context, value.data.connections, "provider", ["data", "connections"]);
+  addUniquePortableFieldIssues(context, value.data.skills, "sourceId", ["data", "skills"]);
+  addUniquePortableFieldIssues(context, value.data.skills, "name", ["data", "skills"]);
+  addUniquePortableFieldIssues(context, value.data.agents, "sourceId", ["data", "agents"]);
+  addUniquePortableFieldIssues(context, value.data.agents, "name", ["data", "agents"]);
+  addUniquePortableFieldIssues(context, value.data.assets, "sourceIdSha256", ["data", "assets"]);
+  value.data.projects.forEach((project, projectIndex) => {
+    addUniquePortableFieldIssues(
+      context,
+      project.tasks,
+      "sourceIdSha256",
+      ["data", "projects", projectIndex, "tasks"],
+    );
+  });
   for (const name of portableArchiveSectionNames) {
     const section = value.manifest.sections[name];
     if (section.includedCount !== value.data[name].length) {
@@ -295,9 +391,33 @@ export const portableArchiveV2Schema = portableArchiveV2BaseSchema.superRefine((
   }
 });
 
+function addUniquePortableFieldIssues<
+  Item extends Record<Field, string>,
+  Field extends keyof Item & string,
+>(
+  context: z.RefinementCtx,
+  items: Item[],
+  field: Field,
+  path: (string | number)[],
+) {
+  const seen = new Set<string>();
+  items.forEach((item, index) => {
+    const value = item[field];
+    if (seen.has(value)) {
+      context.addIssue({
+        code: "custom",
+        message: `Portable archive ${field} values must be unique.`,
+        path: [...path, index, field],
+      });
+    }
+    seen.add(value);
+  });
+}
+
 export type PortableArchiveDataV2 = z.infer<typeof portableArchiveDataV2Schema>;
 export type PortableArchiveV2 = z.infer<typeof portableArchiveV2Schema>;
 export type PortableEncryptedAssetV2 = z.infer<typeof portableEncryptedAssetV2Schema>;
+export type PortableRestoreReceiptV1 = z.infer<typeof portableRestoreReceiptV1Schema>;
 
 export type PortableArchiveExclusion = z.infer<typeof portableExclusionSchema>;
 
@@ -321,7 +441,10 @@ export function buildPortableArchiveV2(input: {
         : "restore" as const;
     return [name, {
       includedCount: data[name].length,
-      excludedCount: input.excludedCounts?.[name] ?? 0,
+      excludedCount: input.excludedCounts &&
+          Object.prototype.hasOwnProperty.call(input.excludedCounts, name)
+        ? input.excludedCounts[name] ?? null
+        : 0,
       contentSha256: portableJsonSha256(data[name]),
       restoreDisposition: disposition,
     }];
@@ -370,6 +493,49 @@ export function verifyPortableArchiveV2(value: unknown) {
     throw new Error("Portable archive v2 failed manifest or content verification.");
   }
   return parsed.data;
+}
+
+export function buildPortableRestoreReceiptV1(input: {
+  archive: PortableArchiveV2;
+  targetOwnerActorId: string;
+  targetTenantId: string;
+  restoredCounts: PortableRestoreReceiptV1["restoredCounts"];
+  verifiedAt?: string;
+}) {
+  const declaredCounts = Object.fromEntries(portableArchiveSectionNames.map(
+    (name) => [name, input.archive.manifest.sections[name].includedCount],
+  )) as PortableRestoreReceiptV1["declaredCounts"];
+  const declaredSectionSha256 = Object.fromEntries(portableArchiveSectionNames.map(
+    (name) => [name, input.archive.manifest.sections[name].contentSha256],
+  )) as PortableRestoreReceiptV1["declaredSectionSha256"];
+  const restoredInputSha256 = Object.fromEntries(portableArchiveSectionNames.map(
+    (name) => [name, portableJsonSha256(input.archive.data[name])],
+  )) as PortableRestoreReceiptV1["restoredInputSha256"];
+  const body = {
+    schemaVersion: 1 as const,
+    contractId: PORTABLE_RESTORE_RECEIPT_CONTRACT_ID,
+    archiveSha256: input.archive.archiveSha256,
+    manifestSha256: input.archive.manifest.manifestSha256,
+    sourceOwnerActorIdSha256: input.archive.provenance.sourceOwnerActorIdSha256,
+    sourceTenantIdSha256: input.archive.provenance.sourceTenantIdSha256,
+    targetOwnerActorIdSha256: portableTextSha256(input.targetOwnerActorId),
+    targetTenantIdSha256: portableTextSha256(input.targetTenantId),
+    ownershipRebound: true as const,
+    provenancePreserved: true as const,
+    archiveIntegrityVerified: true as const,
+    countsVerified: true as const,
+    hashesVerified: true as const,
+    declaredCounts,
+    restoredCounts: input.restoredCounts,
+    declaredSectionSha256,
+    restoredInputSha256,
+    connectionsReauthorizationRequired: declaredCounts.connections,
+    verifiedAt: new Date(input.verifiedAt || Date.now()).toISOString(),
+  };
+  return portableRestoreReceiptV1Schema.parse({
+    ...body,
+    receiptSha256: portableJsonSha256(body),
+  });
 }
 
 export function createPortableAssetEncryption() {
