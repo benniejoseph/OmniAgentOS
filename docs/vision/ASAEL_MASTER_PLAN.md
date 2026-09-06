@@ -1960,6 +1960,27 @@ shared worker/web and release-smoke credential was rotated as part of the
 paired release. This closes P3.2 without claiming the externally authority-held
 P3.1 or the remaining Phase 3 slices.
 
+P3.4 is complete at production release
+`7b8409084c596eeeee7fc017e72545d69491b968`. Every new inactive confirmation
+candidate and explicit contradiction now enters an actor-scoped review inbox
+with the candidate, current claim when present, evidence, source, confidence,
+and validity context. Candidates remain outside retrieval, graph, and entity
+projections until an explicit decision confirms the candidate, keeps the
+existing claim, or—only for a contradiction—keeps both. The deterministic
+transition preserves the rejected or contradicted claim and its temporal
+history, replays the same decision idempotently, and rejects a different later
+decision as a conflict.
+
+Migration v101 installed the forced-RLS review table, immutable identity
+trigger, tenant and actor policies, and a metadata-only legacy-candidate
+backfill with checksum
+`8165ab850b46c4cc71c31d2c3ba15e093e1dba9f2063a9a0f024bb5fcdd20247`.
+Production contains 58 pending reviews with zero eligible candidates missing a
+review and zero owner-scope mismatches. An authenticated live canary returned
+25 valid review records with private no-store caching and no embeddings or
+review actor identifiers. This closes P3.4 without claiming the externally
+authority-held P3.1 or the remaining Phase 3 slices; P3.5 is next.
+
 The first P4.1 delivery is active only as a shadow comparison. Context Compiler
 v2 independently gates canonical source evidence, bound memory claims and
 summaries, and bound graph neighborhoods by exact tenant, actor, scope, grant,

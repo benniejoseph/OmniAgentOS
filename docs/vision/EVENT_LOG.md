@@ -1425,3 +1425,18 @@ for the exact retrieved memory after that trace commits. It emits no new domain
 event and grants no retrieval authority. Retention expiry and validity state
 are evaluated independently, so usage cannot reactivate an expired, forgotten,
 candidate, or superseded claim.
+
+## Memory reconciliation lifecycle
+
+P3.4 adds `memory.reconciliation.detected`,
+`memory.reconciliation.backfilled`, and `memory.reconciliation.resolved` to the
+exact owner-scoped reconciliation stream. Detection and backfill events retain
+only review kind, reason, claim identifiers, schema version, and causal
+coordinates. Resolution adds the explicit decision and resulting bounded claim
+statuses. None of these events contains memory content, title, tags, evidence
+passages, embeddings, actor identity, or private reasoning.
+
+Detection is committed with the candidate and review; resolution is committed
+with the deterministic claim-state transition. The events record decisions but
+grant no retrieval authority. Graph and entity projections occur only after a
+resolved candidate is active under its existing authorized memory scope.
