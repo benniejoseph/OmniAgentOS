@@ -106,7 +106,7 @@ Key properties:
 - Every tool call goes through risk policy and lands in a persistent execution record.
 - Risk 3 tools and `planned` tools are never exposed to the model.
 - Gated calls create `approval_required` records and persist a run continuation. Approval executes the real call and resumes the same run with its saved conversation and outputs.
-- The loop re-sends instructions and the complete conversation array on every turn. It does not use `previous_response_id`, so it remains compatible with OpenAI Zero Data Retention.
+- The loop re-sends instructions and the complete canonical conversation array on every turn. It does not use OpenAI `previous_response_id` or Gemini `previous_interaction_id`, so provider application-state retention stays disabled. Repeated prefixes are still optimized without surrendering transcript ownership: OpenAI receives a content-free HMAC cache bucket scoped to the tenant actor and run, Anthropic Messages uses the ephemeral automatic cache, Gemini Interactions uses its stateless implicit cache, and supported Bedrock Converse models receive a checkpoint after stable tool/system content. Provider continuation state is accepted only by the provider that created it; canonical native-role replay remains the recovery source of truth.
 - Step budget (`OMNIAGENT_AGENT_MAX_TOOL_STEPS`), per-turn call cap, and output truncation bound cost.
 - Each run emits one `run.harness` receipt with the effective context decision, model route, tool/skill set, approval mode, execution budgets, and contract hashes.
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
