@@ -12,7 +12,13 @@ import { readEntityRegistry } from "@/lib/entities/store";
 import { knowledgeDeletionTargetId } from "@/lib/rag/deletion-events";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
+import { getCanonicalKnowledgeEvidenceByChunkIds } from "@/lib/rag/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { finalizeCaptureExtraction, renderCaptureExtractionUnits } from "@/lib/capture/extraction";
+import {
+  CLAIM_EVIDENCE_PURPOSE_ID,
+  CONTEXT_COMPILER_V2_PURPOSE_ID,
+} from "@/lib/sources/purposes";
 
 vi.mock("@/lib/openai/client", () => ({
   embedTexts: vi.fn(async (texts: readonly string[]) =>
@@ -46,6 +52,73 @@ afterEach(async () => {
 });
 
 describe("knowledge ingestion entity projection", () => {
+  it("persists structured extraction locators with inherited private authority", async () => {
+    const extraction = finalizeCaptureExtraction({
+      sourceKind: "presentation",
+      format: "pptx",
+      units: [{
+        label: "Slide 1",
+        content: "Roadmap decision",
+        locator: {
+          kind: "slide",
+          slideNumber: 1,
+          slideCount: 2,
+          elementKeySha256: null,
+        },
+      }],
+    });
+    const sourceScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "structured-source-ingestion",
+      purpose: "capture.asset.extract",
+    });
+    const knowledge = await ingestTextDocument({
+      idempotencyKey: "structured-source-document",
+      tenantId,
+      title: "Roadmap",
+      content: renderCaptureExtractionUnits(extraction.units),
+      structuredUnits: extraction.units,
+      source: "capture:asset:structured-source",
+      sourceType: "file",
+      sourceLineage: {
+        executionScope: sourceScope,
+        connectionId: "first_party.capture",
+        adapterId: "asael.capture",
+        externalItemId: "asset:structured-source",
+        sourceKind: extraction.sourceKind,
+        capturedAt: "2026-09-06T00:00:00.000Z",
+        permissionGrantIds: ["first_party.capture"],
+        allowedPurposeIds: [
+          CLAIM_EVIDENCE_PURPOSE_ID,
+          CONTEXT_COMPILER_V2_PURPOSE_ID,
+        ].sort(),
+      },
+    });
+    const evidence = await getCanonicalKnowledgeEvidenceByChunkIds(
+      knowledge.chunks.map((chunk) => chunk.id),
+      { tenantId },
+    );
+
+    expect(evidence[0]).toMatchObject({
+      chunk: {
+        title: "Roadmap — Slide 1",
+        metadata: {
+          evidenceLabel: "Slide 1",
+          evidenceLocatorKind: "slide",
+        },
+      },
+      evidenceUnit: {
+        ownerActorId: actorId,
+        visibility: "user_private",
+        permissionGrantIds: ["first_party.capture"],
+        locator: { kind: "slide", slideNumber: 1, slideCount: 2 },
+      },
+    });
+  });
+
   it("projects explicit markers from canonical private evidence", async () => {
     const sourceScope = createExecutionScope({
       tenantId,

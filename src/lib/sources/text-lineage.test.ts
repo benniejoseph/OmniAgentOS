@@ -86,4 +86,39 @@ describe("canonical text source lineage", () => {
       }),
     ).toThrow("exact text-span locator");
   });
+
+  it("binds a structured page locator to the exact evidence content", () => {
+    const content = "Page one evidence";
+    const write = buildCanonicalTextSourceWrite({
+      lineage: {
+        executionScope: createExecutionScope({
+          tenantId: "tenant-a",
+          initiatingActorId: "actor-a",
+          executingPrincipalType: "user",
+          executingPrincipalId: "actor-a",
+          correlationId: "structured-ingest-1",
+          purpose: "capture.asset.extract",
+        }),
+        connectionId: "first_party.capture",
+        adapterId: "asael.capture",
+        externalItemId: "asset:page-fixture",
+        sourceKind: "document",
+        capturedAt: "2026-09-06T00:00:00.000Z",
+      },
+      content,
+      normalizedContent: content,
+      chunks: [{
+        index: 0,
+        content,
+        characterStart: 0,
+        characterEnd: content.length,
+        locator: { kind: "page", pageNumber: 1, pageCount: 3 },
+      }],
+    });
+
+    expect(write.adapterOutput.evidenceUnits[0]).toMatchObject({
+      evidenceContentSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      locator: { kind: "page", pageNumber: 1, pageCount: 3 },
+    });
+  });
 });

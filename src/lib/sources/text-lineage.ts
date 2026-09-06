@@ -11,6 +11,7 @@ import {
   buildSourceRevisionV1,
   sourceContractIdSchema,
   sourceContractSha256,
+  type EvidenceLocatorV1,
   type SourceAdapterUpsertV1,
   type SourceItemV1,
 } from "@/lib/sources/contracts";
@@ -48,6 +49,7 @@ export type TextLineageChunk = Readonly<{
   content: string;
   characterStart: number;
   characterEnd: number;
+  locator?: EvidenceLocatorV1;
 }>;
 
 export type CanonicalTextSourceWrite = Readonly<{
@@ -219,14 +221,14 @@ export function buildCanonicalTextSourceWrite(input: {
       providerItemKeySha256,
       evidenceContentSha256: contentSha256Hex(chunk.content),
       evidenceByteLength: Buffer.byteLength(chunk.content, "utf8"),
-      locator: {
-        kind: "text_span",
-        offsetUnit: "utf16_code_unit",
-        startOffset: chunk.characterStart,
-        endOffsetExclusive: chunk.characterEnd,
-        containerLength: input.normalizedContent.length,
-        containerSha256: normalizedContentSha256,
-      },
+      locator: chunk.locator || {
+          kind: "text_span",
+          offsetUnit: "utf16_code_unit",
+          startOffset: chunk.characterStart,
+          endOffsetExclusive: chunk.characterEnd,
+          containerLength: input.normalizedContent.length,
+          containerSha256: normalizedContentSha256,
+        },
       ...observation,
       extractedAt: capturedAt,
       extractorIdentity,

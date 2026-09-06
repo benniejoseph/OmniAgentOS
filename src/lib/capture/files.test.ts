@@ -82,13 +82,13 @@ describe("capture files", () => {
     workbook.file("xl/sharedStrings.xml", "<sst><si><t>Alpha</t></si><si><t>Ready</t></si></sst>");
     workbook.file("xl/worksheets/sheet1.xml", "<worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c></row></sheetData></worksheet>");
     const workbookBytes = await workbook.generateAsync({ type: "uint8array" });
-    const spreadsheet = await extractCaptureFile(new File([workbookBytes], "status.xlsx"));
+    const spreadsheet = await extractCaptureFile(new File([Buffer.from(workbookBytes)], "status.xlsx"));
 
     const presentationArchive = new JSZip();
     presentationArchive.file("ppt/slides/slide1.xml", "<p:sld><a:t>Quarterly review</a:t></p:sld>");
     presentationArchive.file("ppt/slides/slide2.xml", "<p:sld><a:t>Next actions</a:t></p:sld>");
     const presentationBytes = await presentationArchive.generateAsync({ type: "uint8array" });
-    const presentation = await extractCaptureFile(new File([presentationBytes], "review.pptx"));
+    const presentation = await extractCaptureFile(new File([Buffer.from(presentationBytes)], "review.pptx"));
 
     expect(spreadsheet.extraction.units[0].locator.kind).toBe("sheet_range");
     expect(spreadsheet.content).toContain("Alpha\tReady");

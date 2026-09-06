@@ -12,6 +12,37 @@ beforeAll(async () => {
 });
 
 describe("background operation jobs", () => {
+  it("accepts exact structured units and rejects units that do not compose the content", async () => {
+    const { finalizeCaptureExtraction, renderCaptureExtractionUnits } = await import("@/lib/capture/extraction");
+    const { knowledgeIngestJobRequestSchema } = await import("@/lib/operations/background-jobs");
+    const extraction = finalizeCaptureExtraction({
+      sourceKind: "presentation",
+      format: "pptx",
+      units: [{
+        label: "Slide 1",
+        content: "Quarterly result",
+        locator: {
+          kind: "slide",
+          slideNumber: 1,
+          slideCount: 1,
+          elementKeySha256: null,
+        },
+      }],
+    });
+    const content = renderCaptureExtractionUnits(extraction.units);
+
+    expect(knowledgeIngestJobRequestSchema.parse({
+      title: "Review",
+      content,
+      structuredUnits: extraction.units,
+    }).structuredUnits).toHaveLength(1);
+    expect(() => knowledgeIngestJobRequestSchema.parse({
+      title: "Review",
+      content: "Different content",
+      structuredUnits: extraction.units,
+    })).toThrow(/exactly compose/i);
+  });
+
   it("queues ingestion idempotently and exposes progress without request content", async () => {
     const jobs = await import("@/lib/operations/background-jobs");
     const queue = await import("@/lib/operations/job-queue");
