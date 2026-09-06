@@ -29,6 +29,17 @@ const writeCapability: CapabilityDescriptor = {
   reversible: true,
 };
 
+const memoryWriteCapability: CapabilityDescriptor = {
+  id: "memory.write",
+  name: "Write memory",
+  description: "Persist a durable memory.",
+  category: "memory",
+  source: "native",
+  riskLevel: 1,
+  approvalRequired: false,
+  reversible: true,
+};
+
 function candidate(
   overrides: Partial<SemanticIntentCandidate> = {},
 ): SemanticIntentCandidate {
@@ -53,6 +64,7 @@ describe("semantic intent policy", () => {
       "orchestrate",
     );
     const resolution = applySemanticIntentPolicy({
+      message: "Investigate this and prepare a verified report for later.",
       baseline,
       mode: "orchestrate",
       capabilityCandidates: [readCapability],
@@ -84,6 +96,7 @@ describe("semantic intent policy", () => {
       "execute",
     );
     const resolution = applySemanticIntentPolicy({
+      message: "Deploy the release to production.",
       baseline,
       mode: "execute",
       capabilityCandidates: [],
@@ -100,6 +113,7 @@ describe("semantic intent policy", () => {
 
   it("uses only catalog-validated capability identifiers", () => {
     const resolution = applySemanticIntentPolicy({
+      message: "Put lunch on my calendar.",
       baseline: routeAgentRequest("Put lunch on my calendar."),
       mode: "orchestrate",
       capabilityCandidates: [writeCapability],
@@ -123,6 +137,7 @@ describe("semantic intent policy", () => {
 
   it("keeps exact destructive ambiguity and saved procedures authoritative", () => {
     const ambiguity = applySemanticIntentPolicy({
+      message: "Delete the old project",
       baseline: routeAgentRequest("Delete the old project"),
       mode: "orchestrate",
       capabilityCandidates: [],
@@ -135,6 +150,7 @@ describe("semantic intent policy", () => {
     expect(ambiguity.receipt.source).toBe("deterministic_invariant");
 
     const procedure = applySemanticIntentPolicy({
+      message: "Run my publishing routine",
       baseline: routeAgentRequest(
         "Run my publishing routine",
         "orchestrate",
@@ -157,6 +173,7 @@ describe("semantic intent policy", () => {
 
   it("records model ambiguity as advisory without adding clarification", () => {
     const resolution = applySemanticIntentPolicy({
+      message: "Explain the deployment process.",
       baseline: routeAgentRequest("Explain the deployment process."),
       mode: "orchestrate",
       capabilityCandidates: [],
@@ -164,6 +181,43 @@ describe("semantic intent policy", () => {
     });
     expect(resolution.decision.route).toBe("direct");
     expect(resolution.receipt.clarificationAdvisory).toBe(true);
+  });
+
+  it("maps semantic memory creation to an active catalog capability", () => {
+    const resolution = applySemanticIntentPolicy({
+      message: "Remember that release notes need a risk section.",
+      baseline: routeAgentRequest(
+        "Remember that release notes need a risk section.",
+        "learn",
+      ),
+      mode: "learn",
+      capabilityCandidates: [memoryWriteCapability],
+      candidate: candidate({
+        intent: "create",
+        executionShape: "multi_step",
+        workKinds: ["memory"],
+        capabilityQueries: ["remember preference memory write"],
+      }),
+    });
+    expect(resolution.decision.route).toBe("direct");
+    expect(resolution.receipt.matchedCapabilityIds).toEqual([
+      "memory.write",
+    ]);
+  });
+
+  it("persists multi-step work even when coordination was omitted", () => {
+    const resolution = applySemanticIntentPolicy({
+      message: "Research, implement, verify, and report.",
+      baseline: routeAgentRequest("Research, implement, verify, and report."),
+      mode: "orchestrate",
+      capabilityCandidates: [],
+      candidate: candidate({
+        intent: "execute",
+        executionShape: "multi_step",
+        workKinds: ["research", "build", "verify"],
+      }),
+    });
+    expect(resolution.decision.route).toBe("durable_workflow");
   });
 
   it("fails back to the deterministic decision without broadening it", () => {

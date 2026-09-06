@@ -28,6 +28,8 @@ export const semanticRoutingObservationSchema = z.object({
     "deterministic_invariant",
     "deterministic_fallback",
   ]),
+  intent: z.string().trim().min(1).max(80),
+  executionShape: z.string().trim().min(1).max(80),
 }).strict();
 
 export type SemanticRoutingSuite = z.infer<typeof semanticRoutingSuiteSchema>;

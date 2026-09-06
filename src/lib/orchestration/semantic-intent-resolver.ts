@@ -206,6 +206,7 @@ export function createSemanticIntentResolver(
     }
 
     const initialResolution = applySemanticIntentPolicy({
+      message: input.message,
       baseline: input.baseline,
       candidate: parsedCandidate.data,
       mode: input.mode,
@@ -227,6 +228,7 @@ export function createSemanticIntentResolver(
       ...semanticCatalogCandidates.map((capability) => capability.id),
     ])].slice(0, 12);
     const resolution = applySemanticIntentPolicy({
+      message: input.message,
       baseline: input.baseline,
       candidate: {
         ...parsedCandidate.data,
@@ -360,8 +362,14 @@ function semanticIntentInput(
 }
 
 function parseGeneratedJson(value: string): unknown {
+  const trimmed = value.trim();
+  const json = trimmed.startsWith("```")
+    ? trimmed
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```$/, "")
+    : trimmed;
   try {
-    return JSON.parse(value);
+    return JSON.parse(json);
   } catch {
     return undefined;
   }

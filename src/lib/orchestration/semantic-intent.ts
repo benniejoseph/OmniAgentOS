@@ -96,6 +96,7 @@ export type SemanticSupervisorResolution = Readonly<{
 }>;
 
 export function applySemanticIntentPolicy(input: {
+  message: string;
   baseline: SupervisorDecision;
   candidate: SemanticIntentCandidate;
   mode: AgentMode;
@@ -106,7 +107,10 @@ export function applySemanticIntentPolicy(input: {
   const capabilityById = new Map(
     input.capabilityCandidates.map((capability) => [capability.id, capability]),
   );
-  const matchedCapabilities = [...new Set(candidate.candidateCapabilityIds)]
+  const matchedCapabilities = [...new Set([
+    ...candidate.candidateCapabilityIds,
+    ...semanticCapabilityPolicyIds(candidate, input.capabilityCandidates),
+  ])]
     .map((id) => capabilityById.get(id))
     .filter((capability): capability is CapabilityDescriptor =>
       Boolean(capability)
@@ -140,7 +144,7 @@ export function applySemanticIntentPolicy(input: {
     input.mode,
     input.preferredAgentId,
   );
-  const route = semanticRoute(candidate);
+  const route = semanticRoute(candidate, input.baseline);
   const requiresCapabilityApproval = matchedCapabilities.some(
     (capability) =>
       capability.approvalRequired || capability.riskLevel >= 2,
@@ -225,7 +229,15 @@ export function attachSemanticModelReceipt(
 
 function semanticRoute(
   candidate: SemanticIntentCandidate,
+  baseline: SupervisorDecision,
 ): SupervisorDecision["route"] {
+  if (
+    candidate.workKinds.includes("memory") &&
+    baseline.route === "direct" &&
+    candidate.intent !== "recurring"
+  ) {
+    return "direct";
+  }
   if (
     candidate.executionShape === "recurring" ||
     candidate.executionShape === "background"
@@ -233,12 +245,61 @@ function semanticRoute(
     return "durable_workflow";
   }
   if (
-    candidate.executionShape === "multi_step" &&
-    candidate.workKinds.includes("coordinate")
+    candidate.executionShape === "multi_step"
   ) {
     return "durable_workflow";
   }
   return "direct";
+}
+
+function semanticCapabilityPolicyIds(
+  candidate: SemanticIntentCandidate,
+  capabilities: readonly CapabilityDescriptor[],
+) {
+  const available = new Set(capabilities.map((capability) => capability.id));
+  const selected = new Set<string>();
+  const semanticSurface = [
+    ...candidate.capabilityQueries,
+    ...candidate.entities.flatMap((entity) => [entity.kind, entity.reference]),
+  ].join(" ").toLowerCase();
+  const add = (id: string) => {
+    if (available.has(id)) selected.add(id);
+  };
+
+  if (candidate.workKinds.includes("memory")) {
+    if (
+      candidate.intent === "retrieve" ||
+      candidate.intent === "question" ||
+      candidate.intent === "research"
+    ) {
+      add("memory.search");
+    } else if (candidate.intent === "delete") {
+      add("memory.forget");
+    } else if (candidate.intent === "update") {
+      add(/\b(?:correct|correction|replace|fix)\b/.test(semanticSurface)
+        ? "memory.correct"
+        : "memory.write");
+    } else if (candidate.intent === "create") {
+      add("memory.write");
+    }
+  }
+
+  if (
+    !candidate.workKinds.includes("memory") &&
+    (
+      candidate.intent === "retrieve" ||
+      candidate.intent === "research" ||
+      candidate.intent === "question"
+    )
+  ) {
+    if (/\b(?:current|latest|live|web|internet|online)\b/.test(semanticSurface)) {
+      add("web.search");
+    }
+    if (/\b(?:knowledge|document|file|saved|source)\b/.test(semanticSurface)) {
+      add("knowledge.search");
+    }
+  }
+  return [...selected];
 }
 
 function semanticRouteScore(candidate: SemanticIntentCandidate) {
