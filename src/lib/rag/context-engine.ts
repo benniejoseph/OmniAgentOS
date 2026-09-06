@@ -35,6 +35,7 @@ import type {
   RetrievalIntent,
   RetrievalMode,
   RetrievalProfile,
+  RetrievalQueryPlan,
   RetrievalTraceRecord,
 } from "@/lib/rag/types";
 import { citationIdForEvidence } from "@/lib/rag/citations";
@@ -44,6 +45,10 @@ import {
   prepareContextCompilerV2Candidates,
 } from "@/lib/rag/context-compiler-v2";
 import { normalizeExplicitEvidenceIds } from "@/lib/rag/evidence-selection";
+import {
+  buildDeterministicRetrievalQueryPlan,
+  planRetrievalQuery,
+} from "@/lib/rag/query-planner";
 import { redactSensitive } from "@/lib/security/context";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { AiUsageScope } from "@/lib/usage/types";
@@ -75,6 +80,11 @@ export type BuildContextPackOptions = {
   evidenceIds?: string[];
   /** Trusted server-created attribution for the retrieval embedding call. */
   usageScope?: AiUsageScope;
+  /** Governs the optional semantic planning turn; deterministic planning remains available. */
+  queryPlanning?: {
+    allowSemanticModel?: boolean;
+    beforeSemanticModelCall?: () => void | Promise<void>;
+  };
   /**
    * Runs Context Compiler v2 as a metadata-only comparison. The legacy pack
    * remains authoritative until a later rollout promotes the compiler.
@@ -98,34 +108,6 @@ type RetrievalTraceLedger = {
   traces: RetrievalTraceRecord[];
 };
 
-const stopWords = new Set([
-  "about",
-  "after",
-  "again",
-  "also",
-  "and",
-  "are",
-  "can",
-  "could",
-  "for",
-  "from",
-  "have",
-  "how",
-  "into",
-  "let",
-  "our",
-  "that",
-  "the",
-  "this",
-  "what",
-  "when",
-  "where",
-  "which",
-  "with",
-  "would",
-  "your",
-]);
-
 export async function buildContextPack(
   query: string,
   options: BuildContextPackOptions = {},
@@ -140,8 +122,20 @@ export async function buildContextPack(
   const evidenceIds = normalizeExplicitEvidenceIds(options.evidenceIds);
   const limit = Math.min(Math.max(options.limit || 8, evidenceIds?.length || 1), 24);
   const candidateLimit = Math.min(Math.max(options.candidateLimit || limit * 3, limit), 60);
-  const profile = profileQuery(normalizedQuery);
   const compilerAsOfTime = new Date().toISOString();
+  let queryPlan = buildDeterministicRetrievalQueryPlan(normalizedQuery);
+  let profile = profileQuery(normalizedQuery, queryPlan);
+  if (profile.shouldRetrieve && evidenceIds?.length !== 0) {
+    queryPlan = await planRetrievalQuery({
+      query: normalizedQuery,
+      asOfTime: compilerAsOfTime,
+      usageScope: options.usageScope,
+      allowSemanticModel: options.queryPlanning?.allowSemanticModel,
+      beforeSemanticModelCall:
+        options.queryPlanning?.beforeSemanticModelCall,
+    });
+    profile = profileQuery(normalizedQuery, queryPlan);
+  }
   const compilerV2Request = contextCompilerV2Request(options);
   assertContextCompilerV2Scope(compilerV2Request, tenantId);
 
@@ -228,7 +222,7 @@ export async function buildContextPack(
         })
       : Promise.resolve([]),
     searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),
-    searchMemoryGraph(normalizedQuery, {
+    searchMemoryGraph(retrievalQuery || normalizedQuery, {
       limit: Math.min(candidateLimit, 24),
       tenantId,
       accessScope: databaseMemoryAccessScope,
@@ -466,9 +460,20 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
     compilerV2Canary,
     ...redactionInput
   } = pack;
-  const sanitized = redactSensitive(redactionInput) as ContextPack;
+  const queryPlan = redactionInput.profile.queryPlan;
+  const sanitized = redactSensitive({
+    ...redactionInput,
+    profile: {
+      ...redactionInput.profile,
+      queryPlan: undefined,
+    },
+  }) as ContextPack;
   return {
     ...sanitized,
+    profile: {
+      ...sanitized.profile,
+      queryPlan,
+    },
     ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
     ...(compilerV2Canary ? { compilerV2Canary } : {}),
     memoryResults: sanitized.memoryResults.map(withoutMemoryEmbedding),
@@ -593,13 +598,16 @@ export async function getContextEngineStats(options: {
   };
 }
 
-function profileQuery(query: string): RetrievalProfile {
+function profileQuery(
+  query: string,
+  queryPlan: RetrievalQueryPlan,
+): RetrievalProfile {
   const queryTerms = tokenize(query);
   const rationale: string[] = [];
   const casual = !queryTerms.length || /^(hi|hello|hey|thanks|thank you|ok|okay)$/i.test(query);
   const personal = /\b(my|me|our|previous|remember|preference|decision|we decided)\b/i.test(query);
   const operational = /\b(workflow|tool|connector|approval|deploy|vercel|database|queue|cron|auth|security|run|eval)\b/i.test(query);
-  const procedural = /\b(how|plan|steps|implement|build|fix|debug|migrate|configure|operate)\b/i.test(query);
+  const procedural = queryPlan.domains.includes("procedural");
   const global = /\b(all|across|entire|overall|themes|summarize|synthesize|compare|landscape|architecture|research|review|audit)\b/i.test(query);
   const questionComplexity = Math.min(1, queryTerms.length / 18);
   const complexity =
@@ -645,30 +653,27 @@ function profileQuery(query: string): RetrievalProfile {
     shouldRetrieve: mode !== "direct",
     complexity: roundScore(complexity),
     queryTerms,
-    expandedQueries: expandQueries(query, queryTerms, { personal, operational, procedural, global }),
+    expandedQueries: expandQueries(queryPlan.queries, query, {
+      personal,
+      operational,
+      global,
+    }),
     rationale,
+    queryPlan,
   };
 }
 
 function expandQueries(
+  plannedQueries: readonly string[],
   query: string,
-  queryTerms: string[],
   flags: {
     personal: boolean;
     operational: boolean;
-    procedural: boolean;
     global: boolean;
   },
 ) {
-  const variants = new Set<string>();
-  if (query.trim()) {
-    variants.add(query.trim());
-  }
-
-  const distilled = queryTerms.filter((term) => !stopWords.has(term)).join(" ");
-  if (distilled && distilled !== query.trim().toLowerCase()) {
-    variants.add(distilled);
-  }
+  const variants = new Set(plannedQueries);
+  const distilled = plannedQueries[1] || query;
 
   if (flags.global) {
     variants.add(`${distilled || query} themes architecture synthesis evidence`);
@@ -678,15 +683,11 @@ function expandQueries(
     variants.add(`${distilled || query} workflow runtime operations security connector database`);
   }
 
-  if (flags.procedural) {
-    variants.add(`${distilled || query} procedure implementation verification`);
-  }
-
   if (flags.personal) {
     variants.add(`${distilled || query} preference decision memory prior context`);
   }
 
-  return Array.from(variants).slice(0, 5);
+  return Array.from(variants).slice(0, 6);
 }
 
 function scoreEvidenceItems({
@@ -889,9 +890,15 @@ async function saveRetrievalTrace(
   input: Omit<RetrievalTraceRecord, "id" | "createdAt">,
   options: { accessScope?: DatabaseMemoryAccessScope } = {},
 ): Promise<RetrievalTraceRecord> {
-  const safeInput = redactSensitive(
-    input,
-  ) as Omit<RetrievalTraceRecord, "id" | "createdAt">;
+  const queryPlan = input.profile.queryPlan;
+  const safeInput = redactSensitive({
+    ...input,
+    profile: {
+      ...input.profile,
+      queryPlan: undefined,
+    },
+  }) as Omit<RetrievalTraceRecord, "id" | "createdAt">;
+  safeInput.profile.queryPlan = queryPlan;
   const createdAt = new Date().toISOString();
   const tenantId = normalizeTenantId(safeInput.tenantId);
   const accessScope = options.accessScope
@@ -1140,7 +1147,14 @@ function normalizeTenantId(value?: string) {
 
 function parseProfile(value: unknown): RetrievalProfile {
   if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as RetrievalProfile;
+    const profile = value as Partial<RetrievalProfile>;
+    return {
+      ...(profile as RetrievalProfile),
+      queryPlan: profile.queryPlan ||
+        buildDeterministicRetrievalQueryPlan(
+          profile.expandedQueries?.[0] || "",
+        ),
+    };
   }
 
   return {
@@ -1151,6 +1165,7 @@ function parseProfile(value: unknown): RetrievalProfile {
     queryTerms: [],
     expandedQueries: [],
     rationale: ["Profile unavailable."],
+    queryPlan: buildDeterministicRetrievalQueryPlan(""),
   };
 }
 
@@ -1186,6 +1201,9 @@ function memoryIntentBoost(profile: RetrievalProfile, type: string, tags: string
   if (profile.intent === "personal" && ["preference", "decision", "task"].includes(type)) {
     boost += 0.12;
   }
+  if (profile.queryPlan.domains.includes("temporal") && ["decision", "commitment", "episode"].includes(type)) {
+    boost += 0.08;
+  }
   return boost;
 }
 
@@ -1207,6 +1225,15 @@ function graphIntentBoost(profile: RetrievalProfile, kind: string, tags: string[
   let boost = 0;
   if (profile.mode === "global") {
     boost += 0.18;
+  }
+  if (profile.queryPlan.domains.includes("entity")) {
+    boost += 0.12;
+  }
+  if (profile.queryPlan.domains.includes("relationship")) {
+    boost += 0.2;
+  }
+  if (profile.queryPlan.domains.includes("temporal")) {
+    boost += 0.06;
   }
   if (profile.intent === "global_synthesis") {
     boost += 0.12;

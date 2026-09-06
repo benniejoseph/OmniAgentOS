@@ -59,6 +59,57 @@ export type KnowledgeLedger = {
 export type RetrievalMode = "direct" | "memory_first" | "local" | "global" | "hybrid";
 export type RetrievalIntent = "casual" | "personal" | "factual" | "procedural" | "operational" | "global_synthesis";
 
+export type RetrievalQueryDomain =
+  | "semantic"
+  | "temporal"
+  | "entity"
+  | "relationship"
+  | "procedural";
+
+export type RetrievalTemporalMode =
+  | "none"
+  | "latest"
+  | "as_of"
+  | "before"
+  | "after"
+  | "between"
+  | "relative"
+  | "timeline";
+
+export type RetrievalQueryPlan = {
+  version: "p4.3-query-plan:1";
+  source: "deterministic" | "model";
+  domains: RetrievalQueryDomain[];
+  queries: string[];
+  entityTerms: string[];
+  relationshipTerms: string[];
+  proceduralTerms: string[];
+  temporal: {
+    mode: RetrievalTemporalMode;
+    expressions: string[];
+  };
+  confidence: number;
+  validation: {
+    originalQueryAnchored: true;
+    authorizationInputsExcluded: true;
+    candidateAccepted: boolean;
+    droppedQueryCount: number;
+  };
+  fallbackReason?:
+    | "not_required"
+    | "usage_scope_unavailable"
+    | "model_unavailable"
+    | "model_failed"
+    | "model_usage_unrecorded"
+    | "model_output_invalid";
+  model?: {
+    provider: import("@/lib/models/types").ProviderId;
+    model: string;
+    usageReceiptRecorded: true;
+    usageReceiptId?: string;
+  };
+};
+
 export type RetrievalProfile = {
   mode: RetrievalMode;
   intent: RetrievalIntent;
@@ -67,6 +118,7 @@ export type RetrievalProfile = {
   queryTerms: string[];
   expandedQueries: string[];
   rationale: string[];
+  queryPlan: RetrievalQueryPlan;
 };
 
 export type ContextEvidenceItem =
