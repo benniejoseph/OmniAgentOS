@@ -83,7 +83,7 @@ export async function resolveAgentIdentityForExecution(input: {
 
 export function createAgentIdentityMutationScope(
   agent: Pick<CustomAgentDefinition, "id" | "tenantId" | "actorId">,
-  operation: "create" | "update" | "delete" | "skill_update",
+  operation: "create" | "update" | "delete" | "skill_update" | "grant_update",
 ): ExecutionScope {
   return createExecutionScope({
     tenantId: agent.tenantId,
@@ -186,6 +186,46 @@ export async function revokeCustomAgentIdentityWithSql(input: {
     tenantId: input.agent.tenantId,
     agentId: input.agent.id,
     ownerActorId,
+    executionScope: input.executionScope,
+    sql: input.sql,
+  });
+}
+
+export async function rotateCustomAgentGrantAuthorityWithSql(input: {
+  agent: CustomAgentDefinition;
+  contextGrantIds: readonly string[];
+  capabilityGrantIds: readonly string[];
+  executionScope: ExecutionScope;
+  onPrincipalHeld?: (
+    principal: ResolvedAgentIdentityV1["principal"],
+  ) => Promise<void>;
+  sql: IdentitySql;
+}): Promise<ResolvedAgentIdentityV1["principal"]> {
+  const ownerActorId = await resolveCanonicalOwnerActorId(
+    input.agent.tenantId,
+    input.agent.actorId,
+    input.sql,
+  );
+  const definitionVersion = Number((await readLatestDefinitionRow(
+    input.agent.tenantId,
+    input.agent.id,
+    ownerActorId,
+    input.sql,
+  )).definition_version);
+  await revokeCurrentPrincipal({
+    tenantId: input.agent.tenantId,
+    agentId: input.agent.id,
+    ownerActorId,
+    executionScope: input.executionScope,
+    sql: input.sql,
+  });
+  return appendPrincipalGeneration({
+    agent: input.agent,
+    ownerActorId,
+    definitionVersion,
+    contextGrantIds: input.contextGrantIds,
+    capabilityGrantIds: input.capabilityGrantIds,
+    onPrincipalHeld: input.onPrincipalHeld,
     executionScope: input.executionScope,
     sql: input.sql,
   });
@@ -383,6 +423,11 @@ async function appendPrincipalGeneration(input: {
   agent: CustomAgentDefinition;
   ownerActorId: string;
   definitionVersion: number;
+  contextGrantIds?: readonly string[];
+  capabilityGrantIds?: readonly string[];
+  onPrincipalHeld?: (
+    principal: ResolvedAgentIdentityV1["principal"],
+  ) => Promise<void>;
   executionScope: ExecutionScope;
   sql: IdentitySql;
 }) {
@@ -417,8 +462,11 @@ async function appendPrincipalGeneration(input: {
     definitionVersion: input.definitionVersion,
     principalId: id,
     principalGeneration,
+    principalContextGrantIds: input.contextGrantIds,
+    principalCapabilityGrantIds: input.capabilityGrantIds,
     principalCreatedAt,
   }).principal;
+  await input.onPrincipalHeld?.(principal);
   await input.sql`
     INSERT INTO omni_agent_principal_policies (
       tenant_id, principal_id, principal_generation, owner_actor_id,

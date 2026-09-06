@@ -19,6 +19,7 @@ import {
   createAgentIdentityMutationScope,
   createCustomAgentIdentityWithSql,
   resolveCustomAgentIdentityWithSql,
+  rotateCustomAgentGrantAuthorityWithSql,
   updateCustomAgentIdentityWithSql,
   versionCustomAgentsForSkillChangeWithSql,
 } from "@/lib/agents/identity-store";
@@ -145,6 +146,43 @@ describe("P7.1 custom agent identity store", () => {
     expect(database.statements.some((value) =>
       /INSERT INTO omni_tenant_execution_principals/.test(value.text)
     )).toBe(true);
+    expect(eventMocks.appendScopedDomainEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("pins exact context and capability grants on a new principal generation", async () => {
+    const onPrincipalHeld = vi.fn(async () => undefined);
+    const database = fakeSql([
+      [{ canonical_actor_id: canonicalActorId }],
+      [{ definition_version: 4 }],
+      [{ principal_generation: 2, state: "revoked" }],
+      [{ next_generation: 3 }],
+      [{ created_at: "2026-09-07T03:00:00.000Z" }],
+      [],
+      [{ state: "active" }],
+    ]);
+
+    const principal = await rotateCustomAgentGrantAuthorityWithSql({
+      agent: agent(),
+      contextGrantIds: ["context:read-one"],
+      capabilityGrantIds: ["capability:read-one"],
+      executionScope: createAgentIdentityMutationScope(agent(), "grant_update"),
+      onPrincipalHeld,
+      sql: database.sql,
+    });
+
+    expect(principal).toMatchObject({
+      principalId: "agent:agent-one",
+      principalGeneration: 3,
+      contextGrantIds: ["context:read-one"],
+      capabilityGrantIds: ["capability:read-one"],
+    });
+    expect(onPrincipalHeld).toHaveBeenCalledWith(principal);
+    expect(database.statements.find((statement) =>
+      /INSERT INTO omni_agent_principal_policies/.test(statement.text)
+    )?.params).toEqual(expect.arrayContaining([
+      ["context:read-one"],
+      ["capability:read-one"],
+    ]));
     expect(eventMocks.appendScopedDomainEvent).toHaveBeenCalledTimes(2);
   });
 
