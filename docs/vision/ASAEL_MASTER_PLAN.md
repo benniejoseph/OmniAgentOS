@@ -438,6 +438,20 @@ or external effect. This completes the shared baseline portion of P0.5; each
 later phase must still add its own narrow regression set and explicit exit gate
 rather than treating the shared baseline as proof of that phase.
 
+P0.1-P0.6 and the Phase 0 gate are complete at exact production release
+`49c8a3d87108b8cd6da3cd442b0d27ecd0e78804`. The authenticated,
+idempotent `p0-production-phase-gate-v1` evaluation exercises the actual
+execution-scope attenuation and tenant-denial paths, all six named versioned
+run-contract sections, the current tenant's exact active rollout generation,
+all nine canonical statuses, the complete P0.5 runtime observer, and the
+runtime registry for accepted ADRs 005-011. The production receipt passed 6/6
+rows, 10/10 scope boundaries, 6/6 contracts, 9/9 statuses, 16/16 baseline cases
+at 10,000 basis points, and 7/7 decisions with no unresolved decision or
+external effect. Canonical replay returned the same immutable receipt.
+Canonical Vercel, the exact-revision Fly protocol-1 gateway/worker and all
+three lanes, and the dedicated Playwright service are healthy; anonymous agent
+access remains closed. This gate changes no serving behavior or authority.
+
 ### Phase 1 — Truthful events, evidence, completion, and recovery
 
 **Goal:** Make every result and status honest before increasing autonomy.
@@ -2168,7 +2182,7 @@ That is the path from the current governed assistant workspace to a cohesive sec
 
 The task tables above are the source of truth. A phase is checked only after every listed slice and its phase gate are complete.
 
-- [ ] **Phase 0 — contracts and compatibility:** P0.1–P0.6 complete.
+- [x] **Phase 0 — contracts and compatibility:** P0.1–P0.6 complete.
 - [ ] **Phase 1 — truthful events and outcomes:** P1.1–P1.7 complete.
 - [ ] **Phase 2 — sources, assets, and privacy lifecycle:** P2.1–P2.8 complete.
 - [ ] **Phase 3 — persistent memory:** P3.1–P3.7 complete.

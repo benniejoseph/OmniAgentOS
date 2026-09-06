@@ -58,9 +58,11 @@ interchangeable:
 The offline lane has no warning result. Every declared assertion is required,
 and its domain-separated suite digest plus declared scorer version are intended
 to bind later observed baselines. Scoring changes must bump that version. A
-normative fixture is not evidence that the current application passes it; P0.5
-remains open until category adapters have produced a checked-in observed
-baseline through an explicitly authorized evaluation run.
+normative fixture is not evidence that the current application passes it. The
+checked-in observation is reproduced from the real side-effect-free adapters,
+and the authenticated Phase 0 production gate scores that fresh observation
+before emitting its scoped, content-free receipt. A pass requires every case,
+category, and Phase 0 row to pass with zero effects.
 
 ## Claim evidence is stronger than citation presence
 
