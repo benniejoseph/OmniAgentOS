@@ -1408,3 +1408,20 @@ verification booleans, and the receipt digest. It never contains exported
 content, filenames, source identifiers, connector metadata, credentials,
 passphrases, decrypted bytes, or private reasoning. The event records the
 verified result; it does not grant access or authorize later connector use.
+
+## Explainable memory tier lifecycle
+
+P3.2 extends the existing `memory.created` metadata with the resolved tier,
+policy version, formation reason, retention boundary, and promotion lineage.
+These fields contain lifecycle coordinates only; title, content, tags,
+embeddings, source passages, actor identity, and private reasoning remain
+excluded. Historical records are backfilled in place by migration v100 without
+emitting synthetic creation events, and permanent-deletion barriers are never
+rewritten.
+
+The existing immutable memory-retrieval trace remains the authoritative usage
+receipt. A database projection now updates only `last_used_at` and `use_count`
+for the exact retrieved memory after that trace commits. It emits no new domain
+event and grants no retrieval authority. Retention expiry and validity state
+are evaluated independently, so usage cannot reactivate an expired, forgotten,
+candidate, or superseded claim.

@@ -1936,7 +1936,29 @@ from active retrieval and graph projections. Failed, blocked, approval-held,
 dry-run, cross-actor, and unverified effects form no successful episode.
 Migration v83 quarantines legacy active response-derived memories and removes
 their derived graph and daily-brief projections. This closes P3.3 without
-claiming P3.1, P3.2, or the rest of Phase 3.
+claiming P3.1 or the rest of Phase 3.
+
+P3.2 is complete at production release
+`32e38779ac34dcb6b82a5ede5fc71311975632f2`. The memory store and portable
+archive now preserve one of eight explicit tiers under frozen policy v1. Each
+tier declares retention, review-only promotion, superseding correction, and
+authorized temporal retrieval rules. Working memory is session-affine and is
+excluded from generic retrieval; retention-expired records cannot re-enter
+active context; retrieval priority is tier-aware; corrections retain history;
+and immutable retrieval traces project last-use time and count. The API and
+Memory workspace show why a record exists, its source, scope, confidence, last
+use, validity, retention state, and full tier policy without exposing its
+embedding.
+
+Migration v100 backfilled all 2,047 eligible production memories while
+preserving all 16 permanent-deletion barriers, and installed one exact
+retrieval-use projection trigger under checksum
+`bfc626248789e032ca657d911f93a6929018f218a712f6d62f388fc2d41a159d`.
+The live Fly worker then authenticated to canonical Vercel and read 25 records
+with valid tiers, policy v1, complete explainability, and no embeddings. The
+shared worker/web and release-smoke credential was rotated as part of the
+paired release. This closes P3.2 without claiming the externally authority-held
+P3.1 or the remaining Phase 3 slices.
 
 The first P4.1 delivery is active only as a shadow comparison. Context Compiler
 v2 independently gates canonical source evidence, bound memory claims and
