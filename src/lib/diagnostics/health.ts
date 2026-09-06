@@ -21,6 +21,7 @@ import { getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
 import { getWorkflowTriggerStats } from "@/lib/workflows/triggers";
 import type { WorkflowRunRecord, WorkflowStats } from "@/lib/workflows/types";
 import { getRunStats } from "@/lib/runs/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -113,6 +114,14 @@ async function runSystemDiagnosticsForTenant(input: DiagnosticsInput) {
       mode: "repair",
       limit: 10,
       tenantId,
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: null,
+        executingPrincipalType: "system",
+        executingPrincipalId: "omniagent-diagnostics",
+        correlationId: `diagnostics-recovery:${randomUUID()}`,
+        purpose: "diagnostics.workflow_recovery",
+      }),
     });
     recoveryActions.push({
       id: "operation_jobs.expired_leases",

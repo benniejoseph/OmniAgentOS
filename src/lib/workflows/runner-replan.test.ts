@@ -139,6 +139,31 @@ beforeEach(() => {
     };
     return structuredClone(detail.run);
   });
+  mocks.transitionWorkflowRunWithEvents.mockImplementation(async (
+    _runId: string,
+    allowedStatuses: string[],
+    patch: Record<string, unknown>,
+    events: Array<{ type: string; payload?: Record<string, unknown> }>,
+  ) => {
+    if (!allowedStatuses.includes(detail.run.status)) return null;
+    updateCounter += 1;
+    detail.run = {
+      ...detail.run,
+      ...patch,
+      updatedAt: `2026-09-06T00:00:${String(updateCounter).padStart(2, "0")}.000Z`,
+    };
+    for (const event of events) {
+      detail.events.push({
+        id: `event-${detail.events.length + 1}`,
+        tenantId: "tenant-1",
+        workflowRunId: detail.run.id,
+        type: event.type,
+        payload: event.payload || {},
+        createdAt: new Date().toISOString(),
+      });
+    }
+    return structuredClone(detail.run);
+  });
   mocks.updateWorkflowStep.mockImplementation(async (
     _runId: string,
     stepKey: string,

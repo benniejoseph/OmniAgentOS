@@ -308,6 +308,7 @@ async function cancelLinkedExecutors(
             tenantId: owner.tenantId,
             actorId: owner.actorId,
             reason: "Canceled with the parent mission.",
+            executionScope: owner.executionScope,
           });
         } catch (error) {
           if (!(error instanceof WorkflowSignalConflictError)) throw error;

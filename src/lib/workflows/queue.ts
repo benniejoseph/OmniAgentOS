@@ -20,10 +20,11 @@ import { tickWorkflowRun } from "@/lib/workflows/runner";
 import {
   appendWorkflowEvent,
   failWorkflowRunForQueueExhaustion,
+  getWorkflowRunExecutionAuthority,
   getWorkflowRunDetail,
   listRunnableWorkflowRuns,
   reclaimWorkflowRunForQueueDelivery,
-  transitionWorkflowRun,
+  transitionWorkflowRunWithEvents,
   updateWorkflowStep,
 } from "@/lib/workflows/store";
 import { createWorkflowBudgetSession } from "@/lib/workflows/budgets";
@@ -261,6 +262,11 @@ async function processWorkflowQueueInScope(
           tenantId: job.tenantId,
         });
         if (budgetDetail) {
+          const executionAuthority = budgetDetail.run.input.executionAuthorityRequired
+            ? await getWorkflowRunExecutionAuthority(workflowRunId, {
+                tenantId: job.tenantId,
+              })
+            : undefined;
           try {
             await createWorkflowBudgetSession(budgetDetail).reserve(
               { retries: 1 },
@@ -278,9 +284,20 @@ async function processWorkflowQueueInScope(
                   error: message,
                   completedAt: new Date().toISOString(),
                 },
+                {
+                  tenantId: job.tenantId,
+                  events: [{
+                    type: "step.failed",
+                    payload: {
+                      stepKey: budgetDetail.run.currentStep,
+                      reason: "queue_redelivery_budget_exhausted",
+                    },
+                  }],
+                  executionAuthority,
+                },
               );
             }
-            await transitionWorkflowRun(
+            await transitionWorkflowRunWithEvents(
               workflowRunId,
               ["queued", "running"],
               {
@@ -288,19 +305,18 @@ async function processWorkflowQueueInScope(
                 error: message,
                 completedAt: new Date().toISOString(),
               },
-              { tenantId: job.tenantId },
-            );
-            await appendWorkflowEvent(
-              workflowRunId,
-              "workflow.budget_exhausted",
-              {
-                schemaVersion: 1,
-                dimension: error.dimension,
-                limit: error.limit,
-                attempted: error.attempted,
-                requiresAuthorization: true,
-                phase: "workflow.queue_redelivery",
-              },
+              [{
+                type: "workflow.budget_exhausted",
+                payload: {
+                  schemaVersion: 1,
+                  dimension: error.dimension,
+                  limit: error.limit,
+                  attempted: error.attempted,
+                  requiresAuthorization: true,
+                  phase: "workflow.queue_redelivery",
+                },
+              }],
+              { tenantId: job.tenantId, executionAuthority },
             );
             const completedJob = await completeOperationJob(
               job.id,
@@ -372,11 +388,6 @@ async function processWorkflowQueueInScope(
         const detail = await tickWorkflowRun(workflowRunId, {
           tenantId: job.tenantId,
         });
-        await appendWorkflowEvent(
-          workflowRunId,
-          "workflow.queue.retry_budget_exhausted",
-          { jobId: job.id, attempt: job.attempt },
-        ).catch(() => undefined);
         results.push({
           job: completedJob || job,
           workflowRunId,
@@ -403,13 +414,6 @@ async function processWorkflowQueueInScope(
           error: "Workflow queue lease was stale during redelivery recovery.",
         });
         continue;
-      }
-      if (reclaimDisposition === "requeued") {
-        await appendWorkflowEvent(
-          workflowRunId,
-          "workflow.queue.redelivery_reclaimed",
-          { jobId: job.id, attempt: job.attempt },
-        ).catch(() => undefined);
       }
       if (reclaimDisposition === "failed") {
         const completedJob = await completeOperationJob(

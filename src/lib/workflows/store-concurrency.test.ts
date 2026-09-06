@@ -265,6 +265,9 @@ describe("workflow conditional transitions (file mode)", () => {
     });
     await store.updateWorkflowStep(detail.run.id, "approval_gate", {
       status: "running",
+    }, {
+      tenantId: "tenant-cas",
+      events: [{ type: "step.started" }],
     });
     await store.transitionWorkflowRun(
       detail.run.id,
@@ -319,6 +322,7 @@ describe("workflow conditional transitions (file mode)", () => {
       {
         tenantId: "tenant-redelivery",
         expectedRunUpdatedAt: running!.updatedAt,
+        events: [{ type: "step.started" }],
       },
     );
 
@@ -338,6 +342,7 @@ describe("workflow conditional transitions (file mode)", () => {
         {
           tenantId: "tenant-redelivery",
           expectedRunUpdatedAt: running!.updatedAt,
+          events: [{ type: "step.completed" }],
         },
       ),
     ).resolves.toBeNull();
