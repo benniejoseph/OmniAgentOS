@@ -128,6 +128,46 @@ export function buildUserPrivateMemoryAccessBindingV1(input: {
   });
 }
 
+export function buildAgentPrivateMemoryAccessBindingV1(input: {
+  tenantId: string;
+  ownerActorId: string;
+  ownerAgentId: string;
+  originPurpose: string;
+  allowedPurposeIds?: readonly string[];
+  sensitivity?: MemoryAccessBindingV1["sensitivity"];
+  accessBoundAt?: string;
+}): MemoryAccessBindingV1 {
+  const draft = {
+    version: MEMORY_ACCESS_BINDING_VERSION,
+    state: "scope_bound" as const,
+    tenantId: contractIdSchema.parse(input.tenantId),
+    ownerActorId: contractIdSchema.parse(input.ownerActorId),
+    ownerAgentId: contractIdSchema.parse(input.ownerAgentId),
+    workspaceId: null,
+    projectId: null,
+    missionId: null,
+    visibility: "agent_private" as const,
+    sensitivity: input.sensitivity || "confidential" as const,
+    originPurpose: input.originPurpose.trim(),
+    allowedPurposeIds: Object.freeze(
+      [...new Set(input.allowedPurposeIds || [
+        MEMORY_PURPOSE_IDS.read,
+        MEMORY_PURPOSE_IDS.retrieve,
+        MEMORY_PURPOSE_IDS.formation,
+      ])].sort(compareIds),
+    ),
+    accessBoundAt: new Date(input.accessBoundAt || Date.now()).toISOString(),
+  };
+  const parsed = memoryAccessBindingV1Schema.parse({
+    ...draft,
+    accessScopeSha256: memoryAccessBindingSha256(draft),
+  });
+  return Object.freeze({
+    ...parsed,
+    allowedPurposeIds: Object.freeze(parsed.allowedPurposeIds),
+  });
+}
+
 export function memoryAccessBindingAllows(
   scope: DatabaseMemoryAccessScope,
   candidate: unknown,
@@ -146,6 +186,7 @@ export function memoryAccessBindingAllows(
   }
   if (binding.visibility === "agent_private") {
     return scope.executingPrincipalType === "agent" &&
+      binding.ownerActorId === scope.initiatingActorId &&
       binding.ownerAgentId === scope.executingPrincipalId;
   }
   if (binding.visibility === "mission_shared") {

@@ -126,9 +126,22 @@ describe("verified-effect memory formation", () => {
     });
     expect(input).toMatchObject({
       type: "episode",
+      tier: "episodic",
+      scope: "user",
       claimStatus: "active",
       assertedBy: "system",
       formationOrigin: "verified_effect",
+      accessBinding: {
+        visibility: "agent_private",
+        ownerActorId: actorId,
+        ownerAgentId: "atlas",
+      },
+      databaseAccessScope: {
+        initiatingActorId: actorId,
+        executingPrincipalType: "agent",
+        executingPrincipalId: "atlas",
+        purposeId: "memory.formation.v1",
+      },
       evidenceRefs: expect.arrayContaining([
         "run:run-a",
         `tool-execution:${toolExecutionId}`,

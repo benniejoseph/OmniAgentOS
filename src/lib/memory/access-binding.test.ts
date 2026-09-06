@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildAgentPrivateMemoryAccessBindingV1,
   buildUserPrivateMemoryAccessBindingV1,
   memoryAccessBindingAllows,
   memoryAccessBindingV1Schema,
@@ -64,5 +65,39 @@ describe("memory access binding v1", () => {
       ...binding,
       ownerActorId: "actor:sibling",
     }).success).toBe(false);
+  });
+
+  it("binds agent-private memory to the exact owner and logical agent", () => {
+    const agentBinding = buildAgentPrivateMemoryAccessBindingV1({
+      tenantId: "tenant:alpha",
+      ownerActorId: "actor:owner",
+      ownerAgentId: "agent:atlas",
+      originPurpose: "memory.verified_effect",
+      accessBoundAt: "2026-09-06T00:00:00.000Z",
+    });
+    const agentScope = scope({
+      executingPrincipalType: "agent",
+      executingPrincipalId: "agent:atlas",
+      purposeId: MEMORY_PURPOSE_IDS.retrieve,
+    });
+
+    expect(memoryAccessBindingV1Schema.parse(agentBinding)).toEqual(
+      agentBinding,
+    );
+    expect(Object.isFrozen(agentBinding)).toBe(true);
+    expect(agentBinding).toMatchObject({
+      visibility: "agent_private",
+      ownerActorId: "actor:owner",
+      ownerAgentId: "agent:atlas",
+    });
+    expect(memoryAccessBindingAllows(agentScope, agentBinding)).toBe(true);
+    expect(memoryAccessBindingAllows({
+      ...agentScope,
+      executingPrincipalId: "agent:sibling",
+    }, agentBinding)).toBe(false);
+    expect(memoryAccessBindingAllows({
+      ...agentScope,
+      initiatingActorId: "actor:sibling",
+    }, agentBinding)).toBe(false);
   });
 });

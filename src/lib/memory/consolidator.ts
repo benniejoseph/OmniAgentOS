@@ -1,5 +1,10 @@
 import { listStreamEvents } from "@/lib/events/store";
+import { databaseMemoryAccessScopeFromExecutionScope } from "@/lib/db/memory-access-scope";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
+import {
+  buildAgentPrivateMemoryAccessBindingV1,
+  MEMORY_PURPOSE_IDS,
+} from "@/lib/memory/access-binding";
 import {
   saveMemories,
   type CreateMemoryInput,
@@ -154,7 +159,13 @@ export async function formVerifiedEffectMemories(input: {
   input.abortSignal?.throwIfAborted();
   const saved = await saveMemories(memoryInputs);
   input.abortSignal?.throwIfAborted();
-  await indexMemoryGraphRecords(saved, "memory.verified_effect");
+  const compatibilityRecords = saved.filter((record) => !record.accessBinding);
+  if (compatibilityRecords.length) {
+    await indexMemoryGraphRecords(
+      compatibilityRecords,
+      "memory.verified_effect",
+    );
+  }
   return saved;
 }
 
@@ -178,6 +189,22 @@ export function verifiedEffectMemoryInput(input: {
   }
   const receipt = verifiedReceipt(record);
   if (!receipt) return undefined;
+  const agentPrivate = executionScope.executingPrincipalType === "agent" &&
+    Boolean(executionScope.executingPrincipalId);
+  const accessBinding = agentPrivate
+    ? buildAgentPrivateMemoryAccessBindingV1({
+        tenantId: executionScope.tenantId,
+        ownerActorId: executionScope.initiatingActorId,
+        ownerAgentId: executionScope.executingPrincipalId as string,
+        originPurpose: "memory.verified_effect",
+      })
+    : undefined;
+  const databaseAccessScope = accessBinding
+    ? databaseMemoryAccessScopeFromExecutionScope(executionScope, {
+        purposeId: MEMORY_PURPOSE_IDS.formation,
+        auditPurpose: "Form an agent-private verified-effect episode.",
+      })
+    : undefined;
 
   return {
     id: `verified_effect_${sourceContractSha256({
@@ -186,6 +213,7 @@ export function verifiedEffectMemoryInput(input: {
     })}`,
     tenantId: executionScope.tenantId,
     type: "episode",
+    tier: "episodic",
     title: `Verified effect: ${record.toolName}`,
     content: [
       `Tool: ${record.toolId}`,
@@ -197,7 +225,7 @@ export function verifiedEffectMemoryInput(input: {
       "Outcome: the committed target exactly matched the expected state.",
     ].join("\n"),
     tags: ["verified-effect", record.toolId],
-    scope: "workspace",
+    scope: accessBinding ? "user" : "workspace",
     source: "effect-receipt",
     importance: 0.75,
     confidence: 1,
@@ -211,6 +239,7 @@ export function verifiedEffectMemoryInput(input: {
     ],
     executionScope,
     formationOrigin: "verified_effect",
+    ...(accessBinding ? { accessBinding, databaseAccessScope } : {}),
   };
 }
 

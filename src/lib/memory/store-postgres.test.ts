@@ -71,6 +71,7 @@ vi.mock("@/lib/events/store", () => ({
 }));
 
 import {
+  buildAgentPrivateMemoryAccessBindingV1,
   buildUserPrivateMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
@@ -115,6 +116,25 @@ function executionScope(purposeId: string) {
     executingPrincipalType: "user",
     executingPrincipalId: ownerActorId,
     correlationId: "memory_test",
+    purpose: `test.${purposeId}`,
+  });
+}
+
+function agentAccessScope(purposeId: string, agentId = "agent:atlas") {
+  return {
+    ...accessScope(purposeId),
+    executingPrincipalType: "agent" as const,
+    executingPrincipalId: agentId,
+  };
+}
+
+function agentExecutionScope(purposeId: string, agentId = "agent:atlas") {
+  return createExecutionScope({
+    tenantId: "tenant-a",
+    initiatingActorId: ownerActorId,
+    executingPrincipalType: "agent",
+    executingPrincipalId: agentId,
+    correlationId: "agent_memory_test",
     purpose: `test.${purposeId}`,
   });
 }
@@ -177,6 +197,52 @@ describe("Postgres memory recall", () => {
     expect(mocks.events.slice(0, 2)).toEqual(["scope", "query"]);
     expect(mocks.queries[0]).toContain("access_contract_version");
     expect(record.accessBinding).toEqual(binding);
+  });
+
+  it("persists verified agent-private tiers and rejects sibling agents", async () => {
+    const binding = buildAgentPrivateMemoryAccessBindingV1({
+      tenantId: "tenant-a",
+      ownerActorId,
+      ownerAgentId: "agent:atlas",
+      originPurpose: "memory.verified_effect",
+    });
+    const record = await saveMemory({
+      id: "agent-private-memory-a",
+      tenantId: "tenant-a",
+      type: "episode",
+      tier: "episodic",
+      title: "Verified effect",
+      content: "The committed target matched the expected state.",
+      accessBinding: binding,
+      databaseAccessScope: agentAccessScope(MEMORY_PURPOSE_IDS.formation),
+      executionScope: agentExecutionScope(MEMORY_PURPOSE_IDS.formation),
+    });
+
+    expect(record.accessBinding).toEqual(binding);
+    expect(vi.mocked(appendScopedDomainEvent)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "memory.agent_private.created" }),
+      expect.objectContaining({
+        sql: expect.objectContaining({ transactionScoped: true }),
+      }),
+    );
+
+    await expect(saveMemory({
+      id: "agent-private-memory-sibling",
+      tenantId: "tenant-a",
+      type: "episode",
+      tier: "episodic",
+      title: "Sibling attempt",
+      content: "This must fail before SQL.",
+      accessBinding: binding,
+      databaseAccessScope: agentAccessScope(
+        MEMORY_PURPOSE_IDS.formation,
+        "agent:sibling",
+      ),
+      executionScope: agentExecutionScope(
+        MEMORY_PURPOSE_IDS.formation,
+        "agent:sibling",
+      ),
+    })).rejects.toThrow("does not authorize this write");
   });
 
   it("owns a scoped read transaction and rejects read purpose for writes", async () => {
