@@ -39,6 +39,7 @@ import type {
 } from "@/lib/rag/types";
 import { citationIdForEvidence } from "@/lib/rag/citations";
 import {
+  buildContextCompilerV2Canary,
   buildContextCompilerV2Shadow,
   prepareContextCompilerV2Candidates,
 } from "@/lib/rag/context-compiler-v2";
@@ -79,6 +80,15 @@ export type BuildContextPackOptions = {
    * remains authoritative until a later rollout promotes the compiler.
    */
   contextCompilerV2Shadow?: {
+    runId: string;
+    executionScope: ExecutionScope;
+  };
+  /**
+   * Authoritative only for a direct, explicit actor-private selection. The
+   * canary may remove rejected evidence but can never add an item that the
+   * reviewed legacy selection did not contain.
+   */
+  contextCompilerV2Canary?: {
     runId: string;
     executionScope: ExecutionScope;
   };
@@ -132,7 +142,8 @@ export async function buildContextPack(
   const candidateLimit = Math.min(Math.max(options.candidateLimit || limit * 3, limit), 60);
   const profile = profileQuery(normalizedQuery);
   const compilerAsOfTime = new Date().toISOString();
-  assertContextCompilerV2Scope(options.contextCompilerV2Shadow, tenantId);
+  const compilerV2Request = contextCompilerV2Request(options);
+  assertContextCompilerV2Scope(compilerV2Request, tenantId);
 
   if (!profile.shouldRetrieve || evidenceIds?.length === 0) {
     const compilerV2Shadow = options.contextCompilerV2Shadow
@@ -147,6 +158,18 @@ export async function buildContextPack(
           asOfTime: compilerAsOfTime,
         })
       : undefined;
+    const compilerV2Canary = options.contextCompilerV2Canary
+      ? buildContextCompilerV2Canary({
+          runId: options.contextCompilerV2Canary.runId,
+          tenantId: normalizeTenantId(tenantId),
+          query: normalizedQuery,
+          candidates: [],
+          legacySelectedEvidenceIds: [],
+          explicitEvidenceIds: evidenceIds || [],
+          limit,
+          asOfTime: compilerAsOfTime,
+        })
+      : undefined;
     const pack: ContextPack = {
       query: normalizedQuery,
       profile,
@@ -156,6 +179,7 @@ export async function buildContextPack(
       graphResults: [],
       contextBlock: formatContextPack([], profile),
       ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
+      ...(compilerV2Canary ? { compilerV2Canary } : {}),
     };
     if (options.persistTrace !== false && !databaseMemoryAccessScope) {
       pack.trace = await saveRetrievalTrace({
@@ -215,9 +239,9 @@ export async function buildContextPack(
     scopedMemoryResults,
     candidateLimit,
   );
-  const compilerCandidatesPromise = options.contextCompilerV2Shadow
+  const compilerCandidatesPromise = compilerV2Request
     ? prepareContextCompilerV2Candidates({
-        executionScope: options.contextCompilerV2Shadow.executionScope,
+        executionScope: compilerV2Request.executionScope,
         memoryAccessScope: databaseMemoryAccessScope,
         memoryResults,
         knowledgeResults,
@@ -232,10 +256,42 @@ export async function buildContextPack(
     graphResults,
   });
   const evidenceIdSet = evidenceIds ? new Set(evidenceIds) : undefined;
-  const selected = selectDiverseEvidence(
+  const legacySelected = selectDiverseEvidence(
     evidenceIdSet ? evidence.filter((item) => evidenceIdSet.has(citationIdForEvidence(item))) : evidence,
     limit,
   );
+  const compilerV2Shadow = options.contextCompilerV2Shadow && compilerCandidatesPromise
+    ? buildContextCompilerV2Shadow({
+        runId: options.contextCompilerV2Shadow.runId,
+        tenantId: normalizeTenantId(tenantId),
+        query: normalizedQuery,
+        candidates: await compilerCandidatesPromise,
+        legacySelectedEvidenceIds: legacySelected.map(citationIdForEvidence),
+        explicitEvidenceIds: evidenceIds,
+        limit,
+        asOfTime: compilerAsOfTime,
+      })
+    : undefined;
+  const compilerV2Canary = options.contextCompilerV2Canary && compilerCandidatesPromise
+    ? buildContextCompilerV2Canary({
+        runId: options.contextCompilerV2Canary.runId,
+        tenantId: normalizeTenantId(tenantId),
+        query: normalizedQuery,
+        candidates: await compilerCandidatesPromise,
+        legacySelectedEvidenceIds: legacySelected.map(citationIdForEvidence),
+        explicitEvidenceIds: evidenceIds || [],
+        limit,
+        asOfTime: compilerAsOfTime,
+      })
+    : undefined;
+  const canarySelectedIds = compilerV2Canary
+    ? new Set(compilerV2Canary.selectedEvidenceIds)
+    : undefined;
+  const selected = canarySelectedIds
+    ? legacySelected.filter((item) =>
+        canarySelectedIds.has(citationIdForEvidence(item))
+      )
+    : legacySelected;
   const selectedIdSet = evidenceIdSet
     ? new Set(selected.map(citationIdForEvidence))
     : undefined;
@@ -264,18 +320,6 @@ export async function buildContextPack(
   const privateTraceResults = traceResults.filter(
     (result) => result.kind === "memory" && privateMemoryIds.has(result.id),
   );
-  const compilerV2Shadow = options.contextCompilerV2Shadow && compilerCandidatesPromise
-    ? buildContextCompilerV2Shadow({
-        runId: options.contextCompilerV2Shadow.runId,
-        tenantId: normalizeTenantId(tenantId),
-        query: normalizedQuery,
-        candidates: await compilerCandidatesPromise,
-        legacySelectedEvidenceIds: selected.map(citationIdForEvidence),
-        explicitEvidenceIds: evidenceIds,
-        limit,
-        asOfTime: compilerAsOfTime,
-      })
-    : undefined;
   const trace =
     options.persistTrace === false
       ? undefined
@@ -311,20 +355,34 @@ export async function buildContextPack(
     contextBlock: formatContextPack(selected, profile),
     trace,
     ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
+    ...(compilerV2Canary ? { compilerV2Canary } : {}),
   });
 }
 
 function assertContextCompilerV2Scope(
-  shadow: BuildContextPackOptions["contextCompilerV2Shadow"],
+  compiler: BuildContextPackOptions["contextCompilerV2Shadow"],
   tenantId: string | undefined,
 ) {
-  if (!shadow) return;
-  if (normalizeTenantId(shadow.executionScope.tenantId) !== normalizeTenantId(tenantId)) {
+  if (!compiler) return;
+  if (normalizeTenantId(compiler.executionScope.tenantId) !== normalizeTenantId(tenantId)) {
     throw new Error("Context Compiler v2 scope does not match the retrieval tenant.");
   }
-  if (!shadow.executionScope.initiatingActorId) {
+  if (!compiler.executionScope.initiatingActorId) {
     throw new Error("Context Compiler v2 requires an initiating actor.");
   }
+}
+
+function contextCompilerV2Request(options: BuildContextPackOptions) {
+  if (options.contextCompilerV2Shadow && options.contextCompilerV2Canary) {
+    throw new Error("Context Compiler v2 cannot run in shadow and canary mode together.");
+  }
+  if (
+    options.contextCompilerV2Canary &&
+    !normalizeExplicitEvidenceIds(options.evidenceIds)?.length
+  ) {
+    throw new Error("Context Compiler v2 canary requires explicit evidence.");
+  }
+  return options.contextCompilerV2Canary || options.contextCompilerV2Shadow;
 }
 
 function resolveContextTenantId(

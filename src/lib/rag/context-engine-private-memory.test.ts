@@ -236,4 +236,59 @@ describe("actor-scoped context retrieval", () => {
       "private-memory",
     );
   });
+
+  it("lets the explicit-private canary remove unbound context without widening", async () => {
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "context-v2-canary",
+      purpose: "agent.run",
+    });
+    const pack = await buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope(),
+      persistTrace: false,
+      limit: 8,
+      evidenceIds: ["memory:legacy-memory", "memory:private-memory"],
+      contextCompilerV2Canary: {
+        runId: "run-context-v2-canary",
+        executionScope,
+      },
+    });
+
+    expect(pack.compilerV2Canary?.selectedEvidenceIds).toEqual([
+      "memory:private-memory",
+    ]);
+    expect(pack.compilerV2Canary?.receipt).toMatchObject({
+      mode: "canary",
+      legacySelectedCount: 2,
+      selectedCount: 1,
+      legacyOnlyCount: 1,
+    });
+    expect(pack.results.map((result) => result.id)).toEqual(["private-memory"]);
+    expect(pack.contextBlock).toContain("Private preference");
+    expect(pack.contextBlock).not.toContain("Legacy preference");
+  });
+
+  it("rejects canary activation without explicit evidence", async () => {
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "context-v2-canary-empty",
+      purpose: "agent.run",
+    });
+    await expect(buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope(),
+      contextCompilerV2Canary: {
+        runId: "run-context-v2-canary-empty",
+        executionScope,
+      },
+    })).rejects.toThrow("requires explicit evidence");
+    expect(mocks.searchMemories).not.toHaveBeenCalled();
+  });
 });

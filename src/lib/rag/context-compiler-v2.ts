@@ -24,6 +24,10 @@ export const CONTEXT_COMPILER_V2_VERSION_ID =
   "context-compiler:v2-shadow" as const;
 export const CONTEXT_COMPILER_V2_POLICY_VERSION_ID =
   "context-policy:v2-shadow" as const;
+export const CONTEXT_COMPILER_V2_CANARY_VERSION_ID =
+  "context-compiler:v2-explicit-private-canary" as const;
+export const CONTEXT_COMPILER_V2_CANARY_POLICY_VERSION_ID =
+  "context-policy:v2-explicit-private-canary" as const;
 
 // Context engine candidates are independently bounded to 60 memories,
 // 60 knowledge chunks, and 24 graph neighborhoods.
@@ -80,14 +84,11 @@ const contextCompilerV2DecisionSchema = z.object({
   selectedByV2: z.boolean(),
 }).strict();
 
-const contextCompilerV2ShadowReceiptBaseSchema = z.object({
+const contextCompilerV2ReceiptCommonSchema = z.object({
   schemaVersion: z.literal(CONTEXT_COMPILER_V2_SCHEMA_VERSION),
   receiptId: idSchema,
   runId: idSchema,
   tenantId: idSchema,
-  mode: z.literal("shadow"),
-  compilerVersionId: z.literal(CONTEXT_COMPILER_V2_VERSION_ID),
-  policyVersionId: z.literal(CONTEXT_COMPILER_V2_POLICY_VERSION_ID),
   purposeId: z.literal(CONTEXT_COMPILER_V2_PURPOSE_ID),
   querySha256: sha256Schema,
   asOfTime: z.string().datetime({ offset: true }),
@@ -106,10 +107,26 @@ const contextCompilerV2ShadowReceiptBaseSchema = z.object({
   decisions: z.array(contextCompilerV2DecisionSchema).max(MAX_CANDIDATES),
 }).strict();
 
-export const contextCompilerV2ShadowReceiptSchema =
-  contextCompilerV2ShadowReceiptBaseSchema.extend({
+const contextCompilerV2ShadowReceiptSchema =
+  contextCompilerV2ReceiptCommonSchema.extend({
+    mode: z.literal("shadow"),
+    compilerVersionId: z.literal(CONTEXT_COMPILER_V2_VERSION_ID),
+    policyVersionId: z.literal(CONTEXT_COMPILER_V2_POLICY_VERSION_ID),
     receiptSha256: sha256Schema,
   }).strict();
+
+const contextCompilerV2CanaryReceiptSchema =
+  contextCompilerV2ReceiptCommonSchema.extend({
+    mode: z.literal("canary"),
+    compilerVersionId: z.literal(CONTEXT_COMPILER_V2_CANARY_VERSION_ID),
+    policyVersionId: z.literal(CONTEXT_COMPILER_V2_CANARY_POLICY_VERSION_ID),
+    receiptSha256: sha256Schema,
+  }).strict();
+
+export const contextCompilerV2ReceiptSchema = z.discriminatedUnion("mode", [
+  contextCompilerV2ShadowReceiptSchema,
+  contextCompilerV2CanaryReceiptSchema,
+]);
 
 export type ContextCompilerV2AuthorizationReason = z.infer<
   typeof contextCompilerV2AuthorizationReasonSchema
@@ -119,6 +136,12 @@ export type ContextCompilerV2ItemClass = z.infer<
 >;
 export type ContextCompilerV2ShadowReceipt = z.infer<
   typeof contextCompilerV2ShadowReceiptSchema
+>;
+export type ContextCompilerV2CanaryReceipt = z.infer<
+  typeof contextCompilerV2CanaryReceiptSchema
+>;
+export type ContextCompilerV2Receipt = z.infer<
+  typeof contextCompilerV2ReceiptSchema
 >;
 
 export type ContextCompilerV2PreparedCandidate = Readonly<{
@@ -133,6 +156,10 @@ export type ContextCompilerV2PreparedCandidate = Readonly<{
 export type ContextCompilerV2Shadow = Readonly<{
   selectedEvidenceIds: readonly string[];
   receipt: ContextCompilerV2ShadowReceipt;
+}>;
+export type ContextCompilerV2Canary = Readonly<{
+  selectedEvidenceIds: readonly string[];
+  receipt: ContextCompilerV2CanaryReceipt;
 }>;
 
 export async function prepareContextCompilerV2Candidates(input: {
@@ -195,6 +222,47 @@ export function buildContextCompilerV2Shadow(input: {
   limit: number;
   asOfTime?: string;
 }): ContextCompilerV2Shadow {
+  const selection = buildContextCompilerV2Selection({ ...input, mode: "shadow" });
+  return Object.freeze({
+    selectedEvidenceIds: selection.selectedEvidenceIds,
+    receipt: parseContextCompilerV2ShadowReceipt(selection.receipt),
+  });
+}
+
+export function buildContextCompilerV2Canary(input: {
+  runId: string;
+  tenantId: string;
+  query: string;
+  candidates: readonly ContextCompilerV2PreparedCandidate[];
+  legacySelectedEvidenceIds: readonly string[];
+  explicitEvidenceIds: readonly string[];
+  limit: number;
+  asOfTime?: string;
+}): ContextCompilerV2Canary {
+  if (!input.explicitEvidenceIds.length) {
+    throw new Error("Context Compiler v2 canary requires explicit evidence.");
+  }
+  const selection = buildContextCompilerV2Selection({ ...input, mode: "canary" });
+  return Object.freeze({
+    selectedEvidenceIds: selection.selectedEvidenceIds,
+    receipt: parseContextCompilerV2CanaryReceipt(selection.receipt),
+  });
+}
+
+function buildContextCompilerV2Selection(input: {
+  runId: string;
+  tenantId: string;
+  query: string;
+  candidates: readonly ContextCompilerV2PreparedCandidate[];
+  legacySelectedEvidenceIds: readonly string[];
+  explicitEvidenceIds?: readonly string[];
+  limit: number;
+  asOfTime?: string;
+  mode: "shadow" | "canary";
+}): Readonly<{
+  selectedEvidenceIds: readonly string[];
+  receipt: ContextCompilerV2Receipt;
+}> {
   const asOfTime = canonicalTimestamp(input.asOfTime || new Date().toISOString());
   const candidates = uniqueCandidates(input.candidates);
   const legacySelectedEvidenceIds = uniqueIds(input.legacySelectedEvidenceIds);
@@ -263,12 +331,17 @@ export function buildContextCompilerV2Shadow(input: {
       runId: input.runId,
       querySha256: sourceContractSha256(input.query),
       asOfTime,
+      mode: input.mode,
     }).slice(0, 48)}`,
     runId: input.runId,
     tenantId: input.tenantId,
-    mode: "shadow" as const,
-    compilerVersionId: CONTEXT_COMPILER_V2_VERSION_ID,
-    policyVersionId: CONTEXT_COMPILER_V2_POLICY_VERSION_ID,
+    mode: input.mode,
+    compilerVersionId: input.mode === "canary"
+      ? CONTEXT_COMPILER_V2_CANARY_VERSION_ID
+      : CONTEXT_COMPILER_V2_VERSION_ID,
+    policyVersionId: input.mode === "canary"
+      ? CONTEXT_COMPILER_V2_CANARY_POLICY_VERSION_ID
+      : CONTEXT_COMPILER_V2_POLICY_VERSION_ID,
     purposeId: CONTEXT_COMPILER_V2_PURPOSE_ID,
     querySha256: sourceContractSha256(input.query),
     asOfTime,
@@ -295,7 +368,7 @@ export function buildContextCompilerV2Shadow(input: {
     }),
     decisions,
   };
-  const receipt = parseContextCompilerV2ShadowReceipt({
+  const receipt = parseContextCompilerV2Receipt({
     ...unsigned,
     receiptSha256: sourceContractSha256(unsigned),
   });
@@ -308,7 +381,27 @@ export function buildContextCompilerV2Shadow(input: {
 export function parseContextCompilerV2ShadowReceipt(
   value: unknown,
 ): ContextCompilerV2ShadowReceipt {
-  const receipt = contextCompilerV2ShadowReceiptSchema.parse(value);
+  const receipt = parseContextCompilerV2Receipt(value);
+  if (receipt.mode !== "shadow") {
+    throw new Error("Context Compiler v2 receipt is not a shadow receipt.");
+  }
+  return receipt;
+}
+
+export function parseContextCompilerV2CanaryReceipt(
+  value: unknown,
+): ContextCompilerV2CanaryReceipt {
+  const receipt = parseContextCompilerV2Receipt(value);
+  if (receipt.mode !== "canary") {
+    throw new Error("Context Compiler v2 receipt is not a canary receipt.");
+  }
+  return receipt;
+}
+
+export function parseContextCompilerV2Receipt(
+  value: unknown,
+): ContextCompilerV2Receipt {
+  const receipt = contextCompilerV2ReceiptSchema.parse(value);
   const { receiptSha256, ...unsigned } = receipt;
   if (sourceContractSha256(unsigned) !== receiptSha256) {
     throw new Error("Context Compiler v2 shadow receipt digest is invalid.");

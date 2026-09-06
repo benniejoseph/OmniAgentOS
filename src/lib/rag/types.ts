@@ -150,6 +150,8 @@ export type ContextPack = {
   trace?: RetrievalTraceRecord;
   /** Additive P4.1 comparison; it never changes the active prompt selection. */
   compilerV2Shadow?: import("@/lib/rag/context-compiler-v2").ContextCompilerV2Shadow;
+  /** P4.1 canary decision for explicit actor-private context. */
+  compilerV2Canary?: import("@/lib/rag/context-compiler-v2").ContextCompilerV2Canary;
 };
 
 export type ContextEngineStats = {
