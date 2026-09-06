@@ -1650,3 +1650,21 @@ comes only from an exact-owner database record in `active` state whose
 evaluation definition matches the immutable run identity. Evidence refresh,
 evaluation, activation, and rollback are separate owner actions. Failed or
 stale evaluation cannot be skipped, and rolled-back records never reactivate.
+
+## Bounded delegation contract bindings
+
+P8.1 adds no separate authoritative delegation ledger; that lifecycle begins in
+P8.3. New workflow Agent-node `workflow.plan_node.started` events carry only the
+delegation ID and contract digest. The persisted node input contains the strict
+contract, and its model execution receipt binds the same contract ID/digest,
+delegate principal, and verifier version. Existing Council delegation-before
+checkpoints now use the exact contract digest as their request reference, while
+the contribution receipt binds the returned proposal to that contract.
+
+Contracts may contain the bounded current objective and acceptance statements,
+but never a parent transcript, credential, or artifact content. Input artifact
+references retain source execution, content digest, byte count, kind, and
+evidence IDs; content is resolved separately as untrusted model input. Contract
+records and checkpoint/event payloads are evidence and attribution, not
+authority: actual execution uses the derived child scope and the governed model
+or tool boundary.

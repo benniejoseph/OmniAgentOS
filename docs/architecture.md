@@ -1462,6 +1462,25 @@ routing. Migration v115 installs the append-only forced-RLS ledger, exact actor
 policy, one-active-effect index, lifecycle and truncate guards, and serving-role
 grants limited to select, insert, and the ten transition columns.
 
+P8.1 introduces the strict `p8.1-delegation-contract:1` boundary for every new
+workflow Agent node and internal Council specialist. A contract binds the exact
+parent execution/principal, delegate Agent definition and principal, purpose,
+idempotency digest, independently understandable objective and criteria,
+content-free input artifact references, closed output schema, attenuated grants,
+complete budget vector, ordered deadline, cancel signal, retry policy, and exact
+verifier. Its digest determines the immutable contract identity. Credential
+material, full parent transcripts, open output schemas, and widened grants,
+budgets, or deadlines fail validation.
+
+Workflow nodes persist the contract before model execution and bind it into the
+typed execution receipt. Council checkpoints use the contract digest as their
+request digest and return the same binding with each proposed contribution.
+Both paths derive the child execution scope from the contract's exact delegate
+principal and delegation ID. Artifact content is resolved separately from the
+content-free reference, remains explicitly untrusted, and never grants tools or
+capabilities. These delegates remain model-only until P8.2 adds the governed
+broker and attenuated real-tool execution.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,

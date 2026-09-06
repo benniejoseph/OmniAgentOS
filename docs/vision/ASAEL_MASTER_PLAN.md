@@ -773,6 +773,9 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.6 | Build external A2A client/server adapters. | Reuse inbound auth/MCP patterns; create A2A boundary. | External agents receive scoped references and delegated tokens; all actions re-enter governed execution. | Compatible external agents can discover, negotiate, stream progress, exchange artifacts, cancel, and resume without a second security path. |
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
+**Implementation status:** P8.1 is complete. P8.2 is the next actionable slice;
+P12 and P13 remain deferred.
+
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
 
 ### Phase 9 — Main Agent control, browser/computer use, voice, notifications, communications, and AP2
@@ -2554,6 +2557,28 @@ Dart analysis, and the Next 16 production build. Vercel rejected the completed
 feature deployment because the team still has an overdue balance, so Fly was
 intentionally left unchanged. Phase 7 is complete; P8.1 is next, and P12/P13
 remain deferred.
+
+P8.1 repository implementation is complete through commit
+`6bcac064e48b765c8a4586a0e0258438fbee2123`. The strict
+`p8.1-delegation-contract:1` binds exact parent and delegate execution identity,
+purpose, idempotency, objective, required acceptance criteria, content-free
+input artifact references, a closed output schema, attenuated grants, the
+complete budget vector, deadline, cancellation, retry, and exact verifier.
+Credential material, parent transcripts, open schemas, widened authority, and
+post-construction mutation fail closed.
+
+Every new workflow Agent node persists that contract before model execution,
+derives the child scope from its delegate principal and delegation ID, resolves
+artifact content separately as untrusted data, and binds the contract into its
+typed execution receipt. Every internal Council specialist uses the same
+boundary; its checkpoint request digest is the contract digest and its returned
+contribution carries the matching proposal binding for parent verification.
+These P8.1 delegates remain model-only; real tools and attenuated delegated
+principals begin in P8.2. Forty-two focused checks across ten affected files,
+affected lint, TypeScript, and the 96-route Next 16 production build pass. No
+migration was required. Vercel rejected the complete-feature promotion before
+upload because the team still has an overdue balance, so Fly was intentionally
+left unchanged. P8.2 is next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
