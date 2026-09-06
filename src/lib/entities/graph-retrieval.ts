@@ -15,8 +15,7 @@ import {
   type EntityAlias,
   type EntityRecord,
 } from "@/lib/entities/registry";
-import { readEntityRegistry } from "@/lib/entities/store";
-import { queryTemporalRelationClaims } from "@/lib/entities/temporal-claim-store";
+import { readGraphStorageSnapshot } from "@/lib/entities/graph-storage-adapter";
 import {
   parseTemporalRelationClaimRecord,
   relationClaimIsVisibleAt,
@@ -119,19 +118,15 @@ export async function retrieveGraphRelationshipPaths(
   );
   const memoryScope = assertRuntimeScopes(input, entityBinding);
   const asOfTime = canonicalTimestamp(input.asOfTime || new Date().toISOString());
-  const [registry, relations] = await Promise.all([
-    readEntityRegistry({
+  const storage = await readGraphStorageSnapshot({
+    read: {
       accessBinding: entityBinding,
       executionScope: input.entityAccess.executionScope,
-    }),
-    queryTemporalRelationClaims({
-      accessBinding: entityBinding,
-      executionScope: input.entityAccess.executionScope,
-      validAt: asOfTime,
-      recordedAt: asOfTime,
-      limit: MAX_RELATIONS,
-    }),
-  ]);
+      asOfTime,
+      relationLimit: MAX_RELATIONS,
+    },
+  });
+  const { entities, aliases, relations } = storage.snapshot;
   const lineage = uniqueLineage(relations);
   const [memories, canonicalEvidence] = await Promise.all([
     getActiveMemoriesByIds(
@@ -159,8 +154,8 @@ export async function retrieveGraphRelationshipPaths(
   return buildGraphRelationshipPaths({
     query,
     accessBinding: entityBinding,
-    entities: registry.entities,
-    aliases: registry.aliases,
+    entities,
+    aliases,
     relations,
     evidence,
     maxHops: input.maxHops,
