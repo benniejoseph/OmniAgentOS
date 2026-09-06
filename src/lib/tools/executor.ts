@@ -21,16 +21,29 @@ import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/o
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
+import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
+import { retireEntityMemoryLineage } from "@/lib/entities/store";
+import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import {
   publicMemoryDeletionReceiptV1,
   type MemoryDeletionReceiptV1,
 } from "@/lib/memory/deletion-receipt";
-import { queueMemoryGraphRebuild } from "@/lib/memory/graph";
+import {
+  indexUserPrivateMemoryGraphRecords,
+  queueMemoryGraphRebuild,
+} from "@/lib/memory/graph";
+import { memoryLifecycleActionSchema } from "@/lib/memory/lifecycle";
+import {
+  MemoryLifecycleConflictError,
+  setMemoryLifecycle,
+} from "@/lib/memory/maintenance-store";
+import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import {
   correctMemory,
   forgetMemoryWithReceipt,
   getMemory,
   getMemoryDeletionReceipt,
+  previewMemoryDeletion,
   saveMemory,
   saveMemoryWithCommitStatus,
   searchMemories,
@@ -54,6 +67,7 @@ import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  deriveExecutionScope,
   executionScopesEqual,
   executionScopeFromSecurityContext,
   type ExecutionScope,
@@ -131,6 +145,17 @@ const memoryWriteSchema = z.object({
   importance: z.number().min(0).max(1).optional(),
 }).strict();
 
+const memoryIdSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+}).strict();
+
+const memoryLifecycleSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  action: memoryLifecycleActionSchema,
+}).strict();
+
+const memoryExportSchema = z.object({}).strict();
+
 const memoryCorrectSchema = z.object({
   id: z.string().trim().min(1).max(200),
   title: z.string().trim().min(1).max(240).optional(),
@@ -150,6 +175,7 @@ const memoryCorrectSchema = z.object({
 
 const memoryForgetSchema = z.object({
   id: z.string().trim().min(1).max(200),
+  expectedReceiptManifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
 const knowledgeIngestSchema = z.object({
@@ -2623,6 +2649,73 @@ function requiredEffectSha256(value: string, field: string) {
   return value;
 }
 
+function memoryToolAccess(
+  context: SecurityContext | undefined,
+  input: {
+    purposeId: string;
+    auditPurpose: string;
+    correlationId?: string;
+  },
+) {
+  if (!context) return undefined;
+  return requestMemoryAccessFromSecurityContext(context, {
+    purposeId: input.purposeId,
+    auditPurpose: input.auditPurpose,
+    correlationId: input.correlationId || randomUUID(),
+  });
+}
+
+function publicMemoryScope(memory: MemoryRecord) {
+  const binding = memory.accessBinding;
+  if (!binding) {
+    return {
+      visibility: memory.scope === "user"
+        ? "user_legacy"
+        : memory.scope === "project"
+          ? "project_legacy"
+          : "workspace_legacy",
+      sensitivity: "legacy_unspecified",
+      scope: memory.scope,
+    };
+  }
+  return {
+    visibility: binding.visibility,
+    sensitivity: binding.sensitivity,
+    scope: memory.scope,
+    owner: binding.visibility === "user_private" ? "current_user" : undefined,
+    agentId: binding.ownerAgentId,
+    workspaceId: binding.workspaceId,
+    projectId: binding.projectId,
+    missionId: binding.missionId,
+  };
+}
+
+function publicMemoryToolRecord(memory: MemoryRecord) {
+  const {
+    embedding: _embedding,
+    accessBinding: _accessBinding,
+    ...record
+  } = memory;
+  void _embedding;
+  void _accessBinding;
+  return {
+    ...record,
+    access: publicMemoryScope(memory),
+  };
+}
+
+function mergeMemoryToolSearchResults(
+  legacy: Array<{ record: MemoryRecord; score: number; reasons: string[] }>,
+  scoped: Array<{ record: MemoryRecord; score: number; reasons: string[] }>,
+  limit: number,
+) {
+  return [...new Map(
+    [...legacy, ...scoped].map((result) => [result.record.id, result] as const),
+  ).values()]
+    .sort((left, right) => right.score - left.score)
+    .slice(0, limit);
+}
+
 async function runTool(
   tool: ToolDefinition,
   input: Record<string, unknown>,
@@ -2654,16 +2747,100 @@ async function runTool(
       abortSignal,
       aiUsageScope("embedding", "tool.memory.search"),
     ))?.[0];
-    const results = await searchMemories(safeQuery, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
+    const searchLimit = limit || 5;
+    const privateAccess = memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.retrieve,
+      auditPurpose: "tool.memory.search",
+      correlationId: idempotencyKey,
+    });
+    const [legacyResults, privateResults] = await Promise.all([
+      searchMemories(safeQuery, {
+        limit: searchLimit,
+        queryEmbedding,
+        tenantId: context?.tenantId,
+      }),
+      privateAccess
+        ? searchMemories(safeQuery, {
+            limit: searchLimit,
+            queryEmbedding,
+            tenantId: context?.tenantId,
+            accessScope: privateAccess.databaseAccessScope,
+          })
+        : Promise.resolve([]),
+    ]);
+    const results = mergeMemoryToolSearchResults(
+      legacyResults,
+      privateResults,
+      searchLimit,
+    );
     return {
       results: results.map((result) => ({
         score: result.score,
         reasons: result.reasons,
-        record: {
-          ...result.record,
-          embedding: undefined,
-        },
+        record: publicMemoryToolRecord(result.record),
       })),
+    };
+  }
+
+  if (tool.id === "memory.inspect") {
+    const { id } = memoryIdSchema.parse(parsed);
+    const access = memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.read,
+      auditPurpose: "tool.memory.inspect",
+      correlationId: idempotencyKey,
+    });
+    const privateMemory = access
+      ? await getMemory(id, {
+          tenantId: context?.tenantId,
+          accessScope: access.databaseAccessScope,
+        })
+      : null;
+    const memory = privateMemory || await getMemory(id, {
+      tenantId: context?.tenantId,
+    });
+    if (!memory) throw new Error("Memory not found.");
+    return {
+      memory: publicMemoryToolRecord(memory),
+      receipt: {
+        operation: "inspect",
+        memoryId: memory.id,
+        scope: publicMemoryScope(memory),
+        claimStatus: memory.claimStatus || "active",
+        retrievalEligible:
+          (memory.claimStatus || "active") === "active" &&
+          !memory.archivedAt,
+      },
+    };
+  }
+
+  if (tool.id === "memory.forget.preview") {
+    const { id } = memoryIdSchema.parse(parsed);
+    const access = memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.forget,
+      auditPurpose: "tool.memory.forget.preview",
+      correlationId: idempotencyKey,
+    });
+    const privatePreview = access
+      ? await previewMemoryDeletion(id, {
+          tenantId: context?.tenantId,
+          accessScope: access.databaseAccessScope,
+        })
+      : null;
+    const preview = privatePreview || await previewMemoryDeletion(id, {
+      tenantId: context?.tenantId,
+    });
+    if (!preview) throw new Error("Memory not found.");
+    return {
+      preview,
+      receipt: {
+        operation: "forget_preview",
+        memoryId: preview.memory.id,
+        expectedReceiptManifestSha256:
+          preview.expectedReceiptManifestSha256,
+        state: preview.state,
+        guarantee: preview.guarantee,
+        irreversible: true,
+      },
     };
   }
 
@@ -2739,9 +2916,30 @@ async function runTool(
 
   if (tool.id === "memory.correct") {
     const { id, ...correction } = memoryCorrectSchema.parse(parsed);
-    const existing = await getMemory(id, { tenantId: context?.tenantId });
+    const readAccess = memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.read,
+      auditPurpose: "tool.memory.correct.read",
+      correlationId: idempotencyKey,
+    });
+    const correctionAccess = memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.correct,
+      auditPurpose: "tool.memory.correct",
+      correlationId: idempotencyKey,
+    });
+    const scopedExisting = readAccess
+      ? await getMemory(id, {
+          tenantId: context?.tenantId,
+          accessScope: readAccess.databaseAccessScope,
+        })
+      : null;
+    const existing = scopedExisting || await getMemory(id, {
+      tenantId: context?.tenantId,
+    });
     if (!existing || existing.claimStatus === "forgotten") {
       throw new Error("Memory not found.");
+    }
+    if (scopedExisting && !correctionAccess) {
+      throw new Error("Private memory correction scope is unavailable.");
     }
     const safeCorrection = redactSensitive(correction) as typeof correction;
     const title = safeCorrection.title ?? existing.title;
@@ -2756,22 +2954,141 @@ async function runTool(
       { ...safeCorrection, embedding },
       {
         tenantId: context?.tenantId,
-        actorId: context?.actorId,
-        executionScope,
+        actorId: scopedExisting
+          ? correctionAccess?.actorBinding.canonicalActorId
+          : context?.actorId,
+        accessScope: scopedExisting
+          ? correctionAccess?.databaseAccessScope
+          : undefined,
+        executionScope: scopedExisting
+          ? correctionAccess?.executionScope
+          : executionScope,
       },
     );
     if (!result) {
       throw new Error("Memory not found.");
     }
-    await queueMemoryGraphRebuild({ tenantId: context?.tenantId });
+    if (
+      result.review?.status !== "pending" &&
+      result.corrected.accessBinding &&
+      correctionAccess
+    ) {
+      await indexUserPrivateMemoryGraphRecords(
+        [result.corrected],
+        "memory.tool.correct",
+        {
+          tenantId: context?.tenantId,
+          accessScope: correctionAccess.databaseAccessScope,
+        },
+      );
+      await projectExplicitMemoryEntities({
+        memory: result.corrected,
+        executionScope: correctionAccess.executionScope,
+      });
+      await retireEntityMemoryLineage({
+        tenantId: context?.tenantId || "default",
+        ownerActorId: correctionAccess.actorBinding.canonicalActorId,
+        memoryIds: [result.previous.id],
+        executionScope: deriveExecutionScope(correctionAccess.executionScope, {
+          purpose: "memory.correct.v1",
+        }),
+      });
+    } else if (!result.corrected.accessBinding) {
+      await queueMemoryGraphRebuild({ tenantId: context?.tenantId });
+    }
     return {
-      previous: stripEmbedding(result.previous),
-      corrected: stripEmbedding(result.corrected),
+      previous: publicMemoryToolRecord(result.previous),
+      corrected: publicMemoryToolRecord(result.corrected),
+      ...(result.review
+        ? {
+            review: {
+              id: result.review.id,
+              kind: result.review.kind,
+              status: result.review.status,
+              decision: result.review.decision,
+            },
+          }
+        : {}),
+      receipt: {
+        operation: correction.contradiction
+          ? "propose_contradiction"
+          : "correct",
+        previousMemoryId: result.previous.id,
+        correctedMemoryId: result.corrected.id,
+        previousClaimStatus: result.previous.claimStatus,
+        reviewRequired: result.review?.status === "pending",
+      },
+    };
+  }
+
+  if (tool.id === "memory.lifecycle") {
+    const { id, action } = memoryLifecycleSchema.parse(parsed);
+    const readAccess = memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.read,
+      auditPurpose: "tool.memory.lifecycle.read",
+      correlationId: idempotencyKey,
+    });
+    const maintenanceAccess = memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.maintenance,
+      auditPurpose: "tool.memory.lifecycle.update",
+      correlationId: idempotencyKey,
+    });
+    const scopedMemory = readAccess
+      ? await getMemory(id, {
+          tenantId: context?.tenantId,
+          accessScope: readAccess.databaseAccessScope,
+        })
+      : null;
+    const memory = scopedMemory || await getMemory(id, {
+      tenantId: context?.tenantId,
+    });
+    if (!memory) throw new Error("Memory not found.");
+    if (scopedMemory && !maintenanceAccess) {
+      throw new Error("Private memory maintenance scope is unavailable.");
+    }
+    const lifecycleExecutionScope = scopedMemory
+      ? maintenanceAccess?.executionScope
+      : executionScope;
+    if (!lifecycleExecutionScope) {
+      throw new Error("Governed memory lifecycle requires an execution scope.");
+    }
+    let lifecycle;
+    try {
+      lifecycle = await setMemoryLifecycle(memory, action, {
+        tenantId: context?.tenantId || lifecycleExecutionScope.tenantId,
+        accessScope: scopedMemory
+          ? maintenanceAccess?.databaseAccessScope
+          : undefined,
+        executionScope: lifecycleExecutionScope,
+      });
+    } catch (error) {
+      if (error instanceof MemoryLifecycleConflictError) {
+        throw new Error(error.message);
+      }
+      throw error;
+    }
+    if (!lifecycle) throw new Error("Memory not found.");
+    const refreshed = scopedMemory && readAccess
+      ? await getMemory(id, {
+          tenantId: context?.tenantId,
+          accessScope: readAccess.databaseAccessScope,
+        })
+      : await getMemory(id, { tenantId: context?.tenantId });
+    return {
+      memory: refreshed ? publicMemoryToolRecord(refreshed) : undefined,
+      lifecycle,
+      receipt: {
+        operation: `lifecycle_${action}`,
+        memoryId: id,
+        action,
+        historicalTruthChanged: false,
+        permanentDeletion: false,
+      },
     };
   }
 
   if (tool.id === "memory.forget") {
-    const { id } = memoryForgetSchema.parse(parsed);
+    const { id, expectedReceiptManifestSha256 } = memoryForgetSchema.parse(parsed);
     if (!executionScope) {
       throw new Error("Governed memory deletion requires an execution scope.");
     }
@@ -2780,12 +3097,28 @@ async function runTool(
         "Governed memory deletion requires a non-null initiating actor.",
       );
     }
+    const forgetAccess = memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.forget,
+      auditPurpose: "tool.memory.forget",
+      correlationId: idempotencyKey,
+    });
     let result: Awaited<ReturnType<typeof forgetMemoryWithReceipt>>;
     try {
-      result = await forgetMemoryWithReceipt(id, {
-        tenantId: executionScope.tenantId,
-        executionScope,
-      });
+      const scopedResult = forgetAccess
+        ? await forgetMemoryWithReceipt(id, {
+            tenantId: executionScope.tenantId,
+            expectedDescendantManifestSha256:
+              expectedReceiptManifestSha256,
+            executionScope: forgetAccess.executionScope,
+            accessScope: forgetAccess.databaseAccessScope,
+          })
+        : null;
+      result = scopedResult || await forgetMemoryWithReceipt(id, {
+          tenantId: executionScope.tenantId,
+          expectedDescendantManifestSha256:
+            expectedReceiptManifestSha256,
+          executionScope,
+        });
     } catch (error) {
       let committedReceipt: MemoryDeletionReceiptV1 | null;
       try {
@@ -2814,6 +3147,55 @@ async function runTool(
       deletionReceipt: result.receipt
         ? publicMemoryDeletionReceiptV1(result.receipt)
         : null,
+      receipt: {
+        operation: "forget",
+        memoryId: id,
+        expectedReceiptManifestSha256,
+        deletionDisposition: result.deletionDisposition,
+        deletionReceiptSha256: result.receipt?.receiptSha256 || null,
+        irreversible: true,
+      },
+    };
+  }
+
+  if (tool.id === "memory.export") {
+    memoryExportSchema.parse(parsed);
+    if (!memoryToolAccess(context, {
+      purposeId: MEMORY_PURPOSE_IDS.export,
+      auditPurpose: "tool.memory.export",
+      correlationId: idempotencyKey,
+    })) {
+      throw new Error("Portable export requires an authenticated user session.");
+    }
+    return {
+      ready: true,
+      downloadUrl: "/api/data/export",
+      archiveFormat: "asael-portable-archive",
+      archiveVersion: 2,
+      includes: [
+        "knowledge",
+        "memories",
+        "threads",
+        "today",
+        "projects",
+        "connections_reauthorization_metadata",
+        "skills",
+        "agents",
+      ],
+      excludes: [
+        "credentials",
+        "secrets",
+        "embeddings",
+        "provider_cursors",
+        "operational_audit_content",
+        "original_assets",
+      ],
+      receipt: {
+        operation: "prepare_portable_export",
+        scope: "exact_owner",
+        contentCopiedIntoAgentTranscript: false,
+        encryptedAssetExportRequiresSettings: true,
+      },
     };
   }
 
@@ -3748,12 +4130,27 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return memoryWriteSchema.parse(input);
   }
 
+  if (
+    tool.id === "memory.inspect" ||
+    tool.id === "memory.forget.preview"
+  ) {
+    return memoryIdSchema.parse(input);
+  }
+
   if (tool.id === "memory.correct") {
     return memoryCorrectSchema.parse(input);
   }
 
+  if (tool.id === "memory.lifecycle") {
+    return memoryLifecycleSchema.parse(input);
+  }
+
   if (tool.id === "memory.forget") {
     return memoryForgetSchema.parse(input);
+  }
+
+  if (tool.id === "memory.export") {
+    return memoryExportSchema.parse(input);
   }
 
   if (tool.id === "knowledge.ingest") {
@@ -3797,6 +4194,17 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
 }
 
 function describeSideEffects(toolId: string) {
+  if (toolId === "memory.inspect") {
+    return ["read-only exact memory inspection without embeddings"];
+  }
+
+  if (toolId === "memory.forget.preview") {
+    return [
+      "read-only permanent-deletion impact preview",
+      "returns the exact receipt-manifest digest required by memory.forget",
+    ];
+  }
+
   if (toolId === "memory.write") {
     return ["writes omni_memories", "may create embedding"];
   }
@@ -3809,12 +4217,28 @@ function describeSideEffects(toolId: string) {
     ];
   }
 
+  if (toolId === "memory.lifecycle") {
+    return [
+      "changes only the selected memory lifecycle projection",
+      "pin and unpin change retrieval priority without changing the claim",
+      "archive and restore reversibly change recall eligibility without permanent deletion",
+    ];
+  }
+
   if (toolId === "memory.forget") {
     return [
       "irreversibly scrubs the selected memory, including evidence references and embeddings",
       "in Postgres, removes retrieval traces and graph rows derived from the selected memory or its descendants",
       "atomically records a scoped deletion receipt and queues a memory graph rebuild in Postgres",
       "file-backed compatibility mode performs a best-effort scrub and graph rebuild without a deletion receipt",
+    ];
+  }
+
+
+  if (toolId === "memory.export") {
+    return [
+      "returns an authenticated exact-owner portable archive download route",
+      "does not copy archive content into the agent transcript or tool ledger",
     ];
   }
 
