@@ -1157,6 +1157,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[111],
+      up: ensureAgentMemoryGrantLifecycleV1,
+    },
   ];
 }
 
@@ -9518,6 +9522,209 @@ async function ensureAgentMemoryGrantsV1(sql: SqlClient) {
           AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
       ) THEN
         RAISE EXCEPTION 'Agent memory grant storage boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentMemoryGrantLifecycleV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 111
+          AND name = 'agent_memory_grants_v1'
+          AND checksum =
+            '7e438818cab0afcf73dfe6aeda9d36edbf6bd7d81c83a26c92b1370f4a0b1dc6'
+      ) <> 1 OR EXISTS (
+        SELECT 1 FROM omni_tenant_memory_access_grants
+        WHERE state <> 'held'
+      ) THEN
+        RAISE EXCEPTION 'Agent memory grant lifecycle predecessor is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_memory_access_grants
+    DROP CONSTRAINT IF EXISTS omni_memory_access_grant_activation_hold_check
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_memory_access_grant_lifecycle_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      transition_at TIMESTAMPTZ;
+    BEGIN
+      IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'Memory access grant rows cannot be removed'
+          USING ERRCODE = '55000';
+      END IF;
+      PERFORM pg_advisory_xact_lock(
+        hashtext(OLD.tenant_id || ':' || OLD.grant_kind),
+        hashtext(OLD.grant_id)
+      );
+      IF OLD.state = 'revoked' THEN
+        RAISE EXCEPTION 'Revoked memory access grants are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF ROW(
+        NEW.schema_version, NEW.tenant_id, NEW.grant_kind, NEW.grant_id,
+        NEW.grant_generation, NEW.grantee_kind, NEW.grantee_key,
+        NEW.grantee_actor_id, NEW.grantee_execution_principal_id,
+        NEW.grantee_execution_principal_generation, NEW.purpose_id,
+        NEW.target_visibility, NEW.owner_actor_id, NEW.owner_agent_id,
+        NEW.owner_agent_principal_generation, NEW.workspace_id,
+        NEW.project_id, NEW.mission_id, NEW.resource_ids, NEW.operation_ids,
+        NEW.max_items, NEW.max_bytes, NEW.max_invocations,
+        NEW.max_cost_microusd, NEW.max_duration_ms, NEW.not_before,
+        NEW.expires_at, NEW.created_by_actor_id, NEW.created_at
+      ) IS DISTINCT FROM ROW(
+        OLD.schema_version, OLD.tenant_id, OLD.grant_kind, OLD.grant_id,
+        OLD.grant_generation, OLD.grantee_kind, OLD.grantee_key,
+        OLD.grantee_actor_id, OLD.grantee_execution_principal_id,
+        OLD.grantee_execution_principal_generation, OLD.purpose_id,
+        OLD.target_visibility, OLD.owner_actor_id, OLD.owner_agent_id,
+        OLD.owner_agent_principal_generation, OLD.workspace_id,
+        OLD.project_id, OLD.mission_id, OLD.resource_ids, OLD.operation_ids,
+        OLD.max_items, OLD.max_bytes, OLD.max_invocations,
+        OLD.max_cost_microusd, OLD.max_duration_ms, OLD.not_before,
+        OLD.expires_at, OLD.created_by_actor_id, OLD.created_at
+      ) THEN
+        RAISE EXCEPTION 'Memory access grant authority is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NOT (
+        (OLD.state = 'held' AND NEW.state IN ('active', 'revoked'))
+        OR (OLD.state = 'active' AND NEW.state = 'revoked')
+      ) OR NEW.lifecycle_revision IS DISTINCT FROM OLD.lifecycle_revision + 1
+      THEN
+        RAISE EXCEPTION 'Memory access grant transition is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      transition_at := GREATEST(
+        statement_timestamp(),
+        OLD.updated_at + INTERVAL '1 microsecond'
+      );
+      NEW.updated_at := transition_at;
+      IF NEW.state = 'active' THEN
+        IF statement_timestamp() < OLD.not_before
+          OR statement_timestamp() >= OLD.expires_at
+          OR NEW.activated_by_actor_id IS DISTINCT FROM OLD.owner_actor_id
+          OR NEW.revoked_by_actor_id IS NOT NULL
+          OR NEW.revoked_at IS NOT NULL
+        THEN
+          RAISE EXCEPTION 'Memory access grant activation is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.activated_at := transition_at;
+      ELSE
+        IF NEW.revoked_by_actor_id IS DISTINCT FROM OLD.owner_actor_id THEN
+          RAISE EXCEPTION 'Memory access grant revocation is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.revoked_at := transition_at;
+        IF OLD.activated_at IS NULL THEN
+          NEW.activated_by_actor_id := NULL;
+          NEW.activated_at := NULL;
+        ELSE
+          NEW.activated_by_actor_id := OLD.activated_by_actor_id;
+          NEW.activated_at := OLD.activated_at;
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      DROP TRIGGER IF EXISTS omni_memory_access_grant_mutation_hold
+        ON omni_tenant_memory_access_grants;
+      DROP TRIGGER IF EXISTS omni_memory_access_grant_lifecycle_protect
+        ON omni_tenant_memory_access_grants;
+      CREATE TRIGGER omni_memory_access_grant_lifecycle_protect
+      BEFORE UPDATE OR DELETE ON omni_tenant_memory_access_grants
+      FOR EACH ROW
+      EXECUTE FUNCTION omni_protect_memory_access_grant_lifecycle_v1();
+
+      DROP POLICY IF EXISTS omni_memory_access_grant_holdback
+        ON omni_tenant_memory_access_grants;
+      DROP POLICY IF EXISTS omni_memory_access_grant_actor
+        ON omni_tenant_memory_access_grants;
+      CREATE POLICY omni_memory_access_grant_actor
+      ON omni_tenant_memory_access_grants AS RESTRICTIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_tenant_memory_access_grants FROM PUBLIC`;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_protect_memory_access_grant_lifecycle_v1()
+    FROM PUBLIC
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_tenant_memory_access_grants FROM omni_runtime';
+        GRANT SELECT, INSERT ON omni_tenant_memory_access_grants TO omni_runtime;
+        GRANT UPDATE (
+          state, lifecycle_revision, activated_by_actor_id, revoked_by_actor_id
+        ) ON omni_tenant_memory_access_grants TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_tenant_memory_access_grants FROM omni_maintenance';
+        GRANT SELECT, INSERT ON omni_tenant_memory_access_grants TO omni_maintenance;
+        GRANT UPDATE (
+          state, lifecycle_revision, activated_by_actor_id, revoked_by_actor_id
+        ) ON omni_tenant_memory_access_grants TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_tenant_memory_access_grants'::regclass
+          AND conname = 'omni_memory_access_grant_activation_hold_check'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_tenant_memory_access_grants'::regclass
+          AND tgname = 'omni_memory_access_grant_lifecycle_protect'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_tenant_memory_access_grants'::regclass
+          AND polname = 'omni_memory_access_grant_actor'
+          AND NOT polpermissive AND polcmd = '*'
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_tenant_memory_access_grants'
+          AND grantee IN ('omni_runtime', 'omni_maintenance')
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) THEN
+        RAISE EXCEPTION 'Agent memory grant lifecycle boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
