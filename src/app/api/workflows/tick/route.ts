@@ -15,6 +15,7 @@ import {
   processAgentResumeQueue,
   processAllTenantAgentResumeQueues,
 } from "@/lib/orchestration/resume-queue";
+import { recoverInterruptedLoopV2Runs } from "@/lib/orchestration/loop-v2-recovery";
 import { repairStuckAgentRuns } from "@/lib/runs/store";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
 import { SecurityPolicyError } from "@/lib/security/context";
@@ -552,6 +553,22 @@ function summarizeScheduledOutcome(
     backgroundJobsFailed: scheduled.backgroundJobs?.failed || 0,
     memoryGraphRebuilds: scheduled.memoryGraphRebuilds?.processed || 0,
     memoryDeletionScrubs: scheduled.memoryDeletionScrubs?.scrubbedMemories || 0,
+    loopV2RecoveriesClaimed: scheduled.maintenance.reduce(
+      (total, item) => total + item.loopV2Recovery.claimed,
+      0,
+    ),
+    loopV2RecoveriesResumed: scheduled.maintenance.reduce(
+      (total, item) => total + item.loopV2Recovery.resumed,
+      0,
+    ),
+    loopV2RecoveriesFailedClosed: scheduled.maintenance.reduce(
+      (total, item) => total + item.loopV2Recovery.failedClosed,
+      0,
+    ),
+    loopV2RecoveriesDeferred: scheduled.maintenance.reduce(
+      (total, item) => total + item.loopV2Recovery.deferred,
+      0,
+    ),
     overdueMemoryDeletionScrubs:
       scheduled.memoryDeletionScrubs?.overdueReceiptIds.length || 0,
     maintenanceTenants: scheduled.maintenanceTenantIds.length,
@@ -691,6 +708,7 @@ async function runAllTenantScheduledWork({
     personalNotificationsProcessed: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
+    loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
   }> = [];
@@ -798,6 +816,7 @@ async function runTenantMaintenance({
     personalNotificationsProcessed: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
+    loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
     alerts?: Awaited<ReturnType<typeof runScheduledAlertDispatch>>;
   } = {
@@ -808,7 +827,14 @@ async function runTenantMaintenance({
     personalNotificationsProcessed: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
+    loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
+  if (Date.now() < deadlineAt) {
+    result.loopV2Recovery = await recoverInterruptedLoopV2Runs({
+      tenantId,
+      limit: 1,
+    });
+  }
   if (Date.now() < deadlineAt) {
     result.agentRunsRepaired = await repairStuckAgentRuns({ tenantId });
   }
@@ -855,6 +881,19 @@ async function runTenantMaintenance({
     });
   }
   return result;
+}
+
+function emptyLoopV2RecoverySummary(): Awaited<
+  ReturnType<typeof recoverInterruptedLoopV2Runs>
+> {
+  return {
+    claimed: 0,
+    resumed: 0,
+    waitingClarification: 0,
+    failedClosed: 0,
+    deferred: 0,
+    results: [],
+  };
 }
 
 function getCronSecurityContext(): SecurityContext {

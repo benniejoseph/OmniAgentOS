@@ -5,6 +5,16 @@ const routeMocks = vi.hoisted(() => ({
   processAllTenantAgentResumeQueues: vi.fn(),
   processAllTenantDurableSpecialistQueues: vi.fn(),
   processAllTenantWorkflowQueues: vi.fn(),
+  processPendingMemoryDeletionScrubs: vi.fn(),
+  processPendingMemoryGraphRebuilds: vi.fn(),
+  listMaintenanceTenantIds: vi.fn(),
+  recoverInterruptedLoopV2Runs: vi.fn(),
+  repairStuckAgentRuns: vi.fn(),
+  recoverStaleToolExecutionClaims: vi.fn(),
+  processDueDailyBriefs: vi.fn(),
+  processDueNotifications: vi.fn(),
+  processActiveProjectExecutions: vi.fn(),
+  syncDuePersonalProviders: vi.fn(),
   recordSecurityAudit: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
@@ -43,6 +53,60 @@ vi.mock("@/lib/orchestration/resume-queue", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/orchestration/resume-queue")>()),
   processAllTenantAgentResumeQueues:
     routeMocks.processAllTenantAgentResumeQueues,
+}));
+
+vi.mock("@/lib/orchestration/loop-v2-recovery", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/orchestration/loop-v2-recovery")
+  >()),
+  recoverInterruptedLoopV2Runs: routeMocks.recoverInterruptedLoopV2Runs,
+}));
+
+vi.mock("@/lib/runs/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/runs/store")>()),
+  repairStuckAgentRuns: routeMocks.repairStuckAgentRuns,
+}));
+
+vi.mock("@/lib/security/retention", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/security/retention")>()),
+  processPendingMemoryGraphRebuilds:
+    routeMocks.processPendingMemoryGraphRebuilds,
+}));
+
+vi.mock("@/lib/memory/deletion-scrub", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/deletion-scrub")>()),
+  processPendingMemoryDeletionScrubs:
+    routeMocks.processPendingMemoryDeletionScrubs,
+}));
+
+vi.mock("@/lib/operations/job-queue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/operations/job-queue")>()),
+  listMaintenanceTenantIds: routeMocks.listMaintenanceTenantIds,
+}));
+
+vi.mock("@/lib/tools/audit-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tools/audit-store")>()),
+  recoverStaleToolExecutionClaims: routeMocks.recoverStaleToolExecutionClaims,
+}));
+
+vi.mock("@/lib/today/briefs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/today/briefs")>()),
+  processDueDailyBriefs: routeMocks.processDueDailyBriefs,
+}));
+
+vi.mock("@/lib/today/notifications", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/today/notifications")>()),
+  processDueNotifications: routeMocks.processDueNotifications,
+}));
+
+vi.mock("@/lib/projects/execution", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/projects/execution")>()),
+  processActiveProjectExecutions: routeMocks.processActiveProjectExecutions,
+}));
+
+vi.mock("@/lib/connectors/personal-sync", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/connectors/personal-sync")>()),
+  syncDuePersonalProviders: routeMocks.syncDuePersonalProviders,
 }));
 
 vi.mock("@/lib/subagents/worker", async (importOriginal) => ({
@@ -109,6 +173,24 @@ beforeEach(() => {
   routeMocks.processAllTenantDurableSpecialistQueues
     .mockReset()
     .mockResolvedValue(emptySpecialistQueue);
+  routeMocks.processPendingMemoryGraphRebuilds
+    .mockReset()
+    .mockResolvedValue({ processed: 0 });
+  routeMocks.processPendingMemoryDeletionScrubs
+    .mockReset()
+    .mockResolvedValue({ scrubbedMemories: 0, overdueReceiptIds: [] });
+  routeMocks.listMaintenanceTenantIds
+    .mockReset()
+    .mockResolvedValue([]);
+  routeMocks.recoverInterruptedLoopV2Runs
+    .mockReset()
+    .mockResolvedValue(emptyLoopV2Recovery);
+  routeMocks.repairStuckAgentRuns.mockReset().mockResolvedValue(0);
+  routeMocks.recoverStaleToolExecutionClaims.mockReset().mockResolvedValue([]);
+  routeMocks.processDueDailyBriefs.mockReset().mockResolvedValue([]);
+  routeMocks.processDueNotifications.mockReset().mockResolvedValue([]);
+  routeMocks.processActiveProjectExecutions.mockReset().mockResolvedValue([]);
+  routeMocks.syncDuePersonalProviders.mockReset().mockResolvedValue([]);
   routeMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
   routeMocks.recordSecurityAudit.mockReset().mockResolvedValue(undefined);
   routeMocks.recordWorkerHeartbeat.mockReset().mockImplementation(async (input) => ({
@@ -237,14 +319,59 @@ describe("dedicated worker heartbeat timing", () => {
     expect(routeMocks.recordWorkerHeartbeat).not.toHaveBeenCalled();
     expect(routeMocks.processAllTenantWorkflowQueues).not.toHaveBeenCalled();
   });
+
+  it("recovers fenced Loop v2 work before generic stale-run repair", async () => {
+    const order: string[] = [];
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue(["tenant-a"]);
+    routeMocks.recoverInterruptedLoopV2Runs.mockImplementation(async () => {
+      order.push("loop-v2-recovery");
+      return {
+        ...emptyLoopV2Recovery,
+        claimed: 1,
+        failedClosed: 1,
+        results: [{
+          runId: "run-a",
+          action: "fail_closed",
+          outcome: "failed_closed",
+          reasonCode: "non_replayable_model_boundary",
+        }],
+      };
+    });
+    routeMocks.repairStuckAgentRuns.mockImplementation(async () => {
+      order.push("generic-repair");
+      return 0;
+    });
+
+    const response = await POST(workerRequest({
+      startup: false,
+      lane: "maintenance",
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      maintenance: [{
+        tenantId: "tenant-a",
+        agentRunsRepaired: 0,
+        loopV2Recovery: { claimed: 1, failedClosed: 1 },
+      }],
+      idle: false,
+    });
+    expect(order).toEqual(["loop-v2-recovery", "generic-repair"]);
+    expect(routeMocks.recoverInterruptedLoopV2Runs).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      limit: 1,
+    });
+  });
 });
 
 function workerRequest({
   startup,
   target = "http://localhost",
+  lane = "fast",
 }: {
   startup: boolean;
   target?: string;
+  lane?: "fast" | "background" | "maintenance" | "all";
 }) {
   return new Request("http://localhost/api/workflows/tick", {
     method: "POST",
@@ -257,12 +384,21 @@ function workerRequest({
     },
     body: JSON.stringify({
       scope: "all_tenants",
-      lane: "fast",
+      lane,
       startup,
       timeBudgetMs: 1_000,
     }),
   });
 }
+
+const emptyLoopV2Recovery = {
+  claimed: 0,
+  resumed: 0,
+  waitingClarification: 0,
+  failedClosed: 0,
+  deferred: 0,
+  results: [],
+};
 
 function createGate() {
   let release!: () => void;

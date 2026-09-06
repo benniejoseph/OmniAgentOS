@@ -1147,7 +1147,7 @@ export async function repairStuckAgentRuns({
     const rows = await runWithDatabaseSystemScope(
       `Repair stale agent runs for tenant ${tenantId}.`,
       () => getSql()`
-        UPDATE omni_agent_runs
+        UPDATE omni_agent_runs AS run
         SET status       = 'failed',
             error        = CASE
               WHEN status = 'resuming'
@@ -1172,6 +1172,19 @@ export async function repairStuckAgentRuns({
           AND NOT (
             status = 'resuming'
             AND continuation ? 'checkpointResumeClaim'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM omni_agent_loop_v2_checkpoints AS checkpoint
+            WHERE checkpoint.tenant_id = run.tenant_id
+              AND checkpoint.run_id = run.id
+              AND checkpoint.lifecycle_state = 'active'
+              AND checkpoint.sequence = (
+                SELECT MAX(latest.sequence)
+                FROM omni_agent_loop_v2_checkpoints AS latest
+                WHERE latest.tenant_id = run.tenant_id
+                  AND latest.run_id = run.id
+              )
           )
         RETURNING id
       `,
