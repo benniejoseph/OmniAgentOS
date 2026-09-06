@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { generateModelText } from "@/lib/models/gateway";
+import { generateModelStructured } from "@/lib/models/gateway";
 import type { ModelGenerationResult } from "@/lib/models/types";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
 import { redactSensitive } from "@/lib/security/context";
@@ -61,14 +61,14 @@ type RuntimeModelResolution = Awaited<
 
 type QueryPlannerDependencies = Readonly<{
   resolveRuntimeModelAssignment: typeof resolveRuntimeModelAssignment;
-  generateModelText: (
-    request: Parameters<typeof generateModelText>[0],
+  generateModelStructured: (
+    request: Parameters<typeof generateModelStructured>[0],
   ) => Promise<ModelGenerationResult>;
 }>;
 
 const defaultDependencies: QueryPlannerDependencies = {
   resolveRuntimeModelAssignment,
-  generateModelText,
+  generateModelStructured,
 };
 
 export type PlanRetrievalQueryInput = Readonly<{
@@ -146,7 +146,7 @@ export function createRetrievalQueryPlanner(
         actorId: usageScope.actorId,
         scope: "orchestrator",
         tier: "fast",
-        requiredFeature: "text",
+        requiredFeature: "json_schema",
       });
     } catch {
       return { ...baseline, fallbackReason: "model_unavailable" };
@@ -197,8 +197,10 @@ async function generateCandidate(input: {
     QUERY_PLANNER_TIMEOUT_MS,
   );
   try {
-    return await input.dependencies.generateModelText(
+    return await input.dependencies.generateModelStructured(
       input.runtimeModel.bind({
+        name: "retrieval_query_plan",
+        schema: z.toJSONSchema(retrievalQueryPlanCandidateSchema),
         instructions: queryPlannerInstructions(),
         input: [
           `Planning time: ${normalizeAsOfTime(input.input.asOfTime)}`,
@@ -211,7 +213,7 @@ async function generateCandidate(input: {
         maxOutputTokens: 700,
         usageScope: {
           ...input.usageScope,
-          operation: "text_generation",
+          operation: "structured_generation",
           purpose: "context.query_plan.semantic",
         },
       }),
@@ -228,8 +230,7 @@ function queryPlannerInstructions() {
     "Domains are semantic concepts, temporal constraints/change, named entities, relationships, and procedures/runbooks.",
     "Rewrites must preserve the user's meaning and improve search recall. Do not answer the query.",
     "Do not emit permissions, identities, tenants, actors, grants, scopes, visibility, tools, or policy decisions.",
-    "Return only one JSON object matching this schema, with no markdown or commentary:",
-    JSON.stringify(z.toJSONSchema(retrievalQueryPlanCandidateSchema)),
+    "Return only the requested JSON object with no markdown or commentary.",
   ].join(" ");
 }
 
@@ -373,6 +374,8 @@ const RELATIONSHIP_PATTERNS = [
   /\breports?\s+to\b/i,
   /\breported\s+to\b/i,
   /\bworks?\s+with\b/i,
+  /\bmanage(?:s|d)?\b/i,
+  /\bmanaged\s+by\b/i,
   /\bdepends?\s+on\b/i,
   /\bowned?\s+by\b/i,
   /\bowns?\b/i,
