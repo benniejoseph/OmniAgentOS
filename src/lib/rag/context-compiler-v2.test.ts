@@ -24,7 +24,9 @@ import type {
   MemorySearchResult,
 } from "@/lib/memory/types";
 import {
+  buildContextCompilerV2Canary,
   buildContextCompilerV2Shadow,
+  parseContextCompilerV2CanaryReceipt,
   parseContextCompilerV2ShadowReceipt,
   prepareContextCompilerV2Candidates,
   type ContextCompilerV2PreparedCandidate,
@@ -53,6 +55,45 @@ beforeEach(() => {
 });
 
 describe("Context Compiler v2 shadow", () => {
+  it("pins a distinct canary contract to non-empty explicit evidence", () => {
+    const canary = buildContextCompilerV2Canary({
+      runId: "run-canary",
+      tenantId: "tenant-a",
+      query: "Use my selected preference",
+      candidates: [
+        preparedCandidate("memory:private", "claim", "authorized", 0.9),
+        preparedCandidate("memory:legacy", "claim", "access_binding_missing", 0.8),
+      ],
+      legacySelectedEvidenceIds: ["memory:private", "memory:legacy"],
+      explicitEvidenceIds: ["memory:private", "memory:legacy"],
+      limit: 8,
+      asOfTime,
+    });
+
+    expect(canary.selectedEvidenceIds).toEqual(["memory:private"]);
+    expect(canary.receipt).toMatchObject({
+      mode: "canary",
+      explicitSelectionState: "selected",
+      selectedCount: 1,
+      legacyOnlyCount: 1,
+    });
+    expect(() => parseContextCompilerV2ShadowReceipt(canary.receipt))
+      .toThrow("not a shadow");
+    expect(parseContextCompilerV2CanaryReceipt(canary.receipt)).toEqual(
+      canary.receipt,
+    );
+    expect(() => buildContextCompilerV2Canary({
+      runId: "run-empty-canary",
+      tenantId: "tenant-a",
+      query: "No context",
+      candidates: [],
+      legacySelectedEvidenceIds: [],
+      explicitEvidenceIds: [],
+      limit: 8,
+      asOfTime,
+    })).toThrow("requires explicit evidence");
+  });
+
   it("selects only authorized candidates and stores no raw evidence IDs", () => {
     const candidates: ContextCompilerV2PreparedCandidate[] = [
       preparedCandidate("memory:private-secret-a", "claim", "authorized", 0.9),
