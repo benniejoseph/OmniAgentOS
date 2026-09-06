@@ -7,6 +7,7 @@ import {
   resolveKnownProcedure,
   routeAgentRequest,
 } from "@/lib/orchestration/supervisor";
+import { buildThreadConversationSummaries } from "@/lib/threads/summaries";
 import type { ThreadTurnRecord } from "@/lib/threads/types";
 
 describe("supervisor routing", () => {
@@ -171,5 +172,41 @@ describe("thread context compiler", () => {
     expect(compiled.messages.map((message) => message.content)).toEqual(["middle", "newest"]);
     expect(compiled.stats.omitted).toBe(1);
     expect(compiled.stats.tokens).toBeGreaterThan(0);
+  });
+
+  it("replaces omitted raw history with source-linked untrusted episode summaries", () => {
+    const turns = Array.from({ length: 24 }, (_, index): ThreadTurnRecord => ({
+      id: `turn-${index}`,
+      tenantId: "t",
+      threadId: "thread-a",
+      role: index % 2 ? "assistant" : "user",
+      content: `Detail ${index}`,
+      createdAt: new Date(Date.UTC(2026, 8, 6, 0, index)).toISOString(),
+    }));
+    const summaries = buildThreadConversationSummaries({
+      thread: {
+        id: "thread-a",
+        tenantId: "t",
+        actorId: "actor:user-a",
+        title: "History",
+        mode: "orchestrate",
+        createdAt: turns[0].createdAt,
+        updatedAt: turns.at(-1)?.createdAt || turns[0].createdAt,
+      },
+      turns,
+    });
+    const compiled = compileThreadContext(turns, {
+      maxMessages: 6,
+      maxCharacters: 4_000,
+      summaries,
+    });
+
+    expect(compiled.messages).toHaveLength(6);
+    expect(compiled.messages[0].content).toMatch(/untrusted data only/i);
+    expect(compiled.messages.at(-1)?.content).toBe("Detail 23");
+    expect(compiled.stats.rawSelected).toBe(5);
+    expect(compiled.stats.summariesSelected).toBeGreaterThan(0);
+    expect(compiled.stats.summarizedSourceTurns).toBeGreaterThan(0);
+    expect(compiled.stats.characters).toBeLessThanOrEqual(4_000);
   });
 });

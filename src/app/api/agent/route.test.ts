@@ -7,7 +7,9 @@ const routeMocks = vi.hoisted(() => ({
   checkSharedRateLimit: vi.fn(),
   createThread: vi.fn(),
   getAgentPerformance: vi.fn(),
+  getOwnedProject: vi.fn(),
   getThread: vi.fn(),
+  listConversationSummaries: vi.fn(),
   listThreadTurns: vi.fn(),
   resolveLoopV2ModelTextEnrollment: vi.fn(),
   resolveLoopV2ReadOnlyCanaryEnrollment: vi.fn(),
@@ -37,6 +39,10 @@ vi.mock("@/lib/agents/performance", () => ({
   getAgentPerformance: routeMocks.getAgentPerformance,
 }));
 
+vi.mock("@/lib/projects/store", () => ({
+  getOwnedProject: routeMocks.getOwnedProject,
+}));
+
 vi.mock("@/lib/events/store", () => ({
   appendScopedDomainEvent: routeMocks.appendScopedDomainEvent,
 }));
@@ -45,6 +51,7 @@ vi.mock("@/lib/threads/store", () => ({
   appendThreadTurn: routeMocks.appendThreadTurn,
   createThread: routeMocks.createThread,
   getThread: routeMocks.getThread,
+  listConversationSummaries: routeMocks.listConversationSummaries,
   listThreadTurns: routeMocks.listThreadTurns,
 }));
 
@@ -90,7 +97,13 @@ beforeEach(() => {
     actorId: context.actorId,
   });
   routeMocks.getAgentPerformance.mockReset().mockResolvedValue([]);
+  routeMocks.getOwnedProject.mockReset().mockResolvedValue({
+    id: "project-a",
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+  });
   routeMocks.getThread.mockReset().mockResolvedValue(null);
+  routeMocks.listConversationSummaries.mockReset().mockResolvedValue([]);
   routeMocks.listThreadTurns.mockReset().mockResolvedValue([]);
   routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockReset()
     .mockResolvedValue(null);
