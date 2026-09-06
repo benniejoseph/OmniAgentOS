@@ -90,6 +90,9 @@ describe("Postgres knowledge deletion event boundary", () => {
     expect(dbMocks.statements).toEqual(expect.arrayContaining([
       expect.stringContaining("DELETE FROM omni_knowledge_documents"),
       expect.stringContaining("UPDATE omni_memories"),
+      expect.stringMatching(
+        /SELECT evidence_id AS id, owner_actor_id[\s\S]*SELECT DISTINCT evidence\.id AS evidence_id[\s\S]*ORDER BY owner_actor_id COLLATE "C", evidence_id COLLATE "C"/,
+      ),
     ]));
     expect(eventMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
       expect.objectContaining({
