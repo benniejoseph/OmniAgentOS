@@ -636,9 +636,23 @@ The persisted generation-2 canary reader served a new asset with exact checksum
 parity; pausing the rollout returned the same bytes from the retained legacy
 reader, and reactivation restored object authority without data loss. The
 canary was then deleted with its indexed knowledge and its private object was
-physically scrubbed. Legacy bytes remain through the rollback window. P2.6 and
-P2.8 remain open, and the P2.3 live Google-provider proof still requires
-enrollment.
+physically scrubbed. Legacy bytes remain through the rollback window.
+
+P2.6 is complete at production release
+`96b246293b8cd632ac0934c4da6fcae5b2c311a2`. Capture now emits format-aware,
+ordered evidence units for document text and PDF pages, spreadsheet ranges,
+presentation slides, image regions, and audio/video time ranges while retaining
+the immutable original in the private object plane. Every derivative uses the
+same owner-private, confidential grant and retention boundary as its source,
+and a digest-bound receipt records the extractor identity, format, exact unit
+and locator kinds, content hash, warnings, and completed, partial, unsupported,
+or failed state. Recording segments enter the same timestamped evidence path.
+Migration v99 persists asset receipts and validates partial-state compatibility.
+The authenticated production CSV canary returned one exact `sheet_range` unit,
+proved original and derivative scope inheritance, completed indexing, and then
+deleted its asset and knowledge before the worker physically scrubbed the Blob.
+P2.8 remains open, and the P2.3 live Google-provider proof still requires
+external enrollment.
 
 ### Phase 3 — Long-lasting, persistent, readable memory
 
