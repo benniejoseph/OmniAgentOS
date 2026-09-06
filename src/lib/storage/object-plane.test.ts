@@ -31,6 +31,7 @@ import {
   commitAssetObjectJob,
   deleteAssetObjectJob,
   issueAssetObjectDelivery,
+  readReadyAssetObject,
   redeemAssetObjectDelivery,
   retireAssetObjectsForSource,
   stageAssetObject,
@@ -266,6 +267,14 @@ describe("tenant-scoped private asset object plane", () => {
       }),
     };
     await commitAssetObjectJob(commitJob, { adapter });
+    await expect(readReadyAssetObject({
+      tenantId,
+      ownerActorId: actorId,
+      sourceKind: "capture_asset",
+      sourceId,
+      purpose: "capture.asset.download",
+      adapter,
+    })).resolves.toMatchObject({ bytes });
     const delivery = await issueAssetObjectDelivery({
       tenantId,
       actorId,

@@ -9,6 +9,7 @@ import {
   enqueueOperationJob,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
+import { getCurrentTenantCapabilityRollout } from "@/lib/rollouts/tenant-capability-rollouts";
 import {
   assertExecutionScopeTenant,
   deriveExecutionScope,
@@ -24,6 +25,11 @@ import {
 export const ASSET_OBJECT_MIGRATION_SCHEMA_VERSION = 1 as const;
 export const ASSET_OBJECT_MIGRATION_BATCH_SIZE = 25;
 export const ASSET_OBJECT_MIGRATION_MAX_VERIFY_ATTEMPTS = 20;
+export const ASSET_OBJECT_READ_CAPABILITY_ID = "asset-object-read-v1";
+export const ASSET_OBJECT_READ_ENGINE_VERSION = "asset-object-reader-v1";
+export const ASSET_OBJECT_READ_CONTRACT_VERSION = "tenant-asset-object-read-v1";
+export const ASSET_OBJECT_READ_CONFIGURATION_SHA256 =
+  "4c48b9c7101061cced0a53b5f3211043a5e86d15cfccccf3301e60d7e05deed4";
 
 export type AssetObjectMigrationStatus =
   | "queued"
@@ -181,6 +187,32 @@ export async function getLatestAssetObjectMigration(input: {
     ORDER BY generation DESC LIMIT 1
   `;
   return rows[0] ? migrationFromRow(rows[0]) : null;
+}
+
+export async function getAssetObjectReadMode(input: {
+  tenantId: string;
+  ownerActorId: string;
+}): Promise<"legacy" | "shadow" | "object"> {
+  if (!hasDatabaseUrl()) return "legacy";
+  const tenantId = requiredText(input.tenantId, 160);
+  const ownerActorId = requiredText(input.ownerActorId, 320);
+  const rollout = await getCurrentTenantCapabilityRollout({
+    tenantId,
+    capabilityId: ASSET_OBJECT_READ_CAPABILITY_ID,
+  });
+  if (
+    !rollout || rollout.status !== "active" ||
+    rollout.engineVersion !== ASSET_OBJECT_READ_ENGINE_VERSION ||
+    rollout.contractVersionId !== ASSET_OBJECT_READ_CONTRACT_VERSION ||
+    rollout.configurationSha256 !== ASSET_OBJECT_READ_CONFIGURATION_SHA256
+  ) {
+    return "legacy";
+  }
+  if (rollout.mode === "shadow") return "shadow";
+  const migration = await getLatestAssetObjectMigration({ tenantId, ownerActorId });
+  return migration?.status === "completed" && migration.verificationSha256
+    ? "object"
+    : "legacy";
 }
 
 export async function executeAssetObjectMigrationJob(job: OperationJobRecord) {

@@ -12,10 +12,12 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
+  readReadyAssetObject,
   retireAssetObjectsForSource,
   stageAssetObject,
   updateAssetObjectExtractionState,
 } from "@/lib/storage/object-plane";
+import { getAssetObjectReadMode } from "@/lib/storage/object-migration";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type {
@@ -395,14 +397,7 @@ export async function getCaptureAssetContentForRequest(
   await ensureDatabaseSchema();
   const rows = await getSql()`
     SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
-      content_sha256, storage_kind,
-      CASE
-        WHEN byte_count BETWEEN 1 AND ${MAX_CAPTURE_ASSET_BYTES}
-          AND octet_length(content) = byte_count
-        THEN content
-        ELSE NULL
-      END AS content,
-      status, extraction_status,
+      content_sha256, storage_kind, status, extraction_status,
       ingest_job_id, knowledge_document_id, error, tags, metadata, created_at,
       updated_at
     FROM omni_capture_assets
@@ -425,7 +420,7 @@ export async function getCaptureAssetContentForRequest(
   );
   return {
     asset: captureAssetForRequest(asset, exactActorId),
-    bytes: verifiedRequestCaptureAssetBytes(asset, rows[0].content),
+    bytes: await readCaptureAssetBytes(asset),
   };
 }
 
@@ -465,14 +460,76 @@ export async function resolveCaptureAssetActorForIngestJob(
 export async function getCaptureAssetContent(id: string, owner: Owner) {
   const asset = await requireCaptureAsset(id, owner);
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`SELECT content FROM omni_capture_assets WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId} LIMIT 1`;
-    if (!rows[0]) throw new CaptureAssetError("Captured file not found.", 404);
-    return { asset, bytes: Buffer.from(rows[0].content as Uint8Array) };
+    return { asset, bytes: await readCaptureAssetBytes(asset) };
   }
   const ledger = await readJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] });
   const stored = ledger.assets.find((item) => item.id === asset.id && item.tenantId === asset.tenantId && item.actorId === asset.actorId);
   if (!stored) throw new CaptureAssetError("Captured file not found.", 404);
   return { asset, bytes: await readFile(stored.contentPath) };
+}
+
+async function readCaptureAssetBytes(asset: CaptureAsset) {
+  const mode = await getAssetObjectReadMode({
+    tenantId: asset.tenantId,
+    ownerActorId: asset.actorId,
+  });
+  if (mode === "object") {
+    try {
+      const stored = await readReadyAssetObject({
+        tenantId: asset.tenantId,
+        ownerActorId: asset.actorId,
+        sourceKind: "capture_asset",
+        sourceId: asset.id,
+        purpose: "capture.asset.download",
+      });
+      return Buffer.from(stored.bytes);
+    } catch {
+      throw new CaptureAssetContentIntegrityError();
+    }
+  }
+  const rows = await getSql()`
+    SELECT CASE
+      WHEN byte_count BETWEEN 1 AND ${MAX_CAPTURE_ASSET_BYTES}
+        AND octet_length(content) = byte_count
+      THEN content
+      ELSE NULL
+    END AS content
+    FROM omni_capture_assets
+    WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId}
+      AND actor_id = ${asset.actorId}
+    LIMIT 1
+  `;
+  if (!rows[0]) throw new CaptureAssetError("Captured file not found.", 404);
+  const bytes = verifiedRequestCaptureAssetBytes(asset, rows[0].content);
+  if (mode === "shadow") {
+    void shadowReadCaptureAssetObject(asset, bytes);
+  }
+  return bytes;
+}
+
+async function shadowReadCaptureAssetObject(
+  asset: CaptureAsset,
+  legacyBytes: Buffer,
+) {
+  try {
+    const stored = await readReadyAssetObject({
+      tenantId: asset.tenantId,
+      ownerActorId: asset.actorId,
+      sourceKind: "capture_asset",
+      sourceId: asset.id,
+      purpose: "capture.asset.download",
+    });
+    const storedHash = createHash("sha256").update(stored.bytes).digest("hex");
+    const legacyHash = createHash("sha256").update(legacyBytes).digest("hex");
+    if (storedHash !== legacyHash || stored.bytes.byteLength !== legacyBytes.byteLength) {
+      console.warn("Asset object shadow read did not match the legacy source.", {
+        sourceKind: "capture_asset",
+        sourceIdSha256: sha256Json(asset.id),
+      });
+    }
+  } catch {
+    // Shadow mode preserves the legacy reader while migration converges.
+  }
 }
 
 export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, input: {
