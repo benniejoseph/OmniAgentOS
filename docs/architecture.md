@@ -1251,8 +1251,8 @@ pre-retrieval authorization cutover remain later P4.1 work.
 
 ## Capture asset object plane
 
-Capture files and recording segments still store database bytes as the serving
-authority while the migration is additive. The same source transaction stages
+Capture files and recording segments retain database bytes through the rollback
+window. The same source transaction stages
 an immutable private-object metadata row and background intent. The bounded
 worker re-enters the owner actor scope, reads the legacy bytes, uploads to an
 opaque tenant/owner/version/hash locator, reads the object back, and commits
@@ -1265,8 +1265,11 @@ the current metadata, source row, purpose, owner, and deletion barrier before
 streaming verified bytes. Source deletion marks the object deleted and queues
 physical scrub in the same transaction before removing the source. The
 deletion barrier is immediate and cannot be disabled by a later reader
-rollback. P2.5 owns historical backfill and the persisted tenant read cutover;
-until that gate passes, ordinary Capture reads remain on the legacy bytes.
+rollback. P2.5 adds a forced-RLS owner migration receipt and resumable cursor.
+Shadow mode dual-reads while serving legacy bytes; a canary or enabled reader
+uses the private object only after the receipt proves complete parity. Pausing
+the persisted rollout immediately returns reads to legacy bytes without
+removing verified objects, while deletion remains a permanent query barrier.
 
 ## Where things live
 
@@ -1282,5 +1285,5 @@ until that gate passes, ordinary Capture reads remain on the legacy bytes.
 | Security / auth | `src/lib/security/`, `src/lib/auth/` |
 | Observability / incidents / alerts | `src/lib/observability/`, `src/lib/diagnostics/` |
 | Evaluations + signed reports | `src/lib/evaluations/`, `src/lib/release/` |
-| Private asset objects + signed delivery | `src/lib/storage/object-plane.ts`, `src/app/api/assets/delivery/` |
+| Private asset objects, migration + signed delivery | `src/lib/storage/object-plane.ts`, `src/lib/storage/object-migration.ts`, `src/app/api/assets/` |
 | UI shell + workspaces | `src/components/`, `src/app/app/` |
