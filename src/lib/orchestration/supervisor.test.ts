@@ -126,7 +126,7 @@ describe("supervisor routing", () => {
     expect(decision.specialistIds).toEqual(expect.arrayContaining(["forge", "scout"]));
   });
 
-  it("adds planning and verification support after repeated incomplete outcomes", () => {
+  it("measures outcome evidence without silently changing routing", () => {
     const decision = routeAgentRequest("Implement the integration.", "execute");
     const adapted = adaptSupervisorDecision(decision, [{
       agentId: "forge",
@@ -141,11 +141,16 @@ describe("supervisor routing", () => {
       needsWorkOutcomes: 0,
       userApprovalRate: null,
     }]);
-    expect(adapted.specialistIds).toEqual(expect.arrayContaining(["forge", "atlas", "sentinel"]));
-    expect(adapted.learning).toMatchObject({ state: "supported", sampleSize: 5 });
+    expect(adapted.specialistIds).toEqual(decision.specialistIds);
+    expect(adapted.reasons).toEqual(decision.reasons);
+    expect(adapted.adaptationEvidence).toMatchObject({
+      state: "evidence_ready",
+      sampleSize: 5,
+      confidence: 0.5,
+    });
   });
 
-  it("adds support when personal feedback shows repeated weak outcomes", () => {
+  it("does not turn weak feedback into an implicit specialist policy", () => {
     const decision = routeAgentRequest("Research the options.", "research");
     const adapted = adaptSupervisorDecision(decision, [{
       agentId: "scout",
@@ -160,8 +165,12 @@ describe("supervisor routing", () => {
       needsWorkOutcomes: 2,
       userApprovalRate: 1 / 3,
     }]);
-    expect(adapted.specialistIds).toEqual(expect.arrayContaining(["scout", "atlas", "sentinel"]));
-    expect(adapted.learning?.adjustments.join(" ")).toMatch(/your recent outcome feedback/i);
+    expect(adapted.specialistIds).toEqual(decision.specialistIds);
+    expect(adapted.adaptationEvidence).toMatchObject({
+      state: "evidence_ready",
+      sampleSize: 4,
+      confidence: 0.4,
+    });
   });
 });
 

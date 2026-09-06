@@ -14,7 +14,7 @@ import {
   hasOpenAIKey,
 } from "@/lib/config";
 import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
-import { getAgentLearningGuidance } from "@/lib/agents/learning";
+import { getActiveAgentAdaptationGuidance } from "@/lib/agents/adaptation-store";
 import {
   analyzeBrowserCapabilityIntent,
   buildAutomaticRetrievalQuery,
@@ -844,12 +844,15 @@ export async function* runAgent(
           WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS,
         )
       : Promise.resolve(undefined);
-    const feedbackGuidancePromise = !agentPrivateMemoryAccessScope &&
+    const adaptationGuidancePromise = !agentPrivateMemoryAccessScope &&
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
       hasModelProviderFeature("text", modelRoute.tier)
-      ? getAgentLearningGuidance(request.agentId || "atlas", {
-          tenantId: request.tenantId,
+      ? getActiveAgentAdaptationGuidance({
+          tenantId: runTenantId,
+          ownerActorId: resolvedAgentIdentity.definition.ownerActorId,
+          agentId: resolvedAgentIdentity.definition.logicalAgentId,
+          definitionVersion: resolvedAgentIdentity.definition.definitionVersion,
         })
       : Promise.resolve([]);
     const liveWebPromise = useLiveWeb
@@ -1007,21 +1010,29 @@ export async function* runAgent(
         detail: `${workspaceAccess.connected.length} connected service${workspaceAccess.connected.length === 1 ? "" : "s"}; ${selectedExternalToolCount} governed external tool${selectedExternalToolCount === 1 ? "" : "s"} selected for this task.`,
       });
     }
-    const feedbackGuidance = await feedbackGuidancePromise;
-    if (durableMemoryEnabled && (feedbackGuidance.length || request.learning?.sampleSize)) {
+    const activeAdaptations = await adaptationGuidancePromise;
+    if (
+      durableMemoryEnabled &&
+      (activeAdaptations.length || request.adaptationEvidence?.sampleSize)
+    ) {
       yield await emit({
         type: "status",
-        label: "outcome learning ready",
-        detail: feedbackGuidance.length
-          ? `${feedbackGuidance.length} relevant correction${feedbackGuidance.length === 1 ? "" : "s"} applied alongside ${request.learning?.sampleSize || 0} prior outcome${request.learning?.sampleSize === 1 ? "" : "s"}.`
-          : `Outcome history reviewed across ${request.learning?.sampleSize || 0} prior run${request.learning?.sampleSize === 1 ? "" : "s"}.`,
+        label: activeAdaptations.length
+          ? "activated adaptation ready"
+          : "adaptation evidence observed",
+        detail: activeAdaptations.length
+          ? `${activeAdaptations.length} owner-activated adaptation${activeAdaptations.length === 1 ? "" : "s"} match this exact Agent definition.`
+          : `${request.adaptationEvidence?.sampleSize || 0} prior outcome${request.adaptationEvidence?.sampleSize === 1 ? "" : "s"} are evidence only and changed no behavior.`,
       });
     }
+    const adaptationGuidance = activeAdaptations.map((adaptation) =>
+      `Activation v${adaptation.activationVersion}: ${adaptation.guidance}`
+    );
     const instructions = buildAgentInstructions({
       mode,
       agentId: request.agentId,
       specialistIds: request.specialistIds,
-      feedbackGuidance,
+      adaptationGuidance,
       profile: request.agentProfile,
     });
     const toolIds = toolbox.tools
@@ -1169,11 +1180,16 @@ export async function* runAgent(
       budgetLimits,
       approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
       autonomy: request.agentProfile?.autonomy || "governed",
-      learningState: request.learning?.state || "cold_start",
-      learningSampleSize: request.learning?.sampleSize || 0,
-      learningGuidanceCount: feedbackGuidance.length,
-      learningGuidanceSha256: createHash("sha256")
-        .update(feedbackGuidance.join("\n"))
+      adaptationState: activeAdaptations.length
+        ? "active"
+        : request.adaptationEvidence?.state || "baseline",
+      adaptationEvidenceCount: request.adaptationEvidence?.sampleSize || 0,
+      adaptationConfidence: request.adaptationEvidence?.confidence || 0,
+      adaptationActivationVersions: activeAdaptations.map(
+        (adaptation) => adaptation.activationVersion,
+      ),
+      adaptationGuidanceSha256: createHash("sha256")
+        .update(adaptationGuidance.join("\n"))
         .digest("hex"),
     });
     const primaryAgentId = asCouncilAgentId(request.agentId || "atlas");

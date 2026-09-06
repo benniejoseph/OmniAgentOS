@@ -980,6 +980,11 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         learningSampleSize: event.learningSampleSize,
         learningGuidanceCount: event.learningGuidanceCount,
         learningGuidanceSha256: event.learningGuidanceSha256,
+        adaptationState: event.adaptationState,
+        adaptationEvidenceCount: event.adaptationEvidenceCount,
+        adaptationConfidence: event.adaptationConfidence,
+        adaptationActivationVersions: event.adaptationActivationVersions,
+        adaptationGuidanceSha256: event.adaptationGuidanceSha256,
       };
     case "memory":
       return {

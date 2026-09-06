@@ -1414,7 +1414,7 @@ function buildBaseToolInput({
 
   if (toolId === "memory.write") {
     return {
-      title: `Workflow learning: ${node.label}`.slice(0, 120),
+      title: `Workflow outcome note: ${node.label}`.slice(0, 120),
       content: compactText([
         `Workflow run: ${detail.run.id}`,
         `Plan: ${planId}`,

@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   completeAgentRun: vi.fn(),
   createAgentRun: vi.fn(),
   enqueueMemoryConsolidationJob: vi.fn(),
-  getAgentLearningGuidance: vi.fn(),
+  getActiveAgentAdaptationGuidance: vi.fn(),
   loadProgressiveAgentTools: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   runCouncilRound: vi.fn(),
@@ -39,8 +39,8 @@ vi.mock("@/lib/config", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/agents/learning", () => ({
-  getAgentLearningGuidance: mocks.getAgentLearningGuidance,
+vi.mock("@/lib/agents/adaptation-store", () => ({
+  getActiveAgentAdaptationGuidance: mocks.getActiveAgentAdaptationGuidance,
 }));
 
 vi.mock("@/lib/capabilities/toolbox", () => ({
@@ -133,7 +133,7 @@ describe("agent memory scope", () => {
     mocks.completeAgentRun.mockResolvedValue({ id: "run-memory-scope" });
     mocks.updateRunContextCount.mockResolvedValue(undefined);
     mocks.enqueueMemoryConsolidationJob.mockResolvedValue(null);
-    mocks.getAgentLearningGuidance.mockResolvedValue([]);
+    mocks.getActiveAgentAdaptationGuidance.mockResolvedValue([]);
     mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [] });
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
     mocks.buildContextPack.mockImplementation(async (
@@ -208,7 +208,7 @@ describe("agent memory scope", () => {
 
     expect(mocks.buildContextPack).not.toHaveBeenCalled();
     expect(mocks.updateRunContextCount).not.toHaveBeenCalled();
-    expect(mocks.getAgentLearningGuidance).not.toHaveBeenCalled();
+    expect(mocks.getActiveAgentAdaptationGuidance).not.toHaveBeenCalled();
     expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
     expect(events.some((event) => event.type === "memory")).toBe(false);
     expect(
@@ -265,7 +265,7 @@ describe("agent memory scope", () => {
     const events = await collectRun("project");
 
     expect(mocks.buildContextPack).not.toHaveBeenCalled();
-    expect(mocks.getAgentLearningGuidance).not.toHaveBeenCalled();
+    expect(mocks.getActiveAgentAdaptationGuidance).not.toHaveBeenCalled();
     expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({
       type: "status",
@@ -309,10 +309,12 @@ describe("agent memory scope", () => {
       { receiptId: "context-receipt-a" },
       expect.objectContaining({ tenantId: "paid-test-tenant" }),
     );
-    expect(mocks.getAgentLearningGuidance).toHaveBeenCalledWith(
-      "paid-test-agent",
-      { tenantId: "paid-test-tenant" },
-    );
+    expect(mocks.getActiveAgentAdaptationGuidance).toHaveBeenCalledWith({
+      tenantId: "paid-test-tenant",
+      ownerActorId: "paid-test-actor",
+      agentId: "paid-test-agent",
+      definitionVersion: 1,
+    });
     expect(mocks.enqueueMemoryConsolidationJob).toHaveBeenCalledOnce();
     expect(events).toContainEqual(expect.objectContaining({
       type: "memory",
@@ -329,6 +331,31 @@ describe("agent memory scope", () => {
     }));
     expect(JSON.stringify(mocks.streamResponseTurn.mock.calls[0]?.[0].input))
       .toContain("DURABLE_MEMORY_CONTEXT");
+  });
+
+  it("applies only an owner-activated adaptation to the exact identity pin", async () => {
+    mocks.getActiveAgentAdaptationGuidance.mockResolvedValue([{
+      adaptationId: `agent-adaptation:${"a".repeat(64)}`,
+      activationVersion: 4,
+      guidance: "Cite the exact source for material claims.",
+      confidence: 0.95,
+      evaluationSha256: "b".repeat(64),
+    }]);
+
+    const events = await collectRun("all");
+
+    expect(mocks.streamResponseTurn.mock.calls[0]?.[0].instructions).toContain(
+      "Activation v4: Cite the exact source for material claims.",
+    );
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "activated adaptation ready",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      adaptationState: "active",
+      adaptationActivationVersions: [4],
+    }));
   });
 
   it("retrieves only the assigned agent's memory and blocks sibling delegation", async () => {
@@ -353,7 +380,7 @@ describe("agent memory scope", () => {
         persistTrace: false,
       }),
     );
-    expect(mocks.getAgentLearningGuidance).not.toHaveBeenCalled();
+    expect(mocks.getActiveAgentAdaptationGuidance).not.toHaveBeenCalled();
     expect(mocks.runCouncilRound).not.toHaveBeenCalled();
     expect(mocks.enqueueMemoryConsolidationJob).toHaveBeenCalledOnce();
     expect(events).toContainEqual(expect.objectContaining({

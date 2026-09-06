@@ -59,7 +59,7 @@ export const appNav: AppNavItem[] = [
     href: "/app/agents",
     label: "Arsenal",
     shortLabel: "Arsenal",
-    description: "Your specialists, capabilities, and learning loops.",
+    description: "Your specialists, capabilities, and adaptation lifecycle.",
     icon: Bot,
   },
   {

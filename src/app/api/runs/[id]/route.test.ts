@@ -13,7 +13,7 @@ beforeAll(async () => {
   delete process.env.DATABASE_URL;
 });
 
-describe("run feedback learning", () => {
+describe("run feedback effects", () => {
   it("returns the content-free context receipt for later inspection", async () => {
     const runs = await import("@/lib/runs/store");
     const { createExecutionScope } = await import("@/lib/security/execution-scope");
@@ -117,7 +117,7 @@ describe("run feedback learning", () => {
     );
     expect(first.status).toBe(200);
     await expect(first.json()).resolves.toMatchObject({
-      learning: { demotedCapabilities: ["http.request"] },
+      feedbackEffects: { demotedCapabilities: ["http.request"] },
     });
 
     const repeated = await PATCH(
@@ -126,7 +126,7 @@ describe("run feedback learning", () => {
     );
     expect(repeated.status).toBe(200);
     await expect(repeated.json()).resolves.toMatchObject({
-      learning: { demotedCapabilities: [] },
+      feedbackEffects: { demotedCapabilities: [] },
     });
     await expect(trust.getTrustProfile("http.request", { tenantId })).resolves.toMatchObject({
       rejections: 1,

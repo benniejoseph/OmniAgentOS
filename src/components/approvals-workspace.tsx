@@ -967,7 +967,7 @@ function TrackRecord({
   return (
     <div className="mt-4 rounded-md border border-line bg-background p-3" data-daybook="track">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">{stage} learning</p>
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">{stage} evidence gate</p>
         <p className="text-xs text-muted">
           {trust.successes} ok · {trust.failures} failed · streak {trust.cleanStreak}
         </p>

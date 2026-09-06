@@ -169,6 +169,8 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
       "approvalPolicy", "autonomy",
       "learningState", "learningSampleSize", "learningGuidanceCount",
       "learningGuidanceSha256",
+      "adaptationState", "adaptationEvidenceCount", "adaptationConfidence",
+      "adaptationActivationVersions", "adaptationGuidanceSha256",
     ]);
   } else if (
     event.type === "run.contracts.bound" ||
