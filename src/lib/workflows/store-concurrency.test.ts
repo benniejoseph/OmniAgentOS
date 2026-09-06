@@ -127,6 +127,115 @@ describe("workflow conditional transitions (file mode)", () => {
     ).resolves.toMatchObject({ run: { status: "paused" } });
   });
 
+  it("commits terminal state and scoped outcome events together", async () => {
+    const store = await import("@/lib/workflows/store");
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-terminal-events",
+      initiatingActorId: "workflow-owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "workflow-owner",
+      correlationId: "workflow-terminal-request",
+      purpose: "workflow.run",
+    });
+    const authority = { executionScope, requesterRole: "admin" as const };
+    const detail = await store.createWorkflowRun({
+      tenantId: "tenant-terminal-events",
+      goal: "Finish with an exact outcome receipt",
+      executionAuthority: authority,
+    });
+    const running = await store.transitionWorkflowRun(
+      detail.run.id,
+      ["queued"],
+      { status: "running" },
+      { tenantId: "tenant-terminal-events" },
+    );
+
+    const completed = await store.transitionWorkflowRunWithEvents(
+      detail.run.id,
+      ["running"],
+      {
+        status: "completed",
+        result: { report: "Private report", outcomeEvaluation: { exact: true } },
+        completedAt: new Date().toISOString(),
+      },
+      [
+        {
+          type: "workflow.outcome_evaluated",
+          payload: { disposition: "verified_success", privateEvidence: "secret" },
+        },
+        { type: "workflow.completed", payload: {} },
+      ],
+      {
+        tenantId: "tenant-terminal-events",
+        expectedUpdatedAt: running!.updatedAt,
+        executionAuthority: authority,
+      },
+    );
+
+    expect(completed).toMatchObject({ status: "completed" });
+    await expect(
+      store.getWorkflowRunDetail(detail.run.id, {
+        tenantId: "tenant-terminal-events",
+      }),
+    ).resolves.toMatchObject({
+      run: { status: "completed", result: { report: "Private report" } },
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: "workflow.outcome_evaluated" }),
+        expect.objectContaining({ type: "workflow.completed" }),
+      ]),
+    });
+    const canonical = await listStreamEvents(`workflow:${detail.run.id}`, {
+      tenantId: "tenant-terminal-events",
+    });
+    const terminal = canonical.filter((event) =>
+      event.type === "workflow.outcome_evaluated" ||
+      event.type === "workflow.completed"
+    );
+    expect(terminal).toHaveLength(2);
+    expect(terminal.every((event) =>
+      event.actorId === "workflow-owner" &&
+      event.correlationId === "workflow-terminal-request"
+    )).toBe(true);
+    expect(JSON.stringify(terminal)).not.toContain("secret");
+  });
+
+  it("rejects an unscoped terminal write before changing state", async () => {
+    const store = await import("@/lib/workflows/store");
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-terminal-authority",
+      initiatingActorId: "workflow-owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "workflow-owner",
+      correlationId: "workflow-terminal-authority",
+      purpose: "workflow.run",
+    });
+    const detail = await store.createWorkflowRun({
+      tenantId: "tenant-terminal-authority",
+      goal: "Reject an unattributed completion",
+      executionAuthority: { executionScope, requesterRole: "admin" },
+    });
+    await store.transitionWorkflowRun(
+      detail.run.id,
+      ["queued"],
+      { status: "running" },
+      { tenantId: "tenant-terminal-authority" },
+    );
+
+    await expect(store.transitionWorkflowRunWithEvents(
+      detail.run.id,
+      ["running"],
+      { status: "completed", completedAt: new Date().toISOString() },
+      [{ type: "workflow.completed" }],
+      { tenantId: "tenant-terminal-authority" },
+    )).rejects.toBeInstanceOf(store.WorkflowRunExecutionScopeBindingError);
+    const unchanged = await store.getWorkflowRunDetail(detail.run.id, {
+      tenantId: "tenant-terminal-authority",
+    });
+    expect(unchanged?.run.status).toBe("running");
+    expect(unchanged?.events.some((event) => event.type === "workflow.completed"))
+      .toBe(false);
+  });
+
   it("reports invalid workflow signals without changing state", async () => {
     const store = await import("@/lib/workflows/store");
     const {

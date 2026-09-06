@@ -819,6 +819,175 @@ export async function transitionWorkflowRun(
   return transitioned;
 }
 
+export type WorkflowTransitionEvent = Readonly<{
+  type: string;
+  payload?: Record<string, unknown>;
+}>;
+
+/**
+ * Commits a workflow state transition and its observable events as one write.
+ * Database-backed runs also append the metadata-only canonical projections in
+ * the same transaction. The file ledger keeps state and private events atomic;
+ * its canonical projections remain a best-effort development fallback.
+ */
+export async function transitionWorkflowRunWithEvents(
+  runId: string,
+  expectedStatuses: readonly WorkflowRunStatus[],
+  patch: Partial<Omit<WorkflowRunRecord, "id" | "createdAt">>,
+  events: readonly WorkflowTransitionEvent[],
+  options: {
+    tenantId?: string;
+    expectedUpdatedAt?: string;
+    requireNoActiveJobDedupeKey?: string;
+    executionAuthority?: WorkflowExecutionAuthority;
+  } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const existing = await getWorkflowRunDetail(runId, { tenantId });
+  if (!existing || !expectedStatuses.includes(existing.run.status)) {
+    return null;
+  }
+  const authority = options.executionAuthority;
+  if (existing.run.input.executionAuthorityRequired && !authority) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow transition requires its bound execution authority.",
+    );
+  }
+  if (authority) {
+    assertExecutionScopeTenant(authority.executionScope, tenantId);
+    await assertWorkflowRunExecutionAuthority(runId, authority, { tenantId });
+  }
+
+  const now = new Date().toISOString();
+  const nextRun = sanitizeWorkflowRunRecord({
+    ...existing.run,
+    ...patch,
+    updatedAt: now,
+  });
+  const eventRecords = events.map((event) => ({
+    record: createWorkflowEventRecord(
+      runId,
+      event.type,
+      event.payload || {},
+      tenantId,
+    ),
+    payload: event.payload || {},
+  }));
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const transitioned = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          WITH recovery_jobs AS MATERIALIZED (
+            SELECT status, lease_expires_at
+            FROM omni_operation_jobs
+            WHERE tenant_id = ${tenantId}
+              AND dedupe_key = ${options.requireNoActiveJobDedupeKey || "__no_recovery_job__"}
+            FOR UPDATE
+          )
+          UPDATE omni_workflow_runs
+          SET workflow_type = ${nextRun.workflowType},
+              status = ${nextRun.status},
+              goal = ${nextRun.goal},
+              input = ${nextRun.input || {}}::jsonb,
+              current_step = ${nextRun.currentStep || null},
+              attempt = ${nextRun.attempt},
+              max_attempts = ${nextRun.maxAttempts},
+              approval_required = ${nextRun.approvalRequired},
+              approved_at = ${nextRun.approvedAt || null},
+              paused_at = ${nextRun.pausedAt || null},
+              canceled_at = ${nextRun.canceledAt || null},
+              error = ${nextRun.error || null},
+              result = ${nextRun.result || null}::jsonb,
+              updated_at = ${nextRun.updatedAt},
+              completed_at = ${nextRun.completedAt || null}
+          WHERE id = ${runId}
+            AND tenant_id = ${tenantId}
+            AND status = ANY(${expectedStatuses as WorkflowRunStatus[]})
+            AND (
+              ${options.expectedUpdatedAt || null}::timestamptz IS NULL
+              OR updated_at = ${options.expectedUpdatedAt || null}::timestamptz
+            )
+            AND (
+              ${options.requireNoActiveJobDedupeKey || null}::text IS NULL
+              OR NOT EXISTS (
+                SELECT 1
+                FROM recovery_jobs
+                WHERE status = 'running'
+                  AND lease_expires_at > NOW()
+              )
+            )
+          RETURNING *
+        `;
+        if (!rows[0]) return null;
+        for (const event of eventRecords) {
+          await sql`
+            INSERT INTO omni_workflow_events (
+              id, tenant_id, workflow_run_id, type, payload, created_at
+            )
+            VALUES (
+              ${event.record.id}, ${tenantId}, ${event.record.workflowRunId},
+              ${event.record.type}, ${event.record.payload}::jsonb,
+              ${event.record.createdAt}
+            )
+          `;
+          await appendWorkflowDomainEvent(
+            event.record,
+            event.payload,
+            tenantId,
+            authority?.executionScope,
+            sql,
+          );
+        }
+        return workflowRunFromRow(rows[0]);
+      },
+    ) as WorkflowRunRecord | null;
+    if (transitioned) {
+      await syncWorkflowMissionTransition(existing.run, transitioned);
+    }
+    return transitioned;
+  }
+
+  let transitioned: WorkflowRunRecord | null = null;
+  await mutateWorkflowLedger((ledger) => {
+    ledger.runs = ledger.runs.map((run) => {
+      if (
+        run.id !== runId ||
+        normalizeTenantId(run.tenantId) !== tenantId ||
+        !expectedStatuses.includes(run.status) ||
+        (options.expectedUpdatedAt && run.updatedAt !== options.expectedUpdatedAt)
+      ) {
+        return run;
+      }
+      transitioned = nextRun;
+      return nextRun;
+    });
+    if (transitioned) {
+      ledger.events.push(...eventRecords.map((event) => event.record));
+    }
+    return trimWorkflowLedger(ledger);
+  });
+  if (!transitioned) return null;
+  for (const event of eventRecords) {
+    try {
+      await appendWorkflowDomainEvent(
+        event.record,
+        event.payload,
+        tenantId,
+        authority?.executionScope,
+      );
+    } catch (error) {
+      console.warn(
+        "Workflow domain event append failed.",
+        error instanceof Error ? error.message : "Unknown workflow event error.",
+      );
+    }
+  }
+  await syncWorkflowMissionTransition(existing.run, transitioned);
+  return transitioned;
+}
+
 async function syncWorkflowMissionTransition(
   previous: WorkflowRunRecord,
   current: WorkflowRunRecord,

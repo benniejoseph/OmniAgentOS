@@ -53,6 +53,7 @@ import {
   getWorkflowRunDetail,
   listRunnableWorkflowRuns,
   transitionWorkflowRun,
+  transitionWorkflowRunWithEvents,
   updateWorkflowStep,
   updateWorkflowStepForRunFence,
   workflowStepDefinitions,
@@ -1471,33 +1472,34 @@ async function completeWorkflow(
       console.error("Workflow outcome evaluation failed.");
     }
   }
-  const completed = await transitionWorkflowRun(runId, ["running"], {
+  const authority = detail
+    ? await getWorkflowRunExecutionAuthority(detail.run.id, {
+        tenantId: detail.run.tenantId,
+      })
+    : undefined;
+  const completionEvents = [
+    ...(outcomeEventPayload
+      ? [{
+          type: "workflow.outcome_evaluated",
+          payload: outcomeEventPayload,
+        }]
+      : []),
+    { type: "workflow.completed", payload: {} },
+  ];
+  const completed = await transitionWorkflowRunWithEvents(runId, ["running"], {
     status: "completed",
     currentStep: undefined,
     error: undefined,
     completedAt: new Date().toISOString(),
     result,
-  }, { tenantId, expectedUpdatedAt });
+  }, completionEvents, {
+    tenantId,
+    expectedUpdatedAt,
+    executionAuthority: authority,
+  });
   if (completed) {
-    if (outcomeEventPayload) {
-      try {
-        await appendWorkflowEvent(
-          runId,
-          "workflow.outcome_evaluated",
-          outcomeEventPayload,
-        );
-      } catch {
-        // The validated receipt is already stored atomically with the legacy
-        // completion record; event transactionalization belongs to P1.1.
-        console.error("Workflow outcome event persistence failed.");
-      }
-    }
     if (detail && authoritativeToolExecutions.length) {
       try {
-        const authority = await getWorkflowRunExecutionAuthority(
-          detail.run.id,
-          { tenantId: detail.run.tenantId },
-        );
         if (authority?.executionScope) {
           const reportThreadId = detail.run.input.metadata?.threadId;
           await formVerifiedEffectMemories({
@@ -1516,7 +1518,6 @@ async function completeWorkflow(
         );
       }
     }
-    await appendWorkflowEvent(runId, "workflow.completed", {});
     const threadId = detail?.run.input.metadata?.threadId;
     if (typeof threadId === "string" && threadId) {
       try {

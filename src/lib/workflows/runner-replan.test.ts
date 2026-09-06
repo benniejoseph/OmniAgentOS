@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   listWorkflowPlanNodeExecutionsForRun: vi.fn(),
   resolveRuntimeModelAssignment: vi.fn(),
   transitionWorkflowRun: vi.fn(),
+  transitionWorkflowRunWithEvents: vi.fn(),
   updateWorkflowStep: vi.fn(),
   updateWorkflowStepForRunFence: vi.fn(),
 }));
@@ -53,6 +54,7 @@ vi.mock("@/lib/workflows/store", () => ({
   getWorkflowRunDetail: mocks.getWorkflowRunDetail,
   listRunnableWorkflowRuns: vi.fn(),
   transitionWorkflowRun: mocks.transitionWorkflowRun,
+  transitionWorkflowRunWithEvents: mocks.transitionWorkflowRunWithEvents,
   updateWorkflowStep: mocks.updateWorkflowStep,
   updateWorkflowStepForRunFence: mocks.updateWorkflowStepForRunFence,
   workflowStepDefinitions: [
