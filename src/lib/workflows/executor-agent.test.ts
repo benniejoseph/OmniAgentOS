@@ -26,6 +26,7 @@ import {
   executeAgentPlanNode,
   executeDynamicWorkflowPlan,
 } from "@/lib/workflows/executor";
+import { buildWorkflowNodeDelegationContractV1 } from "@/lib/delegation/workflow-adapter";
 import {
   buildWorkflowNodeInput,
   withWorkflowNodeContract,
@@ -106,6 +107,7 @@ describe("workflow agent node execution", () => {
       detail,
       node,
       nodeInput,
+      delegationContract: delegationContract(nodeInput),
       dependencyRecords: [],
       budget: createWorkflowExecutionBudget(),
     });
@@ -130,6 +132,12 @@ describe("workflow agent node execution", () => {
         usageReceiptRecorded: true,
         attemptCount: 1,
       },
+      delegation: {
+        delegationId: expect.stringMatching(/^delegation:[a-f0-9]{64}$/),
+        contractSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        delegatePrincipalId: expect.any(String),
+        verifierAgentId: "sentinel",
+      },
     });
     expect(mocks.generateModelStructured).toHaveBeenCalledOnce();
     expect(mocks.generateModelStructured.mock.calls[0]?.[0]).toMatchObject({
@@ -143,6 +151,8 @@ describe("workflow agent node execution", () => {
         purpose: "workflow.node.agent.execute",
       },
     });
+    expect(mocks.generateModelStructured.mock.calls[0]?.[0].input)
+      .toContain("<delegation_contract");
   });
 
   it("persists a completed plan node only with typed input, output, and receipt", async () => {
@@ -208,19 +218,47 @@ describe("workflow agent node execution", () => {
           schemaVersion: 1,
           executor: "agent",
           grants: { toolIds: [] },
+          delegationContract: {
+            version: "p8.1-delegation-contract:1",
+            delegate: { agentId: "scout", definitionVersion: 1 },
+          },
         },
         output: {
           nodeResult: { completionBasis: "model_receipt" },
+          delegationContract: {
+            version: "p8.1-delegation-contract:1",
+          },
           executionReceipt: {
             schemaVersion: 1,
             executor: "agent",
+            delegation: { verifierAgentId: "sentinel" },
             model: { usageReceiptId: "usage-1" },
           },
         },
       }],
     });
+    expect(mocks.appendWorkflowEvent).toHaveBeenCalledWith(
+      "workflow-integrated-1",
+      "workflow.plan_node.started",
+      expect.objectContaining({
+        delegationId: expect.stringMatching(/^delegation:[a-f0-9]{64}$/),
+        delegationContractSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
   });
 });
+
+function delegationContract(nodeInput: ReturnType<typeof buildWorkflowNodeInput>) {
+  return buildWorkflowNodeDelegationContractV1({
+    detail,
+    planId: "plan-test",
+    node,
+    nodeInput,
+    dependencyRecords: [],
+    remainingWallTimeMs: 30_000,
+    createdAt: "2026-09-07T06:00:00.000Z",
+  });
+}
 
 function mockSuccessfulNodeGeneration() {
   mocks.generateModelStructured.mockResolvedValue({
