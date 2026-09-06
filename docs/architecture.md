@@ -1329,6 +1329,25 @@ calls a provider. Retrieval traces retain the validated plan in their existing
 owner visibility boundary and synthesize a deterministic plan when reading an
 older trace.
 
+P4.4 separates retrieval representation from provider identity. Every query
+embedding carries an immutable space ID that binds implementation, version, and
+dimension. The credential-free local multilingual feature-hash space is the
+default and never enters the legacy OpenAI pgvector index or compares with its
+stored vectors. Local candidate vectors are computed only after the existing
+tenant/actor-authorized bounded read. An external embedding provider must be
+explicitly allowed; the direct-agent lane may reuse OpenAI only when OpenAI is
+already the selected model provider, so retrieval cannot create a new provider
+disclosure.
+
+The learned pairwise reranker operates after authorization over bounded
+evidence features and returns a deterministic score. Context profiles and
+governed search outputs retain content-free `p4.4-retrieval-embedding:1` and
+`p4.4-reranker-receipt:1` records with model identity, vector space,
+dimensions, capability flags, and training-receipt coordinates. They contain
+no query, evidence content, embedding values, tenant/actor identity,
+credentials, or private reasoning. Provider or credential unavailability falls
+back to the local space without widening retrieval scope.
+
 ## Capture asset object plane
 
 Capture files and recording segments retain database bytes through the rollback

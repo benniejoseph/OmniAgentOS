@@ -1525,3 +1525,20 @@ model budget before disclosure, while provider, schema, or usage-receipt failure
 falls back to the deterministic plan. Neither receipt nor plan grants retrieval
 access: the context engine continues to enforce the independently resolved
 database and tenant boundaries on every search.
+
+## Provider-neutral multilingual retrieval
+
+P4.4 adds no mutation event or new authority surface. The existing retrieval
+trace and governed search result may retain content-free
+`p4.4-retrieval-embedding:1` and `p4.4-reranker-receipt:1` metadata. Those
+receipts identify implementation/model version, vector space and dimensions,
+capability flags, fallback reason, and the fixed training receipt. They contain
+no query text, evidence content, vector values, credentials, tenant/actor
+identity, provider response, or private reasoning.
+
+Embedding and reranking occur only inside the already-resolved read boundary.
+The local space computes vectors after the bounded scoped candidate read and is
+never submitted to the legacy OpenAI vector index. An external embedding
+provider requires explicit caller permission. Neither receipt can grant access,
+change scope, reactivate lifecycle-invalid evidence, or create a domain event;
+no database migration is required.
