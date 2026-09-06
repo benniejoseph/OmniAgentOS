@@ -87,6 +87,7 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
+  appendContextCompilerV2CanaryEvent,
   appendContextCompilerV2ShadowEventSafely,
   appendRunEvent,
   appendRunContractEventSafely,
@@ -716,10 +717,19 @@ export async function* runAgent(
               credentialSource: "deployment_environment" as const,
             },
           } : {}),
-          contextCompilerV2Shadow: {
-            runId,
-            executionScope,
-          },
+          ...(promptMemoryAccessScope && request.contextSelection?.evidenceIds.length
+            ? {
+                contextCompilerV2Canary: {
+                  runId,
+                  executionScope,
+                },
+              }
+            : {
+                contextCompilerV2Shadow: {
+                  runId,
+                  executionScope,
+                },
+              }),
         })
       : Promise.resolve(fallbackContextPack(query));
     const configuredToolIds = request.agentProfile ? [...new Set([
@@ -786,6 +796,13 @@ export async function* runAgent(
       await appendContextCompilerV2ShadowEventSafely(
         runId,
         retrieval.compilerV2Shadow.receipt,
+        { tenantId: runTenantId, executionScope },
+      );
+    }
+    if (retrieval.compilerV2Canary) {
+      await appendContextCompilerV2CanaryEvent(
+        runId,
+        retrieval.compilerV2Canary.receipt,
         { tenantId: runTenantId, executionScope },
       );
     }
