@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { embedTexts } from "@/lib/openai/client";
 import { chunkText, normalizeTextForChunking } from "@/lib/rag/chunk";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
@@ -8,6 +9,11 @@ import { jsonbSafeText, jsonbSafeTruncate } from "@/lib/rag/text-safety";
 import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
 import { redactSensitive } from "@/lib/security/context";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
+import {
+  captureExtractionUnitSchema,
+  renderCaptureExtractionUnits,
+  type CaptureExtractionUnit,
+} from "@/lib/capture/extraction";
 import { projectCanonicalEvidenceEntities } from "@/lib/entities/extraction";
 import {
   buildCanonicalTextSourceWrite,
@@ -32,6 +38,7 @@ export async function ingestTextDocument({
   sourceLineage,
   captureIngestGuard,
   executionScope,
+  structuredUnits,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -47,6 +54,7 @@ export async function ingestTextDocument({
   sourceLineage?: TextSourceLineageInput;
   captureIngestGuard?: CaptureIngestGuard;
   executionScope?: ExecutionScope;
+  structuredUnits?: CaptureExtractionUnit[];
 }) {
   if ((usageScope?.actorId || captureIngestGuard?.actorId) && !sourceLineage) {
     throw new Error(
@@ -54,7 +62,10 @@ export async function ingestTextDocument({
     );
   }
   const safeTitle = jsonbSafeTruncate(String(redactSensitive(title)), 240);
-  const safeContent = jsonbSafeTruncate(
+  const structured = structuredUnits?.length
+    ? normalizeStructuredIngestUnits(content, structuredUnits)
+    : undefined;
+  const safeContent = structured?.content || jsonbSafeTruncate(
     String(redactSensitive(content)),
     900_000,
   );
@@ -65,10 +76,10 @@ export async function ingestTextDocument({
   const safeTags = tags
     .map((tag) => jsonbSafeTruncate(String(redactSensitive(tag)), 80))
     .slice(0, 50);
-  const chunks = chunkText(safeContent).map((chunk) => ({
-    ...chunk,
-    content: jsonbSafeText(chunk.content),
-  }));
+  const chunks = structured?.chunks || chunkText(safeContent).map((chunk) => ({
+      ...chunk,
+      content: jsonbSafeText(chunk.content),
+    }));
   const canonicalSourceWrite = sourceLineage
     ? buildCanonicalTextSourceWrite({
         lineage: sourceLineage,
@@ -165,6 +176,57 @@ export async function ingestTextDocument({
     chunks: knowledge.chunks,
     memories: records,
   };
+}
+
+function normalizeStructuredIngestUnits(
+  content: string,
+  input: readonly CaptureExtractionUnit[],
+) {
+  const parsed = input.map((unit) => captureExtractionUnitSchema.parse(unit));
+  if (
+    normalizeTextForChunking(content) !==
+      normalizeTextForChunking(renderCaptureExtractionUnits(parsed))
+  ) {
+    throw new Error(
+      "Structured extraction units must exactly compose the ingest content.",
+    );
+  }
+  const safeContents = parsed.map((unit) => normalizeTextForChunking(
+    jsonbSafeText(String(redactSensitive(unit.content))),
+  ));
+  if (safeContents.some((value) => !value)) {
+    throw new Error("Structured extraction contains an empty evidence unit.");
+  }
+  const safeContent = safeContents.join("\n\n");
+  let cursor = 0;
+  const chunks = parsed.map((unit, index) => {
+    const safeUnitContent = safeContents[index];
+    const characterStart = cursor;
+    const characterEnd = characterStart + safeUnitContent.length;
+    cursor = characterEnd + 2;
+    return {
+      index,
+      content: safeUnitContent,
+      characterStart,
+      characterEnd,
+      label: unit.label,
+      metadata: {
+        evidenceLabel: unit.label,
+        evidenceLocatorKind: unit.locator.kind,
+      },
+      locator: unit.locator.kind === "text_span"
+        ? {
+            kind: "text_span" as const,
+            offsetUnit: "utf16_code_unit" as const,
+            startOffset: characterStart,
+            endOffsetExclusive: characterEnd,
+            containerLength: safeContent.length,
+            containerSha256: createHash("sha256").update(safeContent).digest("hex"),
+          }
+        : unit.locator,
+    };
+  });
+  return { content: safeContent, chunks };
 }
 
 async function embedKnowledgeTexts(

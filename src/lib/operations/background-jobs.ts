@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import {
+  CAPTURE_STRUCTURED_EXTRACTOR_CONFIG_SHA256,
+  CAPTURE_STRUCTURED_EXTRACTOR_ID,
+  CAPTURE_STRUCTURED_EXTRACTOR_VERSION,
+  captureExtractionUnitSchema,
+  renderCaptureExtractionUnits,
+} from "@/lib/capture/extraction";
 import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
 import {
   resolveCaptureAssetActorForIngestJob,
@@ -51,6 +58,11 @@ import {
   deleteAssetObjectJob,
 } from "@/lib/storage/object-plane";
 import { executeAssetObjectMigrationJob } from "@/lib/storage/object-migration";
+import {
+  CLAIM_EVIDENCE_PURPOSE_ID,
+  CONTEXT_COMPILER_V2_PURPOSE_ID,
+} from "@/lib/sources/purposes";
+import type { SourceItemV1 } from "@/lib/sources/contracts";
 
 export const evaluationJobRequestSchema = z
   .object({
@@ -71,8 +83,27 @@ export const knowledgeIngestJobRequestSchema = z
       z.union([z.string().max(2_000), z.number(), z.boolean(), z.null()]),
     ).optional(),
     evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(100).optional(),
+    structuredUnits: z.array(captureExtractionUnitSchema).min(1).max(1_024).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.structuredUnits) return;
+    const structuredContent = renderCaptureExtractionUnits(value.structuredUnits);
+    if (structuredContent.length > 900_000) {
+      context.addIssue({
+        code: "custom",
+        message: "Structured extraction exceeds the indexing limit.",
+        path: ["structuredUnits"],
+      });
+    }
+    if (normalizeQueuedContent(structuredContent) !== normalizeQueuedContent(value.content)) {
+      context.addIssue({
+        code: "custom",
+        message: "Structured extraction must exactly compose the queued content.",
+        path: ["structuredUnits"],
+      });
+    }
+  });
 
 const memoryConsolidationJobRequestSchema = z
   .object({
@@ -702,8 +733,27 @@ async function executeBackgroundOperation(
               providerRevisionId: job.id,
               capturedAt: job.createdAt,
               sourceKind: captureTarget
-                ? "capture" as const
+                ? captureStructuredSourceKind(parsed)
                 : canonicalSourceKind(parsed.sourceType),
+              ...(captureTarget ? {
+                visibility: "user_private" as const,
+                sensitivity: "confidential" as const,
+                permissionGrantIds: ["first_party.capture"],
+                allowedPurposeIds: [
+                  CLAIM_EVIDENCE_PURPOSE_ID,
+                  CONTEXT_COMPILER_V2_PURPOSE_ID,
+                ].sort(),
+                retentionPolicyId: "retention.capture.owner-controlled",
+                extractorId: parsed.structuredUnits?.length
+                  ? CAPTURE_STRUCTURED_EXTRACTOR_ID
+                  : undefined,
+                extractorVersionId: parsed.structuredUnits?.length
+                  ? CAPTURE_STRUCTURED_EXTRACTOR_VERSION
+                  : undefined,
+                extractorConfigSha256: parsed.structuredUnits?.length
+                  ? CAPTURE_STRUCTURED_EXTRACTOR_CONFIG_SHA256
+                  : undefined,
+              } : {}),
             },
           }
         : {}),
@@ -1009,6 +1059,39 @@ function canonicalSourceKind(
   if (sourceType === "file") return "file" as const;
   if (sourceType === "api") return "record" as const;
   return "document" as const;
+}
+
+function captureStructuredSourceKind(
+  request: KnowledgeIngestJobRequest,
+): SourceItemV1["sourceKind"] {
+  const candidate = request.metadata?.structuredSourceKind;
+  if (
+    typeof candidate === "string" &&
+    [
+      "document",
+      "spreadsheet",
+      "presentation",
+      "email",
+      "calendar_event",
+      "image",
+      "audio",
+      "video",
+      "record",
+      "file",
+      "capture",
+    ].includes(candidate)
+  ) {
+    return candidate as SourceItemV1["sourceKind"];
+  }
+  return "capture" as const;
+}
+
+function normalizeQueuedContent(value: string) {
+  return value
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function stableStringify(value: unknown): string {

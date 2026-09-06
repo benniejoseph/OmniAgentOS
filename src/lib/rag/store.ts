@@ -81,6 +81,8 @@ type CreateKnowledgeDocumentInput = {
     index: number;
     content: string;
     embedding?: number[];
+    label?: string;
+    metadata?: Record<string, unknown>;
   }>;
   metadata?: Record<string, unknown>;
   canonicalSourceWrite?: CanonicalTextSourceWrite;
@@ -182,8 +184,10 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
         : {}),
       chunkIndex: chunk.index,
       title:
-        input.chunks.length > 1
-          ? `${document.title} (${chunk.index + 1}/${input.chunks.length})`
+        chunk.label
+          ? `${document.title} — ${jsonbSafeTruncate(String(redactSensitive(chunk.label)), 240)}`
+          : input.chunks.length > 1
+            ? `${document.title} (${chunk.index + 1}/${input.chunks.length})`
           : document.title,
       content: safeChunkContent,
       tags,
@@ -195,6 +199,9 @@ export async function createKnowledgeDocument(input: CreateKnowledgeDocumentInpu
       metadata: {
         ...document.metadata,
         documentTitle: document.title,
+        ...(chunk.metadata
+          ? redactSensitive(chunk.metadata) as Record<string, unknown>
+          : {}),
       },
       createdAt: now,
       updatedAt: now,
@@ -1572,16 +1579,16 @@ function assertCanonicalKnowledgeLineage(
       );
     }
     const locator = evidence.locator;
-    if (
-      locator.kind !== "text_span" ||
-      locator.offsetUnit !== "utf16_code_unit" ||
-      locator.containerLength !== normalizedContent.length ||
-      locator.containerSha256 !== containerSha256 ||
-      normalizedContent.slice(
-        locator.startOffset,
-        locator.endOffsetExclusive,
-      ) !== chunk.content
-    ) {
+    const locatorMatches = locator.kind === "text_span"
+      ? locator.offsetUnit === "utf16_code_unit" &&
+        locator.containerLength === normalizedContent.length &&
+        locator.containerSha256 === containerSha256 &&
+        normalizedContent.slice(
+          locator.startOffset,
+          locator.endOffsetExclusive,
+        ) === chunk.content
+      : structuredLocatorMatchesSourceKind(locator.kind, revision.sourceKind);
+    if (!locatorMatches) {
       throw new Error(
         "Canonical evidence locator does not resolve to its knowledge chunk.",
       );
@@ -1595,6 +1602,20 @@ function assertCanonicalKnowledgeLineage(
       "Canonical knowledge lineage is incomplete or contains duplicate evidence.",
     );
   }
+}
+
+function structuredLocatorMatchesSourceKind(
+  locatorKind: Exclude<EvidenceUnitV1["locator"]["kind"], "text_span">,
+  sourceKind: EvidenceUnitV1["sourceKind"],
+) {
+  if (locatorKind === "page") {
+    return ["document", "file", "capture"].includes(sourceKind);
+  }
+  if (locatorKind === "sheet_range") return sourceKind === "spreadsheet";
+  if (locatorKind === "slide") return sourceKind === "presentation";
+  if (locatorKind === "email_section") return sourceKind === "email";
+  if (locatorKind === "image_region") return sourceKind === "image";
+  return sourceKind === "audio" || sourceKind === "video";
 }
 
 function recoverFileKnowledgeLineage(
