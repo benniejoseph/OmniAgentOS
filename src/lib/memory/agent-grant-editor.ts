@@ -154,7 +154,9 @@ export function explainAgentMemoryGrantV1(
     ? `${visibilityLabels[grant.target.visibility]} (${coordinates.join(" · ")})`
     : visibilityLabels[grant.target.visibility];
   const state = grant.state === "active"
-    ? `until ${formatTime(grant.expiresAt)}`
+    ? Date.parse(grant.expiresAt) <= Date.now()
+      ? `expired ${formatTime(grant.expiresAt)}`
+      : `until ${formatTime(grant.expiresAt)}`
     : grant.state === "revoked"
       ? `revoked ${formatTime(grant.revokedAt || grant.updatedAt)}`
       : "pending activation";
@@ -162,9 +164,9 @@ export function explainAgentMemoryGrantV1(
 }
 
 function canonicalIds(values: readonly string[]) {
-  return Object.freeze([...new Set(values)].sort((left, right) =>
+  return [...new Set(values)].sort((left, right) =>
     left.localeCompare(right, "en", { sensitivity: "variant" })
-  ));
+  );
 }
 
 function formatBytes(value: number) {
