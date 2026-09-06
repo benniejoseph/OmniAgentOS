@@ -14,6 +14,13 @@ export type RetrievalQueryPlanBenchmarkCase = Readonly<{
 export const RETRIEVAL_QUERY_PLAN_BENCHMARK_VERSION =
   "p4.3-query-plan-benchmark:1" as const;
 
+export const RETRIEVAL_QUERY_PLAN_BENCHMARK_THRESHOLDS = Object.freeze({
+  domainPrecision: 0.95,
+  domainRecall: 0.95,
+  temporalModeAccuracy: 0.95,
+  originalQueryAnchorRate: 1,
+});
+
 export const retrievalQueryPlanBenchmarkCases: readonly RetrievalQueryPlanBenchmarkCase[] = [
   fixture("semantic-explain", "Explain vector database indexing", ["semantic"]),
   fixture("semantic-paraphrase", "Tell me about cache invalidation", ["semantic"]),
@@ -90,13 +97,23 @@ export function evaluateRetrievalQueryPlanBenchmark(
     };
   });
 
+  const domainPrecision = ratio(truePositive, truePositive + falsePositive);
+  const domainRecall = ratio(truePositive, truePositive + falseNegative);
+  const temporalModeAccuracy = ratio(temporalCorrect, temporalCases);
+  const originalQueryAnchorRate = ratio(anchorCorrect, cases.length);
   return {
     version: RETRIEVAL_QUERY_PLAN_BENCHMARK_VERSION,
     caseCount: cases.length,
-    domainPrecision: ratio(truePositive, truePositive + falsePositive),
-    domainRecall: ratio(truePositive, truePositive + falseNegative),
-    temporalModeAccuracy: ratio(temporalCorrect, temporalCases),
-    originalQueryAnchorRate: ratio(anchorCorrect, cases.length),
+    thresholds: RETRIEVAL_QUERY_PLAN_BENCHMARK_THRESHOLDS,
+    domainPrecision,
+    domainRecall,
+    temporalModeAccuracy,
+    originalQueryAnchorRate,
+    passed:
+      domainPrecision >= RETRIEVAL_QUERY_PLAN_BENCHMARK_THRESHOLDS.domainPrecision &&
+      domainRecall >= RETRIEVAL_QUERY_PLAN_BENCHMARK_THRESHOLDS.domainRecall &&
+      temporalModeAccuracy >= RETRIEVAL_QUERY_PLAN_BENCHMARK_THRESHOLDS.temporalModeAccuracy &&
+      originalQueryAnchorRate >= RETRIEVAL_QUERY_PLAN_BENCHMARK_THRESHOLDS.originalQueryAnchorRate,
     results,
   };
 }
