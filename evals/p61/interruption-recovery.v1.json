@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "p6.1-loop-v2-interruption-recovery-v1",
+  "cases": [
+    { "id": "read.interrupt.understand", "capability": "read_only", "checkpointState": "understand", "fault": "none", "leaseGeneration": 1, "expectedOutcome": "resumed" },
+    { "id": "read.interrupt.plan", "capability": "read_only", "checkpointState": "plan", "fault": "none", "leaseGeneration": 1, "expectedOutcome": "resumed" },
+    { "id": "read.interrupt.act", "capability": "read_only", "checkpointState": "act", "fault": "none", "leaseGeneration": 1, "expectedOutcome": "resumed" },
+    { "id": "read.interrupt.observe", "capability": "read_only", "checkpointState": "observe", "fault": "none", "leaseGeneration": 1, "expectedOutcome": "resumed" },
+    { "id": "read.interrupt.verify", "capability": "read_only", "checkpointState": "verify", "fault": "none", "leaseGeneration": 1, "expectedOutcome": "resumed" },
+    { "id": "read.retry.once", "capability": "read_only", "checkpointState": "act", "fault": "transient_read_once", "leaseGeneration": 1, "expectedOutcome": "resumed" },
+    { "id": "read.retry.twice", "capability": "read_only", "checkpointState": "act", "fault": "transient_read_twice", "leaseGeneration": 1, "expectedOutcome": "resumed" },
+    { "id": "read.cancel", "capability": "read_only", "checkpointState": "act", "fault": "cancel", "leaseGeneration": 1, "expectedOutcome": "canceled" },
+    { "id": "read.verification.effect-receipt", "capability": "read_only", "checkpointState": "verify", "fault": "verification_mismatch", "leaseGeneration": 1, "expectedOutcome": "failed_closed" },
+    { "id": "read.stale-fence", "capability": "read_only", "checkpointState": "act", "fault": "stale_fence", "leaseGeneration": 1, "expectedOutcome": "deferred" },
+    { "id": "read.replan", "capability": "read_only", "checkpointState": "replan", "fault": "none", "leaseGeneration": 1, "expectedOutcome": "failed_closed" },
+    { "id": "model.interrupt.understand", "capability": "model_text", "checkpointState": "understand", "fault": "none", "leaseGeneration": 1, "expectedOutcome": "failed_closed" },
+    { "id": "model.interrupt.act", "capability": "model_text", "checkpointState": "act", "fault": "none", "leaseGeneration": 1, "expectedOutcome": "failed_closed" },
+    { "id": "read.claims-exhausted", "capability": "read_only", "checkpointState": "plan", "fault": "none", "leaseGeneration": 4, "expectedOutcome": "failed_closed" },
+    { "id": "read.waiting-not-active", "capability": "read_only", "checkpointState": "clarify", "fault": "inactive_wait", "leaseGeneration": 1, "expectedOutcome": "rejected" }
+  ]
+}
