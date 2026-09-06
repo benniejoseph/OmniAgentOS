@@ -12,6 +12,12 @@ import {
   createQueuedAgentRun,
 } from "@/lib/runs/store";
 import {
+  RUN_BUDGET_DIMENSIONS,
+  narrowRunBudgetLimits,
+  runBudgetCountersV1Schema,
+  type RunBudgetCountersV1,
+} from "@/lib/runs/budgets";
+import {
   assertExecutionScopeTenant,
   deriveExecutionScope,
   executionScopesEqual,
@@ -40,6 +46,7 @@ export async function prepareDurableSpecialistDelegation(input: {
   mode: AgentMode;
   primaryAgentId: DurableSpecialistAgentId;
   specialistIds: DurableSpecialistAgentId[];
+  parentBudgetLimits: RunBudgetCountersV1;
 }) {
   const parentExecutionScope = input.parentExecutionScope;
   assertExecutionScopeTenant(parentExecutionScope, input.owner.tenantId);
@@ -56,6 +63,19 @@ export async function prepareDurableSpecialistDelegation(input: {
     input.primaryAgentId,
     input.specialistIds,
     input.mode,
+  );
+  const parentBudgetLimits = runBudgetCountersV1Schema.parse(
+    input.parentBudgetLimits,
+  );
+  if (selected.length + 1 > parentBudgetLimits.agents) {
+    throw new Error("Durable delegation exceeds the authorized agent budget.");
+  }
+  if (selected.length > parentBudgetLimits.fanOut) {
+    throw new Error("Durable delegation exceeds the authorized fan-out budget.");
+  }
+  const childBudgetLimits = deriveSpecialistBudgetLimits(
+    parentBudgetLimits,
+    selected.length,
   );
   const prepared: PreparedDurableSpecialist[] = [];
 
@@ -99,6 +119,7 @@ export async function prepareDurableSpecialistDelegation(input: {
       requestId: input.requestId,
       delegationId,
       executionScope,
+      budgetLimits: childBudgetLimits,
       ready: false,
       preparedAt: task.createdAt,
     } satisfies DurableSpecialistJobPayload;
@@ -135,6 +156,7 @@ export async function prepareDurableSpecialistDelegation(input: {
       taskId: task.id,
       attemptId: attempt.id,
       executionScope,
+      budgetLimits: childBudgetLimits,
     } satisfies PreparedDurableSpecialist;
     prepared.push(item);
   }
@@ -214,6 +236,7 @@ async function enqueueDurableSpecialist(
     requestId: specialist.requestId,
     delegationId: specialist.delegationId,
     executionScope: specialist.executionScope,
+    budgetLimits: specialist.budgetLimits,
     ready: true,
     preparedAt: new Date().toISOString(),
     workflowRunId,
@@ -301,8 +324,38 @@ function assertSpecialistJobScope(
     payload.missionId !== expected.missionId ||
     payload.taskId !== expected.causationId ||
     payload.requestId !== expected.correlationId ||
-    payload.delegationId !== expected.delegationId
+    payload.delegationId !== expected.delegationId ||
+    !sameBudgetLimits(payload.budgetLimits, expectedPayload.budgetLimits)
   ) {
     throw new Error("Durable specialist queue scope does not match its request.");
   }
+}
+
+export function deriveSpecialistBudgetLimits(
+  parentLimits: RunBudgetCountersV1,
+  specialistCount: number,
+) {
+  const parent = runBudgetCountersV1Schema.parse(parentLimits);
+  const divisor = Math.max(1, Math.round(specialistCount));
+  const requested = Object.fromEntries(
+    RUN_BUDGET_DIMENSIONS.map((dimension) => [
+      dimension,
+      Math.floor(parent[dimension] / divisor),
+    ]),
+  ) as RunBudgetCountersV1;
+  requested.agents = 1;
+  requested.fanOut = 0;
+  requested.replans = 0;
+  return narrowRunBudgetLimits(parent, requested);
+}
+
+function sameBudgetLimits(
+  actual: unknown,
+  expected: RunBudgetCountersV1 | undefined,
+) {
+  if (!expected) return actual === undefined;
+  const parsed = runBudgetCountersV1Schema.safeParse(actual);
+  return parsed.success && RUN_BUDGET_DIMENSIONS.every(
+    (dimension) => parsed.data[dimension] === expected[dimension],
+  );
 }

@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 function parentExecutionScope(
@@ -33,6 +34,26 @@ describe("durable specialist delegation", () => {
     );
   });
 
+  it("partitions delegated authority without allowing child fan-out", async () => {
+    const { deriveSpecialistBudgetLimits } = await import(
+      "@/lib/subagents/scheduler"
+    );
+    const child = deriveSpecialistBudgetLimits(
+      DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+      2,
+    );
+
+    expect(child).toMatchObject({
+      modelTurns: 3,
+      tokens: 32_000,
+      toolCalls: 15,
+      agents: 1,
+      fanOut: 0,
+      retries: 1,
+      replans: 0,
+    });
+  });
+
   it("prepares deterministic queued runs and jobs across supervisor retries", async () => {
     const missions = await import("@/lib/missions/store");
     const scheduler = await import("@/lib/subagents/scheduler");
@@ -59,6 +80,7 @@ describe("durable specialist delegation", () => {
       mode: "research" as const,
       primaryAgentId: "atlas" as const,
       specialistIds: ["scout", "sentinel"] as const,
+      parentBudgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
     };
     const first = await scheduler.prepareDurableSpecialistDelegation({
       ...input,
@@ -144,6 +166,7 @@ describe("durable specialist delegation", () => {
       mode: "research",
       primaryAgentId: "atlas",
       specialistIds: ["sentinel"],
+      parentBudgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
     });
 
     await expect(worker.processDurableSpecialistQueue({
@@ -183,6 +206,7 @@ describe("durable specialist delegation", () => {
       mode: "research",
       primaryAgentId: "atlas",
       specialistIds: ["sentinel"],
+      parentBudgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
     });
 
     await expect(worker.processDurableSpecialistQueue({
@@ -241,6 +265,7 @@ describe("durable specialist delegation", () => {
       mode: "research",
       primaryAgentId: "scout",
       specialistIds: ["scout"],
+      parentBudgetLimits: DEFAULT_AGENT_RUN_BUDGET_LIMITS,
     });
     expect(specialists).toHaveLength(1);
     expect(specialists[0].agentId).toBe("sentinel");
