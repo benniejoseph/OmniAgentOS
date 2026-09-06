@@ -1,26 +1,44 @@
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
+  getEvaluationFailureCluster,
   HarnessRuleReviewConflictError,
   listEvaluationFailureFeedback,
   reviewHarnessRuleProposal,
 } from "@/lib/evaluations/failure-feedback-store";
+import {
+  defaultEvalCases,
+  evaluateEvaluationGovernance,
+} from "@/lib/evaluations/runner";
 import {
   jsonBodyErrorResponse,
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import {
+  BackgroundJobIdempotencyConflictError,
+  enqueueEvaluationJob,
+} from "@/lib/operations/background-jobs";
+import { projectOperationJobStatus } from "@/lib/operations/job-queue";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
-const reviewSchema = z.object({
-  proposalId: z.string().trim().min(1).max(240),
-  decision: z.enum(["approved", "rejected"]),
-  reason: z.string().trim().min(12).max(500),
-}).strict();
+const actionSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("review"),
+    proposalId: z.string().trim().min(1).max(240),
+    decision: z.enum(["approved", "rejected"]),
+    reason: z.string().trim().min(12).max(500),
+  }).strict(),
+  z.object({
+    action: z.literal("replay"),
+    clusterId: z.string().trim().min(1).max(240),
+  }).strict(),
+]);
 
 async function GETHandler(request: Request) {
   let context;
@@ -54,10 +72,10 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
-  const parsed = reviewSchema.safeParse(body);
+  const parsed = actionSchema.safeParse(body);
   if (!parsed.success) {
     return Response.json(
-      { error: "Invalid harness rule review", details: parsed.error.flatten() },
+      { error: "Invalid failure feedback action", details: parsed.error.flatten() },
       { status: 400 },
     );
   }
@@ -67,10 +85,15 @@ async function POSTHandler(request: Request) {
     context = await authorizeRequest({
       request,
       action: "run.evaluation",
-      resourceType: "harness_rule_proposal",
-      resourceId: parsed.data.proposalId,
+      resourceType: parsed.data.action === "review"
+        ? "harness_rule_proposal"
+        : "evaluation_failure_replay",
+      resourceId: parsed.data.action === "review"
+        ? parsed.data.proposalId
+        : parsed.data.clusterId,
       metadata: {
-        decision: parsed.data.decision,
+        feedbackAction: parsed.data.action,
+        decision: parsed.data.action === "review" ? parsed.data.decision : undefined,
         automaticApplication: false,
       },
     });
@@ -79,6 +102,64 @@ async function POSTHandler(request: Request) {
   }
 
   try {
+    if (parsed.data.action === "replay") {
+      const cluster = await getEvaluationFailureCluster(parsed.data.clusterId, {
+        tenantId: context.tenantId,
+      });
+      if (!cluster) {
+        return Response.json({ error: "Failure replay cluster not found." }, { status: 404 });
+      }
+      const evalCase = defaultEvalCases.find((candidate) =>
+        candidate.id === cluster.replayCase.caseId
+      );
+      if (
+        !evalCase ||
+        canonicalJsonSha256(evalCase) !== cluster.replayCase.caseDefinitionSha256
+      ) {
+        return Response.json(
+          { error: "Failure replay case definition changed; review a new minimized case." },
+          { status: 409 },
+        );
+      }
+      const governance = evaluateEvaluationGovernance({
+        cases: [evalCase],
+        role: context.role,
+        allowMutation: false,
+      });
+      if (!governance.allowed) {
+        return Response.json(
+          {
+            error: "Failure replay requires explicit mutation governance.",
+            violations: governance.violations,
+          },
+          { status: 403 },
+        );
+      }
+      const job = await enqueueEvaluationJob({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || undefined,
+        request: {
+          suite: `failure-replay:${cluster.id.slice(0, 48)}`,
+          caseIds: [evalCase.id],
+        },
+      });
+      return Response.json(
+        {
+          job: projectOperationJobStatus(job),
+          replayCase: cluster.replayCase,
+          mutationAuthorityInherited: false,
+        },
+        {
+          status: 202,
+          headers: {
+            location: `/api/operations/jobs/${job.id}`,
+            "retry-after": "2",
+            "cache-control": "private, no-store",
+          },
+        },
+      );
+    }
     const proposal = await reviewHarnessRuleProposal({
       tenantId: context.tenantId,
       proposalId: parsed.data.proposalId,
@@ -92,6 +173,9 @@ async function POSTHandler(request: Request) {
       message: "Review recorded. Harness changes remain inactive until separately implemented and released.",
     });
   } catch (error) {
+    if (error instanceof BackgroundJobIdempotencyConflictError) {
+      return Response.json({ error: error.message }, { status: 409 });
+    }
     if (error instanceof HarnessRuleReviewConflictError) {
       return Response.json({ error: error.message }, { status: 409 });
     }

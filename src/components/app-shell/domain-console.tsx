@@ -776,7 +776,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           arrayPath(data, "failureFeedback.clusters").map((item) => ({
             title: stringValue(item.caseId, "Evaluation case"),
             status: stringValue(item.status, "unknown"),
-            meta: `${stringValue(item.failureCategory, "failure")} · ${numberValue(item.failureCount, 0)} total · ${numberValue(item.consecutiveFailures, 0)} consecutive`,
+            meta: `${stringValue(item.id, "cluster")} · ${stringValue(item.failureCategory, "failure")} · ${numberValue(item.failureCount, 0)} total · ${numberValue(item.consecutiveFailures, 0)} consecutive`,
             time: stringValue(item.updatedAt),
             tone: stringValue(item.status) === "resolved" ? "success" : "warning",
           })),
@@ -789,7 +789,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           arrayPath(data, "failureFeedback.proposals").map((item) => ({
             title: stringValue(item.target, "Harness rule"),
             status: stringValue(item.status, "proposed"),
-            meta: `v${numberValue(item.version, 1)} · ${stringValue(item.kind, "rule")} · review only`,
+            meta: `${stringValue(item.id, "proposal")} · v${numberValue(item.version, 1)} · ${stringValue(item.kind, "rule")} · review only`,
             time: stringValue(item.updatedAt),
             tone: stringValue(item.status) === "approved"
               ? "success"
@@ -844,9 +844,24 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
           { name: "reason", label: "Review reason", type: "textarea", placeholder: "Explain how the minimized replay evidence supports this decision." },
         ],
         buildPayload: (values) => ({
+          action: "review",
           proposalId: textValue(values.proposalId),
           decision: textValue(values.decision, "approved"),
           reason: textValue(values.reason),
+        }),
+      },
+      {
+        id: "replay-failure-cluster",
+        title: "Run minimized replay",
+        description: "Queue only the digest-matched evaluation case. Mutation authority is never inherited from the failed run.",
+        method: "POST",
+        path: "/api/evaluations/failure-feedback",
+        fields: [
+          { name: "clusterId", label: "Failure cluster id", type: "text", placeholder: "Paste a cluster id from the recurring-failure list" },
+        ],
+        buildPayload: (values) => ({
+          action: "replay",
+          clusterId: textValue(values.clusterId),
         }),
       },
     ],
