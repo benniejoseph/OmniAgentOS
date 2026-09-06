@@ -43,10 +43,11 @@ const agentReleaseEvaluationBodySchema = z.object({
   baselineDefinitionVersionId: idSchema,
   baselineDefinitionSha256: sha256Schema,
   policyVersionId: z.literal("agent-release-policy:1"),
+  direction: z.enum(["promotion", "rollback"]),
   changedFields: z.array(agentReleaseChangedFieldSchema).min(1).max(10),
   checks: z.object({
     exactOwnerBinding: z.literal(true),
-    forwardVersion: z.literal(true),
+    versionTransition: z.literal(true),
     immutableDefinitionDigest: z.literal(true),
     personaContract: z.literal(true),
     skillPins: z.literal(true),
@@ -136,14 +137,17 @@ export function evaluateAgentReleaseCandidateV1(input: {
   ) {
     throw new Error("Agent release evaluation requires one exact owner binding.");
   }
-  if (candidate.definitionVersion <= baseline.definitionVersion) {
-    throw new Error("Agent release candidates must advance the active version.");
+  if (candidate.definitionVersion === baseline.definitionVersion) {
+    throw new Error("Agent release candidates must change the active version.");
   }
   const changedFields = releaseChangedFields(baseline, candidate);
   if (!changedFields.length) {
     throw new Error("Agent release candidates require a material behavior change.");
   }
   const evaluatedAt = canonicalTimestamp(input.evaluatedAt || Date.now());
+  const direction = candidate.definitionVersion > baseline.definitionVersion
+    ? "promotion"
+    : "rollback";
   const evaluationCoordinates = {
     agentId: candidate.logicalAgentId,
     definitionVersionId: candidate.definitionVersionId,
@@ -151,6 +155,7 @@ export function evaluateAgentReleaseCandidateV1(input: {
     baselineDefinitionVersionId: baseline.definitionVersionId,
     baselineDefinitionSha256: baseline.definitionSha256,
     policyVersionId: "agent-release-policy:1",
+    direction,
   };
   const evaluationId = `agent-release-evaluation:${sourceContractSha256(
     evaluationCoordinates,
@@ -168,10 +173,11 @@ export function evaluateAgentReleaseCandidateV1(input: {
     baselineDefinitionVersionId: baseline.definitionVersionId,
     baselineDefinitionSha256: baseline.definitionSha256,
     policyVersionId: "agent-release-policy:1",
+    direction,
     changedFields,
     checks: {
       exactOwnerBinding: true,
-      forwardVersion: true,
+      versionTransition: true,
       immutableDefinitionDigest: true,
       personaContract: true,
       skillPins: true,
@@ -197,7 +203,9 @@ export function parseAgentReleaseEvaluationV1(
       `${parsed.definitionId}:v${parsed.definitionVersion}` ||
     parsed.baselineDefinitionVersionId !==
       `${parsed.definitionId}:v${parsed.baselineDefinitionVersion}` ||
-    parsed.definitionVersion <= parsed.baselineDefinitionVersion ||
+    parsed.definitionVersion === parsed.baselineDefinitionVersion ||
+    parsed.direction !== (parsed.definitionVersion >
+      parsed.baselineDefinitionVersion ? "promotion" : "rollback") ||
     parsed.evaluationId !== `agent-release-evaluation:${sourceContractSha256({
       agentId: parsed.agentId,
       definitionVersionId: parsed.definitionVersionId,
@@ -205,6 +213,7 @@ export function parseAgentReleaseEvaluationV1(
       baselineDefinitionVersionId: parsed.baselineDefinitionVersionId,
       baselineDefinitionSha256: parsed.baselineDefinitionSha256,
       policyVersionId: parsed.policyVersionId,
+      direction: parsed.direction,
     })}` ||
     sourceContractSha256(body) !== evaluationSha256
   ) {
