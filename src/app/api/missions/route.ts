@@ -7,6 +7,7 @@ import {
   listMissionSummariesForRequest,
   MissionReadConflictError,
 } from "@/lib/missions/store";
+import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
 import { toMissionSummaryView } from "@/lib/missions/public";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -91,6 +92,9 @@ async function POSTHandler(request: Request) {
     tenantId: context.tenantId,
     actorId: context.actorId,
     source: "user",
+    ...missionMutationFromRequest(request, context, {
+      purpose: "mission.create",
+    }),
   });
   return Response.json({ mission: toMissionSummaryView(mission) }, { status: 201 });
 }

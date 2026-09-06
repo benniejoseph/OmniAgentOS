@@ -9,6 +9,7 @@ import {
   transitionMission,
   transitionMissionAttempt,
   transitionMissionTask,
+  type MissionOwner,
 } from "@/lib/missions/store";
 import type {
   Mission,
@@ -20,7 +21,6 @@ import type {
 } from "@/lib/missions/types";
 import { redactSensitive } from "@/lib/security/context";
 
-type MissionOwner = { tenantId?: string; actorId: string };
 type ExecutorStatus = "queued" | "running" | "waiting" | "succeeded" | "failed" | "canceled";
 
 const TERMINAL_ATTEMPT_STATUSES = new Set<MissionAttemptStatus>([
