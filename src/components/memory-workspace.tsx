@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  Archive,
   Brain,
   Check,
   CircleDot,
@@ -12,12 +13,16 @@ import {
   Network,
   PanelLeftClose,
   PanelLeftOpen,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   ShieldCheck,
   Sparkles,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
@@ -36,6 +41,12 @@ import type {
   MemoryReconciliationDecision,
   MemoryReconciliationReview,
 } from "@/lib/memory/reconciliation";
+import type {
+  MemoryLifecycleAction,
+  MemoryMaintenanceReport,
+  MemoryPromotionDecision,
+  MemoryPromotionReview,
+} from "@/lib/memory/lifecycle";
 import type { MemoryGraphEdge, MemoryGraphNode, MemoryGraphStats, MemoryRecord, MemoryType } from "@/lib/memory/types";
 import styles from "@/components/memory-workspace.module.css";
 
@@ -104,6 +115,14 @@ export function MemoryWorkspace() {
   const [draft, setDraft] = useState<{ title: string; content: string; confidence: number }>();
   const [showCreate, setShowCreate] = useState(false);
   const [showReconciliation, setShowReconciliation] = useState(false);
+  const [showMaintenance, setShowMaintenance] = useState(false);
+  const [maintenanceReviews, setMaintenanceReviews] = useState<
+    MemoryPromotionReview[]
+  >([]);
+  const [maintenanceReport, setMaintenanceReport] = useState<
+    MemoryMaintenanceReport
+  >();
+  const [maintenanceBusy, setMaintenanceBusy] = useState<string>();
   const [reconciliationReviews, setReconciliationReviews] = useState<
     MemoryReconciliationReview[]
   >([]);
@@ -120,14 +139,17 @@ export function MemoryWorkspace() {
   const load = useCallback(async () => {
     setLoadState("loading");
     try {
-      const [memoryResponse, graphResponse, reconciliationResponse] = await Promise.all([
+      const [memoryResponse, graphResponse, reconciliationResponse, maintenanceResponse] = await Promise.all([
         fetch("/api/memory?limit=100", { cache: "no-store" }),
         fetch("/api/memory/graph?limit=100", { cache: "no-store" }),
         fetch("/api/memory/reconciliation?status=all&limit=100", {
           cache: "no-store",
         }),
+        fetch("/api/memory/maintenance?status=all&limit=100", {
+          cache: "no-store",
+        }),
       ]);
-      if (!memoryResponse.ok || !graphResponse.ok || !reconciliationResponse.ok) {
+      if (!memoryResponse.ok || !graphResponse.ok || !reconciliationResponse.ok || !maintenanceResponse.ok) {
         throw new Error("Memory workspace could not be loaded.");
       }
       const memoryPayload = await memoryResponse.json() as { memories?: MemoryRecord[] };
@@ -135,11 +157,15 @@ export function MemoryWorkspace() {
       const reconciliationPayload = await reconciliationResponse.json() as {
         reviews?: MemoryReconciliationReview[];
       };
+      const maintenancePayload = await maintenanceResponse.json() as {
+        reviews?: MemoryPromotionReview[];
+      };
       setMemories(memoryPayload.memories || []);
       setNodes(graphPayload.nodes || []);
       setEdges(graphPayload.edges || []);
       setStats(graphPayload.stats);
       setReconciliationReviews(reconciliationPayload.reviews || []);
+      setMaintenanceReviews(maintenancePayload.reviews || []);
       setLoadState("ready");
       setError(undefined);
     } catch (loadError) {
@@ -194,6 +220,9 @@ export function MemoryWorkspace() {
   const visibleEdges = edges.filter((edge) => visibleNodeIds.has(edge.sourceNodeId) && visibleNodeIds.has(edge.targetNodeId)).slice(0, 90);
   const pendingEntityReviews = countPendingEntityMergeReviews(entityRegistry);
   const pendingMemoryReviews = reconciliationReviews.filter(
+    (review) => review.status === "pending",
+  ).length;
+  const pendingPromotionReviews = maintenanceReviews.filter(
     (review) => review.status === "pending",
   ).length;
 
@@ -360,6 +389,109 @@ export function MemoryWorkspace() {
     } catch (graphError) { setError(message(graphError)); }
   }
 
+  async function updateLifecycle(action: MemoryLifecycleAction) {
+    if (!selectedMemory) return;
+    setMaintenanceBusy(`memory:${selectedMemory.id}`);
+    setError(undefined);
+    try {
+      const response = await fetch(
+        `/api/memory/${encodeURIComponent(selectedMemory.id)}/lifecycle`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action }),
+        },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || "Lifecycle update failed.");
+      }
+      const updated = payload.memory as MemoryRecord;
+      setMemories((current) => current.map((memory) =>
+        memory.id === updated.id ? updated : memory
+      ));
+      selectMemory(updated);
+      setAnnouncement(
+        action === "pin"
+          ? "Memory pinned. Priority decay is paused while the claim remains unchanged."
+          : action === "unpin"
+            ? "Memory unpinned. Normal priority decay has resumed."
+            : action === "archive"
+              ? "Memory archived outside recall. Historical truth was not changed."
+              : "Memory restored to eligible recall.",
+      );
+    } catch (lifecycleError) {
+      setError(message(lifecycleError));
+    } finally {
+      setMaintenanceBusy(undefined);
+    }
+  }
+
+  async function runMaintenance() {
+    setMaintenanceBusy("run");
+    setError(undefined);
+    try {
+      const response = await fetch("/api/memory/maintenance", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "run" }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || "Memory maintenance failed.");
+      }
+      setMaintenanceReport(payload.report as MemoryMaintenanceReport);
+      setAnnouncement("Memory maintenance completed. Exact duplicates were archived reversibly.");
+      await load();
+      setShowMaintenance(true);
+    } catch (maintenanceError) {
+      setError(message(maintenanceError));
+    } finally {
+      setMaintenanceBusy(undefined);
+    }
+  }
+
+  async function decidePromotion(
+    review: MemoryPromotionReview,
+    decision: MemoryPromotionDecision,
+  ) {
+    setMaintenanceBusy(review.id);
+    setError(undefined);
+    try {
+      const response = await fetch("/api/memory/maintenance", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "decide_promotion",
+          reviewId: review.id,
+          decision,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || "Promotion review failed.");
+      }
+      const resolved = payload.review as MemoryPromotionReview;
+      setMaintenanceReviews((current) => current.map((item) =>
+        item.id === resolved.id ? resolved : item
+      ));
+      if (payload.promotedMemory) {
+        const promoted = payload.promotedMemory as MemoryRecord;
+        setMemories((current) => [
+          promoted,
+          ...current.filter((memory) => memory.id !== promoted.id),
+        ]);
+      }
+      setAnnouncement(decision === "promote"
+        ? "Verified episodes promoted to a procedure with review lineage."
+        : "Procedure promotion dismissed; source episodes remain unchanged.");
+    } catch (promotionError) {
+      setError(message(promotionError));
+    } finally {
+      setMaintenanceBusy(undefined);
+    }
+  }
+
   return (
     <main className={clsx("memory-studio workspace-enter", styles.shell)} aria-busy={loadState === "loading"}>
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
@@ -374,6 +506,7 @@ export function MemoryWorkspace() {
           <div className={styles.stat}><Network size={14} aria-hidden="true" /><span><strong>{stats?.edges || 0}</strong><small>Links</small></span></div>
           <button type="button" className={clsx(styles.stat, styles.entityTrigger)} onClick={() => setShowEntities(true)}><GitMerge size={14} aria-hidden="true" /><span><strong>{entityRegistry?.entities.length || 0}</strong><small>{pendingEntityReviews ? `${pendingEntityReviews} to review` : "Entities"}</small></span></button>
           <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingMemoryReviews > 0 && styles.reviewTriggerPending)} onClick={() => setShowReconciliation(true)}><AlertTriangle size={14} aria-hidden="true" /><span><strong>{pendingMemoryReviews}</strong><small>{pendingMemoryReviews === 1 ? "Claim to review" : "Claims to review"}</small></span></button>
+          <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingPromotionReviews > 0 && styles.reviewTriggerPending)} onClick={() => setShowMaintenance(true)}><Wrench size={14} aria-hidden="true" /><span><strong>{pendingPromotionReviews}</strong><small>{pendingPromotionReviews === 1 ? "Promotion to review" : "Promotions to review"}</small></span></button>
           <button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> Add memory</button>
         </div>
       </header>
@@ -390,7 +523,7 @@ export function MemoryWorkspace() {
             <div className="memory-search"><Search size={14} aria-hidden="true" /><label className="sr-only" htmlFor="memory-search">Search memory</label><input id="memory-search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search memories" /></div>
             <div className="memory-type-filter" aria-label="Memory tier filter"><button type="button" className={clsx(tierFilter === "all" && "is-selected")} onClick={() => setTierFilter("all")}>All</button>{memoryTiers.map((tier) => <button type="button" key={tier} className={clsx(tierFilter === tier && "is-selected")} onClick={() => setTierFilter(tier)}>{tier}</button>)}</div>
             <div className="memory-index-list">
-              {loadState === "loading" ? <div className="memory-index-empty"><Loader2 className="animate-spin" size={18} aria-hidden="true" /> Loading memory…</div> : filtered.length ? filtered.map((memory) => <button key={memory.id} type="button" className={clsx(selectedMemoryId === memory.id && "is-selected", `is-${memory.claimStatus || "active"}`)} onClick={() => selectMemory(memory)}><i /><span><strong>{memory.title}</strong><small>{resolveMemoryTier(memory.tier, memory.type)} · {memory.type} · {memory.source}</small><em>{Math.round((memory.confidence ?? .7) * 100)}% confidence</em></span></button>) : <div className="memory-index-empty"><Brain size={18} aria-hidden="true" /> No memories match this view.</div>}
+              {loadState === "loading" ? <div className="memory-index-empty"><Loader2 className="animate-spin" size={18} aria-hidden="true" /> Loading memory…</div> : filtered.length ? filtered.map((memory) => <button key={memory.id} type="button" className={clsx(selectedMemoryId === memory.id && "is-selected", `is-${memory.claimStatus || "active"}`)} onClick={() => selectMemory(memory)}><i /><span><strong>{memory.title}</strong><small>{resolveMemoryTier(memory.tier, memory.type)} · {memory.type} · {memory.pinnedAt ? "pinned" : memory.archivedAt ? "archived" : memory.source}</small><em>{Math.round((memory.confidence ?? .7) * 100)}% confidence</em></span></button>) : <div className="memory-index-empty"><Brain size={18} aria-hidden="true" /> No memories match this view.</div>}
             </div>
           </div>
         </aside>
@@ -406,12 +539,13 @@ export function MemoryWorkspace() {
 
         <aside className={clsx("memory-inspector", styles.inspector)} aria-label="Memory details">
           {selectedMemory && draft ? <>
-            <div className="memory-inspector-heading"><div><p>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)} · {selectedMemory.type}</p><h2>{selectedMemory.title}</h2></div><span className={clsx(`is-${selectedMemory.claimStatus || "active"}`)}>{selectedMemory.claimStatus || "active"}</span></div>
+            <div className="memory-inspector-heading"><div><p>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)} · {selectedMemory.type}</p><h2>{selectedMemory.title}</h2></div><span className={clsx(`is-${selectedMemory.claimStatus || "active"}`)}>{selectedMemory.archivedAt ? "archived" : selectedMemory.pinnedAt ? "pinned" : selectedMemory.claimStatus || "active"}</span></div>
             <label>Title<input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setSaveState("idle"); }} /></label>
             <label>Claim<textarea rows={9} value={draft.content} onChange={(event) => { setDraft({ ...draft, content: event.currentTarget.value }); setSaveState("idle"); }} /></label>
             <label>Confidence <span>{Math.round(draft.confidence * 100)}%</span><input type="range" min="0" max="1" step=".01" value={draft.confidence} onChange={(event) => { setDraft({ ...draft, confidence: Number(event.currentTarget.value) }); setSaveState("idle"); }} /></label>
-            <div className="memory-provenance"><p><ShieldCheck size={13} aria-hidden="true" /> Why this memory exists</p><span>{memoryFormationReasonLabel(selectedMemory.formationReason || "legacy_record")}</span><dl><dt>Tier</dt><dd>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)}</dd><dt>Asserted by</dt><dd>{selectedMemory.assertedBy || "unknown"}</dd><dt>Source</dt><dd>{selectedMemory.source}</dd><dt>Scope</dt><dd>{selectedMemory.scope}</dd><dt>Last used</dt><dd>{selectedMemory.lastUsedAt ? formatDate(selectedMemory.lastUsedAt) : "Never"}</dd><dt>Use count</dt><dd>{selectedMemory.useCount || 0}</dd><dt>Valid from</dt><dd>{selectedMemory.validFrom ? formatDate(selectedMemory.validFrom) : "Immediately"}</dd><dt>Valid until</dt><dd>{selectedMemory.validTo ? formatDate(selectedMemory.validTo) : "No claim expiry"}</dd><dt>Retained until</dt><dd>{selectedMemory.retentionExpiresAt ? formatDate(selectedMemory.retentionExpiresAt) : "Policy controlled"}</dd><dt>Updated</dt><dd>{formatDate(selectedMemory.updatedAt)}</dd></dl>{selectedMemory.evidenceRefs?.length ? <div>{selectedMemory.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</div>
+            <div className="memory-provenance"><p><ShieldCheck size={13} aria-hidden="true" /> Why this memory exists</p><span>{memoryFormationReasonLabel(selectedMemory.formationReason || "legacy_record")}</span><dl><dt>Tier</dt><dd>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)}</dd><dt>Asserted by</dt><dd>{selectedMemory.assertedBy || "unknown"}</dd><dt>Source</dt><dd>{selectedMemory.source}</dd><dt>Scope</dt><dd>{selectedMemory.scope}</dd><dt>Lifecycle</dt><dd>{selectedMemory.pinnedAt ? "Pinned" : selectedMemory.archivedAt ? `Archived · ${selectedMemory.archiveReason?.replaceAll("_", " ") || "manual"}` : "Eligible recall"}</dd><dt>Last used</dt><dd>{selectedMemory.lastUsedAt ? formatDate(selectedMemory.lastUsedAt) : "Never"}</dd><dt>Use count</dt><dd>{selectedMemory.useCount || 0}</dd><dt>Valid from</dt><dd>{selectedMemory.validFrom ? formatDate(selectedMemory.validFrom) : "Immediately"}</dd><dt>Valid until</dt><dd>{selectedMemory.validTo ? formatDate(selectedMemory.validTo) : "No claim expiry"}</dd><dt>Retained until</dt><dd>{selectedMemory.retentionExpiresAt ? formatDate(selectedMemory.retentionExpiresAt) : "Policy controlled"}</dd><dt>Updated</dt><dd>{formatDate(selectedMemory.updatedAt)}</dd></dl>{selectedMemory.evidenceRefs?.length ? <div>{selectedMemory.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</div>
             <MemoryTierPolicySummary tier={resolveMemoryTier(selectedMemory.tier, selectedMemory.type)} />
+            <div className={styles.lifecycleActions} aria-label="Memory lifecycle controls"><button type="button" disabled={Boolean(maintenanceBusy) || Boolean(selectedMemory.archivedAt)} onClick={() => void updateLifecycle(selectedMemory.pinnedAt ? "unpin" : "pin")}>{maintenanceBusy === `memory:${selectedMemory.id}` ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : selectedMemory.pinnedAt ? <PinOff size={13} aria-hidden="true" /> : <Pin size={13} aria-hidden="true" />}{selectedMemory.pinnedAt ? "Unpin" : "Pin"}</button><button type="button" disabled={Boolean(maintenanceBusy) || Boolean(selectedMemory.pinnedAt)} onClick={() => void updateLifecycle(selectedMemory.archivedAt ? "restore" : "archive")}>{selectedMemory.archivedAt ? <RotateCcw size={13} aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}{selectedMemory.archivedAt ? "Restore" : "Archive"}</button></div>
             {forgetPreview ? <DeletionPreview preview={forgetPreview} /> : null}
             <div className="memory-inspector-actions"><button type="button" className="memory-save" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection()}>{saveState === "saving" && forgetState !== "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : saveState === "saved" ? <Check size={13} aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{saveState === "saved" ? "Corrected" : "Save correction"}</button><button type="button" className="memory-cancel" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection(true)}><AlertTriangle size={13} aria-hidden="true" /> Flag contradiction</button><button type="button" className={clsx("memory-forget", forgetState === "ready" && "is-confirming")} disabled={forgetState === "previewing" || forgetState === "deleting"} onClick={() => forgetState === "ready" ? void forgetSelected() : void requestForgetPreview()}>{forgetState === "previewing" || forgetState === "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}{forgetState === "previewing" ? "Checking impact" : forgetState === "deleting" ? "Committing deletion" : forgetState === "ready" ? "Forget permanently" : "Review forget impact"}</button>{forgetState === "ready" ? <button type="button" className="memory-cancel" onClick={() => { setForgetState("idle"); setForgetPreview(undefined); }}><X size={13} aria-hidden="true" /> Cancel</button> : null}</div>
           </> : deletionResult ? <DeletionReceipt result={deletionResult} onClose={() => setDeletionResult(undefined)} /> : selectedNode ? <div className="memory-node-inspector"><CircleDot size={22} aria-hidden="true" /><p>{selectedNode.kind}</p><h2>{selectedNode.label}</h2><span>{selectedNode.summary}</span><dl><dt>Sources</dt><dd>{selectedNode.sourceCount}</dd><dt>Weight</dt><dd>{selectedNode.weight.toFixed(1)}</dd><dt>Memories</dt><dd>{selectedNode.memoryIds.length}</dd></dl></div> : <div className="memory-inspector-empty"><Brain size={26} aria-hidden="true" /><h2>Select a memory</h2><p>Inspect provenance, correct a claim, or forget information that should no longer influence your agents.</p></div>}
@@ -420,8 +554,33 @@ export function MemoryWorkspace() {
       {showCreate ? <CreateMemoryDialog onClose={() => setShowCreate(false)} onCreated={(memory, projection) => { setShowCreate(false); setMemories((current) => [memory, ...current]); selectMemory(memory); setAnnouncement(projection?.candidateCount ? `Memory added. ${projection.createdCount} new and ${projection.linkedCount} existing private entities matched; ${projection.reviewRequiredCount} require review.` : "Memory added."); void refreshGraph(); void loadEntityRegistry(); }} /> : null}
       {showEntities ? <EntityRegistryDialog registry={entityRegistry} loadError={entityRegistryError} onClose={() => setShowEntities(false)} onReload={loadEntityRegistry} onAnnouncement={setAnnouncement} /> : null}
       {showReconciliation ? <MemoryReconciliationDialog reviews={reconciliationReviews} onClose={() => setShowReconciliation(false)} onResolved={recordResolvedReview} /> : null}
+      {showMaintenance ? <MemoryMaintenanceDialog reviews={maintenanceReviews} memories={memories} report={maintenanceReport} busyId={maintenanceBusy} onRun={() => void runMaintenance()} onDecision={(review, decision) => void decidePromotion(review, decision)} onClose={() => setShowMaintenance(false)} /> : null}
     </main>
   );
+}
+
+function MemoryMaintenanceDialog({
+  reviews,
+  memories,
+  report,
+  busyId,
+  onRun,
+  onDecision,
+  onClose,
+}: {
+  reviews: MemoryPromotionReview[];
+  memories: MemoryRecord[];
+  report?: MemoryMaintenanceReport;
+  busyId?: string;
+  onRun: () => void;
+  onDecision: (
+    review: MemoryPromotionReview,
+    decision: MemoryPromotionDecision,
+  ) => void;
+  onClose: () => void;
+}) {
+  const pending = reviews.filter((review) => review.status === "pending");
+  return <div className={clsx("memory-dialog-backdrop", styles.dialogBackdrop, styles.registryBackdrop)} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className={clsx("memory-dialog", styles.dialog, styles.registryDialog, styles.reconciliationDialog)} role="dialog" aria-modal="true" aria-labelledby="memory-maintenance-title"><header className={styles.registryHeader}><div><p>Lifecycle control</p><h2 id="memory-maintenance-title">Memory maintenance</h2><span>Deduplicate recall, decay retrieval priority, and review repeated verified episodes before they become procedures. Archival never deletes historical truth.</span></div><div className={styles.registryHeaderActions}><button type="button" disabled={Boolean(busyId)} onClick={onRun} aria-label="Run memory maintenance">{busyId === "run" ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}</button><button type="button" onClick={onClose} aria-label="Close memory maintenance"><X size={16} aria-hidden="true" /></button></div></header><div className={styles.registrySummary}><span><strong>{pending.length}</strong> pending promotions</span>{report ? <><span><strong>{report.autoArchivedDuplicates}</strong> duplicates archived</span><span><strong>{Math.round(report.duplicateRateAfter * 10000) / 100}%</strong> duplicate rate</span></> : null}</div><section className={styles.registrySection}><div className={styles.registrySectionHeading}><div><p>Explicit review</p><h3>Procedure candidates</h3></div><span>{pending.length}</span></div>{pending.length ? <div className={styles.reconciliationList}>{pending.map((review) => { const source = memories.find((memory) => memory.id === review.canonicalMemoryId); return <article key={review.id} className={styles.reconciliationCard}><header><span><Wrench size={13} aria-hidden="true" /> Repeated verified episode</span><small>{formatDate(review.createdAt)}</small></header><div><h4>{source?.title || "Verified episode pattern"}</h4><p>{source ? truncate(source.content, 240) : `${review.sourceMemoryIds.length} source memories`}</p></div><div className={styles.maintenanceLineage}><span>{review.sourceMemoryIds.length} verified occurrences</span><code title={review.sourceClaimSha256}>{review.sourceClaimSha256.slice(0, 16)}…</code></div><div className={styles.reconciliationActions}><button type="button" disabled={Boolean(busyId)} onClick={() => onDecision(review, "dismiss")}>Dismiss</button><button type="button" disabled={Boolean(busyId)} onClick={() => onDecision(review, "promote")}>{busyId === review.id ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />} Promote to procedure</button></div></article>; })}</div> : <p className={styles.registryEmpty}>No repeated verified episodes are waiting for promotion.</p>}</section></section></div>;
 }
 
 function DeletionPreview({ preview }: { preview: MemoryDeletionPreview }) {
