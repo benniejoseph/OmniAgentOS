@@ -182,6 +182,7 @@ export function allocateContextBudget(input: {
   const selectedIds = new Set<string>();
   const seenLineages = new Set<string>();
   const allocatedByTier = new Map<ContextBudgetTier, number>();
+  const originalOrder = compareOriginalOrder(input.items);
   let duplicateEvidenceTokens = 0;
   let evidenceTokens = 0;
 
@@ -205,10 +206,11 @@ export function allocateContextBudget(input: {
       render: input.render,
       tokenLimit: limits.effectiveTokenLimit,
       deltaLimit,
+      order: originalOrder,
     });
     if (!fitted) return false;
     selected.push(fitted.item);
-    selected.sort(compareOriginalOrder(input.items));
+    selected.sort(originalOrder);
     selectedIds.add(candidateEvidenceId(candidate));
     seenLineages.add(candidate.lineageRefSha256);
     evidenceTokens += fitted.deltaTokens;
@@ -363,11 +365,16 @@ function fitCandidate(input: {
   render: RenderContext;
   tokenLimit: number;
   deltaLimit: number;
+  order: (
+    left: BudgetedContextEvidenceItem,
+    right: BudgetedContextEvidenceItem,
+  ) => number;
 }) {
   const beforeTokens = estimateContextTokens(input.render(input.selected));
   const fits = (item: BudgetedContextEvidenceItem) => {
+    const ordered = [...input.selected, item].sort(input.order);
     const afterTokens = estimateContextTokens(
-      input.render([...input.selected, item]),
+      input.render(ordered),
     );
     return {
       fits:
