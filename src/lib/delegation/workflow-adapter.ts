@@ -10,6 +10,7 @@ import {
   type DelegationArtifactReferenceV1,
   type DelegationContractV1,
 } from "@/lib/delegation/contracts";
+import { delegatedPrincipalIdV1 } from "@/lib/delegation/principal";
 import { isBuiltInPromptAgentId } from "@/lib/orchestration/prompts";
 import { runBudgetCountersV1Schema } from "@/lib/runs/budgets";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
@@ -141,7 +142,15 @@ export function buildWorkflowNodeDelegationContractV1(input: {
       definitionVersion: delegator.definition.definitionVersion,
     },
     delegate: {
-      principalId: contractId(delegate.principal.principalId),
+      principalId: delegatedPrincipalIdV1({
+        delegationId,
+        parentPrincipalId: contractId(
+          input.parentExecutionScope?.executingPrincipalId ||
+            delegator.principal.principalId,
+        ),
+        agentId: delegate.definition.logicalAgentId,
+        definitionVersion: delegate.definition.definitionVersion,
+      }),
       agentId: delegate.definition.logicalAgentId,
       definitionVersion: delegate.definition.definitionVersion,
     },

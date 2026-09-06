@@ -30,6 +30,9 @@ describe("P8.1 council delegation adapter", () => {
       verifier: { agentId: "sentinel", method: "agent_then_deterministic" },
     });
     expect(contract.inputArtifacts).toHaveLength(1);
+    expect(contract.delegate.principalId).toMatch(
+      /^delegated-principal:[a-f0-9]{64}$/,
+    );
     expect(contract.inputArtifacts[0].byteCount).toBe(
       Buffer.byteLength(contextBlock, "utf8"),
     );

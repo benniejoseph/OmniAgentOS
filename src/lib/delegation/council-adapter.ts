@@ -3,6 +3,7 @@ import {
   buildDelegationContractV1,
   type DelegationContractV1,
 } from "@/lib/delegation/contracts";
+import { delegatedPrincipalIdV1 } from "@/lib/delegation/principal";
 import type { CouncilAgentId } from "@/lib/orchestration/council";
 import type { AgentMode } from "@/lib/orchestration/types";
 import {
@@ -115,7 +116,12 @@ export function buildCouncilMemberDelegationContractV1(input: {
       definitionVersion: input.authority.delegator.definitionVersion,
     },
     delegate: {
-      principalId: contractId(delegate.principal.principalId),
+      principalId: delegatedPrincipalIdV1({
+        delegationId,
+        parentPrincipalId: contractId(input.authority.delegator.principalId),
+        agentId: delegate.definition.logicalAgentId,
+        definitionVersion: delegate.definition.definitionVersion,
+      }),
       agentId: delegate.definition.logicalAgentId,
       definitionVersion: delegate.definition.definitionVersion,
     },

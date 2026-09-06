@@ -51,6 +51,9 @@ describe("P8.1 workflow delegation adapter", () => {
         completionDisposition: "proposed_only",
       },
     });
+    expect(contract.delegate.principalId).toMatch(
+      /^delegated-principal:[a-f0-9]{64}$/,
+    );
     expect(contract.objective).toContain(node.description);
     expect(contract.objective).toContain(detail.run.goal);
     expect(contract.inputArtifacts).toHaveLength(1);
