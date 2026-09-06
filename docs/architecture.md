@@ -1152,9 +1152,11 @@ before resolving the selected IDs. Automatic retrieval and session/project
 modes do not receive that scope. A run carrying private context disables
 sibling council delegation and verification instead of forwarding the context.
 It also receives an empty toolbox until capability grants can authorize data
-disclosure to individual operations. Workflows, forks, specialist/background
-workers, standing formation, agent-private/shared visibility, and the full
-authority resolver remain closed, so P3.1 is still incomplete.
+disclosure to individual operations. Legacy prompt/response consolidation is
+skipped so a private answer cannot be reclassified as workspace memory.
+Workflows, forks, specialist/background workers, standing formation,
+agent-private/shared visibility, and the full authority resolver remain closed,
+so P3.1 is still incomplete.
 
 ## Where things live
 
