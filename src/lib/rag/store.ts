@@ -373,15 +373,19 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
       });
       if (ids.length && invalidationScope) {
         const evidenceRows = await sql`
-          SELECT DISTINCT evidence.id, evidence.owner_actor_id
-          FROM omni_knowledge_chunks chunk
-          JOIN omni_evidence_units evidence
-            ON evidence.tenant_id = chunk.tenant_id
-           AND evidence.id = chunk.evidence_unit_id
-          WHERE chunk.tenant_id = ${tenantId}
-            AND chunk.document_id = ANY(${ids}::TEXT[])
-            AND chunk.evidence_unit_id IS NOT NULL
-          ORDER BY evidence.owner_actor_id COLLATE "C", evidence.id COLLATE "C"
+          SELECT evidence_id AS id, owner_actor_id
+          FROM (
+            SELECT DISTINCT evidence.id AS evidence_id,
+              evidence.owner_actor_id
+            FROM omni_knowledge_chunks chunk
+            JOIN omni_evidence_units evidence
+              ON evidence.tenant_id = chunk.tenant_id
+             AND evidence.id = chunk.evidence_unit_id
+            WHERE chunk.tenant_id = ${tenantId}
+              AND chunk.document_id = ANY(${ids}::TEXT[])
+              AND chunk.evidence_unit_id IS NOT NULL
+          ) distinct_evidence
+          ORDER BY owner_actor_id COLLATE "C", evidence_id COLLATE "C"
         `;
         if (evidenceRows.length) {
           await retireKnowledgeEntityEvidence({
