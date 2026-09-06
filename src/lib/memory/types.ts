@@ -45,6 +45,10 @@ export type MemoryRecord = {
   useCount?: number;
   promotedFromTier?: MemoryTier;
   promotedAt?: string;
+  pinnedAt?: string;
+  archivedAt?: string;
+  archiveReason?: "manual" | "exact_duplicate" | "retention_expired";
+  duplicateOfMemoryId?: string;
   createdAt: string;
   updatedAt: string;
   embedding?: number[];
