@@ -140,4 +140,58 @@ describe("Google AI provider", () => {
       result: [{ type: "text", text: "{\"name\":\"Ada\"}" }],
     });
   });
+
+  it("replays a canonical tool transcript without Google-owned state", async () => {
+    process.env.GEMINI_API_KEY = "test-key";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "interaction-replay",
+      model: "gemini-test",
+      status: "completed",
+      steps: [{
+        type: "model_output",
+        content: [{ type: "text", text: "Ada found" }],
+      }],
+      usage: { total_input_tokens: 12, total_output_tokens: 3, total_tokens: 15 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await generateGeminiToolTurn({
+      prompt: "fallback is not used",
+      model: "gemini-test",
+      tools: [],
+      conversation: [
+        { type: "message", role: "user", content: "Find Ada." },
+        { type: "message", role: "assistant", content: "I will search." },
+        {
+          type: "tool_call",
+          callId: "call-1",
+          name: "memory_search",
+          argumentsJson: "{\"query\":\"Ada\"}",
+        },
+        {
+          type: "tool_result",
+          callId: "call-1",
+          name: "memory_search",
+          content: "{\"name\":\"Ada Lovelace\"}",
+        },
+      ],
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.input.map((step: { type: string }) => step.type)).toEqual([
+      "user_input",
+      "model_output",
+      "function_call",
+      "function_result",
+    ]);
+    expect(body.input[2]).toMatchObject({
+      id: "call-1",
+      name: "memory_search",
+      arguments: { query: "Ada" },
+    });
+    expect(body.input[3]).toMatchObject({
+      call_id: "call-1",
+      name: "memory_search",
+    });
+  });
 });
