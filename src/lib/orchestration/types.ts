@@ -1,5 +1,6 @@
 import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
 import type { GroundingReport } from "@/lib/rag/citations";
+import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
@@ -143,10 +144,7 @@ export type AgentRunRequest = {
   /** Trusted server-created attribution; authorization remains in SecurityContext. */
   executionScope?: ExecutionScope;
   /** Server-validated saved-context selection using canonical `kind:id` evidence IDs. */
-  contextSelection?: {
-    query: string;
-    evidenceIds: string[];
-  };
+  contextSelection?: ContextSelectionLockBinding;
   /** User-reviewed P4.2 context boundary for this direct run. */
   contextScope?: ContextScopeId;
   /** Trusted request-bound access for an explicit owner-reviewed selection. */

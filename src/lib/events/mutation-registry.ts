@@ -73,6 +73,7 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "run.manifests.resolved",
       "run.context_compiler_v2.shadow",
       "run.context_compiler_v2.canary",
+      "run.context.receipt",
       "run.feedback",
       "run.status",
       "run.waiting_approval",

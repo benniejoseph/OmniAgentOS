@@ -34,6 +34,11 @@ import {
   getContextScopePolicy,
 } from "@/lib/rag/context-scope";
 import {
+  contextSelectionRequestSchema,
+  verifyContextSelectionLock,
+  type ContextSelectionLockBinding,
+} from "@/lib/rag/context-selection-lock";
+import {
   formAssistantInferenceCandidate,
   formExplicitUserAssertionMemory,
 } from "@/lib/memory/evidence-formation";
@@ -88,15 +93,6 @@ const chatMessageSchema = z.object({
   content: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS),
 }).strict();
 
-const contextSelectionSchema = z.object({
-  query: z.string().trim().min(1).max(4_000),
-  evidenceIds: z.array(z.string().trim().min(1).max(200).regex(/^(?:memory|knowledge|graph):[^\s]+$/))
-    .max(24)
-    .refine((ids) => new Set(ids).size === ids.length, {
-      message: "Context evidence IDs must be unique.",
-    }),
-}).strict();
-
 const requestSchema = z.object({
   messages: z.array(chatMessageSchema).min(1).max(AGENT_MAX_MESSAGES).optional(),
   threadId: z.string().uuid().optional(),
@@ -111,7 +107,7 @@ const requestSchema = z.object({
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
-  contextSelection: contextSelectionSchema.optional(),
+  contextSelection: contextSelectionRequestSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
 }).strict()
   .refine((value) => Boolean(value.message || value.messages?.length), {
@@ -177,13 +173,6 @@ async function POSTHandler(request: Request) {
       );
     }
   }
-  const contextSelection = parsed.data.contextSelection
-    ? {
-        query: parsed.data.contextSelection.query,
-        evidenceIds: parsed.data.contextSelection.evidenceIds,
-      }
-    : undefined;
-
   let requestId: string;
   try {
     requestId = resolveRequestId(request, parsed.data.requestId);
@@ -207,6 +196,26 @@ async function POSTHandler(request: Request) {
     });
   } catch (error) {
     return forbiddenResponse(error);
+  }
+  let contextSelection: ContextSelectionLockBinding | undefined;
+  if (parsed.data.contextSelection) {
+    try {
+      contextSelection = verifyContextSelectionLock({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        selection: parsed.data.contextSelection,
+      });
+    } catch (error) {
+      return Response.json({
+        error: "Context selection lock is invalid.",
+        message: error instanceof Error
+          ? error.message
+          : "Refresh and review context again.",
+      }, {
+        status: 409,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
   }
   if (parsed.data.projectId) {
     const project = await getOwnedProject(parsed.data.projectId, {
@@ -770,6 +779,9 @@ async function POSTHandler(request: Request) {
                 specialistRunIds: durableSpecialists.map((item) => item.runId),
                 learning: decision.learning,
                 ...(savedProcedure ? { savedProcedure } : {}),
+                ...(parsed.data.contextScope
+                  ? { contextScope: parsed.data.contextScope }
+                  : {}),
                 ...(contextSelection ? { contextSelection } : {}),
               },
               idempotencyKey: `supervisor:${context.actorId}:${requestId}`,
@@ -1065,19 +1077,24 @@ function semanticIntentEventId(
 
 function sameContextSelection(
   stored: unknown,
-  expected: { query: string; evidenceIds: string[] } | undefined,
+  expected: ContextSelectionLockBinding | undefined,
 ) {
   if (!expected) return stored === undefined;
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) return false;
 
   const value = stored as Record<string, unknown>;
-  if (typeof value.query !== "string" || !Array.isArray(value.evidenceIds)) return false;
+  if (
+    typeof value.query !== "string" ||
+    !Array.isArray(value.evidenceIds) ||
+    typeof value.selectionSha256 !== "string"
+  ) return false;
   const storedIds = value.evidenceIds.filter((id): id is string => typeof id === "string").sort();
   const expectedIds = [...expected.evidenceIds].sort();
   return normalizeTaskQuery(String(redactSensitive(value.query))) === normalizeTaskQuery(String(redactSensitive(expected.query)))
     && storedIds.length === value.evidenceIds.length
     && storedIds.length === expectedIds.length
-    && storedIds.every((id, index) => id === expectedIds[index]);
+    && storedIds.every((id, index) => id === expectedIds[index])
+    && value.selectionSha256 === expected.selectionSha256;
 }
 
 function sameSavedProcedure(

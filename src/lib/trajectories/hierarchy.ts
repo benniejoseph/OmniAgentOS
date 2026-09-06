@@ -289,6 +289,7 @@ function classifyTraceStage(event: DomainEvent): TraceStageId | undefined {
   ) return "tool";
   if (
     type === "run.memory" ||
+    type === "run.context.receipt" ||
     type.includes("context_compiler") ||
     type.startsWith("retrieval.") ||
     type.startsWith("evidence.") ||
@@ -363,6 +364,11 @@ function safeEventSummary(event: DomainEvent) {
   if (event.type === "run.memory") {
     const count = safeCount(payload.count);
     return count === undefined ? "Authorized context recorded" : `${count} context item${count === 1 ? "" : "s"}`;
+  }
+  if (event.type === "run.context.receipt") {
+    const actual = safeCount(payload.actualCount);
+    const excluded = safeCount(payload.excludedCount);
+    return `${actual ?? 0} context item${actual === 1 ? "" : "s"} used · ${excluded ?? 0} excluded`;
   }
   if (event.type === "run.council_verdict") {
     const status = safeToken(payload.status);

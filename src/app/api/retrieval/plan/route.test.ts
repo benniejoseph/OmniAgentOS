@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
-  buildContextPack: vi.fn(async () => ({ results: [] })),
+  buildContextPack: vi.fn(async (query: string) => ({
+    query,
+    results: [],
+    budget: {},
+  })),
   getContextEngineStats: vi.fn(async () => ({ traces: 0 })),
   listRetrievalTraces: vi.fn(async () => []),
   requestMemoryAccessFromSecurityContext: vi.fn(),
@@ -58,6 +62,7 @@ const databaseAccessScope = {
 describe("retrieval plan private-memory boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("OMNIAGENT_INTERNAL_AUTH_SECRET", "retrieval-preview-test-secret");
     mocks.authorizeRequest.mockResolvedValue(context);
     mocks.requestMemoryAccessFromSecurityContext.mockImplementation((
       _context: unknown,
@@ -108,6 +113,12 @@ describe("retrieval plan private-memory boundary", () => {
     expect(mocks.getContextEngineStats).toHaveBeenCalledWith({
       tenantId: "tenant-a",
       accessScope: databaseAccessScope,
+    });
+    await expect(response.clone().json()).resolves.toMatchObject({
+      preview: {
+        candidateEvidenceIds: [],
+        token: expect.stringMatching(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/),
+      },
     });
   });
 

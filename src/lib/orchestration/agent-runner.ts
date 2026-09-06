@@ -72,6 +72,7 @@ import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { emptyContextBudgetReceipt } from "@/lib/rag/context-budget";
 import { contextScopeMemoryMode } from "@/lib/rag/context-scope";
+import { buildContextUseReceiptV1 } from "@/lib/rag/context-use-receipt";
 import { buildDeterministicRetrievalQueryPlan } from "@/lib/rag/query-planner";
 import {
   buildCitationSources,
@@ -92,6 +93,7 @@ import {
 import {
   appendContextCompilerV2CanaryEvent,
   appendContextCompilerV2ShadowEventSafely,
+  appendContextUseReceiptEvent,
   appendRunEvent,
   appendRunContractEventSafely,
   bindAgentRunExecutionScope,
@@ -998,14 +1000,14 @@ export async function* runAgent(
             .digest("hex"),
           retrievalTraceId: retrieval.trace?.id,
           scopeDecision: runContractScopeDecision(contextDecision),
-          selectedContext: citationSources.map((source, index) => ({
+          selectedContext: buildCitationSources(retrieval.results).map((source, index) => ({
             id: source.citationId,
             score: retrieval.results[index]?.score,
             userIncluded: userIncluded.has(source.citationId) ||
               userIncluded.has(retrieval.results[index]?.id || ""),
           })),
           userInclusionIds: request.contextSelection?.evidenceIds || [],
-          userExclusionIds: [],
+          userExclusionIds: request.contextSelection?.excludedEvidenceIds || [],
           compiledContextSha256: compiledContext
             ? createHash("sha256").update(compiledContext).digest("hex")
             : undefined,
@@ -1038,6 +1040,24 @@ export async function* runAgent(
       } catch (error) {
         logRunContractShadowFailure("resolved", error);
       }
+    }
+    if (request.contextSelection) {
+      const contextManifestSha256 =
+        shadowRunContract?.envelope.harnessManifest.initialContextManifestSha256 ||
+        undefined;
+      await appendContextUseReceiptEvent(
+        runId,
+        buildContextUseReceiptV1({
+          runId,
+          selection: request.contextSelection,
+          actualEvidenceIds: contextEvidenceIds,
+          retrievalTraceId: retrieval.trace?.id,
+          contextManifestSha256,
+          compiledContext: retrieval.contextBlock,
+          contextBudget: retrieval.budget,
+        }),
+        { tenantId: runTenantId, executionScope },
+      );
     }
     if (!request.preclaimedRunId && shadowRunContract) {
       try {

@@ -34,6 +34,10 @@ import {
   type ContextCompilerV2ShadowReceipt,
 } from "@/lib/rag/context-compiler-v2";
 import {
+  parseContextUseReceiptV1,
+  type ContextUseReceiptV1,
+} from "@/lib/rag/context-use-receipt";
+import {
   buildLegacyTerminalReceiptV1,
   buildRunContractEnvelopeV1,
   buildRunContractEventPayloadV1,
@@ -260,7 +264,7 @@ export async function getAgentRunExecutionScope(
   const tenantId = normalizeTenantId(options.tenantId);
   const events = await listStreamEvents(`run:${runId}`, {
     tenantId,
-    limit: 2_000,
+    limit: 100,
     order: "asc",
   });
   let bound: ExecutionScope | undefined;
@@ -430,6 +434,55 @@ export async function appendContextCompilerV2CanaryEvent(
     payload: parsed,
     executionScope: options.executionScope,
   });
+}
+
+/**
+ * Persists the content-free, user-lock-bound record of the saved context that
+ * was actually compiled for a run. Locked selections fail closed if this
+ * receipt cannot be committed before model disclosure.
+ */
+export async function appendContextUseReceiptEvent(
+  runId: string,
+  receipt: ContextUseReceiptV1,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const parsed = parseContextUseReceiptV1(receipt);
+  if (parsed.runId !== runId) {
+    throw new Error("Context use receipt is bound to another run.");
+  }
+  const run = await getAgentRun(runId, { tenantId });
+  if (!run) throw new Error("Context use receipt requires an existing run.");
+  const boundScope = await getAgentRunExecutionScope(runId, { tenantId });
+  if (!boundScope || !executionScopesEqual(boundScope, options.executionScope)) {
+    throw new Error("Context use receipt scope does not match the run binding.");
+  }
+  return appendScopedDomainEvent({
+    streamId: `run:${runId}`,
+    type: "run.context.receipt",
+    payload: parsed,
+    executionScope: options.executionScope,
+  });
+}
+
+export async function getRunContextUseReceipt(
+  runId: string,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const events = await listStreamEvents(`run:${runId}`, {
+    tenantId,
+    limit: 2_000,
+    order: "asc",
+  });
+  const event = [...events].reverse().find((item) =>
+    item.type === "run.context.receipt"
+  );
+  if (!event) return undefined;
+  const { _executionScope: _scope, ...payload } = event.payload;
+  void _scope;
+  return parseContextUseReceiptV1(payload);
 }
 
 /** Exactly one queue delivery may move a pre-created run into execution. */

@@ -7,6 +7,7 @@ import { generateModelStructured } from "@/lib/models/gateway";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { parseContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import {
   deriveExecutionScope,
   type ExecutionScope,
@@ -1692,36 +1693,34 @@ function workflowAgentProfile(detail: WorkflowRunDetail): AgentRunRequest["agent
   return profile as AgentRunRequest["agentProfile"];
 }
 
-function workflowContextSelection(detail: WorkflowRunDetail): AgentRunRequest["contextSelection"] | undefined {
+function workflowContextSelection(
+  detail: WorkflowRunDetail,
+): { query: string; evidenceIds: string[] } | undefined {
   const value = detail.run.input.metadata?.contextSelection;
-  if (value === undefined) return undefined;
+  const noSavedContext = { query: detail.run.goal, evidenceIds: [] };
+  if (value === undefined) {
+    return typeof detail.run.input.metadata?.contextScope === "string"
+      ? noSavedContext
+      : undefined;
+  }
 
-  const noSavedContext = {
-    query: detail.run.goal,
-    evidenceIds: [],
-  };
-  if (!value || typeof value !== "object" || Array.isArray(value)) return noSavedContext;
-
-  const selection = value as Record<string, unknown>;
-  if (
-    typeof selection.query !== "string"
-    || !selection.query.trim()
-    || selection.query.length > 4_000
-    || !Array.isArray(selection.evidenceIds)
-    || selection.evidenceIds.length > 24
-  ) return noSavedContext;
-
-  const evidenceIds = selection.evidenceIds.map((id) => typeof id === "string" ? id.trim() : "");
-  if (
-    evidenceIds.some((id) => id.length > 200 || !/^(?:memory|knowledge|graph):[^\s]+$/.test(id))
-    || new Set(evidenceIds).size !== evidenceIds.length
-    || !contextSelectionMatchesGoal(selection.query, detail.run.goal)
-  ) return noSavedContext;
-
-  return {
-    query: selection.query.trim(),
-    evidenceIds,
-  };
+  try {
+    const selection = parseContextSelectionLockBinding(value);
+    return contextSelectionMatchesGoal(selection.query, detail.run.goal)
+      ? selection
+      : noSavedContext;
+  } catch {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return noSavedContext;
+    }
+    const legacy = value as Record<string, unknown>;
+    return typeof legacy.query === "string" &&
+        contextSelectionMatchesGoal(legacy.query, detail.run.goal) &&
+        Array.isArray(legacy.evidenceIds) &&
+        legacy.evidenceIds.length === 0
+      ? { query: legacy.query.trim(), evidenceIds: [] }
+      : noSavedContext;
+  }
 }
 
 function workflowSavedProcedure(detail: WorkflowRunDetail) {
