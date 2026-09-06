@@ -144,6 +144,7 @@ export const tenantRootPolicyTables = [
   "omni_agent_identity_backfill_holds",
   "omni_agent_release_channels",
   "omni_agent_release_evaluations",
+  "omni_agent_adaptations",
   "omni_agent_loop_v2_checkpoints",
   "omni_workflow_triggers",
   "omni_operation_jobs",
@@ -1173,6 +1174,13 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[113],
       up: ensureAgentReleaseEnrollmentV1,
+    },
+    {
+      ...databaseSchemaMigrations[114],
+      up: async (sql) => {
+        await ensureAgentAdaptationLifecycleV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -10323,6 +10331,326 @@ async function ensureAgentReleaseEnrollmentV1(sql: SqlClient) {
           AND channel.agent_definition_id IS NULL
       ) THEN
         RAISE EXCEPTION 'Agent release enrollment boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 114
+          AND name = 'agent_release_enrollment_v1'
+          AND checksum =
+            '368ef844bec7d397e8bf8fe50c743aecd9e383b22f5451132e2feff528516f43'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Agent adaptation lifecycle predecessor is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_agent_adaptations (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      adaptation_id TEXT NOT NULL,
+      agent_definition_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      owner_binding_sha256 TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'observed',
+      lifecycle_revision SMALLINT NOT NULL DEFAULT 0,
+      evidence JSONB NOT NULL,
+      evidence_sha256 TEXT NOT NULL,
+      confidence DOUBLE PRECISION NOT NULL,
+      effect_kind TEXT NOT NULL,
+      effect_payload JSONB NOT NULL,
+      evaluation JSONB,
+      evaluation_sha256 TEXT,
+      evaluated_definition_version BIGINT,
+      activation_version BIGINT,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      evaluated_at TIMESTAMPTZ,
+      activated_at TIMESTAMPTZ,
+      rolled_back_at TIMESTAMPTZ,
+      PRIMARY KEY (tenant_id, adaptation_id),
+      UNIQUE (
+        tenant_id, owner_actor_id, agent_definition_id,
+        effect_kind, evidence_sha256
+      ),
+      UNIQUE (
+        tenant_id, owner_actor_id, agent_definition_id, activation_version
+      ),
+      CHECK (schema_version = 1),
+      CHECK (char_length(adaptation_id) BETWEEN 1 AND 240),
+      CHECK (char_length(agent_definition_id) BETWEEN 1 AND 240),
+      CHECK (owner_binding_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (state IN ('observed', 'evaluated', 'active', 'rolled_back')),
+      CHECK (lifecycle_revision BETWEEN 0 AND 3),
+      CHECK (
+        jsonb_typeof(evidence) = 'array'
+        AND jsonb_array_length(evidence) BETWEEN 1 AND 10
+      ),
+      CHECK (evidence_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (confidence BETWEEN 0 AND 1),
+      CHECK (effect_kind = 'instruction_guidance'),
+      CHECK (jsonb_typeof(effect_payload) = 'object'),
+      CHECK (evaluation IS NULL OR jsonb_typeof(evaluation) = 'object'),
+      CHECK (
+        evaluation_sha256 IS NULL
+        OR evaluation_sha256 ~ '^[a-f0-9]{64}$'
+      ),
+      CHECK (
+        evaluated_definition_version IS NULL
+        OR evaluated_definition_version BETWEEN 1 AND 9007199254740991
+      ),
+      CHECK (
+        activation_version IS NULL
+        OR activation_version BETWEEN 1 AND 9007199254740991
+      ),
+      CHECK (
+        (state = 'observed' AND lifecycle_revision = 0
+          AND evaluation IS NULL AND evaluation_sha256 IS NULL
+          AND evaluated_definition_version IS NULL
+          AND activation_version IS NULL AND evaluated_at IS NULL
+          AND activated_at IS NULL AND rolled_back_at IS NULL)
+        OR (state = 'evaluated' AND lifecycle_revision = 1
+          AND evaluation IS NOT NULL AND evaluation_sha256 IS NOT NULL
+          AND evaluated_definition_version IS NOT NULL
+          AND activation_version IS NULL AND evaluated_at IS NOT NULL
+          AND activated_at IS NULL AND rolled_back_at IS NULL)
+        OR (state = 'active' AND lifecycle_revision = 2
+          AND evaluation IS NOT NULL AND evaluation_sha256 IS NOT NULL
+          AND evaluated_definition_version IS NOT NULL
+          AND activation_version IS NOT NULL AND evaluated_at IS NOT NULL
+          AND activated_at IS NOT NULL AND rolled_back_at IS NULL)
+        OR (state = 'rolled_back' AND lifecycle_revision = 3
+          AND evaluation IS NOT NULL AND evaluation_sha256 IS NOT NULL
+          AND evaluated_definition_version IS NOT NULL
+          AND activation_version IS NOT NULL AND evaluated_at IS NOT NULL
+          AND activated_at IS NOT NULL AND rolled_back_at IS NOT NULL)
+      ),
+      FOREIGN KEY (owner_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_adaptations_owner_idx
+    ON omni_agent_adaptations (
+      tenant_id, owner_actor_id, agent_definition_id,
+      state, updated_at DESC
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_agent_adaptations_active_effect_idx
+    ON omni_agent_adaptations (
+      tenant_id, owner_actor_id, agent_definition_id, effect_kind
+    )
+    WHERE state = 'active'
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_agent_adaptation_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      transition_at TIMESTAMPTZ;
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION 'Agent adaptations cannot be removed'
+          USING ERRCODE = '55000';
+      END IF;
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id),
+        hashtext(NEW.owner_actor_id || ':' || NEW.agent_definition_id)
+      );
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.state <> 'observed'
+          OR NEW.lifecycle_revision <> 0
+          OR NEW.evaluation IS NOT NULL
+          OR NEW.evaluation_sha256 IS NOT NULL
+          OR NEW.evaluated_definition_version IS NOT NULL
+          OR NEW.activation_version IS NOT NULL
+          OR NEW.evaluated_at IS NOT NULL
+          OR NEW.activated_at IS NOT NULL
+          OR NEW.rolled_back_at IS NOT NULL
+          OR NEW.updated_at IS DISTINCT FROM NEW.created_at
+        THEN
+          RAISE EXCEPTION 'Initial Agent adaptation is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF ROW(
+        NEW.schema_version, NEW.tenant_id, NEW.adaptation_id,
+        NEW.agent_definition_id, NEW.owner_actor_id,
+        NEW.owner_binding_sha256, NEW.evidence, NEW.evidence_sha256,
+        NEW.confidence, NEW.effect_kind, NEW.effect_payload, NEW.created_at
+      ) IS DISTINCT FROM ROW(
+        OLD.schema_version, OLD.tenant_id, OLD.adaptation_id,
+        OLD.agent_definition_id, OLD.owner_actor_id,
+        OLD.owner_binding_sha256, OLD.evidence, OLD.evidence_sha256,
+        OLD.confidence, OLD.effect_kind, OLD.effect_payload, OLD.created_at
+      ) OR NEW.lifecycle_revision IS DISTINCT FROM OLD.lifecycle_revision + 1
+      THEN
+        RAISE EXCEPTION 'Agent adaptation identity is immutable'
+          USING ERRCODE = '23514';
+      END IF;
+      transition_at := GREATEST(
+        statement_timestamp(), OLD.updated_at + INTERVAL '1 microsecond'
+      );
+      NEW.updated_at := transition_at;
+      IF OLD.state = 'observed' AND NEW.state = 'evaluated' THEN
+        IF NEW.evaluation IS NULL
+          OR NEW.evaluation_sha256 IS NULL
+          OR NEW.evaluated_definition_version IS NULL
+          OR NEW.activation_version IS NOT NULL
+          OR NEW.activated_at IS NOT NULL
+          OR NEW.rolled_back_at IS NOT NULL
+        THEN
+          RAISE EXCEPTION 'Agent adaptation evaluation is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.evaluated_at := transition_at;
+        RETURN NEW;
+      END IF;
+      IF OLD.state = 'evaluated' AND NEW.state = 'active' THEN
+        IF NEW.evaluation IS DISTINCT FROM OLD.evaluation
+          OR NEW.evaluation_sha256 IS DISTINCT FROM OLD.evaluation_sha256
+          OR NEW.evaluated_definition_version IS DISTINCT FROM
+            OLD.evaluated_definition_version
+          OR OLD.evaluation->>'verdict' <> 'passed'
+          OR NEW.activation_version IS NULL
+          OR NEW.evaluated_at IS DISTINCT FROM OLD.evaluated_at
+          OR NEW.rolled_back_at IS NOT NULL
+        THEN
+          RAISE EXCEPTION 'Agent adaptation activation is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.activated_at := transition_at;
+        RETURN NEW;
+      END IF;
+      IF OLD.state = 'active' AND NEW.state = 'rolled_back' THEN
+        IF NEW.evaluation IS DISTINCT FROM OLD.evaluation
+          OR NEW.evaluation_sha256 IS DISTINCT FROM OLD.evaluation_sha256
+          OR NEW.evaluated_definition_version IS DISTINCT FROM
+            OLD.evaluated_definition_version
+          OR NEW.activation_version IS DISTINCT FROM OLD.activation_version
+          OR NEW.evaluated_at IS DISTINCT FROM OLD.evaluated_at
+          OR NEW.activated_at IS DISTINCT FROM OLD.activated_at
+        THEN
+          RAISE EXCEPTION 'Agent adaptation rollback is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.rolled_back_at := transition_at;
+        RETURN NEW;
+      END IF;
+      RAISE EXCEPTION 'Agent adaptation transition is invalid'
+        USING ERRCODE = '23514';
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      DROP TRIGGER IF EXISTS omni_agent_adaptation_protect
+        ON omni_agent_adaptations;
+      CREATE TRIGGER omni_agent_adaptation_protect
+      BEFORE INSERT OR UPDATE OR DELETE ON omni_agent_adaptations
+      FOR EACH ROW
+      EXECUTE FUNCTION omni_protect_agent_adaptation_v1();
+      DROP TRIGGER IF EXISTS omni_agent_adaptation_no_truncate
+        ON omni_agent_adaptations;
+      CREATE TRIGGER omni_agent_adaptation_no_truncate
+      BEFORE TRUNCATE ON omni_agent_adaptations
+      FOR EACH STATEMENT
+      EXECUTE FUNCTION omni_protect_agent_adaptation_v1();
+      ALTER TABLE omni_agent_adaptations ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_adaptations FORCE ROW LEVEL SECURITY;
+      DROP POLICY IF EXISTS omni_agent_adaptations_actor
+        ON omni_agent_adaptations;
+      CREATE POLICY omni_agent_adaptations_actor
+      ON omni_agent_adaptations AS RESTRICTIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_agent_adaptations FROM PUBLIC`;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_protect_agent_adaptation_v1()
+    FROM PUBLIC
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_agent_adaptations FROM omni_runtime';
+        GRANT SELECT, INSERT ON omni_agent_adaptations TO omni_runtime;
+        GRANT UPDATE (
+          state, lifecycle_revision, evaluation, evaluation_sha256,
+          evaluated_definition_version, activation_version, updated_at,
+          evaluated_at, activated_at, rolled_back_at
+        ) ON omni_agent_adaptations TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_agent_adaptations FROM omni_maintenance';
+        GRANT SELECT, INSERT ON omni_agent_adaptations TO omni_maintenance;
+        GRANT UPDATE (
+          state, lifecycle_revision, evaluation, evaluation_sha256,
+          evaluated_definition_version, activation_version, updated_at,
+          evaluated_at, activated_at, rolled_back_at
+        ) ON omni_agent_adaptations TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_agent_adaptations'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_agent_adaptations'::regclass
+          AND tgname = 'omni_agent_adaptation_protect'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_agent_adaptations'::regclass
+          AND polname = 'omni_agent_adaptations_actor'
+          AND NOT polpermissive AND polcmd = '*'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_index
+        WHERE indexrelid = 'omni_agent_adaptations_active_effect_idx'::regclass
+          AND indisvalid AND indisunique
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_agent_adaptations'
+          AND grantee IN ('omni_runtime', 'omni_maintenance')
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) THEN
+        RAISE EXCEPTION 'Agent adaptation lifecycle boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
