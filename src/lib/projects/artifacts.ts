@@ -1,5 +1,6 @@
 import { getMemory, saveMemory } from "@/lib/memory/store";
 import { saveProjectArtifact } from "@/lib/projects/store";
+import type { ProjectMutationContext } from "@/lib/projects/store";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
 import type { WorkflowRunRecord } from "@/lib/workflows/types";
 
@@ -7,6 +8,7 @@ export async function ensureProjectWorkflowArtifact(input: {
   project: PersonalProject;
   task: ProjectTask;
   run: WorkflowRunRecord;
+  mutation: ProjectMutationContext;
 }) {
   const { project, task, run } = input;
   const evidenceRefs = [
@@ -56,6 +58,8 @@ export async function ensureProjectWorkflowArtifact(input: {
     memoryId,
     sourceMemoryId,
     evidenceRefs: memoryId ? [...evidenceRefs, `memory:${memoryId}`] : evidenceRefs,
+    actorId: project.actorId,
+    mutation: input.mutation,
   });
 }
 

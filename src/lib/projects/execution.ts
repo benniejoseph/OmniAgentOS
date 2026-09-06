@@ -6,13 +6,16 @@ import {
   listProjectTasks,
   updateProjectExecution,
   updateProjectTaskExecution,
+  type ProjectMutationContext,
 } from "@/lib/projects/store";
 import { ensureProjectWorkflowArtifact } from "@/lib/projects/artifacts";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
 import {
   createExecutionScope,
+  deriveExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
+import { projectMutationSha256 } from "@/lib/projects/events";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 import { createWorkflowRun, getWorkflowRunDetail } from "@/lib/workflows/store";
@@ -32,6 +35,32 @@ export async function syncProjectExecution(input: {
 }) {
   let project = await getProject(input.projectId, input);
   if (!project) return undefined;
+  const executionScope = input.executionScope || createExecutionScope({
+    tenantId: project.tenantId,
+    initiatingActorId: project.actorId,
+    executingPrincipalType: "system",
+    executingPrincipalId: "omniagent-project-worker",
+    projectId: project.id,
+    correlationId: `project-sync:${project.id}:${project.updatedAt}`,
+    purpose: "project.execution.sync",
+  });
+  const mutationFor = (
+    purpose: string,
+    causationId: string,
+    value: unknown,
+  ) => ({
+    executionScope: deriveExecutionScope(executionScope, {
+      projectId: project!.id,
+      causationId,
+      purpose,
+    }),
+    idempotencyKey: `project-execution:${projectMutationSha256({
+      correlationId: executionScope.correlationId,
+      purpose,
+      causationId,
+      value,
+    })}`,
+  });
   let tasks = await listProjectTasks(project.id, { tenantId: project.tenantId });
 
   for (const task of tasks.filter((item) => item.workflowRunId)) {
@@ -39,7 +68,16 @@ export async function syncProjectExecution(input: {
     if (!detail) continue;
     const run = detail.run;
     if (run.status === "completed" || run.status === "failed" || run.status === "canceled") {
-      await ensureProjectWorkflowArtifact({ project, task, run });
+      await ensureProjectWorkflowArtifact({
+        project,
+        task,
+        run,
+        mutation: mutationFor(
+          "project.artifact.save",
+          run.id,
+          { status: run.status, completedAt: run.completedAt },
+        ),
+      });
     }
     if (run.status === task.workflowStatus && !(run.status === "completed" && task.status !== "done")) continue;
     if (run.status === "completed") {
@@ -48,20 +86,44 @@ export async function syncProjectExecution(input: {
         workflowRunId: run.id,
         workflowStatus: "completed",
         completedAt: run.completedAt || new Date().toISOString(),
-      }, { tenantId: project.tenantId });
+      }, {
+        tenantId: project.tenantId,
+        actorId: project.actorId,
+        mutation: mutationFor(
+          "project.task.execution.complete",
+          task.id,
+          { workflowRunId: run.id, status: run.status },
+        ),
+      });
     } else if (run.status === "failed" || run.status === "canceled") {
       await updateProjectTaskExecution(project.id, task.id, {
         status: "open",
         workflowRunId: run.id,
         workflowStatus: run.status,
         executionError: run.error || `Workflow ${run.status}.`,
-      }, { tenantId: project.tenantId });
+      }, {
+        tenantId: project.tenantId,
+        actorId: project.actorId,
+        mutation: mutationFor(
+          "project.task.execution.terminal",
+          task.id,
+          { workflowRunId: run.id, status: run.status },
+        ),
+      });
     } else {
       await updateProjectTaskExecution(project.id, task.id, {
         status: "doing",
         workflowRunId: run.id,
         workflowStatus: run.status,
-      }, { tenantId: project.tenantId });
+      }, {
+        tenantId: project.tenantId,
+        actorId: project.actorId,
+        mutation: mutationFor(
+          "project.task.execution.sync",
+          task.id,
+          { workflowRunId: run.id, status: run.status },
+        ),
+      });
     }
   }
 
@@ -70,7 +132,14 @@ export async function syncProjectExecution(input: {
     project = (await updateProjectExecution(project.id, {
       executionStatus: "completed",
       lastSyncedAt: new Date().toISOString(),
-    }, input)) || project;
+    }, {
+      ...input,
+      mutation: mutationFor(
+        "project.execution.complete",
+        project.id,
+        { executionStatus: "completed" },
+      ),
+    })) || project;
     return executionSnapshot(project, tasks, []);
   }
 
@@ -79,7 +148,14 @@ export async function syncProjectExecution(input: {
     project = (await updateProjectExecution(project.id, {
       executionStatus: "failed",
       lastSyncedAt: new Date().toISOString(),
-    }, input)) || project;
+    }, {
+      ...input,
+      mutation: mutationFor(
+        "project.execution.fail",
+        project.id,
+        { executionStatus: "failed", taskId: failedTask.id },
+      ),
+    })) || project;
     return executionSnapshot(project, tasks, []);
   }
 
@@ -104,10 +180,30 @@ export async function syncProjectExecution(input: {
 
   if (!waitingApproval) {
     for (const task of ready) {
-      const result = await dispatchProjectTask(project, task, input.drain ?? false);
+      const result = await dispatchProjectTask(
+        project,
+        task,
+        input.drain ?? false,
+        mutationFor(
+          "project.task.dispatch_claim",
+          task.id,
+          { dispatchAttempt: task.dispatchAttempt + 1 },
+        ),
+      );
       if (result) {
         dispatched.push(result);
-        project = (await updateProjectExecution(project.id, { incrementDispatched: 1 }, input)) || project;
+        project = (await updateProjectExecution(
+          project.id,
+          { incrementDispatched: 1 },
+          {
+            ...input,
+            mutation: mutationFor(
+              "project.execution.dispatch_count",
+              task.id,
+              { dispatchAttempt: result.dispatchAttempt },
+            ),
+          },
+        )) || project;
       }
     }
   }
@@ -121,7 +217,14 @@ export async function syncProjectExecution(input: {
   project = (await updateProjectExecution(project.id, {
     executionStatus: nextStatus,
     lastSyncedAt: new Date().toISOString(),
-  }, input)) || project;
+  }, {
+    ...input,
+    mutation: mutationFor(
+      "project.execution.status",
+      project.id,
+      { executionStatus: nextStatus, tasksDispatched: project.tasksDispatched },
+    ),
+  })) || project;
   return executionSnapshot(project, tasks, dispatched);
 }
 
@@ -192,20 +295,26 @@ export async function signalProjectTask(input: {
   return detail;
 }
 
-async function dispatchProjectTask(project: PersonalProject, task: ProjectTask, drain: boolean) {
-  const claimed = await claimProjectTaskForDispatch(project.id, task.id, { tenantId: project.tenantId });
+async function dispatchProjectTask(
+  project: PersonalProject,
+  task: ProjectTask,
+  drain: boolean,
+  mutation: ProjectMutationContext,
+) {
+  const claimed = await claimProjectTaskForDispatch(project.id, task.id, {
+    tenantId: project.tenantId,
+    actorId: project.actorId,
+    mutation,
+  });
   if (!claimed) return undefined;
   try {
     const workflow = await createWorkflowRun({
       tenantId: project.tenantId,
       executionAuthority: {
-        executionScope: createExecutionScope({
-          tenantId: project.tenantId,
-          initiatingActorId: project.actorId,
+        executionScope: deriveExecutionScope(mutation.executionScope, {
           executingPrincipalType: "agent",
           executingPrincipalId: task.agentId,
           projectId: project.id,
-          correlationId: `project-task:${task.id}:${claimed.dispatchAttempt}`,
           causationId: task.id,
           purpose: "project.task.workflow",
         }),
@@ -227,7 +336,15 @@ async function dispatchProjectTask(project: PersonalProject, task: ProjectTask, 
       status: "doing",
       workflowRunId: workflow.run.id,
       workflowStatus: workflow.run.status,
-    }, { tenantId: project.tenantId });
+    }, {
+      tenantId: project.tenantId,
+      actorId: project.actorId,
+      mutation: childProjectMutation(
+        mutation,
+        "project.task.dispatch_bound",
+        { taskId: task.id, workflowRunId: workflow.run.id },
+      ),
+    });
     await enqueueWorkflowRunTick(workflow.run.id, "project_task_dispatched", 10, project.tenantId);
     if (drain) scheduleWorkflowQueueDrain(1, project.tenantId);
     return claimed;
@@ -235,9 +352,32 @@ async function dispatchProjectTask(project: PersonalProject, task: ProjectTask, 
     await updateProjectTaskExecution(project.id, task.id, {
       status: "open",
       executionError: error instanceof Error ? error.message : "Task dispatch failed.",
-    }, { tenantId: project.tenantId });
+    }, {
+      tenantId: project.tenantId,
+      actorId: project.actorId,
+      mutation: childProjectMutation(
+        mutation,
+        "project.task.dispatch_failed",
+        { taskId: task.id, dispatchAttempt: claimed.dispatchAttempt },
+      ),
+    });
     throw error;
   }
+}
+
+function childProjectMutation(
+  parent: ProjectMutationContext,
+  purpose: string,
+  value: unknown,
+): ProjectMutationContext {
+  return {
+    executionScope: deriveExecutionScope(parent.executionScope, { purpose }),
+    idempotencyKey: `project-execution:${projectMutationSha256({
+      parentIdempotencyKey: parent.idempotencyKey,
+      purpose,
+      value,
+    })}`,
+  };
 }
 
 function modeForAgent(agentId: ProjectTask["agentId"]) {

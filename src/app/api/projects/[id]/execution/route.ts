@@ -47,13 +47,19 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   try {
     context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "project_execution", resourceId: id, metadata: { action: parsed.data.action } });
   } catch (error) { return forbiddenResponse(error); }
+  const mutation = projectMutationFromRequest(request, context, {
+    purpose: `project.execution.${parsed.data.action}`,
+    projectId: id,
+  });
   const scope = {
     tenantId: context.tenantId,
     actorId: context.actorId,
-    ...projectMutationFromRequest(request, context, {
-      purpose: `project.execution.${parsed.data.action}`,
-      projectId: id,
-    }),
+    ...mutation,
+  };
+  const mutationScope = {
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    mutation,
   };
   const current = await getProject(id, scope);
   if (!current) return Response.json({ error: "Project not found." }, { status: 404 });
@@ -66,11 +72,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         taskBudget: parsed.data.taskBudget,
         maxParallelTasks: parsed.data.maxParallelTasks,
         requireApproval: parsed.data.autonomyMode === "supervised" ? true : parsed.data.requireApproval,
-      }, scope);
+      }, mutationScope);
       return Response.json({ project, tasks: await listProjectTasks(id, scope), artifacts: await listProjectArtifacts(id, scope) });
     }
     if (parsed.data.action === "pause") {
-      await updateProjectExecution(id, { executionStatus: "paused" }, scope);
+      await updateProjectExecution(id, { executionStatus: "paused" }, mutationScope);
       await signalProjectWorkflows({
         projectId: id,
         signal: "pause",
@@ -84,7 +90,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         signal: "resume",
         ...scope,
       });
-      await updateProjectExecution(id, { executionStatus: "running" }, scope);
+      await updateProjectExecution(id, { executionStatus: "running" }, mutationScope);
       return Response.json(await syncProjectExecution({ projectId: id, ...scope, drain: true }));
     }
     if (parsed.data.action === "approve" || parsed.data.action === "retry") {
@@ -101,7 +107,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         taskBudget: parsed.data.taskBudget,
         maxParallelTasks: parsed.data.maxParallelTasks,
         requireApproval: parsed.data.autonomyMode === "supervised" ? true : parsed.data.requireApproval,
-      }, scope);
+      }, mutationScope);
       return Response.json(await syncProjectExecution({ projectId: id, ...scope, drain: true }));
     }
     return Response.json(await syncProjectExecution({ projectId: id, ...scope, drain: true }));

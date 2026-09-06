@@ -81,8 +81,7 @@ export async function createProject(input: {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     if (!mutation) {
-      const rows = await insertProject(getSql(), project, now);
-      return projectFromRow(rows[0]);
+      throw new Error("Project creation requires an execution scope and idempotency key.");
     }
     return getSql().transaction(async (sql: ProjectSqlClient) => {
       const rows = await insertProject(sql, project, now, true);
@@ -364,8 +363,7 @@ export async function updateProject(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     if (!mutation) {
-      const rows = await updateProjectRow(getSql(), next, now);
-      return rows[0] ? projectFromRow(rows[0]) : undefined;
+      throw new Error("Project update requires an execution scope and idempotency key.");
     }
     return getSql().transaction(async (sql: ProjectSqlClient) => {
       const rows = await updateProjectRow(sql, next, now);
@@ -410,10 +408,22 @@ export async function updateProjectExecution(
     incrementDispatched?: number;
     lastSyncedAt?: string;
   },
-  options: { tenantId?: string; actorId: string },
+  options: {
+    tenantId?: string;
+    actorId: string;
+    mutation?: ProjectMutationContext;
+  },
 ) {
   const current = await getProject(id, options);
   if (!current) return undefined;
+  const mutation = options.mutation
+    ? exactProjectMutationContext(
+        options.mutation,
+        current.tenantId,
+        current.actorId,
+        "delegated",
+      )
+    : undefined;
   const now = new Date().toISOString();
   const next: PersonalProject = {
     ...current,
@@ -428,21 +438,48 @@ export async function updateProjectExecution(
   };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_projects SET
-        autonomy_mode = ${next.autonomyMode}, execution_status = ${next.executionStatus},
-        task_budget = ${next.taskBudget}, tasks_dispatched = ${next.tasksDispatched},
-        max_parallel_tasks = ${next.maxParallelTasks}, require_approval = ${next.requireApproval},
-        last_synced_at = ${next.lastSyncedAt || null}, updated_at = ${now}
-      WHERE id = ${id} AND tenant_id = ${next.tenantId} AND actor_id = ${next.actorId}
-      RETURNING *
-    `;
-    return rows[0] ? projectFromRow(rows[0]) : undefined;
+    if (!mutation) {
+      throw new Error("Project execution mutation requires an execution scope and idempotency key.");
+    }
+    return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const rows = await sql`
+        UPDATE omni_projects SET
+          autonomy_mode = ${next.autonomyMode}, execution_status = ${next.executionStatus},
+          task_budget = ${next.taskBudget}, tasks_dispatched = ${next.tasksDispatched},
+          max_parallel_tasks = ${next.maxParallelTasks}, require_approval = ${next.requireApproval},
+          last_synced_at = ${next.lastSyncedAt || null}, updated_at = ${now}
+        WHERE id = ${id} AND tenant_id = ${next.tenantId} AND actor_id = ${next.actorId}
+        RETURNING *
+      `;
+      const saved = rows[0] ? projectFromRow(rows[0]) : undefined;
+      if (!saved) return undefined;
+      await appendProjectMutationEvent({
+        mutation,
+        project: saved,
+        operation: "project_execution_updated",
+        priorStatus: current.executionStatus,
+        status: saved.executionStatus,
+        changedFieldIds: Object.keys(input),
+        mutationInput: input,
+      }, sql);
+      return saved;
+    }) as Promise<PersonalProject | undefined>;
   }
   await updateLedger((ledger) => ({
     ...ledger,
     projects: ledger.projects.map((item) => item.id === id ? next : item),
   }));
+  if (mutation) {
+    await appendProjectMutationEvent({
+      mutation,
+      project: next,
+      operation: "project_execution_updated",
+      priorStatus: current.executionStatus,
+      status: next.executionStatus,
+      changedFieldIds: Object.keys(input),
+      mutationInput: input,
+    });
+  }
   return next;
 }
 
@@ -586,20 +623,49 @@ export async function recordProjectArtifactFeedback(
     lesson: string;
     reflectionMemoryId: string;
   },
-  options: { tenantId?: string; projectId: string },
+  options: {
+    tenantId?: string;
+    projectId: string;
+    actorId: string;
+    mutation?: ProjectMutationContext;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const project = await getProject(options.projectId, options);
+  if (!project) return undefined;
+  const mutation = options.mutation
+    ? exactProjectMutationContext(
+        options.mutation,
+        tenantId,
+        project.actorId,
+      )
+    : undefined;
   const now = new Date().toISOString();
   const lesson = safeTextBlock(input.lesson, 1_200);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_project_artifacts SET verdict = ${input.verdict}, lesson = ${lesson},
-        reflection_memory_id = ${input.reflectionMemoryId}, reviewed_at = ${now}, updated_at = ${now}
-      WHERE id = ${artifactId} AND tenant_id = ${tenantId} AND project_id = ${options.projectId}
-      RETURNING *
-    `;
-    return rows[0] ? artifactFromRow(rows[0]) : undefined;
+    if (!mutation) {
+      throw new Error("Project artifact review requires an execution scope and idempotency key.");
+    }
+    return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const rows = await sql`
+        UPDATE omni_project_artifacts SET verdict = ${input.verdict}, lesson = ${lesson},
+          reflection_memory_id = ${input.reflectionMemoryId}, reviewed_at = ${now}, updated_at = ${now}
+        WHERE id = ${artifactId} AND tenant_id = ${tenantId} AND project_id = ${options.projectId}
+        RETURNING *
+      `;
+      const saved = rows[0] ? artifactFromRow(rows[0]) : undefined;
+      if (!saved) return undefined;
+      await appendProjectMutationEvent({
+        mutation,
+        project,
+        operation: "project_artifact_reviewed",
+        status: input.verdict,
+        changedFieldIds: ["lesson", "reflection_memory_id", "verdict"],
+        mutationInput: input,
+      }, sql);
+      return saved;
+    }) as Promise<ProjectArtifact | undefined>;
   }
   let updated: ProjectArtifact | undefined;
   await updateLedger((ledger) => ({
@@ -610,6 +676,16 @@ export async function recordProjectArtifactFeedback(
       return updated;
     }),
   }));
+  if (updated && mutation) {
+    await appendProjectMutationEvent({
+      mutation,
+      project,
+      operation: "project_artifact_reviewed",
+      status: input.verdict,
+      changedFieldIds: ["lesson", "reflection_memory_id", "verdict"],
+      mutationInput: input,
+    });
+  }
   return updated;
 }
 
@@ -626,6 +702,8 @@ export async function saveProjectArtifact(input: {
   memoryId?: string;
   sourceMemoryId?: string;
   evidenceRefs?: string[];
+  actorId: string;
+  mutation?: ProjectMutationContext;
 }) {
   const now = new Date().toISOString();
   const artifact: ProjectArtifact = {
@@ -644,28 +722,68 @@ export async function saveProjectArtifact(input: {
     createdAt: now,
     updatedAt: now,
   };
+  const project = await getProject(artifact.projectId, {
+    tenantId: artifact.tenantId,
+    actorId: input.actorId,
+  });
+  if (!project) throw new Error("Project not found for artifact mutation.");
+  const mutation = input.mutation
+    ? exactProjectMutationContext(
+        input.mutation,
+        artifact.tenantId,
+        project.actorId,
+        "delegated",
+      )
+    : undefined;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      INSERT INTO omni_project_artifacts (
-        id, tenant_id, project_id, task_id, workflow_run_id, agent_id, status,
-        title, content, memory_id, source_memory_id, evidence_refs, created_at, updated_at
-      ) VALUES (
-        ${artifact.id}, ${artifact.tenantId}, ${artifact.projectId}, ${artifact.taskId},
-        ${artifact.workflowRunId}, ${artifact.agentId}, ${artifact.status}, ${artifact.title},
-        ${artifact.content}, ${artifact.memoryId || null}, ${artifact.sourceMemoryId || null},
-        ${artifact.evidenceRefs}, ${now}, ${now}
-      )
-      ON CONFLICT (id) DO UPDATE SET
-        status = EXCLUDED.status, title = EXCLUDED.title, content = EXCLUDED.content,
-        memory_id = COALESCE(EXCLUDED.memory_id, omni_project_artifacts.memory_id),
-        source_memory_id = COALESCE(EXCLUDED.source_memory_id, omni_project_artifacts.source_memory_id),
-        evidence_refs = EXCLUDED.evidence_refs, updated_at = EXCLUDED.updated_at
-      WHERE omni_project_artifacts.tenant_id = EXCLUDED.tenant_id
-      RETURNING *
-    `;
-    if (!rows[0]) throw new Error("Project artifact id collided across tenants.");
-    return artifactFromRow(rows[0]);
+    if (!mutation) {
+      throw new Error("Project artifact mutation requires an execution scope and idempotency key.");
+    }
+    return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const rows = await sql`
+        INSERT INTO omni_project_artifacts (
+          id, tenant_id, project_id, task_id, workflow_run_id, agent_id, status,
+          title, content, memory_id, source_memory_id, evidence_refs, created_at, updated_at
+        ) VALUES (
+          ${artifact.id}, ${artifact.tenantId}, ${artifact.projectId}, ${artifact.taskId},
+          ${artifact.workflowRunId}, ${artifact.agentId}, ${artifact.status}, ${artifact.title},
+          ${artifact.content}, ${artifact.memoryId || null}, ${artifact.sourceMemoryId || null},
+          ${artifact.evidenceRefs}, ${now}, ${now}
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status, title = EXCLUDED.title, content = EXCLUDED.content,
+          memory_id = COALESCE(EXCLUDED.memory_id, omni_project_artifacts.memory_id),
+          source_memory_id = COALESCE(EXCLUDED.source_memory_id, omni_project_artifacts.source_memory_id),
+          evidence_refs = EXCLUDED.evidence_refs, updated_at = EXCLUDED.updated_at
+        WHERE omni_project_artifacts.tenant_id = EXCLUDED.tenant_id
+        RETURNING *
+      `;
+      if (!rows[0]) throw new Error("Project artifact id collided across tenants.");
+      const saved = artifactFromRow(rows[0]);
+      await appendProjectMutationEvent({
+        mutation,
+        project,
+        operation: "project_artifact_saved",
+        status: saved.status,
+        changedFieldIds: [
+          "content",
+          "evidence_refs",
+          "memory_id",
+          "source_memory_id",
+          "status",
+          "title",
+        ],
+        mutationInput: {
+          artifactId: artifact.id,
+          status: artifact.status,
+          title: artifact.title,
+          contentSha256: projectMutationSha256(artifact.content),
+          evidenceRefs: artifact.evidenceRefs,
+        },
+      }, sql);
+      return saved;
+    }) as Promise<ProjectArtifact>;
   }
   let saved = artifact;
   await updateLedger((ledger) => {
@@ -679,6 +797,29 @@ export async function saveProjectArtifact(input: {
         : [saved, ...ledger.artifacts],
     };
   });
+  if (mutation) {
+    await appendProjectMutationEvent({
+      mutation,
+      project,
+      operation: "project_artifact_saved",
+      status: saved.status,
+      changedFieldIds: [
+        "content",
+        "evidence_refs",
+        "memory_id",
+        "source_memory_id",
+        "status",
+        "title",
+      ],
+      mutationInput: {
+        artifactId: artifact.id,
+        status: artifact.status,
+        title: artifact.title,
+        contentSha256: projectMutationSha256(artifact.content),
+        evidenceRefs: artifact.evidenceRefs,
+      },
+    });
+  }
   return saved;
 }
 
@@ -705,11 +846,9 @@ export async function createProjectTasks(
         options.mutation,
         tenantId,
         options.actorId || "",
+        "delegated",
       )
     : undefined;
-  if (mutation && inputs.length !== 1) {
-    throw new Error("Interactive project task creation requires exactly one task.");
-  }
   if (
     mutation?.executionScope.projectId &&
     mutation.executionScope.projectId !== projectId
@@ -726,38 +865,34 @@ export async function createProjectTasks(
     throw new Error("Project not found for task mutation.");
   }
   const existing = await listProjectTasks(projectId, { tenantId });
-  if (mutation) {
-    const taskId = projectTaskIdForIdempotencyKey(
-      tenantId,
-      projectId,
-      mutation.idempotencyKey,
-    );
-    const replay = existing.find((item) => item.id === taskId);
-    if (replay) {
-      if (!sameProjectTaskCreateRequest(replay, inputs[0])) {
-        throw new Error(
-          "Idempotency-Key is already bound to a different project task request.",
-        );
-      }
-      return [replay];
-    }
-  }
   const existingTitles = new Set(existing.map((item) => item.title.toLowerCase()));
   const now = new Date().toISOString();
-  const tasks = inputs
-    .filter((input) => !existingTitles.has(safeText(input.title, 240).toLowerCase()))
-    .slice(0, 20)
-    .map((input, index): ProjectTask => ({
-      id: mutation
-        ? projectTaskIdForIdempotencyKey(
-            tenantId,
-            projectId,
-            mutation.idempotencyKey,
-          )
-        : randomUUID(),
+  const prepared = inputs.slice(0, 20).map((input, index) => {
+    const itemMutation = mutation
+      ? projectBatchMutationContext(mutation, index, inputs.length)
+      : undefined;
+    const id = itemMutation
+      ? projectTaskIdForIdempotencyKey(
+          tenantId,
+          projectId,
+          itemMutation.idempotencyKey,
+        )
+      : randomUUID();
+    const replay = existing.find((item) => item.id === id);
+    if (replay && !sameProjectTaskCreateRequest(replay, input)) {
+      throw new Error(
+        "Idempotency-Key is already bound to a different project task request.",
+      );
+    }
+    const normalizedTitle = safeText(input.title, 240);
+    if (!replay && existingTitles.has(normalizedTitle.toLowerCase())) {
+      return undefined;
+    }
+    const task: ProjectTask = replay || {
+      id,
       tenantId,
       projectId,
-      title: safeText(input.title, 240),
+      title: normalizedTitle,
       detail: safeText(input.detail || "", 1_000),
       status: "open",
       priority: input.priority || "medium",
@@ -769,35 +904,75 @@ export async function createProjectTasks(
       dispatchAttempt: 0,
       createdAt: now,
       updatedAt: now,
-    }));
-  if (!tasks.length) return [];
+    };
+    existingTitles.add(normalizedTitle.toLowerCase());
+    return { input, mutation: itemMutation, replay: Boolean(replay), task };
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+  if (!prepared.length) return [];
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    if (!mutation) {
-      for (const task of tasks) await insertProjectTask(getSql(), task);
-      return tasks;
+    if (!mutation || !mutationProject) {
+      throw new Error("Project task creation requires an actor, execution scope, and idempotency key.");
     }
     return getSql().transaction(async (sql: ProjectSqlClient) => {
-      const task = tasks[0];
-      const rows = await insertProjectTask(sql, task, true);
-      const saved = rows[0]
-        ? taskFromRow(rows[0])
-        : await getProjectTaskById(sql, task.id, tenantId, projectId);
-      if (!saved || !sameProjectTaskCreateRequest(saved, inputs[0])) {
-        throw new Error(
-          "Idempotency-Key is already bound to a different project task request.",
-        );
-      }
       const project = await getProjectById(sql, projectId, tenantId);
       if (!project || project.actorId !== options.actorId) {
         throw new Error("Project not found for task mutation.");
       }
+      const savedTasks: ProjectTask[] = [];
+      for (const item of prepared) {
+        const rows = item.replay
+          ? []
+          : await insertProjectTask(sql, item.task, true);
+        const saved = rows[0]
+          ? taskFromRow(rows[0])
+          : await getProjectTaskById(
+              sql,
+              item.task.id,
+              tenantId,
+              projectId,
+            );
+        if (!saved || !sameProjectTaskCreateRequest(saved, item.input)) {
+          throw new Error(
+            "Idempotency-Key is already bound to a different project task request.",
+          );
+        }
+        await appendProjectMutationEvent({
+          mutation: item.mutation!,
+          project,
+          taskId: saved.id,
+          operation: "project_task_created",
+          status: saved.status,
+          changedFieldIds: [
+            "agent_id",
+            "dependency_ids",
+            "detail",
+            "due_at",
+            "origin",
+            "priority",
+            "title",
+          ],
+          mutationInput: projectTaskCreateMutationInput(saved),
+        }, sql);
+        savedTasks.push(saved);
+      }
+      return savedTasks;
+    }) as Promise<ProjectTask[]>;
+  }
+  const tasks = prepared.map((item) => item.task);
+  const newTasks = prepared.filter((item) => !item.replay).map((item) => item.task);
+  await updateLedger((ledger) => ({
+    ...ledger,
+    tasks: [...ledger.tasks, ...newTasks],
+  }));
+  if (mutation) {
+    for (const item of prepared) {
       await appendProjectMutationEvent({
-        mutation,
-        project,
-        taskId: saved.id,
+        mutation: item.mutation!,
+        project: mutationProject!,
+        taskId: item.task.id,
         operation: "project_task_created",
-        status: saved.status,
+        status: item.task.status,
         changedFieldIds: [
           "agent_id",
           "dependency_ids",
@@ -807,30 +982,9 @@ export async function createProjectTasks(
           "priority",
           "title",
         ],
-        mutationInput: projectTaskCreateMutationInput(saved),
-      }, sql);
-      return [saved];
-    }) as Promise<ProjectTask[]>;
-  }
-  await updateLedger((ledger) => ({ ...ledger, tasks: [...ledger.tasks, ...tasks] }));
-  if (mutation) {
-    await appendProjectMutationEvent({
-      mutation,
-      project: mutationProject!,
-      taskId: tasks[0].id,
-      operation: "project_task_created",
-      status: tasks[0].status,
-      changedFieldIds: [
-        "agent_id",
-        "dependency_ids",
-        "detail",
-        "due_at",
-        "origin",
-        "priority",
-        "title",
-      ],
-      mutationInput: projectTaskCreateMutationInput(tasks[0]),
-    });
+        mutationInput: projectTaskCreateMutationInput(item.task),
+      });
+    }
   }
   return tasks;
 }
@@ -838,7 +992,11 @@ export async function createProjectTasks(
 export async function replaceProjectTaskDependencies(
   projectId: string,
   dependencies: Array<{ taskId: string; dependsOn: string[] }>,
-  options: { tenantId?: string },
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    mutation?: ProjectMutationContext;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const allowed = new Set((await listProjectTasks(projectId, { tenantId })).map((task) => task.id));
@@ -846,11 +1004,39 @@ export async function replaceProjectTaskDependencies(
     taskId: item.taskId,
     dependsOn: sanitizeIds(item.dependsOn).filter((id) => allowed.has(id) && id !== item.taskId),
   })).filter((item) => allowed.has(item.taskId));
+  if (!safe.length) return listProjectTasks(projectId, { tenantId });
+  const project = options.actorId
+    ? await getProject(projectId, {
+        tenantId,
+        actorId: options.actorId,
+      })
+    : undefined;
+  const mutation = project && options.mutation
+    ? exactProjectMutationContext(
+        options.mutation,
+        tenantId,
+        project.actorId,
+        "delegated",
+      )
+    : undefined;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    for (const item of safe) {
-      await getSql()`UPDATE omni_project_tasks SET dependency_ids = ${item.dependsOn}::jsonb, updated_at = NOW() WHERE id = ${item.taskId} AND project_id = ${projectId} AND tenant_id = ${tenantId}`;
+    if (!project || !mutation) {
+      throw new Error("Project dependency mutation requires an actor, execution scope, and idempotency key.");
     }
+    await getSql().transaction(async (sql: ProjectSqlClient) => {
+      for (const item of safe) {
+        await sql`UPDATE omni_project_tasks SET dependency_ids = ${item.dependsOn}::jsonb, updated_at = NOW() WHERE id = ${item.taskId} AND project_id = ${projectId} AND tenant_id = ${tenantId}`;
+      }
+      await appendProjectMutationEvent({
+        mutation,
+        project,
+        operation: "project_task_dependencies_replaced",
+        status: project.status,
+        changedFieldIds: ["dependency_ids"],
+        mutationInput: safe,
+      }, sql);
+    });
   } else {
     await updateLedger((ledger) => ({
       ...ledger,
@@ -859,6 +1045,16 @@ export async function replaceProjectTaskDependencies(
         return item ? { ...task, dependsOn: item.dependsOn, updatedAt: new Date().toISOString() } : task;
       }),
     }));
+    if (project && mutation) {
+      await appendProjectMutationEvent({
+        mutation,
+        project,
+        operation: "project_task_dependencies_replaced",
+        status: project.status,
+        changedFieldIds: ["dependency_ids"],
+        mutationInput: safe,
+      });
+    }
   }
   return listProjectTasks(projectId, { tenantId });
 }
@@ -866,20 +1062,59 @@ export async function replaceProjectTaskDependencies(
 export async function claimProjectTaskForDispatch(
   projectId: string,
   taskId: string,
-  options: { tenantId?: string },
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    mutation?: ProjectMutationContext;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const project = options.actorId
+    ? await getProject(projectId, { tenantId, actorId: options.actorId })
+    : undefined;
+  const mutation = project && options.mutation
+    ? exactProjectMutationContext(
+        options.mutation,
+        tenantId,
+        project.actorId,
+        "delegated",
+      )
+    : undefined;
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_project_tasks SET workflow_status = 'dispatching', dispatched_at = ${now},
-        dispatch_attempt = dispatch_attempt + 1, execution_error = NULL, updated_at = ${now}
-      WHERE id = ${taskId} AND project_id = ${projectId} AND tenant_id = ${tenantId}
-        AND status = 'open' AND workflow_run_id IS NULL AND workflow_status IS NULL
-      RETURNING *
-    `;
-    return rows[0] ? taskFromRow(rows[0]) : undefined;
+    if (!project || !mutation) {
+      throw new Error("Project task dispatch requires an actor, execution scope, and idempotency key.");
+    }
+    return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const rows = await sql`
+        UPDATE omni_project_tasks SET workflow_status = 'dispatching', dispatched_at = ${now},
+          dispatch_attempt = dispatch_attempt + 1, execution_error = NULL, updated_at = ${now}
+        WHERE id = ${taskId} AND project_id = ${projectId} AND tenant_id = ${tenantId}
+          AND status = 'open' AND workflow_run_id IS NULL AND workflow_status IS NULL
+        RETURNING *
+      `;
+      const saved = rows[0] ? taskFromRow(rows[0]) : undefined;
+      if (!saved) return undefined;
+      await appendProjectMutationEvent({
+        mutation,
+        project,
+        taskId,
+        operation: "project_task_dispatch_claimed",
+        status: saved.workflowStatus || saved.status,
+        changedFieldIds: [
+          "dispatch_attempt",
+          "dispatched_at",
+          "execution_error",
+          "workflow_status",
+        ],
+        mutationInput: {
+          taskId,
+          dispatchAttempt: saved.dispatchAttempt,
+        },
+      }, sql);
+      return saved;
+    }) as Promise<ProjectTask | undefined>;
   }
   let claimed: ProjectTask | undefined;
   await updateLedger((ledger) => ({
@@ -890,6 +1125,22 @@ export async function claimProjectTaskForDispatch(
       return claimed;
     }),
   }));
+  if (claimed && project && mutation) {
+    await appendProjectMutationEvent({
+      mutation,
+      project,
+      taskId,
+      operation: "project_task_dispatch_claimed",
+      status: claimed.workflowStatus || claimed.status,
+      changedFieldIds: [
+        "dispatch_attempt",
+        "dispatched_at",
+        "execution_error",
+        "workflow_status",
+      ],
+      mutationInput: { taskId, dispatchAttempt: claimed.dispatchAttempt },
+    });
+  }
   return claimed;
 }
 
@@ -897,20 +1148,51 @@ export async function updateProjectTaskExecution(
   projectId: string,
   taskId: string,
   patch: Pick<ProjectTask, "status"> & Partial<Pick<ProjectTask, "workflowRunId" | "workflowStatus" | "executionError" | "completedAt">>,
-  options: { tenantId?: string },
+  options: {
+    tenantId?: string;
+    actorId?: string;
+    mutation?: ProjectMutationContext;
+  },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  const project = options.actorId
+    ? await getProject(projectId, { tenantId, actorId: options.actorId })
+    : undefined;
+  const mutation = project && options.mutation
+    ? exactProjectMutationContext(
+        options.mutation,
+        tenantId,
+        project.actorId,
+        "delegated",
+      )
+    : undefined;
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_project_tasks SET status = ${patch.status}, workflow_run_id = ${patch.workflowRunId || null},
-        workflow_status = ${patch.workflowStatus || null}, execution_error = ${patch.executionError || null},
-        completed_at = ${patch.completedAt || null}, updated_at = ${now}
-      WHERE id = ${taskId} AND project_id = ${projectId} AND tenant_id = ${tenantId}
-      RETURNING *
-    `;
-    return rows[0] ? taskFromRow(rows[0]) : undefined;
+    if (!project || !mutation) {
+      throw new Error("Project task execution mutation requires an actor, execution scope, and idempotency key.");
+    }
+    return getSql().transaction(async (sql: ProjectSqlClient) => {
+      const rows = await sql`
+        UPDATE omni_project_tasks SET status = ${patch.status}, workflow_run_id = ${patch.workflowRunId || null},
+          workflow_status = ${patch.workflowStatus || null}, execution_error = ${patch.executionError || null},
+          completed_at = ${patch.completedAt || null}, updated_at = ${now}
+        WHERE id = ${taskId} AND project_id = ${projectId} AND tenant_id = ${tenantId}
+        RETURNING *
+      `;
+      const saved = rows[0] ? taskFromRow(rows[0]) : undefined;
+      if (!saved) return undefined;
+      await appendProjectMutationEvent({
+        mutation,
+        project,
+        taskId,
+        operation: "project_task_execution_updated",
+        status: saved.workflowStatus || saved.status,
+        changedFieldIds: Object.keys(patch),
+        mutationInput: patch,
+      }, sql);
+      return saved;
+    }) as Promise<ProjectTask | undefined>;
   }
   let updated: ProjectTask | undefined;
   await updateLedger((ledger) => ({
@@ -929,6 +1211,17 @@ export async function updateProjectTaskExecution(
       return updated;
     }),
   }));
+  if (updated && project && mutation) {
+    await appendProjectMutationEvent({
+      mutation,
+      project,
+      taskId,
+      operation: "project_task_execution_updated",
+      status: updated.workflowStatus || updated.status,
+      changedFieldIds: Object.keys(patch),
+      mutationInput: patch,
+    });
+  }
   return updated;
 }
 
@@ -985,8 +1278,7 @@ export async function updateProjectTask(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     if (!mutation) {
-      const rows = await updateProjectTaskRow(getSql(), next, now);
-      return rows[0] ? taskFromRow(rows[0]) : undefined;
+      throw new Error("Project task update requires an execution scope and idempotency key.");
     }
     return getSql().transaction(async (sql: ProjectSqlClient) => {
       const rows = await updateProjectTaskRow(sql, next, now);
@@ -1051,6 +1343,7 @@ function exactProjectMutationContext(
   value: ProjectMutationContext,
   tenantId: string,
   actorId: string,
+  principalMode: "interactive_user" | "delegated" = "interactive_user",
 ) {
   const executionScope = parsePersistedExecutionScope(value.executionScope);
   if (!executionScope) {
@@ -1058,14 +1351,17 @@ function exactProjectMutationContext(
   }
   assertExecutionScopeTenant(executionScope, tenantId);
   const exactActorId = safeText(actorId, 200);
-  if (
-    !executionScope.initiatingActorId ||
-    executionScope.initiatingActorId !== exactActorId ||
-    executionScope.executingPrincipalType !== "user" ||
-    executionScope.executingPrincipalId !== exactActorId
-  ) {
+  const actorMatches = Boolean(executionScope.initiatingActorId) &&
+    executionScope.initiatingActorId === exactActorId;
+  const principalMatches = principalMode === "delegated"
+    ? Boolean(executionScope.executingPrincipalId)
+    : executionScope.executingPrincipalType === "user" &&
+      executionScope.executingPrincipalId === exactActorId;
+  if (!actorMatches || !principalMatches) {
     throw new Error(
-      "Interactive project mutation scope must bind the initiating user principal.",
+      principalMode === "delegated"
+        ? "Project mutation scope must bind its initiating actor and executing principal."
+        : "Interactive project mutation scope must bind the initiating user principal.",
     );
   }
   const idempotencyKey = value.idempotencyKey.trim();
@@ -1079,6 +1375,21 @@ function exactProjectMutationContext(
     );
   }
   return { executionScope, idempotencyKey } as const;
+}
+
+function projectBatchMutationContext(
+  mutation: ReturnType<typeof exactProjectMutationContext>,
+  index: number,
+  inputCount: number,
+) {
+  if (inputCount === 1) return mutation;
+  return {
+    executionScope: mutation.executionScope,
+    idempotencyKey: `project-task-batch:${projectMutationSha256({
+      rootIdempotencyKey: mutation.idempotencyKey,
+      index,
+    })}`,
+  } as const;
 }
 
 async function insertProject(
@@ -1295,7 +1606,13 @@ async function appendProjectMutationEvent(
     project: PersonalProject;
     taskId?: string;
     operation: "project_created" | "project_updated" |
-      "project_task_created" | "project_task_updated";
+      "project_task_created" | "project_task_updated" |
+      "project_execution_updated" |
+      "project_task_dependencies_replaced" |
+      "project_task_dispatch_claimed" |
+      "project_task_execution_updated" |
+      "project_artifact_saved" |
+      "project_artifact_reviewed";
     priorStatus?: string;
     status: string;
     changedFieldIds: string[];

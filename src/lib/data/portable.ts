@@ -5,6 +5,7 @@ import { buildUserPrivateMemoryAccessBindingV1 } from "@/lib/memory/access-bindi
 import { saveMemories, listMemories } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import { createProject, createProjectTasks, listProjectCollections, listProjects } from "@/lib/projects/store";
+import { projectMutationSha256 } from "@/lib/projects/events";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { listKnowledgeChunks, listKnowledgeDocuments } from "@/lib/rag/store";
 import { appendThreadTurn, createThread, listThreads, listThreadTurns } from "@/lib/threads/store";
@@ -12,6 +13,7 @@ import { createTodayItem, listTodayItems, updateTodayItem } from "@/lib/today/st
 import { createAgentSkill, createCustomAgent, listAgentSkills, listCustomAgents } from "@/lib/skills/store";
 import {
   createExecutionScope,
+  deriveExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 
@@ -172,8 +174,40 @@ export async function restorePortableArchive(archive: unknown, input: {
     await createCustomAgent({ name: item.name, role: item.role, description: item.description, instructions: item.instructions, status: item.status, accent: item.accent, modelPolicy: item.modelPolicy, autonomy: item.autonomy, approvalPolicy: item.approvalPolicy, memoryScope: item.memoryScope, skillIds: item.skillIds.map((skillId) => restoredSkillIds.get(skillId) || skillId), toolIds: item.toolIds }, { tenantId: input.tenantId, actorId: input.actorId });
   }
   for (const item of data.projects.slice(0, 100)) {
-    const project = await createProject({ tenantId: input.tenantId, actorId: input.actorId, title: item.title, objective: item.objective, status: item.status, targetDate: item.targetDate });
-    await createProjectTasks(project.id, item.tasks.slice(0, 20), { tenantId: input.tenantId });
+    const projectRestoreKey = `portable-project:${projectMutationSha256({
+      title: item.title,
+      objective: item.objective,
+      status: item.status,
+      targetDate: item.targetDate,
+    })}`;
+    const projectScope = deriveExecutionScope(sourceExecutionScope, {
+      causationId: projectRestoreKey,
+      purpose: "portable.project.restore",
+    });
+    const project = await createProject({
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      title: item.title,
+      objective: item.objective,
+      status: item.status,
+      targetDate: item.targetDate,
+      mutation: {
+        executionScope: projectScope,
+        idempotencyKey: projectRestoreKey,
+      },
+    });
+    await createProjectTasks(project.id, item.tasks.slice(0, 20), {
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      mutation: {
+        executionScope: deriveExecutionScope(projectScope, {
+          projectId: project.id,
+          causationId: project.id,
+          purpose: "portable.project_tasks.restore",
+        }),
+        idempotencyKey: `${projectRestoreKey}:tasks`,
+      },
+    });
   }
   return { knowledge, memories: memoryInputs.length, threads: data.threads.length, turns, today: data.today.length, projects: data.projects.length, skills: data.skills.length, agents: data.agents.length };
 }
