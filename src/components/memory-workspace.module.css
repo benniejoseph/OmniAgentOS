@@ -88,6 +88,7 @@
 .stat small { color: var(--day-muted); font-size: .53rem; }
 .stats > button { display: inline-flex; min-height: 2.75rem; align-items: center; justify-content: center; gap: .4rem; border: 0; border-radius: 999px; padding: 0 1rem; color: var(--day-primary-ink); background: var(--day-primary); box-shadow: 0 .8rem 2.4rem color-mix(in oklab, var(--day-primary) 18%, transparent); font-size: .69rem; font-weight: 770; transition: transform 150ms ease; }
 .stats > button:hover { transform: translateY(-2px); }
+.stats > button:disabled { cursor: wait; opacity: .65; transform: none; }
 .stats > button.entityTrigger { min-width: 6.4rem; justify-content: flex-start; border: 1px solid var(--day-line); padding: .5rem .7rem; color: var(--day-muted); background: var(--day-paper); box-shadow: 0 .65rem 2rem var(--day-shadow); font-weight: inherit; backdrop-filter: blur(14px); }
 .stats > button.entityTrigger > svg { color: var(--day-primary); }
 .stats > button.entityTrigger > span { display: grid; gap: .05rem; text-align: left; }

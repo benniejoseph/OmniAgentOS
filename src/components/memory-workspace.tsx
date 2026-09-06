@@ -8,6 +8,7 @@ import {
   Check,
   CircleDot,
   Database,
+  Download,
   GitMerge,
   Loader2,
   Network,
@@ -48,6 +49,10 @@ import type {
   MemoryPromotionReview,
 } from "@/lib/memory/lifecycle";
 import type { MemoryGraphEdge, MemoryGraphNode, MemoryGraphStats, MemoryRecord, MemoryType } from "@/lib/memory/types";
+import {
+  memoryScopePresentation,
+  portableArchiveFilename,
+} from "@/components/memory-workspace-utils";
 import styles from "@/components/memory-workspace.module.css";
 
 type LoadState = "loading" | "ready" | "error";
@@ -133,6 +138,7 @@ export function MemoryWorkspace() {
   const [forgetState, setForgetState] = useState<ForgetState>("idle");
   const [forgetPreview, setForgetPreview] = useState<MemoryDeletionPreview>();
   const [deletionResult, setDeletionResult] = useState<MemoryDeletionResult>();
+  const [exportBusy, setExportBusy] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const [error, setError] = useState<string>();
 
@@ -214,6 +220,9 @@ export function MemoryWorkspace() {
     });
   }, [memories, query, tierFilter]);
   const selectedMemory = memories.find((memory) => memory.id === selectedMemoryId);
+  const selectedMemoryScope = selectedMemory
+    ? memoryScopePresentation(selectedMemory)
+    : undefined;
   const selectedNode = nodes.find((node) => node.id === selectedNodeId);
   const positionedNodes = useMemo(() => positionGraphNodes(nodes.slice(0, 42)), [nodes]);
   const visibleNodeIds = useMemo(() => new Set(positionedNodes.map((node) => node.id)), [positionedNodes]);
@@ -243,6 +252,34 @@ export function MemoryWorkspace() {
       setSelectedNodeId(node.id);
       setSelectedMemoryId(undefined);
       setDraft(undefined);
+    }
+  }
+
+  async function downloadMemoryArchive() {
+    setExportBusy(true);
+    setError(undefined);
+    try {
+      const response = await fetch("/api/data/export", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error("Asael could not prepare your portable archive.");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = portableArchiveFilename(
+        response.headers.get("content-disposition"),
+      );
+      anchor.click();
+      URL.revokeObjectURL(url);
+      const receipt = response.headers.get("x-asael-archive-sha256")?.slice(0, 12);
+      setAnnouncement(
+        `Verified portable archive downloaded${receipt ? ` · receipt ${receipt}` : ""}. Secrets, embeddings, audit data, and original assets were excluded.`,
+      );
+    } catch (exportError) {
+      setError(message(exportError));
+    } finally {
+      setExportBusy(false);
     }
   }
 
@@ -507,6 +544,7 @@ export function MemoryWorkspace() {
           <button type="button" className={clsx(styles.stat, styles.entityTrigger)} onClick={() => setShowEntities(true)}><GitMerge size={14} aria-hidden="true" /><span><strong>{entityRegistry?.entities.length || 0}</strong><small>{pendingEntityReviews ? `${pendingEntityReviews} to review` : "Entities"}</small></span></button>
           <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingMemoryReviews > 0 && styles.reviewTriggerPending)} onClick={() => setShowReconciliation(true)}><AlertTriangle size={14} aria-hidden="true" /><span><strong>{pendingMemoryReviews}</strong><small>{pendingMemoryReviews === 1 ? "Claim to review" : "Claims to review"}</small></span></button>
           <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingPromotionReviews > 0 && styles.reviewTriggerPending)} onClick={() => setShowMaintenance(true)}><Wrench size={14} aria-hidden="true" /><span><strong>{pendingPromotionReviews}</strong><small>{pendingPromotionReviews === 1 ? "Promotion to review" : "Promotions to review"}</small></span></button>
+          <button type="button" className={clsx(styles.stat, styles.entityTrigger)} disabled={exportBusy} onClick={() => void downloadMemoryArchive()} title="Download a verified portable archive without secrets or original assets"><Download size={14} aria-hidden="true" /><span><strong>{exportBusy ? "Preparing…" : "Export"}</strong><small>Portable archive</small></span></button>
           <button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> Add memory</button>
         </div>
       </header>
@@ -543,7 +581,7 @@ export function MemoryWorkspace() {
             <label>Title<input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setSaveState("idle"); }} /></label>
             <label>Claim<textarea rows={9} value={draft.content} onChange={(event) => { setDraft({ ...draft, content: event.currentTarget.value }); setSaveState("idle"); }} /></label>
             <label>Confidence <span>{Math.round(draft.confidence * 100)}%</span><input type="range" min="0" max="1" step=".01" value={draft.confidence} onChange={(event) => { setDraft({ ...draft, confidence: Number(event.currentTarget.value) }); setSaveState("idle"); }} /></label>
-            <div className="memory-provenance"><p><ShieldCheck size={13} aria-hidden="true" /> Why this memory exists</p><span>{memoryFormationReasonLabel(selectedMemory.formationReason || "legacy_record")}</span><dl><dt>Tier</dt><dd>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)}</dd><dt>Asserted by</dt><dd>{selectedMemory.assertedBy || "unknown"}</dd><dt>Source</dt><dd>{selectedMemory.source}</dd><dt>Scope</dt><dd>{selectedMemory.scope}</dd><dt>Lifecycle</dt><dd>{selectedMemory.pinnedAt ? "Pinned" : selectedMemory.archivedAt ? `Archived · ${selectedMemory.archiveReason?.replaceAll("_", " ") || "manual"}` : "Eligible recall"}</dd><dt>Last used</dt><dd>{selectedMemory.lastUsedAt ? formatDate(selectedMemory.lastUsedAt) : "Never"}</dd><dt>Use count</dt><dd>{selectedMemory.useCount || 0}</dd><dt>Valid from</dt><dd>{selectedMemory.validFrom ? formatDate(selectedMemory.validFrom) : "Immediately"}</dd><dt>Valid until</dt><dd>{selectedMemory.validTo ? formatDate(selectedMemory.validTo) : "No claim expiry"}</dd><dt>Retained until</dt><dd>{selectedMemory.retentionExpiresAt ? formatDate(selectedMemory.retentionExpiresAt) : "Policy controlled"}</dd><dt>Updated</dt><dd>{formatDate(selectedMemory.updatedAt)}</dd></dl>{selectedMemory.evidenceRefs?.length ? <div>{selectedMemory.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</div>
+            <div className="memory-provenance"><p><ShieldCheck size={13} aria-hidden="true" /> Why this memory exists</p><span>{memoryFormationReasonLabel(selectedMemory.formationReason || "legacy_record")}</span><dl><dt>Tier</dt><dd>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)}</dd><dt>Asserted by</dt><dd>{selectedMemory.assertedBy || "unknown"}</dd><dt>Source</dt><dd>{selectedMemory.source}</dd><dt>Visibility</dt><dd title={selectedMemoryScope?.explanation}>{selectedMemoryScope?.visibility}</dd><dt>Scope</dt><dd>{selectedMemoryScope?.boundary}</dd><dt>Sensitivity</dt><dd>{selectedMemoryScope?.sensitivity}</dd><dt>Lifecycle</dt><dd>{selectedMemory.pinnedAt ? "Pinned" : selectedMemory.archivedAt ? `Archived · ${selectedMemory.archiveReason?.replaceAll("_", " ") || "manual"}` : "Eligible recall"}</dd><dt>Last used</dt><dd>{selectedMemory.lastUsedAt ? formatDate(selectedMemory.lastUsedAt) : "Never"}</dd><dt>Use count</dt><dd>{selectedMemory.useCount || 0}</dd><dt>Valid from</dt><dd>{selectedMemory.validFrom ? formatDate(selectedMemory.validFrom) : "Immediately"}</dd><dt>Valid until</dt><dd>{selectedMemory.validTo ? formatDate(selectedMemory.validTo) : "No claim expiry"}</dd><dt>Retained until</dt><dd>{selectedMemory.retentionExpiresAt ? formatDate(selectedMemory.retentionExpiresAt) : "Policy controlled"}</dd><dt>Updated</dt><dd>{formatDate(selectedMemory.updatedAt)}</dd></dl>{selectedMemory.evidenceRefs?.length ? <div>{selectedMemory.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</div>
             <MemoryTierPolicySummary tier={resolveMemoryTier(selectedMemory.tier, selectedMemory.type)} />
             <div className={styles.lifecycleActions} aria-label="Memory lifecycle controls"><button type="button" disabled={Boolean(maintenanceBusy) || Boolean(selectedMemory.archivedAt)} onClick={() => void updateLifecycle(selectedMemory.pinnedAt ? "unpin" : "pin")}>{maintenanceBusy === `memory:${selectedMemory.id}` ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : selectedMemory.pinnedAt ? <PinOff size={13} aria-hidden="true" /> : <Pin size={13} aria-hidden="true" />}{selectedMemory.pinnedAt ? "Unpin" : "Pin"}</button><button type="button" disabled={Boolean(maintenanceBusy) || Boolean(selectedMemory.pinnedAt)} onClick={() => void updateLifecycle(selectedMemory.archivedAt ? "restore" : "archive")}>{selectedMemory.archivedAt ? <RotateCcw size={13} aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}{selectedMemory.archivedAt ? "Restore" : "Archive"}</button></div>
             {forgetPreview ? <DeletionPreview preview={forgetPreview} /> : null}
