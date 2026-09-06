@@ -41,7 +41,8 @@ export type WorkspacePermission =
   | "manage.workflow"
   | "run.evaluation"
   | "read.security"
-  | "manage.identity";
+  | "manage.identity"
+  | "manage.storage";
 
 type SessionStatus = "loading" | "ready" | "error";
 
@@ -64,6 +65,7 @@ const permissionRoles: Record<WorkspacePermission, WorkspaceRole[]> = {
   "run.evaluation": ["operator", "admin", "system"],
   "read.security": ["admin", "system"],
   "manage.identity": ["admin", "system"],
+  "manage.storage": ["admin", "system"],
 };
 
 const SessionContext = createContext<SessionContextValue | undefined>(undefined);

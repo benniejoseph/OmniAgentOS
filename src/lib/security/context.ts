@@ -109,6 +109,11 @@ export const rbacRules: RbacRule[] = [
     roles: ["admin", "system"],
   },
   {
+    action: "manage.storage",
+    description: "Activate or roll back tenant storage migration read paths.",
+    roles: ["admin", "system"],
+  },
+  {
     action: "manage.security",
     description: "Run controlled platform security maintenance such as database migrations.",
     roles: ["system"],

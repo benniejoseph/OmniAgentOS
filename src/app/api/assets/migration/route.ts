@@ -79,7 +79,7 @@ async function POSTHandler(request: Request) {
   try {
     context = await authorizeRequest({
       request,
-      action: action === "start" ? "write.memory" : "manage.security",
+      action: action === "start" ? "write.memory" : "manage.storage",
       resourceType: "asset_object_migration",
       resourceId: ASSET_OBJECT_READ_CAPABILITY_ID,
       riskLevel: action === "start" ? 2 : 3,

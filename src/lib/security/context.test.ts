@@ -28,6 +28,8 @@ describe("RBAC rules", () => {
   it("reserves controlled security maintenance for the system role", () => {
     expect(canPerform("admin", "manage.security")).toBe(false);
     expect(canPerform("system", "manage.security")).toBe(true);
+    expect(canPerform("admin", "manage.storage")).toBe(true);
+    expect(canPerform("operator", "manage.storage")).toBe(false);
   });
 });
 

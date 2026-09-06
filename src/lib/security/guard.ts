@@ -321,6 +321,7 @@ function requiresDurableAudit(action: string, riskLevel?: number) {
     "execute.tool",
     "manage.connector",
     "manage.identity",
+    "manage.storage",
     "manage.security",
     "manage.workflow",
   ].includes(action);
