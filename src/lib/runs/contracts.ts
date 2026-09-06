@@ -109,6 +109,66 @@ export const runBudgetsV1Schema = z.object({
 export type CountLimitV1 = z.infer<typeof countLimitV1Schema>;
 export type RunBudgetsV1 = z.infer<typeof runBudgetsV1Schema>;
 
+export const runBudgetsV2Schema = z.object({
+  schemaVersion: z.literal(2),
+  assessmentState: z.enum(["assessed", "unassessed"]),
+  modelTurnBudget: countLimitV1Schema,
+  tokenBudget: countLimitV1Schema,
+  costMicrousdBudget: countLimitV1Schema,
+  wallClockMsBudget: countLimitV1Schema,
+  toolCallBudget: countLimitV1Schema,
+  browserActionBudget: countLimitV1Schema,
+  agentBudget: countLimitV1Schema,
+  fanOutBudget: countLimitV1Schema,
+  retryBudget: countLimitV1Schema,
+  replanBudget: countLimitV1Schema,
+  toolResultByteBudget: countLimitV1Schema,
+  externalEffectBudget: countLimitV1Schema,
+}).strict().superRefine((value, context) => {
+  const states = [
+    value.modelTurnBudget.state,
+    value.tokenBudget.state,
+    value.costMicrousdBudget.state,
+    value.wallClockMsBudget.state,
+    value.toolCallBudget.state,
+    value.browserActionBudget.state,
+    value.agentBudget.state,
+    value.fanOutBudget.state,
+    value.retryBudget.state,
+    value.replanBudget.state,
+    value.toolResultByteBudget.state,
+    value.externalEffectBudget.state,
+  ];
+  if (
+    value.assessmentState === "unassessed"
+    && states.some((state) => state !== "unassessed")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Unassessed budgets cannot contain assessed limits.",
+      path: ["assessmentState"],
+    });
+  }
+  if (
+    value.assessmentState === "assessed"
+    && states.some((state) => state === "unassessed")
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Assessed budgets require every limit to be assessed.",
+      path: ["assessmentState"],
+    });
+  }
+});
+
+export const runBudgetsSchema = z.union([
+  runBudgetsV2Schema,
+  runBudgetsV1Schema,
+]);
+
+export type RunBudgetsV2 = z.infer<typeof runBudgetsV2Schema>;
+export type RunBudgets = z.infer<typeof runBudgetsSchema>;
+
 export const agentPrincipalV1Schema = z.object({
   schemaVersion: z.literal(RUN_CONTRACT_SCHEMA_VERSION),
   agentPrincipalId: runContractIdSchema,
@@ -137,7 +197,7 @@ export const agentPrincipalV1Schema = z.object({
   contextGrantIds: uniqueIdList(),
   capabilityGrantIds: uniqueIdList(),
   budgetPolicyId: nullableIdSchema,
-  budgets: runBudgetsV1Schema,
+  budgets: runBudgetsSchema,
 }).strict().superRefine((value, context) => {
   if (
     value.agentDefinitionVersionId !== null &&
@@ -801,7 +861,7 @@ const harnessManifestBaseSchema = z.object({
   policies: z.array(pinnedContractRefV1Schema).max(MAX_RUN_CONTRACT_IDS),
   contextGrantIds: uniqueIdList(),
   capabilityGrantIds: uniqueIdList(),
-  budgets: runBudgetsV1Schema,
+  budgets: runBudgetsSchema,
   agentPrincipalSha256: runContractSha256Schema,
   intentSpecSha256: runContractSha256Schema,
   outcomeContractSha256: runContractSha256Schema,
@@ -1809,20 +1869,38 @@ function addGrantBroadeningIssue(
 }
 
 function addBudgetBroadeningIssues(
-  principal: RunBudgetsV1,
-  harness: RunBudgetsV1,
+  principal: RunBudgets,
+  harness: RunBudgets,
   context: z.RefinementCtx,
 ) {
   const fields = [
     "modelTurnBudget",
-    "toolCallBudget",
     "tokenBudget",
+    "costMicrousdBudget",
+    "wallClockMsBudget",
+    "toolCallBudget",
+    "browserActionBudget",
+    "agentBudget",
+    "fanOutBudget",
+    "retryBudget",
+    "replanBudget",
     "toolResultByteBudget",
     "externalEffectBudget",
   ] as const;
   fields.forEach((field) => {
-    const authority = principal[field];
-    const effective = harness[field];
+    const authority = budgetLimit(principal, field);
+    const effective = budgetLimit(harness, field);
+    if (!authority) return;
+    if (!effective) {
+      if (authority.state === "bounded") {
+        context.addIssue({
+          code: "custom",
+          message: "A harness budget cannot omit a bounded principal budget.",
+          path: ["harnessManifest", "budgets", field],
+        });
+      }
+      return;
+    }
     if (authority.state !== "bounded" || effective.state === "unassessed") {
       return;
     }
@@ -1839,6 +1917,15 @@ function addBudgetBroadeningIssues(
       });
     }
   });
+}
+
+function budgetLimit(
+  budgets: RunBudgets,
+  field: string,
+): CountLimitV1 | undefined {
+  const candidate = (budgets as unknown as Record<string, unknown>)[field];
+  const parsed = countLimitV1Schema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function addDuplicateContextItemIssues(

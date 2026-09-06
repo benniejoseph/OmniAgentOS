@@ -9,7 +9,7 @@ import {
   buildRunContractEventPayloadV1,
   type HarnessManifestV1,
   type IntentSpecV1,
-  type RunBudgetsV1,
+  type RunBudgetsV2,
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
 } from "@/lib/runs/contracts";
@@ -27,6 +27,13 @@ type ShadowRunBudgetInput = Readonly<{
   maxOutputTokens: number;
   maxToolResultBytes: number;
   maxExternalEffects: number;
+  maxCostMicrousd?: number;
+  maxWallClockMs?: number;
+  maxBrowserActions?: number;
+  maxAgents?: number;
+  maxFanOut?: number;
+  maxRetries?: number;
+  maxReplans?: number;
 }>;
 
 export type BuildInitialShadowRunContractInput = Readonly<{
@@ -340,12 +347,20 @@ function snapshot(envelope: RunContractEnvelopeV1): ShadowRunContractSnapshot {
   });
 }
 
-function assessedBudgets(input: ShadowRunBudgetInput): RunBudgetsV1 {
+function assessedBudgets(input: ShadowRunBudgetInput): RunBudgetsV2 {
   return {
+    schemaVersion: 2,
     assessmentState: "assessed",
     modelTurnBudget: bounded(input.maxModelTurns),
-    toolCallBudget: bounded(input.maxToolCalls),
     tokenBudget: bounded(input.maxOutputTokens),
+    costMicrousdBudget: bounded(input.maxCostMicrousd ?? 5_000_000),
+    wallClockMsBudget: bounded(input.maxWallClockMs ?? 300_000),
+    toolCallBudget: bounded(input.maxToolCalls),
+    browserActionBudget: bounded(input.maxBrowserActions ?? input.maxToolCalls),
+    agentBudget: bounded(input.maxAgents ?? 1),
+    fanOutBudget: bounded(input.maxFanOut ?? 0),
+    retryBudget: bounded(input.maxRetries ?? 0),
+    replanBudget: bounded(input.maxReplans ?? 0),
     toolResultByteBudget: bounded(input.maxToolResultBytes),
     externalEffectBudget: bounded(input.maxExternalEffects),
   };
