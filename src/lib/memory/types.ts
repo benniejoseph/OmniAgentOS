@@ -1,4 +1,8 @@
 import type { MemoryAccessBindingV1 } from "@/lib/memory/access-binding";
+import type {
+  MemoryFormationReason,
+  MemoryTier,
+} from "@/lib/memory/tier-policy";
 
 export type MemoryType =
   | "preference"
@@ -13,6 +17,9 @@ export type MemoryRecord = {
   id: string;
   tenantId?: string;
   type: MemoryType;
+  tier?: MemoryTier;
+  tierPolicyVersion?: 1;
+  formationReason?: MemoryFormationReason;
   title: string;
   content: string;
   tags: string[];
@@ -33,6 +40,11 @@ export type MemoryRecord = {
   supersedesId?: string;
   contradictionOfId?: string;
   forgottenAt?: string;
+  retentionExpiresAt?: string;
+  lastUsedAt?: string;
+  useCount?: number;
+  promotedFromTier?: MemoryTier;
+  promotedAt?: string;
   createdAt: string;
   updatedAt: string;
   embedding?: number[];

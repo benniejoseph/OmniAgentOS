@@ -26,6 +26,12 @@ import {
   EntityRegistryDialog,
   type EntityRegistryPayload,
 } from "@/components/entity-registry-dialog";
+import {
+  memoryFormationReasonLabel,
+  memoryTierPoliciesV1,
+  resolveMemoryTier,
+  type MemoryTier,
+} from "@/lib/memory/tier-policy";
 import type { MemoryGraphEdge, MemoryGraphNode, MemoryGraphStats, MemoryRecord, MemoryType } from "@/lib/memory/types";
 import styles from "@/components/memory-workspace.module.css";
 
@@ -77,7 +83,8 @@ type EntityProjectionSummary = {
   reviewRequiredCount: number;
 };
 
-const memoryTypes: MemoryType[] = ["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"];
+const memoryTiers = Object.keys(memoryTierPoliciesV1) as MemoryTier[];
+const userCreatableMemoryTiers = memoryTiers.filter((tier) => tier !== "working");
 
 export function MemoryWorkspace() {
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
@@ -87,7 +94,7 @@ export function MemoryWorkspace() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [query, setQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState<MemoryType | "all">("all");
+  const [tierFilter, setTierFilter] = useState<MemoryTier | "all">("all");
   const [selectedMemoryId, setSelectedMemoryId] = useState<string>();
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [draft, setDraft] = useState<{ title: string; content: string; confidence: number }>();
@@ -154,12 +161,15 @@ export function MemoryWorkspace() {
   const filtered = useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     return memories.filter((memory) => {
-      if (typeFilter !== "all" && memory.type !== typeFilter) return false;
+      if (
+        tierFilter !== "all" &&
+        resolveMemoryTier(memory.tier, memory.type) !== tierFilter
+      ) return false;
       if (!terms.length) return true;
       const haystack = `${memory.title} ${memory.content} ${memory.tags.join(" ")} ${memory.source}`.toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [memories, query, typeFilter]);
+  }, [memories, query, tierFilter]);
   const selectedMemory = memories.find((memory) => memory.id === selectedMemoryId);
   const selectedNode = nodes.find((node) => node.id === selectedNodeId);
   const positionedNodes = useMemo(() => positionGraphNodes(nodes.slice(0, 42)), [nodes]);
@@ -301,9 +311,9 @@ export function MemoryWorkspace() {
           </div>
           <div className={styles.indexBody}>
             <div className="memory-search"><Search size={14} aria-hidden="true" /><label className="sr-only" htmlFor="memory-search">Search memory</label><input id="memory-search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search memories" /></div>
-            <div className="memory-type-filter" aria-label="Memory type filter"><button type="button" className={clsx(typeFilter === "all" && "is-selected")} onClick={() => setTypeFilter("all")}>All</button>{memoryTypes.map((type) => <button type="button" key={type} className={clsx(typeFilter === type && "is-selected")} onClick={() => setTypeFilter(type)}>{type}</button>)}</div>
+            <div className="memory-type-filter" aria-label="Memory tier filter"><button type="button" className={clsx(tierFilter === "all" && "is-selected")} onClick={() => setTierFilter("all")}>All</button>{memoryTiers.map((tier) => <button type="button" key={tier} className={clsx(tierFilter === tier && "is-selected")} onClick={() => setTierFilter(tier)}>{tier}</button>)}</div>
             <div className="memory-index-list">
-              {loadState === "loading" ? <div className="memory-index-empty"><Loader2 className="animate-spin" size={18} aria-hidden="true" /> Loading memory…</div> : filtered.length ? filtered.map((memory) => <button key={memory.id} type="button" className={clsx(selectedMemoryId === memory.id && "is-selected", `is-${memory.claimStatus || "active"}`)} onClick={() => selectMemory(memory)}><i /><span><strong>{memory.title}</strong><small>{memory.type} · {memory.source}</small><em>{Math.round((memory.confidence ?? .7) * 100)}% confidence</em></span></button>) : <div className="memory-index-empty"><Brain size={18} aria-hidden="true" /> No memories match this view.</div>}
+              {loadState === "loading" ? <div className="memory-index-empty"><Loader2 className="animate-spin" size={18} aria-hidden="true" /> Loading memory…</div> : filtered.length ? filtered.map((memory) => <button key={memory.id} type="button" className={clsx(selectedMemoryId === memory.id && "is-selected", `is-${memory.claimStatus || "active"}`)} onClick={() => selectMemory(memory)}><i /><span><strong>{memory.title}</strong><small>{resolveMemoryTier(memory.tier, memory.type)} · {memory.type} · {memory.source}</small><em>{Math.round((memory.confidence ?? .7) * 100)}% confidence</em></span></button>) : <div className="memory-index-empty"><Brain size={18} aria-hidden="true" /> No memories match this view.</div>}
             </div>
           </div>
         </aside>
@@ -319,11 +329,12 @@ export function MemoryWorkspace() {
 
         <aside className={clsx("memory-inspector", styles.inspector)} aria-label="Memory details">
           {selectedMemory && draft ? <>
-            <div className="memory-inspector-heading"><div><p>{selectedMemory.type}</p><h2>{selectedMemory.title}</h2></div><span className={clsx(`is-${selectedMemory.claimStatus || "active"}`)}>{selectedMemory.claimStatus || "active"}</span></div>
+            <div className="memory-inspector-heading"><div><p>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)} · {selectedMemory.type}</p><h2>{selectedMemory.title}</h2></div><span className={clsx(`is-${selectedMemory.claimStatus || "active"}`)}>{selectedMemory.claimStatus || "active"}</span></div>
             <label>Title<input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setSaveState("idle"); }} /></label>
             <label>Claim<textarea rows={9} value={draft.content} onChange={(event) => { setDraft({ ...draft, content: event.currentTarget.value }); setSaveState("idle"); }} /></label>
             <label>Confidence <span>{Math.round(draft.confidence * 100)}%</span><input type="range" min="0" max="1" step=".01" value={draft.confidence} onChange={(event) => { setDraft({ ...draft, confidence: Number(event.currentTarget.value) }); setSaveState("idle"); }} /></label>
-            <div className="memory-provenance"><p><ShieldCheck size={13} aria-hidden="true" /> Provenance</p><dl><dt>Asserted by</dt><dd>{selectedMemory.assertedBy || "unknown"}</dd><dt>Source</dt><dd>{selectedMemory.source}</dd><dt>Scope</dt><dd>{selectedMemory.scope}</dd><dt>Updated</dt><dd>{formatDate(selectedMemory.updatedAt)}</dd></dl>{selectedMemory.evidenceRefs?.length ? <div>{selectedMemory.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</div>
+            <div className="memory-provenance"><p><ShieldCheck size={13} aria-hidden="true" /> Why this memory exists</p><span>{memoryFormationReasonLabel(selectedMemory.formationReason || "legacy_record")}</span><dl><dt>Tier</dt><dd>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)}</dd><dt>Asserted by</dt><dd>{selectedMemory.assertedBy || "unknown"}</dd><dt>Source</dt><dd>{selectedMemory.source}</dd><dt>Scope</dt><dd>{selectedMemory.scope}</dd><dt>Last used</dt><dd>{selectedMemory.lastUsedAt ? formatDate(selectedMemory.lastUsedAt) : "Never"}</dd><dt>Use count</dt><dd>{selectedMemory.useCount || 0}</dd><dt>Valid from</dt><dd>{selectedMemory.validFrom ? formatDate(selectedMemory.validFrom) : "Immediately"}</dd><dt>Valid until</dt><dd>{selectedMemory.validTo ? formatDate(selectedMemory.validTo) : "No claim expiry"}</dd><dt>Retained until</dt><dd>{selectedMemory.retentionExpiresAt ? formatDate(selectedMemory.retentionExpiresAt) : "Policy controlled"}</dd><dt>Updated</dt><dd>{formatDate(selectedMemory.updatedAt)}</dd></dl>{selectedMemory.evidenceRefs?.length ? <div>{selectedMemory.evidenceRefs.map((reference) => <code key={reference}>{reference}</code>)}</div> : null}</div>
+            <MemoryTierPolicySummary tier={resolveMemoryTier(selectedMemory.tier, selectedMemory.type)} />
             {forgetPreview ? <DeletionPreview preview={forgetPreview} /> : null}
             <div className="memory-inspector-actions"><button type="button" className="memory-save" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection()}>{saveState === "saving" && forgetState !== "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : saveState === "saved" ? <Check size={13} aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{saveState === "saved" ? "Corrected" : "Save correction"}</button><button type="button" className={clsx("memory-forget", forgetState === "ready" && "is-confirming")} disabled={forgetState === "previewing" || forgetState === "deleting"} onClick={() => forgetState === "ready" ? void forgetSelected() : void requestForgetPreview()}>{forgetState === "previewing" || forgetState === "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}{forgetState === "previewing" ? "Checking impact" : forgetState === "deleting" ? "Committing deletion" : forgetState === "ready" ? "Forget permanently" : "Review forget impact"}</button>{forgetState === "ready" ? <button type="button" className="memory-cancel" onClick={() => { setForgetState("idle"); setForgetPreview(undefined); }}><X size={13} aria-hidden="true" /> Cancel</button> : null}</div>
           </> : deletionResult ? <DeletionReceipt result={deletionResult} onClose={() => setDeletionResult(undefined)} /> : selectedNode ? <div className="memory-node-inspector"><CircleDot size={22} aria-hidden="true" /><p>{selectedNode.kind}</p><h2>{selectedNode.label}</h2><span>{selectedNode.summary}</span><dl><dt>Sources</dt><dd>{selectedNode.sourceCount}</dd><dt>Weight</dt><dd>{selectedNode.weight.toFixed(1)}</dd><dt>Memories</dt><dd>{selectedNode.memoryIds.length}</dd></dl></div> : <div className="memory-inspector-empty"><Brain size={26} aria-hidden="true" /><h2>Select a memory</h2><p>Inspect provenance, correct a claim, or forget information that should no longer influence your agents.</p></div>}
@@ -346,9 +357,24 @@ function DeletionReceipt({ result, onClose }: { result: MemoryDeletionResult; on
 }
 
 function CreateMemoryDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (memory: MemoryRecord, entityProjection?: EntityProjectionSummary) => void }) {
-  const [title, setTitle] = useState(""); const [content, setContent] = useState(""); const [type, setType] = useState<MemoryType>("knowledge"); const [saving, setSaving] = useState(false); const [error, setError] = useState<string>();
-  async function submit(event: React.FormEvent) { event.preventDefault(); setSaving(true); try { const response = await fetch("/api/memory", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, content, type, importance: .75, confidence: .95 }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.message || payload.error || "Memory could not be saved."); onCreated(payload.record as MemoryRecord, payload.entityProjection as EntityProjectionSummary | undefined); } catch (submitError) { setError(message(submitError)); setSaving(false); } }
-  return <div className={clsx("memory-dialog-backdrop", styles.dialogBackdrop)} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className={clsx("memory-dialog", styles.dialog)} onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="new-memory-title"><header><div><p>Direct knowledge</p><h2 id="new-memory-title">Add a memory</h2></div><button type="button" onClick={onClose} aria-label="Close"><X size={16} /></button></header>{error ? <p className="memory-dialog-error">{error}</p> : null}<label>Title<input autoFocus value={title} onChange={(event) => setTitle(event.currentTarget.value)} maxLength={240} required /></label><label>Type<select value={type} onChange={(event) => setType(event.currentTarget.value as MemoryType)}>{memoryTypes.map((item) => <option key={item}>{item}</option>)}</select></label><label>What should your agents know?<textarea rows={8} value={content} onChange={(event) => setContent(event.currentTarget.value)} maxLength={200000} placeholder={'Use explicit markers such as project: Phoenix or person named "Ada Lovelace" to add them to your private entity registry.'} required /></label><footer><button type="button" onClick={onClose}>Cancel</button><button type="submit" disabled={saving || !title.trim() || !content.trim()}>{saving ? <Loader2 size={13} className="animate-spin" /> : <Brain size={13} />} Save memory</button></footer></form></div>;
+  const [title, setTitle] = useState(""); const [content, setContent] = useState(""); const [tier, setTier] = useState<MemoryTier>("semantic"); const [saving, setSaving] = useState(false); const [error, setError] = useState<string>();
+  async function submit(event: React.FormEvent) { event.preventDefault(); setSaving(true); try { const response = await fetch("/api/memory", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, content, tier, type: memoryTypeForTier(tier), importance: .75, confidence: .95 }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.message || payload.error || "Memory could not be saved."); onCreated(payload.record as MemoryRecord, payload.entityProjection as EntityProjectionSummary | undefined); } catch (submitError) { setError(message(submitError)); setSaving(false); } }
+  return <div className={clsx("memory-dialog-backdrop", styles.dialogBackdrop)} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><form className={clsx("memory-dialog", styles.dialog)} onSubmit={submit} role="dialog" aria-modal="true" aria-labelledby="new-memory-title"><header><div><p>Direct memory</p><h2 id="new-memory-title">Add a memory</h2></div><button type="button" onClick={onClose} aria-label="Close"><X size={16} /></button></header>{error ? <p className="memory-dialog-error">{error}</p> : null}<label>Title<input autoFocus value={title} onChange={(event) => setTitle(event.currentTarget.value)} maxLength={240} required /></label><label>Tier<select value={tier} onChange={(event) => setTier(event.currentTarget.value as MemoryTier)}>{userCreatableMemoryTiers.map((item) => <option key={item}>{item}</option>)}</select></label><label>What should your agents know?<textarea rows={8} value={content} onChange={(event) => setContent(event.currentTarget.value)} maxLength={200000} placeholder={'Use explicit markers such as project: Phoenix or person named "Ada Lovelace" to add them to your private entity registry.'} required /></label><footer><button type="button" onClick={onClose}>Cancel</button><button type="submit" disabled={saving || !title.trim() || !content.trim()}>{saving ? <Loader2 size={13} className="animate-spin" /> : <Brain size={13} />} Save memory</button></footer></form></div>;
+}
+
+function MemoryTierPolicySummary({ tier }: { tier: MemoryTier }) {
+  const policy = memoryTierPoliciesV1[tier];
+  return <div className="memory-provenance"><p><Database size={13} aria-hidden="true" /> Tier policy v{policy.version}</p><dl><dt>Retention</dt><dd>{policy.retention.mode.replaceAll("_", " ")}{policy.retention.defaultDays ? ` · ${policy.retention.defaultDays} days` : ""}</dd><dt>Promotion</dt><dd>{policy.promotion.targets.length ? `Reviewed only → ${policy.promotion.targets.join(", ")}` : "Not promotable"}</dd><dt>Correction</dt><dd>Superseding revision; history retained</dd><dt>Retrieval</dt><dd>Active, valid, authorized · priority {policy.retrieval.priorityWeight.toFixed(2)}</dd></dl></div>;
+}
+
+function memoryTypeForTier(tier: MemoryTier): MemoryType {
+  if (tier === "episodic") return "episode";
+  if (tier === "procedural") return "procedure";
+  if (tier === "preference") return "preference";
+  if (tier === "decision") return "decision";
+  if (tier === "commitment") return "task";
+  if (tier === "semantic" || tier === "summary") return "knowledge";
+  return "fact";
 }
 
 function positionGraphNodes(nodes: MemoryGraphNode[]): PositionedNode[] {

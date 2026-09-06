@@ -17,6 +17,12 @@ import {
 } from "@/lib/memory/access-binding";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { listMemories, listThreadMemories, saveMemory, searchMemories } from "@/lib/memory/store";
+import {
+  memoryFormationReasonLabel,
+  memoryTierPolicy,
+  resolveMemoryTier,
+} from "@/lib/memory/tier-policy";
+import type { MemoryRecord } from "@/lib/memory/types";
 import { embedTexts } from "@/lib/openai/client";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
@@ -32,6 +38,7 @@ const memorySchema = z.object({
   title: z.string().trim().min(1).max(240),
   content: z.string().min(1).max(200_000),
   type: z.enum(["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"]).optional(),
+  tier: z.enum(["working", "episodic", "semantic", "procedural", "preference", "decision", "commitment", "summary"]).optional(),
   tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
   importance: z.number().min(0).max(1).optional(),
   confidence: z.number().min(0).max(1).optional(),
@@ -160,10 +167,43 @@ async function GETHandler(request: Request) {
   }, { headers: privateNoStoreHeaders });
 }
 
-function publicMemoryRecord<T extends { embedding?: number[] }>(record: T) {
+function publicMemoryRecord(record: MemoryRecord) {
   const publicRecord = { ...record };
   delete publicRecord.embedding;
-  return publicRecord;
+  const tier = resolveMemoryTier(record.tier, record.type || "fact");
+  const policy = memoryTierPolicy(tier);
+  const now = Date.now();
+  const retentionExpired = Boolean(
+    record.retentionExpiresAt && Date.parse(record.retentionExpiresAt) <= now,
+  );
+  const temporallyInvalid = Boolean(
+    (record.validFrom && Date.parse(record.validFrom) > now) ||
+      (record.validTo && Date.parse(record.validTo) <= now),
+  );
+  return {
+    ...publicRecord,
+    tier,
+    tierPolicyVersion: policy.version,
+    explainability: {
+      why: memoryFormationReasonLabel(
+        record.formationReason || "legacy_record",
+      ),
+      source: record.source,
+      scope: record.scope,
+      confidence: record.confidence ?? 0.7,
+      lastUsedAt: record.lastUsedAt || null,
+      useCount: record.useCount || 0,
+      validity: retentionExpired
+        ? "retention_expired"
+        : temporallyInvalid
+          ? "outside_validity_interval"
+          : record.claimStatus || "active",
+      validFrom: record.validFrom || null,
+      validTo: record.validTo || null,
+      retentionExpiresAt: record.retentionExpiresAt || null,
+      policy,
+    },
+  };
 }
 
 async function POSTHandler(request: Request) {

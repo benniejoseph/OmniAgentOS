@@ -55,11 +55,24 @@ import {
   buildMemoryFormationEvent,
   type MemoryFormationOrigin,
 } from "@/lib/memory/formation-contract";
+import {
+  defaultMemoryTier,
+  inferMemoryFormationReason,
+  memoryFormationReasonSchema,
+  memoryTierPolicy,
+  memoryTierRetentionExpiresAt,
+  memoryTierSchema,
+  resolveMemoryTier,
+  type MemoryFormationReason,
+  type MemoryTier,
+} from "@/lib/memory/tier-policy";
 
 export type CreateMemoryInput = {
   id?: string;
   tenantId?: string;
   type?: MemoryType;
+  tier?: MemoryTier;
+  formationReason?: MemoryFormationReason;
   title: string;
   content: string;
   tags?: string[];
@@ -74,6 +87,9 @@ export type CreateMemoryInput = {
   validTo?: string;
   supersedesId?: string;
   contradictionOfId?: string;
+  retentionExpiresAt?: string;
+  promotedFromTier?: MemoryTier;
+  promotedAt?: string;
   embedding?: number[];
   accessBinding?: MemoryAccessBindingV1;
   databaseAccessScope?: DatabaseMemoryAccessScope;
@@ -110,8 +126,8 @@ export async function listMemories(options: TenantScopedOptions = {}) {
         ? sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
         : sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
       : options.type
-        ? sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`
-        : sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`;
+        ? sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) AND (retention_expires_at IS NULL OR retention_expires_at > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`
+        : sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) AND (retention_expires_at IS NULL OR retention_expires_at > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`;
     const rows = options.accessScope
       ? await runWithDatabaseMemoryAccessScope(
           options.accessScope,
@@ -210,6 +226,27 @@ function memoryRecordFromInput(
   const evidenceRefs = normalizeEvidenceRefs(input.evidenceRefs || []);
   const supersedesId = normalizeOptionalId(input.supersedesId);
   const contradictionOfId = normalizeOptionalId(input.contradictionOfId);
+  const type = input.type || "fact";
+  const tier = resolveMemoryTier(input.tier, type);
+  const formationReason = input.formationReason
+    ? memoryFormationReasonSchema.parse(input.formationReason)
+    : inferMemoryFormationReason({
+        source,
+        formationOrigin: input.formationOrigin,
+        supersedesId,
+      });
+  const retentionExpiresAt = normalizeOptionalDate(
+    input.retentionExpiresAt,
+  ) || memoryTierRetentionExpiresAt(tier, now, input.validTo);
+  const promotedFromTier = input.promotedFromTier
+    ? memoryTierSchema.parse(input.promotedFromTier)
+    : undefined;
+  const promotedAt = normalizeOptionalDate(input.promotedAt);
+  if (Boolean(promotedFromTier) !== Boolean(promotedAt)) {
+    throw new Error(
+      "Memory promotion requires both its source tier and promotion time.",
+    );
+  }
   const textWasRedacted =
     title !== input.title || content !== input.content;
   return {
@@ -227,7 +264,10 @@ function memoryRecordFromInput(
           })
         : randomUUID()),
     tenantId,
-    type: input.type || "fact",
+    type,
+    tier,
+    tierPolicyVersion: 1,
+    formationReason,
     title,
     content,
     tags,
@@ -242,6 +282,11 @@ function memoryRecordFromInput(
     validTo: normalizeOptionalDate(input.validTo),
     supersedesId,
     contradictionOfId,
+    retentionExpiresAt,
+    promotedFromTier,
+    promotedAt,
+    lastUsedAt: undefined,
+    useCount: 0,
     createdAt: now,
     updatedAt: now,
     embedding: textWasRedacted ? undefined : input.embedding,
@@ -379,6 +424,9 @@ async function saveMemoriesWithCommitStatus(
       id: record.id,
       tenant_id: record.tenantId,
       type: record.type,
+      tier: record.tier,
+      tier_policy_version: record.tierPolicyVersion,
+      formation_reason: record.formationReason,
       title: record.title,
       content: record.content,
       tags: record.tags,
@@ -393,6 +441,9 @@ async function saveMemoriesWithCommitStatus(
       valid_to: record.validTo || null,
       supersedes_id: record.supersedesId || null,
       contradiction_of_id: record.contradictionOfId || null,
+      retention_expires_at: record.retentionExpiresAt || null,
+      promoted_from_tier: record.promotedFromTier || null,
+      promoted_at: record.promotedAt || null,
       embedding: record.embedding || null,
       access_contract_version: record.accessBinding?.version || 0,
       access_state: record.accessBinding?.state || "legacy_unattributed",
@@ -417,6 +468,9 @@ async function saveMemoriesWithCommitStatus(
           id text,
           tenant_id text,
           type text,
+          tier text,
+          tier_policy_version smallint,
+          formation_reason text,
           title text,
           content text,
           tags text[],
@@ -431,6 +485,9 @@ async function saveMemoriesWithCommitStatus(
           valid_to timestamptz,
           supersedes_id text,
           contradiction_of_id text,
+          retention_expires_at timestamptz,
+          promoted_from_tier text,
+          promoted_at timestamptz,
           embedding jsonb,
           access_contract_version smallint,
           access_state text,
@@ -451,18 +508,22 @@ async function saveMemoriesWithCommitStatus(
       ),
       inserted AS (
         INSERT INTO omni_memories (
-          id, tenant_id, type, title, content, tags, scope, source, importance,
+          id, tenant_id, type, tier, tier_policy_version, formation_reason,
+          title, content, tags, scope, source, importance,
           confidence, claim_status, asserted_by, evidence_refs, valid_from, valid_to,
-          supersedes_id, contradiction_of_id, embedding,
+          supersedes_id, contradiction_of_id, retention_expires_at,
+          promoted_from_tier, promoted_at, embedding,
           access_contract_version, access_state, owner_actor_id, owner_agent_id,
           workspace_id, project_id, mission_id, visibility, sensitivity,
           origin_purpose, allowed_purpose_ids, access_scope_sha256,
           access_bound_at, created_at, updated_at
         )
         SELECT
-          id, tenant_id, type, title, content, tags, scope, source, importance,
+          id, tenant_id, type, tier, tier_policy_version, formation_reason,
+          title, content, tags, scope, source, importance,
           confidence, claim_status, asserted_by, evidence_refs, valid_from, valid_to,
-          supersedes_id, contradiction_of_id, embedding,
+          supersedes_id, contradiction_of_id, retention_expires_at,
+          promoted_from_tier, promoted_at, embedding,
           access_contract_version, access_state, owner_actor_id, owner_agent_id,
           workspace_id, project_id, mission_id, visibility, sensitivity,
           origin_purpose, allowed_purpose_ids, access_scope_sha256,
@@ -598,6 +659,7 @@ export async function searchMemories(
     queryEmbedding?: number[];
     tenantId?: string;
     accessScope?: DatabaseMemoryAccessScope;
+    workingMemoryReference?: string;
   } = {},
 ): Promise<MemorySearchResult[]> {
   if (hasDatabaseUrl() && !options.accessScope) {
@@ -613,9 +675,19 @@ export async function searchMemories(
   });
   const terms = tokenize(query);
   const limit = options.limit || 8;
+  const workingMemoryReference = normalizeWorkingMemoryReference(
+    options.workingMemoryReference,
+  );
 
   return memories
     .filter((record) => record.claimStatus === "active")
+    .filter((record) =>
+      resolveMemoryTier(record.tier, record.type) !== "working" ||
+      Boolean(
+        workingMemoryReference &&
+        record.evidenceRefs?.includes(workingMemoryReference),
+      )
+    )
     .map((record) => {
       const text = `${record.title} ${record.content} ${record.tags.join(" ")}`;
       const recordTerms = tokenize(text);
@@ -628,19 +700,30 @@ export async function searchMemories(
           ? Math.max(0, cosineSimilarity(options.queryEmbedding, record.embedding))
           : 0;
       const confidence = clamp01(record.confidence ?? 0.7);
-      const score = (lexicalScore + tagScore + importanceScore + embeddingScore) * (0.35 + confidence * 0.65);
+      const tierWeight = memoryTierPolicy(
+        resolveMemoryTier(record.tier, record.type),
+      ).retrieval.priorityWeight;
+      const score = (lexicalScore + tagScore + importanceScore + embeddingScore) *
+        (0.35 + confidence * 0.65) * tierWeight;
       const reasons = [
         overlap.length ? `matched ${overlap.slice(0, 5).join(", ")}` : "",
         embeddingScore ? "semantic match" : "",
         record.importance >= 0.8 ? "high importance" : "",
         confidence >= 0.85 ? "high-confidence claim" : confidence < 0.5 ? "low-confidence claim" : "",
+        tierWeight > 1 ? `${record.tier} memory priority` : "",
       ].filter(Boolean);
 
-      return { record, score, reasons };
+      return {
+        record,
+        score,
+        reasons,
+        hasQueryMatch: overlap.length > 0 || tagScore > 0 || embeddingScore > 0,
+      };
     })
-    .filter((result) => result.score > 0.05)
+    .filter((result) => result.hasQueryMatch && result.score > 0.05)
     .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .slice(0, limit)
+    .map(({ hasQueryMatch: _hasQueryMatch, ...result }) => result);
 }
 
 export async function getMemory(
@@ -703,6 +786,7 @@ export async function getActiveMemoriesByIds(
         AND claim_status = 'active'
         AND (valid_from IS NULL OR valid_from <= NOW())
         AND (valid_to IS NULL OR valid_to > NOW())
+        AND (retention_expires_at IS NULL OR retention_expires_at > NOW())
     `;
     const rows = options.accessScope
       ? await runWithDatabaseMemoryAccessScope(
@@ -873,6 +957,8 @@ function correctionInput(
   return {
     tenantId: existing.tenantId,
     type: existing.type,
+    tier: resolveMemoryTier(existing.tier, existing.type),
+    formationReason: "correction",
     title: correction.title || existing.title,
     content: correction.content || existing.content,
     tags: existing.tags,
@@ -1836,13 +1922,21 @@ export async function getMemoryStats(options: { tenantId?: string } = {}) {
 
 async function searchMemoriesDb(
   query: string,
-  options: { limit?: number; queryEmbedding?: number[]; tenantId?: string },
+  options: {
+    limit?: number;
+    queryEmbedding?: number[];
+    tenantId?: string;
+    workingMemoryReference?: string;
+  },
 ): Promise<MemorySearchResult[]> {
   await ensureDatabaseSchema();
   const limit = options.limit || 8;
   const queryText = query.trim();
   const tenantId = normalizeTenantId(options.tenantId);
   const vector = toVectorLiteral(options.queryEmbedding);
+  const workingMemoryReference = normalizeWorkingMemoryReference(
+    options.workingMemoryReference,
+  ) || "";
 
   if (vector) {
     try {
@@ -1862,8 +1956,13 @@ async function searchMemoriesDb(
           AND claim_status = 'active'
           AND (valid_from IS NULL OR valid_from <= NOW())
           AND (valid_to IS NULL OR valid_to > NOW())
+          AND (retention_expires_at IS NULL OR retention_expires_at > NOW())
+          AND (
+            tier <> 'working'
+            OR ${workingMemoryReference} = ANY(evidence_refs)
+          )
           AND embedding_vector IS NOT NULL
-        ORDER BY (
+        ORDER BY ((
           (0.52 * GREATEST(0, 1 - (embedding_vector <=> ${vector}::vector))) +
           (0.22 * CASE
             WHEN ${queryText} = '' THEN 0
@@ -1875,19 +1974,44 @@ async function searchMemoriesDb(
           (0.10 * importance) +
           (0.06 * (1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800))) +
           (0.10 * confidence)
-        ) DESC
+        ) * CASE tier
+          WHEN 'commitment' THEN 1.15
+          WHEN 'working' THEN 1.12
+          WHEN 'procedural' THEN 1.10
+          WHEN 'preference' THEN 1.08
+          WHEN 'decision' THEN 1.08
+          WHEN 'semantic' THEN 1.06
+          WHEN 'episodic' THEN 1.00
+          WHEN 'summary' THEN 0.96
+          ELSE 1.00
+        END) DESC
         LIMIT ${limit}
       `;
       return rows.map(memorySearchResultFromRow);
     } catch {
-      return searchMemoriesLexicalDb(queryText, limit, tenantId);
+      return searchMemoriesLexicalDb(
+        queryText,
+        limit,
+        tenantId,
+        workingMemoryReference,
+      );
     }
   }
 
-  return searchMemoriesLexicalDb(queryText, limit, tenantId);
+  return searchMemoriesLexicalDb(
+    queryText,
+    limit,
+    tenantId,
+    workingMemoryReference,
+  );
 }
 
-async function searchMemoriesLexicalDb(query: string, limit: number, tenantId: string) {
+async function searchMemoriesLexicalDb(
+  query: string,
+  limit: number,
+  tenantId: string,
+  workingMemoryReference: string,
+) {
   const rows = await getSql()`
     SELECT ranked.*
     FROM (
@@ -1905,12 +2029,31 @@ async function searchMemoriesLexicalDb(query: string, limit: number, tenantId: s
         AND claim_status = 'active'
         AND (valid_from IS NULL OR valid_from <= NOW())
         AND (valid_to IS NULL OR valid_to > NOW())
+        AND (retention_expires_at IS NULL OR retention_expires_at > NOW())
+        AND (
+          tier <> 'working'
+          OR ${workingMemoryReference} = ANY(evidence_refs)
+        )
         AND (
           ${query} = ''
           OR to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', ${query})
         )
     ) ranked
-    ORDER BY (ranked.lexical_score * (0.35 + ranked.confidence * 0.65)) DESC,
+    ORDER BY (
+               ranked.lexical_score *
+               (0.35 + ranked.confidence * 0.65) *
+               CASE ranked.tier
+                 WHEN 'commitment' THEN 1.15
+                 WHEN 'working' THEN 1.12
+                 WHEN 'procedural' THEN 1.10
+                 WHEN 'preference' THEN 1.08
+                 WHEN 'decision' THEN 1.08
+                 WHEN 'semantic' THEN 1.06
+                 WHEN 'episodic' THEN 1.00
+                 WHEN 'summary' THEN 0.96
+                 ELSE 1.00
+               END
+             ) DESC,
              ranked.importance DESC,
              ranked.updated_at DESC
     LIMIT ${limit}
@@ -2070,6 +2213,12 @@ async function appendMemoryMutationEvents(
         schemaVersion: 1,
         memoryId: record.id,
         memoryType: record.type,
+        memoryTier: record.tier,
+        tierPolicyVersion: record.tierPolicyVersion,
+        formationReason: record.formationReason,
+        retentionExpiresAt: record.retentionExpiresAt || null,
+        promotedFromTier: record.promotedFromTier || null,
+        promotedAt: record.promotedAt || null,
         memoryScope: record.scope,
         claimStatus: record.claimStatus,
         assertedBy: record.assertedBy,
@@ -2162,6 +2311,13 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
     type: String(row.type) as MemoryType,
+    tier: row.tier
+      ? memoryTierSchema.parse(row.tier)
+      : defaultMemoryTier(String(row.type) as MemoryType),
+    tierPolicyVersion: 1,
+    formationReason: row.formation_reason
+      ? memoryFormationReasonSchema.parse(row.formation_reason)
+      : inferMemoryFormationReason({ source: String(row.source || "database") }),
     title: String(row.title || ""),
     content: String(row.content || ""),
     tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
@@ -2177,6 +2333,15 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     supersedesId: row.supersedes_id ? String(row.supersedes_id) : undefined,
     contradictionOfId: row.contradiction_of_id ? String(row.contradiction_of_id) : undefined,
     forgottenAt: row.forgotten_at ? normalizeDate(row.forgotten_at) : undefined,
+    retentionExpiresAt: row.retention_expires_at
+      ? normalizeDate(row.retention_expires_at)
+      : undefined,
+    lastUsedAt: row.last_used_at ? normalizeDate(row.last_used_at) : undefined,
+    useCount: Math.max(0, Number(row.use_count || 0)),
+    promotedFromTier: row.promoted_from_tier
+      ? memoryTierSchema.parse(row.promoted_from_tier)
+      : undefined,
+    promotedAt: row.promoted_at ? normalizeDate(row.promoted_at) : undefined,
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
     embedding: parseEmbedding(row.embedding),
@@ -2300,8 +2465,30 @@ function memoryForgottenEventId(tenantId: string, memoryId: string) {
 }
 
 function sanitizeMemoryRecord(record: MemoryRecord): MemoryRecord {
+  const tier = resolveMemoryTier(record.tier, record.type);
+  const formationReason = record.formationReason
+    ? memoryFormationReasonSchema.parse(record.formationReason)
+    : inferMemoryFormationReason({
+        source: record.source,
+        supersedesId: record.supersedesId,
+      });
   return {
     ...record,
+    tier,
+    tierPolicyVersion: 1,
+    formationReason,
+    retentionExpiresAt: normalizeOptionalDate(record.retentionExpiresAt),
+    lastUsedAt: normalizeOptionalDate(record.lastUsedAt),
+    useCount: Math.max(0, Math.floor(Number(record.useCount || 0))),
+    promotedFromTier: record.promotedFromTier
+      ? memoryTierSchema.parse(record.promotedFromTier)
+      : undefined,
+    promotedAt: normalizeOptionalDate(record.promotedAt),
+    validFrom: normalizeOptionalDate(record.validFrom),
+    validTo: normalizeOptionalDate(record.validTo),
+    supersedesId: normalizeOptionalId(record.supersedesId),
+    contradictionOfId: normalizeOptionalId(record.contradictionOfId),
+    embedding: record.embedding,
     confidence: clamp01(record.confidence ?? 0.7),
     claimStatus: normalizeClaimStatus(record.claimStatus),
     assertedBy: normalizeAssertedBy(record.assertedBy),
@@ -2338,7 +2525,13 @@ function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchRe
   const recencyScore = Number(row.recency_score || 0);
   const memory = memoryFromRow(row);
   const confidence = clamp01(memory.confidence ?? 0.7);
-  const score = vectorScore * 0.52 + lexicalScore * 0.22 + memory.importance * 0.10 + recencyScore * 0.06 + confidence * 0.10;
+  const tierWeight = memoryTierPolicy(
+    resolveMemoryTier(memory.tier, memory.type),
+  ).retrieval.priorityWeight;
+  const score = (
+    vectorScore * 0.52 + lexicalScore * 0.22 + memory.importance * 0.10 +
+    recencyScore * 0.06 + confidence * 0.10
+  ) * tierWeight;
 
   return {
     record: memory,
@@ -2349,6 +2542,7 @@ function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchRe
       memory.importance >= 0.8 ? "high importance" : "",
       recencyScore > 0.5 ? "recent memory" : "",
       confidence >= 0.85 ? "high-confidence claim" : confidence < 0.5 ? "low-confidence claim" : "",
+      tierWeight > 1 ? `${memory.tier} memory priority` : "",
     ].filter(Boolean),
   };
 }
@@ -2386,6 +2580,13 @@ function normalizeOptionalId(value?: string) {
   return value?.trim().replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 200) || undefined;
 }
 
+function normalizeWorkingMemoryReference(value?: string) {
+  const normalized = String(value || "").trim().slice(0, 500);
+  return normalized.startsWith("thread:") || normalized.startsWith("session:")
+    ? normalized
+    : undefined;
+}
+
 function normalizeClaimStatus(value: unknown): NonNullable<MemoryRecord["claimStatus"]> {
   return value === "candidate" || value === "superseded" || value === "contradicted" || value === "forgotten" ? value : "active";
 }
@@ -2396,6 +2597,10 @@ function normalizeAssertedBy(value: unknown): NonNullable<MemoryRecord["asserted
 
 function isActiveMemory(memory: MemoryRecord) {
   if (memory.claimStatus !== "active") return false;
+  if (
+    memory.retentionExpiresAt &&
+    Date.parse(memory.retentionExpiresAt) <= Date.now()
+  ) return false;
   return isTemporalIntervalActive(memory, Date.now());
 }
 

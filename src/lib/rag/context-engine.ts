@@ -62,6 +62,8 @@ export type BuildContextPackOptions = {
   databaseMemoryAccessScope?: DatabaseMemoryAccessScope;
   limit?: number;
   candidateLimit?: number;
+  /** Exact thread/session evidence reference required by working memory. */
+  workingMemoryReference?: `thread:${string}` | `session:${string}`;
   persistTrace?: boolean;
   /**
    * An explicit allowlist of canonical `kind:id` evidence IDs selected by the
@@ -186,13 +188,19 @@ export async function buildContextPack(
     options.usageScope,
   ))?.[0];
   const [legacyMemoryResults, scopedMemoryResults, knowledgeResults, graphResults] = await Promise.all([
-    searchMemories(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),
+    searchMemories(retrievalQuery || normalizedQuery, {
+      limit: candidateLimit,
+      queryEmbedding,
+      tenantId,
+      workingMemoryReference: options.workingMemoryReference,
+    }),
     databaseMemoryAccessScope
       ? searchMemories(retrievalQuery || normalizedQuery, {
           limit: candidateLimit,
           queryEmbedding,
           tenantId,
           accessScope: databaseMemoryAccessScope,
+          workingMemoryReference: options.workingMemoryReference,
         })
       : Promise.resolve([]),
     searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),

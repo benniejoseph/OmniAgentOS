@@ -699,6 +699,9 @@ export async function* runAgent(
             ? undefined
             : memoryAccessContext,
           databaseMemoryAccessScope: promptMemoryAccessScope,
+          ...(request.threadId
+            ? { workingMemoryReference: `thread:${request.threadId}` as const }
+            : {}),
           evidenceIds: request.contextSelection?.evidenceIds,
           ...(request.actorId ? {
             usageScope: {

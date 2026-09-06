@@ -39,6 +39,35 @@ describe("portable archive v2 contract", () => {
       sourceRevisionIdSha256: null,
       updatedAt: "2026-09-06T10:00:00.000Z",
     });
+    data.memories.push({
+      sourceId: "memory-a",
+      title: "Tiered memory",
+      content: "Remember the verified decision.",
+      contentSha256: portableTextSha256("Remember the verified decision."),
+      type: "decision",
+      tier: "decision",
+      tierPolicyVersion: 1,
+      formationReason: "explicit_user_request",
+      tags: ["portable"],
+      scope: "user",
+      source: "user-assertion",
+      importance: 0.9,
+      confidence: 1,
+      claimStatus: "active",
+      assertedBy: "user",
+      evidenceRefs: ["thread:a", "turn:b"],
+      validFrom: null,
+      validTo: null,
+      retentionExpiresAt: null,
+      lastUsedAt: "2026-09-06T10:01:00.000Z",
+      useCount: 2,
+      promotedFromTier: null,
+      promotedAt: null,
+      supersedesId: null,
+      contradictionOfId: null,
+      createdAt: "2026-09-06T10:00:00.000Z",
+      updatedAt: "2026-09-06T10:01:00.000Z",
+    });
     const archive = buildPortableArchiveV2({
       exportedAt: "2026-09-06T10:05:00.000Z",
       sourceOwnerActorId: "owner-a",
@@ -49,7 +78,8 @@ describe("portable archive v2 contract", () => {
 
     expect(verifyPortableArchiveV2(archive)).toEqual(archive);
     expect(archive.manifest.sections.knowledge.includedCount).toBe(1);
-    expect(archive.manifest.totals.includedCount).toBe(1);
+    expect(archive.manifest.sections.memories.includedCount).toBe(1);
+    expect(archive.manifest.totals.includedCount).toBe(2);
     expect(archive.manifest.secretsExcluded).toBe(true);
 
     const tampered = structuredClone(archive);
