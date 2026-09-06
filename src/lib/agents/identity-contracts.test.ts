@@ -99,6 +99,30 @@ describe("P7.1 agent identity contracts", () => {
     expect(second.principal.principalSha256).toBe(first.principal.principalSha256);
   });
 
+  it("maps a legacy custom agent onto its canonical stored identities", () => {
+    const identity = buildCustomAgentIdentityV1({
+      agent: { ...customAgent(), actorId: "owner@example.test" },
+      skills: [skill()],
+      definitionVersion: 2,
+      ownerActorId: "actor:11111111-1111-4111-8111-111111111111",
+      definitionPublishedAt: "2026-09-07T02:00:00.000Z",
+      principalId: "agent:agent-one",
+      principalGeneration: 3,
+      principalCreatedAt: "2026-09-07T01:00:00.000Z",
+    });
+
+    expect(identity.definition).toMatchObject({
+      ownerActorId: "actor:11111111-1111-4111-8111-111111111111",
+      definitionVersionId: "definition:custom:agent-one:v2",
+      publishedAt: "2026-09-07T02:00:00.000Z",
+    });
+    expect(identity.principal).toMatchObject({
+      principalId: "agent:agent-one",
+      principalVersionId: "agent:agent-one:g3",
+      controllerActorId: "actor:11111111-1111-4111-8111-111111111111",
+    });
+  });
+
   it("rejects tampered definitions, pins, and mismatched principal scope", () => {
     const identity = buildCustomAgentIdentityV1({
       agent: customAgent(),
