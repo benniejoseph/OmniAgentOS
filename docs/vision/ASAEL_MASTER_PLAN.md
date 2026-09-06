@@ -1779,14 +1779,23 @@ claims, and fork lineage. Authenticated requests install the canonical/current
 owner set, while resume, specialist, consolidation, daily-brief, and workflow
 workers re-enter the persisted actor before reading or writing these ledgers.
 Existing queued resume and consolidation work is upgraded with that owner.
+Migration v82 applies the same owner boundary to governed tool inputs,
+outputs, approval state, and the matching tool-event stream. Historical rows
+without verified actor lineage are quarantined instead of guessed, and tool
+identity plus reviewed input become immutable. A pending risk-3 record has one
+narrow exception: active tenant admins may review it, and only an admin who
+records a quorum decision retains access after the pending state. The approval
+route then carries the exact requester owner alongside the authorized reviewer
+while executing the already-bound action; unrelated sibling actors remain
+excluded.
 Migration v74 repairs the daily-brief memory-lineage column used by governed
 deletion invalidation. Migrations v75-v76 index immutable deletion barriers and
 remove redundant derived-row read scans after an integrity-gated cutover; the
 production scoped Retrieval Plan and governed-forget canary passes without
 exposing embeddings. Migration v78 applies the same integrity-gated indexed
 lineage cutover to retrieval-trace deletion lookup. Private memory still cannot
-enter agent-run context because governed tool inputs, outputs, and approval
-records remain tenant-scoped copies. Agent-private and
+enter agent-run context until prompt assembly and every remaining context copy
+use the actor boundary. Agent-private and
 mission/project/workspace-shared memory, context compilation, standing
 consent-driven formation, private-memory worker consumption, and the full
 authority resolver remain pending. This canary therefore advances P3.1 without
