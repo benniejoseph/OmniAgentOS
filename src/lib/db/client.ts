@@ -1084,10 +1084,7 @@ function schemaMigrations(): SchemaMigration[] {
     },
     {
       ...databaseSchemaMigrations[100],
-      up: async (sql) => {
-        await ensureMemoryReconciliationInboxV1(sql);
-        await ensureTenantIsolationPolicies(sql);
-      },
+      up: ensureMemoryReconciliationInboxV1,
     },
   ];
 }
@@ -6327,6 +6324,7 @@ async function ensureMemoryReconciliationInboxV1(sql: SqlClient) {
     ON CONFLICT (id) DO NOTHING
   `;
 
+  await ensureTenantIsolationPolicies(sql);
   await sql`
     ALTER TABLE omni_memory_reconciliation_reviews
     ENABLE ROW LEVEL SECURITY
