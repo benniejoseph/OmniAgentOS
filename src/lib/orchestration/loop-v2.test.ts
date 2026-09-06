@@ -8,6 +8,9 @@ import {
   LOOP_V2_CONFIGURATION_SHA256,
   LOOP_V2_CONTRACT_VERSION_ID,
   LOOP_V2_ENGINE_VERSION_ID,
+  LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
+  LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256,
+  LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
   replayLoopV2Checkpoints,
 } from "@/lib/orchestration/loop-v2";
 import type { TenantCapabilityRollout } from "@/lib/rollouts/tenant-capability-rollouts";
@@ -114,6 +117,23 @@ describe("Loop v2 transition checkpoints", () => {
     tampered[3].parentCheckpointSha256 = evidence("tampered");
     expect(() => replayLoopV2Checkpoints(tampered)).toThrow();
   });
+
+  it("pins supported engines without accepting mixed capability contracts", () => {
+    const modelRollout = rollout({
+      capabilityId: LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
+      engineVersion: LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
+      configurationSha256: LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256,
+    });
+    expect(buildLoopV2EnginePin(modelRollout)).toMatchObject({
+      capabilityId: LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
+      engineVersionId: LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
+      configurationSha256: LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256,
+    });
+    expect(() => buildLoopV2EnginePin({
+      ...modelRollout,
+      configurationSha256: LOOP_V2_CONFIGURATION_SHA256,
+    })).toThrow("active supported canary");
+  });
 });
 
 function successChain() {
@@ -166,7 +186,9 @@ function scope(actorId = "actor-a") {
   });
 }
 
-function rollout(): TenantCapabilityRollout {
+function rollout(
+  overrides: Partial<TenantCapabilityRollout> = {},
+): TenantCapabilityRollout {
   return {
     schemaVersion: 1,
     tenantId: "tenant-a",
@@ -183,5 +205,6 @@ function rollout(): TenantCapabilityRollout {
     activatedAt: at,
     createdAt: at,
     updatedAt: at,
+    ...overrides,
   };
 }

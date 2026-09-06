@@ -4,7 +4,6 @@ import {
 } from "@/lib/events/store";
 import {
   advanceLoopV2Checkpoint,
-  LOOP_V2_CAPABILITY_ID,
   loopV2ExecutionScopeSha256,
   parseLoopV2Checkpoint,
   replayLoopV2Checkpoints,
@@ -210,7 +209,7 @@ async function assertLoopV2RootAdmission(
      ORDER BY rollout_generation DESC
      LIMIT 2
      FOR SHARE`,
-    [checkpoint.tenantId, LOOP_V2_CAPABILITY_ID],
+    [checkpoint.tenantId, checkpoint.enginePin.capabilityId],
   );
   const rollout = exactlyOne(rolloutRows, "Loop v2 rollout");
   if (
