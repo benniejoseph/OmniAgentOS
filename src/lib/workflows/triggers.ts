@@ -7,13 +7,20 @@ import {
   runWithDatabaseSystemScope,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   redactSensitive,
   validateTriggerSecretEnvName,
 } from "@/lib/security/context";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  assertExecutionScopeTenant,
+  createExecutionScope,
+  deriveExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { enqueueWorkflowRunTick } from "@/lib/workflows/queue";
 import { appendWorkflowEvent, createWorkflowRun } from "@/lib/workflows/store";
 import type {
@@ -40,6 +47,8 @@ type CreateWorkflowTriggerInput = {
   workflowMode?: WorkflowTriggerRecord["workflowMode"];
   requireApproval?: boolean;
   metadata?: Record<string, unknown>;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
 };
 
 type DispatchWorkflowTriggerInput = {
@@ -87,7 +96,9 @@ export async function createWorkflowTrigger(input: CreateWorkflowTriggerInput) {
   }
 
   const record: WorkflowTriggerRecord = {
-    id: randomUUID(),
+    id: input.idempotencyKey
+      ? deterministicTriggerId(tenantId, input.idempotencyKey)
+      : randomUUID(),
     tenantId,
     name: input.name.trim().slice(0, 120),
     source: slugify(input.source || input.name),
@@ -104,7 +115,13 @@ export async function createWorkflowTrigger(input: CreateWorkflowTriggerInput) {
     updatedAt: now,
   };
 
-  return runWithDatabaseTenantScope(tenantId, () => saveWorkflowTrigger(record));
+  return runWithDatabaseTenantScope(tenantId, () =>
+    saveWorkflowTrigger(
+      record,
+      input.executionScope,
+      input.idempotencyKey || record.id,
+    )
+  );
 }
 
 export async function listWorkflowTriggers(
@@ -234,53 +251,102 @@ async function dispatchWorkflowTriggerForTenant(
   const verification = verifyTriggerSignature(trigger, input.bodyText, headers);
   const delivery = triggerDeliveryIdentity(trigger, input.bodyText, headers);
   const rejectedPayload = rejectedTriggerPayloadEvidence(input.bodyText, payload);
+  const deliveryExecutionScope = createTriggerDeliveryExecutionScope(
+    trigger,
+    delivery.deliveryKey,
+  );
 
   if (trigger.status !== "active") {
-    const event = await saveWorkflowTriggerEvent(createTriggerEvent({
+    const saved = await saveWorkflowTriggerEvent(createTriggerEvent({
       tenantId: trigger.tenantId,
       trigger,
       status: "rejected",
+      eventIdentity: delivery.deliveryKey,
       signatureVerified: verification.verified,
       signatureDigest: delivery.signatureDigest,
       payload: rejectedPayload,
       headers,
       eventType,
       error: "Trigger is paused.",
-    }));
-    await incrementTriggerCounters(trigger.id, { failed: true });
-    return { trigger, event, workflow: null, queueJob: null, replayed: false };
+    }), deliveryExecutionScope);
+    if (saved.mutated) {
+      await incrementTriggerCounters(
+        trigger.id,
+        { failed: true },
+        trigger.tenantId,
+        deliveryExecutionScope,
+        `${saved.event.id}:rejected`,
+      );
+    }
+    return {
+      trigger,
+      event: saved.event,
+      workflow: null,
+      queueJob: null,
+      replayed: !saved.mutated,
+    };
   }
 
   if (!verification.verified) {
-    const event = await saveWorkflowTriggerEvent(createTriggerEvent({
+    const saved = await saveWorkflowTriggerEvent(createTriggerEvent({
       tenantId: trigger.tenantId,
       trigger,
       status: "rejected",
+      eventIdentity: delivery.deliveryKey,
       signatureVerified: false,
       signatureDigest: delivery.signatureDigest,
       payload: rejectedPayload,
       headers,
       eventType,
       error: verification.error || "Signature verification failed.",
-    }));
-    await incrementTriggerCounters(trigger.id, { failed: true });
-    return { trigger, event, workflow: null, queueJob: null, replayed: false };
+    }), deliveryExecutionScope);
+    if (saved.mutated) {
+      await incrementTriggerCounters(
+        trigger.id,
+        { failed: true },
+        trigger.tenantId,
+        deliveryExecutionScope,
+        `${saved.event.id}:rejected`,
+      );
+    }
+    return {
+      trigger,
+      event: saved.event,
+      workflow: null,
+      queueJob: null,
+      replayed: !saved.mutated,
+    };
   }
 
   if (trigger.authMode === "none" && isProductionRuntime()) {
-    const event = await saveWorkflowTriggerEvent(createTriggerEvent({
+    const saved = await saveWorkflowTriggerEvent(createTriggerEvent({
       tenantId: trigger.tenantId,
       trigger,
       status: "rejected",
+      eventIdentity: delivery.deliveryKey,
       signatureVerified: false,
       signatureDigest: delivery.signatureDigest,
       payload: rejectedPayload,
       headers,
       eventType,
       error: "Unauthenticated workflow triggers are disabled in production.",
-    }));
-    await incrementTriggerCounters(trigger.id, { failed: true }, trigger.tenantId);
-    return { trigger, event, workflow: null, queueJob: null, replayed: false };
+    }), deliveryExecutionScope);
+    if (saved.mutated) {
+      await incrementTriggerCounters(
+        trigger.id,
+        { failed: true },
+        trigger.tenantId,
+        deliveryExecutionScope,
+        `${saved.event.id}:rejected`,
+      );
+    }
+    return {
+      trigger,
+      event: saved.event,
+      workflow: null,
+      queueJob: null,
+      replayed: !saved.mutated,
+    };
   }
 
   const claim = await claimWorkflowTriggerDelivery(createTriggerEvent({
@@ -292,7 +358,7 @@ async function dispatchWorkflowTriggerForTenant(
     payload,
     headers,
     eventType,
-  }));
+  }), deliveryExecutionScope);
   if (!claim.created) {
     return {
       trigger,
@@ -306,21 +372,10 @@ async function dispatchWorkflowTriggerForTenant(
   const tenantId = trigger.tenantId;
   try {
     const goal = renderGoalTemplate(trigger, payload, eventType);
-    const deliveryScopeId = createHash("sha256")
-      .update(`${trigger.id}\0${delivery.deliveryKey}`)
-      .digest("hex");
     const workflow = await createWorkflowRun({
       tenantId,
       executionAuthority: {
-        executionScope: createExecutionScope({
-          tenantId,
-          initiatingActorId: null,
-          executingPrincipalType: "system",
-          executingPrincipalId: `workflow-trigger:${trigger.id}`,
-          correlationId: `workflow-trigger:${deliveryScopeId}`,
-          causationId: `trigger-delivery:${deliveryScopeId}`,
-          purpose: "workflow.trigger.dispatch",
-        }),
+        executionScope: deliveryExecutionScope,
         requesterRole: "system",
       },
       idempotencyKey: `trigger:${trigger.id}:${delivery.deliveryKey}`,
@@ -346,23 +401,51 @@ async function dispatchWorkflowTriggerForTenant(
       eventType,
       queueJobId: queueJob.id,
     }).catch(() => undefined);
-    const event = await saveWorkflowTriggerEvent({
+    const saved = await saveWorkflowTriggerEvent({
       ...claim.event,
       status: "enqueued",
       workflowRunId: workflow.run.id,
       queueJobId: queueJob.id,
-    });
-    await incrementTriggerCounters(trigger.id, { triggered: true }, tenantId);
-    return { trigger, event, workflow, queueJob, replayed: false };
+    }, deliveryExecutionScope);
+    if (saved.mutated) {
+      await incrementTriggerCounters(
+        trigger.id,
+        { triggered: true },
+        tenantId,
+        deliveryExecutionScope,
+        `${saved.event.id}:enqueued`,
+      );
+    }
+    return {
+      trigger,
+      event: saved.event,
+      workflow,
+      queueJob,
+      replayed: false,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Trigger dispatch failed.";
-    const event = await saveWorkflowTriggerEvent({
+    const saved = await saveWorkflowTriggerEvent({
       ...claim.event,
       status: "failed",
       error: message,
-    });
-    await incrementTriggerCounters(trigger.id, { failed: true }, tenantId);
-    return { trigger, event, workflow: null, queueJob: null, replayed: false };
+    }, deliveryExecutionScope);
+    if (saved.mutated) {
+      await incrementTriggerCounters(
+        trigger.id,
+        { failed: true },
+        tenantId,
+        deliveryExecutionScope,
+        `${saved.event.id}:failed`,
+      );
+    }
+    return {
+      trigger,
+      event: saved.event,
+      workflow: null,
+      queueJob: null,
+      replayed: false,
+    };
   }
 }
 
@@ -384,46 +467,88 @@ export function signWorkflowTriggerPayload({
   };
 }
 
-async function saveWorkflowTrigger(record: WorkflowTriggerRecord) {
+async function saveWorkflowTrigger(
+  record: WorkflowTriggerRecord,
+  executionScope: ExecutionScope | undefined,
+  idempotencyKey: string,
+): Promise<WorkflowTriggerRecord> {
+  if (executionScope) {
+    assertExecutionScopeTenant(executionScope, record.tenantId);
+  }
   if (hasDatabaseUrl()) {
+    if (!executionScope) {
+      throw new Error("Workflow trigger persistence requires bound execution authority.");
+    }
     await ensureDatabaseSchema();
-    await getSql()`
-      INSERT INTO omni_workflow_triggers (
-        id, tenant_id, name, source, status, auth_mode, secret_env_var, goal_template,
-        workflow_mode, require_approval, metadata, trigger_count, failure_count,
-        last_triggered_at, created_at, updated_at
-      )
-      VALUES (
-        ${record.id}, ${record.tenantId}, ${record.name}, ${record.source}, ${record.status},
-        ${record.authMode}, ${record.secretEnvVar || null}, ${record.goalTemplate},
-        ${record.workflowMode}, ${record.requireApproval},
-        ${record.metadata || {}}::jsonb,
-        ${record.triggerCount}, ${record.failureCount}, ${record.lastTriggeredAt || null},
-        ${record.createdAt}, ${record.updatedAt}
-      )
-      ON CONFLICT (id) DO UPDATE SET
-        name = EXCLUDED.name,
-        source = EXCLUDED.source,
-        status = EXCLUDED.status,
-        auth_mode = EXCLUDED.auth_mode,
-        secret_env_var = EXCLUDED.secret_env_var,
-        goal_template = EXCLUDED.goal_template,
-        workflow_mode = EXCLUDED.workflow_mode,
-        require_approval = EXCLUDED.require_approval,
-        metadata = EXCLUDED.metadata,
-        trigger_count = EXCLUDED.trigger_count,
-        failure_count = EXCLUDED.failure_count,
-        last_triggered_at = EXCLUDED.last_triggered_at,
-        updated_at = EXCLUDED.updated_at
-    `;
-    return record;
+    return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        INSERT INTO omni_workflow_triggers (
+          id, tenant_id, name, source, status, auth_mode, secret_env_var, goal_template,
+          workflow_mode, require_approval, metadata, trigger_count, failure_count,
+          last_triggered_at, created_at, updated_at
+        )
+        VALUES (
+          ${record.id}, ${record.tenantId}, ${record.name}, ${record.source}, ${record.status},
+          ${record.authMode}, ${record.secretEnvVar || null}, ${record.goalTemplate},
+          ${record.workflowMode}, ${record.requireApproval},
+          ${record.metadata || {}}::jsonb,
+          ${record.triggerCount}, ${record.failureCount}, ${record.lastTriggeredAt || null},
+          ${record.createdAt}, ${record.updatedAt}
+        )
+        ON CONFLICT (id) DO NOTHING
+        RETURNING *
+      `;
+      if (rows[0]) {
+        const saved = workflowTriggerFromRow(rows[0]);
+        await appendWorkflowTriggerCreatedEvent(
+          saved,
+          executionScope,
+          idempotencyKey,
+          sql,
+        );
+        return saved;
+      }
+      const existingRows = await sql`
+        SELECT *
+        FROM omni_workflow_triggers
+        WHERE id = ${record.id}
+          AND tenant_id = ${record.tenantId}
+        LIMIT 1
+      `;
+      if (!existingRows[0]) {
+        throw new Error("Workflow trigger idempotent create could not be resolved.");
+      }
+      const existing = workflowTriggerFromRow(existingRows[0]);
+      if (workflowTriggerConfigurationSha256(existing) !== workflowTriggerConfigurationSha256(record)) {
+        throw new Error("Workflow trigger idempotency key is already bound to another configuration.");
+      }
+      return existing;
+    }) as WorkflowTriggerRecord;
   }
 
+  let created = false;
+  let saved = record;
   await mutateTriggerLedger((ledger) => {
-    ledger.triggers = [record, ...ledger.triggers.filter((trigger) => trigger.id !== record.id)];
+    const existing = ledger.triggers.find((trigger) => trigger.id === record.id);
+    if (existing) {
+      if (workflowTriggerConfigurationSha256(existing) !== workflowTriggerConfigurationSha256(record)) {
+        throw new Error("Workflow trigger idempotency key is already bound to another configuration.");
+      }
+      saved = existing;
+      return ledger;
+    }
+    created = true;
+    ledger.triggers = [record, ...ledger.triggers];
     return trimTriggerLedger(ledger);
   });
-  return record;
+  if (created && executionScope) {
+    await appendWorkflowTriggerCreatedEvent(
+      saved,
+      executionScope,
+      idempotencyKey,
+    );
+  }
+  return saved;
 }
 
 async function getWorkflowTriggerForDispatch(triggerId: string) {
@@ -447,65 +572,77 @@ async function getWorkflowTriggerForDispatch(triggerId: string) {
   return trigger ? { ...trigger, tenantId: triggerTenantId(trigger) } : null;
 }
 
-async function claimWorkflowTriggerDelivery(record: WorkflowTriggerEventRecord) {
+async function claimWorkflowTriggerDelivery(
+  record: WorkflowTriggerEventRecord,
+  executionScope: ExecutionScope,
+): Promise<{ created: boolean; event: WorkflowTriggerEventRecord }> {
+  assertExecutionScopeTenant(executionScope, record.tenantId);
   if (!record.deliveryKey) {
-    return { created: true, event: await saveWorkflowTriggerEvent(record) };
+    const saved = await saveWorkflowTriggerEvent(record, executionScope);
+    return { created: saved.mutated, event: saved.event };
   }
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      INSERT INTO omni_workflow_trigger_events (
-        id, tenant_id, trigger_id, delivery_key, signature_digest,
-        status, source, event_type, signature_verified,
-        workflow_run_id, queue_job_id, payload, headers, error, received_at
-      )
-      VALUES (
-        ${record.id}, ${record.tenantId}, ${record.triggerId}, ${record.deliveryKey},
-        ${record.signatureDigest || null}, ${record.status}, ${record.source},
-        ${record.eventType || null}, ${record.signatureVerified},
-        ${record.workflowRunId || null}, ${record.queueJobId || null},
-        ${record.payload || {}}::jsonb,
-        ${record.headers || {}}::jsonb,
-        ${record.error || null}, ${record.receivedAt}
-      )
-      ON CONFLICT (tenant_id, trigger_id, delivery_key)
-      WHERE delivery_key IS NOT NULL
-      DO NOTHING
-      RETURNING *
-    `;
-    if (rows[0]) {
-      return { created: true, event: workflowTriggerEventFromRow(rows[0]) };
-    }
-    const existing = await getSql()`
-      SELECT *
-      FROM omni_workflow_trigger_events
-      WHERE tenant_id = ${record.tenantId}
-        AND trigger_id = ${record.triggerId}
-        AND delivery_key = ${record.deliveryKey}
-      LIMIT 1
-    `;
-    if (!existing[0]) {
-      throw new Error("Workflow trigger delivery claim could not be resolved.");
-    }
-    const reclaimed = await getSql()`
-      UPDATE omni_workflow_trigger_events
-      SET status = 'accepted',
-          error = NULL,
-          received_at = NOW()
-      WHERE tenant_id = ${record.tenantId}
-        AND trigger_id = ${record.triggerId}
-        AND delivery_key = ${record.deliveryKey}
-        AND (
-          status = 'failed'
-          OR (status = 'accepted' AND received_at < NOW() - INTERVAL '5 minutes')
+    return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        INSERT INTO omni_workflow_trigger_events (
+          id, tenant_id, trigger_id, delivery_key, signature_digest,
+          status, source, event_type, signature_verified,
+          workflow_run_id, queue_job_id, payload, headers, error, received_at
         )
-      RETURNING *
-    `;
-    if (reclaimed[0]) {
-      return { created: true, event: workflowTriggerEventFromRow(reclaimed[0]) };
-    }
-    return { created: false, event: workflowTriggerEventFromRow(existing[0]) };
+        VALUES (
+          ${record.id}, ${record.tenantId}, ${record.triggerId}, ${record.deliveryKey},
+          ${record.signatureDigest || null}, ${record.status}, ${record.source},
+          ${record.eventType || null}, ${record.signatureVerified},
+          ${record.workflowRunId || null}, ${record.queueJobId || null},
+          ${record.payload || {}}::jsonb,
+          ${record.headers || {}}::jsonb,
+          ${record.error || null}, ${record.receivedAt}
+        )
+        ON CONFLICT (tenant_id, trigger_id, delivery_key)
+        WHERE delivery_key IS NOT NULL
+        DO NOTHING
+        RETURNING *
+      `;
+      if (rows[0]) {
+        const event = workflowTriggerEventFromRow(rows[0]);
+        await appendWorkflowTriggerDeliveryEvent(event, executionScope, sql);
+        return { created: true, event };
+      }
+      const existing = await sql`
+        SELECT *
+        FROM omni_workflow_trigger_events
+        WHERE tenant_id = ${record.tenantId}
+          AND trigger_id = ${record.triggerId}
+          AND delivery_key = ${record.deliveryKey}
+        LIMIT 1
+        FOR UPDATE
+      `;
+      if (!existing[0]) {
+        throw new Error("Workflow trigger delivery claim could not be resolved.");
+      }
+      const reclaimed = await sql`
+        UPDATE omni_workflow_trigger_events
+        SET status = 'accepted',
+            error = NULL,
+            received_at = NOW()
+        WHERE tenant_id = ${record.tenantId}
+          AND trigger_id = ${record.triggerId}
+          AND delivery_key = ${record.deliveryKey}
+          AND (
+            status = 'failed'
+            OR (status = 'accepted' AND received_at < NOW() - INTERVAL '5 minutes')
+          )
+        RETURNING *
+      `;
+      if (reclaimed[0]) {
+        const event = workflowTriggerEventFromRow(reclaimed[0]);
+        await appendWorkflowTriggerDeliveryEvent(event, executionScope, sql);
+        return { created: true, event };
+      }
+      return { created: false, event: workflowTriggerEventFromRow(existing[0]) };
+    }) as { created: boolean; event: WorkflowTriggerEventRecord };
   }
 
   let claimed = record;
@@ -542,71 +679,130 @@ async function claimWorkflowTriggerDelivery(record: WorkflowTriggerEventRecord) 
     ledger.events.unshift(record);
     return trimTriggerLedger(ledger);
   });
+  if (created) {
+    await appendWorkflowTriggerDeliveryEvent(claimed, executionScope);
+  }
   return { created, event: claimed };
 }
 
-async function saveWorkflowTriggerEvent(record: WorkflowTriggerEventRecord) {
+async function saveWorkflowTriggerEvent(
+  record: WorkflowTriggerEventRecord,
+  executionScope: ExecutionScope,
+): Promise<{ event: WorkflowTriggerEventRecord; mutated: boolean }> {
+  const tenantId = normalizeTenantId(record.tenantId);
+  assertExecutionScopeTenant(executionScope, tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`
-      INSERT INTO omni_workflow_trigger_events (
-        id, tenant_id, trigger_id, delivery_key, signature_digest,
-        status, source, event_type, signature_verified,
-        workflow_run_id, queue_job_id, payload, headers, error, received_at
-      )
-      VALUES (
-        ${record.id}, ${normalizeTenantId(record.tenantId)}, ${record.triggerId},
-        ${record.deliveryKey || null}, ${record.signatureDigest || null},
-        ${record.status}, ${record.source},
-        ${record.eventType || null}, ${record.signatureVerified},
-        ${record.workflowRunId || null}, ${record.queueJobId || null},
-        ${record.payload || {}}::jsonb,
-        ${record.headers || {}}::jsonb,
-        ${record.error || null}, ${record.receivedAt}
-      )
-      ON CONFLICT (id) DO UPDATE SET
-        status = EXCLUDED.status,
-        signature_verified = EXCLUDED.signature_verified,
-        workflow_run_id = EXCLUDED.workflow_run_id,
-        queue_job_id = EXCLUDED.queue_job_id,
-        payload = EXCLUDED.payload,
-        headers = EXCLUDED.headers,
-        error = EXCLUDED.error
-    `;
-    return record;
+    return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const existingRows = await sql`
+        SELECT *
+        FROM omni_workflow_trigger_events
+        WHERE id = ${record.id}
+          AND tenant_id = ${tenantId}
+        LIMIT 1
+        FOR UPDATE
+      `;
+      if (
+        existingRows[0] &&
+        workflowTriggerEventStateSha256(workflowTriggerEventFromRow(existingRows[0])) ===
+          workflowTriggerEventStateSha256(record)
+      ) {
+        return {
+          event: workflowTriggerEventFromRow(existingRows[0]),
+          mutated: false,
+        };
+      }
+      const rows = await sql`
+        INSERT INTO omni_workflow_trigger_events (
+          id, tenant_id, trigger_id, delivery_key, signature_digest,
+          status, source, event_type, signature_verified,
+          workflow_run_id, queue_job_id, payload, headers, error, received_at
+        )
+        VALUES (
+          ${record.id}, ${tenantId}, ${record.triggerId},
+          ${record.deliveryKey || null}, ${record.signatureDigest || null},
+          ${record.status}, ${record.source},
+          ${record.eventType || null}, ${record.signatureVerified},
+          ${record.workflowRunId || null}, ${record.queueJobId || null},
+          ${record.payload || {}}::jsonb,
+          ${record.headers || {}}::jsonb,
+          ${record.error || null}, ${record.receivedAt}
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status,
+          signature_verified = EXCLUDED.signature_verified,
+          workflow_run_id = EXCLUDED.workflow_run_id,
+          queue_job_id = EXCLUDED.queue_job_id,
+          payload = EXCLUDED.payload,
+          headers = EXCLUDED.headers,
+          error = EXCLUDED.error
+        RETURNING *
+      `;
+      const event = workflowTriggerEventFromRow(rows[0]);
+      await appendWorkflowTriggerDeliveryEvent(event, executionScope, sql);
+      return { event, mutated: true };
+    }) as { event: WorkflowTriggerEventRecord; mutated: boolean };
   }
 
+  let mutated = false;
+  let saved = record;
   await mutateTriggerLedger((ledger) => {
+    const existing = ledger.events.find((event) => event.id === record.id);
+    if (
+      existing &&
+      workflowTriggerEventStateSha256(existing) === workflowTriggerEventStateSha256(record)
+    ) {
+      saved = existing;
+      return ledger;
+    }
+    mutated = true;
     ledger.events = [record, ...ledger.events.filter((event) => event.id !== record.id)];
     return trimTriggerLedger(ledger);
   });
-  return record;
+  if (mutated) {
+    await appendWorkflowTriggerDeliveryEvent(saved, executionScope);
+  }
+  return { event: saved, mutated };
 }
 
 async function incrementTriggerCounters(
   triggerId: string,
   input: { triggered?: boolean; failed?: boolean },
-  tenantId = currentTenantId(),
-) {
+  tenantId: string,
+  executionScope: ExecutionScope,
+  mutationId: string,
+): Promise<WorkflowTriggerRecord | null> {
   const normalizedTenantId = normalizeTenantId(tenantId);
+  assertExecutionScopeTenant(executionScope, normalizedTenantId);
   const now = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_workflow_triggers
-      SET
-        trigger_count = trigger_count + ${input.triggered ? 1 : 0},
-        failure_count = failure_count + ${input.failed ? 1 : 0},
-        last_triggered_at = CASE
-          WHEN ${Boolean(input.triggered)} THEN ${now}
-          ELSE last_triggered_at
-        END,
-        updated_at = ${now}
-      WHERE id = ${triggerId}
-        AND tenant_id = ${normalizedTenantId}
-      RETURNING *
-    `;
-    return rows[0] ? workflowTriggerFromRow(rows[0]) : null;
+    return await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_workflow_triggers
+        SET
+          trigger_count = trigger_count + ${input.triggered ? 1 : 0},
+          failure_count = failure_count + ${input.failed ? 1 : 0},
+          last_triggered_at = CASE
+            WHEN ${Boolean(input.triggered)} THEN ${now}
+            ELSE last_triggered_at
+          END,
+          updated_at = ${now}
+        WHERE id = ${triggerId}
+          AND tenant_id = ${normalizedTenantId}
+        RETURNING *
+      `;
+      if (!rows[0]) return null;
+      const updated = workflowTriggerFromRow(rows[0]);
+      await appendWorkflowTriggerCounterEvent({
+        trigger: updated,
+        input,
+        executionScope,
+        mutationId,
+        sql,
+      });
+      return updated;
+    }) as WorkflowTriggerRecord | null;
   }
 
   let updated: WorkflowTriggerRecord | null = null;
@@ -630,13 +826,218 @@ async function incrementTriggerCounters(
     });
     return trimTriggerLedger(ledger);
   });
+  if (updated) {
+    await appendWorkflowTriggerCounterEvent({
+      trigger: updated,
+      input,
+      executionScope,
+      mutationId,
+    });
+  }
   return updated;
+}
+
+async function appendWorkflowTriggerCreatedEvent(
+  trigger: WorkflowTriggerRecord,
+  executionScope: ExecutionScope,
+  idempotencyKey: string,
+  sql?: ReturnType<typeof getSql>,
+) {
+  const idempotencyKeySha256 = canonicalJsonSha256({
+    tenantId: trigger.tenantId,
+    idempotencyKey,
+  });
+  await appendScopedDomainEvent({
+    id: `workflow-trigger:${canonicalJsonSha256({
+      tenantId: trigger.tenantId,
+      type: "created",
+      triggerId: trigger.id,
+      idempotencyKeySha256,
+    })}`,
+    streamId: `workflow-trigger:${trigger.id}`,
+    type: "workflow.trigger.created",
+    executionScope: deriveExecutionScope(executionScope, {
+      causationId: `workflow-trigger:${trigger.id}:created`,
+      purpose: "workflow.trigger.create",
+    }),
+    payload: {
+      schemaVersion: 1,
+      triggerId: trigger.id,
+      status: trigger.status,
+      authMode: trigger.authMode,
+      workflowMode: trigger.workflowMode,
+      requireApproval: trigger.requireApproval,
+      configurationSha256: workflowTriggerConfigurationSha256(trigger),
+      idempotencyKeySha256,
+    },
+  }, sql ? { sql } : {});
+}
+
+async function appendWorkflowTriggerDeliveryEvent(
+  event: WorkflowTriggerEventRecord,
+  executionScope: ExecutionScope,
+  sql?: ReturnType<typeof getSql>,
+) {
+  const stateSha256 = workflowTriggerEventStateSha256(event);
+  const idempotencyKeySha256 = canonicalJsonSha256({
+    tenantId: event.tenantId,
+    triggerId: event.triggerId,
+    eventId: event.id,
+    status: event.status,
+    receivedAt: event.receivedAt,
+    stateSha256,
+  });
+  await appendScopedDomainEvent({
+    id: `workflow-trigger-delivery:${idempotencyKeySha256}`,
+    streamId: `workflow-trigger:${event.triggerId}`,
+    type: `workflow.trigger.delivery.${event.status}`,
+    executionScope: deriveExecutionScope(executionScope, {
+      causationId: `workflow-trigger-event:${event.id}:${event.status}`,
+      purpose: "workflow.trigger.delivery.persist",
+    }),
+    payload: {
+      schemaVersion: 1,
+      triggerId: event.triggerId,
+      triggerEventId: event.id,
+      status: event.status,
+      source: event.source,
+      eventType: event.eventType || null,
+      signatureVerified: event.signatureVerified,
+      deliveryKeySha256: event.deliveryKey
+        ? canonicalJsonSha256({ deliveryKey: event.deliveryKey })
+        : null,
+      signatureDigest: event.signatureDigest || null,
+      workflowRunId: event.workflowRunId || null,
+      queueJobId: event.queueJobId || null,
+      payloadSha256: canonicalJsonSha256(event.payload),
+      headersSha256: canonicalJsonSha256(event.headers),
+      errorSha256: event.error
+        ? canonicalJsonSha256({ error: event.error })
+        : null,
+      receivedAt: event.receivedAt,
+      stateSha256,
+      idempotencyKeySha256,
+    },
+  }, sql ? { sql } : {});
+}
+
+async function appendWorkflowTriggerCounterEvent({
+  trigger,
+  input,
+  executionScope,
+  mutationId,
+  sql,
+}: {
+  trigger: WorkflowTriggerRecord;
+  input: { triggered?: boolean; failed?: boolean };
+  executionScope: ExecutionScope;
+  mutationId: string;
+  sql?: ReturnType<typeof getSql>;
+}) {
+  const idempotencyKeySha256 = canonicalJsonSha256({
+    tenantId: trigger.tenantId,
+    triggerId: trigger.id,
+    mutationId,
+  });
+  await appendScopedDomainEvent({
+    id: `workflow-trigger-counter:${idempotencyKeySha256}`,
+    streamId: `workflow-trigger:${trigger.id}`,
+    type: "workflow.trigger.counter.updated",
+    executionScope: deriveExecutionScope(executionScope, {
+      causationId: `workflow-trigger:${trigger.id}:counter:${idempotencyKeySha256}`,
+      purpose: "workflow.trigger.counter.persist",
+    }),
+    payload: {
+      schemaVersion: 1,
+      triggerId: trigger.id,
+      triggered: Boolean(input.triggered),
+      failed: Boolean(input.failed),
+      triggerCount: trigger.triggerCount,
+      failureCount: trigger.failureCount,
+      lastTriggeredAt: trigger.lastTriggeredAt || null,
+      idempotencyKeySha256,
+    },
+  }, sql ? { sql } : {});
+}
+
+function workflowTriggerConfigurationSha256(trigger: WorkflowTriggerRecord) {
+  return canonicalJsonSha256({
+    tenantId: trigger.tenantId,
+    triggerId: trigger.id,
+    name: trigger.name,
+    source: trigger.source,
+    status: trigger.status,
+    authMode: trigger.authMode,
+    secretEnvVar: trigger.secretEnvVar || null,
+    goalTemplate: trigger.goalTemplate,
+    workflowMode: trigger.workflowMode,
+    requireApproval: trigger.requireApproval,
+    metadata: trigger.metadata,
+  });
+}
+
+function workflowTriggerEventStateSha256(event: WorkflowTriggerEventRecord) {
+  return canonicalJsonSha256({
+    tenantId: normalizeTenantId(event.tenantId),
+    triggerEventId: event.id,
+    triggerId: event.triggerId,
+    deliveryKey: event.deliveryKey || null,
+    signatureDigest: event.signatureDigest || null,
+    status: event.status,
+    source: event.source,
+    eventType: event.eventType || null,
+    signatureVerified: event.signatureVerified,
+    workflowRunId: event.workflowRunId || null,
+    queueJobId: event.queueJobId || null,
+    payload: event.payload,
+    headers: event.headers,
+    error: event.error || null,
+  });
+}
+
+function createTriggerDeliveryExecutionScope(
+  trigger: WorkflowTriggerRecord,
+  deliveryKey: string,
+) {
+  const deliveryScopeId = canonicalJsonSha256({
+    tenantId: trigger.tenantId,
+    triggerId: trigger.id,
+    deliveryKey,
+  });
+  return createExecutionScope({
+    tenantId: trigger.tenantId,
+    initiatingActorId: null,
+    executingPrincipalType: "system",
+    executingPrincipalId: `workflow-trigger:${trigger.id}`,
+    correlationId: `workflow-trigger:${deliveryScopeId}`,
+    causationId: `trigger-delivery:${deliveryScopeId}`,
+    purpose: "workflow.trigger.dispatch",
+  });
+}
+
+function deterministicTriggerId(tenantId: string, idempotencyKey: string) {
+  return `trigger_${canonicalJsonSha256({ tenantId, idempotencyKey }).slice(0, 40)}`;
+}
+
+function deterministicTriggerEventId(
+  tenantId: string,
+  triggerId: string,
+  eventIdentity: string,
+  status: WorkflowTriggerEventStatus,
+) {
+  return `trigger_event_${canonicalJsonSha256({
+    tenantId,
+    triggerId,
+    eventIdentity,
+    status,
+  }).slice(0, 40)}`;
 }
 
 function createTriggerEvent({
   tenantId,
   trigger,
   status,
+  eventIdentity,
   signatureVerified,
   deliveryKey,
   signatureDigest,
@@ -650,6 +1051,7 @@ function createTriggerEvent({
   tenantId?: string;
   trigger: WorkflowTriggerRecord;
   status: WorkflowTriggerEventStatus;
+  eventIdentity?: string;
   signatureVerified: boolean;
   deliveryKey?: string;
   signatureDigest?: string;
@@ -660,9 +1062,18 @@ function createTriggerEvent({
   queueJobId?: string;
   error?: string;
 }): WorkflowTriggerEventRecord {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const stableEventIdentity = eventIdentity || deliveryKey;
   return {
-    id: randomUUID(),
-    tenantId: normalizeTenantId(tenantId),
+    id: stableEventIdentity
+      ? deterministicTriggerEventId(
+          normalizedTenantId,
+          trigger.id,
+          stableEventIdentity,
+          status,
+        )
+      : randomUUID(),
+    tenantId: normalizedTenantId,
     triggerId: trigger.id,
     deliveryKey,
     signatureDigest,
@@ -895,10 +1306,6 @@ function workflowTriggerEventFromRow(row: Record<string, unknown>): WorkflowTrig
     error: row.error ? String(row.error) : undefined,
     receivedAt: normalizeDate(row.received_at),
   };
-}
-
-function currentTenantId() {
-  return normalizeTenantId(getDatabaseTenantContext());
 }
 
 function triggerTenantId(trigger: { tenantId?: string }) {
