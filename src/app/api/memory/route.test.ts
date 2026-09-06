@@ -80,6 +80,7 @@ describe("memory API private canary", () => {
       .mockResolvedValueOnce([]);
     routeMocks.listThreadMemories.mockReset().mockResolvedValue([]);
     routeMocks.projectExplicitMemoryEntities.mockReset().mockResolvedValue({
+      extraction: { candidates: [] },
       createdEntityIds: [],
       linkedEntityIds: [],
       reviewResolutionIds: [],
@@ -153,6 +154,14 @@ describe("memory API private canary", () => {
         initiatingActorId:
           "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
       }),
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      entityProjection: {
+        candidateCount: 0,
+        createdCount: 0,
+        linkedCount: 0,
+        reviewRequiredCount: 0,
+      },
     });
   });
 });

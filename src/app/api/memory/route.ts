@@ -228,21 +228,35 @@ async function POSTHandler(request: Request) {
       databaseAccessScope: requestAccess?.databaseAccessScope,
       executionScope: requestAccess?.executionScope,
     });
+    let entityProjection:
+      | {
+          candidateCount: number;
+          createdCount: number;
+          linkedCount: number;
+          reviewRequiredCount: number;
+        }
+      | undefined;
     if (record.accessBinding && requestAccess) {
       await indexUserPrivateMemoryGraphRecords([record], "memory.manual", {
         tenantId: context.tenantId,
         accessScope: requestAccess.databaseAccessScope,
       });
-      await projectExplicitMemoryEntities({
+      const projected = await projectExplicitMemoryEntities({
         memory: record,
         executionScope: requestAccess.executionScope,
       });
+      entityProjection = {
+        candidateCount: projected.extraction.candidates.length,
+        createdCount: projected.createdEntityIds.length,
+        linkedCount: projected.linkedEntityIds.length,
+        reviewRequiredCount: projected.reviewResolutionIds.length,
+      };
     } else if (!record.accessBinding) {
       await indexMemoryGraphRecords([record], "memory.manual");
     }
 
     return Response.json(
-      { record: publicMemoryRecord(record) },
+      { record: publicMemoryRecord(record), entityProjection },
       { status: 201, headers: privateNoStoreHeaders },
     );
   } catch (error) {
