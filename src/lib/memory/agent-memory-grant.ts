@@ -112,8 +112,9 @@ export function agentMemoryGrantTargetMemoryId(input: {
   targetAgentId: string;
   idempotencyKey: string;
 }) {
+  const { idempotencyKey, ...coordinates } = input;
   return `agent_shared_${sourceContractSha256({
-    ...input,
-    idempotencyKeySha256: sourceContractSha256(input.idempotencyKey.trim()),
+    ...coordinates,
+    idempotencyKeySha256: sourceContractSha256(idempotencyKey.trim()),
   }).slice(0, 48)}`;
 }

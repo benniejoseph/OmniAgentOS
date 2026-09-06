@@ -563,7 +563,7 @@ export async function shareAgentPrivateMemory(input: {
     } else {
       await appendScopedDomainEvent({
         id: `memory_agent_private_shared_${grant.artifactSha256}`,
-        streamId: `agent-memory-grant:${grant.grantId}`,
+        streamId: grant.grantId,
         type: "memory.agent_private.shared",
         executionScope: targetExecutionScope,
         payload: {
