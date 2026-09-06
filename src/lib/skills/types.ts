@@ -56,6 +56,9 @@ export type CustomAgentDefinition = {
 export type RequestCustomAgentDefinition = CustomAgentDefinition & {
   selectable: boolean;
   manageable: boolean;
+  releaseState?: "active" | "retired";
+  activeDefinitionVersion?: number;
+  latestDefinitionVersion?: number;
 };
 
 export type AgentBuilderLedger = {

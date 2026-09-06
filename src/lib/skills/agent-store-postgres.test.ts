@@ -281,7 +281,7 @@ describe("Postgres custom Agent request detail reads", () => {
     }));
     expect(dbMocks.statements).toHaveLength(1);
     expect(dbMocks.statements[0].text).toMatch(
-      /FROM omni_custom_agents[\s\S]*WHERE id = \$\d+ AND tenant_id = \$\d+[\s\S]*AND \(actor_id = \$\d+ OR actor_id = \$\d+\)[\s\S]*LIMIT 1/,
+      /FROM omni_custom_agents agent[\s\S]*WHERE agent\.id = \$\d+ AND agent\.tenant_id = \$\d+[\s\S]*AND \(agent\.actor_id = \$\d+ OR agent\.actor_id = \$\d+\)[\s\S]*LIMIT 1/,
     );
     expect(dbMocks.statements[0].text).not.toMatch(/\bORDER BY\b/);
     expect(dbMocks.statements[0].params).toEqual([
@@ -344,6 +344,29 @@ describe("Postgres custom Agent request detail reads", () => {
 });
 
 describe("Postgres custom Agent request list reads", () => {
+  it("keeps retired Agents visible but non-actionable", async () => {
+    dbMocks.responses.push([{
+      ...agentRow("retired-agent", []),
+      release_state: "retired",
+      active_definition_version: 1,
+      latest_definition_version: 2,
+    }]);
+
+    await expect(listCustomAgentsForRequest({
+      ...scope,
+      requestActorBinding,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        id: "retired-agent",
+        releaseState: "retired",
+        activeDefinitionVersion: 1,
+        latestDefinitionVersion: 2,
+        selectable: false,
+        manageable: false,
+      }),
+    ]);
+  });
+
   it("reads both owner partitions in deterministic order and projects actionability", async () => {
     dbMocks.responses.push([
       {
@@ -375,7 +398,7 @@ describe("Postgres custom Agent request list reads", () => {
       }),
     ]);
     expect(dbMocks.statements[0].text).toMatch(
-      /FROM omni_custom_agents[\s\S]*tenant_id = \$\d+[\s\S]*actor_id = \$\d+ OR actor_id = \$\d+[\s\S]*ORDER BY updated_at DESC, id ASC/,
+      /FROM omni_custom_agents agent[\s\S]*agent\.tenant_id = \$\d+[\s\S]*agent\.actor_id = \$\d+ OR agent\.actor_id = \$\d+[\s\S]*ORDER BY agent\.updated_at DESC, agent\.id ASC/,
     );
     expect(dbMocks.statements[0].params).toEqual([
       scope.tenantId,
@@ -462,6 +485,9 @@ function agentRow(
     memory_scope: "all",
     skill_ids: skillIds,
     tool_ids: [],
+    release_state: "active",
+    active_definition_version: 1,
+    latest_definition_version: 1,
     created_at: "2026-09-04T10:00:00.000Z",
     updated_at: "2026-09-04T12:00:00.000Z",
   };
