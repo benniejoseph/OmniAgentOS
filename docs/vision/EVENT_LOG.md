@@ -53,7 +53,7 @@ whose required outcomes are verified.
 
 P1.3 adds `workflow.outcome_evaluated` after a completed workflow stores its
 validated shadow evaluation. Its payload is a strict metadata-only projection:
-schema version, the explicit `posthoc` contract-binding state, opaque
+schema version, the explicit `pre_execution` or legacy `posthoc` contract-binding state, opaque
 run/contract/receipt IDs, SHA-256 bindings, terminal and verification enums,
 and bounded counts. It does not include goals, reports,
 acceptance-criterion text, tool data, model output, errors, or private
@@ -968,8 +968,17 @@ commit in one transaction. File fallback updates the tool ledger before a
 separate best-effort event append and remains a development compatibility
 path, not an atomic audit guarantee. Legacy records, dry runs, and other tools
 remain unchanged. P1.3 can project the ID of a strictly bound, verified canary
-receipt as additive evidence, while its evaluation remains `posthoc` and
-cannot emit `succeeded`; full P1.4 remains open.
+receipt as additive evidence. New workflow outcome contracts are pre-bound,
+but the current criterion remains a model assertion and cannot emit
+`succeeded`; full P1.4 remains open.
+
+Loop v2 adds `run.contracts.bound` in the same transaction as its root
+checkpoint and `run.terminal_receipt.recorded` in the terminal transaction.
+Both carry only opaque component IDs, exact SHA-256 bindings, closed enums, and
+counts. The full contract, request, response, model output, and tool output stay
+out of the event log. A deterministic read receipt may project `succeeded`
+only after exact verifier and response binding; model summaries remain
+`unverified`.
 
 ## Notification mutation cutover
 

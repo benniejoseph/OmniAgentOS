@@ -136,10 +136,18 @@ metadata-only outcome contract, terminal receipt, and canonical status. The
 legacy workflow status still drives queueing, polling, retries, approvals, and
 controls. Dry-run, skipped, blocked, waiting, partial, model-asserted, and
 otherwise unverified work cannot project canonical `succeeded`.
-The first evaluator explicitly labels its contract binding `posthoc`: it uses
-requirements from the persisted pre-execution plan, but no exact outcome
-contract digest was bound before execution. Therefore this slice cannot emit
-`succeeded`; pre-execution binding and strong effect receipts are later gates.
+New plans store the exact metadata-only outcome contract and digest before
+approval or execution, so their evaluator labels the binding `pre_execution`.
+Historical plans without that stored value remain `posthoc`. Current workflow
+criteria are still model assertions, so even pre-bound workflow completion
+remains `unverified` until a strong criterion verifier supplies exact evidence.
+
+Loop v2 direct runs bind their principal, intent, outcome, and harness component
+digests in the root-checkpoint transaction. Terminal finalization rejects a
+component mismatch and atomically stores the exact evaluated terminal receipt.
+Only the deterministic read-only canary can currently satisfy every required
+criterion and project canonical `succeeded`; bounded model summaries remain
+truthfully `unverified`.
 
 The first P1.4 canary is deliberately narrower than that phase's target. Only
 live `memory.write` from a single-tool plan node in an approved workflow with
@@ -171,8 +179,9 @@ fail closed. Every recovery checkpoint and finalization validates the exact
 fence, and generic stale-run repair excludes active Loop v2 chains.
 
 This is tool-level evidence only. P1.3 projects the ID of a strictly bound,
-verified canary receipt into its evidence and terminal receipt, but evaluation
-remains `posthoc` and canonical `succeeded` is still impossible. P1.4 now also
+verified canary receipt into its evidence and terminal receipt, but current
+workflow criteria remain model assertions and canonical `succeeded` is still
+impossible for that workflow. P1.4 now also
 routes HTTP mutations, Google Calendar creation, governed OpenAPI non-read
 methods, and governed MCP mutation tools through immutable v2 intent and
 receipt barriers. Direct calls bind the initiating user; workflow effects bind
