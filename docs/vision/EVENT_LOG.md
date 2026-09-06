@@ -1363,3 +1363,15 @@ cases, accepted architecture decisions, failed gate IDs, and the fixed zero
 effect count. It contains no prompt, context, model output, tool data,
 credential, private reasoning, or extensible metadata and grants no runtime
 authority.
+
+## Private asset object lifecycle
+
+P2.4 projects `asset_object.staged`, `asset_object.extraction_changed`,
+`asset_object.ready`, `asset_object.failed`, `asset_object.deleted`, and
+`asset_object.scrubbed` into the owner-scoped object stream. Payloads contain
+only object identity, hashed source/locator/media coordinates, version,
+checksum, byte count, bounded lifecycle state, retention identifier, and job
+references. They never contain asset bytes, filenames, notes, transcripts,
+direct Blob URLs, delivery tokens, credentials, or provider output. Staging and
+deletion events share the source mutation transaction; ready, failure, and
+scrub events share the corresponding object-state transaction.

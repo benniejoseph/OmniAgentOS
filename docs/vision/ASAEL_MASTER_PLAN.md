@@ -615,6 +615,21 @@ may strengthen generic receipts later without reopening this coverage gate.
 
 **Phase gate:** source convergence is exact in bounded fixtures; stale current revisions and duplicate current records are zero; deletion lineage coverage is 100%.
 
+P2.4 is complete at production release
+`3bf419b6bfb653f1915b64c5054caa5ea22ac0b5`. Capture file and recording-segment
+writes retain their legacy database bytes and atomically stage an immutable,
+owner-scoped private-object intent. The worker verifies the source bytes,
+private-object readback, checksum, size, version, and exact persisted scope
+before marking the candidate ready. Application delivery uses a five-minute
+actor-and-purpose-bound token and rechecks current source and deletion state;
+the Blob locator is never exposed. The production lifecycle canary proved
+upload, signed read, byte parity, the immediate deletion barrier, retry after
+an interrupted scrub, and final physical deletion. Migration v97 supplies
+forced tenant-and-actor RLS and the metadata/event boundary. Legacy reads stay
+authoritative until P2.5 completes resumable historical backfill and activates
+one persisted tenant read rollout; P2.6 and P2.8 also remain open, and the P2.3
+live Google-provider proof still requires enrollment.
+
 ### Phase 3 — Long-lasting, persistent, readable memory
 
 **Goal:** Build memory that becomes more accurate and useful over time rather than merely larger.
