@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   jsonBodyErrorResponse,
@@ -231,6 +232,10 @@ async function POSTHandler(request: Request) {
       await indexUserPrivateMemoryGraphRecords([record], "memory.manual", {
         tenantId: context.tenantId,
         accessScope: requestAccess.databaseAccessScope,
+      });
+      await projectExplicitMemoryEntities({
+        memory: record,
+        executionScope: requestAccess.executionScope,
       });
     } else if (!record.accessBinding) {
       await indexMemoryGraphRecords([record], "memory.manual");

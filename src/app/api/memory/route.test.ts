@@ -6,6 +6,7 @@ const routeMocks = vi.hoisted(() => ({
   indexUserPrivateMemoryGraphRecords: vi.fn(),
   listMemories: vi.fn(),
   listThreadMemories: vi.fn(),
+  projectExplicitMemoryEntities: vi.fn(),
   saveMemory: vi.fn(),
   searchMemories: vi.fn(),
   embedTexts: vi.fn(),
@@ -27,6 +28,10 @@ vi.mock("@/lib/memory/store", () => ({
   listThreadMemories: routeMocks.listThreadMemories,
   saveMemory: routeMocks.saveMemory,
   searchMemories: routeMocks.searchMemories,
+}));
+
+vi.mock("@/lib/entities/extraction", () => ({
+  projectExplicitMemoryEntities: routeMocks.projectExplicitMemoryEntities,
 }));
 
 vi.mock("@/lib/memory/graph", () => ({
@@ -74,6 +79,11 @@ describe("memory API private canary", () => {
       .mockResolvedValueOnce([legacyMemory])
       .mockResolvedValueOnce([]);
     routeMocks.listThreadMemories.mockReset().mockResolvedValue([]);
+    routeMocks.projectExplicitMemoryEntities.mockReset().mockResolvedValue({
+      createdEntityIds: [],
+      linkedEntityIds: [],
+      reviewResolutionIds: [],
+    });
     routeMocks.saveMemory.mockReset();
     routeMocks.searchMemories.mockReset().mockResolvedValue([]);
     routeMocks.embedTexts.mockReset().mockResolvedValue([]);
@@ -137,5 +147,12 @@ describe("memory API private canary", () => {
         }),
       }),
     );
+    expect(routeMocks.projectExplicitMemoryEntities).toHaveBeenCalledWith({
+      memory: expect.objectContaining({ id: "private-a" }),
+      executionScope: expect.objectContaining({
+        initiatingActorId:
+          "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+      }),
+    });
   });
 });

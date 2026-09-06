@@ -104,7 +104,7 @@ const NAMED_MARKER_PATTERN = new RegExp(
 );
 
 /**
- * Extracts only explicit typed markers from a canonical user assertion.
+ * Extracts only explicit typed markers from canonical user-authored memory.
  * It intentionally does not guess entities from capitalization or model
  * output. Examples: `project: Phoenix` and `person named "Ada Lovelace"`.
  */
@@ -281,7 +281,7 @@ async function settleResolution(input: {
 function assertCanonicalExplicitMemory(memory: MemoryRecord) {
   if (
     !memory.tenantId ||
-    memory.source !== "user-assertion" ||
+    !["manual", "user-assertion"].includes(memory.source) ||
     memory.assertedBy !== "user" ||
     memory.claimStatus !== "active" ||
     !memory.content.trim() ||
@@ -293,7 +293,7 @@ function assertCanonicalExplicitMemory(memory: MemoryRecord) {
     memory.accessBinding.missionId !== null
   ) {
     throw new Error(
-      "Entity extraction requires a canonical active user assertion.",
+      "Entity extraction requires canonical active user-authored memory.",
     );
   }
 }
