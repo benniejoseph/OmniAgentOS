@@ -434,12 +434,34 @@ export async function transcribeGoogleAudio(
     const response = await fetch(`${SPEECH_URL}?key=${encodeURIComponent(apiKey)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ config: { ...(encoding ? { encoding } : {}), languageCode: "en-US", enableAutomaticPunctuation: true, model: "latest_long" }, audio: { content } }),
+      body: JSON.stringify({ config: { ...(encoding ? { encoding } : {}), languageCode: "en-US", enableAutomaticPunctuation: true, enableWordTimeOffsets: true, model: "latest_long" }, audio: { content } }),
       signal: abortSignal,
     });
-    const body = await readJsonResponse(response) as { results?: Array<{ alternatives?: Array<{ transcript?: string }> }> };
+    const body = await readJsonResponse(response) as {
+      results?: Array<{
+        resultEndTime?: string;
+        alternatives?: Array<{
+          transcript?: string;
+          words?: Array<{ word?: string; startTime?: string; endTime?: string }>;
+        }>;
+      }>;
+    };
     const text = (body.results || []).map((result) => result.alternatives?.[0]?.transcript || "").filter(Boolean).join(" ").trim();
     if (!text) throw new Error("Google Speech could not recognize this recording.");
+    let previousEndMilliseconds = 0;
+    const segments = (body.results || []).flatMap((result) => {
+      const alternative = result.alternatives?.[0];
+      const transcript = alternative?.transcript?.trim();
+      if (!transcript) return [];
+      const firstWord = alternative?.words?.find((word) => word.startTime);
+      const lastWord = [...(alternative?.words || [])].reverse().find((word) => word.endTime);
+      const startMilliseconds = googleDurationMilliseconds(firstWord?.startTime) ?? previousEndMilliseconds;
+      const parsedEnd = googleDurationMilliseconds(lastWord?.endTime)
+        ?? googleDurationMilliseconds(result.resultEndTime);
+      const endMilliseconds = Math.max(startMilliseconds + 1, parsedEnd ?? startMilliseconds + 1);
+      previousEndMilliseconds = endMilliseconds;
+      return [{ text: transcript, startMilliseconds, endMilliseconds }];
+    });
     if (usageScope) {
       await recordAiUsageSafely({
         ...usageScope,
@@ -453,7 +475,12 @@ export async function transcribeGoogleAudio(
         latencyMs: Date.now() - startedAt,
       });
     }
-    return { text, model };
+    return {
+      text,
+      model,
+      segments,
+      durationMs: Math.max(1, ...segments.map((segment) => segment.endMilliseconds)),
+    };
   } catch (error) {
     if (usageScope) {
       await recordAiUsageSafely({
@@ -472,6 +499,14 @@ export async function transcribeGoogleAudio(
     }
     throw error;
   }
+}
+
+function googleDurationMilliseconds(value?: string) {
+  if (!value || !/^\d+(?:\.\d+)?s$/.test(value)) return undefined;
+  const seconds = Number(value.slice(0, -1));
+  return Number.isFinite(seconds) && seconds >= 0
+    ? Math.round(seconds * 1_000)
+    : undefined;
 }
 
 export async function synthesizeGoogleSpeech(
