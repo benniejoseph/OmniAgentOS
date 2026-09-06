@@ -173,19 +173,31 @@ export function buildCustomAgentIdentityV1(input: {
   skills: readonly AgentSkill[];
   definitionVersion: number;
   previousDefinitionVersionId?: string | null;
+  ownerActorId?: string;
+  definitionPublishedAt?: string;
+  principalId?: string;
   principalGeneration: number;
   previousPrincipalVersionId?: string | null;
   principalState?: "held" | "active" | "revoked";
   principalCreatedAt?: string;
   principalRevokedAt?: string | null;
 }) {
+  const ownerActorId = input.ownerActorId || input.agent.actorId;
+  const definitionId = `definition:custom:${input.agent.id}`;
+  const principalId = input.principalId || scopedPrincipalId(
+    input.agent.id,
+    input.agent.tenantId,
+    ownerActorId,
+  );
   const definition = buildAgentDefinitionV1({
-    definitionId: `definition:custom:${input.agent.id}`,
+    definitionId,
     definitionVersion: input.definitionVersion,
-    previousDefinitionVersionId: input.previousDefinitionVersionId || null,
+    previousDefinitionVersionId: input.previousDefinitionVersionId === undefined
+      ? previousVersionId(definitionId, "v", input.definitionVersion)
+      : input.previousDefinitionVersionId,
     origin: "custom",
     tenantId: input.agent.tenantId,
-    ownerActorId: input.agent.actorId,
+    ownerActorId,
     logicalAgentId: input.agent.id,
     slug: input.agent.slug,
     name: input.agent.name,
@@ -196,14 +208,16 @@ export function buildCustomAgentIdentityV1(input: {
     accent: input.agent.accent,
     modelPolicy: input.agent.modelPolicy,
     skills: input.skills,
-    publishedAt: input.agent.updatedAt,
+    publishedAt: input.definitionPublishedAt || input.agent.updatedAt,
   });
   const principal = buildAgentPrincipalDefinitionV1({
-    principalId: scopedPrincipalId(input.agent.id, input.agent.tenantId, input.agent.actorId),
+    principalId,
     principalGeneration: input.principalGeneration,
-    previousPrincipalVersionId: input.previousPrincipalVersionId || null,
+    previousPrincipalVersionId: input.previousPrincipalVersionId === undefined
+      ? previousVersionId(principalId, "g", input.principalGeneration)
+      : input.previousPrincipalVersionId,
     tenantId: input.agent.tenantId,
-    controllerActorId: input.agent.actorId,
+    controllerActorId: ownerActorId,
     logicalAgentId: input.agent.id,
     definitionId: definition.definitionId,
     state: input.principalState || "active",
@@ -359,7 +373,7 @@ export function parseAgentPrincipalDefinitionV1(
   value: unknown,
 ): AgentPrincipalDefinitionV1 {
   const parsed = agentPrincipalDefinitionV1Schema.parse(value);
-  const { principalSha256, ...body } = parsed;
+  const { principalSha256 } = parsed;
   const expectedVersionId = `${parsed.principalId}:g${parsed.principalGeneration}`;
   const expectedPreviousVersionId = parsed.principalGeneration === 1
     ? null
@@ -372,7 +386,7 @@ export function parseAgentPrincipalDefinitionV1(
   ) {
     throw new Error("Agent principal version identity is invalid.");
   }
-  if (sourceContractSha256(body) !== principalSha256) {
+  if (sourceContractSha256(principalImmutableBody(parsed)) !== principalSha256) {
     throw new Error("Agent principal digest is invalid.");
   }
   return deepFreeze(parsed);
@@ -493,8 +507,28 @@ function buildAgentPrincipalDefinitionV1(
   });
   return parseAgentPrincipalDefinitionV1({
     ...body,
-    principalSha256: sourceContractSha256(body),
+    principalSha256: sourceContractSha256(principalImmutableBody(body)),
   });
+}
+
+function principalImmutableBody(
+  value: z.infer<typeof agentPrincipalBodySchema> & { principalSha256?: string },
+) {
+  const {
+    state: _state,
+    revokedAt: _revokedAt,
+    principalSha256: _principalSha256,
+    ...immutable
+  } = value;
+  return immutable;
+}
+
+function previousVersionId(
+  id: string,
+  marker: "v" | "g",
+  version: number,
+) {
+  return version === 1 ? null : `${id}:${marker}${version - 1}`;
 }
 
 function buildSkillPin(skill: AgentSkill) {
