@@ -1181,6 +1181,19 @@ actors cannot see those nodes or edges. Migration v80 makes the validated
 transaction scope an initplan input to those policies, avoiding per-row parsing
 without weakening tenant, actor, visibility, or purpose checks.
 
+P5.3 adds a separate actor-private typed-relation ledger without rewriting the
+legacy topic/co-occurrence graph. A logical claim has immutable ontology and
+endpoint identity; each revision records one of `asserted`, `observed`,
+`inferred`, or `computed`, exact evidence lineage, confidence, a half-open valid
+interval, and its recorded time. A correction appends a successor and closes
+only the prior system interval in the same transaction. A deferred database
+constraint rejects a closed revision without that exact successor, so history
+cannot be overwritten or stranded. Independently evidenced overlaps remain
+separate claims. Forced tenant/actor RLS plus memory and canonical-evidence
+barriers apply before reads, and graph query responses expose neither binding
+contracts nor evidence identifiers. P5.4 will populate and repair this ledger
+transactionally from canonical claim/evidence changes.
+
 Migration v81 adds immutable actor ownership to agent runs and applies
 restrictive actor policies to runs, threads, turns, run events, checkpoints,
 checkpoint references and resume claims, and fork lineage. Authenticated web

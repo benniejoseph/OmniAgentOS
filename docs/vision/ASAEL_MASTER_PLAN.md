@@ -2251,6 +2251,30 @@ registry, memory, review, and canonical text-evidence scope. This evidence does
 not grant production merge or access-broadening authority, and the legacy graph
 projection remains unchanged until P5.3/P5.4.
 
+P5.3 is complete at exact production release
+`d01c11fd9ccd10c46bc1918b4e22eff955c146e1`. Typed relation claims are pinned
+to the versioned ontology and retain exact actor-private access, endpoint,
+lineage, confidence, and temporal coordinates. Asserted, observed, inferred,
+and computed claims remain epistemically distinct. Each correction appends an
+immutable successor, closes the prior half-open system interval, and preserves
+the previous revision; independently evidenced overlaps and contradictions are
+never overwritten. Valid time and recorded time can therefore be queried
+independently, including full change history and retractions.
+
+Migration 105 installs the relation ledger with forced tenant and actor RLS,
+five restrictive policies, current memory/evidence barriers, database-level
+ontology validation, four append-only boundary triggers, and temporal endpoint
+indexes. Supabase reports the exact schema marker and an empty initial ledger.
+The authenticated graph API now accepts the bounded `temporal_relations` view
+with entity, relation, epistemic-kind, valid-time, recorded-time, and history
+filters; its public projection omits access contracts, actor coordinates,
+digests, and evidence identifiers. Forty-nine focused checks, affected lint,
+TypeScript, and the Next 16 production build passed. Canonical Vercel, Fly
+protocol 1, and all activated worker lanes are healthy on the exact release,
+and anonymous graph access remains closed. P5.4 is next: transactionally derive
+and self-correct this projection from canonical claims and evidence. P12/P13
+remain deferred.
+
 The first P6.1 delivery is active only for an exact, low-risk recent-runs read.
 An exact tenant rollout pins the Loop v2 engine, transition contract, and
 configuration. Migration v85 stores the immutable actor-owned checkpoint chain
