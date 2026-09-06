@@ -8506,6 +8506,7 @@ async function ensureAgentIdentityVersionsV1(sql: SqlClient) {
     AS $function$
     DECLARE
       expected_version BIGINT;
+      expected_previous_version BIGINT;
     BEGIN
       PERFORM pg_advisory_xact_lock(
         hashtext(NEW.tenant_id), hashtext(NEW.agent_definition_id)
@@ -8515,9 +8516,13 @@ async function ensureAgentIdentityVersionsV1(sql: SqlClient) {
       FROM public.omni_agent_definition_versions
       WHERE tenant_id = NEW.tenant_id
         AND agent_definition_id = NEW.agent_definition_id;
+      expected_previous_version := CASE
+        WHEN expected_version = 1 THEN NULL
+        ELSE expected_version - 1
+      END;
       IF NEW.definition_version IS DISTINCT FROM expected_version
         OR NEW.previous_definition_version IS DISTINCT FROM
-          CASE WHEN expected_version = 1 THEN NULL ELSE expected_version - 1 END
+          expected_previous_version
       THEN
         RAISE EXCEPTION 'Agent definition version is not the next revision'
           USING ERRCODE = '23514';
