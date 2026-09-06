@@ -18,6 +18,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import type { ToolDefinition } from "@/lib/tools/types";
 import type { AiUsageScope } from "@/lib/usage/types";
 import { shouldUseLiveWebSearch } from "@/lib/web-search/search";
+import { normalizeWorkflowNodeInputBindings } from "@/lib/workflows/dependency-bindings";
 import { withWorkflowNodeContract } from "@/lib/workflows/node-contract";
 import type { SavedProcedureToolBinding } from "@/lib/workflows/saved-procedures";
 import type {
@@ -96,6 +97,12 @@ const planNodeSchema = z.object({
     )
     .optional()
     .default([]),
+  inputBindings: z.array(z.object({
+    dependencyNodeId: z.string().min(1).max(120),
+    targetToolId: z.string().min(1).max(240),
+    targetPath: z.string().min(1).max(500),
+    artifactName: z.string().max(160),
+  }).strict()).max(16).optional().default([]),
   connectorTargets: z.array(z.string()),
   riskLevel: z.number().int().min(0).max(3),
   approvalRequired: z.boolean(),
@@ -968,6 +975,9 @@ function normalizeNodes(nodes: WorkflowPlanNode[], knownToolIds: Set<string>) {
     const toolIds = unique(
       node.toolIds.filter((toolId) => knownToolIds.has(toolId)),
     ).slice(0, 8);
+    const dependsOn = unique(
+      node.dependsOn.map(slugify).filter((dep) => dep && dep !== id),
+    ).slice(0, 8);
     const toolInputs = (node.toolInputs || [])
       .flatMap((toolInput) => {
         if (!toolIds.includes(toolInput.toolId)) {
@@ -987,9 +997,14 @@ function normalizeNodes(nodes: WorkflowPlanNode[], knownToolIds: Set<string>) {
       label: node.label.trim().slice(0, 120) || `Step ${index + 1}`,
       kind: normalizeNodeKind(node.kind),
       description: node.description.trim().slice(0, 1000),
-      dependsOn: unique(node.dependsOn.map(slugify).filter((dep) => dep && dep !== id)).slice(0, 8),
+      dependsOn,
       toolIds,
       toolInputs,
+      inputBindings: normalizeWorkflowNodeInputBindings({
+        bindings: node.inputBindings,
+        dependencyNodeIds: dependsOn,
+        toolIds,
+      }),
       connectorTargets: unique(node.connectorTargets.map(slugify).filter(Boolean)).slice(0, 8),
       riskLevel: clampRisk(node.riskLevel),
       approvalRequired: Boolean(node.approvalRequired || node.riskLevel >= 2),
@@ -1217,6 +1232,7 @@ Rules:
 - Build a directed acyclic graph, not a prose checklist.
 - Use only tool IDs provided in Available tools.
 - For every selected tool on a node, add one toolInputs entry. inputJson must be a JSON object string that matches that tool's inputSchema. Never place credential values in inputJson; use an allowed server-side env reference when a schema supports one.
+- When a downstream tool needs an upstream artifact, add an inputBindings entry naming the direct dependency node, target tool, safe content/data/query/body/message JSON Pointer, and artifact name (an empty name means all dependency artifacts). Never bind artifacts into URLs, hosts, paths, methods, headers, credentials, tokens, secrets, environment references, or commands.
 - Prefer low-risk read tools for research and dry-run before side effects.
 - Any risk level 2 or 3 node must set approvalRequired true and policy approval_required.
 - Include at least one verify node and one memory/report node.
@@ -1533,6 +1549,7 @@ const planNodeJsonSchema = {
     "dependsOn",
     "toolIds",
     "toolInputs",
+    "inputBindings",
     "connectorTargets",
     "riskLevel",
     "approvalRequired",
@@ -1559,6 +1576,21 @@ const planNodeJsonSchema = {
             type: "string",
             description: "A JSON-encoded object matching the selected tool input schema.",
           },
+        },
+      },
+    },
+    inputBindings: {
+      type: "array",
+      maxItems: 16,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["dependencyNodeId", "targetToolId", "targetPath", "artifactName"],
+        properties: {
+          dependencyNodeId: { type: "string" },
+          targetToolId: { type: "string" },
+          targetPath: { type: "string" },
+          artifactName: { type: "string" },
         },
       },
     },
