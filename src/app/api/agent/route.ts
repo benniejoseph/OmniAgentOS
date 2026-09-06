@@ -516,6 +516,12 @@ async function POSTHandler(request: Request) {
             actorId: context.actorId,
             agentId: executingAgentId,
           });
+        const agentPrincipalExecution = {
+          executingPrincipalType: "agent" as const,
+          executingPrincipalId: agentIdentity.principal.principalId,
+          contextGrantIds: agentIdentity.principal.contextGrantIds,
+          capabilityGrantIds: agentIdentity.principal.capabilityGrantIds,
+        };
         let loopV2CanaryEnrollment;
         let loopV2ModelTextEnrollment;
         try {
@@ -578,9 +584,7 @@ async function POSTHandler(request: Request) {
           actorId: context.actorId,
           idempotencyKey: `agent-request:${requestId}`,
           executionScope: executionScopeFromSecurityContext(context, {
-            executingPrincipalType: "agent",
-            executingPrincipalId:
-              customAgent?.id || decision.primaryAgentId,
+            ...agentPrincipalExecution,
             missionId: parsed.data.missionId,
             projectId: threadProjectId,
             correlationId: requestId,
@@ -649,8 +653,7 @@ async function POSTHandler(request: Request) {
               streamId: `thread:${thread.id}`,
               type: "intent.clarification_requested",
               executionScope: executionScopeFromSecurityContext(context, {
-                executingPrincipalType: "agent",
-                executingPrincipalId: customAgent?.id || decision.primaryAgentId,
+                ...agentPrincipalExecution,
                 missionId: mission?.id,
                 projectId: threadProjectId,
                 correlationId: requestId,
@@ -687,9 +690,7 @@ async function POSTHandler(request: Request) {
               missionOwner = {
                 ...missionOwner,
                 executionScope: executionScopeFromSecurityContext(context, {
-                  executingPrincipalType: "agent",
-                  executingPrincipalId:
-                    customAgent?.id || decision.primaryAgentId,
+                  ...agentPrincipalExecution,
                   projectId: threadProjectId,
                   missionId: parsed.data.missionId,
                   correlationId: requestId,
@@ -717,9 +718,7 @@ async function POSTHandler(request: Request) {
               missionOwner = {
                 ...missionOwner,
                 executionScope: executionScopeFromSecurityContext(context, {
-                  executingPrincipalType: "agent",
-                  executingPrincipalId:
-                    customAgent?.id || decision.primaryAgentId,
+                  ...agentPrincipalExecution,
                   projectId: threadProjectId,
                   missionId: mission.id,
                   correlationId: requestId,
@@ -735,9 +734,7 @@ async function POSTHandler(request: Request) {
               const parentExecutionScope = executionScopeFromSecurityContext(
                 context,
                 {
-                  executingPrincipalType: "agent",
-                  executingPrincipalId:
-                    customAgent?.id || decision.primaryAgentId,
+                  ...agentPrincipalExecution,
                   projectId: threadProjectId,
                   missionId: mission.id,
                   correlationId: requestId,
@@ -789,9 +786,7 @@ async function POSTHandler(request: Request) {
               tenantId: context.tenantId,
               executionAuthority: {
                 executionScope: executionScopeFromSecurityContext(context, {
-                  executingPrincipalType: "agent",
-                  executingPrincipalId:
-                    customAgent?.id || decision.primaryAgentId,
+                  ...agentPrincipalExecution,
                   projectId: threadProjectId,
                   missionId: mission.id,
                   correlationId: requestId,
@@ -911,8 +906,7 @@ async function POSTHandler(request: Request) {
         const directExecutionScope = executionScopeFromSecurityContext(
           context,
           {
-            executingPrincipalType: "agent",
-            executingPrincipalId: executingAgentId,
+            ...agentPrincipalExecution,
             projectId: threadProjectId,
             missionId: mission?.id,
             correlationId: requestId,

@@ -117,7 +117,10 @@ beforeEach(() => {
       definitionVersionId: "definition:built-in:atlas:v1",
     },
     principal: {
+      principalId: "agent:atlas:test",
       principalVersionId: "agent:atlas:test:g1",
+      contextGrantIds: ["context:atlas-read"],
+      capabilityGrantIds: ["capability:atlas-read"],
     },
   });
   routeMocks.listConversationSummaries.mockReset().mockResolvedValue([]);
@@ -190,7 +193,9 @@ describe("agent intent clarification", () => {
         tenantId: context.tenantId,
         initiatingActorId: context.actorId,
         executingPrincipalType: "agent",
-        executingPrincipalId: "atlas",
+        executingPrincipalId: "agent:atlas:test",
+        contextGrantIds: ["context:atlas-read"],
+        capabilityGrantIds: ["capability:atlas-read"],
         correlationId: "clarify-delete-a",
         causationId: "turn-user",
         purpose: "agent.intent.clarification",
