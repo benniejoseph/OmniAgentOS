@@ -651,8 +651,31 @@ Migration v99 persists asset receipts and validates partial-state compatibility.
 The authenticated production CSV canary returned one exact `sheet_range` unit,
 proved original and derivative scope inheritance, completed indexing, and then
 deleted its asset and knowledge before the worker physically scrubbed the Blob.
-P2.8 remains open, and the P2.3 live Google-provider proof still requires
-external enrollment.
+
+P2.8 is complete at production release
+`23aba20acc942445de421eba0f8627df10f89f5b`. Portable archive v2 binds every
+included section to a schema-closed manifest with declared counts, SHA-256
+digests, restore dispositions, and explicit known or unknown exclusions.
+Knowledge export requires exact current source ownership; private memory uses
+the canonical actor-purpose boundary and discloses that legacy unscoped rows
+are excluded. Connector exports retain only provider, scopes, and a
+configuration digest and always require reauthorization. Credentials,
+secrets, embeddings, provider cursors, and operational audit data never enter
+the archive. Up to 25 eligible originals / 2 MB may be included only through
+metadata-bound AES-256-GCM encryption with a user passphrase.
+
+Restore verifies the complete archive, section and content hashes, encrypted
+asset authentication, and skill/agent collision preflight before the first
+mutation. Writes rebind the exact target tenant and owner, retain archive
+provenance, converge on deterministic records or exact existing matches, and
+emit a metadata-only, digest-bound count/hash/ownership/provenance receipt.
+The authenticated production export verified 72 included records and every
+declared exclusion without credential material. An isolated encrypted-asset
+restore matched its declared byte count and content hash, became readable only
+after the owner-scoped private object reached ready, then was deleted and
+physically scrubbed with zero job failures. No database migration was required.
+The P2.3 live Google-provider proof still requires external enrollment, so the
+aggregate Phase 2 gate remains open for that external proof only.
 
 ### Phase 3 — Long-lasting, persistent, readable memory
 

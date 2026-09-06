@@ -1396,3 +1396,15 @@ source kind, format, terminal state, content digest when evidence exists, and
 its own digest. Canonical `EvidenceUnit` rows remain the authoritative
 page/slide/sheet/region/time-range derivatives and inherit or narrow the source
 permission and retention boundary; no new unscoped content event is created.
+
+## Portable archive restore
+
+P2.8 adds `portable_archive.restore_completed` to the exact actor-scoped
+archive stream after archive verification and every declared restore
+disposition completes. Its schema-v1 receipt contains only the archive and
+manifest digests, source and target owner/tenant digests, per-section declared
+and processed counts, section-input digests, connector reauthorization count,
+verification booleans, and the receipt digest. It never contains exported
+content, filenames, source identifiers, connector metadata, credentials,
+passphrases, decrypted bytes, or private reasoning. The event records the
+verified result; it does not grant access or authorize later connector use.
