@@ -1308,6 +1308,27 @@ Legacy requests without the new field retain their prior behavior. Durable
 workflow and Loop v2 adoption require their own pinned contract changes and are
 not silently enrolled by this direct-run slice.
 
+P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
+provider sees the redacted query and planning time, not authorization coordinates. Its
+`p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,
+entity/relationship/procedural terms, temporal mode/expressions, confidence,
+validation state, and content-free provider receipt metadata. The original
+query always remains the first search query. Deterministic temporal detection
+cannot be replaced by a model suggestion, and unknown or authority-shaped
+fields invalidate the complete model candidate.
+
+Planning never constructs or mutates access. The context engine resolves the
+database memory scope first, plans independently, and passes that exact scope
+unchanged to memory and graph reads; knowledge remains tenant-scoped through its
+existing store boundary. Semantic planning is optional and requires server-side
+tenant/actor usage attribution plus a recorded structured-generation receipt.
+Direct agent and durable workflow callers reserve one model turn before the
+call; budget refusal propagates before disclosure. Provider, schema, or receipt
+failure uses the deterministic plan, while casual or explicit-empty input never
+calls a provider. Retrieval traces retain the validated plan in their existing
+owner visibility boundary and synthesize a deterministic plan when reading an
+older trace.
+
 ## Capture asset object plane
 
 Capture files and recording segments retain database bytes through the rollback

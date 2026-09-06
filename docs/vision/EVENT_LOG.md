@@ -1505,3 +1505,23 @@ and its private contents are never copied into the tool event. The forget tool
 records the reviewed preview digest and resulting deletion-receipt digest, not
 memory content or the user's prose. A process-loss reconciliation must re-enter
 the same actor-purpose memory scope before finalizing the governed execution.
+
+## Governed retrieval query planning
+
+P4.3 adds no authority or mutation event. The existing immutable retrieval
+trace stores the validated `p4.3-query-plan:1` profile under the same
+tenant-compatible or actor-private visibility boundary as the query and selected
+evidence metadata. The plan records bounded domains, queries, descriptive
+terms, temporal mode/expressions, confidence, validation booleans, fallback
+reason, and content-free provider/model usage-receipt coordinates. It contains
+no access binding, tenant/actor field, grant, tool, policy decision, evidence
+content, or private reasoning. Older traces receive a deterministic plan only
+in their read projection; their stored history is not rewritten.
+
+The semantic planning call uses the ordinary AI usage ledger with purpose
+`context.query_plan.semantic`. A recorded structured-generation receipt is
+required before any model candidate can become active. The caller reserves its
+model budget before disclosure, while provider, schema, or usage-receipt failure
+falls back to the deterministic plan. Neither receipt nor plan grants retrieval
+access: the context engine continues to enforce the independently resolved
+database and tenant boundaries on every search.
