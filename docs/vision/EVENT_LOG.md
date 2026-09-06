@@ -1542,3 +1542,21 @@ never submitted to the legacy OpenAI vector index. An external embedding
 provider requires explicit caller permission. Neither receipt can grant access,
 change scope, reactivate lifecycle-invalid evidence, or create a domain event;
 no database migration is required.
+
+## Lineage-aware context budgets
+
+P4.5 adds no mutation event and grants no authority. Its content-free
+`p4.5-context-budget:1` receipt is persisted inside the existing retrieval
+profile JSON. The receipt records only estimator/policy versions, model/task
+limits, reserved and effective capacity, formatted-token estimate, compliance,
+candidate/selection/lineage/duplicate/truncation counts, tier allocation totals,
+duplicate-token share, and a receipt digest. Evidence rows expose only a hashed
+lineage reference and bounded allocation metadata. Query text, evidence content,
+raw source/evidence/memory identifiers, credentials, embeddings, and private
+reasoning are excluded from the receipt.
+
+Lineage grouping and allocation occur only after the existing authorized read
+and learned rerank. The allocator may remove or truncate a candidate but cannot
+add evidence, widen scope, change lifecycle state, or alter the P4.1 compiler's
+authorization decision. Existing retrieval-profile JSON storage carries the
+receipt without a migration.
