@@ -85,7 +85,8 @@ export type SemanticIntentReceipt = Readonly<{
   fallbackReasonCode?:
     | "deterministic_invariant"
     | "model_unavailable"
-    | "model_output_invalid";
+    | "model_output_invalid"
+    | "model_usage_unrecorded";
 }>;
 
 export type SemanticSupervisorResolution = Readonly<{
@@ -177,7 +178,10 @@ export function applySemanticIntentPolicy(input: {
 
 export function deterministicSemanticFallback(input: {
   baseline: SupervisorDecision;
-  reasonCode: "model_unavailable" | "model_output_invalid";
+  reasonCode:
+    | "model_unavailable"
+    | "model_output_invalid"
+    | "model_usage_unrecorded";
 }): SemanticSupervisorResolution {
   return {
     decision: input.baseline,
