@@ -182,7 +182,23 @@
 .dialog :global(input), .dialog :global(textarea), .dialog :global(select) { border-color: var(--day-line); border-radius: 1rem; color: var(--day-ink); background: var(--day-bg); }
 .dialog > footer button { border-radius: 999px; }
 
-.registryBackdrop { place-items: stretch end; padding: 0; }
+.registryBackdrop {
+  --day-bg: var(--background);
+  --day-paper: color-mix(in oklab, var(--surface) 88%, transparent);
+  --day-paper-solid: var(--surface);
+  --day-paper-soft: var(--surface-raised);
+  --day-ink: var(--foreground);
+  --day-muted: var(--muted);
+  --day-line: var(--line);
+  --day-line-strong: color-mix(in oklab, var(--line) 74%, var(--foreground));
+  --day-primary: var(--primary);
+  --day-primary-ink: var(--primary-ink);
+  --day-mint: color-mix(in oklab, var(--primary) 12%, var(--surface));
+  --day-shadow: oklch(0 0 0 / .2);
+  z-index: 120;
+  place-items: stretch end;
+  padding: 0;
+}
 .registryDialog { width: min(46rem, 100%); height: 100svh; max-height: 100svh; border-width: 0 0 0 1px; border-radius: 3rem 0 0 3rem; padding: clamp(1.15rem, 2.5vw, 2rem); animation: registry-reveal 180ms ease both; }
 .registryDialog > .registryHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--day-line); padding-bottom: 1.1rem; }
 .registryHeader > div:first-child { max-width: 32rem; }
