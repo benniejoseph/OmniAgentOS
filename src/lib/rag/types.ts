@@ -123,7 +123,7 @@ export type RetrievalProfile = {
   reranker?: import("@/lib/rag/learned-reranker").RetrievalRerankerReceipt;
 };
 
-export type ContextEvidenceItem =
+export type ContextEvidenceItem = (
   | {
       id: string;
       kind: "memory";
@@ -168,7 +168,17 @@ export type ContextEvidenceItem =
       confidence: number;
       reasons: string[];
       result: import("@/lib/memory/types").MemoryGraphSearchResult;
-    };
+    }
+) & {
+  /** Content-free digest shared by evidence derived from one underlying source. */
+  lineageRefSha256?: string;
+  /** P4.5 allocation tier applied after authorization and ranking. */
+  contextTier?: import("@/lib/rag/context-budget").ContextBudgetTier;
+  /** Provider-neutral estimate for the evidence content retained in this pack. */
+  tokenEstimate?: number;
+  /** True only when the allocator shortened content to honor the hard limit. */
+  contentTruncated?: boolean;
+};
 
 export type RetrievalTraceRecord = {
   id: string;
@@ -189,7 +199,11 @@ export type RetrievalTraceRecord = {
     utilityScore: number;
     confidence: number;
     reasons: string[];
+    lineageRefSha256?: string;
+    contextTier?: import("@/lib/rag/context-budget").ContextBudgetTier;
+    tokenEstimate?: number;
   }>;
+  contextBudget?: import("@/lib/rag/context-budget").ContextBudgetReceipt;
   createdAt: string;
 };
 
@@ -201,6 +215,7 @@ export type ContextPack = {
   knowledgeResults: KnowledgeSearchResult[];
   graphResults: import("@/lib/memory/types").MemoryGraphSearchResult[];
   contextBlock: string;
+  budget: import("@/lib/rag/context-budget").ContextBudgetReceipt;
   trace?: RetrievalTraceRecord;
   /** Additive P4.1 comparison; it never changes the active prompt selection. */
   compilerV2Shadow?: import("@/lib/rag/context-compiler-v2").ContextCompilerV2Shadow;

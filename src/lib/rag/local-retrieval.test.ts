@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
+import { estimateContextTokens } from "@/lib/rag/context-budget";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(
@@ -115,5 +116,74 @@ describe("P4.4 local multilingual retrieval", () => {
       algorithm: "pairwise_logistic_regression",
       externalDisclosure: false,
     });
+  });
+
+  it("persists a lineage-deduplicated pack that cannot exceed either token limit", async () => {
+    const [{ saveMemory }, { buildContextPack }] = await Promise.all([
+      import("@/lib/memory/store"),
+      import("@/lib/rag/context-engine"),
+    ]);
+    const repeated = "Restore the Orion database from its verified backup. ";
+    await saveMemory({
+      tenantId: "tenant-context-budget",
+      title: "Orion restore source A",
+      content: repeated.repeat(18),
+      type: "knowledge",
+      tier: "semantic",
+      evidenceRefs: ["knowledge:orion-runbook"],
+      importance: 0.9,
+    });
+    await saveMemory({
+      tenantId: "tenant-context-budget",
+      title: "Orion restore source B",
+      content: `${repeated.repeat(15)}Validate the checksum.`,
+      type: "knowledge",
+      tier: "semantic",
+      evidenceRefs: ["knowledge:orion-runbook"],
+      importance: 0.85,
+    });
+    await saveMemory({
+      tenantId: "tenant-context-budget",
+      title: "Orion recovery approval",
+      content: "The approved decision is to stop writes before the Orion restore.",
+      type: "decision",
+      tier: "decision",
+      evidenceRefs: ["turn:orion-decision"],
+      importance: 0.95,
+    });
+
+    const pack = await buildContextPack(
+      "What is the approved Orion database restore procedure?",
+      {
+        tenantId: "tenant-context-budget",
+        limit: 6,
+        persistTrace: true,
+        queryPlanning: { allowSemanticModel: false },
+        contextBudget: {
+          modelInputTokenLimit: 1_200,
+          reservedModelTokens: 300,
+          taskContextTokenLimit: 760,
+          duplicateTokenShareTarget: 0.2,
+        },
+      },
+    );
+
+    expect(pack.budget).toMatchObject({
+      version: "p4.5-context-budget:1",
+      effectiveTokenLimit: 760,
+      withinBudget: true,
+    });
+    expect(estimateContextTokens(pack.contextBlock)).toBeLessThanOrEqual(760);
+    expect(pack.budget.duplicateCandidateCount).toBeGreaterThan(0);
+    expect(pack.budget.duplicateTokenShare).toBeLessThanOrEqual(0.2);
+    expect(pack.results.every((item) =>
+      /^[a-f0-9]{64}$/.test(item.lineageRefSha256 || "") &&
+      Boolean(item.contextTier) &&
+      Number.isInteger(item.tokenEstimate)
+    )).toBe(true);
+    expect(pack.trace?.contextBudget).toEqual(pack.budget);
+    expect(JSON.stringify(pack.trace?.contextBudget)).not.toContain(
+      "orion-runbook",
+    );
   });
 });

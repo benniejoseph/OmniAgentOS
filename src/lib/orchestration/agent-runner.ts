@@ -70,6 +70,7 @@ import {
 } from "@/lib/orchestration/council";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { emptyContextBudgetReceipt } from "@/lib/rag/context-budget";
 import { contextScopeMemoryMode } from "@/lib/rag/context-scope";
 import { buildDeterministicRetrievalQueryPlan } from "@/lib/rag/query-planner";
 import {
@@ -163,6 +164,7 @@ const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_TOOL_CALLS_PER_TURN = 5;
 const MAX_TOOL_ARGUMENT_BYTES = 64_000;
 const WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS = 3_000;
+const AGENT_CONTEXT_TASK_TOKEN_LIMIT = 4_096;
 
 type QueuedFunctionCall = ResponseFunctionCall & {
   skipReason?: string;
@@ -689,7 +691,10 @@ export async function* runAgent(
       shouldUseLiveWebSearch(query) &&
       hasOpenAIKey();
     if (durableMemoryEnabled) {
-      reserveBudget({ tokens: 1_024, costMicrousd: 1_000 });
+      reserveBudget({
+        tokens: AGENT_CONTEXT_TASK_TOKEN_LIMIT,
+        costMicrousd: 1_000,
+      });
     }
     if (useLiveWeb) {
       reserveModelTurnWithoutRetry();
@@ -708,6 +713,9 @@ export async function* runAgent(
             ? { workingMemoryReference: `thread:${request.threadId}` as const }
             : {}),
           evidenceIds: request.contextSelection?.evidenceIds,
+          contextBudget: {
+            taskContextTokenLimit: AGENT_CONTEXT_TASK_TOKEN_LIMIT,
+          },
           ...(runtimeModel.provider === "openai"
             ? {
                 embeddingPolicy: {
@@ -5174,6 +5182,9 @@ function fallbackContextPack(query: string): ContextPack {
     knowledgeResults: [],
     graphResults: [],
     contextBlock: "",
+    budget: emptyContextBudgetReceipt({
+      taskContextTokenLimit: AGENT_CONTEXT_TASK_TOKEN_LIMIT,
+    }),
   };
 }
 

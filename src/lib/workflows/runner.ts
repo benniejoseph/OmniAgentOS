@@ -68,6 +68,7 @@ import type {
 import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "canceled"]);
+const WORKFLOW_CONTEXT_TASK_TOKEN_LIMIT = 4_096;
 
 export class WorkflowNotFoundError extends Error {
   constructor() {
@@ -920,7 +921,7 @@ async function executeStep(
 
   if (stepKey === "retrieve_context") {
     await runBudget.reserve(
-      { tokens: 1_024, costMicrousd: 1_000 },
+      { tokens: WORKFLOW_CONTEXT_TASK_TOKEN_LIMIT, costMicrousd: 1_000 },
       { phase: "workflow.context.retrieve" },
     );
     const profile = workflowAgentProfile(detail);
@@ -949,6 +950,9 @@ async function executeStep(
       limit: 6,
       tenantId: detail.run.tenantId,
       evidenceIds: contextSelection?.evidenceIds,
+      contextBudget: {
+        taskContextTokenLimit: WORKFLOW_CONTEXT_TASK_TOKEN_LIMIT,
+      },
       ...(usageScope ? { usageScope } : {}),
       ...(retrievalRuntimeModel.provider === "openai"
         ? {
