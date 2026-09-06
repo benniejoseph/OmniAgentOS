@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Check,
   GitMerge,
@@ -163,7 +164,7 @@ export function EntityRegistryDialog({
     setRefreshing(false);
   }
 
-  return (
+  return createPortal((
     <div
       className={clsx("memory-dialog-backdrop", styles.dialogBackdrop, styles.registryBackdrop)}
       role="presentation"
@@ -288,7 +289,7 @@ export function EntityRegistryDialog({
         </section>
       </section>
     </div>
-  );
+  ), document.body);
 }
 
 function MergeReviewRow({
