@@ -1375,3 +1375,12 @@ references. They never contain asset bytes, filenames, notes, transcripts,
 direct Blob URLs, delivery tokens, credentials, or provider output. Staging and
 deletion events share the source mutation transaction; ready, failure, and
 scrub events share the corresponding object-state transaction.
+
+P2.5 adds `asset_object_migration.started`,
+`asset_object_migration.progressed`, `asset_object_migration.completed`, and
+`asset_object_migration.failed` to the owner-scoped migration stream. These
+events retain only the receipt ID, generation, phase, bounded parity counts,
+hashed cursor, verification digest, and operation-job references. They never
+contain source identifiers, filenames, bytes, object locators, credentials, or
+content. A completed event is emitted only in the same transaction that records
+exact parity and unlocks the persisted reader gate.

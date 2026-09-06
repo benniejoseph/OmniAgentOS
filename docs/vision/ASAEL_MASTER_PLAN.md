@@ -625,10 +625,20 @@ actor-and-purpose-bound token and rechecks current source and deletion state;
 the Blob locator is never exposed. The production lifecycle canary proved
 upload, signed read, byte parity, the immediate deletion barrier, retry after
 an interrupted scrub, and final physical deletion. Migration v97 supplies
-forced tenant-and-actor RLS and the metadata/event boundary. Legacy reads stay
-authoritative until P2.5 completes resumable historical backfill and activates
-one persisted tenant read rollout; P2.6 and P2.8 also remain open, and the P2.3
-live Google-provider proof still requires enrollment.
+forced tenant-and-actor RLS and the metadata/event boundary.
+
+P2.5 is complete at production release
+`50df71029010248d1e13234cebb4ae703abfa30b`. Migration v98 adds an
+owner-scoped, forced-RLS migration receipt with stable cursor, bounded repair,
+and hash/size verification. The production backfill migrated all eight legacy
+assets with 8/8 ready and zero pending, failed, missing, or mismatched objects.
+The persisted generation-2 canary reader served a new asset with exact checksum
+parity; pausing the rollout returned the same bytes from the retained legacy
+reader, and reactivation restored object authority without data loss. The
+canary was then deleted with its indexed knowledge and its private object was
+physically scrubbed. Legacy bytes remain through the rollback window. P2.6 and
+P2.8 remain open, and the P2.3 live Google-provider proof still requires
+enrollment.
 
 ### Phase 3 — Long-lasting, persistent, readable memory
 
