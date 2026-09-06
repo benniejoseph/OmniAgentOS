@@ -949,6 +949,15 @@ async function executeStep(
       tenantId: detail.run.tenantId,
       evidenceIds: contextSelection?.evidenceIds,
       ...(usageScope ? { usageScope } : {}),
+      queryPlanning: {
+        beforeSemanticModelCall: async () => {
+          await reserveWorkflowModelCall(
+            runBudget,
+            { phase: "workflow.context.query_plan" },
+            { allowRetry: false },
+          );
+        },
+      },
     });
     return {
       contextCount: retrieval.results.length + specialistContext.count,

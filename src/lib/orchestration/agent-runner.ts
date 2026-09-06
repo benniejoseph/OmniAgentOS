@@ -71,6 +71,7 @@ import {
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { contextScopeMemoryMode } from "@/lib/rag/context-scope";
+import { buildDeterministicRetrievalQueryPlan } from "@/lib/rag/query-planner";
 import {
   buildCitationSources,
   buildClaimGroundingReport,
@@ -718,6 +719,11 @@ export async function* runAgent(
               causationId: executionScope.causationId || undefined,
               executionScope,
               credentialSource: "deployment_environment" as const,
+            },
+            queryPlanning: {
+              beforeSemanticModelCall: () => {
+                reserveModelTurnWithoutRetry();
+              },
             },
           } : {}),
           ...(promptMemoryAccessScope && request.contextSelection?.evidenceIds.length
@@ -5154,6 +5160,7 @@ function fallbackContextPack(query: string): ContextPack {
       queryTerms: [],
       expandedQueries: [],
       rationale: ["No model provider is configured, so retrieval was skipped."],
+      queryPlan: buildDeterministicRetrievalQueryPlan(query),
     },
     results: [],
     memoryResults: [],
