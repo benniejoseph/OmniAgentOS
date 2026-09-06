@@ -130,6 +130,69 @@ describe("memory persistence safety (file mode)", () => {
     })).resolves.toEqual([candidate]);
   });
 
+  it("holds a contradiction until review and retires the old claim only when confirmed", async () => {
+    const store = await import("@/lib/memory/store");
+    const { createExecutionScope } = await import(
+      "@/lib/security/execution-scope"
+    );
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-reconciliation",
+      initiatingActorId: "actor:reviewer",
+      executingPrincipalType: "user",
+      executingPrincipalId: "actor:reviewer",
+      correlationId: "memory_reconciliation_test",
+      purpose: "test.memory.reconciliation",
+    });
+    const original = await store.saveMemory({
+      tenantId: "tenant-reconciliation",
+      title: "Office day",
+      content: "The office day is Tuesday.",
+      assertedBy: "user",
+      confidence: 0.9,
+    });
+    const proposed = await store.correctMemory(original.id, {
+      content: "The office day is Thursday.",
+      contradiction: true,
+    }, {
+      tenantId: "tenant-reconciliation",
+      actorId: "actor:reviewer",
+      executionScope,
+    });
+
+    expect(proposed).toMatchObject({
+      previous: { id: original.id, claimStatus: "active" },
+      corrected: {
+        claimStatus: "candidate",
+        contradictionOfId: original.id,
+      },
+      review: { kind: "contradiction", status: "pending" },
+    });
+    await expect(store.searchMemories("office day", {
+      tenantId: "tenant-reconciliation",
+    })).resolves.toMatchObject([{ record: { id: original.id } }]);
+
+    const resolved = await store.resolveMemoryReconciliationReview(
+      proposed!.review!.id,
+      "confirm_candidate",
+      {
+        tenantId: "tenant-reconciliation",
+        actorId: "actor:reviewer",
+        executionScope,
+      },
+    );
+    expect(resolved).toMatchObject({
+      status: "resolved",
+      decision: "confirm_candidate",
+      candidate: { claimStatus: "active" },
+      existing: { claimStatus: "contradicted" },
+    });
+    await expect(store.searchMemories("office day", {
+      tenantId: "tenant-reconciliation",
+    })).resolves.toMatchObject([{
+      record: { id: proposed!.corrected.id },
+    }]);
+  });
+
   it("retrieves working memory only for its exact thread or session", async () => {
     const store = await import("@/lib/memory/store");
     const working = await store.saveMemory({
