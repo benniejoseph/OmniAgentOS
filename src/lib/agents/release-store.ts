@@ -218,9 +218,32 @@ export async function initializeAgentReleaseChannelWithSql(input: {
       ${input.definitionVersion}, ${input.canonicalActorId},
       ${input.agent.updatedAt}
     )
+    ON CONFLICT (tenant_id, agent_definition_id) DO NOTHING
     RETURNING *
   `;
-  const channel = channelFromRow(exactlyOne(rows), input.definitionVersion, null);
+  const persistedRows = rows[0] ? rows : await input.sql`
+    SELECT *
+    FROM omni_agent_release_channels
+    WHERE tenant_id = ${input.agent.tenantId}
+      AND agent_definition_id = ${input.agent.id}
+      AND owner_actor_id = ${input.canonicalActorId}
+    LIMIT 1
+  `;
+  const channel = channelFromRow(
+    exactlyOne(persistedRows),
+    input.definitionVersion,
+    null,
+  );
+  if (
+    channel.state !== "active" ||
+    channel.releaseRevision !== 1 ||
+    channel.activeDefinitionVersion !== input.definitionVersion ||
+    channel.previousDefinitionVersion !== null
+  ) {
+    throw new AgentReleaseConflictError(
+      "The initial Agent release channel is inconsistent.",
+    );
+  }
   await appendReleaseEvent(
     input.sql,
     input.agent.id,

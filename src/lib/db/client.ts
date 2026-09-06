@@ -1170,6 +1170,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[113],
+      up: ensureAgentReleaseEnrollmentV1,
+    },
   ];
 }
 
@@ -10221,6 +10225,104 @@ async function ensureAgentReleaseLifecycleV1(sql: SqlClient) {
           AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
       ) THEN
         RAISE EXCEPTION 'Agent release lifecycle boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentReleaseEnrollmentV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 113
+          AND name = 'agent_release_lifecycle_v1'
+          AND checksum =
+            '9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Agent release enrollment predecessor is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_enroll_initial_agent_release_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF NEW.definition_version <> 1 THEN
+        RETURN NEW;
+      END IF;
+      INSERT INTO public.omni_agent_release_channels (
+        tenant_id, agent_definition_id, owner_actor_id,
+        active_definition_version, updated_by_actor_id, updated_at
+      ) VALUES (
+        NEW.tenant_id, NEW.agent_definition_id, NEW.owner_actor_id,
+        NEW.definition_version, NEW.owner_actor_id, NEW.published_at
+      )
+      ON CONFLICT (tenant_id, agent_definition_id) DO NOTHING;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.omni_agent_release_channels channel
+        WHERE channel.tenant_id = NEW.tenant_id
+          AND channel.agent_definition_id = NEW.agent_definition_id
+          AND channel.owner_actor_id = NEW.owner_actor_id
+          AND channel.state = 'active'
+          AND channel.release_revision = 1
+          AND channel.active_definition_version = 1
+          AND channel.previous_definition_version IS NULL
+          AND channel.last_evaluation_id IS NULL
+          AND channel.retired_at IS NULL
+      ) THEN
+        RAISE EXCEPTION 'Initial Agent release enrollment is inconsistent'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_agent_definition_release_enroll
+    ON omni_agent_definition_versions
+  `;
+  await sql`
+    CREATE TRIGGER omni_agent_definition_release_enroll
+    AFTER INSERT ON omni_agent_definition_versions
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_enroll_initial_agent_release_v1()
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_enroll_initial_agent_release_v1()
+    FROM PUBLIC
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgrelid = 'omni_agent_definition_versions'::regclass
+          AND tgname = 'omni_agent_definition_release_enroll'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_agent_definition_versions definition
+        LEFT JOIN omni_agent_release_channels channel
+          ON channel.tenant_id = definition.tenant_id
+          AND channel.agent_definition_id = definition.agent_definition_id
+        WHERE definition.definition_version = 1
+          AND channel.agent_definition_id IS NULL
+      ) THEN
+        RAISE EXCEPTION 'Agent release enrollment boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
