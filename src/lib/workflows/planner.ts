@@ -56,6 +56,7 @@ type BuildWorkflowPlanInput = {
     directive: WorkflowReplanDirectiveV1;
   };
   abortSignal?: AbortSignal;
+  modelMaxAttempts?: number;
   usageAttribution?: Pick<AiUsageScope, "actorId" | "executionScope" | "correlationId" | "causationId">;
 };
 
@@ -229,6 +230,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
       ? `workflow:${input.workflowRunId}`
       : `workflow-plan:${planId}`,
     usageAttribution: input.usageAttribution,
+    modelMaxAttempts: input.modelMaxAttempts,
   });
   const admittedPlan = input.replan
     ? applyWorkflowSubtreeReplan({
@@ -506,6 +508,7 @@ async function generatePlan({
   abortSignal,
   sourceStreamId,
   usageAttribution,
+  modelMaxAttempts,
 }: {
   tenantId: string;
   actorId: string;
@@ -520,6 +523,7 @@ async function generatePlan({
   abortSignal?: AbortSignal;
   sourceStreamId: string;
   usageAttribution?: BuildWorkflowPlanInput["usageAttribution"];
+  modelMaxAttempts?: number;
 }): Promise<{ planner: WorkflowPlanRecord["planner"]; model: string; plan: WorkflowDynamicPlan }> {
   if (requiredToolBindings.length) {
     return {
@@ -582,6 +586,7 @@ async function generatePlan({
           : controller.signal,
         reasoningEffort: "minimal",
         tier: "reasoning",
+        maxAttempts: modelMaxAttempts,
         ...(actorId
           ? {
               usageScope: {

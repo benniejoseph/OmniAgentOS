@@ -121,6 +121,24 @@ describe("model gateway", () => {
     expect(google.generateText).not.toHaveBeenCalled();
   });
 
+  it("never starts a fallback outside the caller's attempt budget", async () => {
+    openAI.configured.mockReturnValue(true);
+    openAI.targets.mockReturnValue([
+      target("openai", "openai-primary", ["text"]),
+      target("openai", "openai-backup", ["text"]),
+    ]);
+    openAI.generateText.mockRejectedValue(
+      Object.assign(new Error("temporarily unavailable"), { status: 503 }),
+    );
+
+    await expect(generateModelText({
+      input: "bounded private context",
+      preferredProvider: "openai",
+      maxAttempts: 1,
+    })).rejects.toMatchObject({ provider: "openai", retryable: true });
+    expect(openAI.generateText).toHaveBeenCalledTimes(1);
+  });
+
   it("does not fall back on invalid or safety failures", async () => {
     process.env.OMNIAGENT_MODEL_PROVIDER_ORDER = "google,openai";
     google.configured.mockReturnValue(true);

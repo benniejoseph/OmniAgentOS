@@ -45,7 +45,7 @@ describe("non-OpenAI governed provider tool loop", () => {
       attempt: number;
       provider: "openai" | "google" | "anthropic" | "aws_bedrock";
       tier: "fast" | "reasoning";
-    }) => undefined);
+    }) => ({ maxAttempts: 1 }));
 
     const loop = runNonOpenAIProviderToolLoop({
       provider: "google",
@@ -100,6 +100,8 @@ describe("non-OpenAI governed provider tool loop", () => {
       costKnown: true,
     });
     expect(collected.result.attempts).toHaveLength(2);
+    expect(generateTurn.mock.calls.every(([request]) => request.maxAttempts === 1))
+      .toBe(true);
     expect(beforeModelTurn.mock.calls.map(([call]) => call)).toEqual([
       { attempt: 5, provider: "google", tier: "fast" },
       { attempt: 6, provider: "google", tier: "fast" },
