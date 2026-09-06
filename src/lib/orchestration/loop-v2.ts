@@ -16,24 +16,44 @@ export const LOOP_V2_SCHEMA_VERSION = 1 as const;
 export const LOOP_V2_CAPABILITY_ID = "agent_loop_v2" as const;
 export const LOOP_V2_ENGINE_VERSION_ID =
   "agent_loop_v2_read_only_canary_1" as const;
+export const LOOP_V2_MODEL_TEXT_CAPABILITY_ID =
+  "agent_loop_v2_model_text" as const;
+export const LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID =
+  "agent_loop_v2_model_text_canary_1" as const;
 export const LOOP_V2_CONTRACT_VERSION_ID =
   "agent_loop_transition_checkpoint_v1" as const;
+const LOOP_V2_TRANSITIONS = Object.freeze([
+  "understand",
+  "clarify",
+  "plan",
+  "act",
+  "observe",
+  "verify",
+  "replan",
+  "finish",
+]);
 export const LOOP_V2_CONFIGURATION_SHA256 = sourceContractSha256({
   engineVersionId: LOOP_V2_ENGINE_VERSION_ID,
   contractVersionId: LOOP_V2_CONTRACT_VERSION_ID,
   taskClass: "single_read_only_governed_tool",
   maxRetries: 2,
   maxReplans: 1,
-  transitions: [
-    "understand",
-    "clarify",
-    "plan",
-    "act",
-    "observe",
-    "verify",
-    "replan",
-    "finish",
-  ],
+  transitions: LOOP_V2_TRANSITIONS,
+});
+export const LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256 = sourceContractSha256({
+  engineVersionId: LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
+  contractVersionId: LOOP_V2_CONTRACT_VERSION_ID,
+  taskClass: "bounded_user_text_summary",
+  inputPrefix: "summarize",
+  minInputChars: 80,
+  maxInputChars: 4_000,
+  maxModelCalls: 1,
+  maxOutputTokens: 256,
+  contextEvidenceCount: 0,
+  toolCount: 0,
+  maxRetries: 2,
+  maxReplans: 1,
+  transitions: LOOP_V2_TRANSITIONS,
 });
 
 export const loopV2StateSchema = z.enum([
@@ -71,14 +91,27 @@ export const loopV2TerminalDispositionSchema = z.enum([
 ]);
 
 const loopV2EnginePinSchema = z.object({
-  capabilityId: z.literal(LOOP_V2_CAPABILITY_ID),
-  engineVersionId: z.literal(LOOP_V2_ENGINE_VERSION_ID),
+  capabilityId: z.enum([
+    LOOP_V2_CAPABILITY_ID,
+    LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
+  ]),
+  engineVersionId: z.enum([
+    LOOP_V2_ENGINE_VERSION_ID,
+    LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
+  ]),
   contractVersionId: z.literal(LOOP_V2_CONTRACT_VERSION_ID),
-  configurationSha256: z.literal(LOOP_V2_CONFIGURATION_SHA256),
+  configurationSha256: sourceContractSha256Schema,
   rolloutMode: z.literal("canary"),
   rolloutGeneration: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
   rolloutLifecycleRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
-}).strict();
+}).strict().superRefine((pin, context) => {
+  if (!loopV2EngineConfigurationMatches(pin)) {
+    context.addIssue({
+      code: "custom",
+      message: "Loop v2 capability, engine, and configuration must match.",
+    });
+  }
+});
 
 const loopV2CheckpointBodySchema = z.object({
   schemaVersion: z.literal(LOOP_V2_SCHEMA_VERSION),
@@ -162,10 +195,12 @@ export function buildLoopV2EnginePin(
   rollout: TenantCapabilityRollout,
 ): LoopV2EnginePin {
   if (
-    rollout.capabilityId !== LOOP_V2_CAPABILITY_ID ||
-    rollout.engineVersion !== LOOP_V2_ENGINE_VERSION_ID ||
     rollout.contractVersionId !== LOOP_V2_CONTRACT_VERSION_ID ||
-    rollout.configurationSha256 !== LOOP_V2_CONFIGURATION_SHA256 ||
+    !loopV2EngineConfigurationMatches({
+      capabilityId: rollout.capabilityId,
+      engineVersionId: rollout.engineVersion,
+      configurationSha256: rollout.configurationSha256,
+    }) ||
     rollout.mode !== "canary" ||
     rollout.status !== "active" ||
     rollout.lifecycleRevision < 1
@@ -181,6 +216,22 @@ export function buildLoopV2EnginePin(
     rolloutGeneration: rollout.rolloutGeneration,
     rolloutLifecycleRevision: rollout.lifecycleRevision,
   }));
+}
+
+function loopV2EngineConfigurationMatches(input: {
+  capabilityId: string;
+  engineVersionId: string;
+  configurationSha256: string;
+}) {
+  return (
+    input.capabilityId === LOOP_V2_CAPABILITY_ID &&
+    input.engineVersionId === LOOP_V2_ENGINE_VERSION_ID &&
+    input.configurationSha256 === LOOP_V2_CONFIGURATION_SHA256
+  ) || (
+    input.capabilityId === LOOP_V2_MODEL_TEXT_CAPABILITY_ID &&
+    input.engineVersionId === LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID &&
+    input.configurationSha256 === LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256
+  );
 }
 
 export function createInitialLoopV2Checkpoint(input: {
