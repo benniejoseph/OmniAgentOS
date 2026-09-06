@@ -205,6 +205,24 @@ Asael's tenant isolation, evidence history, and approval controls.
    tool contract, architectural constraint, focused evaluation, or documented
    runbook—not another paragraph in the system prompt.
 
+## Recurring failure feedback loop
+
+Every persisted evaluation result produces a content-free observation. A
+failed result is assigned one bounded deterministic category and fingerprint;
+the minimized replay record keeps only suite/case/type, the current case
+definition digest, a failure-signal digest, input JSON shape, expected keys,
+and an explicit absence of mutation authority. Raw prompts, inputs, outputs,
+errors, tool results, and reasoning are excluded.
+
+The second consecutive matching failure activates a tenant-scoped cluster,
+opens or updates its evaluation-regression incident, and proposes one
+versioned harness response for operator review. The response may be a focused
+evaluation case, tool contract, prompt change, workflow guard, architecture
+constraint, or runbook. It cannot apply itself. Two focused passes resolve the
+cluster and incident. Replay is allowed only while the stored case-definition
+digest equals the current canonical case and still passes ordinary evaluation
+governance without inherited mutation permission.
+
 ## What not to copy from a blueprint
 
 Waku optimizes for a small, local, single-user assistant. Asael is a

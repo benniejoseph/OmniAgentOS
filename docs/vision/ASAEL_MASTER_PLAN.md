@@ -2108,6 +2108,27 @@ access remains closed. P6.9 recurring-failure minimization and harness-rule
 feedback is next; P6.1 interrupted-run recovery and broader fault injection
 remain separately open, and P12/P13 remain deferred.
 
+P6.9 is complete at exact production release
+`4770ac6791b6661bbba232c7e5198df85bfe56b3`. Evaluation results now enter a
+deterministic recurring-failure loop that records content-free observations,
+groups consecutive matching failures by tenant and fingerprint, minimizes each
+case to definition/signal digests plus input shape and expected keys, and opens
+or updates the corresponding evaluation-regression incident. The second
+consecutive failure produces a versioned review-only proposal for a focused
+evaluation, tool contract, prompt change, workflow guard, architecture
+constraint, or runbook. Proposals are immutable and never self-apply; two
+focused passes resolve the cluster and incident. Replay is allowed only while
+the stored case-definition digest matches the current case and never inherits
+mutation authority. Migration 94 installs three forced-RLS tables, four valid
+indexes, and the review-transition trigger with its declared checksum. Forty
+focused tests plus affected lint and type validation pass. A read-only
+production `system.readiness` evaluation completed through the active worker
+and produced exactly one pass observation with no false cluster or proposal.
+Canonical Vercel, the Fly protocol-1 gateway/worker, the dedicated Playwright
+service, and all worker lanes are healthy; anonymous agent access remains
+closed. P6.1 interrupted-run recovery and broader bounded fault injection are
+the remaining work before the Phase 6 gate. P12/P13 remain deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
