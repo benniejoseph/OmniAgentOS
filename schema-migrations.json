@@ -533,5 +533,10 @@
     "version": 107,
     "name": "graph_query_telemetry_v1",
     "checksum": "b827edb34b4b148e950daf528fefed302ba2584eeb8d552cb241e47c7b256383"
+  },
+  {
+    "version": 108,
+    "name": "agent_identity_versions_v1",
+    "checksum": "0061d42b7a5638ffb41b2c51038df6d082c183b08f94aec5d3196920430be476"
   }
 ]
