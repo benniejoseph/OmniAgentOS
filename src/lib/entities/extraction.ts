@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   buildEntityAccessBinding,
   buildEntityRecord,
+  ENTITY_PURPOSE_IDS,
   entityLineageReferenceSchema,
   labelSha256,
   type EntityResolutionDecision,
@@ -63,13 +64,6 @@ export type EntityExtractionProjection = Readonly<{
   linkedEntityIds: readonly string[];
   reviewResolutionIds: readonly string[];
 }>;
-
-const ENTITY_PURPOSE_IDS = Object.freeze([
-  "entity.read.v1",
-  "entity.resolve.v1",
-  "entity.review.v1",
-  "entity.write.v1",
-]);
 
 const MARKER_TO_TYPE = new Map<string, EntityTypeId>([
   ["person", "person"],
