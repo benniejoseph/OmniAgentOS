@@ -18,6 +18,7 @@ import { getDataPath } from "@/lib/storage/paths";
 import type { ToolDefinition } from "@/lib/tools/types";
 import type { AiUsageScope } from "@/lib/usage/types";
 import { shouldUseLiveWebSearch } from "@/lib/web-search/search";
+import { withWorkflowNodeContract } from "@/lib/workflows/node-contract";
 import type { SavedProcedureToolBinding } from "@/lib/workflows/saved-procedures";
 import type {
   WorkflowDynamicPlan,
@@ -972,7 +973,7 @@ function normalizeNodes(nodes: WorkflowPlanNode[], knownToolIds: Set<string>) {
           toolInputIndex,
       )
       .slice(0, 8);
-    return {
+    return withWorkflowNodeContract({
       id,
       label: node.label.trim().slice(0, 120) || `Step ${index + 1}`,
       kind: normalizeNodeKind(node.kind),
@@ -986,7 +987,7 @@ function normalizeNodes(nodes: WorkflowPlanNode[], knownToolIds: Set<string>) {
       policy: normalizePolicy(node.policy, node.riskLevel, node.approvalRequired),
       acceptanceCriteria: normalizeTextArray(node.acceptanceCriteria, 8),
       expectedOutputs: normalizeTextArray(node.expectedOutputs, 8),
-    };
+    });
   });
 }
 

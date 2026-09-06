@@ -31,6 +31,18 @@ export type WorkflowPlanNodeKind =
 
 export type WorkflowPlanPolicy = "auto" | "dry_run" | "approval_required" | "manual";
 
+export type WorkflowPlanNodeExecutor = "agent" | "tool" | "control";
+
+export type WorkflowPlanNodeContract = {
+  schemaVersion: 1;
+  executor: WorkflowPlanNodeExecutor;
+  dependencyNodeIds: string[];
+  grantedToolIds: string[];
+  maxToolCalls: number;
+  maxModelCalls: 0 | 1;
+  maxOutputChars: number;
+};
+
 export type WorkflowPlanNode = {
   id: string;
   label: string;
@@ -48,6 +60,8 @@ export type WorkflowPlanNode = {
   policy: WorkflowPlanPolicy;
   acceptanceCriteria: string[];
   expectedOutputs: string[];
+  /** Server-derived after planning. Older persisted plans are upgraded at execution. */
+  execution?: WorkflowPlanNodeContract;
 };
 
 export type WorkflowPlanEdge = {
