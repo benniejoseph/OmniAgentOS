@@ -114,6 +114,9 @@ export const tenantRootPolicyTables = [
   "omni_eval_runs",
   "omni_eval_results",
   "omni_eval_reports",
+  "omni_evaluation_failure_observations",
+  "omni_evaluation_failure_clusters",
+  "omni_harness_rule_proposals",
   "omni_security_audits",
   "omni_observability_events",
   "omni_observability_slo_policy_changes",
@@ -1041,6 +1044,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[92],
       up: ensureActorScopedEventCorrelationIndex,
+    },
+    {
+      ...databaseSchemaMigrations[93],
+      up: ensureRecurringFailureFeedbackV1,
     },
   ];
 }
@@ -5026,6 +5033,228 @@ async function ensureActorScopedEventCorrelationIndex(sql: SqlClient) {
         RAISE EXCEPTION 'Actor-scoped event correlation index is invalid'
           USING ERRCODE = '55000';
       END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureRecurringFailureFeedbackV1(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_evaluation_failure_observations (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      eval_run_id TEXT NOT NULL REFERENCES omni_eval_runs(id) ON DELETE CASCADE,
+      source_result_id TEXT NOT NULL REFERENCES omni_eval_results(id) ON DELETE CASCADE,
+      case_id TEXT NOT NULL,
+      case_type TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pass', 'fail', 'warn')),
+      failure_category TEXT,
+      failure_fingerprint TEXT,
+      failure_signal_sha256 TEXT,
+      case_definition_sha256 TEXT NOT NULL,
+      observed_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT omni_evaluation_failure_observation_bounds CHECK (
+        length(id) BETWEEN 1 AND 240
+        AND length(tenant_id) BETWEEN 1 AND 240
+        AND length(eval_run_id) BETWEEN 1 AND 240
+        AND length(source_result_id) BETWEEN 1 AND 240
+        AND length(case_id) BETWEEN 1 AND 120
+        AND length(case_type) BETWEEN 1 AND 40
+        AND case_definition_sha256 ~ '^[a-f0-9]{64}$'
+        AND (
+          status <> 'fail'
+          OR (
+            failure_category IS NOT NULL
+            AND length(failure_category) BETWEEN 1 AND 80
+            AND failure_fingerprint ~ '^[a-f0-9]{64}$'
+            AND failure_signal_sha256 ~ '^[a-f0-9]{64}$'
+          )
+        )
+      ),
+      CONSTRAINT omni_evaluation_failure_observation_result_unique
+        UNIQUE (tenant_id, source_result_id)
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_evaluation_failure_clusters (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      case_id TEXT NOT NULL,
+      case_type TEXT NOT NULL,
+      failure_category TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('active', 'resolved')),
+      failure_count INTEGER NOT NULL,
+      pass_count INTEGER NOT NULL,
+      consecutive_failures INTEGER NOT NULL,
+      consecutive_passes INTEGER NOT NULL,
+      replay_case JSONB NOT NULL,
+      replay_case_sha256 TEXT NOT NULL,
+      latest_eval_run_id TEXT NOT NULL,
+      latest_result_id TEXT NOT NULL,
+      latest_proposal_version INTEGER NOT NULL DEFAULT 0,
+      last_proposal_failure_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at TIMESTAMPTZ NOT NULL,
+      last_seen_at TIMESTAMPTZ NOT NULL,
+      resolved_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT omni_evaluation_failure_cluster_bounds CHECK (
+        length(id) BETWEEN 1 AND 240
+        AND length(tenant_id) BETWEEN 1 AND 240
+        AND fingerprint ~ '^[a-f0-9]{64}$'
+        AND length(case_id) BETWEEN 1 AND 120
+        AND length(case_type) BETWEEN 1 AND 40
+        AND length(failure_category) BETWEEN 1 AND 80
+        AND replay_case_sha256 ~ '^[a-f0-9]{64}$'
+        AND failure_count >= 1
+        AND pass_count >= 0
+        AND consecutive_failures >= 0
+        AND consecutive_passes >= 0
+        AND latest_proposal_version >= 0
+        AND last_proposal_failure_count >= 0
+        AND jsonb_typeof(replay_case) = 'object'
+        AND (replay_case ->> 'schemaVersion')::INTEGER = 1
+      ),
+      CONSTRAINT omni_evaluation_failure_cluster_fingerprint_unique
+        UNIQUE (tenant_id, fingerprint),
+      CONSTRAINT omni_evaluation_failure_cluster_tenant_id_unique
+        UNIQUE (tenant_id, id)
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_harness_rule_proposals (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      cluster_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN (
+        'evaluation_case', 'tool_contract', 'prompt_change',
+        'workflow_guard', 'architecture_constraint', 'runbook'
+      )),
+      target TEXT NOT NULL,
+      proposal JSONB NOT NULL,
+      proposal_sha256 TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('proposed', 'approved', 'rejected')),
+      proposed_by TEXT NOT NULL,
+      reviewed_by TEXT,
+      review_reason TEXT,
+      proposed_at TIMESTAMPTZ NOT NULL,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT omni_harness_rule_proposal_bounds CHECK (
+        length(id) BETWEEN 1 AND 240
+        AND length(tenant_id) BETWEEN 1 AND 240
+        AND length(cluster_id) BETWEEN 1 AND 240
+        AND version BETWEEN 1 AND 1000000
+        AND length(target) BETWEEN 1 AND 240
+        AND proposal_sha256 ~ '^[a-f0-9]{64}$'
+        AND length(proposed_by) BETWEEN 1 AND 240
+        AND (reviewed_by IS NULL OR length(reviewed_by) BETWEEN 1 AND 240)
+        AND (review_reason IS NULL OR length(review_reason) BETWEEN 12 AND 500)
+        AND jsonb_typeof(proposal) = 'object'
+        AND (proposal ->> 'schemaVersion')::INTEGER = 1
+        AND (proposal ->> 'reviewRequired')::BOOLEAN
+        AND NOT (proposal ->> 'automaticApplication')::BOOLEAN
+        AND (
+          (status = 'proposed' AND reviewed_by IS NULL AND reviewed_at IS NULL)
+          OR (status IN ('approved', 'rejected') AND reviewed_by IS NOT NULL
+            AND review_reason IS NOT NULL AND reviewed_at IS NOT NULL)
+        )
+      ),
+      CONSTRAINT omni_harness_rule_proposal_cluster_fk
+        FOREIGN KEY (tenant_id, cluster_id)
+        REFERENCES omni_evaluation_failure_clusters(tenant_id, id),
+      CONSTRAINT omni_harness_rule_proposal_version_unique
+        UNIQUE (tenant_id, cluster_id, version)
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_evaluation_failure_observations_case_idx
+    ON omni_evaluation_failure_observations (tenant_id, case_id, observed_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_evaluation_failure_clusters_status_idx
+    ON omni_evaluation_failure_clusters (
+      tenant_id, status, consecutive_failures DESC, updated_at DESC
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_harness_rule_proposals_status_idx
+    ON omni_harness_rule_proposals (tenant_id, status, updated_at DESC)
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_harness_rule_proposals_open_idx
+    ON omni_harness_rule_proposals (tenant_id, cluster_id)
+    WHERE status = 'proposed'
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_guard_harness_rule_proposal_update()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF ROW(
+        OLD.id, OLD.tenant_id, OLD.cluster_id, OLD.version, OLD.kind,
+        OLD.target, OLD.proposal, OLD.proposal_sha256, OLD.proposed_by,
+        OLD.proposed_at, OLD.created_at
+      ) IS DISTINCT FROM ROW(
+        NEW.id, NEW.tenant_id, NEW.cluster_id, NEW.version, NEW.kind,
+        NEW.target, NEW.proposal, NEW.proposal_sha256, NEW.proposed_by,
+        NEW.proposed_at, NEW.created_at
+      ) THEN
+        RAISE EXCEPTION 'Harness rule proposal identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF OLD.status <> 'proposed' OR NEW.status NOT IN ('approved', 'rejected') THEN
+        RAISE EXCEPTION 'Harness rule proposal review transition is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_harness_rule_proposals'::regclass
+          AND tgname = 'omni_harness_rule_proposals_guard'
+          AND NOT tgisinternal
+      ) THEN
+        CREATE TRIGGER omni_harness_rule_proposals_guard
+        BEFORE UPDATE ON omni_harness_rule_proposals
+        FOR EACH ROW EXECUTE FUNCTION omni_guard_harness_rule_proposal_update();
+      END IF;
+    END
+    $migration$
+  `;
+  await ensureTenantIsolationPolicies(sql);
+  await sql`
+    DO $migration$
+    DECLARE
+      table_name TEXT;
+    BEGIN
+      FOREACH table_name IN ARRAY ARRAY[
+        'omni_evaluation_failure_observations',
+        'omni_evaluation_failure_clusters',
+        'omni_harness_rule_proposals'
+      ] LOOP
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_class
+          WHERE oid = table_name::regclass
+            AND relrowsecurity AND relforcerowsecurity
+        ) OR NOT EXISTS (
+          SELECT 1 FROM pg_policy
+          WHERE polrelid = table_name::regclass
+            AND polname = 'omni_tenant_isolation'
+        ) THEN
+          RAISE EXCEPTION 'Recurring failure feedback tenant boundary is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END LOOP;
     END
     $migration$
   `;
