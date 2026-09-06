@@ -172,6 +172,20 @@ use compile-pinned definition/principal versions, while file-mode compatibility
 constructs the same strict contract without pretending to be durable split
 storage.
 
+P7.2 extends each immutable definition with a schema-closed behavioral persona:
+charter, operating style, voice, visual identity, allowed domains, escalation
+behavior, and success measures. Migration v109 backfills and validates that
+profile independently of the principal. The Agent builder and inspector,
+Conversation, Council, Mission assignment, run Results, and speech attribution
+all read the same definition fields. Council always wraps persona content as
+untrusted configuration, and Mission/Conversation presentation cannot grant
+execution authority. Run Results resolve the immutable identity pin to its
+historical definition version rather than showing the latest edited persona.
+The versioned Agent identity-card projection carries only definition/persona
+presentation and digests: it excludes tenant/actor coordinates, principals,
+grants, budgets, endpoints, and credentials. It remains internal-only with
+external A2A explicitly disabled until the Phase 8 discovery and adapter gates.
+
 The first P1.4 canary is deliberately narrower than that phase's target. Only
 live `memory.write` from a single-tool plan node in an approved workflow with
 explicit tenant and initiating-actor scope creates an `EffectReceiptV1`. Its memory target is
