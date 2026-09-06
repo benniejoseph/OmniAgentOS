@@ -1,6 +1,9 @@
 import type { AgentRunRecord } from "@/lib/runs/types";
 import { publicGroundingReport } from "@/lib/rag/citations";
-import { canonicalStatusForAgentRun } from "@/lib/status/canonical";
+import {
+  canonicalStatusForAgentRun,
+  canonicalStatusForTerminalReceipt,
+} from "@/lib/status/canonical";
 
 export function publicAgentRun(run: AgentRunRecord) {
   const { continuation, grounding, messages, ownerActorId: _ownerActorId, ...safeRun } = run;
@@ -8,7 +11,9 @@ export function publicAgentRun(run: AgentRunRecord) {
   return {
     ...safeRun,
     grounding: grounding ? publicGroundingReport(grounding) : undefined,
-    canonicalStatus: canonicalStatusForAgentRun(run),
+    canonicalStatus: run.terminalReceipt
+      ? canonicalStatusForTerminalReceipt(run.terminalReceipt, "agent_run")
+      : canonicalStatusForAgentRun(run),
     messageCount: messages.length,
     waitingApproval: continuation
       ? {

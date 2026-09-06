@@ -112,6 +112,15 @@ describe("Loop v2 read-only canary runtime", () => {
       expect.anything(),
       expect.objectContaining({
         response: expect.stringContaining("Prior run"),
+        terminalRunContract: expect.objectContaining({
+          envelope: expect.objectContaining({
+            terminalReceipt: expect.objectContaining({
+              disposition: "succeeded",
+              verificationState: "verified",
+              source: "outcome_evaluator",
+            }),
+          }),
+        }),
       }),
     );
     const done = events.find((event) => event.type === "done");
@@ -176,6 +185,13 @@ describe("Loop v2 read-only canary runtime", () => {
       expect.anything(),
       expect.objectContaining({
         error: expect.stringContaining("client stopped"),
+        terminalRunContract: expect.objectContaining({
+          envelope: expect.objectContaining({
+            terminalReceipt: expect.objectContaining({
+              disposition: "canceled",
+            }),
+          }),
+        }),
       }),
     );
     expect(events.at(-1)).toMatchObject({ type: "canceled" });

@@ -111,6 +111,21 @@ describe("Loop v2 model-text runtime", () => {
       type: "done",
       response: "A concise factual summary.",
     });
+    expect(harness.finalizeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ terminalDisposition: "succeeded" }),
+      expect.anything(),
+      expect.objectContaining({
+        terminalRunContract: expect.objectContaining({
+          envelope: expect.objectContaining({
+            terminalReceipt: expect.objectContaining({
+              disposition: "unverified",
+              verificationState: "unverified",
+              source: "outcome_evaluator",
+            }),
+          }),
+        }),
+      }),
+    );
     expect(harness.appendAssistantTurn).toHaveBeenCalledTimes(1);
     expect(harness.failUncheckpointedRun).not.toHaveBeenCalled();
   });
@@ -195,6 +210,19 @@ describe("Loop v2 model-text runtime", () => {
       toState: "finish",
       terminalDisposition: "canceled",
     });
+    expect(harness.finalizeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ terminalDisposition: "canceled" }),
+      expect.anything(),
+      expect.objectContaining({
+        terminalRunContract: expect.objectContaining({
+          envelope: expect.objectContaining({
+            terminalReceipt: expect.objectContaining({
+              disposition: "canceled",
+            }),
+          }),
+        }),
+      }),
+    );
     expect(events.at(-1)).toMatchObject({ type: "canceled" });
   });
 });
@@ -296,6 +324,7 @@ function runtimeHarness() {
     dependencies,
     checkpoints,
     generateText,
+    finalizeRun,
     appendAssistantTurn,
     failUncheckpointedRun,
   };

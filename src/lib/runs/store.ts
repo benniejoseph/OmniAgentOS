@@ -37,6 +37,7 @@ import {
   parseRunContractEnvelopeV1,
   runContractIdSchema,
   runContractEventPayloadV1Schema,
+  terminalReceiptV1Schema,
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
 } from "@/lib/runs/contracts";
@@ -1775,6 +1776,9 @@ function runFromRow(row: Record<string, unknown>): AgentRunRecord {
     error: row.error ? String(row.error) : undefined,
     consolidationError: row.consolidation_error ? String(row.consolidation_error) : undefined,
     continuation: parseContinuation(row.continuation),
+    terminalReceipt: row.terminal_receipt
+      ? terminalReceiptV1Schema.parse(row.terminal_receipt)
+      : undefined,
     startedAt: normalizeDate(row.started_at),
     completedAt: row.completed_at ? normalizeDate(row.completed_at) : undefined,
     consolidatedAt: row.consolidated_at ? normalizeDate(row.consolidated_at) : undefined,

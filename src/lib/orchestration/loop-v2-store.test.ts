@@ -19,6 +19,10 @@ import {
   waitForLoopV2Clarification,
   type LoopV2CheckpointWriterSql,
 } from "@/lib/orchestration/loop-v2-store";
+import {
+  buildLoopV2PreExecutionRunContract,
+  buildLoopV2TerminalRunContract,
+} from "@/lib/orchestration/loop-v2-outcome";
 import type { TenantCapabilityRollout } from "@/lib/rollouts/tenant-capability-rollouts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
@@ -104,9 +108,20 @@ describe("Loop v2 checkpoint store", () => {
   it("commits the terminal checkpoint and run disposition together", async () => {
     const storage = fakeStorage();
     let current = initial();
+    const preExecution = buildLoopV2PreExecutionRunContract({
+      rootCheckpoint: current,
+      executionScope: executionScope(),
+      requestSha256: sourceContractSha256("Show my recent runs"),
+      requestedOutcomeSha256: sourceContractSha256({
+        taskClass: "single_read_only_governed_tool",
+        toolId: "runs.list",
+      }),
+      agentId: "atlas",
+    });
     await recordLoopV2Checkpoint({
       checkpoint: current,
       executionScope: executionScope(),
+      runContractBinding: preExecution,
     }, storage.sql);
     for (const [trigger, minute] of [
       ["plan_bound", 1],
@@ -126,23 +141,45 @@ describe("Loop v2 checkpoint store", () => {
         executionScope: executionScope(),
       }, storage.sql);
     }
+    const response = "Five recent runs.";
+    const verificationReceipt = {
+      executionId: "execution-a",
+      operationClass: "read_only" as const,
+      effectReceiptPresent: false as const,
+      responseSha256: sourceContractSha256(response),
+    };
     const terminal = advanceLoopV2Checkpoint({
       current,
       executionScope: executionScope(),
       trigger: "verification_passed",
-      outputReceiptSha256: sourceContractSha256("verified"),
+      outputReceiptSha256: sourceContractSha256(verificationReceipt),
       transitionedAt: "2026-09-06T03:05:00.000Z",
+    });
+    const terminalRunContract = buildLoopV2TerminalRunContract({
+      preExecution,
+      terminalCheckpoint: terminal,
+      response,
+      verificationReceipt,
     });
 
     await expect(finalizeLoopV2Run({
       checkpoint: terminal,
       executionScope: executionScope(),
-      response: "Five recent runs.",
+      response,
+      terminalRunContract,
     }, storage.sql)).resolves.toMatchObject({
       runStatus: "completed",
       checkpoint: { terminalDisposition: "succeeded" },
     });
     expect(storage.runStatus()).toBe("completed");
+    expect(storage.terminalReceipt()).toMatchObject({
+      runId: "run-a",
+      disposition: "succeeded",
+      verificationState: "verified",
+      source: "outcome_evaluator",
+    });
+    expect(storage.eventTypes()).toContain("run.contracts.bound");
+    expect(storage.eventTypes()).toContain("run.terminal_receipt.recorded");
   });
 
   it("pins admitted runs across rollout changes while rejecting new roots", async () => {
@@ -312,9 +349,11 @@ function fakeStorage(options: {
   recovery?: Record<string, unknown>;
 } = {}) {
   const checkpoints: LoopV2Checkpoint[] = [...(options.checkpoints || [])];
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
   let eventCount = 0;
   let currentRunStatus = options.runStatus || "running";
   let currentRolloutStatus = options.rolloutStatus || "active";
+  let terminalReceipt: Record<string, unknown> | null = null;
   const sql = (async (
     strings: TemplateStringsArray,
     ..._params: unknown[]
@@ -322,6 +361,10 @@ function fakeStorage(options: {
     const text = strings.join(" ");
     if (text.includes("INSERT INTO omni_events")) {
       eventCount += 1;
+      events.push({
+        type: String(_params[2]),
+        payload: _params[5] as Record<string, unknown>,
+      });
       return [{ seq: eventCount }];
     }
     if (text.includes("SELECT * FROM omni_events")) return [];
@@ -339,6 +382,7 @@ function fakeStorage(options: {
         owner_actor_id: "actor-a",
         thread_id: "thread-a",
         agent_id: "atlas",
+        prompt: "Show my recent runs",
         status: currentRunStatus,
         continuation: options.recovery
           ? { loopV2Recovery: options.recovery }
@@ -348,6 +392,11 @@ function fakeStorage(options: {
     }
     if (text.includes("type = 'run.scope_bound'")) {
       return [{ payload: { _executionScope: executionScope() } }];
+    }
+    if (text.includes("type = 'run.contracts.bound'")) {
+      return events
+        .filter((event) => event.type === "run.contracts.bound")
+        .map((event) => ({ payload: event.payload }));
     }
     if (text.includes("FROM omni_tenant_capability_rollouts")) {
       return [{
@@ -397,6 +446,11 @@ function fakeStorage(options: {
         .map((checkpoint) => ({ checkpoint_json: checkpoint }));
     }
     if (text.includes("UPDATE omni_agent_runs")) {
+      if (text.includes("SET terminal_receipt")) {
+        if (String(params[4]) !== currentRunStatus) return [];
+        terminalReceipt = params[3] as Record<string, unknown>;
+        return [{ id: "run-a" }];
+      }
       if (text.includes("SET status = 'waiting_clarification'")) {
         if (currentRunStatus !== "running") return [];
         currentRunStatus = "waiting_clarification";
@@ -416,7 +470,9 @@ function fakeStorage(options: {
   return {
     sql,
     eventCount: () => eventCount,
+    eventTypes: () => events.map((event) => event.type),
     runStatus: () => currentRunStatus,
+    terminalReceipt: () => terminalReceipt,
     setRolloutStatus: (status: string) => {
       currentRolloutStatus = status;
     },
