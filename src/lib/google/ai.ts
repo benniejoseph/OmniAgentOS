@@ -9,6 +9,12 @@ import { attachModelProviderResponseReceipt } from "@/lib/models/types";
 import type { ModelUsage } from "@/lib/openai/model-router";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
+import {
+  appendModelTurnToConversation,
+  modelConversationForToolTurn,
+  renderUntrustedObservation,
+  type ModelConversationItem,
+} from "@/lib/models/conversation";
 
 const INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const SPEECH_URL = "https://speech.googleapis.com/v1/speech:recognize";
@@ -121,6 +127,7 @@ export async function generateGeminiText(input: {
 
 export async function generateGeminiToolTurn(input: {
   prompt: string;
+  conversation?: readonly ModelConversationItem[];
   instructions?: string;
   model?: string;
   maxOutputTokens?: number;
@@ -137,13 +144,18 @@ export async function generateGeminiToolTurn(input: {
     throw new Error("Gemini cannot consume another provider's continuation state.");
   }
   const model = input.model || GEMINI_FAST_MODEL;
+  const conversation = modelConversationForToolTurn({
+    prompt: input.prompt,
+    conversation: input.conversation,
+    continuationConversation: input.continuation?.conversation,
+    toolResults: input.toolResults,
+  });
   const history: Record<string, unknown>[] = input.continuation?.state.length
     ? input.continuation.state.map((step) => ({ ...step }))
-    : [{
-        type: "user_input",
-        content: [{ type: "text", text: input.prompt }],
-      }];
-  for (const result of input.toolResults || []) {
+    : geminiStepsFromConversation(conversation);
+  for (const result of input.continuation?.state.length
+    ? input.toolResults || []
+    : []) {
     history.push({
       type: "function_result",
       name: result.name,
@@ -223,6 +235,10 @@ export async function generateGeminiToolTurn(input: {
       // Preserve every model step exactly, including thought/tool signatures,
       // so the next store:false request remains a valid stateless continuation.
       state: [...history, ...steps],
+      conversation: appendModelTurnToConversation(conversation, {
+        text,
+        toolCalls,
+      }),
     },
     model: body.model || model,
     responseId: body.id,
@@ -230,6 +246,54 @@ export async function generateGeminiToolTurn(input: {
     usage,
     estimatedCostUsd: estimateGeminiCostUsd(body.model || model, usage),
   };
+}
+
+function geminiStepsFromConversation(
+  conversation: readonly ModelConversationItem[],
+) {
+  return conversation.map((item): Record<string, unknown> => {
+    if (item.type === "message") {
+      return {
+        type: item.role === "user" ? "user_input" : "model_output",
+        content: [{ type: "text", text: item.content }],
+      };
+    }
+    if (item.type === "observation") {
+      return {
+        type: "user_input",
+        content: [{
+          type: "text",
+          text: renderUntrustedObservation(item),
+        }],
+      };
+    }
+    if (item.type === "tool_call") {
+      return {
+        type: "function_call",
+        id: item.callId,
+        name: item.name,
+        arguments: parseArgumentsObject(item.argumentsJson),
+      };
+    }
+    return {
+      type: "function_result",
+      name: item.name,
+      call_id: item.callId,
+      result: [{ type: "text", text: item.content }],
+      ...(item.isError ? { is_error: true } : {}),
+    };
+  });
+}
+
+function parseArgumentsObject(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 export async function generateGeminiImage(input: {

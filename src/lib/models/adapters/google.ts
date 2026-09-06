@@ -40,6 +40,7 @@ export const googleModelAdapter: ModelProviderAdapter = {
   async generateToolTurn(request, target) {
     const result = await generateGeminiToolTurn({
       prompt: request.input,
+      conversation: request.conversation,
       instructions: request.instructions,
       model: target.model,
       maxOutputTokens: request.maxOutputTokens,
