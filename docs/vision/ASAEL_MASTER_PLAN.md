@@ -2036,6 +2036,23 @@ resets `plan` and `execute` but immediately re-enters `verify`. That remains
 pending under P6.6/recovery work. P6.5 dependency binding and parallel DAG
 scheduling is next; P12/P13 remain deferred.
 
+P6.5 is complete at exact production release
+`da3a187bf3ac11299442369388ecb4640b63548a`. A workflow node may bind only a
+typed artifact from one of its declared direct dependencies into an allowlisted
+content field of one of its granted governed tools. Restricted JSON Pointers,
+bounded content, and fail-closed resolution exclude network targets, methods,
+headers, credentials, secrets, environment references, commands, prototype
+pollution, and array traversal. The DAG executor schedules ready work in
+bounded waves: model-only nodes and proven read-only risk-0 tools can overlap;
+approval gates and any possible mutation stay serialized. The production gate
+persisted one concurrent batch for independent `runs.list` and `missions.list`
+roots, waited for the join, and proved that `knowledge.search.input.query`
+exactly matched the upstream typed artifact. Matching Vercel and Fly services
+are healthy, all worker lanes returned HTTP 200, the activation marker matches,
+and anonymous agent access remains closed. P6.6 bounded subtree replanning is
+next; P6.1 recovery/fault injection remains separately open, and P12/P13 remain
+deferred.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
