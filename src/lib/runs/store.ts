@@ -53,6 +53,7 @@ import type { AgentRunContinuation, AgentRunEventRecord, AgentRunFeedback, Agent
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { recordAiUsage } from "@/lib/usage/ledger";
+import { modelConversationSchema } from "@/lib/models/conversation";
 
 export async function createAgentRun(input: {
   tenantId?: string;
@@ -2101,7 +2102,15 @@ function parseModelToolContinuation(value: unknown) {
   if (state.length !== candidate.state.length) {
     return undefined;
   }
-  return { provider, state };
+  const conversation = candidate.conversation === undefined
+    ? undefined
+    : modelConversationSchema.safeParse(candidate.conversation);
+  if (conversation && !conversation.success) return undefined;
+  return {
+    provider,
+    state,
+    ...(conversation?.success ? { conversation: conversation.data } : {}),
+  };
 }
 
 function parseModelToolCall(value: unknown) {
