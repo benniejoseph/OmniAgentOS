@@ -1099,6 +1099,25 @@ The ledgers have different mutation semantics:
 - Local JSON ledgers are bounded and rewrite files during updates; they are not an immutable audit archive.
 - Signed evaluation exports provide integrity evidence, but durable retention and object-lock controls belong in the deployment platform.
 
+### Recurring failure feedback
+
+Evaluation completion records a tenant-scoped observation after the canonical
+result is durable. Failure classification is deterministic and stores only a
+bounded category, fingerprints, signal/definition digests, input JSON shape,
+and expected keys; raw inputs, outputs, errors, prompts, and private reasoning
+do not enter the replay projection or its typed events. Two consecutive
+matching failures activate a cluster, open or update the evaluation-regression
+incident, and create a versioned harness-rule proposal. Two focused passes
+resolve the cluster and incident.
+
+Proposals are review records, not executable configuration. Database
+constraints and an immutable-identity transition trigger permit only one
+`proposed -> approved|rejected` review and require an evidence reason; the
+proposal explicitly declares `reviewRequired=true` and
+`automaticApplication=false`. A minimized replay can queue only the current
+evaluation case whose canonical definition digest still matches, and it never
+inherits mutation authority. All three ledgers use forced tenant RLS.
+
 ## Security model
 
 - First-party auth: scrypt password hashes, opaque session tokens stored as SHA-256 digests, HttpOnly/Secure/SameSite=Lax cookies. Enforcement cannot be disabled in production.
