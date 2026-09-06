@@ -669,43 +669,25 @@ export async function updateWorkflowRun(
   if (!existing) {
     return null;
   }
-
-  const now = new Date().toISOString();
-  const nextRun = sanitizeWorkflowRunRecord({
-    ...existing.run,
-    ...patch,
-    updatedAt: now,
-  });
-
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    await getSql()`
-      UPDATE omni_workflow_runs
-      SET workflow_type = ${nextRun.workflowType},
-          status = ${nextRun.status},
-          goal = ${nextRun.goal},
-          input = ${nextRun.input || {}}::jsonb,
-          current_step = ${nextRun.currentStep || null},
-          attempt = ${nextRun.attempt},
-          max_attempts = ${nextRun.maxAttempts},
-          approval_required = ${nextRun.approvalRequired},
-          approved_at = ${nextRun.approvedAt || null},
-          paused_at = ${nextRun.pausedAt || null},
-          canceled_at = ${nextRun.canceledAt || null},
-          error = ${nextRun.error || null},
-          result = ${nextRun.result || null}::jsonb,
-          updated_at = ${nextRun.updatedAt},
-          completed_at = ${nextRun.completedAt || null}
-      WHERE id = ${runId}
-    `;
-    return nextRun;
-  }
-
-  await mutateWorkflowLedger((ledger) => {
-    ledger.runs = ledger.runs.map((run) => (run.id === runId ? nextRun : run));
-    return ledger;
-  });
-  return nextRun;
+  const authority = existing.run.input.executionAuthorityRequired
+    ? await getWorkflowRunExecutionAuthority(runId, {
+        tenantId: existing.run.tenantId,
+      })
+    : undefined;
+  return transitionWorkflowRunWithEvents(
+    runId,
+    [existing.run.status],
+    patch,
+    [{
+      type: "workflow.updated",
+      payload: { changedFields: Object.keys(patch).sort() },
+    }],
+    {
+      tenantId: existing.run.tenantId,
+      expectedUpdatedAt: existing.run.updatedAt,
+      executionAuthority: authority,
+    },
+  );
 }
 
 export async function setWorkflowRunStatus(
@@ -735,104 +717,23 @@ export async function transitionWorkflowRun(
   if (!existing || !expectedStatuses.includes(existing.run.status)) {
     return null;
   }
-  const transitionAuthority = existing.run.input.executionAuthorityRequired
+  const authority = existing.run.input.executionAuthorityRequired
     ? await getWorkflowRunExecutionAuthority(runId, { tenantId })
     : undefined;
-  if (existing.run.input.executionAuthorityRequired && !transitionAuthority) {
-    throw new WorkflowRunExecutionScopeBindingError(
-      "Workflow transition requires its bound execution authority.",
-    );
-  }
-  const now = new Date().toISOString();
-  const nextRun = sanitizeWorkflowRunRecord({
-    ...existing.run,
-    ...patch,
-    updatedAt: now,
-  });
-
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    const rows = await getSql()`
-      WITH recovery_jobs AS MATERIALIZED (
-        SELECT status, lease_expires_at
-        FROM omni_operation_jobs
-        WHERE tenant_id = ${tenantId}
-          AND dedupe_key = ${options.requireNoActiveJobDedupeKey || "__no_recovery_job__"}
-        FOR UPDATE
-      )
-      UPDATE omni_workflow_runs
-      SET workflow_type = ${nextRun.workflowType},
-          status = ${nextRun.status},
-          goal = ${nextRun.goal},
-          input = ${nextRun.input || {}}::jsonb,
-          current_step = ${nextRun.currentStep || null},
-          attempt = ${nextRun.attempt},
-          max_attempts = ${nextRun.maxAttempts},
-          approval_required = ${nextRun.approvalRequired},
-          approved_at = ${nextRun.approvedAt || null},
-          paused_at = ${nextRun.pausedAt || null},
-          canceled_at = ${nextRun.canceledAt || null},
-          error = ${nextRun.error || null},
-          result = ${nextRun.result || null}::jsonb,
-          updated_at = ${nextRun.updatedAt},
-          completed_at = ${nextRun.completedAt || null}
-      WHERE id = ${runId}
-        AND tenant_id = ${tenantId}
-        AND status = ANY(${expectedStatuses as WorkflowRunStatus[]})
-        AND (
-          ${options.expectedUpdatedAt || null}::timestamptz IS NULL
-          OR updated_at = ${options.expectedUpdatedAt || null}::timestamptz
-        )
-        AND (
-          ${options.requireNoActiveJobDedupeKey || null}::text IS NULL
-          OR NOT EXISTS (
-            SELECT 1
-            FROM recovery_jobs
-            WHERE status = 'running'
-              AND lease_expires_at > NOW()
-          )
-        )
-      RETURNING *
-    `;
-    const transitioned = rows[0] ? workflowRunFromRow(rows[0]) : null;
-    if (transitioned) {
-      await syncWorkflowMissionTransition(
-        existing.run,
-        transitioned,
-        transitionAuthority?.executionScope,
-      );
-    }
-    return transitioned;
-  }
-
-  let transitioned: WorkflowRunRecord | null = null;
-  await mutateWorkflowLedger((ledger) => {
-    ledger.runs = ledger.runs.map((run) => {
-      if (
-        run.id !== runId ||
-        normalizeTenantId(run.tenantId) !== tenantId ||
-        !expectedStatuses.includes(run.status) ||
-        (options.expectedUpdatedAt && run.updatedAt !== options.expectedUpdatedAt)
-      ) {
-        return run;
-      }
-      transitioned = sanitizeWorkflowRunRecord({
-        ...run,
-        ...patch,
-        updatedAt: now,
-      });
-      return transitioned;
-    });
-    return ledger;
-  });
-  if (transitioned) {
-    await syncWorkflowMissionTransition(
-      existing.run,
-      transitioned,
-      transitionAuthority?.executionScope,
-    );
-  }
-  return transitioned;
+  return transitionWorkflowRunWithEvents(
+    runId,
+    expectedStatuses,
+    patch,
+    [{
+      type: "workflow.transitioned",
+      payload: {
+        previousStatus: existing.run.status,
+        nextStatus: patch.status || existing.run.status,
+        changedFields: Object.keys(patch).sort(),
+      },
+    }],
+    { ...options, executionAuthority: authority },
+  );
 }
 
 export type WorkflowTransitionEvent = Readonly<{
@@ -856,8 +757,12 @@ export async function transitionWorkflowRunWithEvents(
     expectedUpdatedAt?: string;
     requireNoActiveJobDedupeKey?: string;
     executionAuthority?: WorkflowExecutionAuthority;
+    eventExecutionScope?: ExecutionScope;
   } = {},
 ) {
+  if (events.length === 0) {
+    throw new Error("Workflow transitions require at least one event.");
+  }
   const tenantId = normalizeTenantId(options.tenantId);
   const existing = await getWorkflowRunDetail(runId, { tenantId });
   if (!existing || !expectedStatuses.includes(existing.run.status)) {
@@ -872,6 +777,11 @@ export async function transitionWorkflowRunWithEvents(
   if (authority) {
     assertExecutionScopeTenant(authority.executionScope, tenantId);
     await assertWorkflowRunExecutionAuthority(runId, authority, { tenantId });
+  }
+  const eventExecutionScope = options.eventExecutionScope ||
+    authority?.executionScope;
+  if (eventExecutionScope) {
+    assertExecutionScopeTenant(eventExecutionScope, tenantId);
   }
 
   const now = new Date().toISOString();
@@ -952,7 +862,7 @@ export async function transitionWorkflowRunWithEvents(
             event.record,
             event.payload,
             tenantId,
-            authority?.executionScope,
+            eventExecutionScope,
             sql,
           );
         }
@@ -963,7 +873,7 @@ export async function transitionWorkflowRunWithEvents(
       await syncWorkflowMissionTransition(
         existing.run,
         transitioned,
-        authority?.executionScope,
+        eventExecutionScope,
       );
     }
     return transitioned;
@@ -995,7 +905,7 @@ export async function transitionWorkflowRunWithEvents(
         event.record,
         event.payload,
         tenantId,
-        authority?.executionScope,
+        eventExecutionScope,
       );
     } catch (error) {
       console.warn(
@@ -1007,7 +917,7 @@ export async function transitionWorkflowRunWithEvents(
   await syncWorkflowMissionTransition(
     existing.run,
     transitioned,
-    authority?.executionScope,
+    eventExecutionScope,
   );
   return transitioned;
 }
@@ -1074,6 +984,15 @@ export async function reclaimWorkflowRunForQueueDelivery(
   const tenantId = normalizeTenantId(requestedTenantId);
   if (deliveryAttempt <= 1 || !leaseOwner) {
     return "unchanged";
+  }
+  const detail = await getWorkflowRunDetail(runId, { tenantId });
+  const authority = detail?.run.input.executionAuthorityRequired
+    ? await getWorkflowRunExecutionAuthority(runId, { tenantId })
+    : undefined;
+  if (detail?.run.input.executionAuthorityRequired && !authority) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow redelivery recovery requires its bound execution authority.",
+    );
   }
   const now = new Date().toISOString();
 
@@ -1144,6 +1063,21 @@ export async function reclaimWorkflowRunForQueueDelivery(
               AND tenant_id = ${tenantId}
               AND status = 'running'
           `;
+          const event = workflowTransitionEventRecords(runId, tenantId, [{
+            type: "workflow.queue.redelivery_failed",
+            payload: {
+              jobId,
+              deliveryAttempt,
+              stepKey: currentStep,
+              reason: "step_retry_budget_exhausted",
+            },
+          }]);
+          await appendWorkflowEventRecords(
+            event,
+            tenantId,
+            authority?.executionScope,
+            sql,
+          );
           return "failed";
         }
         if (step && String(step.status) === "running") {
@@ -1168,12 +1102,23 @@ export async function reclaimWorkflowRunForQueueDelivery(
             AND tenant_id = ${tenantId}
             AND status = 'running'
         `;
+        const event = workflowTransitionEventRecords(runId, tenantId, [{
+          type: "workflow.queue.redelivery_reclaimed",
+          payload: { jobId, deliveryAttempt, stepKey: currentStep },
+        }]);
+        await appendWorkflowEventRecords(
+          event,
+          tenantId,
+          authority?.executionScope,
+          sql,
+        );
         return "requeued";
       },
     ) as Promise<"unchanged" | "requeued" | "failed" | "stale">;
   }
 
   let disposition: "unchanged" | "requeued" | "failed" = "unchanged";
+  let recoveryEvents: ReturnType<typeof workflowTransitionEventRecords> = [];
   await mutateWorkflowLedger((ledger) => {
     const runIndex = ledger.runs.findIndex(
       (run) =>
@@ -1215,8 +1160,18 @@ export async function reclaimWorkflowRunForQueueDelivery(
         completedAt: now,
         updatedAt: now,
       };
+      recoveryEvents = workflowTransitionEventRecords(runId, tenantId, [{
+        type: "workflow.queue.redelivery_failed",
+        payload: {
+          jobId,
+          deliveryAttempt,
+          stepKey: run.currentStep,
+          reason: "step_retry_budget_exhausted",
+        },
+      }]);
+      ledger.events.push(...recoveryEvents.map((event) => event.record));
       disposition = "failed";
-      return ledger;
+      return trimWorkflowLedger(ledger);
     }
     if (step && step.status === "running") {
       ledger.steps[stepIndex] = {
@@ -1235,9 +1190,21 @@ export async function reclaimWorkflowRunForQueueDelivery(
       completedAt: undefined,
       updatedAt: now,
     };
+    recoveryEvents = workflowTransitionEventRecords(runId, tenantId, [{
+      type: "workflow.queue.redelivery_reclaimed",
+      payload: { jobId, deliveryAttempt, stepKey: run.currentStep },
+    }]);
+    ledger.events.push(...recoveryEvents.map((event) => event.record));
     disposition = "requeued";
-    return ledger;
+    return trimWorkflowLedger(ledger);
   });
+  if (recoveryEvents.length) {
+    await appendWorkflowEventRecordsBestEffort(
+      recoveryEvents,
+      tenantId,
+      authority?.executionScope,
+    );
+  }
   return disposition;
 }
 
@@ -1256,6 +1223,15 @@ export async function failWorkflowRunForQueueExhaustion(
   },
 ) {
   const tenantId = normalizeTenantId(requestedTenantId);
+  const detail = await getWorkflowRunDetail(runId, { tenantId });
+  const authority = detail?.run.input.executionAuthorityRequired
+    ? await getWorkflowRunExecutionAuthority(runId, { tenantId })
+    : undefined;
+  if (detail?.run.input.executionAuthorityRequired && !authority) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow queue failure requires its bound execution authority.",
+    );
+  }
   const now = new Date().toISOString();
 
   if (hasDatabaseUrl()) {
@@ -1317,12 +1293,24 @@ export async function failWorkflowRunForQueueExhaustion(
             AND status NOT IN ('completed', 'failed', 'canceled')
           RETURNING id
         `;
-        return Boolean(updated[0]);
+        if (!updated[0]) return false;
+        const event = workflowTransitionEventRecords(runId, tenantId, [{
+          type: "workflow.queue.retry_budget_exhausted",
+          payload: { jobId, reason },
+        }]);
+        await appendWorkflowEventRecords(
+          event,
+          tenantId,
+          authority?.executionScope,
+          sql,
+        );
+        return true;
       },
     ) as Promise<boolean>;
   }
 
   let failed = false;
+  let failureEvents: ReturnType<typeof workflowTransitionEventRecords> = [];
   await mutateWorkflowLedger((ledger) => {
     const runIndex = ledger.runs.findIndex(
       (run) =>
@@ -1357,9 +1345,21 @@ export async function failWorkflowRunForQueueExhaustion(
           : step,
       );
     }
+    failureEvents = workflowTransitionEventRecords(runId, tenantId, [{
+      type: "workflow.queue.retry_budget_exhausted",
+      payload: { jobId, reason },
+    }]);
+    ledger.events.push(...failureEvents.map((event) => event.record));
     failed = true;
-    return ledger;
+    return trimWorkflowLedger(ledger);
   });
+  if (failureEvents.length) {
+    await appendWorkflowEventRecordsBestEffort(
+      failureEvents,
+      tenantId,
+      authority?.executionScope,
+    );
+  }
   return failed;
 }
 
@@ -1368,12 +1368,42 @@ export async function approveWorkflowRun(
   {
     tenantId: requestedTenantId,
     approvedAt = new Date().toISOString(),
+    executionAuthority,
+    eventExecutionScope,
+    actorId,
+    reason,
   }: {
     tenantId?: string;
     approvedAt?: string;
+    executionAuthority?: WorkflowExecutionAuthority;
+    eventExecutionScope?: ExecutionScope;
+    actorId?: string;
+    reason?: string;
   } = {},
 ) {
   const tenantId = normalizeTenantId(requestedTenantId);
+  const detail = await getWorkflowRunDetail(runId, { tenantId });
+  if (!detail) return null;
+  if (detail.run.input.executionAuthorityRequired && !executionAuthority) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow approval requires its bound execution authority.",
+    );
+  }
+  if (executionAuthority) {
+    await assertWorkflowRunExecutionAuthority(runId, executionAuthority, {
+      tenantId,
+    });
+  }
+  const approvalScope = eventExecutionScope ||
+    executionAuthority?.executionScope;
+  if (approvalScope) assertExecutionScopeTenant(approvalScope, tenantId);
+  const eventPayload = { actorId, reason };
+  const event = createWorkflowEventRecord(
+    runId,
+    "workflow.approved",
+    eventPayload,
+    tenantId,
+  );
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -1412,6 +1442,21 @@ export async function approveWorkflowRun(
         if (!steps[0]) {
           throw new Error("Workflow approval gate is missing.");
         }
+        await sql`
+          INSERT INTO omni_workflow_events (
+            id, tenant_id, workflow_run_id, type, payload, created_at
+          ) VALUES (
+            ${event.id}, ${tenantId}, ${event.workflowRunId}, ${event.type},
+            ${event.payload}::jsonb, ${event.createdAt}
+          )
+        `;
+        await appendWorkflowDomainEvent(
+          event,
+          eventPayload,
+          tenantId,
+          approvalScope,
+          sql,
+        );
         return workflowRunFromRow(rows[0]);
       },
     ) as Promise<WorkflowRunRecord | null>;
@@ -1453,77 +1498,134 @@ export async function approveWorkflowRun(
       completedAt: approvedAt,
       updatedAt: approvedAt,
     };
+    ledger.events.push(event);
     return ledger;
   });
-  return approved;
-}
-
-export async function saveWorkflowStep(step: WorkflowStepRecord) {
-  if (hasDatabaseUrl()) {
-    await ensureDatabaseSchema();
-    const tenantId = normalizeTenantId(step.tenantId || await resolveWorkflowRunTenantId(step.workflowRunId));
-    const nextStep = sanitizeWorkflowStepRecord({ ...step, tenantId });
-    await getSql()`
-      INSERT INTO omni_workflow_steps (
-        id, tenant_id, workflow_run_id, step_key, label, status, attempt, max_attempts,
-        input, output, error, started_at, completed_at, created_at, updated_at
-      )
-      VALUES (
-        ${nextStep.id}, ${tenantId}, ${nextStep.workflowRunId}, ${nextStep.stepKey}, ${nextStep.label},
-        ${nextStep.status}, ${nextStep.attempt}, ${nextStep.maxAttempts},
-        ${nextStep.input || {}}::jsonb,
-        ${nextStep.output || null}::jsonb, ${nextStep.error || null},
-        ${nextStep.startedAt || null}, ${nextStep.completedAt || null},
-        ${nextStep.createdAt}, ${nextStep.updatedAt}
-      )
-      ON CONFLICT (workflow_run_id, step_key) DO UPDATE SET
-        tenant_id = EXCLUDED.tenant_id,
-        label = EXCLUDED.label,
-        status = EXCLUDED.status,
-        attempt = EXCLUDED.attempt,
-        max_attempts = EXCLUDED.max_attempts,
-        input = EXCLUDED.input,
-        output = EXCLUDED.output,
-        error = EXCLUDED.error,
-        started_at = EXCLUDED.started_at,
-        completed_at = EXCLUDED.completed_at,
-        updated_at = EXCLUDED.updated_at
-    `;
-    return nextStep;
-  }
-
-  let savedStep = step;
-  await mutateWorkflowLedger((ledger) => {
-    const tenantId = normalizeTenantId(step.tenantId || ledger.runs.find((run) => run.id === step.workflowRunId)?.tenantId);
-    const nextStep = sanitizeWorkflowStepRecord({ ...step, tenantId });
-    savedStep = nextStep;
-    const existingIndex = ledger.steps.findIndex((item) => item.id === nextStep.id);
-    if (existingIndex >= 0) {
-      ledger.steps[existingIndex] = nextStep;
-    } else {
-      ledger.steps.push(nextStep);
+  if (approved) {
+    try {
+      await appendWorkflowDomainEvent(
+        event,
+        eventPayload,
+        tenantId,
+        approvalScope,
+      );
+    } catch (error) {
+      console.warn(
+        "Workflow domain event append failed.",
+        error instanceof Error ? error.message : "Unknown workflow event error.",
+      );
     }
-    return ledger;
-  });
-  return savedStep;
+  }
+  return approved;
 }
 
 export async function updateWorkflowStep(
   runId: string,
   stepKey: WorkflowStepKey,
   patch: Partial<Omit<WorkflowStepRecord, "id" | "workflowRunId" | "stepKey" | "createdAt">>,
+  options: {
+    tenantId?: string;
+    events: readonly WorkflowTransitionEvent[];
+    executionAuthority?: WorkflowExecutionAuthority;
+    eventExecutionScope?: ExecutionScope;
+  },
 ) {
-  const existing = await getWorkflowStep(runId, stepKey);
+  if (options.events.length === 0) {
+    throw new Error("Workflow step mutations require at least one event.");
+  }
+  const tenantId = normalizeTenantId(options.tenantId);
+  const detail = await getWorkflowRunDetail(runId, { tenantId });
+  if (!detail) {
+    return null;
+  }
+  const existing = detail.steps.find((step) => step.stepKey === stepKey);
   if (!existing) {
     return null;
   }
-
-  const nextStep: WorkflowStepRecord = {
+  const authority = options.executionAuthority;
+  if (detail.run.input.executionAuthorityRequired && !authority) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow step mutation requires its bound execution authority.",
+    );
+  }
+  if (authority) {
+    assertExecutionScopeTenant(authority.executionScope, tenantId);
+    await assertWorkflowRunExecutionAuthority(runId, authority, { tenantId });
+  }
+  const eventExecutionScope = options.eventExecutionScope ||
+    authority?.executionScope;
+  if (eventExecutionScope) {
+    assertExecutionScopeTenant(eventExecutionScope, tenantId);
+  }
+  const nextStep = sanitizeWorkflowStepRecord({
     ...existing,
     ...patch,
+    tenantId,
     updatedAt: new Date().toISOString(),
-  };
-  return saveWorkflowStep(nextStep);
+  });
+  const eventRecords = workflowTransitionEventRecords(
+    runId,
+    tenantId,
+    options.events,
+  );
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_workflow_steps
+        SET label = ${nextStep.label},
+            status = ${nextStep.status},
+            attempt = ${nextStep.attempt},
+            max_attempts = ${nextStep.maxAttempts},
+            input = ${nextStep.input || {}}::jsonb,
+            output = ${nextStep.output || null}::jsonb,
+            error = ${nextStep.error || null},
+            started_at = ${nextStep.startedAt || null},
+            completed_at = ${nextStep.completedAt || null},
+            updated_at = ${nextStep.updatedAt}
+        WHERE workflow_run_id = ${runId}
+          AND step_key = ${stepKey}
+          AND tenant_id = ${tenantId}
+        RETURNING *
+      `;
+      if (!rows[0]) return null;
+      await appendWorkflowEventRecords(
+        eventRecords,
+        tenantId,
+        eventExecutionScope,
+        sql,
+      );
+      return workflowStepFromRow(rows[0]);
+    }) as Promise<WorkflowStepRecord | null>;
+  }
+
+  let saved: WorkflowStepRecord | null = null;
+  await mutateWorkflowLedger((ledger) => {
+    ledger.steps = ledger.steps.map((step) => {
+      if (
+        step.workflowRunId !== runId ||
+        step.stepKey !== stepKey ||
+        normalizeTenantId(step.tenantId) !== tenantId
+      ) {
+        return step;
+      }
+      saved = nextStep;
+      return nextStep;
+    });
+    if (saved) {
+      ledger.events.push(...eventRecords.map((event) => event.record));
+    }
+    return trimWorkflowLedger(ledger);
+  });
+  if (saved) {
+    await appendWorkflowEventRecordsBestEffort(
+      eventRecords,
+      tenantId,
+      eventExecutionScope,
+    );
+  }
+  return saved;
 }
 
 export async function updateWorkflowStepForRunFence(
@@ -1535,15 +1637,43 @@ export async function updateWorkflowStepForRunFence(
   {
     tenantId: requestedTenantId,
     expectedRunUpdatedAt,
+    events,
+    executionAuthority,
+    eventExecutionScope: requestedEventExecutionScope,
   }: {
     tenantId?: string;
     expectedRunUpdatedAt: string;
+    events: readonly WorkflowTransitionEvent[];
+    executionAuthority?: WorkflowExecutionAuthority;
+    eventExecutionScope?: ExecutionScope;
   },
 ) {
+  if (events.length === 0) {
+    throw new Error("Workflow step mutations require at least one event.");
+  }
   const tenantId = normalizeTenantId(requestedTenantId);
-  const existing = await getWorkflowStep(runId, stepKey);
+  const detail = await getWorkflowRunDetail(runId, { tenantId });
+  if (!detail) {
+    return null;
+  }
+  const existing = detail.steps.find((step) => step.stepKey === stepKey);
   if (!existing) {
     return null;
+  }
+  const authority = executionAuthority;
+  if (detail.run.input.executionAuthorityRequired && !authority) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow step mutation requires its bound execution authority.",
+    );
+  }
+  if (authority) {
+    assertExecutionScopeTenant(authority.executionScope, tenantId);
+    await assertWorkflowRunExecutionAuthority(runId, authority, { tenantId });
+  }
+  const eventExecutionScope = requestedEventExecutionScope ||
+    authority?.executionScope;
+  if (eventExecutionScope) {
+    assertExecutionScopeTenant(eventExecutionScope, tenantId);
   }
   const nextStep = sanitizeWorkflowStepRecord({
     ...existing,
@@ -1551,36 +1681,50 @@ export async function updateWorkflowStepForRunFence(
     tenantId,
     updatedAt: new Date().toISOString(),
   });
+  const eventRecords = workflowTransitionEventRecords(
+    runId,
+    tenantId,
+    events,
+  );
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_workflow_steps step
-      SET label = ${nextStep.label},
-          status = ${nextStep.status},
-          attempt = ${nextStep.attempt},
-          max_attempts = ${nextStep.maxAttempts},
-          input = ${nextStep.input || {}}::jsonb,
-          output = ${nextStep.output || null}::jsonb,
-          error = ${nextStep.error || null},
-          started_at = ${nextStep.startedAt || null},
-          completed_at = ${nextStep.completedAt || null},
-          updated_at = ${nextStep.updatedAt}
-      WHERE step.workflow_run_id = ${runId}
-        AND step.step_key = ${stepKey}
-        AND step.tenant_id = ${tenantId}
-        AND EXISTS (
-          SELECT 1
-          FROM omni_workflow_runs run
-          WHERE run.id = step.workflow_run_id
-            AND run.tenant_id = step.tenant_id
-            AND run.status = 'running'
-            AND run.current_step = ${stepKey}
-            AND run.updated_at = ${expectedRunUpdatedAt}::timestamptz
-        )
-      RETURNING step.*
-    `;
-    return rows[0] ? workflowStepFromRow(rows[0]) : null;
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_workflow_steps step
+        SET label = ${nextStep.label},
+            status = ${nextStep.status},
+            attempt = ${nextStep.attempt},
+            max_attempts = ${nextStep.maxAttempts},
+            input = ${nextStep.input || {}}::jsonb,
+            output = ${nextStep.output || null}::jsonb,
+            error = ${nextStep.error || null},
+            started_at = ${nextStep.startedAt || null},
+            completed_at = ${nextStep.completedAt || null},
+            updated_at = ${nextStep.updatedAt}
+        WHERE step.workflow_run_id = ${runId}
+          AND step.step_key = ${stepKey}
+          AND step.tenant_id = ${tenantId}
+          AND EXISTS (
+            SELECT 1
+            FROM omni_workflow_runs run
+            WHERE run.id = step.workflow_run_id
+              AND run.tenant_id = step.tenant_id
+              AND run.status = 'running'
+              AND run.current_step = ${stepKey}
+              AND run.updated_at = ${expectedRunUpdatedAt}::timestamptz
+          )
+        RETURNING step.*
+      `;
+      if (!rows[0]) return null;
+      await appendWorkflowEventRecords(
+        eventRecords,
+        tenantId,
+        eventExecutionScope,
+        sql,
+      );
+      return workflowStepFromRow(rows[0]);
+    }) as Promise<WorkflowStepRecord | null>;
   }
 
   let saved: WorkflowStepRecord | null = null;
@@ -1609,9 +1753,83 @@ export async function updateWorkflowStepForRunFence(
       saved = nextStep;
       return nextStep;
     });
-    return ledger;
+    if (saved) {
+      ledger.events.push(...eventRecords.map((event) => event.record));
+    }
+    return trimWorkflowLedger(ledger);
   });
+  if (saved) {
+    await appendWorkflowEventRecordsBestEffort(
+      eventRecords,
+      tenantId,
+      eventExecutionScope,
+    );
+  }
   return saved;
+}
+
+function workflowTransitionEventRecords(
+  runId: string,
+  tenantId: string,
+  events: readonly WorkflowTransitionEvent[],
+) {
+  return events.map((event) => ({
+    record: createWorkflowEventRecord(
+      runId,
+      event.type,
+      event.payload || {},
+      tenantId,
+    ),
+    payload: event.payload || {},
+  }));
+}
+
+async function appendWorkflowEventRecords(
+  events: ReturnType<typeof workflowTransitionEventRecords>,
+  tenantId: string,
+  executionScope: ExecutionScope | undefined,
+  sql: ReturnType<typeof getSql>,
+) {
+  for (const event of events) {
+    await sql`
+      INSERT INTO omni_workflow_events (
+        id, tenant_id, workflow_run_id, type, payload, created_at
+      ) VALUES (
+        ${event.record.id}, ${tenantId}, ${event.record.workflowRunId},
+        ${event.record.type}, ${event.record.payload}::jsonb,
+        ${event.record.createdAt}
+      )
+    `;
+    await appendWorkflowDomainEvent(
+      event.record,
+      event.payload,
+      tenantId,
+      executionScope,
+      sql,
+    );
+  }
+}
+
+async function appendWorkflowEventRecordsBestEffort(
+  events: ReturnType<typeof workflowTransitionEventRecords>,
+  tenantId: string,
+  executionScope?: ExecutionScope,
+) {
+  for (const event of events) {
+    try {
+      await appendWorkflowDomainEvent(
+        event.record,
+        event.payload,
+        tenantId,
+        executionScope,
+      );
+    } catch (error) {
+      console.warn(
+        "Workflow domain event append failed.",
+        error instanceof Error ? error.message : "Unknown workflow event error.",
+      );
+    }
+  }
 }
 
 export async function appendWorkflowEvent(

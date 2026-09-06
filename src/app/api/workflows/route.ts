@@ -22,7 +22,7 @@ import {
   getWorkflowRunDetail,
   getWorkflowStats,
   listWorkflowRuns,
-  transitionWorkflowRun,
+  transitionWorkflowRunWithEvents,
 } from "@/lib/workflows/store";
 import {
   claimWorkflowPlanForRun,
@@ -331,7 +331,7 @@ async function POSTHandler(request: Request) {
             replayed: true,
           });
         }
-        await transitionWorkflowRun(
+        await transitionWorkflowRunWithEvents(
           detail.run.id,
           ["queued"],
           {
@@ -340,7 +340,15 @@ async function POSTHandler(request: Request) {
             canceledAt: new Date().toISOString(),
             completedAt: new Date().toISOString(),
           },
-          { tenantId: context.tenantId },
+          [{
+            type: "workflow.plan_claim_conflict",
+            payload: { planId: selectedPlan.id },
+          }],
+          {
+            tenantId: context.tenantId,
+            executionAuthority,
+            eventExecutionScope: executionAuthority.executionScope,
+          },
         );
         return Response.json(
           {

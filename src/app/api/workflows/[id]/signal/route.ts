@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import {
   signalWorkflowRun,
@@ -45,7 +46,16 @@ async function POSTHandler(
       resourceId: id,
       metadata: { signal: parsed.data.signal },
     });
-    const detail = await signalWorkflowRun(id, parsed.data.signal, { tenantId: securityContext.tenantId });
+    const detail = await signalWorkflowRun(id, parsed.data.signal, {
+      tenantId: securityContext.tenantId,
+      actorId: securityContext.actorId,
+      executionScope: executionScopeFromSecurityContext(securityContext, {
+        correlationId: request.headers.get("x-request-id")?.trim() ||
+          crypto.randomUUID(),
+        causationId: id,
+        purpose: `workflow.signal.${parsed.data.signal}`,
+      }),
+    });
     let queueJob;
     let canceledJobs;
 

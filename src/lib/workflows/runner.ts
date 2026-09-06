@@ -7,7 +7,10 @@ import { generateModelStructured } from "@/lib/models/gateway";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
-import { deriveExecutionScope } from "@/lib/security/execution-scope";
+import {
+  deriveExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import {
   resolveRuntimeModelAssignment,
   type RuntimeModelResolution,
@@ -52,7 +55,6 @@ import {
   getWorkflowRunExecutionAuthority,
   getWorkflowRunDetail,
   listRunnableWorkflowRuns,
-  transitionWorkflowRun,
   transitionWorkflowRunWithEvents,
   updateWorkflowStep,
   updateWorkflowStepForRunFence,
@@ -95,12 +97,11 @@ export async function tickWorkflowRun(
     return detail;
   }
 
-  if (
-    detail.run.input.executionAuthorityRequired &&
-    !(await getWorkflowRunExecutionAuthority(detail.run.id, {
-      tenantId: detail.run.tenantId,
-    }))
-  ) {
+  const executionAuthority = await getWorkflowRunExecutionAuthority(
+    detail.run.id,
+    { tenantId: detail.run.tenantId },
+  );
+  if (detail.run.input.executionAuthorityRequired && !executionAuthority) {
     throw new Error("Workflow execution authority is missing.");
   }
 
@@ -113,14 +114,19 @@ export async function tickWorkflowRun(
       return detail;
     }
     if (specialistGate.state === "failed") {
-      await transitionWorkflowRun(detail.run.id, ["queued"], {
+      await transitionWorkflowRunWithEvents(detail.run.id, ["queued"], {
         status: "failed",
         error: specialistGate.reason,
         completedAt: new Date().toISOString(),
-      }, { tenantId: detail.run.tenantId });
-      await appendWorkflowEvent(detail.run.id, "workflow.specialists.failed", {
-        taskIds: specialistGate.failedTaskIds,
-        reason: specialistGate.reason,
+      }, [{
+        type: "workflow.specialists.failed",
+        payload: {
+          taskIds: specialistGate.failedTaskIds,
+          reason: specialistGate.reason,
+        },
+      }], {
+        tenantId: detail.run.tenantId,
+        executionAuthority,
       });
       return getWorkflowRunDetail(runId, {
         tenantId: options.tenantId,
@@ -138,11 +144,14 @@ export async function tickWorkflowRun(
   }
 
   const stepKey = nextStepKey(detail);
-  const claimedRun = await transitionWorkflowRun(detail.run.id, ["queued"], {
+  const claimedRun = await transitionWorkflowRunWithEvents(detail.run.id, ["queued"], {
     status: "running",
     currentStep: stepKey,
     error: undefined,
-  }, { tenantId: detail.run.tenantId });
+  }, [{ type: "workflow.started", payload: { stepKey } }], {
+    tenantId: detail.run.tenantId,
+    executionAuthority,
+  });
   if (!claimedRun) {
     return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
   }
@@ -169,12 +178,12 @@ export async function tickWorkflowRun(
   }, {
     tenantId: detail.run.tenantId,
     expectedRunUpdatedAt: runFence,
+    events: [{ type: "step.started", payload: { stepKey, attempt } }],
+    executionAuthority,
   });
   if (!startedStep) {
     return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
   }
-  await appendWorkflowEvent(detail.run.id, "step.started", { stepKey, attempt });
-
   let runBudget: WorkflowBudgetSession | undefined;
   try {
     throwIfAborted(options.abortSignal);
@@ -188,19 +197,27 @@ export async function tickWorkflowRun(
       }, {
         tenantId: detail.run.tenantId,
         expectedRunUpdatedAt: runFence,
+        events: [{
+          type: "step.approval_waiting",
+          payload: { stepKey, attempt },
+        }],
+        executionAuthority,
       });
       if (!waitingStep) {
         return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
       }
-      await transitionWorkflowRun(detail.run.id, ["running"], {
+      await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
         status: "waiting_approval",
         currentStep: stepKey,
         error: undefined,
-      }, {
+      }, [{
+        type: "workflow.waiting_approval",
+        payload: { stepKey },
+      }], {
         tenantId: detail.run.tenantId,
         expectedUpdatedAt: runFence,
+        executionAuthority,
       });
-      await appendWorkflowEvent(detail.run.id, "workflow.waiting_approval", { stepKey });
       return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
     }
 
@@ -238,6 +255,11 @@ export async function tickWorkflowRun(
         {
           tenantId: detail.run.tenantId,
           expectedRunUpdatedAt: runFence,
+          events: [{
+            type: "step.execution_pending",
+            payload: { stepKey, attempt },
+          }],
+          executionAuthority,
         },
       );
       if (!pendingStep) {
@@ -245,7 +267,7 @@ export async function tickWorkflowRun(
           tenantId: options.tenantId,
         }) as Promise<WorkflowRunDetail>;
       }
-      const requeued = await transitionWorkflowRun(
+      await transitionWorkflowRunWithEvents(
         detail.run.id,
         ["running"],
         {
@@ -253,23 +275,21 @@ export async function tickWorkflowRun(
           currentStep: stepKey,
           error: undefined,
         },
-        {
-          tenantId: detail.run.tenantId,
-          expectedUpdatedAt: runFence,
-        },
-      );
-      if (requeued) {
-        await appendWorkflowEvent(
-          detail.run.id,
-          "workflow.plan_execution.requeued",
-          {
+        [{
+          type: "workflow.plan_execution.requeued",
+          payload: {
             stepKey,
             completedNodes:
               (output.planExecution as { completedNodes?: number } | undefined)
                 ?.completedNodes || 0,
           },
-        );
-      }
+        }],
+        {
+          tenantId: detail.run.tenantId,
+          expectedUpdatedAt: runFence,
+          executionAuthority,
+        },
+      );
       return getWorkflowRunDetail(runId, {
         tenantId: options.tenantId,
       }) as Promise<WorkflowRunDetail>;
@@ -288,12 +308,12 @@ export async function tickWorkflowRun(
     }, {
       tenantId: detail.run.tenantId,
       expectedRunUpdatedAt: runFence,
+      events: [{ type: "step.completed", payload: { stepKey, attempt } }],
+      executionAuthority,
     });
     if (!completedStep) {
       return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
     }
-    await appendWorkflowEvent(detail.run.id, "step.completed", { stepKey, attempt });
-
     if (
       stepKey === "plan" &&
       output &&
@@ -302,13 +322,21 @@ export async function tickWorkflowRun(
       output.approvalRequired === true &&
       !beforeCommit.run.approvalRequired
     ) {
-      const tightened = await transitionWorkflowRun(detail.run.id, ["running"], {
+      const tightened = await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
         status: "running",
         approvalRequired: true,
         approvedAt: undefined,
-      }, {
+      }, [{
+        type: "workflow.approval_required_by_plan",
+        payload: {
+          planId: typeof (output as Record<string, unknown>).id === "string"
+            ? (output as Record<string, unknown>).id
+            : undefined,
+        },
+      }], {
         tenantId: detail.run.tenantId,
         expectedUpdatedAt: runFence,
+        executionAuthority,
       });
       if (!tightened) {
         return getWorkflowRunDetail(runId, {
@@ -323,11 +351,16 @@ export async function tickWorkflowRun(
         error: undefined,
         startedAt: undefined,
         completedAt: undefined,
-      });
-      await appendWorkflowEvent(detail.run.id, "workflow.approval_required_by_plan", {
-        planId: typeof (output as Record<string, unknown>).id === "string"
-          ? (output as Record<string, unknown>).id
-          : undefined,
+      }, {
+        tenantId: detail.run.tenantId,
+        events: [{
+          type: "step.reset",
+          payload: {
+            stepKey: "approval_gate",
+            reason: "approval_required_by_plan",
+          },
+        }],
+        executionAuthority,
       });
     }
 
@@ -379,6 +412,13 @@ export async function tickWorkflowRun(
           error: undefined,
           startedAt: undefined,
           completedAt: undefined,
+        }, {
+          tenantId: detail.run.tenantId,
+          events: [{
+            type: "step.reset",
+            payload: { stepKey: resetKey, reason: "verification_replan" },
+          }],
+          executionAuthority,
         });
       }
 
@@ -386,20 +426,24 @@ export async function tickWorkflowRun(
       // plan the approver never saw, so the approval is revoked and the
       // approval gate re-opens before any side-effecting tool can execute.
       if (freshDetail.run.approvedAt) {
-        const revoked = await transitionWorkflowRun(detail.run.id, ["running"], {
+        const revoked = await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
           status: "running",
           approvedAt: undefined,
-        }, {
+        }, [{
+          type: "workflow.approval_revoked_on_replan",
+          payload: {
+            reason:
+              "Replanning produced a new plan; prior approval applied to the old plan only.",
+          },
+        }], {
           tenantId: detail.run.tenantId,
           expectedUpdatedAt: runFence,
+          executionAuthority,
         });
         if (!revoked) {
           return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
         }
         runFence = revoked.updatedAt;
-        await appendWorkflowEvent(detail.run.id, "workflow.approval_revoked_on_replan", {
-          reason: "Replanning produced a new plan; prior approval applied to the old plan only.",
-        });
       }
       await appendWorkflowEvent(detail.run.id, "workflow.replan_authority_invalidated", {
         previousPlanId: replanDirective.previousPlanId,
@@ -416,7 +460,7 @@ export async function tickWorkflowRun(
       const verdict = verifyOutput.modelVerdict as
         | { failures?: string[]; assessment?: string }
         | undefined;
-      const failed = await transitionWorkflowRun(
+      await transitionWorkflowRunWithEvents(
         detail.run.id,
         ["running"],
         {
@@ -427,24 +471,22 @@ export async function tickWorkflowRun(
             "Workflow verification failed after the bounded replan.",
           completedAt: new Date().toISOString(),
         },
-        {
-          tenantId: detail.run.tenantId,
-          expectedUpdatedAt: runFence,
-        },
-      );
-      if (failed) {
-        await appendWorkflowEvent(
-          detail.run.id,
-          "workflow.verification_failed",
-          {
+        [{
+          type: "workflow.verification_failed",
+          payload: {
             failures: verdict?.failures || [],
             assessment:
               verdict?.assessment ||
               "Workflow verification failed after the bounded replan.",
             mechanicalPassed: verifyOutput.mechanicalPassed,
           },
-        );
-      }
+        }],
+        {
+          tenantId: detail.run.tenantId,
+          expectedUpdatedAt: runFence,
+          executionAuthority,
+        },
+      );
       return getWorkflowRunDetail(runId, {
         tenantId: options.tenantId,
       }) as Promise<WorkflowRunDetail>;
@@ -454,13 +496,17 @@ export async function tickWorkflowRun(
       await getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as WorkflowRunDetail,
     );
     if (nextKey) {
-      await transitionWorkflowRun(detail.run.id, ["running"], {
+      await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
         status: "queued",
         currentStep: nextKey,
         error: undefined,
-      }, {
+      }, [{
+        type: "workflow.step.queued",
+        payload: { stepKey: nextKey },
+      }], {
         tenantId: detail.run.tenantId,
         expectedUpdatedAt: runFence,
+        executionAuthority,
       });
     } else {
       await completeWorkflow(detail.run.id, detail.run.tenantId, runFence);
@@ -483,21 +529,27 @@ export async function tickWorkflowRun(
       }, {
         tenantId: detail.run.tenantId,
         expectedRunUpdatedAt: runFence,
+        events: [{
+          type: "step.reset",
+          payload: { stepKey, attempt, reason: "interrupted" },
+        }],
+        executionAuthority,
       });
       if (!resetStep) {
         return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
       }
-      const interrupted = await transitionWorkflowRun(detail.run.id, ["running"], {
+      await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
         status: "queued",
         currentStep: stepKey,
         error: "Workflow execution was interrupted and safely requeued.",
-      }, {
+      }, [{
+        type: "step.interrupted",
+        payload: { stepKey, attempt },
+      }], {
         tenantId: detail.run.tenantId,
         expectedUpdatedAt: runFence,
+        executionAuthority,
       });
-      if (interrupted) {
-        await appendWorkflowEvent(detail.run.id, "step.interrupted", { stepKey, attempt });
-      }
       return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
     }
     if (error instanceof EffectReceiptFinalizationError) {
@@ -517,6 +569,15 @@ export async function tickWorkflowRun(
         {
           tenantId: detail.run.tenantId,
           expectedRunUpdatedAt: runFence,
+          events: [{
+            type: "step.reset",
+            payload: {
+              stepKey,
+              attempt,
+              reason: "effect_receipt_reconciliation",
+            },
+          }],
+          executionAuthority,
         },
       );
       if (!resetStep) {
@@ -524,7 +585,7 @@ export async function tickWorkflowRun(
           tenantId: options.tenantId,
         }) as Promise<WorkflowRunDetail>;
       }
-      const requeued = await transitionWorkflowRun(
+      await transitionWorkflowRunWithEvents(
         detail.run.id,
         ["running"],
         {
@@ -533,18 +594,16 @@ export async function tickWorkflowRun(
           error:
             "A governed effect is awaiting receipt reconciliation on its existing execution.",
         },
+        [{
+          type: "workflow.effect_receipt.reconciliation_queued",
+          payload: { stepKey },
+        }],
         {
           tenantId: detail.run.tenantId,
           expectedUpdatedAt: runFence,
+          executionAuthority,
         },
       );
-      if (requeued) {
-        await appendWorkflowEvent(
-          detail.run.id,
-          "workflow.effect_receipt.reconciliation_queued",
-          { stepKey },
-        );
-      }
       return getWorkflowRunDetail(runId, {
         tenantId: options.tenantId,
       }) as Promise<WorkflowRunDetail>;
@@ -562,30 +621,36 @@ export async function tickWorkflowRun(
     }, {
       tenantId: detail.run.tenantId,
       expectedRunUpdatedAt: runFence,
+      events: [{
+        type: "step.failed",
+        payload: { stepKey, attempt, error: message },
+      }],
+      executionAuthority,
     });
     if (!failedStep) {
       return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
     }
-    await appendWorkflowEvent(detail.run.id, "step.failed", { stepKey, attempt, error: message });
-
     if (error instanceof RunBudgetExceededError) {
-      await appendWorkflowEvent(detail.run.id, "workflow.budget_exhausted", {
-        schemaVersion: 1,
-        dimension: error.dimension,
-        limit: error.limit,
-        attempted: error.attempted,
-        requiresAuthorization: true,
-        stepKey,
-      });
-      await transitionWorkflowRun(detail.run.id, ["running"], {
+      await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
         status: "failed",
         currentStep: stepKey,
         attempt: current.run.attempt + 1,
         error: message,
         completedAt: new Date().toISOString(),
-      }, {
+      }, [{
+        type: "workflow.budget_exhausted",
+        payload: {
+          schemaVersion: 1,
+          dimension: error.dimension,
+          limit: error.limit,
+          attempted: error.attempted,
+          requiresAuthorization: true,
+          stepKey,
+        },
+      }], {
         tenantId: detail.run.tenantId,
         expectedUpdatedAt: runFence,
+        executionAuthority,
       });
       return getWorkflowRunDetail(runId, {
         tenantId: options.tenantId,
@@ -602,48 +667,58 @@ export async function tickWorkflowRun(
       } catch (retryError) {
         if (!(retryError instanceof RunBudgetExceededError)) throw retryError;
         const retryMessage = `${retryError.message} The workflow stopped before retrying; authorize a larger budget in a new run if needed.`;
-        await appendWorkflowEvent(detail.run.id, "workflow.budget_exhausted", {
-          schemaVersion: 1,
-          dimension: retryError.dimension,
-          limit: retryError.limit,
-          attempted: retryError.attempted,
-          requiresAuthorization: true,
-          stepKey,
-        });
-        await transitionWorkflowRun(detail.run.id, ["running"], {
+        await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
           status: "failed",
           currentStep: stepKey,
           attempt: current.run.attempt + 1,
           error: retryMessage,
           completedAt: new Date().toISOString(),
-        }, {
+        }, [{
+          type: "workflow.budget_exhausted",
+          payload: {
+            schemaVersion: 1,
+            dimension: retryError.dimension,
+            limit: retryError.limit,
+            attempted: retryError.attempted,
+            requiresAuthorization: true,
+            stepKey,
+          },
+        }], {
           tenantId: detail.run.tenantId,
           expectedUpdatedAt: runFence,
+          executionAuthority,
         });
         return getWorkflowRunDetail(runId, {
           tenantId: options.tenantId,
         }) as Promise<WorkflowRunDetail>;
       }
-      await transitionWorkflowRun(detail.run.id, ["running"], {
+      await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
         status: "queued",
         currentStep: stepKey,
         attempt: current.run.attempt + 1,
         error: `Retry scheduled for ${stepKey}: ${message}`,
-      }, {
+      }, [{
+        type: "step.retry_scheduled",
+        payload: { stepKey, nextAttempt: attempt + 1 },
+      }], {
         tenantId: detail.run.tenantId,
         expectedUpdatedAt: runFence,
+        executionAuthority,
       });
-      await appendWorkflowEvent(detail.run.id, "step.retry_scheduled", { stepKey, nextAttempt: attempt + 1 });
     } else {
-      await transitionWorkflowRun(detail.run.id, ["running"], {
+      await transitionWorkflowRunWithEvents(detail.run.id, ["running"], {
         status: "failed",
         currentStep: stepKey,
         attempt: current.run.attempt + 1,
         error: message,
         completedAt: new Date().toISOString(),
-      }, {
+      }, [{
+        type: "workflow.failed",
+        payload: { stepKey, attempt, reason: message },
+      }], {
         tenantId: detail.run.tenantId,
         expectedUpdatedAt: runFence,
+        executionAuthority,
       });
     }
   }
@@ -667,6 +742,7 @@ export async function signalWorkflowRun(
     tenantId?: string;
     actorId?: string;
     reason?: string;
+    executionScope?: ExecutionScope;
   } = {},
 ) {
   const detail = await getWorkflowRunDetail(runId, options);
@@ -702,51 +778,71 @@ export async function signalWorkflowRun(
   }
 
   const now = new Date().toISOString();
+  const executionAuthority = await getWorkflowRunExecutionAuthority(runId, {
+    tenantId: detail.run.tenantId,
+  });
+  if (detail.run.input.executionAuthorityRequired && !executionAuthority) {
+    throw new Error("Workflow execution authority is missing.");
+  }
 
   if (signal === "pause") {
-    const transitioned = await transitionWorkflowRun(runId, ["queued", "running"], {
+    const transitioned = await transitionWorkflowRunWithEvents(runId, ["queued", "running"], {
       status: "paused",
       pausedAt: now,
-    }, { tenantId: detail.run.tenantId });
+    }, [{ type: "workflow.paused", payload: {} }], {
+      tenantId: detail.run.tenantId,
+      executionAuthority,
+      eventExecutionScope: options.executionScope,
+    });
     if (!transitioned) {
       throw new WorkflowSignalConflictError(signal, detail.run.status);
     }
-    await appendWorkflowEvent(runId, "workflow.paused", {});
   }
 
   if (signal === "resume") {
-    const transitioned = await transitionWorkflowRun(runId, ["paused"], {
+    const transitioned = await transitionWorkflowRunWithEvents(runId, ["paused"], {
       status: "queued",
       pausedAt: undefined,
       error: undefined,
       completedAt: undefined,
-    }, { tenantId: detail.run.tenantId });
+    }, [{ type: "workflow.resumed", payload: {} }], {
+      tenantId: detail.run.tenantId,
+      executionAuthority,
+      eventExecutionScope: options.executionScope,
+    });
     if (!transitioned) {
       throw new WorkflowSignalConflictError(signal, detail.run.status);
     }
-    await appendWorkflowEvent(runId, "workflow.resumed", {});
   }
 
   if (signal === "cancel") {
-    const transitioned = await transitionWorkflowRun(
+    const transitioned = await transitionWorkflowRunWithEvents(
       runId,
       ["queued", "running", "paused", "waiting_approval"],
       { status: "canceled", canceledAt: now, completedAt: now },
-      { tenantId: detail.run.tenantId },
+      [{
+        type: "workflow.canceled",
+        payload: { actorId: options.actorId, reason: options.reason },
+      }],
+      {
+        tenantId: detail.run.tenantId,
+        executionAuthority,
+        eventExecutionScope: options.executionScope,
+      },
     );
     if (!transitioned) {
       throw new WorkflowSignalConflictError(signal, detail.run.status);
     }
-    await appendWorkflowEvent(runId, "workflow.canceled", {
-      actorId: options.actorId,
-      reason: options.reason,
-    });
   }
 
   if (signal === "approve") {
     const transitioned = await approveWorkflowRun(runId, {
       tenantId: detail.run.tenantId,
       approvedAt: now,
+      executionAuthority,
+      eventExecutionScope: options.executionScope,
+      actorId: options.actorId,
+      reason: options.reason,
     });
     if (!transitioned) {
       const latest = await getWorkflowRunDetail(runId, {
@@ -757,26 +853,28 @@ export async function signalWorkflowRun(
       }
       throw new WorkflowSignalConflictError(signal, detail.run.status);
     }
-    await appendWorkflowEvent(runId, "workflow.approved", {
-      actorId: options.actorId,
-      reason: options.reason,
-    });
   }
 
   if (signal === "retry") {
     const failedStep = detail.steps.find((step) => step.status === "failed");
-    const transitioned = await transitionWorkflowRun(runId, ["failed"], {
+    const transitioned = await transitionWorkflowRunWithEvents(runId, ["failed"], {
       status: "queued",
       currentStep: failedStep?.stepKey || detail.run.currentStep || "preflight",
       error: undefined,
       completedAt: undefined,
-    }, { tenantId: detail.run.tenantId });
+    }, [{
+      type: "workflow.retry_requested",
+      payload: {
+        stepKey: failedStep?.stepKey || detail.run.currentStep || "preflight",
+      },
+    }], {
+      tenantId: detail.run.tenantId,
+      executionAuthority,
+      eventExecutionScope: options.executionScope,
+    });
     if (!transitioned) {
       throw new WorkflowSignalConflictError(signal, detail.run.status);
     }
-    await appendWorkflowEvent(runId, "workflow.retry_requested", {
-      stepKey: failedStep?.stepKey || detail.run.currentStep || "preflight",
-    });
   }
 
   return getWorkflowRunDetail(runId, options) as Promise<WorkflowRunDetail>;

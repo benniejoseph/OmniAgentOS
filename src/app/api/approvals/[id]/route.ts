@@ -40,6 +40,7 @@ import { RISK3_QUORUM } from "@/lib/tools/types";
 import { toolApprovalMutationFromRequest } from "@/lib/tools/approval-events";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import {
   signalWorkflowRun,
@@ -98,10 +99,17 @@ async function POSTHandler(
         },
       });
       const signal = parsed.data.decision === "approve" ? "approve" : "cancel";
+      const correlationId = request.headers.get("x-request-id")?.trim() ||
+        randomUUID();
       const detail = await signalWorkflowRun(id, signal, {
         tenantId: securityContext.tenantId,
         actorId: securityContext.actorId,
         reason: parsed.data.reason,
+        executionScope: executionScopeFromSecurityContext(securityContext, {
+          correlationId,
+          causationId: id,
+          purpose: `workflow.approval.${parsed.data.decision}`,
+        }),
       });
       if (signal === "approve") {
         const queueJob = await enqueueWorkflowRunTick(

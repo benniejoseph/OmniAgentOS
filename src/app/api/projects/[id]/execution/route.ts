@@ -12,6 +12,7 @@ import {
   listProjectTasks,
   updateProjectExecution,
 } from "@/lib/projects/store";
+import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -46,7 +47,14 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   try {
     context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "project_execution", resourceId: id, metadata: { action: parsed.data.action } });
   } catch (error) { return forbiddenResponse(error); }
-  const scope = { tenantId: context.tenantId, actorId: context.actorId };
+  const scope = {
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    ...projectMutationFromRequest(request, context, {
+      purpose: `project.execution.${parsed.data.action}`,
+      projectId: id,
+    }),
+  };
   const current = await getProject(id, scope);
   if (!current) return Response.json({ error: "Project not found." }, { status: 404 });
   if (current.status !== "active") return Response.json({ error: "Only active projects can execute." }, { status: 409 });
@@ -63,11 +71,19 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     }
     if (parsed.data.action === "pause") {
       await updateProjectExecution(id, { executionStatus: "paused" }, scope);
-      await signalProjectWorkflows({ projectId: id, tenantId: context.tenantId, signal: "pause" });
+      await signalProjectWorkflows({
+        projectId: id,
+        signal: "pause",
+        ...scope,
+      });
       return Response.json(await currentSnapshot(id, scope));
     }
     if (parsed.data.action === "resume") {
-      await signalProjectWorkflows({ projectId: id, tenantId: context.tenantId, signal: "resume" });
+      await signalProjectWorkflows({
+        projectId: id,
+        signal: "resume",
+        ...scope,
+      });
       await updateProjectExecution(id, { executionStatus: "running" }, scope);
       return Response.json(await syncProjectExecution({ projectId: id, ...scope, drain: true }));
     }

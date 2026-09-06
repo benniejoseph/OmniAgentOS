@@ -4,6 +4,7 @@ import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { getOperationsOverview } from "@/lib/operations/queue";
 import { reconcileOperationsRecovery } from "@/lib/operations/recovery";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -81,6 +82,10 @@ async function POSTHandler(request: Request) {
       failAfterMs: parsed.data.failAfterMs,
       actorId: context.actorId,
       tenantId: context.tenantId,
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId: telemetry.correlationId,
+        purpose: `operations.${parsed.data.action}`,
+      }),
     });
     const overview = await getOperationsOverview({ tenantId: context.tenantId });
     await recordRuntimeEventSafely({

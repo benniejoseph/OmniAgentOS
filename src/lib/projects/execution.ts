@@ -9,7 +9,10 @@ import {
 } from "@/lib/projects/store";
 import { ensureProjectWorkflowArtifact } from "@/lib/projects/artifacts";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  createExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
 import { createWorkflowRun, getWorkflowRunDetail } from "@/lib/workflows/store";
@@ -24,6 +27,8 @@ export async function syncProjectExecution(input: {
   tenantId?: string;
   actorId: string;
   drain?: boolean;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
 }) {
   let project = await getProject(input.projectId, input);
   if (!project) return undefined;
@@ -138,6 +143,8 @@ export async function processActiveProjectExecutions(options: { tenantId?: strin
 export async function signalProjectWorkflows(input: {
   projectId: string;
   tenantId?: string;
+  actorId: string;
+  executionScope: ExecutionScope;
   signal: "pause" | "resume";
 }) {
   const tasks = await listProjectTasks(input.projectId, input);
@@ -147,7 +154,11 @@ export async function signalProjectWorkflows(input: {
       : task.workflowStatus === "paused"
   ));
   for (const task of candidates) {
-    await signalWorkflowRun(task.workflowRunId!, input.signal, { tenantId: input.tenantId });
+    await signalWorkflowRun(task.workflowRunId!, input.signal, {
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+      executionScope: input.executionScope,
+    });
     if (input.signal === "pause") {
       await cancelWorkflowRunTick(task.workflowRunId!, "Project execution paused.", input.tenantId);
     } else {
@@ -166,6 +177,7 @@ export async function signalProjectTask(input: {
   tenantId?: string;
   actorId: string;
   signal: "approve" | "retry";
+  executionScope: ExecutionScope;
 }) {
   const task = (await listProjectTasks(input.projectId, input)).find((item) => item.id === input.taskId);
   if (!task?.workflowRunId) return undefined;
@@ -173,6 +185,7 @@ export async function signalProjectTask(input: {
     tenantId: input.tenantId,
     actorId: input.actorId,
     reason: `Project task ${input.signal}.`,
+    executionScope: input.executionScope,
   });
   await enqueueWorkflowRunTick(task.workflowRunId, `project_task_${input.signal}`, 10, input.tenantId);
   scheduleWorkflowQueueDrain(1, input.tenantId);

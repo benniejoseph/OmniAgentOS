@@ -76,7 +76,13 @@ import { cancelWorkflowRunTick, enqueueWorkflowRunTick, processWorkflowQueue } f
 import { executeDynamicWorkflowPlan, getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
-import { createWorkflowRun, getWorkflowRunDetail, listWorkflowRuns, updateWorkflowRun, updateWorkflowStep } from "@/lib/workflows/store";
+import {
+  createWorkflowRun,
+  getWorkflowRunDetail,
+  listWorkflowRuns,
+  transitionWorkflowRunWithEvents,
+  updateWorkflowStep,
+} from "@/lib/workflows/store";
 import {
   createWorkflowTrigger,
   dispatchWorkflowTrigger,
@@ -1487,6 +1493,13 @@ async function evaluatePlanExecutor(
       contextBlock: "Plan executor evaluation uses direct DAG execution.",
     },
     completedAt: new Date().toISOString(),
+  }, {
+    tenantId: detail.run.tenantId,
+    executionAuthority: authority,
+    events: [{
+      type: "step.completed",
+      payload: { stepKey: "retrieve_context", source: "evaluation_fixture" },
+    }],
   });
   await updateWorkflowStep(detail.run.id, "plan", {
     status: "completed",
@@ -1509,6 +1522,13 @@ async function evaluatePlanExecutor(
       contextCount: 0,
     },
     completedAt: new Date().toISOString(),
+  }, {
+    tenantId: detail.run.tenantId,
+    executionAuthority: authority,
+    events: [{
+      type: "step.completed",
+      payload: { stepKey: "plan", source: "evaluation_fixture" },
+    }],
   });
 
   const executionDetail = await getWorkflowRunDetail(detail.run.id);
@@ -2064,14 +2084,27 @@ async function evaluateQueueRecovery(
 ): Promise<CaseResult> {
   const tenantId = usageContext?.tenantId;
   const actorId = usageContext?.actorId || "evaluation-harness";
+  const requeueAuthority = evaluationWorkflowAuthority(
+    evalCase.id,
+    "queue-requeue",
+    tenantId,
+    actorId,
+  );
+  const failAuthority = evaluationWorkflowAuthority(
+    evalCase.id,
+    "queue-fail",
+    tenantId,
+    actorId,
+  );
+  const recoveryScope = evaluationWorkflowAuthority(
+    evalCase.id,
+    "queue-recovery",
+    tenantId,
+    actorId,
+  ).executionScope;
   const requeueRun = await createWorkflowRun({
     tenantId,
-    executionAuthority: evaluationWorkflowAuthority(
-      evalCase.id,
-      "queue-requeue",
-      tenantId,
-      actorId,
-    ),
+    executionAuthority: requeueAuthority,
     goal: `${String(evalCase.input.goal || "Queue recovery fixture")} requeue`,
     mode: "orchestrate",
     requireApproval: false,
@@ -2080,22 +2113,26 @@ async function evaluateQueueRecovery(
   });
   const failRun = await createWorkflowRun({
     tenantId,
-    executionAuthority: evaluationWorkflowAuthority(
-      evalCase.id,
-      "queue-fail",
-      tenantId,
-      actorId,
-    ),
+    executionAuthority: failAuthority,
     goal: `${String(evalCase.input.goal || "Queue recovery fixture")} fail`,
     mode: "orchestrate",
     requireApproval: false,
     maxAttempts: 1,
     metadata: { source: "evaluation", caseId: evalCase.id, actorId },
   });
-  await updateWorkflowRun(failRun.run.id, {
-    attempt: failRun.run.maxAttempts,
-    error: "Evaluation exhausted workflow fixture.",
-  });
+  await transitionWorkflowRunWithEvents(
+    failRun.run.id,
+    ["queued"],
+    {
+      attempt: failRun.run.maxAttempts,
+      error: "Evaluation exhausted workflow fixture.",
+    },
+    [{
+      type: "workflow.evaluation_fixture.prepared",
+      payload: { caseId: evalCase.id, fixture: "queue_fail" },
+    }],
+    { tenantId, executionAuthority: failAuthority },
+  );
 
   let cleanup = false;
   try {
@@ -2106,6 +2143,7 @@ async function evaluateQueueRecovery(
       limit: 10,
       actorId,
       tenantId,
+      executionScope: recoveryScope,
     });
     const repair = await reconcileOperationsRecovery({
       mode: "repair",
@@ -2114,6 +2152,7 @@ async function evaluateQueueRecovery(
       limit: 10,
       actorId,
       tenantId,
+      executionScope: recoveryScope,
     });
     const drain = await reconcileOperationsRecovery({
       mode: "drain",
@@ -2123,12 +2162,17 @@ async function evaluateQueueRecovery(
       drainLimit: 2,
       actorId,
       tenantId,
+      executionScope: recoveryScope,
     });
     const requeueDetail = await getWorkflowRunDetail(requeueRun.run.id, { tenantId });
     const failDetail = await getWorkflowRunDetail(failRun.run.id, { tenantId });
     const registry = getCapabilityRegistry();
     const activeToolIds = new Set(registry.tools.filter((tool) => tool.status === "active").map((tool) => tool.id));
-    await signalWorkflowRun(requeueRun.run.id, "cancel", { tenantId, actorId }).catch(() => undefined);
+    await signalWorkflowRun(requeueRun.run.id, "cancel", {
+      tenantId,
+      actorId,
+      executionScope: recoveryScope,
+    }).catch(() => undefined);
     await cancelWorkflowRunTick(requeueRun.run.id, "Evaluation queue recovery cleanup.", tenantId).catch(() => undefined);
     await cancelWorkflowRunTick(failRun.run.id, "Evaluation queue recovery cleanup.", tenantId).catch(() => undefined);
     cleanup = true;

@@ -10,11 +10,12 @@ import {
 } from "@/lib/operations/job-queue";
 import { processWorkflowQueue, enqueueWorkflowRunTick, getWorkflowJobDedupeKey } from "@/lib/workflows/queue";
 import {
-  appendWorkflowEvent,
   getWorkflowStats,
+  getWorkflowRunExecutionAuthority,
   listWorkflowRuns,
-  transitionWorkflowRun,
+  transitionWorkflowRunWithEvents,
 } from "@/lib/workflows/store";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { WorkflowRunRecord, WorkflowStats } from "@/lib/workflows/types";
 
 export type OperationsRecoveryMode = "inspect" | "repair" | "drain";
@@ -73,6 +74,7 @@ export type OperationsRecoveryInput = {
   drainLimit?: number;
   actorId?: string;
   tenantId?: string;
+  executionScope?: ExecutionScope;
 };
 
 const defaultStaleWorkflowMs = 10 * 60 * 1000;
@@ -126,11 +128,24 @@ export async function reconcileOperationsRecovery(input: OperationsRecoveryInput
 
     const exhausted = run.attempt >= run.maxAttempts || staleMs >= failAfterMs;
     if (exhausted) {
-      staleWorkflows.push(await failStaleWorkflow(run, staleMs, ageMs, input.actorId));
+      staleWorkflows.push(await failStaleWorkflow(
+        run,
+        staleMs,
+        ageMs,
+        input.actorId,
+        input.executionScope,
+      ));
       continue;
     }
 
-    staleWorkflows.push(await requeueStaleWorkflow(run, staleMs, ageMs, input.actorId, jobRows));
+    staleWorkflows.push(await requeueStaleWorkflow(
+      run,
+      staleMs,
+      ageMs,
+      input.actorId,
+      jobRows,
+      input.executionScope,
+    ));
   }
 
   const drain = mode === "drain"
@@ -235,15 +250,29 @@ async function requeueStaleWorkflow(
   ageMs: number,
   actorId?: string,
   jobs: OperationJobRecord[] = [],
+  executionScope?: ExecutionScope,
 ) {
-  const transitioned = await transitionWorkflowRun(run.id, [run.status], {
+  const executionAuthority = run.input.executionAuthorityRequired
+    ? await getWorkflowRunExecutionAuthority(run.id, { tenantId: run.tenantId })
+    : undefined;
+  const transitioned = await transitionWorkflowRunWithEvents(run.id, [run.status], {
     status: "queued",
     error: run.status === "running"
       ? "Recovery reconciled stale running workflow back to queued."
       : run.error,
-  }, {
+  }, [{
+    type: "workflow.recovery.requeued",
+    payload: {
+      actorId,
+      staleMs,
+      previousStatus: run.status,
+      queueDedupeKey: getWorkflowJobDedupeKey(run.id),
+    },
+  }], {
     tenantId: run.tenantId,
     expectedUpdatedAt: run.updatedAt,
+    executionAuthority,
+    eventExecutionScope: executionScope,
     requireNoActiveJobDedupeKey: storageDedupeKey(
       run.tenantId,
       getWorkflowJobDedupeKey(run.id),
@@ -273,12 +302,6 @@ async function requeueStaleWorkflow(
         30,
         run.tenantId,
       )];
-  await appendWorkflowEvent(run.id, "workflow.recovery.requeued", {
-    actorId,
-    staleMs,
-    jobIds: requeuedJobs.map((job) => job.id),
-    previousStatus: run.status,
-  }).catch(() => undefined);
   return summarizeWorkflow(
     run,
     staleMs,
@@ -289,18 +312,32 @@ async function requeueStaleWorkflow(
   );
 }
 
-async function failStaleWorkflow(run: WorkflowRunRecord, staleMs: number, ageMs: number, actorId?: string) {
+async function failStaleWorkflow(
+  run: WorkflowRunRecord,
+  staleMs: number,
+  ageMs: number,
+  actorId?: string,
+  executionScope?: ExecutionScope,
+) {
   const reason = run.attempt >= run.maxAttempts
     ? "Recovery failed stale workflow after max attempts were exhausted."
     : "Recovery failed workflow after stale fail-after threshold was exceeded.";
-  const transitioned = await transitionWorkflowRun(run.id, [run.status], {
+  const executionAuthority = run.input.executionAuthorityRequired
+    ? await getWorkflowRunExecutionAuthority(run.id, { tenantId: run.tenantId })
+    : undefined;
+  const transitioned = await transitionWorkflowRunWithEvents(run.id, [run.status], {
     status: "failed",
     currentStep: run.currentStep,
     error: reason,
     completedAt: new Date().toISOString(),
-  }, {
+  }, [{
+    type: "workflow.recovery.failed",
+    payload: { actorId, staleMs, ageMs, reason },
+  }], {
     tenantId: run.tenantId,
     expectedUpdatedAt: run.updatedAt,
+    executionAuthority,
+    eventExecutionScope: executionScope,
     requireNoActiveJobDedupeKey: storageDedupeKey(
       run.tenantId,
       getWorkflowJobDedupeKey(run.id),
@@ -320,13 +357,6 @@ async function failStaleWorkflow(run: WorkflowRunRecord, staleMs: number, ageMs:
     reason,
     { tenantId: run.tenantId },
   );
-  await appendWorkflowEvent(run.id, "workflow.recovery.failed", {
-    actorId,
-    staleMs,
-    ageMs,
-    reason,
-    canceledJobIds: canceledJobs.map((job) => job.id),
-  }).catch(() => undefined);
   return summarizeWorkflow(
     run,
     staleMs,
