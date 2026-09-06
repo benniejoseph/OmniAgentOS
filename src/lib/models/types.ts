@@ -1,5 +1,6 @@
 import type { ModelUsage } from "@/lib/openai/model-router";
 import type { AiUsageScope } from "@/lib/usage/types";
+import type { ModelConversationItem } from "@/lib/models/conversation";
 
 export type ProviderId = "openai" | "google" | "anthropic" | "aws_bedrock" | "local";
 export type ModelTier = "fast" | "reasoning";
@@ -75,11 +76,15 @@ export type ModelToolResult = {
 export type ModelToolContinuation = {
   provider: ProviderId;
   state: readonly Record<string, unknown>[];
+  /** Canonical replay transcript; provider-owned state remains an optimization. */
+  conversation?: readonly ModelConversationItem[];
 };
 
 export type ModelToolTurnRequest = ModelTextRequest & {
   preferredProvider: ProviderId;
   tools: readonly ModelToolDefinition[];
+  /** Native roles and typed observations for the first or replayed turn. */
+  conversation?: readonly ModelConversationItem[];
   continuation?: ModelToolContinuation;
   toolResults?: readonly ModelToolResult[];
 };

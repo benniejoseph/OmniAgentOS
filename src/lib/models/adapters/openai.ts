@@ -15,6 +15,11 @@ import {
   preserveModelProviderResponseReceipt,
 } from "@/lib/models/types";
 import { getModelRuntimeApiKey } from "@/lib/models/runtime-context";
+import {
+  appendModelTurnToConversation,
+  modelConversationForToolTurn,
+  type ModelConversationItem,
+} from "@/lib/models/conversation";
 
 export const openAIModelAdapter: ModelProviderAdapter = {
   id: "openai",
@@ -81,13 +86,15 @@ export const openAIModelAdapter: ModelProviderAdapter = {
         false,
       );
     }
+    const conversation = modelConversationForToolTurn({
+      prompt: request.input,
+      conversation: request.conversation,
+      continuationConversation: request.continuation?.conversation,
+      toolResults: request.toolResults,
+    });
     const prior = request.continuation?.state.length
       ? request.continuation.state as ConversationItem[]
-      : [{
-          type: "message",
-          role: "user",
-          content: request.input,
-        } satisfies ConversationItem];
+      : openAIConversationItems(conversation);
     const input: ConversationItem[] = [
       ...prior,
       ...(request.toolResults || []).map((result) => ({
@@ -114,7 +121,21 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       toolCalls: turn.functionCalls,
       continuation: {
         provider: "openai",
-        state: [...input, ...turn.functionCallItems] as Record<string, unknown>[],
+        state: [
+          ...input,
+          ...(turn.text
+            ? [{
+                type: "message",
+                role: "assistant",
+                content: turn.text,
+              } satisfies ConversationItem]
+            : []),
+          ...turn.functionCallItems,
+        ] as Record<string, unknown>[],
+        conversation: appendModelTurnToConversation(conversation, {
+          text: turn.text,
+          toolCalls: turn.functionCalls,
+        }),
       },
       provider: "openai",
       model: turn.model,
@@ -129,6 +150,28 @@ export const openAIModelAdapter: ModelProviderAdapter = {
     return classifyProviderError("openai", error);
   },
 };
+
+function openAIConversationItems(
+  conversation: readonly ModelConversationItem[],
+): ConversationItem[] {
+  return conversation.map((item) => {
+    if (item.type === "message" || item.type === "observation") return item;
+    if (item.type === "tool_call") {
+      return {
+        type: "function_call",
+        id: item.callId,
+        call_id: item.callId,
+        name: item.name,
+        arguments: item.argumentsJson,
+      };
+    }
+    return {
+      type: "function_call_output",
+      call_id: item.callId,
+      output: item.content,
+    };
+  });
+}
 
 export function classifyProviderError(provider: "openai" | "google" | "anthropic" | "aws_bedrock" | "local", error: unknown) {
   if (error instanceof ModelProviderError) return error;
