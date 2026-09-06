@@ -142,6 +142,18 @@ describe("transactional relation projection planning", () => {
     expect(plan).toMatchObject({ markerCount: 0, unresolvedMarkerCount: 0 });
     expect(plan.desiredClaims).toEqual([]);
   });
+
+  it("holds conflicting duplicate markers from one canonical source", () => {
+    const plan = buildRelationProjectionPlan({
+      sources: [source([
+        'relation: related_to | project: "Phoenix" -> person: "Ada Lovelace" | valid-to: 2027-01-01T00:00:00Z',
+        'relation: related_to | project: "Phoenix" -> person: "Ada Lovelace" | valid-to: 2028-01-01T00:00:00Z',
+      ].join("\n"))],
+      entities: [project, owner],
+    });
+    expect(plan.desiredClaims).toEqual([]);
+    expect(plan.unresolvedMarkerCount).toBe(1);
+  });
 });
 
 function source(
