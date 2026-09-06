@@ -346,6 +346,8 @@ export async function executeGovernedTool({
         existingRecord,
         executionClaimToken,
         error,
+        executionScope,
+        idempotencyKey,
       );
     }
     throw error;
@@ -396,8 +398,14 @@ export async function executeGovernedTool({
       riskLevel: 3,
     });
     const saved = executionClaimToken
-      ? await completeClaimedToolExecution(record, executionClaimToken)
-      : await saveToolExecution(record);
+      ? await completeClaimedToolExecution(record, executionClaimToken, {
+          executionScope: scopedRequest.executionScope,
+          idempotencyKey,
+        })
+      : await saveToolExecution(record, {
+          executionScope: scopedRequest.executionScope,
+          idempotencyKey,
+        });
     if (!saved) {
       if (record.effectReceipt) {
         throw new EffectReceiptFinalizationError({
@@ -496,6 +504,8 @@ export async function executeGovernedTool({
         new ToolInputValidationError(
           "The tool contract changed after approval. Submit the action again.",
         ),
+        executionScope,
+        idempotencyKey,
       );
     }
   }
@@ -508,6 +518,8 @@ export async function executeGovernedTool({
         existingRecord,
         executionClaimToken,
         error,
+        executionScope,
+        idempotencyKey,
       );
     }
     if (
@@ -587,6 +599,8 @@ export async function executeGovernedTool({
           existingRecord,
           executionClaimToken,
           error,
+          executionScope,
+          idempotencyKey,
         );
       }
       throw toolInputValidationError(error);
@@ -641,6 +655,8 @@ export async function executeGovernedTool({
         const recovered = existing.status === "executing"
           ? await recoverStaleToolExecutionClaim(existing.id, {
               tenantId: context?.tenantId,
+              executionScope: scopedRequest.executionScope,
+              idempotencyKey,
             })
           : undefined;
         const record = recovered || existing;
@@ -756,6 +772,8 @@ export async function executeGovernedTool({
           {
             tenantId: context?.tenantId,
             claimToken: replayClaimToken,
+            executionScope: scopedRequest.executionScope,
+            idempotencyKey,
           },
         );
         if (reclaimed) {
@@ -781,6 +799,8 @@ export async function executeGovernedTool({
       const recovered = !reconciled && existing.status === "executing"
         ? await recoverStaleToolExecutionClaim(existing.id, {
             tenantId: context?.tenantId,
+            executionScope: scopedRequest.executionScope,
+            idempotencyKey,
           })
         : undefined;
       const record = reconciled || recovered || existing;
@@ -904,6 +924,9 @@ export async function executeGovernedTool({
           reason:
             "Governed tool execution scope binding failed before approval.",
           completedAt: new Date().toISOString(),
+        }, {
+          executionScope: scopedRequest.executionScope,
+          idempotencyKey,
         }).catch(() => undefined);
       }
       throw error;
@@ -912,7 +935,10 @@ export async function executeGovernedTool({
   };
   const persistRecord = async (record: ToolExecutionRecord) => {
     if (!activeExecutionClaimToken) {
-      const saved = await saveToolExecution(record);
+      const saved = await saveToolExecution(record, {
+        executionScope: scopedRequest.executionScope,
+        idempotencyKey,
+      });
       return bindPersistedRecord(saved);
     }
     let saved: ToolExecutionRecord | undefined;
@@ -920,7 +946,10 @@ export async function executeGovernedTool({
       saved = await completeClaimedToolExecution(
         record,
         activeExecutionClaimToken,
-        { executionScope: scopedRequest.executionScope },
+        {
+          executionScope: scopedRequest.executionScope,
+          idempotencyKey,
+        },
       );
     } catch (error) {
       if (record.effectReceipt) {
@@ -1083,7 +1112,10 @@ export async function executeGovernedTool({
     };
     let claim: Awaited<ReturnType<typeof claimIdempotentToolExecution>>;
     try {
-      claim = await claimIdempotentToolExecution(intent);
+      claim = await claimIdempotentToolExecution(intent, {
+        executionScope: scopedRequest.executionScope,
+        idempotencyKey,
+      });
     } catch (error) {
       if (intendedEffectContext) {
         throw new EffectReceiptFinalizationError({ cause: error });
@@ -1104,6 +1136,8 @@ export async function executeGovernedTool({
         const recovered = claim.record.status === "executing"
           ? await recoverStaleToolExecutionClaim(claim.record.id, {
               tenantId: context?.tenantId,
+              executionScope: scopedRequest.executionScope,
+              idempotencyKey,
             })
           : undefined;
         const record = recovered || claim.record;
@@ -1152,6 +1186,8 @@ export async function executeGovernedTool({
         claim.record.status === "executing"
           ? await recoverStaleToolExecutionClaim(claim.record.id, {
               tenantId: context?.tenantId,
+              executionScope: scopedRequest.executionScope,
+              idempotencyKey,
             })
           : undefined;
       const record = reconciled || recovered || claim.record;
@@ -1240,7 +1276,10 @@ export async function executeGovernedTool({
           : {},
       ),
     };
-    executionRecord = await saveToolExecution(intent);
+    executionRecord = await saveToolExecution(intent, {
+      executionScope: scopedRequest.executionScope,
+      idempotencyKey: intent.id,
+    });
     activeExecutionClaimToken = claimToken;
     await bindToolScopeIfPresent({
       record: executionRecord,
@@ -3492,6 +3531,8 @@ async function completeClaimedInputValidationFailure(
   existingRecord: ToolExecutionRecord,
   executionClaimToken: string,
   error: unknown,
+  executionScope?: ExecutionScope,
+  idempotencyKey?: string,
 ) {
   const validationError = toolInputValidationError(error);
   const record: ToolExecutionRecord = {
@@ -3506,6 +3547,7 @@ async function completeClaimedInputValidationFailure(
   const saved = await completeClaimedToolExecution(
     record,
     executionClaimToken,
+    { executionScope, idempotencyKey },
   );
   if (!saved) {
     throw new ExecutionClaimLostError();

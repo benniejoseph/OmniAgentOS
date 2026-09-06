@@ -443,7 +443,7 @@ describe("tool approval claims (file mode)", () => {
       tenantId: "tenant-a",
       actorId: "requester",
     });
-    expect(events).toEqual([
+    expect(events.filter((event) => event.type.startsWith("tool.effect_"))).toEqual([
       expect.objectContaining({
         id: `tool.effect_intent:${intent.effectIntentId}`,
         type: "tool.effect_intent.recorded",
@@ -461,6 +461,26 @@ describe("tool approval claims (file mode)", () => {
         }),
       }),
     ]);
+    expect(events.filter((event) => event.type === "tool.execution.upserted"))
+      .toEqual([
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            operation: "saved",
+            status: "executing",
+            stateSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            idempotencyKeySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          }),
+        }),
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            operation: "completed",
+            status: "executed",
+            effectReceiptId: receipt.effectReceiptId,
+            effectReceiptSha256: receipt.receiptSha256,
+          }),
+        }),
+      ]);
+    expect(JSON.stringify(events)).not.toContain("provider:generic-effect");
   });
 
   it("does not honor an approval record without a durable claim", async () => {

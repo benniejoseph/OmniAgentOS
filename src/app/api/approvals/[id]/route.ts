@@ -264,7 +264,11 @@ async function POSTHandler(
     !record.dryRun;
   if (record.status !== "approval_required" && !retryingMemoryForget) {
     const recovered = record.status === "executing"
-      ? await recoverStaleToolExecutionClaim(record.id, { tenantId: securityContext.tenantId })
+      ? await recoverStaleToolExecutionClaim(record.id, {
+          tenantId: securityContext.tenantId,
+          executionScope: approvalMutation.executionScope,
+          idempotencyKey: approvalMutation.idempotencyKey,
+        })
       : undefined;
     return Response.json(
       {
@@ -363,7 +367,11 @@ async function POSTHandler(
   }
   if (claim.outcome === "conflict" || !claim.record) {
     const recovered = claim.record?.status === "executing"
-      ? await recoverStaleToolExecutionClaim(record.id, { tenantId: securityContext.tenantId })
+      ? await recoverStaleToolExecutionClaim(record.id, {
+          tenantId: securityContext.tenantId,
+          executionScope: approvalMutation.executionScope,
+          idempotencyKey: approvalMutation.idempotencyKey,
+        })
       : undefined;
     return Response.json(
       {
@@ -426,6 +434,8 @@ async function POSTHandler(
       const failed = await failClaimedToolExecution({
         record: claim.record,
         claimToken,
+        executionScope: approvalMutation.executionScope,
+        idempotencyKey: approvalMutation.idempotencyKey,
         reason:
           "Approved execution payload is missing or failed integrity verification. Submit the action again.",
       });
