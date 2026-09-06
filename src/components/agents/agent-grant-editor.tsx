@@ -23,6 +23,7 @@ import type { AgentMemoryGrantViewV1 } from "@/lib/memory/agent-grant-editor";
 import type {
   RequestCustomAgentDefinition,
 } from "@/lib/skills/types";
+import { AgentReleaseEditor } from "@/components/agents/agent-release-editor";
 
 type GrantKind = "context" | "capability";
 type GrantVisibility =
@@ -411,6 +412,7 @@ export function AgentGrantSettingsPanel() {
     name: string;
     builtIn: boolean;
     manageable: boolean;
+    releaseState?: "active" | "retired";
   }>>([]);
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState<string>();
@@ -428,6 +430,7 @@ export function AgentGrantSettingsPanel() {
             name: agent.name,
             builtIn: false,
             manageable: agent.manageable,
+            releaseState: agent.releaseState,
           })),
           ...(payload.builtIns || []).map((agent) => ({
             id: agent.id,
@@ -468,7 +471,9 @@ export function AgentGrantSettingsPanel() {
         </Field>
       ) : null}
       {error ? <p className="text-sm text-danger" role="alert">{error}</p> : null}
-      {selected?.builtIn || selected?.manageable === false ? (
+      {selected?.releaseState === "retired" ? (
+        <AgentReleaseEditor agentId={selected.id} agentName={selected.name} />
+      ) : selected?.builtIn || selected?.manageable === false ? (
         <div className="rounded-xl border border-border/70 bg-surface-raised/45 p-5">
           <div className="flex items-center gap-2"><Bot size={18} className="text-primary" /><strong>{selected?.name || "Built-in Agent"}</strong></div>
           <p className="mt-2 text-sm leading-6 text-muted">
@@ -476,7 +481,10 @@ export function AgentGrantSettingsPanel() {
           </p>
         </div>
       ) : selected ? (
-        <AgentGrantEditor agentId={selected.id} agentName={selected.name} />
+        <div className="grid gap-5">
+          <AgentReleaseEditor agentId={selected.id} agentName={selected.name} />
+          <AgentGrantEditor agentId={selected.id} agentName={selected.name} />
+        </div>
       ) : (
         <div className="rounded-xl border border-dashed border-border p-5 text-sm text-muted">
           Create a custom Agent in <Link href="/app/agents" className="text-primary underline">Arsenal</Link> to assign explicit grants.

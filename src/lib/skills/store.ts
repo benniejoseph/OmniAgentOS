@@ -193,11 +193,22 @@ export async function listCustomAgentsForRequest(options: RequestReadScope) {
   );
   await ensureDatabaseSchema();
   const rows = await getSql()`
-    SELECT *
-    FROM omni_custom_agents
-    WHERE tenant_id = ${tenantId}
-      AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
-    ORDER BY updated_at DESC, id ASC
+    SELECT agent.*, release.state AS release_state,
+      release.active_definition_version,
+      latest.latest_definition_version
+    FROM omni_custom_agents agent
+    JOIN omni_agent_release_channels release
+      ON release.tenant_id = agent.tenant_id
+      AND release.agent_definition_id = agent.id
+    JOIN LATERAL (
+      SELECT MAX(definition.definition_version) AS latest_definition_version
+      FROM omni_agent_definition_versions definition
+      WHERE definition.tenant_id = agent.tenant_id
+        AND definition.agent_definition_id = agent.id
+    ) latest ON TRUE
+    WHERE agent.tenant_id = ${tenantId}
+      AND (agent.actor_id = ${canonicalActorId} OR agent.actor_id = ${exactActorId})
+    ORDER BY agent.updated_at DESC, agent.id ASC
   `;
   const agents = rows.map(agentFromRow);
   assertRequestCustomAgentOwners(
@@ -207,7 +218,9 @@ export async function listCustomAgentsForRequest(options: RequestReadScope) {
     exactActorId,
   );
   assertNoAgentSlugCollisions(agents);
-  return agents.map((agent) => customAgentForRequest(agent, exactActorId));
+  return agents.map((agent, index) =>
+    customAgentForRequest(agent, exactActorId, rows[index])
+  );
 }
 
 export async function getCustomAgent(id: string, options: Scope) { return (await listCustomAgents(options)).find((item) => item.id === id); }
@@ -234,9 +247,21 @@ export async function getCustomAgentForRequest(
   );
   await ensureDatabaseSchema();
   const rows = await getSql()`
-    SELECT * FROM omni_custom_agents
-    WHERE id = ${id} AND tenant_id = ${tenantId}
-      AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+    SELECT agent.*, release.state AS release_state,
+      release.active_definition_version,
+      latest.latest_definition_version
+    FROM omni_custom_agents agent
+    JOIN omni_agent_release_channels release
+      ON release.tenant_id = agent.tenant_id
+      AND release.agent_definition_id = agent.id
+    JOIN LATERAL (
+      SELECT MAX(definition.definition_version) AS latest_definition_version
+      FROM omni_agent_definition_versions definition
+      WHERE definition.tenant_id = agent.tenant_id
+        AND definition.agent_definition_id = agent.id
+    ) latest ON TRUE
+    WHERE agent.id = ${id} AND agent.tenant_id = ${tenantId}
+      AND (agent.actor_id = ${canonicalActorId} OR agent.actor_id = ${exactActorId})
     LIMIT 1
   `;
   if (!rows[0]) return undefined;
@@ -248,7 +273,7 @@ export async function getCustomAgentForRequest(
     canonicalActorId,
     exactActorId,
   );
-  return customAgentForRequest(agent, exactActorId);
+  return customAgentForRequest(agent, exactActorId, rows[0]);
 }
 
 export async function createCustomAgent(input: CustomAgentCreateInput, options: Scope) {
@@ -594,13 +619,29 @@ function assertNoAgentSlugCollisions(agents: CustomAgentDefinition[]) {
 function customAgentForRequest(
   agent: CustomAgentDefinition,
   requestActorId: string,
+  row?: Record<string, unknown>,
 ): RequestCustomAgentDefinition {
   const exactOwner = agent.actorId === requestActorId;
+  if (row && row.release_state !== "active" && row.release_state !== "retired") {
+    throw new CustomAgentReadConflictError(
+      "Custom Agent release metadata is invalid.",
+    );
+  }
+  const releaseState = row?.release_state === "retired" ? "retired" : "active";
+  const activeDefinitionVersion = optionalPositiveVersion(
+    row?.active_definition_version,
+  );
+  const latestDefinitionVersion = optionalPositiveVersion(
+    row?.latest_definition_version,
+  );
   return {
     ...agent,
     actorId: requestActorId,
-    selectable: exactOwner,
-    manageable: exactOwner,
+    selectable: exactOwner && releaseState === "active",
+    manageable: exactOwner && releaseState === "active",
+    releaseState,
+    activeDefinitionVersion,
+    latestDefinitionVersion,
   };
 }
 
@@ -608,6 +649,17 @@ function customAgentForExactFileRequest(
   agent: CustomAgentDefinition,
 ): RequestCustomAgentDefinition {
   return { ...agent, selectable: true, manageable: true };
+}
+
+function optionalPositiveVersion(value: unknown) {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new CustomAgentReadConflictError(
+      "Custom Agent release metadata is invalid.",
+    );
+  }
+  return parsed;
 }
 
 async function resolveAgentSkillAssignmentsWithSql(

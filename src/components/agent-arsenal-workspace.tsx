@@ -23,6 +23,7 @@ import {
   getAgentMascotIdentity,
 } from "@/components/agents/agent-mascot";
 import { AgentGrantEditor } from "@/components/agents/agent-grant-editor";
+import { AgentReleaseEditor } from "@/components/agents/agent-release-editor";
 import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
@@ -374,8 +375,21 @@ export function AgentArsenalWorkspace() {
             icon="eye"
           />
           {selected.custom?.manageable === true ? (
-            <div className="mt-4">
+            <div className="mt-4 grid gap-4">
+              <AgentReleaseEditor
+                agentId={selected.id}
+                agentName={selected.name}
+                compact
+              />
               <AgentGrantEditor
+                agentId={selected.id}
+                agentName={selected.name}
+                compact
+              />
+            </div>
+          ) : selected.custom?.releaseState === "retired" ? (
+            <div className="mt-4">
+              <AgentReleaseEditor
                 agentId={selected.id}
                 agentName={selected.name}
                 compact

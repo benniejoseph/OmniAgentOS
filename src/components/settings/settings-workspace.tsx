@@ -64,7 +64,7 @@ const sections: Array<{
   { id: "overview", label: "Workspace", description: "Readiness and defaults", icon: Settings2 },
   { id: "providers", label: "AI providers", description: "Credentials and catalogs", icon: Cloud },
   { id: "models", label: "Model routing", description: "Assign work by role", icon: BrainCircuit },
-  { id: "agents", label: "Agent grants", description: "Context and capabilities", icon: Bot },
+  { id: "agents", label: "Agent control", description: "Releases and grants", icon: Bot },
   { id: "api", label: "API & MCP", description: "Programmatic access", icon: Code2 },
   { id: "data", label: "Data & privacy", description: "Ownership and recovery", icon: ShieldCheck },
 ];
