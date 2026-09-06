@@ -1270,6 +1270,7 @@ Rules:
 - Use only tool IDs provided in Available tools.
 - For every selected tool on a node, add one toolInputs entry. inputJson must be a JSON object string that matches that tool's inputSchema. Never place credential values in inputJson; use an allowed server-side env reference when a schema supports one.
 - When a downstream tool needs an upstream artifact, add an inputBindings entry naming the direct dependency node, target tool, safe content/data/query/body/message JSON Pointer, and artifact name (an empty name means all dependency artifacts). Never bind artifacts into URLs, hosts, paths, methods, headers, credentials, tokens, secrets, environment references, or commands.
+- Use an empty inputBindings array when a node needs no artifact binding. Never emit a placeholder binding; dependencyNodeId, targetToolId, and targetPath must all be non-empty.
 - Prefer low-risk read tools for research and dry-run before side effects.
 - Any risk level 2 or 3 node must set approvalRequired true and policy approval_required.
 - Include at least one verify node and one memory/report node.
@@ -1595,8 +1596,8 @@ const planNodeJsonSchema = {
     "expectedOutputs",
   ],
   properties: {
-    id: { type: "string" },
-    label: { type: "string" },
+    id: { type: "string", minLength: 1 },
+    label: { type: "string", minLength: 1 },
     kind: { type: "string", enum: ["research", "tool", "approval", "execute", "verify", "memory", "report"] },
     description: { type: "string" },
     dependsOn: stringArraySchema,
@@ -1608,9 +1609,10 @@ const planNodeJsonSchema = {
         additionalProperties: false,
         required: ["toolId", "inputJson"],
         properties: {
-          toolId: { type: "string" },
+          toolId: { type: "string", minLength: 1, maxLength: 240 },
           inputJson: {
             type: "string",
+            maxLength: 64_000,
             description: "A JSON-encoded object matching the selected tool input schema.",
           },
         },
@@ -1624,10 +1626,10 @@ const planNodeJsonSchema = {
         additionalProperties: false,
         required: ["dependencyNodeId", "targetToolId", "targetPath", "artifactName"],
         properties: {
-          dependencyNodeId: { type: "string" },
-          targetToolId: { type: "string" },
-          targetPath: { type: "string" },
-          artifactName: { type: "string" },
+          dependencyNodeId: { type: "string", minLength: 1, maxLength: 120 },
+          targetToolId: { type: "string", minLength: 1, maxLength: 240 },
+          targetPath: { type: "string", minLength: 1, maxLength: 500 },
+          artifactName: { type: "string", maxLength: 160 },
         },
       },
     },
@@ -1640,7 +1642,7 @@ const planNodeJsonSchema = {
   },
 };
 
-const dynamicPlanJsonSchema = {
+export const workflowDynamicPlanJsonSchema = {
   type: "object",
   additionalProperties: false,
   required: [
@@ -1661,8 +1663,8 @@ const dynamicPlanJsonSchema = {
     "confidence",
   ],
   properties: {
-    objective: { type: "string" },
-    summary: { type: "string" },
+    objective: { type: "string", minLength: 1 },
+    summary: { type: "string", minLength: 1 },
     mode: { type: "string", enum: ["orchestrate", "research", "execute", "learn"] },
     assumptions: stringArraySchema,
     constraints: stringArraySchema,
@@ -1670,6 +1672,8 @@ const dynamicPlanJsonSchema = {
     acceptanceCriteria: stringArraySchema,
     nodes: {
       type: "array",
+      minItems: 3,
+      maxItems: 18,
       items: planNodeJsonSchema,
     },
     edges: {
@@ -1700,6 +1704,8 @@ const dynamicPlanJsonSchema = {
     },
     verificationPlan: stringArraySchema,
     memoryPlan: stringArraySchema,
-    confidence: { type: "number" },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
   },
 };
+
+const dynamicPlanJsonSchema = workflowDynamicPlanJsonSchema;
