@@ -28,6 +28,8 @@ import {
   memoryRetrievalPriorityMultiplier,
 } from "@/lib/memory/lifecycle";
 import { embedTexts } from "@/lib/openai/client";
+import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
+import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
@@ -117,37 +119,58 @@ async function GETHandler(request: Request) {
 
   if (query) {
     const safeQuery = String(redactSensitive(query));
-    const queryEmbedding = (await embedTexts([safeQuery], undefined, {
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      sourceStreamId: "api:memory",
-      operation: "embedding",
-      purpose: "api.memory.search",
-      credentialSource: "deployment_environment",
-    }))?.[0];
+    const embeddingResult = await embedRetrievalTexts([safeQuery], {
+      usageScope: {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        sourceStreamId: "api:memory",
+        operation: "embedding",
+        purpose: "api.memory.search",
+        credentialSource: "deployment_environment",
+      },
+    });
+    const queryEmbedding = embeddingResult.vectors[0];
     const searchLimit = Math.min(Math.max(limit, 1), 100);
     const legacyResults = await searchMemories(safeQuery, {
       limit: searchLimit,
       queryEmbedding,
+      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
       tenantId: context.tenantId,
     });
     const privateResults = requestAccess
       ? await searchMemories(safeQuery, {
           limit: searchLimit,
           queryEmbedding,
+          queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
           tenantId: context.tenantId,
           accessScope: requestAccess.databaseAccessScope,
         })
       : [];
-    return Response.json({
-      results: mergeMemorySearchResults(
+    const mergedResults = mergeMemorySearchResults(
         legacyResults,
         privateResults,
         searchLimit,
-      ).map((result) => ({
+      );
+    const reranked = rerankRetrievalCandidates(
+      safeQuery,
+      mergedResults.map((result) => ({
+        value: result,
+        text: `${result.record.title}\n${result.record.content}`,
+        baseScore: result.score,
+        freshnessScore: 0,
+      })),
+    );
+    return Response.json({
+      results: reranked.results.map(({ value: result, score }) => ({
         ...result,
+        baseScore: result.score,
+        score,
         record: publicMemoryRecord(result.record),
       })),
+      retrieval: {
+        embedding: embeddingResult.receipt,
+        reranker: reranked.receipt,
+      },
     }, { headers: privateNoStoreHeaders });
   }
 

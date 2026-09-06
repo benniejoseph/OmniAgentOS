@@ -1,7 +1,8 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
-import { embedTexts } from "@/lib/openai/client";
 import { redactSensitive } from "@/lib/security/context";
+import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
+import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import { knowledgeDeletionMutationFromRequest } from "@/lib/rag/deletion-events";
 import {
   getKnowledgeStats,
@@ -62,25 +63,42 @@ async function GETHandler(request: Request) {
 
   if (query) {
     const safeQuery = String(redactSensitive(query));
-    const queryEmbedding = (await embedTexts([safeQuery], undefined, {
+    const embeddingResult = await embedRetrievalTexts([safeQuery], {
+      usageScope: {
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        sourceStreamId: "api:knowledge",
+        operation: "embedding",
+        purpose: "api.knowledge.search",
+        credentialSource: "deployment_environment",
+      },
+    });
+    const results = await searchKnowledge(safeQuery, {
+      limit,
+      queryEmbedding: embeddingResult.vectors[0],
+      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
       tenantId: context.tenantId,
-      actorId: context.actorId,
-      sourceStreamId: "api:knowledge",
-      operation: "embedding",
-      purpose: "api.knowledge.search",
-      credentialSource: "deployment_environment",
-    }))?.[0];
+    });
+    const reranked = rerankRetrievalCandidates(
+      safeQuery,
+      results.map((result) => ({
+        value: result,
+        text: `${result.chunk.title}\n${result.chunk.content}`,
+        baseScore: result.score,
+        freshnessScore: result.recencyScore,
+      })),
+    );
     return Response.json({
-      results: (
-        await searchKnowledge(safeQuery, {
-          limit,
-          queryEmbedding,
-          tenantId: context.tenantId,
-        })
-      ).map((result) => ({
+      results: reranked.results.map(({ value: result, score }) => ({
         ...result,
+        baseScore: result.score,
+        score,
         chunk: withoutEmbedding(result.chunk),
       })),
+      retrieval: {
+        embedding: embeddingResult.receipt,
+        reranker: reranked.receipt,
+      },
       stats: await getKnowledgeStats({ tenantId: context.tenantId }),
     });
   }

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { embedTexts } from "@/lib/openai/client";
+import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
+import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import { chunkText, normalizeTextForChunking } from "@/lib/rag/chunk";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
 import { saveMemories, searchMemories } from "@/lib/memory/store";
@@ -253,23 +255,54 @@ export async function retrieveContext(
   // deliberately remains on the legacy tenant-scoped index until P3.1 adds
   // actor/visibility/grant enforcement to every read path before cutover.
   const safeQuery = String(redactSensitive(query));
-  const queryEmbedding = (await embedTexts([safeQuery], undefined, options.usageScope))?.[0];
+  const embeddingResult = await embedRetrievalTexts([safeQuery], {
+    usageScope: options.usageScope,
+  });
+  const queryEmbedding = embeddingResult.vectors[0];
   const [memoryResults, knowledgeResults] = await Promise.all([
-    searchMemories(safeQuery, { limit, queryEmbedding, tenantId: options.tenantId }),
-    searchKnowledge(safeQuery, { limit, queryEmbedding, tenantId: options.tenantId }),
+    searchMemories(safeQuery, {
+      limit,
+      queryEmbedding,
+      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
+      tenantId: options.tenantId,
+    }),
+    searchKnowledge(safeQuery, {
+      limit,
+      queryEmbedding,
+      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
+      tenantId: options.tenantId,
+    }),
   ]);
-  const contextItems = [
+  const candidates = [
     ...memoryResults.map((result) => ({ kind: "memory" as const, result })),
     ...knowledgeResults.map((result) => ({ kind: "knowledge" as const, result })),
-  ]
-    .sort((a, b) => b.result.score - a.result.score)
-    .slice(0, limit);
+  ];
+  const reranked = rerankRetrievalCandidates(
+    safeQuery,
+    candidates.map((candidate) => ({
+      value: candidate,
+      text: candidate.kind === "memory"
+        ? `${candidate.result.record.title}\n${candidate.result.record.content}`
+        : `${candidate.result.chunk.title}\n${candidate.result.chunk.content}`,
+      baseScore: candidate.result.score,
+      freshnessScore: candidate.kind === "knowledge"
+        ? candidate.result.recencyScore
+        : 0,
+    })),
+  );
+  const contextItems = reranked.results
+    .slice(0, limit)
+    .map((result) => result.value);
 
   return {
     results: contextItems,
     memoryResults,
     knowledgeResults,
     contextBlock: formatContext(contextItems),
+    retrieval: {
+      embedding: embeddingResult.receipt,
+      reranker: reranked.receipt,
+    },
   };
 }
 
