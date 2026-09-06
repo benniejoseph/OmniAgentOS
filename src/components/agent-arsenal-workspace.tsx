@@ -24,6 +24,7 @@ import {
 } from "@/components/agents/agent-mascot";
 import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
+import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import type { AgentPerformance } from "@/lib/agents/performance";
 import type {
   AgentSkill,
@@ -334,6 +335,23 @@ export function AgentArsenalWorkspace() {
             </span>
           </div>
           <p className="inspector-description">{selected.description}</p>
+          <section className={styles.personaCard} aria-label={`${selected.name} behavioral identity`}>
+            <p>Charter</p>
+            <strong>{selected.persona.charter}</strong>
+            <div className={styles.personaGrid}>
+              <div><span>Operating style</span><p>{selected.persona.operatingStyle}</p></div>
+              <div><span>Voice</span><p>{selected.persona.voice}</p></div>
+              <div><span>Visual identity</span><p>{selected.persona.visualIdentity}</p></div>
+              <div><span>Escalation</span><p>{selected.persona.escalationBehavior}</p></div>
+            </div>
+            <div className={styles.personaDomains} aria-label="Allowed subject domains">
+              {selected.persona.allowedDomains.map((domain) => <span key={domain}>{domain}</span>)}
+            </div>
+            <details>
+              <summary>Success measures</summary>
+              <ul>{selected.persona.successMeasures.map((measure) => <li key={measure}>{measure}</li>)}</ul>
+            </details>
+          </section>
           <AgentPerformancePanel
             performance={selectedPerformance}
             state={state}
@@ -525,6 +543,20 @@ function BuilderDialog({
   const [instructions, setInstructions] = useState(
     existingAgent?.instructions || existingSkill?.instructions || "",
   );
+  const persona = existingAgent?.persona || DEFAULT_CUSTOM_AGENT_PERSONA;
+  const [charter, setCharter] = useState(persona.charter);
+  const [operatingStyle, setOperatingStyle] = useState(persona.operatingStyle);
+  const [voice, setVoice] = useState(persona.voice);
+  const [visualIdentity, setVisualIdentity] = useState(persona.visualIdentity);
+  const [allowedDomains, setAllowedDomains] = useState(
+    persona.allowedDomains.join(", "),
+  );
+  const [escalationBehavior, setEscalationBehavior] = useState(
+    persona.escalationBehavior,
+  );
+  const [successMeasures, setSuccessMeasures] = useState(
+    persona.successMeasures.join("\n"),
+  );
   const [selectedSkills, setSelectedSkills] = useState(
     (existingAgent?.skillIds || []).filter((id) =>
       skills.some((skill) => skill.id === id && skill.selectable),
@@ -595,6 +627,16 @@ function BuilderDialog({
               role,
               description,
               instructions,
+              persona: {
+                schemaVersion: 1,
+                charter,
+                operatingStyle,
+                voice,
+                visualIdentity,
+                allowedDomains: splitList(allowedDomains, ","),
+                escalationBehavior,
+                successMeasures: splitList(successMeasures, "\n"),
+              },
               status: existingAgent?.status || "ready",
               accent,
               modelPolicy,
@@ -738,6 +780,41 @@ function BuilderDialog({
               placeholder="What this intelligence is for."
             />
           </label>
+          {editor.kind === "agent" ? (
+            <>
+              <p className={clsx("full", styles.personaNotice)}>
+                Behavioral identity shapes how this Agent works and appears. It never grants tools, context, budgets, or approval authority.
+              </p>
+              <label className="full">
+                Charter
+                <textarea required minLength={2} maxLength={2000} value={charter} onChange={(event) => setCharter(event.currentTarget.value)} rows={2} placeholder="The durable purpose this Agent serves." />
+              </label>
+              <label className="full">
+                Operating style
+                <textarea required minLength={2} maxLength={2000} value={operatingStyle} onChange={(event) => setOperatingStyle(event.currentTarget.value)} rows={3} placeholder="How it approaches work, evidence, and verification." />
+              </label>
+              <label>
+                Voice
+                <textarea required minLength={2} maxLength={500} value={voice} onChange={(event) => setVoice(event.currentTarget.value)} rows={3} placeholder="Direct, warm, analytical…" />
+              </label>
+              <label>
+                Visual identity
+                <textarea required minLength={2} maxLength={500} value={visualIdentity} onChange={(event) => setVisualIdentity(event.currentTarget.value)} rows={3} placeholder="The visual motif carried across workspaces." />
+              </label>
+              <label className="full">
+                Allowed subject domains
+                <input required value={allowedDomains} onChange={(event) => setAllowedDomains(event.currentTarget.value)} placeholder="Research, finance, customer operations" />
+              </label>
+              <label className="full">
+                Escalation behavior
+                <textarea required minLength={2} maxLength={1000} value={escalationBehavior} onChange={(event) => setEscalationBehavior(event.currentTarget.value)} rows={3} placeholder="When and how this Agent asks for review or authority." />
+              </label>
+              <label className="full">
+                Success measures
+                <textarea required minLength={2} maxLength={4019} value={successMeasures} onChange={(event) => setSuccessMeasures(event.currentTarget.value)} rows={4} placeholder={"One measurable outcome per line\nEvidence is complete\nAcceptance criteria pass"} />
+              </label>
+            </>
+          ) : null}
           <label className="full">
             Operating instructions
             <textarea
@@ -924,6 +1001,9 @@ function toggle(values: string[], value: string) {
   return values.includes(value)
     ? values.filter((item) => item !== value)
     : [...values, value];
+}
+function splitList(value: string, separator: string) {
+  return [...new Set(value.split(separator).map((item) => item.trim()).filter(Boolean))];
 }
 function skillAfterExactWrite(skill: AgentSkill): AgentSkill {
   return { ...skill, selectable: true, manageable: true };
