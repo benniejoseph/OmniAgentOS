@@ -1361,6 +1361,13 @@ canary append is strict and must complete on the actor-bound run stream before
 the provider call. A malformed receipt or persistence failure terminates the run
 without model disclosure.
 
+P4.2 adds the optional closed `contextScope` enum to the existing metadata-only
+run harness event. It records one of `none`, `current_turn`, `session`, or
+`explicit_selection` for an enrolled direct run; it stores no conversation or
+evidence content. A missing field identifies a compatibility run. The five
+authority-held scope values are rejected before a run begins and therefore do
+not produce a misleading active-scope receipt.
+
 ## Phase 0 aggregate evaluation
 
 `evaluation.phase_zero.completed` is the content-free terminal receipt for the

@@ -2068,6 +2068,19 @@ the v2 purpose, while historical revisions are not silently rewritten. P4.1
 remains open until authorization moves before automatic/shared candidate
 retrieval and ranking; P3.1 remains the prerequisite for broader scopes.
 
+The first P4.2 delivery makes context intent explicit for direct Conversation
+runs. One versioned policy contains all nine planned scopes. `none` and
+`current_turn` admit only the submitted task, `session` admits the current
+conversation without durable retrieval, and `explicit_selection` admits only
+the reviewed set through the P4.1 compiler barrier. The server rejects a
+selection bound to any other scope and records the selected enum in the
+metadata-only run harness receipt. Conversation shows this boundary before
+execution and displays personal, agent-private, mission, project, and workspace
+as authority-held rather than pretending they are available. Canonical Vercel
+and Fly are healthy at production release
+`91e798b58cf90d23df985b14bd639287f5d5bc8a`. P4.2 remains open for those five
+P3.1-dependent scopes and for the durable workflow and Loop v2 runtimes.
+
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
 types and 13 typed relations with mandatory scope, sensitivity, purpose,
