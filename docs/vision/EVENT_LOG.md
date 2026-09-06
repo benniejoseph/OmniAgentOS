@@ -1440,3 +1440,18 @@ Detection is committed with the candidate and review; resolution is committed
 with the deterministic claim-state transition. The events record decisions but
 grant no retrieval authority. Graph and entity projections occur only after a
 resolved candidate is active under its existing authorized memory scope.
+
+## Hierarchical conversation summary projection
+
+P3.5 adds `conversation.summary.rebuilt` to the exact owner-scoped summary
+stream. The event contains the hierarchy level and bucket, source-turn and
+child-summary counts, source/content/access-scope digests, and the rebuildable
+flag. It never contains transcript or summary text, actor identity, project or
+thread titles, tool output, credentials, or private reasoning.
+
+The projection is derived from immutable source turns and is emitted in the
+same transaction only when a summary changes. It grants no context authority;
+the request-scoped compiler must still read it through forced tenant/actor RLS
+for the single `conversation.context.compile.v1` purpose. Deleting any source
+turn removes every directly or transitively derived summary before the turn is
+removed, keeping deletion separate from ordinary rebuilding.
