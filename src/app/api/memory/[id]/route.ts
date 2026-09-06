@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
+import { retireEntityMemoryLineage } from "@/lib/entities/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { publicMemoryDeletionReceiptV1 } from "@/lib/memory/deletion-receipt";
@@ -17,7 +19,10 @@ import {
   previewMemoryDeletion,
 } from "@/lib/memory/store";
 import { embedTexts } from "@/lib/openai/client";
-import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
+import {
+  deriveExecutionScope,
+  executionScopeFromSecurityContext,
+} from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -145,6 +150,20 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
         accessScope: requestAccess.databaseAccessScope,
       },
     );
+    await projectExplicitMemoryEntities({
+      memory: result.corrected,
+      executionScope: requestAccess.executionScope,
+    });
+    // Attach corrected lineage before removing the superseded reference so an
+    // unchanged entity remains active instead of being retired and recreated.
+    await retireEntityMemoryLineage({
+      tenantId: context.tenantId,
+      ownerActorId: requestAccess.actorBinding.canonicalActorId,
+      memoryIds: [result.previous.id],
+      executionScope: deriveExecutionScope(requestAccess.executionScope, {
+        purpose: "memory.correct.v1",
+      }),
+    });
   } else if (!result.corrected.accessBinding) {
     await queueMemoryGraphRebuild({ tenantId: context.tenantId });
   }
@@ -223,6 +242,9 @@ async function DELETEHandler(request: Request, route: { params: Promise<{ id: st
     invalidatedAgentRunCount: result.invalidatedAgentRunCount,
     invalidatedWorkflowRunCount: result.invalidatedWorkflowRunCount,
     invalidatedDailyBriefCount: result.invalidatedDailyBriefCount,
+    affectedEntityCount: result.affectedEntityCount,
+    retiredEntityCount: result.retiredEntityCount,
+    retiredEntityAliasCount: result.retiredEntityAliasCount,
   }, {
     headers: { "cache-control": "private, no-store" },
   });

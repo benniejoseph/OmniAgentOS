@@ -1010,6 +1010,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[84],
       up: ensureLoopV2TransitionCheckpoints,
     },
+    {
+      ...databaseSchemaMigrations[85],
+      up: ensureEntityMemoryDeletionBarrier,
+    },
   ];
 }
 
@@ -5310,6 +5314,200 @@ async function ensureEntityRegistryV1(sql: SqlClient) {
           omni_entity_resolutions,
           omni_entity_merge_reviews
         TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureEntityMemoryDeletionBarrier(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_entity_records
+    ADD COLUMN IF NOT EXISTS lineage_memory_ids TEXT[] NOT NULL DEFAULT '{}'
+  `;
+  await sql`
+    ALTER TABLE omni_entity_aliases
+    ADD COLUMN IF NOT EXISTS lineage_memory_ids TEXT[] NOT NULL DEFAULT '{}'
+  `;
+  await sql`
+    UPDATE omni_entity_records record
+    SET lineage_memory_ids = COALESCE((
+      SELECT array_agg(reference ->> 'referenceId' ORDER BY reference ->> 'referenceId')
+      FROM jsonb_array_elements(record.contract -> 'lineage') reference
+      WHERE reference ->> 'kind' = 'memory'
+    ), '{}'::TEXT[])
+  `;
+  await sql`
+    UPDATE omni_entity_aliases alias
+    SET lineage_memory_ids = CASE
+      WHEN alias.contract #>> '{lineage,kind}' = 'memory'
+      THEN ARRAY[alias.contract #>> '{lineage,referenceId}']
+      ELSE '{}'::TEXT[]
+    END
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_records_memory_lineage_idx
+    ON omni_entity_records USING GIN (lineage_memory_ids)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_aliases_memory_lineage_idx
+    ON omni_entity_aliases USING GIN (lineage_memory_ids)
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_entity_deleted_memory_lineage()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF omni_memory_ids_have_deletion_barrier(
+        NEW.tenant_id,
+        NEW.lineage_memory_ids
+      ) THEN
+        RAISE EXCEPTION 'Entity lineage references permanently forgotten memory'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_entity_records_memory_deletion_barrier
+    ON omni_entity_records
+  `;
+  await sql`
+    CREATE TRIGGER omni_entity_records_memory_deletion_barrier
+    BEFORE INSERT OR UPDATE OF lineage_memory_ids ON omni_entity_records
+    FOR EACH ROW EXECUTE FUNCTION omni_reject_entity_deleted_memory_lineage()
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_entity_aliases_memory_deletion_barrier
+    ON omni_entity_aliases
+  `;
+  await sql`
+    CREATE TRIGGER omni_entity_aliases_memory_deletion_barrier
+    BEFORE INSERT OR UPDATE OF lineage_memory_ids ON omni_entity_aliases
+    FOR EACH ROW EXECUTE FUNCTION omni_reject_entity_deleted_memory_lineage()
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_entity_registry_identity_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_TABLE_NAME = 'omni_entity_records' THEN
+        IF ROW(
+          OLD.tenant_id, OLD.id, OLD.owner_actor_id, OLD.ontology_version_id,
+          OLD.entity_type_id, OLD.normalized_label_sha256,
+          OLD.access_scope_sha256, OLD.created_at
+        ) IS DISTINCT FROM ROW(
+          NEW.tenant_id, NEW.id, NEW.owner_actor_id, NEW.ontology_version_id,
+          NEW.entity_type_id, NEW.normalized_label_sha256,
+          NEW.access_scope_sha256, NEW.created_at
+        ) THEN
+          RAISE EXCEPTION 'Entity identity and access scope are immutable'
+            USING ERRCODE = '55000';
+        END IF;
+        IF OLD.canonical_label IS DISTINCT FROM NEW.canonical_label
+          AND NOT (
+            OLD.state <> 'retired'
+            AND NEW.state = 'retired'
+            AND NEW.canonical_label = '[forgotten]'
+          )
+        THEN
+          RAISE EXCEPTION 'Entity labels may only be scrubbed on retirement'
+            USING ERRCODE = '55000';
+        END IF;
+      END IF;
+      IF TG_TABLE_NAME = 'omni_entity_aliases' AND ROW(
+        OLD.tenant_id, OLD.id, OLD.owner_actor_id, OLD.entity_id,
+        OLD.normalized_alias_sha256, OLD.access_scope_sha256, OLD.created_at
+      ) IS DISTINCT FROM ROW(
+        NEW.tenant_id, NEW.id, NEW.owner_actor_id, NEW.entity_id,
+        NEW.normalized_alias_sha256, NEW.access_scope_sha256, NEW.created_at
+      ) THEN
+        RAISE EXCEPTION 'Entity alias identity and access scope are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+
+  await sql`
+    DROP POLICY IF EXISTS omni_entity_memory_deletion_barrier
+    ON omni_entity_records
+  `;
+  await sql`
+    CREATE POLICY omni_entity_memory_deletion_barrier
+    ON omni_entity_records
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      NOT omni_memory_ids_have_deletion_barrier(
+        tenant_id,
+        lineage_memory_ids
+      )
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_entity_memory_deletion_barrier
+    ON omni_entity_aliases
+  `;
+  await sql`
+    CREATE POLICY omni_entity_memory_deletion_barrier
+    ON omni_entity_aliases
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      NOT omni_memory_ids_have_deletion_barrier(
+        tenant_id,
+        lineage_memory_ids
+      )
+    )
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_entity_records record
+        WHERE record.lineage_memory_ids IS DISTINCT FROM COALESCE((
+          SELECT array_agg(reference ->> 'referenceId' ORDER BY reference ->> 'referenceId')
+          FROM jsonb_array_elements(record.contract -> 'lineage') reference
+          WHERE reference ->> 'kind' = 'memory'
+        ), '{}'::TEXT[])
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_entity_aliases alias
+        WHERE alias.lineage_memory_ids IS DISTINCT FROM CASE
+          WHEN alias.contract #>> '{lineage,kind}' = 'memory'
+          THEN ARRAY[alias.contract #>> '{lineage,referenceId}']
+          ELSE '{}'::TEXT[]
+        END
+      ) OR (
+        SELECT count(*)
+        FROM pg_policy
+        WHERE polname = 'omni_entity_memory_deletion_barrier'
+          AND polrelid IN (
+            'omni_entity_records'::regclass,
+            'omni_entity_aliases'::regclass
+          )
+          AND NOT polpermissive
+          AND polcmd = 'r'
+      ) <> 2 OR (
+        SELECT count(*)
+        FROM pg_trigger
+        WHERE tgname IN (
+          'omni_entity_records_memory_deletion_barrier',
+          'omni_entity_aliases_memory_deletion_barrier'
+        )
+          AND NOT tgisinternal
+      ) <> 2 THEN
+        RAISE EXCEPTION 'Entity memory deletion barrier is invalid'
+          USING ERRCODE = '55000';
       END IF;
     END
     $migration$

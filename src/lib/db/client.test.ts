@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the Loop v2 transition migration", () => {
+  it("pins the entity memory deletion barrier migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 85,
-      name: "loop_v2_transition_checkpoints",
-      checksum: "30249731719188a92b1b6799d67607406b71ee37b5a5f4ea822cfd874a92e6de",
+      version: 86,
+      name: "entity_memory_deletion_barrier",
+      checksum: "f126e6fa2393960ce51851d1ff71d642117fe8bb73c73b6d41f00d15ba77a952",
     });
   });
 

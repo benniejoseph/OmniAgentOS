@@ -72,7 +72,7 @@ const entityRecordBodySchema = z.object({
   state: z.enum(["active", "merged", "retired"]),
   mergedIntoEntityId: idSchema.nullable(),
   accessBinding: entityAccessBindingSchema,
-  lineage: z.array(entityLineageReferenceSchema).min(1).max(64),
+  lineage: z.array(entityLineageReferenceSchema).max(64),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
 }).strict().superRefine((value, context) => {
@@ -81,6 +81,13 @@ const entityRecordBodySchema = z.object({
       code: "custom",
       path: ["mergedIntoEntityId"],
       message: "Only a merged entity may reference its surviving entity.",
+    });
+  }
+  if (value.state !== "retired" && value.lineage.length === 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["lineage"],
+      message: "An active or merged entity requires lineage.",
     });
   }
 });
@@ -204,7 +211,10 @@ export function parseEntityRecord(value: unknown): EntityRecord {
   const entity = entityRecordSchema.parse(value);
   parseEntityAccessBinding(entity.accessBinding);
   getEntityTypeDefinition(entity.ontologyVersionId, entity.entityTypeId);
-  if (labelSha256(entity.canonicalLabel) !== entity.normalizedLabelSha256) {
+  if (
+    !(entity.state === "retired" && entity.canonicalLabel === "[forgotten]") &&
+    labelSha256(entity.canonicalLabel) !== entity.normalizedLabelSha256
+  ) {
     throw new Error("Entity canonical label digest is invalid.");
   }
   const { entitySha256, ...body } = entity;
@@ -216,7 +226,10 @@ export function parseEntityRecord(value: unknown): EntityRecord {
 
 export function parseEntityAlias(value: unknown): EntityAlias {
   const alias = entityAliasSchema.parse(value);
-  if (labelSha256(alias.alias) !== alias.normalizedAliasSha256) {
+  if (
+    !(alias.state === "retired" && alias.alias === "[forgotten]") &&
+    labelSha256(alias.alias) !== alias.normalizedAliasSha256
+  ) {
     throw new Error("Entity alias label digest is invalid.");
   }
   const { aliasSha256, ...body } = alias;
@@ -343,6 +356,35 @@ export function transitionEntityRecord(input: {
   });
 }
 
+export function reviseEntityLineage(input: {
+  entity: EntityRecord;
+  lineage: readonly z.infer<typeof entityLineageReferenceSchema>[];
+  updatedAt?: string;
+  retire?: boolean;
+}): EntityRecord {
+  const current = parseEntityRecord(input.entity);
+  const updatedAt = canonicalTimestamp(input.updatedAt || new Date().toISOString());
+  if (new Date(updatedAt).getTime() < new Date(current.updatedAt).getTime()) {
+    throw new Error("Entity lineage revision cannot move backward in time.");
+  }
+  const lineage = uniqueLineage(input.lineage);
+  const retire = input.retire || lineage.length === 0;
+  const { entitySha256: _currentSha256, ...currentBody } = current;
+  void _currentSha256;
+  const body = entityRecordBodySchema.parse({
+    ...currentBody,
+    canonicalLabel: retire ? "[forgotten]" : current.canonicalLabel,
+    state: retire ? "retired" : current.state,
+    mergedIntoEntityId: retire ? null : current.mergedIntoEntityId,
+    lineage,
+    updatedAt,
+  });
+  return entityRecordSchema.parse({
+    ...body,
+    entitySha256: sourceContractSha256(body),
+  });
+}
+
 export function buildEntityAlias(input: {
   entity: EntityRecord;
   alias: string;
@@ -365,6 +407,25 @@ export function buildEntityAlias(input: {
     lineage: input.lineage,
     state: "active",
     createdAt,
+  });
+  return entityAliasSchema.parse({
+    ...body,
+    aliasSha256: sourceContractSha256(body),
+  });
+}
+
+export function retireEntityAlias(input: {
+  alias: EntityAlias;
+  createdAt?: string;
+}): EntityAlias {
+  const current = parseEntityAlias(input.alias);
+  const { aliasSha256: _currentSha256, ...currentBody } = current;
+  void _currentSha256;
+  const body = entityAliasBodySchema.parse({
+    ...currentBody,
+    alias: "[forgotten]",
+    state: "retired",
+    createdAt: canonicalTimestamp(input.createdAt || current.createdAt),
   });
   return entityAliasSchema.parse({
     ...body,
@@ -592,4 +653,17 @@ function canonicalTimestamp(value: string) {
 function uniqueSorted(values: readonly string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
+}
+
+function uniqueLineage(
+  values: readonly z.infer<typeof entityLineageReferenceSchema>[],
+) {
+  return [...new Map(values.map((value) => [
+    `${value.kind}:${value.referenceId}:${value.referenceSha256}`,
+    entityLineageReferenceSchema.parse(value),
+  ])).values()].sort((left, right) =>
+    `${left.kind}:${left.referenceId}:${left.referenceSha256}`.localeCompare(
+      `${right.kind}:${right.referenceId}:${right.referenceSha256}`,
+    )
+  );
 }
