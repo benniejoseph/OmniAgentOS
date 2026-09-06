@@ -2,6 +2,7 @@ import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
+import type { ContextScopeId } from "@/lib/rag/context-scope";
 import type { AiUsageCallInput } from "@/lib/usage/types";
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
 
@@ -145,6 +146,8 @@ export type AgentRunRequest = {
     query: string;
     evidenceIds: string[];
   };
+  /** User-reviewed P4.2 context boundary for this direct run. */
+  contextScope?: ContextScopeId;
   /** Trusted request-bound access for an explicit owner-reviewed selection. */
   promptMemoryAccess?: RequestMemoryAccessV1;
   /** Server-validated effective limits; delegated callers may only narrow them. */

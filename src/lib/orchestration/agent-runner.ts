@@ -70,6 +70,7 @@ import {
 } from "@/lib/orchestration/council";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { contextScopeMemoryMode } from "@/lib/rag/context-scope";
 import {
   buildCitationSources,
   buildClaimGroundingReport,
@@ -361,7 +362,9 @@ export async function* runAgent(
   }
   const memoryAccessContext = createMemoryAccessContext({
     executionScope,
-    mode: request.agentProfile?.memoryScope || "all",
+    mode: request.contextScope
+      ? contextScopeMemoryMode(request.contextScope)
+      : request.agentProfile?.memoryScope || "all",
   });
   const durableMemoryEnabled = usesDurableMemory(memoryAccessContext);
   const promptMemoryAccessScope = resolveAgentPromptMemoryAccess(
@@ -957,6 +960,7 @@ export async function* runAgent(
     const contextRationale = contextRationaleForRun({
       durableMemoryEnabled,
       memoryMode: memoryAccessContext.mode,
+      contextScope: request.contextScope,
       evidenceIds: request.contextSelection?.evidenceIds,
       rationale: retrieval.profile.rationale,
     });
@@ -5016,9 +5020,19 @@ function contextDecisionForRun(input: {
 function contextRationaleForRun(input: {
   durableMemoryEnabled: boolean;
   memoryMode: "session" | "project" | "all";
+  contextScope?: AgentRunRequest["contextScope"];
   evidenceIds?: string[];
   rationale: string[];
 }) {
+  if (input.contextScope === "none") {
+    return ["The user excluded saved and prior conversation context for this task."];
+  }
+  if (input.contextScope === "current_turn") {
+    return ["The user limited this run to the current turn."];
+  }
+  if (input.contextScope === "session") {
+    return ["The user limited this run to the current conversation."];
+  }
   if (input.memoryMode === "project") {
     return [
       "Project memory stayed isolated because this run has no canonical project authority.",
