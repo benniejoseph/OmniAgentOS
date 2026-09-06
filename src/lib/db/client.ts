@@ -1145,6 +1145,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[109],
+      up: ensureAgentPrivateMemoryV1,
+    },
   ];
 }
 
@@ -9082,6 +9086,214 @@ async function ensureAgentDefinitionPersonaV1(sql: SqlClient) {
         ) <> 2
       THEN
         RAISE EXCEPTION 'Agent persona v1 storage boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentPrivateMemoryV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 109
+          AND name = 'agent_definition_persona_v1'
+          AND checksum =
+            '4c853b38ba5b8a2643c10c9a17789f0c2762feeb4dcc50e7eae1e2b0a086dc89'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Agent-private memory v110 predecessor marker is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    DROP CONSTRAINT IF EXISTS omni_memories_user_private_canary_check
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    DROP CONSTRAINT IF EXISTS omni_memories_private_scope_v1_check
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD CONSTRAINT omni_memories_private_scope_v1_check CHECK (
+      access_contract_version = 0
+      OR (
+        access_contract_version = 1
+        AND access_state = 'scope_bound'
+        AND owner_actor_id IS NOT NULL
+        AND workspace_id IS NULL
+        AND project_id IS NULL
+        AND mission_id IS NULL
+        AND (
+          (visibility = 'user_private' AND owner_agent_id IS NULL)
+          OR (
+            visibility = 'agent_private'
+            AND owner_agent_id IS NOT NULL
+            AND tier IN ('working', 'episodic', 'semantic', 'procedural')
+          )
+        )
+      )
+    ) NOT VALID
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    VALIDATE CONSTRAINT omni_memories_private_scope_v1_check
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_agent_private_memory_scope_v1_allows(
+      row_tenant_id TEXT,
+      row_owner_actor_id TEXT,
+      row_owner_agent_id TEXT,
+      row_allowed_purpose_ids TEXT[]
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      WITH access_scope AS (
+        SELECT public.omni_current_memory_access_scope_v1() AS value
+      )
+      SELECT COALESCE(
+        (value ->> 'tenantId') = row_tenant_id
+        AND (value ->> 'initiatingActorId') = row_owner_actor_id
+        AND (value ->> 'executingPrincipalType') = 'agent'
+        AND (value ->> 'executingPrincipalId') = row_owner_agent_id
+        AND value -> 'workspaceId' = 'null'::JSONB
+        AND value -> 'projectId' = 'null'::JSONB
+        AND value -> 'missionId' = 'null'::JSONB
+        AND (value ->> 'purposeId') = ANY(row_allowed_purpose_ids),
+        FALSE
+      )
+      FROM access_scope
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_agent_private_memory_scope_v1_allows(
+      TEXT,
+      TEXT,
+      TEXT,
+      TEXT[]
+    ) FROM PUBLIC
+  `;
+  await sql`
+    GRANT EXECUTE ON FUNCTION omni_agent_private_memory_scope_v1_allows(
+      TEXT,
+      TEXT,
+      TEXT,
+      TEXT[]
+    ) TO PUBLIC
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_memory_access_scope_holdback
+    ON omni_memories
+  `;
+  await sql`
+    CREATE POLICY omni_memory_access_scope_holdback
+    ON omni_memories
+    AS RESTRICTIVE
+    FOR ALL
+    USING (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND omni_current_memory_access_scope_v1() IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND access_state = 'scope_bound'
+        AND visibility = 'user_private'
+        AND omni_user_private_memory_scope_v1_allows(
+          tenant_id,
+          owner_actor_id,
+          allowed_purpose_ids
+        )
+      )
+      OR (
+        access_contract_version = 1
+        AND access_state = 'scope_bound'
+        AND visibility = 'agent_private'
+        AND omni_agent_private_memory_scope_v1_allows(
+          tenant_id,
+          owner_actor_id,
+          owner_agent_id,
+          allowed_purpose_ids
+        )
+      )
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR (
+        access_contract_version = 0
+        AND omni_current_memory_access_scope_v1() IS NULL
+      )
+      OR (
+        access_contract_version = 1
+        AND access_state = 'scope_bound'
+        AND visibility = 'user_private'
+        AND omni_user_private_memory_scope_v1_allows(
+          tenant_id,
+          owner_actor_id,
+          allowed_purpose_ids
+        )
+      )
+      OR (
+        access_contract_version = 1
+        AND access_state = 'scope_bound'
+        AND visibility = 'agent_private'
+        AND omni_agent_private_memory_scope_v1_allows(
+          tenant_id,
+          owner_actor_id,
+          owner_agent_id,
+          allowed_purpose_ids
+        )
+      )
+    )
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'omni_memories'::regclass
+          AND conname = 'omni_memories_private_scope_v1_check'
+          AND contype = 'c'
+          AND convalidated
+      ) OR to_regprocedure(
+        'public.omni_agent_private_memory_scope_v1_allows(text,text,text,text[])'
+      ) IS NULL OR NOT EXISTS (
+        SELECT 1
+        FROM pg_policy
+        WHERE polrelid = 'omni_memories'::regclass
+          AND polname = 'omni_memory_access_scope_holdback'
+          AND NOT polpermissive
+          AND pg_get_expr(polqual, polrelid) LIKE
+            '%omni_agent_private_memory_scope_v1_allows%'
+          AND pg_get_expr(polwithcheck, polrelid) LIKE
+            '%omni_agent_private_memory_scope_v1_allows%'
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_memories
+        WHERE access_contract_version = 1
+          AND visibility = 'agent_private'
+          AND (
+            owner_actor_id IS NULL
+            OR owner_agent_id IS NULL
+            OR workspace_id IS NOT NULL
+            OR project_id IS NOT NULL
+            OR mission_id IS NOT NULL
+            OR tier NOT IN ('working', 'episodic', 'semantic', 'procedural')
+          )
+      ) THEN
+        RAISE EXCEPTION 'Agent-private memory v1 storage boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
