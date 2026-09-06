@@ -74,6 +74,34 @@ export type WorkflowPlanNode = {
   execution?: WorkflowPlanNodeContract;
 };
 
+export type WorkflowReplanTrigger =
+  | "assumption"
+  | "observation"
+  | "tool"
+  | "verification";
+
+export type WorkflowReusedNodeReferenceV1 = {
+  nodeId: string;
+  executionId: string;
+  sourcePlanId: string;
+  nodeSha256: string;
+  outputSha256: string;
+};
+
+export type WorkflowReplanDirectiveV1 = {
+  schemaVersion: 1;
+  previousPlanId: string;
+  previousPlanSha256: string;
+  trigger: WorkflowReplanTrigger;
+  failureNodeIds: string[];
+  affectedNodeIds: string[];
+  reusedNodes: WorkflowReusedNodeReferenceV1[];
+  approvalInvalidated: boolean;
+  contextGrantsInvalidated: true;
+  capabilityGrantsInvalidated: true;
+  previousContextTraceId?: string;
+};
+
 export type WorkflowPlanEdge = {
   from: string;
   to: string;
@@ -101,6 +129,8 @@ export type WorkflowDynamicPlan = {
   verificationPlan: string[];
   memoryPlan: string[];
   confidence: number;
+  /** Server-derived lineage for one bounded material subtree replan. */
+  replan?: WorkflowReplanDirectiveV1;
 };
 
 export type WorkflowPlanValidation = {
