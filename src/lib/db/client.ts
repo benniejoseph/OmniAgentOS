@@ -1022,6 +1022,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[87],
       up: ensureEntityRegistryIdentityTriggerDispatch,
     },
+    {
+      ...databaseSchemaMigrations[88],
+      up: ensureEntityEvidenceLineageBarrier,
+    },
   ];
 }
 
@@ -5682,6 +5686,309 @@ async function ensureEntityRegistryIdentityTriggerDispatch(sql: SqlClient) {
           AND tgenabled = 'O'
       ) <> 2 THEN
         RAISE EXCEPTION 'Entity identity trigger dispatch is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureEntityEvidenceLineageBarrier(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_entity_records
+    ADD COLUMN IF NOT EXISTS lineage_evidence_unit_ids TEXT[] NOT NULL DEFAULT '{}'
+  `;
+  await sql`
+    ALTER TABLE omni_entity_aliases
+    ADD COLUMN IF NOT EXISTS lineage_evidence_unit_ids TEXT[] NOT NULL DEFAULT '{}'
+  `;
+  await sql`
+    UPDATE omni_entity_records record
+    SET lineage_evidence_unit_ids = CASE
+      WHEN record.state = 'retired' THEN '{}'::TEXT[]
+      ELSE COALESCE((
+        SELECT array_agg(
+          DISTINCT reference ->> 'referenceId'
+          ORDER BY reference ->> 'referenceId'
+        )
+        FROM jsonb_array_elements(record.contract -> 'lineage') reference
+        WHERE reference ->> 'kind' = 'evidence_unit'
+      ), '{}'::TEXT[])
+    END
+  `;
+  await sql`
+    UPDATE omni_entity_aliases alias
+    SET lineage_evidence_unit_ids = CASE
+      WHEN alias.state = 'active'
+        AND alias.contract #>> '{lineage,kind}' = 'evidence_unit'
+      THEN ARRAY[alias.contract #>> '{lineage,referenceId}']
+      ELSE '{}'::TEXT[]
+    END
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_records_evidence_lineage_idx
+    ON omni_entity_records USING GIN (lineage_evidence_unit_ids)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_entity_aliases_evidence_lineage_idx
+    ON omni_entity_aliases USING GIN (lineage_evidence_unit_ids)
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_active_evidence_lineage_owned_by(
+      row_tenant_id TEXT,
+      row_owner_actor_id TEXT,
+      row_evidence_unit_ids TEXT[]
+    )
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT COALESCE(
+        public.omni_current_tenant() = row_tenant_id
+        AND public.omni_actor_scope_v1_allows(
+          row_tenant_id,
+          row_owner_actor_id
+        )
+        AND cardinality(row_evidence_unit_ids) BETWEEN 1 AND 64
+        AND cardinality(ARRAY(
+          SELECT DISTINCT evidence_unit_id COLLATE "C"
+          FROM unnest(row_evidence_unit_ids) evidence_unit_id
+          ORDER BY evidence_unit_id COLLATE "C"
+        )) = cardinality(row_evidence_unit_ids)
+        AND (
+          SELECT count(*)
+          FROM public.omni_evidence_units evidence
+          JOIN public.omni_source_items source_item
+            ON source_item.tenant_id = evidence.tenant_id
+           AND source_item.id = evidence.source_item_id
+           AND source_item.current_revision_id = evidence.source_revision_id
+          LEFT JOIN public.omni_source_sync_heads source_head
+            ON source_head.tenant_id = evidence.tenant_id
+           AND source_head.source_item_id = evidence.source_item_id
+          WHERE evidence.tenant_id = row_tenant_id
+            AND evidence.owner_actor_id = row_owner_actor_id
+            AND evidence.id = ANY(row_evidence_unit_ids)
+            AND evidence.visibility = 'user_private'
+            AND evidence.workspace_id IS NULL
+            AND evidence.project_id IS NULL
+            AND evidence.mission_id IS NULL
+            AND evidence.allowed_purpose_ids @> ARRAY[
+              'agent.answer.claim-evidence-verification'
+            ]::TEXT[]
+            AND (
+              evidence.retention_expires_at IS NULL
+              OR evidence.retention_expires_at > CURRENT_TIMESTAMP
+            )
+            AND source_item.owner_actor_id = row_owner_actor_id
+            AND source_item.visibility = 'user_private'
+            AND source_item.workspace_id IS NULL
+            AND source_item.project_id IS NULL
+            AND source_item.mission_id IS NULL
+            AND (
+              source_item.retention_expires_at IS NULL
+              OR source_item.retention_expires_at > CURRENT_TIMESTAMP
+            )
+            AND (
+              source_head.source_item_id IS NULL
+              OR (
+                source_head.operation = 'upsert'
+                AND NOT source_head.absence_observed
+                AND source_head.source_revision_id = evidence.source_revision_id
+                AND source_head.source_tombstone_id IS NULL
+              )
+            )
+        ) = cardinality(row_evidence_unit_ids),
+        FALSE
+      )
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_active_evidence_lineage_owned_by(
+      TEXT,
+      TEXT,
+      TEXT[]
+    ) FROM PUBLIC
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT EXECUTE ON FUNCTION omni_active_evidence_lineage_owned_by(
+          TEXT,
+          TEXT,
+          TEXT[]
+        ) TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT EXECUTE ON FUNCTION omni_active_evidence_lineage_owned_by(
+          TEXT,
+          TEXT,
+          TEXT[]
+        ) TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_entity_evidence_lineage()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    DECLARE
+      contract_evidence_ids TEXT[];
+    BEGIN
+      IF TG_TABLE_NAME = 'omni_entity_records' THEN
+        contract_evidence_ids := CASE
+          WHEN NEW.state = 'retired' THEN '{}'::TEXT[]
+          ELSE COALESCE((
+            SELECT array_agg(
+              DISTINCT reference ->> 'referenceId'
+              ORDER BY reference ->> 'referenceId'
+            )
+            FROM jsonb_array_elements(NEW.contract -> 'lineage') reference
+            WHERE reference ->> 'kind' = 'evidence_unit'
+          ), '{}'::TEXT[])
+        END;
+      ELSIF TG_TABLE_NAME = 'omni_entity_aliases' THEN
+        contract_evidence_ids := CASE
+          WHEN NEW.state = 'active'
+            AND NEW.contract #>> '{lineage,kind}' = 'evidence_unit'
+          THEN ARRAY[NEW.contract #>> '{lineage,referenceId}']
+          ELSE '{}'::TEXT[]
+        END;
+      ELSE
+        RAISE EXCEPTION 'Entity evidence trigger is attached to an invalid relation'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF NEW.lineage_evidence_unit_ids IS DISTINCT FROM contract_evidence_ids THEN
+        RAISE EXCEPTION 'Entity evidence lineage index does not match its contract'
+          USING ERRCODE = '23514';
+      END IF;
+      IF cardinality(contract_evidence_ids) > 0
+        AND NOT omni_active_evidence_lineage_owned_by(
+          NEW.tenant_id,
+          NEW.owner_actor_id,
+          contract_evidence_ids
+        )
+      THEN
+        RAISE EXCEPTION 'Entity lineage references inactive or inaccessible evidence'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_entity_records_evidence_lineage_barrier
+    ON omni_entity_records
+  `;
+  await sql`
+    CREATE TRIGGER omni_entity_records_evidence_lineage_barrier
+    BEFORE INSERT OR UPDATE OF state, lineage_evidence_unit_ids, contract
+    ON omni_entity_records
+    FOR EACH ROW EXECUTE FUNCTION omni_validate_entity_evidence_lineage()
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_entity_aliases_evidence_lineage_barrier
+    ON omni_entity_aliases
+  `;
+  await sql`
+    CREATE TRIGGER omni_entity_aliases_evidence_lineage_barrier
+    BEFORE INSERT OR UPDATE OF state, lineage_evidence_unit_ids, contract
+    ON omni_entity_aliases
+    FOR EACH ROW EXECUTE FUNCTION omni_validate_entity_evidence_lineage()
+  `;
+
+  await sql`
+    DROP POLICY IF EXISTS omni_entity_evidence_lineage_barrier
+    ON omni_entity_records
+  `;
+  await sql`
+    CREATE POLICY omni_entity_evidence_lineage_barrier
+    ON omni_entity_records
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      cardinality(lineage_evidence_unit_ids) = 0
+      OR omni_system_scope_enabled()
+      OR omni_active_evidence_lineage_owned_by(
+        tenant_id,
+        owner_actor_id,
+        lineage_evidence_unit_ids
+      )
+    )
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_entity_evidence_lineage_barrier
+    ON omni_entity_aliases
+  `;
+  await sql`
+    CREATE POLICY omni_entity_evidence_lineage_barrier
+    ON omni_entity_aliases
+    AS RESTRICTIVE
+    FOR SELECT
+    USING (
+      cardinality(lineage_evidence_unit_ids) = 0
+      OR omni_system_scope_enabled()
+      OR omni_active_evidence_lineage_owned_by(
+        tenant_id,
+        owner_actor_id,
+        lineage_evidence_unit_ids
+      )
+    )
+  `;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_entity_records record
+        WHERE record.lineage_evidence_unit_ids IS DISTINCT FROM CASE
+          WHEN record.state = 'retired' THEN '{}'::TEXT[]
+          ELSE COALESCE((
+            SELECT array_agg(
+              DISTINCT reference ->> 'referenceId'
+              ORDER BY reference ->> 'referenceId'
+            )
+            FROM jsonb_array_elements(record.contract -> 'lineage') reference
+            WHERE reference ->> 'kind' = 'evidence_unit'
+          ), '{}'::TEXT[])
+        END
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_entity_aliases alias
+        WHERE alias.lineage_evidence_unit_ids IS DISTINCT FROM CASE
+          WHEN alias.state = 'active'
+            AND alias.contract #>> '{lineage,kind}' = 'evidence_unit'
+          THEN ARRAY[alias.contract #>> '{lineage,referenceId}']
+          ELSE '{}'::TEXT[]
+        END
+      ) OR (
+        SELECT count(*)
+        FROM pg_policy
+        WHERE polname = 'omni_entity_evidence_lineage_barrier'
+          AND polrelid IN (
+            'omni_entity_records'::regclass,
+            'omni_entity_aliases'::regclass
+          )
+          AND NOT polpermissive
+          AND polcmd = 'r'
+      ) <> 2 OR (
+        SELECT count(*)
+        FROM pg_trigger
+        WHERE tgname IN (
+          'omni_entity_records_evidence_lineage_barrier',
+          'omni_entity_aliases_evidence_lineage_barrier'
+        )
+          AND NOT tgisinternal
+      ) <> 2 THEN
+        RAISE EXCEPTION 'Entity evidence lineage barrier is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

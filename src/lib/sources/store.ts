@@ -1,8 +1,11 @@
 import type { getSql } from "@/lib/db/client";
+import { retireEntityEvidenceLineage } from "@/lib/entities/store";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
   assertExecutionScopeTenant,
+  deriveExecutionScope,
   parsePersistedExecutionScope,
+  type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
   evidenceUnitV1Schema,
@@ -85,6 +88,23 @@ export async function persistCanonicalSourceWrite(
   const item = output.sourceItem;
   const revision = output.sourceRevision;
   const extractor = item.extractorIdentity;
+
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtext(${item.tenantId}),
+      hashtext(${item.sourceItemId})
+    )
+  `;
+  const previousRows = await sql`
+    SELECT current_revision_id
+    FROM omni_source_items
+    WHERE tenant_id = ${item.tenantId}
+      AND id = ${item.sourceItemId}
+    FOR UPDATE
+  `;
+  const previousRevisionId = previousRows[0]?.current_revision_id
+    ? String(previousRows[0].current_revision_id)
+    : null;
 
   await assertCanonicalAdapterOutputReceipt(sql, output);
 
@@ -393,6 +413,19 @@ export async function persistCanonicalSourceWrite(
     }
   }
 
+  if (
+    previousRevisionId &&
+    previousRevisionId !== revision.sourceRevisionId
+  ) {
+    await retireEntityLineageForSourceRevision(sql, {
+      tenantId: item.tenantId,
+      ownerActorId: item.ownerActorId,
+      sourceRevisionId: previousRevisionId,
+      executionScope,
+      retiredAt: output.observedAt,
+    });
+  }
+
   const currentRows = await sql`
     UPDATE omni_source_items
     SET current_revision_id = ${revision.sourceRevisionId},
@@ -432,6 +465,66 @@ export async function persistCanonicalSourceWrite(
     sourceRevisionId: revision.sourceRevisionId,
     evidenceUnitIdsByChunkIndex: write.evidenceUnitIdsByChunkIndex,
   };
+}
+
+export async function retireEntityLineageForSourceRevision(
+  sql: SourceSqlClient,
+  input: {
+    tenantId: string;
+    ownerActorId: string;
+    sourceRevisionId: string;
+    executionScope: ExecutionScope;
+    retiredAt?: string;
+  },
+) {
+  assertCanonicalSourceTransaction(sql);
+  const rows = await sql`
+    SELECT id
+    FROM omni_evidence_units
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.ownerActorId}
+      AND source_revision_id = ${input.sourceRevisionId}
+    ORDER BY id COLLATE "C"
+  `;
+  const evidenceUnitIds = rows.map((row) => String(row.id));
+  if (!evidenceUnitIds.length) {
+    return Object.freeze({
+      affectedEntityIds: Object.freeze([] as string[]),
+      retiredEntityIds: Object.freeze([] as string[]),
+      retiredAliasIds: Object.freeze([] as string[]),
+    });
+  }
+  const referenced = await sql`
+    SELECT 1
+    FROM omni_entity_records
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.ownerActorId}
+      AND lineage_evidence_unit_ids && ${evidenceUnitIds}::TEXT[]
+    UNION ALL
+    SELECT 1
+    FROM omni_entity_aliases
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.ownerActorId}
+      AND lineage_evidence_unit_ids && ${evidenceUnitIds}::TEXT[]
+    LIMIT 1
+  `;
+  if (!referenced.length) {
+    return Object.freeze({
+      affectedEntityIds: Object.freeze([] as string[]),
+      retiredEntityIds: Object.freeze([] as string[]),
+      retiredAliasIds: Object.freeze([] as string[]),
+    });
+  }
+  return retireEntityEvidenceLineage({
+    tenantId: input.tenantId,
+    ownerActorId: input.ownerActorId,
+    evidenceUnitIds,
+    executionScope: deriveExecutionScope(input.executionScope, {
+      purpose: "entity.source.lifecycle.v1",
+    }),
+    retiredAt: input.retiredAt,
+    sql,
+  });
 }
 
 /**

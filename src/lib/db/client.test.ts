@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the entity identity trigger dispatch migration", () => {
+  it("pins the entity evidence lineage barrier migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 88,
-      name: "entity_registry_identity_trigger_dispatch",
-      checksum: "630688d84ad89c7107f3c6aedbc240a8dd5f597017cc2371e6366271a07f3126",
+      version: 89,
+      name: "entity_evidence_lineage_barrier",
+      checksum: "64021253127ac2dea85c277c942d6d8207f76395a05670dd0afe9ca1ef6fbb38",
     });
   });
 
