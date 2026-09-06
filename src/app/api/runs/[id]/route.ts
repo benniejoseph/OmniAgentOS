@@ -19,6 +19,7 @@ import {
   getAgentRun,
   recordAgentRunFeedback,
 } from "@/lib/runs/store";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
@@ -198,6 +199,14 @@ async function DELETEHandler(
   if (!run) {
     return Response.json({ error: "Run not found." }, { status: 404 });
   }
+  const reason = "Canceled by the operator.";
+  const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
+  const cancellationScope = executionScopeFromSecurityContext(auth, {
+    executingPrincipalType: "user",
+    executingPrincipalId: auth.actorId,
+    correlationId: requestId,
+    purpose: "run.cancel",
+  });
   if (["completed", "failed", "canceled"].includes(run.status)) {
     let canceledJobs = 0;
     if (run.status === "canceled") {
@@ -216,14 +225,22 @@ async function DELETEHandler(
         executorType: "agent_run",
         executorId: run.id,
         status: "canceled",
-      }, { tenantId: auth.tenantId, actorId: auth.actorId });
+      }, {
+        tenantId: auth.tenantId,
+        actorId: auth.actorId,
+        executionScope: cancellationScope,
+        idempotencyKey: requestId,
+      });
     }
     return Response.json({ run: publicAgentRun(run), canceledJobs });
   }
 
-  const reason = "Canceled by the operator.";
   const executionId = run.continuation?.pendingToolCall.executionId;
-  const canceled = await cancelAgentRun(run.id, reason);
+  const canceled = await cancelAgentRun(run.id, reason, {
+    tenantId: auth.tenantId,
+    executionScope: cancellationScope,
+    runContractEnvelope: run.continuation?.runContractEnvelope,
+  });
   if (!canceled) {
     const current = await getAgentRun(id, { tenantId: auth.tenantId });
     if (current?.status === "canceled") {
@@ -249,7 +266,12 @@ async function DELETEHandler(
         executorType: "agent_run",
         executorId: current.id,
         status: "canceled",
-      }, { tenantId: auth.tenantId, actorId: auth.actorId });
+      }, {
+        tenantId: auth.tenantId,
+        actorId: auth.actorId,
+        executionScope: cancellationScope,
+        idempotencyKey: requestId,
+      });
       return Response.json({
         run: publicAgentRun(current),
         canceledJobs: canceledJobs.length,
@@ -283,7 +305,12 @@ async function DELETEHandler(
     executorType: "agent_run",
     executorId: run.id,
     status: "canceled",
-  }, { tenantId: auth.tenantId, actorId: auth.actorId });
+  }, {
+    tenantId: auth.tenantId,
+    actorId: auth.actorId,
+    executionScope: cancellationScope,
+    idempotencyKey: requestId,
+  });
   const current = await getAgentRun(id, { tenantId: auth.tenantId });
   return Response.json({
     run: publicAgentRun(current || { ...run, status: "canceled", error: reason }),

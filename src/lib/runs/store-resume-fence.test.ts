@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   completeClaim: vi.fn(),
+  appendDomainEvent: vi.fn(),
   enqueueJob: vi.fn(),
   recordCheckpoint: vi.fn(),
   transaction: vi.fn(),
+  txTag: vi.fn(),
   txQuery: vi.fn(),
 }));
 
@@ -16,7 +18,7 @@ vi.mock("@/lib/db/client", () => ({
 }));
 
 vi.mock("@/lib/events/store", () => ({
-  appendDomainEvent: vi.fn(),
+  appendDomainEvent: mocks.appendDomainEvent,
   appendDomainEventSafely: vi.fn(),
   appendScopedDomainEvent: vi.fn(),
   listStreamEvents: vi.fn(),
@@ -40,6 +42,7 @@ vi.mock("@/lib/runs/checkpoint-resume-claim", () => ({
 
 import {
   completeAgentRun,
+  failAgentRun,
   markAgentRunWaitingForApproval,
 } from "@/lib/runs/store";
 import type { AgentRunContinuation } from "@/lib/runs/types";
@@ -80,9 +83,12 @@ describe("agent run checkpoint resume write fences", () => {
     mocks.completeClaim.mockResolvedValue(true);
     mocks.enqueueJob.mockResolvedValue({ id: "next-resume-job" });
     mocks.recordCheckpoint.mockResolvedValue(undefined);
-    mocks.transaction.mockImplementation(async (callback) =>
-      callback({ query: mocks.txQuery }),
-    );
+    mocks.transaction.mockImplementation(async (callback) => {
+      const sql = Object.assign(vi.fn(mocks.txTag), {
+        query: mocks.txQuery,
+      });
+      return callback(sql);
+    });
   });
 
   it("commits a terminal state only through the exact live claim token", async () => {
@@ -107,6 +113,14 @@ describe("agent run checkpoint resume write fences", () => {
       { ...CLAIM, executionScope: SCOPE },
       expect.objectContaining({ query: mocks.txQuery }),
     );
+    expect(mocks.appendDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamId: `run:${RUN_ID}`,
+        type: "run.done",
+        executionScope: SCOPE,
+      }),
+      expect.objectContaining({ sql: expect.any(Function) }),
+    );
   });
 
   it("refuses a terminal write after the claim fence becomes stale", async () => {
@@ -119,6 +133,29 @@ describe("agent run checkpoint resume write fences", () => {
       { tenantId: TENANT_ID, resumeFence: RESUME_FENCE },
     )).resolves.toBe(false);
     expect(mocks.completeClaim).not.toHaveBeenCalled();
+  });
+
+  it("commits an ordinary terminal row and both event projections in one transaction", async () => {
+    mocks.txTag
+      .mockResolvedValueOnce([{ id: RUN_ID }])
+      .mockResolvedValueOnce([]);
+
+    await expect(failAgentRun(
+      RUN_ID,
+      "bounded failure",
+      { tenantId: TENANT_ID, executionScope: SCOPE },
+    )).resolves.toBe(true);
+
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+    expect(mocks.txTag).toHaveBeenCalledTimes(2);
+    expect(mocks.appendDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamId: `run:${RUN_ID}`,
+        type: "run.error",
+        executionScope: SCOPE,
+      }),
+      expect.objectContaining({ sql: expect.any(Function) }),
+    );
   });
 
   it("parks the next approval and retires the old claim atomically", async () => {
