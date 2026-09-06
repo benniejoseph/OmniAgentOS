@@ -1018,6 +1018,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[86],
       up: ensureEntityMemoryLineageOwnerProbe,
     },
+    {
+      ...databaseSchemaMigrations[87],
+      up: ensureEntityRegistryIdentityTriggerDispatch,
+    },
   ];
 }
 
@@ -5604,6 +5608,77 @@ async function ensureEntityMemoryLineageOwnerProbe(sql: SqlClient) {
             'row_tenant_id text, row_owner_actor_id text, row_memory_ids text[]'
       ) THEN
         RAISE EXCEPTION 'Entity memory lineage owner probe is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureEntityRegistryIdentityTriggerDispatch(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_entity_registry_identity_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $function$
+    BEGIN
+      IF TG_TABLE_NAME = 'omni_entity_records' THEN
+        IF ROW(
+          OLD.tenant_id, OLD.id, OLD.owner_actor_id, OLD.ontology_version_id,
+          OLD.entity_type_id, OLD.normalized_label_sha256,
+          OLD.access_scope_sha256, OLD.created_at
+        ) IS DISTINCT FROM ROW(
+          NEW.tenant_id, NEW.id, NEW.owner_actor_id, NEW.ontology_version_id,
+          NEW.entity_type_id, NEW.normalized_label_sha256,
+          NEW.access_scope_sha256, NEW.created_at
+        ) THEN
+          RAISE EXCEPTION 'Entity identity and access scope are immutable'
+            USING ERRCODE = '55000';
+        END IF;
+        IF OLD.canonical_label IS DISTINCT FROM NEW.canonical_label
+          AND NOT (
+            OLD.state <> 'retired'
+            AND NEW.state = 'retired'
+            AND NEW.canonical_label = '[forgotten]'
+          )
+        THEN
+          RAISE EXCEPTION 'Entity labels may only be scrubbed on retirement'
+            USING ERRCODE = '55000';
+        END IF;
+      ELSIF TG_TABLE_NAME = 'omni_entity_aliases' THEN
+        IF ROW(
+          OLD.tenant_id, OLD.id, OLD.owner_actor_id, OLD.entity_id,
+          OLD.normalized_alias_sha256, OLD.access_scope_sha256, OLD.created_at
+        ) IS DISTINCT FROM ROW(
+          NEW.tenant_id, NEW.id, NEW.owner_actor_id, NEW.entity_id,
+          NEW.normalized_alias_sha256, NEW.access_scope_sha256, NEW.created_at
+        ) THEN
+          RAISE EXCEPTION 'Entity alias identity and access scope are immutable'
+            USING ERRCODE = '55000';
+        END IF;
+      ELSE
+        RAISE EXCEPTION 'Entity identity trigger is attached to an invalid relation'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM pg_trigger
+        WHERE tgname = 'omni_entity_registry_identity_immutable'
+          AND tgrelid IN (
+            'omni_entity_records'::regclass,
+            'omni_entity_aliases'::regclass
+          )
+          AND NOT tgisinternal
+          AND tgenabled = 'O'
+      ) <> 2 THEN
+        RAISE EXCEPTION 'Entity identity trigger dispatch is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
