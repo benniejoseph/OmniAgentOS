@@ -78,6 +78,11 @@ describe("canonical knowledge evidence resolution", () => {
     expect(resolved[0].evidenceUnit.evidenceUnitId).toBe(
       created.chunks[0].evidenceUnitId,
     );
+    expect(resolved[0].sourceState).toMatchObject({
+      currentRevisionId: created.chunks[0].sourceRevisionId,
+      operation: "upsert",
+      isCurrent: true,
+    });
     await expect(
       getCanonicalKnowledgeEvidenceByChunkIds([chunkId], {
         tenantId: "tenant-evidence-b",
