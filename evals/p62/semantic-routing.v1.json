@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "p6.2-semantic-routing-v1",
+  "cases": [
+    { "id": "question.architecture", "utterance": "Explain how the agent runtime is structured.", "mode": "orchestrate", "expectedRoute": "direct", "requiredToolIds": [] },
+    { "id": "summary.bounded", "utterance": "Summarize this text: deterministic policy remains authoritative after semantic classification.", "mode": "orchestrate", "expectedRoute": "direct", "requiredToolIds": [] },
+    { "id": "memory.search", "utterance": "What did I decide about the September launch?", "mode": "learn", "expectedRoute": "direct", "requiredToolIds": ["memory.search"] },
+    { "id": "memory.write", "utterance": "Remember that I prefer release notes with a short risk section.", "mode": "learn", "expectedRoute": "direct", "requiredToolIds": ["memory.write"] },
+    { "id": "memory.correct", "utterance": "Correct memory:launch-date so the date is September 18.", "mode": "learn", "expectedRoute": "direct", "requiredToolIds": ["memory.correct"] },
+    { "id": "memory.forget", "utterance": "Forget memory:obsolete-preference permanently.", "mode": "learn", "expectedRoute": "direct", "requiredToolIds": ["memory.forget"] },
+    { "id": "knowledge.search", "utterance": "Find the deployment rollback rules in my saved documents.", "mode": "research", "expectedRoute": "direct", "requiredToolIds": ["knowledge.search"] },
+    { "id": "knowledge.ingest", "utterance": "Add this incident review to the knowledge base.", "mode": "execute", "expectedRoute": "direct", "requiredToolIds": ["knowledge.ingest"] },
+    { "id": "web.search", "utterance": "Look up the current stable Node.js release and cite the official source.", "mode": "research", "expectedRoute": "direct", "requiredToolIds": ["web.search"] },
+    { "id": "missions.list", "utterance": "Show my active missions.", "mode": "orchestrate", "expectedRoute": "direct", "requiredToolIds": ["missions.list"] },
+    { "id": "mission.show", "utterance": "Open mission 11111111-1111-4111-8111-111111111111 and show its tasks.", "mode": "orchestrate", "expectedRoute": "direct", "requiredToolIds": ["mission.show"] },
+    { "id": "mission.task.create", "utterance": "Create a task called Verify rollback in mission 11111111-1111-4111-8111-111111111111.", "mode": "execute", "expectedRoute": "direct", "requiredToolIds": ["mission.task.create"] },
+    { "id": "mission.task.comment", "utterance": "Comment 'validation passed' on mission task 22222222-2222-4222-8222-222222222222.", "mode": "execute", "expectedRoute": "direct", "requiredToolIds": ["mission.task.comment"] },
+    { "id": "runs.list", "utterance": "List my five most recent agent runs.", "mode": "orchestrate", "expectedRoute": "direct", "requiredToolIds": ["runs.list"] },
+    { "id": "calendar.create", "utterance": "Schedule a calendar event tomorrow at 10 AM called Release review.", "mode": "execute", "expectedRoute": "direct", "requiredToolIds": ["calendar.create"] },
+    { "id": "http.request", "utterance": "Send a POST request to https://example.test/hooks/release with the release identifier.", "mode": "execute", "expectedRoute": "direct", "requiredToolIds": ["http.request"] },
+    { "id": "durable.background", "utterance": "In the background, investigate the deployment failure and keep working until the verified report is complete.", "mode": "orchestrate", "expectedRoute": "durable_workflow", "requiredToolIds": [] },
+    { "id": "durable.recurring", "utterance": "Check the release dashboard every morning and report new failures.", "mode": "orchestrate", "expectedRoute": "durable_workflow", "requiredToolIds": [] },
+    { "id": "durable.coordinated", "utterance": "Research current options, implement the best one, then verify it and prepare a release report.", "mode": "orchestrate", "expectedRoute": "durable_workflow", "requiredToolIds": [] },
+    { "id": "clarify.destructive", "utterance": "Delete the old project.", "mode": "orchestrate", "expectedRoute": "clarify", "requiredToolIds": [] },
+    { "id": "direct.exact-delete", "utterance": "Delete project:stale-demo.", "mode": "execute", "expectedRoute": "direct", "requiredToolIds": [] },
+    { "id": "direct.delete-discussion", "utterance": "Explain how to delete the old project safely without taking action.", "mode": "research", "expectedRoute": "direct", "requiredToolIds": [] },
+    { "id": "direct.prohibition", "utterance": "Do not delete the old project; just explain its current status.", "mode": "research", "expectedRoute": "direct", "requiredToolIds": [] },
+    { "id": "direct.single-research", "utterance": "Compare the two deployment approaches and recommend one.", "mode": "research", "expectedRoute": "direct", "requiredToolIds": [] }
+  ]
+}
