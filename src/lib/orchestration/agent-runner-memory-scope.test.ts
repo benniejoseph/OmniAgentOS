@@ -250,6 +250,7 @@ describe("agent memory scope", () => {
     );
     expect(mocks.runCouncilRound).not.toHaveBeenCalled();
     expect(mocks.loadProgressiveAgentTools).not.toHaveBeenCalled();
+    expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({
       type: "status",
       label: "private context isolated",

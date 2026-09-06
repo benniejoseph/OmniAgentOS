@@ -1797,9 +1797,11 @@ selected IDs. Automatic retrieval, session/project modes, workflows, forks,
 specialist/background workers, and formation do not receive that scope. A run
 carrying private context disables sibling council delegation and verification
 instead of forwarding the context, and receives an empty toolbox until a
-capability grant can authorize disclosure to an individual operation. Raw
-private content stays out of context manifests; only IDs, hashes, counts, and
-the separately actor-private retrieval trace are persisted.
+capability grant can authorize disclosure to an individual operation. Legacy
+prompt/response consolidation is also skipped so the private answer cannot be
+reclassified as workspace memory. Raw private content stays out of context
+manifests; only IDs, hashes, counts, and the separately actor-private retrieval
+trace are persisted.
 Migration v74 repairs the daily-brief memory-lineage column used by governed
 deletion invalidation. Migrations v75-v76 index immutable deletion barriers and
 remove redundant derived-row read scans after an integrity-gated cutover; the

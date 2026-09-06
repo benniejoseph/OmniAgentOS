@@ -1748,7 +1748,7 @@ export async function* runAgent(
       runId: run.id,
       response,
     });
-    const consolidation = durableMemoryEnabled
+    const consolidation = durableMemoryEnabled && !promptMemoryAccessScope
       ? enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: request.tenantId,
