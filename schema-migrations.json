@@ -548,5 +548,10 @@
     "version": 110,
     "name": "agent_private_memory_v1",
     "checksum": "7472b7f5f3ce4099e0b74f6a71bd661cc5de465b014b0df06d9e85571d4ce54b"
+  },
+  {
+    "version": 111,
+    "name": "agent_memory_grants_v1",
+    "checksum": "7e438818cab0afcf73dfe6aeda9d36edbf6bd7d81c83a26c92b1370f4a0b1dc6"
   }
 ]

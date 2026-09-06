@@ -60,7 +60,7 @@ const portableMemoryV2Schema = z.object({
   tierPolicyVersion: z.literal(1).optional(),
   formationReason: z.enum([
     "manual_user_entry", "explicit_user_request",
-    "canonical_source_observation", "verified_effect",
+    "canonical_source_observation", "verified_effect", "agent_shared_artifact",
     "assistant_inference_candidate", "correction", "project_reflection",
     "project_artifact", "workflow_output", "maintenance_promotion", "portable_restore",
     "legacy_record",
