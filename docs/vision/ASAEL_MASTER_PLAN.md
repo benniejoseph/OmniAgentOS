@@ -1853,6 +1853,31 @@ precision and recall. Legacy topic/co-occurrence graph projection remains
 unchanged until P5.3/P5.4 introduce temporal claims and transactional truth
 projection.
 
+The next bounded P3.1/P5.2 delivery closes two unsafe gaps without claiming
+either full phase. `project` memory mode now remains session-only and records a
+held harness decision while project authority, consent, grants, and shared
+scope policies are unavailable; it cannot fall through to tenant-wide durable
+memory. The entity registry now receives deterministic projections only from
+explicit typed markers in canonical active user-authored assertions, manual
+memories, and corrections. Ordinary capitalization and assistant/model prose
+remain non-authoritative. Exact matches append independent memory lineage,
+corrections attach replacement lineage before removing the superseded
+reference, and reviewed forget removes every affected root/descendant
+reference. Removing the final reference retires the entity and scrubs the raw
+label from both columns and the contract.
+
+Migrations v86-v88 add indexed entity-memory lineage, restrictive read and
+write deletion barriers, a tenant/actor-bound active-memory owner probe under
+the shared projection/deletion lock, and safe table-specific immutability
+trigger dispatch. The explicit-marker fixture measured precision and recall
+of 1.0. A production canary created one entity from one marker, then retired it
+through the reviewed forget path; direct database assertions confirmed the
+receipt, forgotten memory shell, retired state, scrubbed contract label, and
+empty lineage. Web and Fly are healthy at release
+`27af65b18c7768e73aa199bc06f75acffdfb8798`. P3.1 still requires authoritative
+project/shared scopes, and P5.2 still requires canonical source/evidence
+extraction, review UX, and a representative production-like benchmark.
+
 The first P6.1 delivery is active only for an exact, low-risk recent-runs read.
 An exact tenant rollout pins the Loop v2 engine, transition contract, and
 configuration. Migration v85 stores the immutable actor-owned checkpoint chain
