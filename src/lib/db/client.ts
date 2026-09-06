@@ -128,6 +128,7 @@ export const tenantRootPolicyTables = [
   "omni_memory_graph_builds",
   "omni_memory_graph_rebuild_queue",
   "omni_memory_reconciliation_reviews",
+  "omni_conversation_summaries",
   "omni_entity_records",
   "omni_entity_aliases",
   "omni_entity_resolutions",
@@ -1085,6 +1086,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[100],
       up: ensureMemoryReconciliationInboxV1,
+    },
+    {
+      ...databaseSchemaMigrations[101],
+      up: ensureConversationSummaryHierarchyV1,
     },
   ];
 }
@@ -6391,6 +6396,345 @@ async function ensureMemoryReconciliationInboxV1(sql: SqlClient) {
           AND NOT polpermissive
       ) THEN
         RAISE EXCEPTION 'Memory reconciliation inbox boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureConversationSummaryHierarchyV1(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_threads
+    ADD COLUMN IF NOT EXISTS project_id TEXT
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_threads'::regclass
+          AND conname = 'omni_threads_project_fk'
+      ) THEN
+        ALTER TABLE omni_threads
+        ADD CONSTRAINT omni_threads_project_fk
+        FOREIGN KEY (project_id) REFERENCES omni_projects(id)
+        ON DELETE SET NULL NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_threads
+    VALIDATE CONSTRAINT omni_threads_project_fk
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_threads_project_updated_idx
+    ON omni_threads (tenant_id, actor_id, project_id, updated_at DESC)
+    WHERE project_id IS NOT NULL
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_thread_project_scope()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF TG_OP = 'UPDATE'
+        AND ROW(OLD.tenant_id, OLD.actor_id, OLD.project_id)
+          IS DISTINCT FROM ROW(NEW.tenant_id, NEW.actor_id, NEW.project_id)
+      THEN
+        RAISE EXCEPTION 'Thread ownership and project scope are immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NEW.project_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.omni_projects project
+        WHERE project.id = NEW.project_id
+          AND project.tenant_id = NEW.tenant_id
+          AND project.actor_id = NEW.actor_id
+      ) THEN
+        RAISE EXCEPTION 'Thread project scope is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_validate_thread_project_scope()
+    FROM PUBLIC
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_threads_project_scope
+    ON omni_threads
+  `;
+  await sql`
+    CREATE TRIGGER omni_threads_project_scope
+    BEFORE INSERT OR UPDATE OF tenant_id, actor_id, project_id
+    ON omni_threads
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_validate_thread_project_scope()
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_conversation_summaries (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      level TEXT NOT NULL,
+      bucket_index INTEGER NOT NULL,
+      thread_id TEXT REFERENCES omni_threads(id) ON DELETE CASCADE,
+      project_id TEXT REFERENCES omni_projects(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      source_turn_ids TEXT[] NOT NULL,
+      child_summary_ids TEXT[] NOT NULL,
+      source_sha256 TEXT NOT NULL,
+      summary_sha256 TEXT NOT NULL,
+      access_scope JSONB NOT NULL,
+      starts_at TIMESTAMPTZ NOT NULL,
+      ends_at TIMESTAMPTZ NOT NULL,
+      rebuildable BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_conversation_summary_shape_check CHECK (
+        level IN ('turn', 'episode', 'project', 'lifetime_index')
+        AND bucket_index >= 0
+        AND char_length(content) BETWEEN 1 AND 12000
+        AND cardinality(source_turn_ids) BETWEEN 1 AND 4096
+        AND cardinality(child_summary_ids) BETWEEN 0 AND 1024
+        AND source_sha256 ~ '^[0-9a-f]{64}$'
+        AND summary_sha256 ~ '^[0-9a-f]{64}$'
+        AND rebuildable
+        AND starts_at <= ends_at
+        AND (
+          (level IN ('turn', 'episode') AND thread_id IS NOT NULL)
+          OR (level IN ('project', 'lifetime_index') AND thread_id IS NULL)
+        )
+        AND (level <> 'project' OR project_id IS NOT NULL)
+        AND (level <> 'lifetime_index' OR project_id IS NULL)
+        AND (level <> 'turn' OR cardinality(source_turn_ids) = 1)
+        AND (level = 'turn' OR cardinality(child_summary_ids) > 0)
+        AND jsonb_typeof(access_scope) = 'object'
+        AND access_scope ->> 'schemaVersion' = '1'
+        AND access_scope ->> 'visibility' = 'user_private'
+        AND access_scope ->> 'tenantId' = tenant_id
+        AND access_scope ->> 'actorId' = owner_actor_id
+        AND access_scope -> 'purposeIds'
+          = '["conversation.context.compile.v1"]'::jsonb
+        AND access_scope ->> 'scopeSha256' ~ '^[0-9a-f]{64}$'
+        AND access_scope ->> 'threadId' IS NOT DISTINCT FROM thread_id
+        AND access_scope ->> 'projectId' IS NOT DISTINCT FROM project_id
+      )
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_conversation_summary_bucket_idx
+    ON omni_conversation_summaries (
+      tenant_id, owner_actor_id, level,
+      COALESCE(thread_id, ''), COALESCE(project_id, ''), bucket_index
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_conversation_summary_thread_time_idx
+    ON omni_conversation_summaries (
+      tenant_id, owner_actor_id, thread_id, starts_at ASC, id
+    )
+    WHERE thread_id IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_conversation_summary_project_time_idx
+    ON omni_conversation_summaries (
+      tenant_id, owner_actor_id, project_id, starts_at ASC, id
+    )
+    WHERE project_id IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_conversation_summary_lifetime_time_idx
+    ON omni_conversation_summaries (
+      tenant_id, owner_actor_id, starts_at ASC, id
+    )
+    WHERE level = 'lifetime_index'
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_conversation_summary_lineage()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      matched_turns INTEGER;
+      matched_children INTEGER;
+    BEGIN
+      IF TG_OP = 'UPDATE'
+        AND ROW(
+          OLD.tenant_id, OLD.owner_actor_id, OLD.level,
+          OLD.bucket_index, OLD.thread_id, OLD.project_id, OLD.created_at
+        ) IS DISTINCT FROM ROW(
+          NEW.tenant_id, NEW.owner_actor_id, NEW.level,
+          NEW.bucket_index, NEW.thread_id, NEW.project_id, NEW.created_at
+        )
+      THEN
+        RAISE EXCEPTION 'Conversation summary identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+
+      IF cardinality(NEW.source_turn_ids) <> (
+        SELECT COUNT(DISTINCT source_id)
+        FROM unnest(NEW.source_turn_ids) source_id
+      ) OR cardinality(NEW.child_summary_ids) <> (
+        SELECT COUNT(DISTINCT child_id)
+        FROM unnest(NEW.child_summary_ids) child_id
+      ) THEN
+        RAISE EXCEPTION 'Conversation summary lineage contains duplicates'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.thread_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.omni_threads thread
+        WHERE thread.id = NEW.thread_id
+          AND thread.tenant_id = NEW.tenant_id
+          AND thread.actor_id = NEW.owner_actor_id
+          AND thread.project_id IS NOT DISTINCT FROM NEW.project_id
+      ) THEN
+        RAISE EXCEPTION 'Conversation summary thread scope is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NEW.project_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM public.omni_projects project
+        WHERE project.id = NEW.project_id
+          AND project.tenant_id = NEW.tenant_id
+          AND project.actor_id = NEW.owner_actor_id
+      ) THEN
+        RAISE EXCEPTION 'Conversation summary project scope is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      SELECT COUNT(DISTINCT turn.id) INTO matched_turns
+      FROM unnest(NEW.source_turn_ids) source_id
+      JOIN public.omni_thread_turns turn ON turn.id = source_id
+      JOIN public.omni_threads thread ON thread.id = turn.thread_id
+      WHERE turn.tenant_id = NEW.tenant_id
+        AND thread.tenant_id = NEW.tenant_id
+        AND thread.actor_id = NEW.owner_actor_id
+        AND (
+          NEW.thread_id IS NULL
+          OR turn.thread_id = NEW.thread_id
+        )
+        AND (
+          NEW.project_id IS NULL
+          OR thread.project_id = NEW.project_id
+        );
+      IF matched_turns <> cardinality(NEW.source_turn_ids) THEN
+        RAISE EXCEPTION 'Conversation summary source-turn lineage is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NEW.level = 'turn' THEN
+        IF cardinality(NEW.child_summary_ids) <> 0 THEN
+          RAISE EXCEPTION 'Turn summary child lineage is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+      END IF;
+
+      SELECT COUNT(DISTINCT child.id) INTO matched_children
+      FROM unnest(NEW.child_summary_ids) child_id
+      JOIN public.omni_conversation_summaries child ON child.id = child_id
+      WHERE child.tenant_id = NEW.tenant_id
+        AND child.owner_actor_id = NEW.owner_actor_id
+        AND (
+          (NEW.level = 'episode'
+            AND child.level = 'turn'
+            AND child.thread_id = NEW.thread_id
+            AND child.project_id IS NOT DISTINCT FROM NEW.project_id)
+          OR (NEW.level = 'project'
+            AND child.level = 'episode'
+            AND child.project_id = NEW.project_id)
+          OR (NEW.level = 'lifetime_index' AND child.level = 'episode')
+        );
+      IF matched_children <> cardinality(NEW.child_summary_ids) THEN
+        RAISE EXCEPTION 'Conversation summary child lineage is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_validate_conversation_summary_lineage()
+    FROM PUBLIC
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_conversation_summary_lineage
+    ON omni_conversation_summaries
+  `;
+  await sql`
+    CREATE TRIGGER omni_conversation_summary_lineage
+    BEFORE INSERT OR UPDATE
+    ON omni_conversation_summaries
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_validate_conversation_summary_lineage()
+  `;
+
+  await ensureTenantIsolationPolicies(sql);
+  await sql`
+    ALTER TABLE omni_conversation_summaries
+    ENABLE ROW LEVEL SECURITY
+  `;
+  await sql`
+    ALTER TABLE omni_conversation_summaries
+    FORCE ROW LEVEL SECURITY
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_conversation_summaries_actor_scope
+    ON omni_conversation_summaries
+  `;
+  await sql`
+    CREATE POLICY omni_conversation_summaries_actor_scope
+    ON omni_conversation_summaries
+    AS RESTRICTIVE
+    FOR ALL
+    USING (
+      omni_system_scope_enabled()
+      OR public.omni_actor_scope_v1_allows_validated(
+        (SELECT public.omni_current_actor_scope_v1()),
+        tenant_id,
+        owner_actor_id
+      )
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR public.omni_actor_scope_v1_allows_validated(
+        (SELECT public.omni_current_actor_scope_v1()),
+        tenant_id,
+        owner_actor_id
+      )
+    )
+  `;
+  await sql`REVOKE ALL ON TABLE omni_conversation_summaries FROM PUBLIC`;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_conversation_summaries'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_conversation_summaries'::regclass
+          AND polname = 'omni_conversation_summaries_actor_scope'
+          AND NOT polpermissive
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_conversation_summaries'::regclass
+          AND tgname = 'omni_conversation_summary_lineage'
+          AND NOT tgisinternal
+      ) THEN
+        RAISE EXCEPTION 'Conversation summary hierarchy boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
