@@ -8,6 +8,7 @@ import { jsonbSafeText, jsonbSafeTruncate } from "@/lib/rag/text-safety";
 import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
 import { redactSensitive } from "@/lib/security/context";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
+import { projectCanonicalEvidenceEntities } from "@/lib/entities/extraction";
 import {
   buildCanonicalTextSourceWrite,
   type TextSourceLineageInput,
@@ -101,6 +102,15 @@ export async function ingestTextDocument({
       embedding: embeddings?.[chunk.index],
     })),
   });
+  if (canonicalSourceWrite) {
+    await projectCanonicalEvidenceEntities({
+      sourceWrite: canonicalSourceWrite,
+      chunks: knowledge.chunks.map((chunk) => ({
+        index: chunk.chunkIndex,
+        content: chunk.content,
+      })),
+    });
+  }
   abortSignal?.throwIfAborted();
 
   const records = await saveMemories(

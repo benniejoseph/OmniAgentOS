@@ -310,6 +310,6 @@ function optionalCanonicalTimestamp(
   return value ? canonicalTimestamp(value, field) : null;
 }
 
-function contentSha256Hex(value: string) {
+export function contentSha256Hex(value: string) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }

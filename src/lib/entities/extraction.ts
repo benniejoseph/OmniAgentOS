@@ -25,7 +25,15 @@ import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
-import { sourceContractSha256 } from "@/lib/sources/contracts";
+import {
+  sourceAdapterUpsertV1Schema,
+  sourceContractSha256,
+} from "@/lib/sources/contracts";
+import { CLAIM_EVIDENCE_PURPOSE_ID } from "@/lib/sources/purposes";
+import {
+  contentSha256Hex,
+  type CanonicalTextSourceWrite,
+} from "@/lib/sources/text-lineage";
 
 export const ENTITY_EXTRACTION_SCHEMA_VERSION = 1 as const;
 export const ENTITY_EXTRACTOR_VERSION_ID =
@@ -60,6 +68,40 @@ export type EntityExtraction = Readonly<
 
 export type EntityExtractionProjection = Readonly<{
   extraction: EntityExtraction;
+  createdEntityIds: readonly string[];
+  linkedEntityIds: readonly string[];
+  reviewResolutionIds: readonly string[];
+}>;
+
+const canonicalEvidenceEntityCandidateSchema =
+  entityExtractionCandidateSchema.extend({
+    evidenceUnitId: z.string().trim().min(1).max(240),
+    evidenceUnitSha256: sha256Schema,
+  }).strict();
+
+const canonicalEvidenceEntityExtractionBodySchema = z.object({
+  schemaVersion: z.literal(ENTITY_EXTRACTION_SCHEMA_VERSION),
+  extractorVersionId: z.literal(ENTITY_EXTRACTOR_VERSION_ID),
+  sourceItemId: z.string().trim().min(1).max(240),
+  sourceRevisionId: z.string().trim().min(1).max(240),
+  candidates: z.array(canonicalEvidenceEntityCandidateSchema).max(32),
+}).strict();
+
+const canonicalEvidenceEntityExtractionSchema =
+  canonicalEvidenceEntityExtractionBodySchema.extend({
+    extractionSha256: sha256Schema,
+  }).strict();
+
+export type CanonicalEvidenceEntityExtraction = Readonly<
+  Omit<z.infer<typeof canonicalEvidenceEntityExtractionSchema>, "candidates"> & {
+    candidates: readonly Readonly<
+      z.infer<typeof canonicalEvidenceEntityCandidateSchema>
+    >[];
+  }
+>;
+
+export type CanonicalEvidenceEntityProjection = Readonly<{
+  extraction: CanonicalEvidenceEntityExtraction;
   createdEntityIds: readonly string[];
   linkedEntityIds: readonly string[];
   reviewResolutionIds: readonly string[];
@@ -107,25 +149,7 @@ export function extractEntitiesFromExplicitMemory(
   memory: MemoryRecord,
 ): EntityExtraction {
   assertCanonicalExplicitMemory(memory);
-  const candidates = new Map<string, z.infer<
-    typeof entityExtractionCandidateSchema
-  >>();
-  for (const pattern of [EXPLICIT_MARKER_PATTERN, NAMED_MARKER_PATTERN]) {
-    pattern.lastIndex = 0;
-    for (const match of memory.content.matchAll(pattern)) {
-      const entityTypeId = MARKER_TO_TYPE.get(
-        String(match[1]).toLocaleLowerCase("en-US"),
-      );
-      const canonicalLabel = cleanLabel(match[2] || match[3] || match[4] || "");
-      if (!entityTypeId || !canonicalLabel) continue;
-      const normalizedLabelSha256 = labelSha256(canonicalLabel);
-      candidates.set(`${entityTypeId}:${normalizedLabelSha256}`, {
-        entityTypeId,
-        canonicalLabel,
-        normalizedLabelSha256,
-      });
-    }
-  }
+  const candidates = extractExplicitCandidates(memory.content);
   const sourceMemoryEvidenceSha256 = sourceContractSha256({
     memoryId: memory.id,
     tenantId: memory.tenantId,
@@ -139,12 +163,227 @@ export function extractEntitiesFromExplicitMemory(
     extractorVersionId: ENTITY_EXTRACTOR_VERSION_ID,
     sourceMemoryId: memory.id,
     sourceMemoryEvidenceSha256,
-    candidates: [...candidates.values()].slice(0, 32),
+    candidates,
   });
   return deepFreeze(entityExtractionSchema.parse({
     ...body,
     extractionSha256: sourceContractSha256(body),
   }));
+}
+
+/**
+ * Extracts explicit typed markers only from immutable canonical evidence.
+ * Every candidate retains the exact evidence-unit digest used to create it.
+ */
+export function extractEntitiesFromCanonicalEvidence(input: {
+  sourceWrite: CanonicalTextSourceWrite;
+  chunks: readonly Readonly<{ index: number; content: string }>[];
+}): CanonicalEvidenceEntityExtraction {
+  const output = sourceAdapterUpsertV1Schema.parse(
+    input.sourceWrite.adapterOutput,
+  );
+  const sourceItem = output.sourceItem;
+  const sourceRevision = output.sourceRevision;
+  const evidenceById = new Map(
+    output.evidenceUnits.map((evidence) => [evidence.evidenceUnitId, evidence]),
+  );
+  const candidates = new Map<string, z.infer<
+    typeof canonicalEvidenceEntityCandidateSchema
+  >>();
+  const orderedChunks = [...input.chunks].sort((left, right) =>
+    left.index - right.index
+  );
+  if (
+    orderedChunks.length !== input.sourceWrite.evidenceUnitIdsByChunkIndex.length ||
+    orderedChunks.some((chunk, index) => chunk.index !== index)
+  ) {
+    throw new Error(
+      "Canonical entity extraction requires the complete ordered chunk set.",
+    );
+  }
+  for (const chunk of orderedChunks) {
+    const evidenceUnitId =
+      input.sourceWrite.evidenceUnitIdsByChunkIndex[chunk.index];
+    const evidence = evidenceById.get(evidenceUnitId);
+    if (
+      !evidence ||
+      evidence.tenantId !== sourceItem.tenantId ||
+      evidence.ownerActorId !== sourceItem.ownerActorId ||
+      evidence.sourceItemId !== sourceItem.sourceItemId ||
+      evidence.sourceRevisionId !== sourceRevision.sourceRevisionId ||
+      evidence.evidenceContentSha256 !== contentSha256Hex(chunk.content)
+    ) {
+      throw new Error(
+        "Canonical entity extraction chunk does not match immutable evidence.",
+      );
+    }
+    for (const candidate of extractExplicitCandidates(chunk.content)) {
+      const key = `${candidate.entityTypeId}:${candidate.normalizedLabelSha256}`;
+      if (candidates.has(key)) continue;
+      candidates.set(key, {
+        ...candidate,
+        evidenceUnitId,
+        evidenceUnitSha256: evidence.evidenceUnitSha256,
+      });
+      if (candidates.size === 32) break;
+    }
+    if (candidates.size === 32) break;
+  }
+  const body = canonicalEvidenceEntityExtractionBodySchema.parse({
+    schemaVersion: ENTITY_EXTRACTION_SCHEMA_VERSION,
+    extractorVersionId: ENTITY_EXTRACTOR_VERSION_ID,
+    sourceItemId: sourceItem.sourceItemId,
+    sourceRevisionId: sourceRevision.sourceRevisionId,
+    candidates: [...candidates.values()],
+  });
+  return deepFreeze(canonicalEvidenceEntityExtractionSchema.parse({
+    ...body,
+    extractionSha256: sourceContractSha256(body),
+  }));
+}
+
+export async function projectCanonicalEvidenceEntities(input: {
+  sourceWrite: CanonicalTextSourceWrite;
+  chunks: readonly Readonly<{ index: number; content: string }>[];
+  evaluatedAt?: string;
+}): Promise<CanonicalEvidenceEntityProjection | null> {
+  const output = sourceAdapterUpsertV1Schema.parse(
+    input.sourceWrite.adapterOutput,
+  );
+  const sourceItem = output.sourceItem;
+  const sourceScope = parsePersistedExecutionScope(
+    input.sourceWrite.executionScope,
+  );
+  const evaluatedAt = new Date(input.evaluatedAt || Date.now());
+  if (!Number.isFinite(evaluatedAt.getTime())) {
+    throw new Error("Canonical entity extraction evaluation time is invalid.");
+  }
+  if (
+    !sourceScope ||
+    sourceScope.tenantId !== sourceItem.tenantId ||
+    sourceScope.initiatingActorId !== sourceItem.ownerActorId ||
+    sourceScope.executingPrincipalType !== "user" ||
+    sourceScope.executingPrincipalId !== sourceItem.ownerActorId ||
+    sourceScope.workspaceId !== null ||
+    sourceScope.projectId !== null ||
+    sourceScope.missionId !== null ||
+    sourceItem.visibility !== "user_private" ||
+    sourceItem.workspaceId !== null ||
+    sourceItem.projectId !== null ||
+    sourceItem.missionId !== null ||
+    !sourceItem.allowedPurposeIds.includes(CLAIM_EVIDENCE_PURPOSE_ID) ||
+    (
+      sourceItem.retentionExpiresAt !== null &&
+      new Date(sourceItem.retentionExpiresAt) <= evaluatedAt
+    )
+  ) {
+    return null;
+  }
+
+  const extraction = extractEntitiesFromCanonicalEvidence(input);
+  if (!extraction.candidates.length) {
+    return frozenCanonicalProjection(extraction, [], [], []);
+  }
+  const accessBinding = buildEntityAccessBinding({
+    tenantId: sourceItem.tenantId,
+    ownerActorId: sourceItem.ownerActorId,
+    visibility: "user_private",
+    sensitivity: sourceItem.sensitivity,
+    allowedPurposeIds: ENTITY_PURPOSE_IDS,
+    boundAt: ASAEL_ONTOLOGY_EFFECTIVE_AT,
+  });
+  const resolveScope = deriveExecutionScope(sourceScope, {
+    purpose: "entity.resolve.v1",
+  });
+  const writeScope = deriveExecutionScope(sourceScope, {
+    purpose: "entity.write.v1",
+  });
+  const createdEntityIds: string[] = [];
+  const linkedEntityIds: string[] = [];
+  const reviewResolutionIds: string[] = [];
+  for (const candidate of extraction.candidates) {
+    const lineage = entityLineageReferenceSchema.parse({
+      kind: "evidence_unit",
+      referenceId: candidate.evidenceUnitId,
+      referenceSha256: candidate.evidenceUnitSha256,
+    });
+    const resolution = await resolveAndRecordEntityIdentity({
+      entityTypeId: candidate.entityTypeId,
+      label: candidate.canonicalLabel,
+      accessBinding,
+      executionScope: resolveScope,
+      decidedAt: output.evidenceUnits.find((evidence) =>
+        evidence.evidenceUnitId === candidate.evidenceUnitId
+      )!.extractedAt,
+    });
+    await settleResolution({
+      resolution,
+      candidate,
+      accessBinding,
+      lineage,
+      writeScope,
+      createdEntityIds,
+      linkedEntityIds,
+      reviewResolutionIds,
+      createdAt: output.sourceRevision.capturedAt,
+    });
+  }
+
+  const projection = frozenCanonicalProjection(
+    extraction,
+    createdEntityIds,
+    linkedEntityIds,
+    reviewResolutionIds,
+  );
+  await appendScopedDomainEvent({
+    id: `entity-source-extraction:${extraction.extractionSha256}`,
+    streamId: `source:${sourceItem.sourceItemId}`,
+    type: "entity.source.extraction.projected",
+    executionScope: deriveExecutionScope(sourceScope, {
+      purpose: "entity.extract.v1",
+    }),
+    payload: {
+      schemaVersion: ENTITY_EXTRACTION_SCHEMA_VERSION,
+      extractorVersionId: ENTITY_EXTRACTOR_VERSION_ID,
+      extractionSha256: extraction.extractionSha256,
+      sourceItemId: extraction.sourceItemId,
+      sourceRevisionId: extraction.sourceRevisionId,
+      candidateCount: extraction.candidates.length,
+      createdCount: projection.createdEntityIds.length,
+      linkedCount: projection.linkedEntityIds.length,
+      reviewRequiredCount: projection.reviewResolutionIds.length,
+      evidenceUnitSetSha256: sourceContractSha256(
+        extraction.candidates.map((candidate) => candidate.evidenceUnitId).sort(),
+      ),
+      entityTypeIds: [...new Set(
+        extraction.candidates.map((candidate) => candidate.entityTypeId),
+      )].sort(),
+    },
+  });
+  return projection;
+}
+
+function extractExplicitCandidates(content: string) {
+  const candidates = new Map<string, z.infer<
+    typeof entityExtractionCandidateSchema
+  >>();
+  for (const pattern of [EXPLICIT_MARKER_PATTERN, NAMED_MARKER_PATTERN]) {
+    pattern.lastIndex = 0;
+    for (const match of content.matchAll(pattern)) {
+      const entityTypeId = MARKER_TO_TYPE.get(
+        String(match[1]).toLocaleLowerCase("en-US"),
+      );
+      const canonicalLabel = cleanLabel(match[2] || match[3] || match[4] || "");
+      if (!entityTypeId || !canonicalLabel) continue;
+      const normalizedLabelSha256 = labelSha256(canonicalLabel);
+      candidates.set(`${entityTypeId}:${normalizedLabelSha256}`, {
+        entityTypeId,
+        canonicalLabel,
+        normalizedLabelSha256,
+      });
+    }
+  }
+  return [...candidates.values()].slice(0, 32);
 }
 
 export async function projectExplicitMemoryEntities(input: {
@@ -245,7 +484,10 @@ export async function projectExplicitMemoryEntities(input: {
 
 async function settleResolution(input: {
   resolution: EntityResolutionDecision;
-  candidate: EntityExtraction["candidates"][number];
+  candidate: Readonly<{
+    entityTypeId: EntityTypeId;
+    canonicalLabel: string;
+  }>;
   accessBinding: ReturnType<typeof buildEntityAccessBinding>;
   lineage: z.infer<typeof entityLineageReferenceSchema>;
   writeScope: ExecutionScope;
@@ -319,6 +561,20 @@ function frozenProjection(
   linkedEntityIds: readonly string[],
   reviewResolutionIds: readonly string[],
 ): EntityExtractionProjection {
+  return Object.freeze({
+    extraction,
+    createdEntityIds: Object.freeze([...createdEntityIds]),
+    linkedEntityIds: Object.freeze([...linkedEntityIds]),
+    reviewResolutionIds: Object.freeze([...reviewResolutionIds]),
+  });
+}
+
+function frozenCanonicalProjection(
+  extraction: CanonicalEvidenceEntityExtraction,
+  createdEntityIds: readonly string[],
+  linkedEntityIds: readonly string[],
+  reviewResolutionIds: readonly string[],
+): CanonicalEvidenceEntityProjection {
   return Object.freeze({
     extraction,
     createdEntityIds: Object.freeze([...createdEntityIds]),
