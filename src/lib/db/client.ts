@@ -1049,6 +1049,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[93],
       up: ensureRecurringFailureFeedbackV1,
     },
+    {
+      ...databaseSchemaMigrations[94],
+      up: ensureLoopV2InterruptionRecoveryV1,
+    },
   ];
 }
 
@@ -5255,6 +5259,97 @@ async function ensureRecurringFailureFeedbackV1(sql: SqlClient) {
             USING ERRCODE = '55000';
         END IF;
       END LOOP;
+    END
+    $migration$
+  `;
+}
+
+async function ensureLoopV2InterruptionRecoveryV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'omni_agent_runs'::regclass
+          AND conname = 'omni_agent_runs_loop_v2_recovery_check'
+      ) THEN
+        ALTER TABLE omni_agent_runs
+        ADD CONSTRAINT omni_agent_runs_loop_v2_recovery_check
+        CHECK (
+          NOT (COALESCE(continuation, '{}'::jsonb) ? 'loopV2Recovery')
+          OR COALESCE(
+            status = 'resuming'
+            AND jsonb_typeof(continuation -> 'loopV2Recovery') = 'object'
+            AND continuation -> 'loopV2Recovery' ?& ARRAY[
+              'schemaVersion', 'checkpointSha256', 'leaseGeneration',
+              'claimTokenSha256', 'leaseOwnerSha256', 'claimedAt',
+              'leaseExpiresAt'
+            ]
+            AND continuation #>> '{loopV2Recovery,schemaVersion}' = '1'
+            AND continuation #>> '{loopV2Recovery,checkpointSha256}'
+              ~ '^[a-f0-9]{64}$'
+            AND continuation #>> '{loopV2Recovery,leaseGeneration}'
+              ~ '^[1-9][0-9]{0,15}$'
+            AND continuation #>> '{loopV2Recovery,claimTokenSha256}'
+              ~ '^[a-f0-9]{64}$'
+            AND continuation #>> '{loopV2Recovery,leaseOwnerSha256}'
+              ~ '^[a-f0-9]{64}$'
+            AND NOT (continuation -> 'loopV2Recovery' ? 'claimToken')
+            AND (continuation #>> '{loopV2Recovery,claimedAt}')::timestamptz
+              <= (continuation #>> '{loopV2Recovery,leaseExpiresAt}')::timestamptz,
+            FALSE
+          )
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_agent_runs
+    VALIDATE CONSTRAINT omni_agent_runs_loop_v2_recovery_check
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_loop_v2_recovery_candidates_idx
+    ON omni_agent_loop_v2_checkpoints (
+      tenant_id, transitioned_at ASC, run_id, sequence DESC
+    )
+    WHERE lifecycle_state = 'active'
+  `;
+  await sql`
+    DO $migration$
+    DECLARE
+      recovery_constraint TEXT;
+    BEGIN
+      SELECT pg_get_constraintdef(oid)
+      INTO recovery_constraint
+      FROM pg_constraint
+      WHERE conrelid = 'omni_agent_runs'::regclass
+        AND conname = 'omni_agent_runs_loop_v2_recovery_check'
+        AND contype = 'c'
+        AND convalidated;
+
+      IF recovery_constraint IS NULL
+        OR recovery_constraint NOT LIKE '%loopV2Recovery%'
+        OR recovery_constraint NOT LIKE '%claimTokenSha256%'
+        OR recovery_constraint NOT LIKE '%leaseExpiresAt%'
+        OR recovery_constraint NOT LIKE '%NOT%claimToken%'
+        OR NOT EXISTS (
+          SELECT 1
+          FROM pg_index index_record
+          JOIN pg_class index_relation
+            ON index_relation.oid = index_record.indexrelid
+          WHERE index_relation.relname =
+              'omni_agent_loop_v2_recovery_candidates_idx'
+            AND index_record.indrelid =
+              'omni_agent_loop_v2_checkpoints'::regclass
+            AND index_record.indisvalid
+            AND index_record.indpred IS NOT NULL
+        )
+      THEN
+        RAISE EXCEPTION 'Loop v2 interruption recovery invariant is invalid'
+          USING ERRCODE = '55000';
+      END IF;
     END
     $migration$
   `;
