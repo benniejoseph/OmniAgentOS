@@ -28,6 +28,12 @@ import {
 import type { Mission, MissionTask } from "@/lib/missions/types";
 import { getOwnedProject } from "@/lib/projects/store";
 import {
+  assertContextScopeRequest,
+  CONTEXT_SCOPE_IDS,
+  contextScopeUsesThreadHistory,
+  getContextScopePolicy,
+} from "@/lib/rag/context-scope";
+import {
   formAssistantInferenceCandidate,
   formExplicitUserAssertionMemory,
 } from "@/lib/memory/evidence-formation";
@@ -104,6 +110,7 @@ const requestSchema = z.object({
   agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
+  contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
 }).strict()
@@ -148,6 +155,27 @@ async function POSTHandler(request: Request) {
       },
       { status: 409 },
     );
+  }
+  if (parsed.data.contextScope) {
+    try {
+      assertContextScopeRequest(
+        parsed.data.contextScope,
+        Boolean(parsed.data.contextSelection),
+      );
+    } catch (error) {
+      const policy = getContextScopePolicy(parsed.data.contextScope);
+      return Response.json(
+        {
+          error: policy.state === "authority_held"
+            ? "Context scope unavailable"
+            : "Invalid context scope",
+          message: error instanceof Error
+            ? error.message
+            : "The requested context scope is invalid.",
+        },
+        { status: policy.state === "authority_held" ? 409 : 400 },
+      );
+    }
   }
   const contextSelection = parsed.data.contextSelection
     ? {
@@ -383,6 +411,20 @@ async function POSTHandler(request: Request) {
     );
   }
 
+  if (
+    parsed.data.contextScope &&
+    preliminaryDecision.route === "durable_workflow"
+  ) {
+    return Response.json(
+      {
+        error: "Context scope unavailable for durable workflow",
+        message:
+          "This reviewed context scope is currently available only for a direct agent run.",
+      },
+      { status: 409 },
+    );
+  }
+
   if (preliminaryDecision.route === "durable_workflow") {
     try {
       await authorizeRequest({
@@ -420,7 +462,7 @@ async function POSTHandler(request: Request) {
         let loopV2CanaryEnrollment;
         let loopV2ModelTextEnrollment;
         try {
-          loopV2CanaryEnrollment = parsed.data.budgets
+          loopV2CanaryEnrollment = parsed.data.budgets || parsed.data.contextScope
             ? undefined
             :
             await resolveLoopV2ReadOnlyCanaryEnrollment({
@@ -438,7 +480,11 @@ async function POSTHandler(request: Request) {
               contextEvidenceIds: contextSelection?.evidenceIds,
               resumeRunId: parsed.data.resumeRunId,
             });
-          if (!loopV2CanaryEnrollment && !parsed.data.budgets) {
+          if (
+            !loopV2CanaryEnrollment &&
+            !parsed.data.budgets &&
+            !parsed.data.contextScope
+          ) {
             loopV2ModelTextEnrollment =
               await resolveLoopV2ModelTextEnrollment({
                 tenantId: context.tenantId,
@@ -769,16 +815,23 @@ async function POSTHandler(request: Request) {
             })));
             return;
           }
-          const turns = await listThreadTurns(thread.id, { tenantId: context.tenantId, limit: AGENT_MAX_MESSAGES * 2 });
-          const summaries = await listConversationSummaries(thread.id, {
-            tenantId: context.tenantId,
-            levels: ["episode"],
-            limit: 500,
-          });
-          safeMessages = compileThreadContext(turns, {
-            maxMessages: AGENT_MAX_MESSAGES,
-            summaries,
-          }).messages;
+          if (
+            !parsed.data.contextScope ||
+            contextScopeUsesThreadHistory(parsed.data.contextScope)
+          ) {
+            const turns = await listThreadTurns(thread.id, { tenantId: context.tenantId, limit: AGENT_MAX_MESSAGES * 2 });
+            const summaries = await listConversationSummaries(thread.id, {
+              tenantId: context.tenantId,
+              levels: ["episode"],
+              limit: 500,
+            });
+            safeMessages = compileThreadContext(turns, {
+              maxMessages: AGENT_MAX_MESSAGES,
+              summaries,
+            }).messages;
+          } else {
+            safeMessages = [{ role: "user", content: safeMessage }];
+          }
         }
         if (parsed.data.missionId && (!mission || !missionTask)) {
           if (!mission) throw new Error("Mission not found.");
@@ -791,7 +844,7 @@ async function POSTHandler(request: Request) {
             input: { route: decision.route },
           }, missionOwner);
         }
-        if (parsed.data.missionId && mission) {
+        if (parsed.data.missionId && mission && !parsed.data.contextScope) {
           safeMessages = includeMissionContext(safeMessages, mission);
         }
         const executingAgentId = customAgent?.id || decision.primaryAgentId;
@@ -851,6 +904,7 @@ async function POSTHandler(request: Request) {
                     semanticResolution.receipt.matchedCapabilityIds,
                   policyVersion: semanticResolution.receipt.policyVersion,
                 },
+                contextScope: parsed.data.contextScope,
                 contextSelection,
                 promptMemoryAccess,
                 executionScope: directExecutionScope,

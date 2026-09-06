@@ -193,6 +193,76 @@ describe("agent intent clarification", () => {
 });
 
 describe("agent semantic intent routing", () => {
+  it("rejects authority-held context scopes before execution", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Use my whole workspace.",
+        contextScope: "workspace",
+      }),
+    }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Context scope unavailable",
+      message: expect.stringMatching(/held/i),
+    });
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("requires reviewed evidence only for explicit-selection scope", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Use this conversation.",
+        contextScope: "session",
+        contextSelection: { query: "Use this conversation.", evidenceIds: [] },
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid context scope",
+      message: expect.stringMatching(/explicit-selection scope/i),
+    });
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("keeps current-turn scope out of thread history and Loop canaries", async () => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-current-turn", threadId: "thread-a" };
+      yield { type: "done", response: "Current turn only." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Answer only from this message.",
+        requestId: "current-turn-scope-a",
+        strategy: "direct",
+        contextScope: "current_turn",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.listThreadTurns).not.toHaveBeenCalled();
+    expect(routeMocks.listConversationSummaries).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextScope: "current_turn",
+        messages: [{ role: "user", content: "Answer only from this message." }],
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
   it("records the validated decision and passes only discovery hints to the runner", async () => {
     routeMocks.resolveSemanticIntent.mockResolvedValue({
       decision: {

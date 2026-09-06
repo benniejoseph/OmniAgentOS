@@ -212,6 +212,23 @@ describe("agent memory scope", () => {
       .not.toContain("DURABLE_MEMORY_CONTEXT");
   });
 
+  it("lets a reviewed session scope narrow an all-memory agent", async () => {
+    const scopedRequest = request("all");
+    scopedRequest.contextScope = "session";
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.buildContextPack).not.toHaveBeenCalled();
+    expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      contextDecision: "disabled_session",
+      contextRationale: [
+        "The user limited this run to the current conversation.",
+      ],
+    }));
+  });
+
   it("uses semantic capability terms as discovery hints without an allowlist", async () => {
     const scopedRequest = request("session");
     scopedRequest.semanticRouting = {
