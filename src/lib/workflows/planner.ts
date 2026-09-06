@@ -102,6 +102,15 @@ const planNodeSchema = z.object({
   policy: z.enum(["auto", "dry_run", "approval_required", "manual"]),
   acceptanceCriteria: z.array(z.string()),
   expectedOutputs: z.array(z.string()),
+  execution: z.object({
+    schemaVersion: z.literal(1),
+    executor: z.enum(["agent", "tool", "control"]),
+    dependencyNodeIds: z.array(z.string()),
+    grantedToolIds: z.array(z.string()),
+    maxToolCalls: z.number().int().min(0).max(6),
+    maxModelCalls: z.union([z.literal(0), z.literal(1)]),
+    maxOutputChars: z.number().int().min(1).max(6_000),
+  }).strict().optional(),
 });
 
 const dynamicPlanSchema = z.object({

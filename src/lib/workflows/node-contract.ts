@@ -31,7 +31,7 @@ export const workflowNodeAgentResultSchema = z.object({
   summary: z.string().trim().min(1).max(2_000),
   artifacts: z.array(nodeArtifactSchema).min(1).max(8),
   acceptanceChecks: z.array(acceptanceCheckSchema).max(24),
-  sideEffectClaimed: z.literal(false),
+  sideEffectClaimed: z.boolean(),
 }).strict();
 
 export type WorkflowNodeResultV1 = z.infer<typeof workflowNodeAgentResultSchema> & {
@@ -223,8 +223,8 @@ export function buildWorkflowNodeInput({
   return Object.freeze({
     schemaVersion: WORKFLOW_NODE_CONTRACT_VERSION,
     nodeId: node.id,
-    objective: boundedText(objective, 4_000),
-    task: boundedText(node.description, 2_000),
+    objective: safeBoundedText(objective, 4_000),
+    task: safeBoundedText(node.description, 2_000),
     executor: contract.executor,
     grants: Object.freeze({
       toolIds: Object.freeze([...contract.grantedToolIds]),
@@ -233,8 +233,8 @@ export function buildWorkflowNodeInput({
       riskLevel: node.riskLevel,
     }),
     dependencies: Object.freeze(dependencies),
-    acceptanceCriteria: Object.freeze(node.acceptanceCriteria.map((value) => boundedText(value, 1_000)).slice(0, 24)),
-    expectedOutputs: Object.freeze(node.expectedOutputs.map((value) => boundedText(value, 1_000)).slice(0, 24)),
+    acceptanceCriteria: Object.freeze(node.acceptanceCriteria.map((value) => safeBoundedText(value, 1_000)).slice(0, 24)),
+    expectedOutputs: Object.freeze(node.expectedOutputs.map((value) => safeBoundedText(value, 1_000)).slice(0, 24)),
     limits: Object.freeze({
       maxToolCalls: contract.maxToolCalls,
       maxModelCalls: contract.maxModelCalls,
@@ -251,8 +251,12 @@ export function parseWorkflowNodeAgentResult(
     throw new Error(`Workflow node ${input.nodeId} is not authorized for an agent execution.`);
   }
   const parsed = workflowNodeAgentResultSchema.parse(value);
+  if (parsed.sideEffectClaimed) {
+    throw new Error(`Workflow node ${input.nodeId} cannot claim side effects from a model-only execution.`);
+  }
+  const safeParsed = redactSensitive(parsed) as typeof parsed;
   const criteria = new Map(input.acceptanceCriteria.map((criterion) => [criterion, false]));
-  for (const check of parsed.acceptanceChecks) {
+  for (const check of safeParsed.acceptanceChecks) {
     if (!criteria.has(check.criterion) || criteria.get(check.criterion)) {
       throw new Error(`Workflow node ${input.nodeId} returned an undeclared or duplicate acceptance criterion.`);
     }
@@ -261,7 +265,7 @@ export function parseWorkflowNodeAgentResult(
   if ([...criteria.values()].some((seen) => !seen)) {
     throw new Error(`Workflow node ${input.nodeId} did not evaluate every acceptance criterion.`);
   }
-  const outputChars = parsed.summary.length + parsed.artifacts.reduce(
+  const outputChars = safeParsed.summary.length + safeParsed.artifacts.reduce(
     (total, artifact) => total + artifact.content.length,
     0,
   );
@@ -269,13 +273,13 @@ export function parseWorkflowNodeAgentResult(
     throw new Error(`Workflow node ${input.nodeId} exceeded its output contract.`);
   }
   const descriptionOnly = normalizedText(input.task);
-  if (parsed.artifacts.some((artifact) => normalizedText(artifact.content) === descriptionOnly)) {
+  if (safeParsed.artifacts.some((artifact) => normalizedText(artifact.content) === descriptionOnly)) {
     throw new Error(`Workflow node ${input.nodeId} only restated its task description.`);
   }
   return {
     schemaVersion: WORKFLOW_NODE_CONTRACT_VERSION,
     completionBasis: "model_receipt",
-    ...parsed,
+    ...safeParsed,
   };
 }
 
@@ -285,6 +289,57 @@ export function workflowNodeInputSha256(input: WorkflowNodeInputV1) {
 
 export function workflowNodeOutputSha256(output: WorkflowNodeResultV1) {
   return canonicalJsonSha256(output);
+}
+
+export function assertWorkflowNodeExecutionReceipt(
+  input: WorkflowNodeInputV1,
+  output: WorkflowNodeResultV1,
+  receipt: WorkflowNodeExecutionReceiptV1,
+) {
+  if (
+    receipt.schemaVersion !== WORKFLOW_NODE_CONTRACT_VERSION ||
+    receipt.nodeId !== input.nodeId ||
+    receipt.executor !== input.executor ||
+    receipt.inputSha256 !== workflowNodeInputSha256(input) ||
+    receipt.outputSha256 !== workflowNodeOutputSha256(output)
+  ) {
+    throw new Error(`Workflow node ${input.nodeId} execution receipt does not bind its typed input and output.`);
+  }
+  const dependencyIds = input.dependencies.map((dependency) => dependency.executionId);
+  if (canonicalJsonSha256(receipt.dependencyExecutionIds) !== canonicalJsonSha256(dependencyIds)) {
+    throw new Error(`Workflow node ${input.nodeId} execution receipt does not bind its dependencies.`);
+  }
+  if (input.executor === "agent") {
+    if (
+      output.completionBasis !== "model_receipt" ||
+      !receipt.model ||
+      receipt.model.attemptCount < 1 ||
+      receipt.toolExecutionIds.length
+    ) {
+      throw new Error(`Workflow node ${input.nodeId} is missing its bounded model receipt.`);
+    }
+    return;
+  }
+  if (input.executor === "tool") {
+    if (
+      output.completionBasis !== "tool_receipts" ||
+      receipt.model ||
+      receipt.control ||
+      !receipt.toolExecutionIds.length ||
+      receipt.toolExecutionIds.length > input.limits.maxToolCalls
+    ) {
+      throw new Error(`Workflow node ${input.nodeId} is missing governed tool receipts.`);
+    }
+    return;
+  }
+  if (
+    output.completionBasis !== "control_receipt" ||
+    !receipt.control ||
+    receipt.model ||
+    receipt.toolExecutionIds.length
+  ) {
+    throw new Error(`Workflow node ${input.nodeId} is missing its deterministic control receipt.`);
+  }
 }
 
 function dependencyArtifacts(output: Record<string, unknown>) {
@@ -349,6 +404,10 @@ function unique(values: readonly string[]) {
 
 function boundedText(value: string, limit: number) {
   return value.trim().slice(0, limit);
+}
+
+function safeBoundedText(value: string, limit: number) {
+  return boundedText(String(redactSensitive(value)), limit);
 }
 
 function normalizedText(value: string) {
