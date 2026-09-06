@@ -563,5 +563,10 @@
     "version": 113,
     "name": "agent_release_lifecycle_v1",
     "checksum": "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff"
+  },
+  {
+    "version": 114,
+    "name": "agent_release_enrollment_v1",
+    "checksum": "368ef844bec7d397e8bf8fe50c743aecd9e383b22f5451132e2feff528516f43"
   }
 ]

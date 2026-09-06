@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCustomAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { evaluateAgentReleaseCandidateV1 } from "@/lib/agents/release-contracts";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { CustomAgentDefinition } from "@/lib/skills/types";
 
 const mocks = vi.hoisted(() => ({
@@ -30,6 +31,7 @@ import {
   AGENT_RELEASE_EVENT_TYPES,
   evaluateAgentRelease,
   getAgentRelease,
+  initializeAgentReleaseChannelWithSql,
   promoteAgentRelease,
 } from "@/lib/agents/release-store";
 
@@ -49,6 +51,41 @@ beforeEach(() => {
 });
 
 describe("P7.5 Agent release store", () => {
+  it("converges with database enrollment of the initial release", async () => {
+    const database = fakeReleaseSql();
+    const executionScope = createExecutionScope({
+      tenantId: owner.tenantId,
+      initiatingActorId: owner.canonicalActorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: owner.canonicalActorId,
+      correlationId: "agent-release:agent-one:initialize:test",
+      purpose: "agent.release.initialize.v1",
+    });
+
+    const channel = await initializeAgentReleaseChannelWithSql({
+      agent: agent(),
+      definitionVersion: 1,
+      canonicalActorId: owner.canonicalActorId,
+      executionScope,
+      sql: database.sql as unknown as Parameters<
+        typeof initializeAgentReleaseChannelWithSql
+      >[0]["sql"],
+    });
+
+    expect(channel).toMatchObject({
+      state: "active",
+      releaseRevision: 1,
+      activeDefinitionVersion: 1,
+    });
+    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: AGENT_RELEASE_EVENT_TYPES.initialized,
+        executionScope,
+      }),
+      { sql: database.sql },
+    );
+  });
+
   it("shows the active version separately from an unevaluated draft", async () => {
     const database = fakeReleaseSql();
     mocks.getSql.mockReturnValue(database.sql);
@@ -143,7 +180,7 @@ function fakeReleaseSql(initialEvaluation?: Record<string, unknown>) {
       const text = render(strings);
       statements.push(text);
       if (/FROM omni_custom_agents agent/.test(text)) return [agentRow()];
-      if (/SELECT \* FROM omni_agent_release_channels/.test(text)) return [channel];
+      if (/SELECT \*\s+FROM omni_agent_release_channels/.test(text)) return [channel];
       if (/SELECT definition_version, published_at/.test(text)) {
         return [
           { definition_version: 1, published_at: agent().updatedAt },
