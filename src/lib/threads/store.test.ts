@@ -19,6 +19,15 @@ describe("durable conversation threads (file mode)", () => {
       { role: "user", content: "Plan my week" },
       { role: "assistant", content: "What matters most this week?" },
     ]);
+    const summaries = await store.listConversationSummaries(thread.id, {
+      tenantId: "tenant-a",
+      levels: ["turn", "episode"],
+    });
+    expect(summaries.filter((summary) => summary.level === "turn")).toHaveLength(2);
+    expect(summaries.filter((summary) => summary.level === "episode")).toHaveLength(1);
+    expect(summaries.every((summary) =>
+      summary.sourceTurnIds.length > 0 && summary.accessScope.actorId === "user-a"
+    )).toBe(true);
     await expect(store.getThread(thread.id, { tenantId: "tenant-b" })).resolves.toBeNull();
     await expect(store.listThreadTurns(thread.id, { tenantId: "tenant-b" })).resolves.toEqual([]);
   });
