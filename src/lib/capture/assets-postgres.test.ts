@@ -42,6 +42,10 @@ vi.mock("@/lib/storage/json", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/storage/object-migration", () => ({
+  getAssetObjectReadMode: vi.fn(async () => "legacy"),
+}));
+
 import {
   CaptureAssetContentIntegrityError,
   CaptureAssetReadConflictError,
@@ -270,14 +274,22 @@ describe("Postgres Capture asset collection reads", () => {
     });
 
     expect(dbMocks.statements[0].text).toMatch(
-      /CASE[\s\S]*?byte_count BETWEEN 1 AND \$\d+[\s\S]*?octet_length\(content\) = byte_count[\s\S]*?THEN content[\s\S]*?FROM omni_capture_assets[\s\S]*?id = \$\d+[\s\S]*?tenant_id = \$\d+[\s\S]*?\(actor_id = \$\d+ OR actor_id = \$\d+\)[\s\S]*?jsonb_typeof\(metadata\) = 'object'[\s\S]*?COALESCE\(metadata->>'internalKind', ''\) = ''[\s\S]*?LIMIT 2/,
+      /FROM omni_capture_assets[\s\S]*?id = \$\d+[\s\S]*?tenant_id = \$\d+[\s\S]*?\(actor_id = \$\d+ OR actor_id = \$\d+\)[\s\S]*?jsonb_typeof\(metadata\) = 'object'[\s\S]*?COALESCE\(metadata->>'internalKind', ''\) = ''[\s\S]*?LIMIT 2/,
     );
     expect(dbMocks.statements[0].params).toEqual([
-      20 * 1024 * 1024,
       "canonical-asset",
       "tenant-a",
       canonicalActorId,
       actorId,
+    ]);
+    expect(dbMocks.statements[1].text).toMatch(
+      /CASE[\s\S]*?byte_count BETWEEN 1 AND \$\d+[\s\S]*?octet_length\(content\) = byte_count[\s\S]*?THEN content/,
+    );
+    expect(dbMocks.statements[1].params).toEqual([
+      20 * 1024 * 1024,
+      "canonical-asset",
+      "tenant-a",
+      canonicalActorId,
     ]);
   });
 
@@ -353,10 +365,15 @@ describe("Postgres Capture asset collection reads", () => {
     });
 
     expect(dbMocks.statements[0].params).toEqual([
-      20 * 1024 * 1024,
       "email-asset",
       "tenant-a",
       actorId,
+      actorId,
+    ]);
+    expect(dbMocks.statements[1].params).toEqual([
+      20 * 1024 * 1024,
+      "email-asset",
+      "tenant-a",
       actorId,
     ]);
   });

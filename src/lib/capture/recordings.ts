@@ -16,10 +16,12 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
+  readReadyAssetObject,
   retireAssetObjectsForSource,
   stageAssetObject,
   updateAssetObjectExtractionState,
 } from "@/lib/storage/object-plane";
+import { getAssetObjectReadMode } from "@/lib/storage/object-migration";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type {
@@ -834,24 +836,108 @@ export async function getCaptureSegmentAudio(recordingId: string, segmentIndex: 
   const recording = await requireCaptureRecording(recordingId, owner);
   if (hasDatabaseUrl()) {
     const rows = await getSql()`
-      SELECT audio_data, mime_type, byte_count, audio_sha256
+      SELECT id, mime_type, byte_count, audio_sha256
       FROM omni_capture_segments
       WHERE tenant_id = ${recording.tenantId} AND actor_id = ${recording.actorId}
         AND recording_id = ${recording.id} AND segment_index = ${segmentIndex}
       LIMIT 1
     `;
     if (!rows[0]) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
+    const sourceId = String(rows[0].id);
+    const mimeType = String(rows[0].mime_type);
+    const byteCount = Number(rows[0].byte_count || 0);
+    const sha256 = String(rows[0].audio_sha256);
+    const mode = await getAssetObjectReadMode({
+      tenantId: recording.tenantId,
+      ownerActorId: recording.actorId,
+    });
+    if (mode === "object") {
+      try {
+        const stored = await readReadyAssetObject({
+          tenantId: recording.tenantId,
+          ownerActorId: recording.actorId,
+          sourceKind: "capture_segment",
+          sourceId,
+          purpose: "capture.recording.playback",
+        });
+        return { bytes: Buffer.from(stored.bytes), mimeType, byteCount, sha256 };
+      } catch {
+        throw new CaptureRecordingError(
+          "Recording segment content failed integrity validation.",
+          409,
+          "segment_content_integrity",
+        );
+      }
+    }
+    const legacyRows = await getSql()`
+      SELECT audio_data
+      FROM omni_capture_segments
+      WHERE tenant_id = ${recording.tenantId} AND actor_id = ${recording.actorId}
+        AND id = ${sourceId} AND recording_id = ${recording.id}
+        AND segment_index = ${segmentIndex}
+      LIMIT 1
+    `;
+    if (!legacyRows[0]) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
+    const bytes = Buffer.from(legacyRows[0].audio_data as Uint8Array);
+    if (
+      bytes.byteLength !== byteCount ||
+      createHash("sha256").update(bytes).digest("hex") !== sha256
+    ) {
+      throw new CaptureRecordingError(
+        "Recording segment content failed integrity validation.",
+        409,
+        "segment_content_integrity",
+      );
+    }
+    if (mode === "shadow") {
+      void shadowReadCaptureSegmentObject({
+        tenantId: recording.tenantId,
+        ownerActorId: recording.actorId,
+        sourceId,
+        expectedBytes: bytes,
+      });
+    }
     return {
-      bytes: Buffer.from(rows[0].audio_data as Uint8Array),
-      mimeType: String(rows[0].mime_type),
-      byteCount: Number(rows[0].byte_count || 0),
-      sha256: String(rows[0].audio_sha256),
+      bytes,
+      mimeType,
+      byteCount,
+      sha256,
     };
   }
   const ledger = await readCaptureLedger();
   const segment = ledger.segments.find((item) => item.recordingId === recording.id && item.segmentIndex === segmentIndex && item.actorId === recording.actorId);
   if (!segment) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
   return { bytes: await readFile(segment.audioPath), mimeType: segment.mimeType, byteCount: segment.byteCount, sha256: segment.audioSha256 };
+}
+
+async function shadowReadCaptureSegmentObject(input: {
+  tenantId: string;
+  ownerActorId: string;
+  sourceId: string;
+  expectedBytes: Buffer;
+}) {
+  try {
+    const stored = await readReadyAssetObject({
+      tenantId: input.tenantId,
+      ownerActorId: input.ownerActorId,
+      sourceKind: "capture_segment",
+      sourceId: input.sourceId,
+      purpose: "capture.recording.playback",
+    });
+    const storedHash = createHash("sha256").update(stored.bytes).digest("hex");
+    const expectedHash = createHash("sha256").update(input.expectedBytes).digest("hex");
+    if (
+      storedHash !== expectedHash ||
+      stored.bytes.byteLength !== input.expectedBytes.byteLength
+    ) {
+      console.warn("Asset object shadow read did not match the legacy source.", {
+        sourceKind: "capture_segment",
+        sourceIdSha256: sha256Json(input.sourceId),
+      });
+    }
+  } catch {
+    // Shadow mode preserves the legacy reader while migration converges.
+  }
 }
 
 export async function prepareCaptureRecordingCompletion(id: string, owner: ScopedOwner) {

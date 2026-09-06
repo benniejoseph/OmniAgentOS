@@ -624,6 +624,59 @@ export async function redeemAssetObjectDelivery(input: {
   return { object: projectAssetObject(object), bytes: stored.bytes };
 }
 
+export async function readReadyAssetObject(input: {
+  tenantId: string;
+  ownerActorId: string;
+  sourceKind: AssetObjectSourceKind;
+  sourceId: string;
+  purpose: string;
+  adapter?: PrivateAssetBlobAdapter;
+}) {
+  if (!input.adapter && !privateObjectStorageConfigured()) {
+    throw new AssetObjectError(
+      "Private object storage is not configured.",
+      "storage_not_configured",
+    );
+  }
+  const tenantId = requiredText(input.tenantId, 160);
+  const ownerActorId = requiredText(input.ownerActorId, 320);
+  const sourceId = requiredText(input.sourceId, 200);
+  const purpose = requiredText(input.purpose, 160);
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT * FROM omni_asset_objects
+    WHERE tenant_id = ${tenantId} AND owner_actor_id = ${ownerActorId}
+      AND source_kind = ${input.sourceKind} AND source_id = ${sourceId}
+      AND object_version = 1 AND status = 'ready'
+    LIMIT 2
+  `;
+  if (rows.length !== 1) {
+    throw new AssetObjectError(
+      "A ready asset object was not found.",
+      "object_not_ready",
+    );
+  }
+  const object = assetObjectFromRow(rows[0]);
+  if (!object.allowedPurposeIds.includes(purpose)) {
+    throw new AssetObjectError(
+      "Asset object read purpose is not allowed.",
+      "source_not_current",
+    );
+  }
+  await assertSourceStillCurrent(object, getSql());
+  const stored = await (input.adapter || defaultBlobAdapter).read(
+    object.storageLocator,
+  );
+  if (!stored) {
+    throw new AssetObjectError(
+      "Asset object content was not found.",
+      "storage_read_failed",
+    );
+  }
+  assertObjectBytes(object, stored.bytes);
+  return { object: projectAssetObject(object), bytes: stored.bytes };
+}
+
 export function projectAssetObject(object: AssetObjectRecord) {
   return {
     id: object.id,
