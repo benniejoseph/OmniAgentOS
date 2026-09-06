@@ -95,6 +95,13 @@ describe("run trajectory route", () => {
 
     expect(response.status).toBe(200);
     const body = await response.json();
+    expect(body).toMatchObject({
+      trajectory: { version: 3, outcomeEvidence: expect.any(Object) },
+      outcomeEvaluation: {
+        retentionEligible: false,
+      },
+    });
+    expect(body).not.toHaveProperty("learningEvaluation");
     expect(body.traceHierarchy).toMatchObject({
       version: 1,
       runId: "run-one",
