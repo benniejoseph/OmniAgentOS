@@ -11,6 +11,13 @@ const routeMocks = vi.hoisted(() => {
     MemoryDeletionPreviewConflictError,
     authorizeRequest: vi.fn(),
     executionScopeFromSecurityContext: vi.fn(),
+    correctMemory: vi.fn(),
+    getMemory: vi.fn(),
+    indexUserPrivateMemoryGraphRecords: vi.fn(),
+    queueMemoryGraphRebuild: vi.fn(),
+    embedTexts: vi.fn(),
+    projectExplicitMemoryEntities: vi.fn(),
+    retireEntityMemoryLineage: vi.fn(),
     forgetMemoryWithReceipt: vi.fn(),
     previewMemoryDeletion: vi.fn(),
   };
@@ -36,20 +43,31 @@ vi.mock("@/lib/security/execution-scope", async (importOriginal) => ({
 vi.mock("@/lib/memory/store", () => ({
   MemoryDeletionPreviewConflictError:
     routeMocks.MemoryDeletionPreviewConflictError,
-  correctMemory: vi.fn(),
+  correctMemory: routeMocks.correctMemory,
   forgetMemoryWithReceipt: routeMocks.forgetMemoryWithReceipt,
-  getMemory: vi.fn(),
+  getMemory: routeMocks.getMemory,
   previewMemoryDeletion: routeMocks.previewMemoryDeletion,
 }));
 
 vi.mock("@/lib/memory/graph", () => ({
-  indexUserPrivateMemoryGraphRecords: vi.fn(),
-  queueMemoryGraphRebuild: vi.fn(),
+  indexUserPrivateMemoryGraphRecords:
+    routeMocks.indexUserPrivateMemoryGraphRecords,
+  queueMemoryGraphRebuild: routeMocks.queueMemoryGraphRebuild,
 }));
 
-vi.mock("@/lib/openai/client", () => ({ embedTexts: vi.fn() }));
+vi.mock("@/lib/openai/client", () => ({
+  embedTexts: routeMocks.embedTexts,
+}));
 
-import { DELETE, GET } from "@/app/api/memory/[id]/route";
+vi.mock("@/lib/entities/extraction", () => ({
+  projectExplicitMemoryEntities: routeMocks.projectExplicitMemoryEntities,
+}));
+
+vi.mock("@/lib/entities/store", () => ({
+  retireEntityMemoryLineage: routeMocks.retireEntityMemoryLineage,
+}));
+
+import { DELETE, GET, PATCH } from "@/app/api/memory/[id]/route";
 
 const context = {
   tenantId: "tenant-a",
@@ -90,6 +108,13 @@ describe("memory deletion route", () => {
   beforeEach(() => {
     routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
     routeMocks.previewMemoryDeletion.mockReset().mockResolvedValue(preview);
+    routeMocks.correctMemory.mockReset();
+    routeMocks.getMemory.mockReset();
+    routeMocks.indexUserPrivateMemoryGraphRecords.mockReset();
+    routeMocks.queueMemoryGraphRebuild.mockReset();
+    routeMocks.embedTexts.mockReset().mockResolvedValue([]);
+    routeMocks.projectExplicitMemoryEntities.mockReset();
+    routeMocks.retireEntityMemoryLineage.mockReset();
     routeMocks.executionScopeFromSecurityContext.mockReset().mockReturnValue({
       tenantId: "tenant-a",
       initiatingActorId: "owner@example.test",
@@ -201,5 +226,68 @@ describe("memory deletion route", () => {
         }),
       }),
     );
+  });
+
+  it("holds a contradiction candidate out of graph and entity projections", async () => {
+    const existing = {
+      id: "memory-a",
+      tenantId: "tenant-a",
+      type: "fact",
+      title: "Office day",
+      content: "Tuesday",
+      tags: [],
+      scope: "workspace",
+      source: "manual",
+      importance: 0.8,
+      claimStatus: "active",
+      createdAt: "2026-09-06T00:00:00.000Z",
+      updatedAt: "2026-09-06T00:00:00.000Z",
+    };
+    const candidate = {
+      ...existing,
+      id: "memory-b",
+      content: "Thursday",
+      claimStatus: "candidate",
+      contradictionOfId: "memory-a",
+    };
+    routeMocks.getMemory.mockResolvedValue(existing);
+    routeMocks.correctMemory.mockResolvedValue({
+      previous: existing,
+      corrected: candidate,
+      review: {
+        id: "review-a",
+        tenantId: "tenant-a",
+        kind: "contradiction",
+        status: "pending",
+        detectionReason: "explicit_contradiction",
+        candidate,
+        existing,
+        createdAt: "2026-09-06T00:00:00.000Z",
+        updatedAt: "2026-09-06T00:00:00.000Z",
+      },
+    });
+
+    const response = await PATCH(new Request(
+      "http://localhost/api/memory/memory-a",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          content: "Thursday",
+          contradiction: true,
+        }),
+      },
+    ), { params: Promise.resolve({ id: "memory-a" }) });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      previous: { claimStatus: "active" },
+      corrected: { claimStatus: "candidate" },
+      review: { status: "pending" },
+    });
+    expect(routeMocks.queueMemoryGraphRebuild).not.toHaveBeenCalled();
+    expect(routeMocks.indexUserPrivateMemoryGraphRecords).not.toHaveBeenCalled();
+    expect(routeMocks.projectExplicitMemoryEntities).not.toHaveBeenCalled();
+    expect(routeMocks.retireEntityMemoryLineage).not.toHaveBeenCalled();
   });
 });
