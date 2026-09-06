@@ -42,6 +42,8 @@ export const retrievalQueryPlanBenchmarkCases: readonly RetrievalQueryPlanBenchm
   fixture("entity-product", "Details for product Mercury", ["entity"]),
 
   fixture("relationship-reporting", "Who reports to Alice Chen?", ["entity", "relationship"]),
+  fixture("relationship-manages", "Who manages Project Orion?", ["entity", "relationship"]),
+  fixture("relationship-managed", "Who managed Project Orion?", ["entity", "relationship"]),
   fixture("relationship-dependency", "Which service depends on billing-api?", ["entity", "relationship"]),
   fixture("relationship-owner", "Who is the owner of project Orion?", ["entity", "relationship"]),
   fixture("relationship-member", "Which team is Priya a member of?", ["entity", "relationship"]),

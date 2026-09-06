@@ -42,7 +42,7 @@ function dependencies(generated = modelResult()) {
       source: "tenant_assignment",
       bind: <T>(request: T) => request,
     }),
-    generateModelText: vi.fn().mockResolvedValue(generated),
+    generateModelStructured: vi.fn().mockResolvedValue(generated),
   };
 }
 
@@ -66,7 +66,7 @@ describe("P4.3 retrieval query planner", () => {
 
     expect(misses).toEqual([]);
     expect(result).toMatchObject({
-      caseCount: 30,
+      caseCount: 32,
       passed: true,
       domainPrecision: 1,
       domainRecall: 1,
@@ -87,7 +87,7 @@ describe("P4.3 retrieval query planner", () => {
       beforeSemanticModelCall,
     })).rejects.toThrow("model turn budget exhausted");
     expect(beforeSemanticModelCall).toHaveBeenCalledOnce();
-    expect(deps.generateModelText).not.toHaveBeenCalled();
+    expect(deps.generateModelStructured).not.toHaveBeenCalled();
   });
 
   it("adds only validated semantic hints while retaining the original query", async () => {
@@ -117,17 +117,26 @@ describe("P4.3 retrieval query planner", () => {
     });
     expect(plan.queries[0]).toBe("Tell me where Project Orion stands");
     expect(plan.queries).toContain("Orion delivery schedule and milestones");
-    expect(deps.generateModelText).toHaveBeenCalledWith(
+    expect(deps.resolveRuntimeModelAssignment).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      scope: "orchestrator",
+      tier: "fast",
+      requiredFeature: "json_schema",
+    });
+    expect(deps.generateModelStructured).toHaveBeenCalledWith(
       expect.objectContaining({
+        name: "retrieval_query_plan",
+        schema: expect.objectContaining({ type: "object" }),
         usageScope: expect.objectContaining({
           tenantId: "tenant-a",
           actorId: "actor-a",
-          operation: "text_generation",
+          operation: "structured_generation",
           purpose: "context.query_plan.semantic",
         }),
       }),
     );
-    const request = deps.generateModelText.mock.calls[0][0];
+    const request = deps.generateModelStructured.mock.calls[0][0];
     expect(request.input).not.toContain("tenant-a");
     expect(request.input).not.toContain("actor-a");
   });
@@ -202,7 +211,7 @@ describe("P4.3 retrieval query planner", () => {
     expect(explicitEmpty.fallbackReason).toBe("not_required");
     expect(casual.fallbackReason).toBe("not_required");
     expect(deps.resolveRuntimeModelAssignment).not.toHaveBeenCalled();
-    expect(deps.generateModelText).not.toHaveBeenCalled();
+    expect(deps.generateModelStructured).not.toHaveBeenCalled();
   });
 
   it("fails closed when usage attribution or a recorded model receipt is missing", async () => {
