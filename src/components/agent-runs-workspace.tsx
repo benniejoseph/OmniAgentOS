@@ -47,6 +47,7 @@ import { ConversationCanvas } from "@/components/conversation-canvas";
 import { CouncilExecutionMap } from "@/components/agents/council-execution-map";
 import { VoiceMode } from "@/components/voice/voice-mode";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
+import { arsenalAgents } from "@/lib/agents/arsenal";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
 
 type JsonRecord = Record<string, unknown>;
@@ -54,6 +55,14 @@ type ThreadSummary = { id: string; title: string; updatedAt: string; mode: Agent
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 type AgentId = string;
+type AgentPresentation = {
+  id: AgentId;
+  name: string;
+  role: string;
+  voice: string;
+  visualIdentity: string;
+  accent: "emerald" | "blue" | "amber" | "violet" | "rose";
+};
 type ActiveContextScopeId = Extract<
   ContextScopeId,
   "none" | "current_turn" | "session" | "explicit_selection"
@@ -328,11 +337,14 @@ export function AgentRunsWorkspace({
   } = useWorkspaceSession();
   const [goal, setGoal] = useState(initialGoal || "");
   const [mode, setMode] = useState<AgentMode>("orchestrate");
-  const initialBuiltInAgentId = initialAgentId && agentDisplayName(initialAgentId) !== "Custom agent"
-    ? initialAgentId
+  const initialBuiltInAgent = initialAgentId
+    ? builtInAgentPresentation(initialAgentId)
     : undefined;
-  const [preferredAgentId, setPreferredAgentId] = useState<AgentId | undefined>(initialBuiltInAgentId);
-  const [preferredAgentName, setPreferredAgentName] = useState<string | undefined>(initialBuiltInAgentId ? agentDisplayName(initialBuiltInAgentId) : undefined);
+  const [preferredAgent, setPreferredAgent] = useState<AgentPresentation | undefined>(
+    initialBuiltInAgent,
+  );
+  const preferredAgentId = preferredAgent?.id;
+  const activeAssistantName = preferredAgent?.name || "Asael";
   const [approvalRequired, setApprovalRequired] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>("context");
   const [loading, setLoading] = useState<string>();
@@ -408,29 +420,26 @@ export function AgentRunsWorkspace({
     let stateTimer: number | undefined;
     if (!initialAgentId) {
       stateTimer = window.setTimeout(() => {
-        setPreferredAgentId(undefined);
-        setPreferredAgentName(undefined);
+        setPreferredAgent(undefined);
       }, 0);
       return () => window.clearTimeout(stateTimer);
     }
-    if (agentDisplayName(initialAgentId) !== "Custom agent") {
+    const builtIn = builtInAgentPresentation(initialAgentId);
+    if (builtIn) {
       stateTimer = window.setTimeout(() => {
-        setPreferredAgentId(initialAgentId);
-        setPreferredAgentName(agentDisplayName(initialAgentId));
+        setPreferredAgent(builtIn);
       }, 0);
       return () => window.clearTimeout(stateTimer);
     }
     stateTimer = window.setTimeout(() => {
-      setPreferredAgentId(undefined);
-      setPreferredAgentName(undefined);
+      setPreferredAgent(undefined);
     }, 0);
     void readJson(`/api/agents/${encodeURIComponent(initialAgentId)}`, { signal: controller.signal })
       .then((payload) => {
         if (controller.signal.aborted) return;
         const agent = asRecord(asRecord(payload).agent);
         if (agent.selectable !== true || stringValue(agent.id) !== initialAgentId) return;
-        setPreferredAgentId(initialAgentId);
-        setPreferredAgentName(stringValue(agent.name, "Custom agent"));
+        setPreferredAgent(agentPresentationFromApi(agent));
       })
       .catch(() => undefined);
     return () => {
@@ -1806,7 +1815,11 @@ export function AgentRunsWorkspace({
     }
     setSpeechLoading(true);
     try {
-      const response = await fetch("/api/media/speech", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
+      const response = await fetch("/api/media/speech", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, agentId: preferredAgentId }),
+      });
       if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(stringValue(asRecord(body).error, "Speech playback failed.")); }
       const blob = await response.blob();
       if (responseAudioUrlRef.current) URL.revokeObjectURL(responseAudioUrlRef.current);
@@ -2284,7 +2297,10 @@ export function AgentRunsWorkspace({
                     </div>
                   ) : (
                     <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
-                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Asael</p>
+                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
+                        {activeAssistantName}
+                        {preferredAgent?.role ? <span className="ml-2 text-muted">· {preferredAgent.role}</span> : null}
+                      </p>
                       <ConversationMessageContent content={turn.content} />
                       {turn.runId ? (
                         <button
@@ -2339,7 +2355,10 @@ export function AgentRunsWorkspace({
                 <article className={clsx("flex justify-start", workspaceStyles.turn, workspaceStyles.assistantTurn)}>
                   <div className={clsx("min-w-0 max-w-full sm:pl-1", workspaceStyles.assistantMessage)}>
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Asael</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">
+                        {activeAssistantName}
+                        {preferredAgent?.role ? <span className="ml-2 text-muted">· {preferredAgent.role}</span> : null}
+                      </p>
                       {loading === "agent" ? (
                         <span className="inline-flex items-center gap-2 text-xs text-muted">
                           <span className="size-1.5 animate-pulse rounded-full bg-primary" />
@@ -2356,7 +2375,7 @@ export function AgentRunsWorkspace({
                         onClick={() => void listenToResponse(currentAssistantResponse)}
                         disabled={speechLoading}
                         className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
-                        aria-label="Listen to Asael's response"
+                        aria-label={`Listen to ${activeAssistantName}'s response`}
                       >
                         {speechLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Volume2 size={13} aria-hidden="true" />}
                         Listen
@@ -2468,8 +2487,7 @@ export function AgentRunsWorkspace({
               goal={goal}
               mode={mode}
               approvalRequired={approvalRequired}
-              preferredAgentId={preferredAgentId}
-              preferredAgentName={preferredAgentName}
+              preferredAgent={preferredAgent}
               loading={loading}
               contextLoading={contextLoading}
               contextScope={contextScope}
@@ -2489,7 +2507,7 @@ export function AgentRunsWorkspace({
               onGoalChange={changeGoal}
               onModeChange={changeMode}
               onApprovalChange={changeApprovalRequired}
-              onClearPreferredAgent={() => { setPreferredAgentId(undefined); setPreferredAgentName(undefined); }}
+              onClearPreferredAgent={() => setPreferredAgent(undefined)}
               onContext={() => void buildContext()}
               onContextScopeChange={changeContextScope}
               onReviewContext={() => {
@@ -4173,8 +4191,7 @@ function GoalStage({
   goal,
   mode,
   approvalRequired,
-  preferredAgentId,
-  preferredAgentName,
+  preferredAgent,
   loading,
   contextLoading,
   contextScope,
@@ -4207,8 +4224,7 @@ function GoalStage({
   goal: string;
   mode: AgentMode;
   approvalRequired: boolean;
-  preferredAgentId?: AgentId;
-  preferredAgentName?: string;
+  preferredAgent?: AgentPresentation;
   loading?: string;
   contextLoading: boolean;
   contextScope: ActiveContextScopeId;
@@ -4257,10 +4273,11 @@ function GoalStage({
         <h2 id="command-composer-title" className="sr-only">Message Asael</h2>
         <div className={clsx("rounded-[1.35rem] border border-line bg-surface shadow-[0_10px_32px_-28px_rgba(0,0,0,0.5)] focus-within:border-primary/60", workspaceStyles.composer)}>
           <span className={workspaceStyles.composerAura} aria-hidden="true"><Sparkles size={15} /></span>
-          {preferredAgentId ? (
+          {preferredAgent ? (
             <div className="flex items-center justify-between gap-3 border-b border-line/70 px-3 py-1.5">
-              <span className="text-xs text-muted">
-                Working with <strong className="font-semibold text-foreground">{preferredAgentName || agentDisplayName(preferredAgentId)}</strong>
+              <span className="min-w-0 truncate text-xs text-muted" title={`${preferredAgent.visualIdentity} Voice: ${preferredAgent.voice}`}>
+                Working with <strong className="font-semibold text-foreground">{preferredAgent.name}</strong>
+                <span> · {preferredAgent.role}</span>
               </span>
               <button type="button" onClick={onClearPreferredAgent} className="min-h-8 rounded-full px-2 text-xs font-semibold text-primary hover:bg-primary/10">
                 Route automatically
@@ -4388,6 +4405,8 @@ function GoalStage({
                 <VoiceMode
                   disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
                   disabledReason={voiceDisabledReason}
+                  agentName={preferredAgent?.name || "Asael"}
+                  agentVoice={preferredAgent?.voice}
                   onTranscript={onVoiceTranscript}
                 />
                 <button
@@ -5114,14 +5133,35 @@ function safeExternalUrl(value?: string) {
   }
 }
 
-function agentDisplayName(agentId: AgentId) {
+function builtInAgentPresentation(agentId: AgentId) {
+  const agent = arsenalAgents.find((candidate) => candidate.id === agentId);
+  if (!agent) return undefined;
   return {
-    atlas: "Atlas",
-    scout: "Scout",
-    forge: "Forge",
-    sentinel: "Sentinel",
-    mnemosyne: "Mnemosyne",
-  }[agentId] || "Custom agent";
+    id: agent.id,
+    name: agent.name,
+    role: agent.role,
+    voice: agent.persona.voice,
+    visualIdentity: agent.persona.visualIdentity,
+    accent: agent.accent,
+  } satisfies AgentPresentation;
+}
+
+function agentPresentationFromApi(agent: JsonRecord): AgentPresentation {
+  const persona = asRecord(agent.persona);
+  const accent = stringValue(agent.accent, "emerald");
+  return {
+    id: stringValue(agent.id),
+    name: stringValue(agent.name, "Custom agent"),
+    role: stringValue(agent.role, "Specialist"),
+    voice: stringValue(persona.voice, "Clear, direct, and calm."),
+    visualIdentity: stringValue(
+      persona.visualIdentity,
+      "A focused specialist companion.",
+    ),
+    accent: ["emerald", "blue", "amber", "violet", "rose"].includes(accent)
+      ? accent as AgentPresentation["accent"]
+      : "emerald",
+  };
 }
 
 function contextEvidenceId(item: JsonRecord) {
