@@ -31,7 +31,7 @@ const modes: Array<{
   { id: "orchestrate", label: "General", description: "Everyday thinking and decisions", icon: Brain },
   { id: "research", label: "Research", description: "Questions and evidence", icon: Search },
   { id: "execute", label: "Tools", description: "Actions and execution", icon: Hammer },
-  { id: "learn", label: "Knowledge", description: "Learning and retained context", icon: Map },
+  { id: "learn", label: "Knowledge", description: "Retained knowledge and context", icon: Map },
 ];
 
 type CanvasNode = {

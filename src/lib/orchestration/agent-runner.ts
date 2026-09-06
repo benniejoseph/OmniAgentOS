@@ -5302,7 +5302,7 @@ function fallbackResponse(query: string, memoryCount: number) {
     `2. Retrieve relevant memories and project knowledge (${memoryCount} records matched this request).\n`,
     `3. Select tools or connectors needed for the job.\n`,
     `4. Execute in small verifiable steps.\n`,
-    `5. Save durable learnings back to memory.\n\n`,
+    `5. Save verified durable outcomes back to memory.\n\n`,
     `Next action: add OPENAI_API_KEY to .env.local, then retry this command for model-backed reasoning.`,
   ].join("");
 

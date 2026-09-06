@@ -590,7 +590,7 @@ async function executeBackgroundOperation(
       {
         type: "status",
         label: "consolidating memory",
-        detail: "Extracting durable learnings in the background.",
+        detail: "Extracting verified durable outcomes in the background.",
       },
       { tenantId: job.tenantId },
     );
@@ -616,7 +616,7 @@ async function executeBackgroundOperation(
       response: run.response || "",
       abortSignal,
     });
-    const learnedCount = consolidation.saved.length;
+    const savedCount = consolidation.saved.length;
     const feedbackExecutionScope = executionScope
       ? deriveExecutionScope(executionScope, {
           executingPrincipalType: "system",
@@ -640,7 +640,7 @@ async function executeBackgroundOperation(
         })
       : [];
     await recordRunConsolidation(parsed.runId, {
-      count: learnedCount,
+      count: savedCount,
       error: consolidation.error,
     }, { tenantId: job.tenantId });
     await appendRunEvent(
@@ -649,10 +649,10 @@ async function executeBackgroundOperation(
         type: "memory",
         title: consolidation.error
           ? "evidence-based memory formation failed"
-          : learnedCount
+          : savedCount
             ? "evidence-backed memory formed"
-            : "no verified effects to learn",
-        count: learnedCount,
+            : "no verified effects to retain",
+        count: savedCount,
       },
       { tenantId: job.tenantId },
     );
@@ -661,7 +661,7 @@ async function executeBackgroundOperation(
     }
     return {
       resourceId: parsed.runId,
-      saved: learnedCount,
+      saved: savedCount,
       ...(episode ? { episodeId: episode.id } : {}),
       feedbackAdjusted: feedbackAdjustedMemoryIds.length,
       skipped: consolidation.skipped,

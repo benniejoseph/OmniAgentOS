@@ -915,7 +915,7 @@ function deterministicPlan({
     },
     {
       id: "persist_learning",
-      label: "Persist learning",
+      label: "Persist verified outcome",
       kind: "memory",
       description: "Store durable decisions, procedures, failures, and successful patterns back to memory and graph memory.",
       dependsOn: ["verify_outputs"],
@@ -924,7 +924,7 @@ function deterministicPlan({
       riskLevel: 1,
       approvalRequired: false,
       policy: "auto",
-      acceptanceCriteria: ["Reusable learning is saved when the run completes."],
+      acceptanceCriteria: ["A reusable verified outcome is saved when the run completes."],
       expectedOutputs: ["memory record", "graph-memory signal"],
     },
   ];
@@ -948,7 +948,7 @@ function deterministicPlan({
         "Plan is a valid DAG with reachable nodes.",
         "Tool choices are registered and risk-scored.",
         "Execution and verification outputs are persisted.",
-        "Durable learnings are written back to memory when useful.",
+        "Verified durable outcomes are written back to memory when useful.",
       ],
       nodes,
       edges: edgesFromNodes(nodes),

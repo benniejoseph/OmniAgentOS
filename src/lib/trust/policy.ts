@@ -118,7 +118,7 @@ export function computeAutonomy(
       ? "Autonomy was demoted after a recent failure. Asael will observe clean outcomes before restoring supervised operation."
       : freshness < 0.5
         ? "Trust evidence is stale. Asael requires fresh supervised outcomes before autonomous execution resumes."
-        : `${supervised ? "Supervised" : "Shadow"} learning: ${profile.cleanStreak}/${threshold} clean executions, reliability ${formatPercent(score)}.`,
+        : `${supervised ? "Supervised" : "Shadow"} evidence gate: ${profile.cleanStreak}/${threshold} clean executions, reliability ${formatPercent(score)}.`,
   };
 }
 
@@ -152,7 +152,7 @@ function hasUnresolvedRecentFailure(profile: TrustEvidence, now: Date) {
 
 function wilsonLowerBound(successes: number, total: number) {
   if (total <= 0) return 0;
-  const z = 1.2815515655446004; // 80% two-sided interval; conservative without freezing learning.
+  const z = 1.2815515655446004; // 80% two-sided interval; conservative without freezing adaptation.
   const probability = Math.min(Math.max(successes / total, 0), 1);
   const zSquared = z * z;
   const denominator = 1 + zSquared / total;

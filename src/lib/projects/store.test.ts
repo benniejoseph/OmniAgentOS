@@ -422,11 +422,11 @@ describe("personal projects", () => {
     const scoutPerformance = (await getAgentPerformance("personal")).find((agent) => agent.agentId === "scout");
     expect(scoutPerformance).toMatchObject({
       projectAssignments: 1,
-      lessonsLearned: 1,
+      reviewedOutcomeNotes: 1,
       needsWorkOutcomes: 1,
       usefulOutcomes: 0,
       userApprovalRate: 0,
-      latestLessons: ["Compare at least two sources before drawing the conclusion."],
+      latestOutcomeNotes: ["Compare at least two sources before drawing the conclusion."],
     });
     const failedRunId = tasks.find((task) => task.id === second.id)?.workflowRunId;
     await transitionWorkflowRun(failedRunId!, ["queued"], { status: "failed", error: "Transient build failure." }, { tenantId: "personal" });

@@ -10,10 +10,10 @@ export type AgentPerformance = {
   failed: number;
   completionRate: number | null;
   verifiedAnswers: number;
-  memoriesLearned: number;
+  memoriesFormed: number;
   projectAssignments?: number;
-  lessonsLearned?: number;
-  latestLessons?: string[];
+  reviewedOutcomeNotes?: number;
+  latestOutcomeNotes?: string[];
   usefulOutcomes: number;
   needsWorkOutcomes: number;
   userApprovalRate: number | null;
@@ -47,10 +47,10 @@ export async function getAgentPerformance(tenantId?: string): Promise<AgentPerfo
       failed,
       completionRate: terminal ? completed / terminal : null,
       verifiedAnswers: primary.filter((run) => run.grounding?.status === "verified").length + projectOutcomes.filter((artifact) => artifact.status === "verified").length,
-      memoriesLearned: primary.reduce((sum, run) => sum + (run.consolidationCount || 0), 0) + projectOutcomes.filter((artifact) => artifact.memoryId).length,
+      memoriesFormed: primary.reduce((sum, run) => sum + (run.consolidationCount || 0), 0) + projectOutcomes.filter((artifact) => artifact.memoryId).length,
       projectAssignments: projectOutcomes.length,
-      lessonsLearned: projectOutcomes.filter((artifact) => artifact.lesson).length,
-      latestLessons: projectOutcomes.map((artifact) => artifact.lesson).filter((lesson): lesson is string => Boolean(lesson)).slice(0, 3),
+      reviewedOutcomeNotes: projectOutcomes.filter((artifact) => artifact.lesson).length,
+      latestOutcomeNotes: projectOutcomes.map((artifact) => artifact.lesson).filter((lesson): lesson is string => Boolean(lesson)).slice(0, 3),
       usefulOutcomes,
       needsWorkOutcomes,
       userApprovalRate: feedbackCount ? usefulOutcomes / feedbackCount : null,

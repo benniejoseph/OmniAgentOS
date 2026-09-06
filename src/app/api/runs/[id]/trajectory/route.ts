@@ -4,7 +4,7 @@ import { getAgentRun } from "@/lib/runs/store";
 import { listRunForkLineage } from "@/lib/runs/fork-store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { buildRunTrajectory } from "@/lib/trajectories/builder";
-import { evaluateTrajectoryLearning } from "@/lib/trajectories/evaluate";
+import { evaluateTrajectoryOutcome } from "@/lib/trajectories/evaluate";
 import {
   buildRunTraceHierarchy,
   resolveRunCorrelationId,
@@ -69,7 +69,7 @@ async function GETHandler(
       verification,
       traceHierarchy,
       lineage,
-      learningEvaluation: evaluateTrajectoryLearning(trajectory, verification),
+      outcomeEvaluation: evaluateTrajectoryOutcome(trajectory, verification),
     },
     {
       headers: {
