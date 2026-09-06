@@ -144,6 +144,36 @@ describe("Loop v2 checkpoint store", () => {
     expect(storage.runStatus()).toBe("completed");
   });
 
+  it("pins admitted runs across rollout changes while rejecting new roots", async () => {
+    const admitted = fakeStorage();
+    const root = initial();
+    await recordLoopV2Checkpoint({
+      checkpoint: root,
+      executionScope: executionScope(),
+    }, admitted.sql);
+    admitted.setRolloutStatus("superseded");
+    const plan = advanceLoopV2Checkpoint({
+      current: root,
+      executionScope: executionScope(),
+      trigger: "plan_bound",
+      outputReceiptSha256: sourceContractSha256("pinned-plan"),
+      transitionedAt: "2026-09-06T03:01:00.000Z",
+    });
+    await expect(recordLoopV2Checkpoint({
+      checkpoint: plan,
+      executionScope: executionScope(),
+    }, admitted.sql)).resolves.toMatchObject({
+      inserted: true,
+      checkpoint: { toState: "plan" },
+    });
+
+    const paused = fakeStorage({ rolloutStatus: "paused" });
+    await expect(recordLoopV2Checkpoint({
+      checkpoint: root,
+      executionScope: executionScope(),
+    }, paused.sql)).rejects.toThrow("root admission");
+  });
+
   it("atomically waits and resumes one exact actor-bound clarification", async () => {
     const storage = fakeStorage();
     const root = initial();
@@ -229,6 +259,7 @@ function fakeStorage(options: {
   const checkpoints: LoopV2Checkpoint[] = [];
   let eventCount = 0;
   let currentRunStatus = options.runStatus || "running";
+  let currentRolloutStatus = options.rolloutStatus || "active";
   const sql = (async (
     strings: TemplateStringsArray,
     ..._params: unknown[]
@@ -266,7 +297,7 @@ function fakeStorage(options: {
         contract_version_id: LOOP_V2_CONTRACT_VERSION_ID,
         configuration_sha256: LOOP_V2_CONFIGURATION_SHA256,
         mode: "canary",
-        status: options.rolloutStatus || "active",
+        status: currentRolloutStatus,
         lifecycle_revision: 1,
       }];
     }
@@ -327,6 +358,9 @@ function fakeStorage(options: {
     sql,
     eventCount: () => eventCount,
     runStatus: () => currentRunStatus,
+    setRolloutStatus: (status: string) => {
+      currentRolloutStatus = status;
+    },
   };
 }
 
