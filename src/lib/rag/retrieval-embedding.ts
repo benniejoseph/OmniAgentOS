@@ -144,6 +144,12 @@ export function isLocalRetrievalEmbeddingSpace(spaceId?: string) {
   return spaceId === LOCAL_MULTILINGUAL_EMBEDDING_SPACE;
 }
 
+export function retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+  spaceId?: string,
+) {
+  return !spaceId || spaceId === retrievalEmbeddingCapabilities.openai.spaceId;
+}
+
 function localEmbeddingResult(
   input: readonly string[],
   fallbackReason: RetrievalEmbeddingReceipt["fallbackReason"],

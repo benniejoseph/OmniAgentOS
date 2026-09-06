@@ -17,6 +17,7 @@ import {
   embedRetrievalTexts,
   retrievalEmbeddingCapabilities,
   retrievalEmbeddingCosine,
+  retrievalEmbeddingSpaceSupportsStoredVectorIndex,
 } from "@/lib/rag/retrieval-embedding";
 
 describe("P4.4 retrieval embedding adapters", () => {
@@ -97,5 +98,15 @@ describe("P4.4 retrieval embedding adapters", () => {
     );
     expect(Object.isFrozen(retrievalEmbeddingCapabilities.local)).toBe(true);
     expect(Object.isFrozen(retrievalEmbeddingCapabilities.openai)).toBe(true);
+    expect(
+      retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+        retrievalEmbeddingCapabilities.local.spaceId,
+      ),
+    ).toBe(false);
+    expect(
+      retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+        retrievalEmbeddingCapabilities.openai.spaceId,
+      ),
+    ).toBe(true);
   });
 });

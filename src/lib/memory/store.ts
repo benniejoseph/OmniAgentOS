@@ -46,6 +46,12 @@ import {
 } from "@/lib/memory/access-binding";
 import { cosineSimilarity, parseEmbedding, toVectorLiteral } from "@/lib/rag/vector";
 import {
+  embedLocalMultilingualTexts,
+  isLocalRetrievalEmbeddingSpace,
+  retrievalEmbeddingCosine,
+  retrievalEmbeddingSpaceSupportsStoredVectorIndex,
+} from "@/lib/rag/retrieval-embedding";
+import {
   assertCaptureIngestSource,
   lockActiveCaptureIngest,
   type CaptureIngestGuard,
@@ -693,13 +699,24 @@ export async function searchMemories(
   options: {
     limit?: number;
     queryEmbedding?: number[];
+    queryEmbeddingSpaceId?: string;
     tenantId?: string;
     accessScope?: DatabaseMemoryAccessScope;
     workingMemoryReference?: string;
   } = {},
 ): Promise<MemorySearchResult[]> {
-  if (hasDatabaseUrl() && !options.accessScope) {
-    const results = await searchMemoriesDb(query, options);
+  const localEmbeddingSpace = isLocalRetrievalEmbeddingSpace(
+    options.queryEmbeddingSpaceId,
+  );
+  if (hasDatabaseUrl() && !options.accessScope && !localEmbeddingSpace) {
+    const results = await searchMemoriesDb(query, {
+      ...options,
+      queryEmbedding: retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+        options.queryEmbeddingSpaceId,
+      )
+        ? options.queryEmbedding
+        : undefined,
+    });
     if (results.length) {
       return results;
     }
@@ -714,7 +731,6 @@ export async function searchMemories(
   const workingMemoryReference = normalizeWorkingMemoryReference(
     options.workingMemoryReference,
   );
-
   return memories
     .filter((record) => record.claimStatus === "active" && !record.archivedAt)
     .filter((record) =>
@@ -731,9 +747,27 @@ export async function searchMemories(
       const lexicalScore = terms.length === 0 ? 0 : overlap.length / terms.length;
       const tagScore = record.tags.filter((tag) => terms.includes(tag)).length * 0.12;
       const importanceScore = record.importance * 0.12;
+      const localCandidateEmbedding = localEmbeddingSpace && options.queryEmbedding
+        ? embedLocalMultilingualTexts([text])[0]
+        : undefined;
       const embeddingScore =
-        options.queryEmbedding && record.embedding
-          ? Math.max(0, cosineSimilarity(options.queryEmbedding, record.embedding))
+        options.queryEmbedding && localCandidateEmbedding
+          ? Math.max(
+              0,
+              retrievalEmbeddingCosine(
+                options.queryEmbedding,
+                localCandidateEmbedding,
+              ),
+            )
+          : options.queryEmbedding &&
+              retrievalEmbeddingSpaceSupportsStoredVectorIndex(
+                options.queryEmbeddingSpaceId,
+              ) &&
+              record.embedding
+            ? Math.max(
+                0,
+                cosineSimilarity(options.queryEmbedding, record.embedding),
+              )
           : 0;
       const confidence = clamp01(record.confidence ?? 0.7);
       const tierWeight = memoryTierPolicy(
