@@ -104,6 +104,7 @@ export const delegationContractV1Schema = z.object({
     tenantId: idSchema,
     initiatingActorId: idSchema,
     parentExecutionId: idSchema,
+    parentPrincipalId: idSchema,
     parentDelegationId: idSchema.nullable(),
     workspaceId: idSchema.nullable(),
     projectId: idSchema.nullable(),
@@ -116,9 +117,12 @@ export const delegationContractV1Schema = z.object({
     definitionVersion: positiveVersionSchema,
   }).strict(),
   delegate: z.object({
+    principalId: idSchema,
     agentId: idSchema,
     definitionVersion: positiveVersionSchema,
   }).strict(),
+  purpose: z.string().trim().min(3).max(500),
+  idempotencyKeySha256: sha256Schema,
   objective: boundedTextSchema,
   acceptanceCriteria: z.array(delegationAcceptanceCriterionV1Schema)
     .min(1).max(24)
@@ -242,6 +246,8 @@ export function buildDelegationContractV1(input: {
   scope: DelegationContractV1["scope"];
   delegator: DelegationContractV1["delegator"];
   delegate: DelegationContractV1["delegate"];
+  purpose: DelegationContractV1["purpose"];
+  idempotencyKeySha256: DelegationContractV1["idempotencyKeySha256"];
   objective: string;
   acceptanceCriteria: DelegationContractV1["acceptanceCriteria"];
   inputArtifacts?: DelegationContractV1["inputArtifacts"];
@@ -270,6 +276,8 @@ export function buildDelegationContractV1(input: {
     scope: input.scope,
     delegator: input.delegator,
     delegate: input.delegate,
+    purpose: input.purpose,
+    idempotencyKeySha256: input.idempotencyKeySha256,
     objective: input.objective,
     acceptanceCriteria: input.acceptanceCriteria,
     inputArtifacts: input.inputArtifacts || [],
