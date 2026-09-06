@@ -40,6 +40,7 @@ import type {
 import { getModelProvider, hasModelProviderFeature } from "@/lib/models/registry";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import {
+  canonicalConversationFromOpenAIItems,
   streamResponseTurn,
   type ConversationItem,
   type ResponseFunctionCall,
@@ -1258,6 +1259,10 @@ export async function* runAgent(
             runContractEnvelope: shadowRunContract?.envelope,
             checkpointShadowEnrollment,
             conversationItems: [],
+            canonicalConversation:
+              waiting.providerState.continuation.conversation
+                ? [...waiting.providerState.continuation.conversation]
+                : undefined,
             instructions,
             response,
             toolSteps: result.toolSteps,
@@ -1457,7 +1462,17 @@ export async function* runAgent(
         // items + tool outputs. This replaces previous_response_id chaining.
         const priorItems: ConversationItem[] =
           conversationItems ?? initialConversationItems;
-        conversationItems = [...priorItems, ...turn.functionCallItems];
+        conversationItems = [
+          ...priorItems,
+          ...(turn.text
+            ? [{
+                type: "message" as const,
+                role: "assistant" as const,
+                content: turn.text,
+              }]
+            : []),
+          ...turn.functionCallItems,
+        ];
 
         toolSteps += 1;
         const outputs: Array<{ type: "function_call_output"; call_id: string; output: string }> = [];
@@ -1618,6 +1633,10 @@ export async function* runAgent(
                 conversationItems ?? [],
                 queuedCallsAfterPause(turn.functionCalls, callIndex),
               ),
+              canonicalConversation: canonicalConversationFromOpenAIItems([
+                ...(conversationItems ?? []),
+                ...outputs,
+              ]),
               instructions,
               response,
               toolSteps,
@@ -2824,6 +2843,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
               conversationItems,
               queuedCalls.slice(queueIndex + 1),
             ),
+            canonicalConversation: canonicalConversationFromOpenAIItems([
+              ...conversationItems,
+              ...carriedOutputs,
+            ]),
             instructions: continuation.instructions,
             response,
             toolSteps,
@@ -3000,7 +3023,17 @@ async function resumeAgentRunAfterToolApprovalInScope({
         break;
       }
 
-      conversationItems = [...conversationItems, ...turn.functionCallItems];
+      conversationItems = [
+        ...conversationItems,
+        ...(turn.text
+          ? [{
+              type: "message" as const,
+              role: "assistant" as const,
+              content: turn.text,
+            }]
+          : []),
+        ...turn.functionCallItems,
+      ];
       toolSteps += 1;
       const outputs: AgentRunContinuation["outputsBeforeApproval"] = [];
 
@@ -3085,10 +3118,14 @@ async function resumeAgentRunAfterToolApprovalInScope({
               runContractEnvelope: continuation.runContractEnvelope,
               checkpointShadowEnrollment:
                 continuation.checkpointShadowEnrollment,
-              conversationItems: withContinuationQueue(
-                conversationItems,
-                queuedCallsAfterPause(turn.functionCalls, callIndex),
-              ),
+            conversationItems: withContinuationQueue(
+              conversationItems,
+              queuedCallsAfterPause(turn.functionCalls, callIndex),
+            ),
+            canonicalConversation: canonicalConversationFromOpenAIItems([
+              ...conversationItems,
+              ...outputs,
+            ]),
               instructions: continuation.instructions,
               response,
               toolSteps,
@@ -3529,6 +3566,9 @@ async function resumeProviderBoundAgentRunAfterApproval({
       runContractEnvelope: continuation.runContractEnvelope,
       checkpointShadowEnrollment: continuation.checkpointShadowEnrollment,
       conversationItems: [],
+      canonicalConversation: waiting.providerState.continuation.conversation
+        ? [...waiting.providerState.continuation.conversation]
+        : undefined,
       instructions: continuation.instructions,
       response,
       toolSteps,

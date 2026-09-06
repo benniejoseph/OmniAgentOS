@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { openAIResponseInput } from "@/lib/openai/client";
+import {
+  canonicalConversationFromOpenAIItems,
+  openAIResponseInput,
+} from "@/lib/openai/client";
 import { buildAgentInput, buildAgentInstructions } from "@/lib/orchestration/prompts";
 
 describe("agent prompt provenance", () => {
@@ -76,6 +79,50 @@ describe("agent prompt provenance", () => {
     expect(JSON.stringify(mapped[0])).toContain("Untrusted memory observation");
     expect(JSON.stringify(mapped[0])).not.toContain("<system>");
     expect(mapped[2]).toEqual({ role: "user", content: "Summarize it." });
+  });
+
+  it("rebuilds a provider-neutral OpenAI approval continuation", () => {
+    const seed = buildAgentInput({
+      messages: [
+        { role: "user", content: "Find Ada." },
+        { role: "assistant", content: "Which source?" },
+        { role: "user", content: "Memory." },
+      ],
+      memoryContext: "Ada Lovelace",
+    });
+    const replay = canonicalConversationFromOpenAIItems([
+      ...seed,
+      { type: "message", role: "assistant", content: "I will search." },
+      {
+        type: "function_call",
+        id: "fc-1",
+        call_id: "call-1",
+        name: "memory_search",
+        arguments: "{\"query\":\"Ada\"}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call-1",
+        output: "{\"name\":\"Ada Lovelace\"}",
+      },
+    ]);
+
+    expect(replay.map((item) => item.type)).toEqual([
+      "observation",
+      "message",
+      "message",
+      "message",
+      "message",
+      "tool_call",
+      "tool_result",
+    ]);
+    expect(replay.filter((item) => item.type === "message").map((item) =>
+      item.type === "message" ? item.role : ""
+    )).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(replay.at(-1)).toMatchObject({
+      type: "tool_result",
+      name: "memory_search",
+    });
   });
 
   it("turns selected specialists into explicit review perspectives", () => {

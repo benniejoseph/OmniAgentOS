@@ -10,6 +10,7 @@ import type {
   ModelTier,
   ProviderId,
 } from "@/lib/models/types";
+import type { ModelConversationItem } from "@/lib/models/conversation";
 
 export type RunStatus =
   | "queued"
@@ -56,6 +57,8 @@ export type AgentRunContinuation = {
   };
   /** Full conversation array for ZDR-safe resume (replaces previousResponseId). */
   conversationItems: Array<Record<string, unknown>>;
+  /** Provider-neutral replay form for every newly persisted continuation. */
+  canonicalConversation?: ModelConversationItem[];
   instructions: string;
   response: string;
   toolSteps: number;

@@ -1924,6 +1924,10 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
   } catch {
     return undefined;
   }
+  const canonicalConversation = candidate.canonicalConversation === undefined
+    ? undefined
+    : modelConversationSchema.safeParse(candidate.canonicalConversation);
+  if (canonicalConversation && !canonicalConversation.success) return undefined;
 
   return {
     executionScope,
@@ -1933,6 +1937,9 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
     conversationItems: Array.isArray(candidate.conversationItems)
       ? (candidate.conversationItems as Array<Record<string, unknown>>)
       : [],
+    canonicalConversation: canonicalConversation?.success
+      ? canonicalConversation.data
+      : undefined,
     instructions: candidate.instructions,
     response: typeof candidate.response === "string" ? candidate.response : "",
     toolSteps: Number.isInteger(candidate.toolSteps) ? (candidate.toolSteps as number) : 0,

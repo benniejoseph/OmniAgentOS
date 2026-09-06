@@ -16,7 +16,9 @@ import {
   type ModelProviderResponseReceipt,
 } from "@/lib/models/types";
 import {
+  parseModelConversation,
   renderUntrustedObservation,
+  type ModelConversationItem,
   type ModelConversationSeedItem,
 } from "@/lib/models/conversation";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
@@ -663,6 +665,34 @@ export function openAIResponseInput(input: ResponseTurnInput) {
     }
     return item;
   });
+}
+
+export function canonicalConversationFromOpenAIItems(
+  items: readonly ConversationItem[],
+) {
+  const callNames = new Map<string, string>();
+  const conversation: ModelConversationItem[] = [];
+  for (const item of items) {
+    if (item.type === "message" || item.type === "observation") {
+      conversation.push(item);
+    } else if (item.type === "function_call") {
+      callNames.set(item.call_id, item.name);
+      conversation.push({
+        type: "tool_call",
+        callId: item.call_id,
+        name: item.name,
+        argumentsJson: item.arguments,
+      });
+    } else {
+      conversation.push({
+        type: "tool_result",
+        callId: item.call_id,
+        name: callNames.get(item.call_id) || "unknown_tool",
+        content: item.output.slice(0, 8_000),
+      });
+    }
+  }
+  return parseModelConversation(conversation);
 }
 
 function attachResponseTurnAttempts(
