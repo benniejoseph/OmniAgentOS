@@ -281,6 +281,7 @@ function buildContextCompilerV2Selection(input: {
   const candidateById = new Map(
     candidates.map((candidate) => [candidate.evidenceId, candidate]),
   );
+  const legacySelectedSet = new Set(legacySelectedEvidenceIds);
   const authorized = candidates.filter(
     (candidate) => candidate.authorizationState === "authorized",
   );
@@ -290,10 +291,12 @@ function buildContextCompilerV2Selection(input: {
         .slice(0, limit)
         .map((candidate) => candidate.evidenceId)
     : explicitEvidenceIds
-        .filter((id) => candidateById.get(id)?.authorizationState === "authorized")
+        .filter((id) =>
+          candidateById.get(id)?.authorizationState === "authorized" &&
+          (input.mode === "shadow" || legacySelectedSet.has(id))
+        )
         .slice(0, limit);
   const selectedSet = new Set(selectedEvidenceIds);
-  const legacySelectedSet = new Set(legacySelectedEvidenceIds);
   const explicitSet = explicitEvidenceIds ? new Set(explicitEvidenceIds) : undefined;
   const decisions = candidates.map((candidate) => ({
     candidateRefSha256: candidateReferenceSha256(candidate.evidenceId),
@@ -404,7 +407,7 @@ export function parseContextCompilerV2Receipt(
   const receipt = contextCompilerV2ReceiptSchema.parse(value);
   const { receiptSha256, ...unsigned } = receipt;
   if (sourceContractSha256(unsigned) !== receiptSha256) {
-    throw new Error("Context Compiler v2 shadow receipt digest is invalid.");
+    throw new Error("Context Compiler v2 receipt digest is invalid.");
   }
   const authorizedCandidateCount = receipt.decisions.filter(
     (decision) => decision.authorizationState === "authorized",
