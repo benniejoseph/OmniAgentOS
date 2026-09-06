@@ -4,6 +4,7 @@ import {
   buildAgentRunIdentityPinV1,
   buildCustomAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
+import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import {
   buildInitialShadowRunContract,
   resolveShadowRunContract,
@@ -95,6 +96,7 @@ const agent: CustomAgentDefinition = {
   role: "Research specialist",
   description: "Finds exact evidence.",
   instructions: "Use exact evidence.",
+  persona: DEFAULT_CUSTOM_AGENT_PERSONA,
   status: "ready",
   accent: "blue",
   modelPolicy: "openai_fast",

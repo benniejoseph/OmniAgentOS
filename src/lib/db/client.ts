@@ -1138,6 +1138,13 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[108],
+      up: async (sql) => {
+        await ensureAgentDefinitionPersonaV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
   ];
 }
 
@@ -8858,6 +8865,166 @@ async function ensureAgentIdentityVersionsV1(sql: SqlClient) {
           AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
       ) THEN
         RAISE EXCEPTION 'Agent identity runtime grants are too broad'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentDefinitionPersonaV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 108
+          AND name = 'agent_identity_versions_v1'
+          AND checksum =
+            '0061d42b7a5638ffb41b2c51038df6d082c183b08f94aec5d3196920430be476'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Agent persona v109 predecessor marker is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_agent_persona_v1_is_valid(value JSONB)
+    RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    PARALLEL SAFE
+    AS $function$
+      SELECT CASE
+        WHEN jsonb_typeof(value) <> 'object' THEN FALSE
+        WHEN NOT value ?& ARRAY[
+          'schemaVersion', 'charter', 'operatingStyle', 'voice',
+          'visualIdentity', 'allowedDomains', 'escalationBehavior',
+          'successMeasures'
+        ] THEN FALSE
+        WHEN (SELECT count(*) FROM jsonb_object_keys(value)) <> 8 THEN FALSE
+        WHEN value->>'schemaVersion' <> '1' THEN FALSE
+        WHEN jsonb_typeof(value->'charter') <> 'string'
+          OR char_length(btrim(value->>'charter')) NOT BETWEEN 2 AND 2000
+          OR jsonb_typeof(value->'operatingStyle') <> 'string'
+          OR char_length(btrim(value->>'operatingStyle')) NOT BETWEEN 2 AND 2000
+          OR jsonb_typeof(value->'voice') <> 'string'
+          OR char_length(btrim(value->>'voice')) NOT BETWEEN 2 AND 500
+          OR jsonb_typeof(value->'visualIdentity') <> 'string'
+          OR char_length(btrim(value->>'visualIdentity')) NOT BETWEEN 2 AND 500
+          OR jsonb_typeof(value->'escalationBehavior') <> 'string'
+          OR char_length(btrim(value->>'escalationBehavior')) NOT BETWEEN 2 AND 1000
+          OR jsonb_typeof(value->'allowedDomains') <> 'array'
+          OR jsonb_typeof(value->'successMeasures') <> 'array'
+        THEN FALSE
+        ELSE
+          jsonb_array_length(value->'allowedDomains') <= 20
+          AND jsonb_array_length(value->'successMeasures') <= 20
+          AND NOT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(value->'allowedDomains') item
+            WHERE jsonb_typeof(item) <> 'string'
+              OR char_length(btrim(item #>> '{}')) NOT BETWEEN 2 AND 120
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(value->'successMeasures') item
+            WHERE jsonb_typeof(item) <> 'string'
+              OR char_length(btrim(item #>> '{}')) NOT BETWEEN 2 AND 200
+          )
+          AND (
+            SELECT count(*) = count(DISTINCT lower(btrim(item #>> '{}')))
+            FROM jsonb_array_elements(value->'allowedDomains') item
+          )
+          AND (
+            SELECT count(*) = count(DISTINCT lower(btrim(item #>> '{}')))
+            FROM jsonb_array_elements(value->'successMeasures') item
+          )
+      END
+    $function$
+  `;
+  await sql`
+    ALTER TABLE omni_custom_agents
+      ADD COLUMN IF NOT EXISTS persona_profile JSONB NOT NULL DEFAULT
+        '{
+          "schemaVersion": 1,
+          "charter": "Complete the assigned objective within the user scope.",
+          "operatingStyle": "Work in evidence-backed steps and verify the result.",
+          "voice": "Clear, direct, calm, and explicit about uncertainty.",
+          "visualIdentity": "A focused specialist companion using the selected Agent accent.",
+          "allowedDomains": ["General assistance"],
+          "escalationBehavior": "Escalate missing authority, context, or consequential approval.",
+          "successMeasures": ["The requested outcome is complete and verified."]
+        }'::jsonb
+  `;
+  await sql`
+    ALTER TABLE omni_agent_definition_versions
+      ADD COLUMN IF NOT EXISTS persona_profile JSONB NOT NULL DEFAULT
+        '{
+          "schemaVersion": 1,
+          "charter": "Complete the assigned objective within the user scope.",
+          "operatingStyle": "Work in evidence-backed steps and verify the result.",
+          "voice": "Clear, direct, calm, and explicit about uncertainty.",
+          "visualIdentity": "A focused specialist companion using the selected Agent accent.",
+          "allowedDomains": ["General assistance"],
+          "escalationBehavior": "Escalate missing authority, context, or consequential approval.",
+          "successMeasures": ["The requested outcome is complete and verified."]
+        }'::jsonb
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_custom_agents'::regclass
+          AND conname = 'omni_custom_agents_persona_profile_valid'
+      ) THEN
+        ALTER TABLE omni_custom_agents
+          ADD CONSTRAINT omni_custom_agents_persona_profile_valid
+          CHECK (omni_agent_persona_v1_is_valid(persona_profile));
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_agent_definition_versions'::regclass
+          AND conname = 'omni_agent_definition_versions_persona_profile_valid'
+      ) THEN
+        ALTER TABLE omni_agent_definition_versions
+          ADD CONSTRAINT omni_agent_definition_versions_persona_profile_valid
+          CHECK (omni_agent_persona_v1_is_valid(persona_profile));
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON FUNCTION omni_agent_persona_v1_is_valid(JSONB) FROM PUBLIC`;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF to_regprocedure('public.omni_agent_persona_v1_is_valid(jsonb)') IS NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'omni_custom_agents'
+            AND column_name = 'persona_profile'
+            AND is_nullable = 'NO'
+        )
+        OR NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'omni_agent_definition_versions'
+            AND column_name = 'persona_profile'
+            AND is_nullable = 'NO'
+        )
+        OR (
+          SELECT count(*) FROM pg_constraint
+          WHERE conname IN (
+            'omni_custom_agents_persona_profile_valid',
+            'omni_agent_definition_versions_persona_profile_valid'
+          ) AND convalidated
+        ) <> 2
+      THEN
+        RAISE EXCEPTION 'Agent persona v1 storage boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

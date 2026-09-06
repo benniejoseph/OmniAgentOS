@@ -5,6 +5,7 @@ import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lo
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import type { ResolvedAgentIdentityV1 } from "@/lib/agents/identity-contracts";
+import type { AgentPersonaV1 } from "@/lib/agents/persona";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
 import type { AiUsageCallInput } from "@/lib/usage/types";
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
@@ -178,6 +179,7 @@ export type AgentRunRequest = {
     role: string;
     description: string;
     instructions: string;
+    persona: AgentPersonaV1;
     modelPolicy: "auto" | "openai_fast" | "openai_reasoning" | "gemini_fast" | "anthropic_fast" | "anthropic_reasoning";
     autonomy: "assist" | "governed" | "execute";
     approvalPolicy: "always" | "risk_based" | "read_only";

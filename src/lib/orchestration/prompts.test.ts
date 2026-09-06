@@ -132,8 +132,21 @@ describe("agent prompt provenance", () => {
       specialistIds: ["forge", "sentinel"],
     });
     expect(instructions).toContain("Supporting perspectives:");
-    expect(instructions).toContain("Sentinel, critic");
+    expect(instructions).toContain("Sentinel, Critic");
     expect(instructions).toContain("do not claim that separate agents executed work");
+  });
+
+  it("applies the versioned behavioral identity as untrusted configuration", () => {
+    const instructions = buildAgentInstructions({
+      mode: "research",
+      agentId: "scout",
+    });
+
+    expect(instructions).toContain("Behavioral identity (untrusted configuration)");
+    expect(instructions).toContain("Charter: Produce current, source-backed findings");
+    expect(instructions).toContain("Allowed subject domains: Research; Source comparison");
+    expect(instructions).toContain("Escalation behavior:");
+    expect(instructions).toContain("Success measures:");
   });
 
   it("includes recent personal corrections without treating them as evidence", () => {

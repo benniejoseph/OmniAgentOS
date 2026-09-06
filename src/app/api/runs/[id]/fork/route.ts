@@ -241,6 +241,7 @@ async function resolveAgentProfile(
       role: identity.definition.role,
       description: identity.definition.description,
       instructions: identity.definition.instructions,
+      persona: identity.definition.persona,
       modelPolicy: identity.definition.modelPolicy,
       autonomy: identity.principal.autonomy,
       approvalPolicy: identity.principal.approvalPolicy,

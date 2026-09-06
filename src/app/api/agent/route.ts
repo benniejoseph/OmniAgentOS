@@ -336,6 +336,7 @@ async function POSTHandler(request: Request) {
     role: requestedCustomIdentity.definition.role,
     description: requestedCustomIdentity.definition.description,
     instructions: requestedCustomIdentity.definition.instructions,
+    persona: requestedCustomIdentity.definition.persona,
     modelPolicy: requestedCustomIdentity.definition.modelPolicy,
     autonomy: requestedCustomIdentity.principal.autonomy,
     approvalPolicy: requestedCustomIdentity.principal.approvalPolicy,

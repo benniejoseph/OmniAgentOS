@@ -7,6 +7,7 @@ import {
   parseAgentDefinitionV1,
   parseAgentRunIdentityPinV1,
 } from "@/lib/agents/identity-contracts";
+import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import type { AgentSkill, CustomAgentDefinition } from "@/lib/skills/types";
 
 describe("P7.1 agent identity contracts", () => {
@@ -53,7 +54,7 @@ describe("P7.1 agent identity contracts", () => {
 
     expect(identity.definition).toMatchObject({
       name: "Scout",
-      role: "research specialist",
+      role: "Research",
       promptContractVersionId: "agent-instructions:1",
     });
     expect(identity.principal).toMatchObject({
@@ -163,6 +164,7 @@ function customAgent(): CustomAgentDefinition {
     role: "Research specialist",
     description: "Finds exact evidence for a bounded question.",
     instructions: "Use exact evidence and report uncertainty clearly.",
+    persona: DEFAULT_CUSTOM_AGENT_PERSONA,
     status: "ready",
     accent: "blue",
     modelPolicy: "openai_fast",

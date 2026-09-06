@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
+import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 
@@ -524,6 +525,7 @@ function request(
       role: "Release verifier",
       description: "Verifies one paid model turn.",
       instructions: "Reply only ASAEL_LIVE_OK",
+      persona: DEFAULT_CUSTOM_AGENT_PERSONA,
       modelPolicy: "openai_fast",
       autonomy: "assist",
       approvalPolicy: "read_only",
