@@ -241,6 +241,26 @@ export async function listEvaluationFailureFeedback({
   };
 }
 
+export async function getEvaluationFailureCluster(
+  clusterId: string,
+  { tenantId: rawTenantId }: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(rawTenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT * FROM omni_evaluation_failure_clusters
+      WHERE tenant_id = ${tenantId} AND id = ${clusterId}
+      LIMIT 1
+    `;
+    return rows[0] ? clusterFromRow(rows[0]) : undefined;
+  }
+  const ledger = await readFailureFeedbackLedger();
+  return ledger.clusters.find((cluster) =>
+    cluster.tenantId === tenantId && cluster.id === clusterId
+  );
+}
+
 export async function reviewHarnessRuleProposal({
   tenantId: rawTenantId,
   proposalId,
