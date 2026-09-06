@@ -43,6 +43,15 @@ export type WorkflowPlanNodeContract = {
   maxOutputChars: number;
 };
 
+export type WorkflowPlanNodeInputBinding = {
+  dependencyNodeId: string;
+  targetToolId: string;
+  /** Restricted JSON Pointer into the governed tool input. */
+  targetPath: string;
+  /** Empty selects all typed artifacts from the dependency. */
+  artifactName: string;
+};
+
 export type WorkflowPlanNode = {
   id: string;
   label: string;
@@ -54,6 +63,7 @@ export type WorkflowPlanNode = {
     toolId: string;
     inputJson: string;
   }>;
+  inputBindings?: WorkflowPlanNodeInputBinding[];
   connectorTargets: string[];
   riskLevel: 0 | 1 | 2 | 3;
   approvalRequired: boolean;

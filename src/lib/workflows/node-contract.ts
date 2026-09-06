@@ -5,6 +5,7 @@ import type {
   WorkflowPlanNode,
   WorkflowPlanNodeContract,
   WorkflowPlanNodeExecutionRecord,
+  WorkflowPlanNodeInputBinding,
 } from "@/lib/workflows/types";
 
 export const WORKFLOW_NODE_CONTRACT_VERSION = 1 as const;
@@ -51,6 +52,7 @@ export type WorkflowNodeInputV1 = Readonly<{
     policy: WorkflowPlanNode["policy"];
     riskLevel: WorkflowPlanNode["riskLevel"];
   }>;
+  inputBindings: readonly Readonly<WorkflowPlanNodeInputBinding>[];
   dependencies: readonly Readonly<{
     nodeId: string;
     executionId: string;
@@ -238,6 +240,12 @@ export function buildWorkflowNodeInput({
       policy: node.policy,
       riskLevel: node.riskLevel,
     }),
+    inputBindings: Object.freeze((node.inputBindings || []).map((binding) => Object.freeze({
+      dependencyNodeId: binding.dependencyNodeId,
+      targetToolId: binding.targetToolId,
+      targetPath: binding.targetPath,
+      artifactName: binding.artifactName,
+    }))),
     dependencies: Object.freeze(dependencies),
     acceptanceCriteria: Object.freeze(node.acceptanceCriteria.map((value) => safeBoundedText(value, 1_000)).slice(0, 24)),
     expectedOutputs: Object.freeze(node.expectedOutputs.map((value) => safeBoundedText(value, 1_000)).slice(0, 24)),

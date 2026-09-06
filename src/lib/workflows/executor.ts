@@ -32,6 +32,7 @@ import { getGovernedTool } from "@/lib/tools/registry";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import type { AiUsageScope } from "@/lib/usage/types";
+import { resolveWorkflowToolInputBindings } from "@/lib/workflows/dependency-bindings";
 import {
   assertWorkflowNodeExecutionReceipt,
   buildWorkflowNodeInput,
@@ -668,7 +669,7 @@ async function executePlanNode({
       (executionScope?.executingPrincipalType === "system"
         ? executionScope.executingPrincipalId?.trim() || "omniagent-system"
         : "workflow");
-    const toolInput = buildToolInput({ detail, plan, planId, node, toolId });
+    const toolInput = buildToolInput({ detail, plan, planId, node, nodeInput, toolId });
     const effectBinding = workflowToolEffectBinding({
       workflowRunId: detail.run.id,
       plan,
@@ -1146,6 +1147,28 @@ export function shouldDryRunWorkflowTool({
 }
 
 function buildToolInput({
+  detail,
+  plan,
+  planId,
+  node,
+  nodeInput,
+  toolId,
+}: {
+  detail: WorkflowRunDetail;
+  plan: WorkflowDynamicPlan;
+  planId: string;
+  node: WorkflowPlanNode;
+  nodeInput: WorkflowNodeInputV1;
+  toolId: string;
+}): Record<string, unknown> {
+  return resolveWorkflowToolInputBindings({
+    input: buildBaseToolInput({ detail, plan, planId, node, toolId }),
+    nodeInput,
+    toolId,
+  });
+}
+
+function buildBaseToolInput({
   detail,
   plan,
   planId,
