@@ -27,7 +27,28 @@ const replanDirectiveSchema = z.object({
   contextGrantsInvalidated: z.literal(true),
   capabilityGrantsInvalidated: z.literal(true),
   previousContextTraceId: z.string().trim().min(1).max(240).optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const failures = new Set(value.failureNodeIds);
+  const affected = new Set(value.affectedNodeIds);
+  const reused = new Set(value.reusedNodes.map((reference) => reference.nodeId));
+  if (failures.size !== value.failureNodeIds.length) {
+    context.addIssue({ code: "custom", message: "Workflow replan failure nodes must be unique." });
+  }
+  if (affected.size !== value.affectedNodeIds.length) {
+    context.addIssue({ code: "custom", message: "Workflow replan affected nodes must be unique." });
+  }
+  if (reused.size !== value.reusedNodes.length) {
+    context.addIssue({ code: "custom", message: "Workflow replan reused nodes must be unique." });
+  }
+  if ([...failures].some((nodeId) => !affected.has(nodeId))) {
+    context.addIssue({ code: "custom", message: "Workflow replan failures must be inside the affected subtree." });
+  }
+  if (value.reusedNodes.some((reference) =>
+    affected.has(reference.nodeId) || reference.sourcePlanId !== value.previousPlanId
+  )) {
+    context.addIssue({ code: "custom", message: "Workflow replan reuse lineage is inconsistent." });
+  }
+});
 
 export function createWorkflowReplanDirective({
   previousPlanId,
@@ -60,10 +81,9 @@ export function createWorkflowReplanDirective({
   for (const node of previousPlan.nodes) {
     const execution = executionsByNode.get(node.id);
     if (
-      execution &&
-      execution.status !== "completed" &&
-      execution.status !== "pending" &&
-      execution.status !== "running"
+      !execution ||
+      execution.status !== "completed" ||
+      !execution.output
     ) {
       explicitFailures.add(node.id);
     }
@@ -146,6 +166,19 @@ export function applyWorkflowSubtreeReplan({
   const affected = new Set(directive.affectedNodeIds);
   if (affected.size === 0 || [...affected].some((nodeId) => !candidateById.has(nodeId))) {
     throw new Error("Workflow subtree replan has an invalid affected node set.");
+  }
+  const reusableByNode = new Map(
+    directive.reusedNodes.map((reference) => [reference.nodeId, reference]),
+  );
+  const unaffectedNodes = previousPlan.nodes.filter((node) => !affected.has(node.id));
+  if (
+    reusableByNode.size !== unaffectedNodes.length ||
+    unaffectedNodes.some((node) => {
+      const reference = reusableByNode.get(node.id);
+      return !reference || reference.nodeSha256 !== workflowPlanNodeSha256(node);
+    })
+  ) {
+    throw new Error("Workflow subtree replan does not bind every unaffected node execution.");
   }
   const mergedNodes = previousPlan.nodes.map((node) =>
     affected.has(node.id) ? candidateById.get(node.id)! : node
