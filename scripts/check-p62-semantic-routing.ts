@@ -76,6 +76,8 @@ async function main() {
       route: resolution.decision.route,
       matchedCapabilityIds: [...resolution.receipt.matchedCapabilityIds],
       source: resolution.receipt.source,
+      intent: resolution.receipt.intent,
+      executionShape: resolution.receipt.executionShape,
     });
   }
 

@@ -207,6 +207,17 @@ describe("semantic intent resolver", () => {
     );
   });
 
+  it("accepts a fenced JSON object but still validates its schema", async () => {
+    const fenced = modelResult();
+    const deps = dependencies({
+      ...fenced,
+      text: `\`\`\`json\n${fenced.text}\n\`\`\``,
+    });
+    const resolution = await createSemanticIntentResolver(deps)(input());
+    expect(resolution.receipt.source).toBe("model");
+    expect(resolution.receipt.intent).toBe("create");
+  });
+
   it("treats prompt-shaped user and capability content as inert data", async () => {
     const deps = dependencies();
     await createSemanticIntentResolver(deps)(

@@ -25,6 +25,8 @@ describe("semantic routing benchmark", () => {
       source: index === 19
         ? "deterministic_invariant" as const
         : "model" as const,
+      intent: index === 19 ? "not_evaluated" : "question",
+      executionShape: index === 19 ? "not_evaluated" : "conversational",
     }));
     expect(evaluateSemanticRoutingBenchmark(suite, passing)).toMatchObject({
       routeAccuracy: 1,

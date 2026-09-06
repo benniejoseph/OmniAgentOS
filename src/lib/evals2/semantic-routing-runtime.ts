@@ -41,6 +41,8 @@ export async function runSemanticRoutingBenchmark(input: {
       route: resolution.decision.route,
       matchedCapabilityIds: [...resolution.receipt.matchedCapabilityIds],
       source: resolution.receipt.source,
+      intent: resolution.receipt.intent,
+      executionShape: resolution.receipt.executionShape,
     });
   }
   return {
