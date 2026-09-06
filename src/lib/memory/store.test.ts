@@ -130,6 +130,30 @@ describe("memory persistence safety (file mode)", () => {
     })).resolves.toEqual([candidate]);
   });
 
+  it("retrieves working memory only for its exact thread or session", async () => {
+    const store = await import("@/lib/memory/store");
+    const working = await store.saveMemory({
+      tenantId: "tenant-working",
+      type: "fact",
+      tier: "working",
+      title: "Current draft choice",
+      content: "Use the cobalt draft for this conversation.",
+      evidenceRefs: ["thread:thread-a"],
+    });
+
+    await expect(store.searchMemories("cobalt draft", {
+      tenantId: "tenant-working",
+    })).resolves.toEqual([]);
+    await expect(store.searchMemories("cobalt draft", {
+      tenantId: "tenant-working",
+      workingMemoryReference: "thread:thread-b",
+    })).resolves.toEqual([]);
+    await expect(store.searchMemories("cobalt draft", {
+      tenantId: "tenant-working",
+      workingMemoryReference: "thread:thread-a",
+    })).resolves.toMatchObject([{ record: { id: working.id, tier: "working" } }]);
+  });
+
   it("scrubs forgotten content and removes it from list and search", async () => {
     const store = await import("@/lib/memory/store");
     const memory = await store.saveMemory({ tenantId: "tenant-forget", title: "Private preference", content: "Never retain this sentence." });

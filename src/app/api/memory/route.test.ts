@@ -105,7 +105,16 @@ describe("memory API private canary", () => {
       }),
     );
     await expect(response.json()).resolves.toMatchObject({
-      memories: [{ id: "legacy-a" }],
+      memories: [{
+        id: "legacy-a",
+        tier: "semantic",
+        explainability: {
+          why: expect.any(String),
+          lastUsedAt: null,
+          validity: "active",
+          policy: { tier: "semantic", version: 1 },
+        },
+      }],
     });
   });
 

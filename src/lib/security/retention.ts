@@ -183,6 +183,8 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
                   ARRAY[id]
                 )
                 AND (
+                  (retention_expires_at IS NOT NULL AND retention_expires_at <= NOW())
+                  OR
                   (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
                   OR
                   (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
@@ -213,6 +215,8 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
                   ARRAY[id]
                 )
                 AND (
+                  (retention_expires_at IS NOT NULL AND retention_expires_at <= NOW())
+                  OR
                   (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
                   OR (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
                 )
@@ -274,6 +278,8 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
               ARRAY[id]
             )
             AND (
+              (retention_expires_at IS NOT NULL AND retention_expires_at <= NOW())
+              OR
               (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
               OR
               (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)
@@ -293,6 +299,8 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
                 ARRAY[id]
               )
               AND (
+                (retention_expires_at IS NOT NULL AND retention_expires_at <= NOW())
+                OR
                 (source = 'agent' AND updated_at < ${episodeMemoryCutoff}::timestamptz)
                 OR
                 (source = 'consolidator' AND updated_at < ${consolidatedMemoryCutoff}::timestamptz)

@@ -134,8 +134,10 @@ describe("Postgres memory recall", () => {
     );
     expect(lexicalQuery).toContain("FROM (\n      SELECT *");
     expect(lexicalQuery).toContain(") ranked");
+    expect(lexicalQuery).toContain("CASE ranked.tier");
+    expect(lexicalQuery).toContain("WHEN 'commitment' THEN 1.15");
     expect(lexicalQuery).toContain(
-      "ORDER BY (ranked.lexical_score * (0.35 + ranked.confidence * 0.65))",
+      "retention_expires_at IS NULL OR retention_expires_at > NOW()",
     );
     expect(lexicalQuery).not.toContain("ORDER BY (lexical_score *");
   });

@@ -1077,6 +1077,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[98],
       up: ensureCaptureStructuredExtractionV1,
     },
+    {
+      ...databaseSchemaMigrations[99],
+      up: ensureMemoryTierPolicyV1,
+    },
   ];
 }
 
@@ -5881,6 +5885,221 @@ async function ensureCaptureStructuredExtractionV1(sql: SqlClient) {
       END IF;
     END
     $migration$
+  `;
+}
+
+async function ensureMemoryTierPolicyV1(sql: SqlClient) {
+  await sql`ALTER TABLE omni_memories ADD COLUMN IF NOT EXISTS tier TEXT`;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS tier_policy_version SMALLINT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS formation_reason TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS retention_expires_at TIMESTAMPTZ
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS use_count BIGINT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS promoted_from_tier TEXT
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD COLUMN IF NOT EXISTS promoted_at TIMESTAMPTZ
+  `;
+
+  await sql`
+    UPDATE omni_memories
+    SET tier = CASE type
+          WHEN 'preference' THEN 'preference'
+          WHEN 'episode' THEN 'episodic'
+          WHEN 'procedure' THEN 'procedural'
+          WHEN 'decision' THEN 'decision'
+          WHEN 'task' THEN 'commitment'
+          ELSE 'semantic'
+        END,
+        tier_policy_version = 1,
+        formation_reason = CASE
+          WHEN supersedes_id IS NOT NULL OR source LIKE 'correction:%'
+            THEN 'correction'
+          WHEN source = 'manual' THEN 'manual_user_entry'
+          WHEN source = 'user-assertion' THEN 'explicit_user_request'
+          WHEN source = 'assistant-inference'
+            THEN 'assistant_inference_candidate'
+          WHEN source = 'effect-receipt' THEN 'verified_effect'
+          WHEN source LIKE 'portable-restore:%' THEN 'portable_restore'
+          WHEN source ILIKE '%reflection%' THEN 'project_reflection'
+          WHEN source ILIKE '%artifact%' THEN 'project_artifact'
+          WHEN source ILIKE '%workflow%' THEN 'workflow_output'
+          WHEN type = 'knowledge' AND cardinality(evidence_refs) > 0
+            THEN 'canonical_source_observation'
+          ELSE 'legacy_record'
+        END,
+        retention_expires_at = CASE
+          WHEN type = 'episode'
+            THEN created_at + INTERVAL '30 days'
+          WHEN type = 'task' THEN valid_to
+          WHEN source = 'consolidator'
+            THEN created_at + INTERVAL '365 days'
+          ELSE retention_expires_at
+        END,
+        use_count = COALESCE(use_count, 0)
+    WHERE tier IS NULL
+       OR tier_policy_version IS NULL
+       OR formation_reason IS NULL
+       OR use_count IS NULL
+  `;
+
+  await sql`
+    WITH usage AS (
+      SELECT memory.id,
+             MAX(trace.created_at) AS last_used_at,
+             COUNT(*)::BIGINT AS use_count
+      FROM omni_memories memory
+      JOIN omni_retrieval_traces trace
+        ON trace.tenant_id = memory.tenant_id
+       AND memory.id = ANY(trace.memory_ids)
+      GROUP BY memory.id
+    )
+    UPDATE omni_memories memory
+    SET last_used_at = usage.last_used_at,
+        use_count = usage.use_count
+    FROM usage
+    WHERE memory.id = usage.id
+      AND (
+        memory.last_used_at IS DISTINCT FROM usage.last_used_at
+        OR memory.use_count IS DISTINCT FROM usage.use_count
+      )
+  `;
+
+  await sql`ALTER TABLE omni_memories ALTER COLUMN tier SET NOT NULL`;
+  await sql`ALTER TABLE omni_memories ALTER COLUMN tier SET DEFAULT 'semantic'`;
+  await sql`
+    ALTER TABLE omni_memories
+    ALTER COLUMN tier_policy_version SET DEFAULT 1
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ALTER COLUMN tier_policy_version SET NOT NULL
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ALTER COLUMN formation_reason SET DEFAULT 'legacy_record'
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ALTER COLUMN formation_reason SET NOT NULL
+  `;
+  await sql`ALTER TABLE omni_memories ALTER COLUMN use_count SET DEFAULT 0`;
+  await sql`ALTER TABLE omni_memories ALTER COLUMN use_count SET NOT NULL`;
+
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_memories'::regclass
+          AND conname = 'omni_memories_tier_policy_check'
+      ) THEN
+        ALTER TABLE omni_memories
+        ADD CONSTRAINT omni_memories_tier_policy_check CHECK (
+          tier IN (
+            'working', 'episodic', 'semantic', 'procedural',
+            'preference', 'decision', 'commitment', 'summary'
+          )
+          AND tier_policy_version = 1
+          AND formation_reason IN (
+            'manual_user_entry', 'explicit_user_request',
+            'canonical_source_observation', 'verified_effect',
+            'assistant_inference_candidate', 'correction',
+            'project_reflection', 'project_artifact', 'workflow_output',
+            'portable_restore', 'legacy_record'
+          )
+          AND use_count >= 0
+          AND (
+            (promoted_from_tier IS NULL AND promoted_at IS NULL)
+            OR (
+              promoted_from_tier IN (
+                'working', 'episodic', 'semantic', 'procedural',
+                'preference', 'decision', 'commitment', 'summary'
+              )
+              AND promoted_from_tier <> tier
+              AND promoted_at IS NOT NULL
+            )
+          )
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    VALIDATE CONSTRAINT omni_memories_tier_policy_check
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memories_tier_active_idx
+    ON omni_memories (tenant_id, tier, updated_at DESC)
+    WHERE claim_status = 'active'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memories_retention_expiry_idx
+    ON omni_memories (retention_expires_at, tenant_id, id)
+    WHERE retention_expires_at IS NOT NULL
+      AND claim_status <> 'forgotten'
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memories_last_used_idx
+    ON omni_memories (tenant_id, last_used_at DESC)
+    WHERE last_used_at IS NOT NULL
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_record_memory_retrieval_usage()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      UPDATE public.omni_memories memory
+      SET last_used_at = GREATEST(
+            COALESCE(memory.last_used_at, NEW.created_at),
+            NEW.created_at
+          ),
+          use_count = memory.use_count + 1
+      WHERE memory.tenant_id = NEW.tenant_id
+        AND memory.id = ANY(NEW.memory_ids)
+        AND memory.claim_status <> 'forgotten';
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_record_memory_retrieval_usage()
+    FROM PUBLIC
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_retrieval_traces_record_memory_usage
+    ON omni_retrieval_traces
+  `;
+  await sql`
+    CREATE TRIGGER omni_retrieval_traces_record_memory_usage
+    AFTER INSERT ON omni_retrieval_traces
+    FOR EACH ROW
+    WHEN (cardinality(NEW.memory_ids) > 0)
+    EXECUTE FUNCTION omni_record_memory_retrieval_usage()
   `;
 }
 
