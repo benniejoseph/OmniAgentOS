@@ -159,6 +159,7 @@ export const tenantRootPolicyTables = [
   "omni_capture_segments",
   "omni_capture_assets",
   "omni_asset_objects",
+  "omni_asset_object_migrations",
   "omni_provider_connections",
   "omni_model_catalog",
   "omni_model_assignments",
@@ -1062,6 +1063,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[96],
       up: async (sql) => {
         await ensureTenantScopedAssetObjectPlaneV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[97],
+      up: async (sql) => {
+        await ensureAssetObjectBackfillReceiptsV1(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -5586,6 +5594,137 @@ async function ensureTenantScopedAssetObjectPlaneV1(sql: SqlClient) {
           AND polcmd = '*'
       ) THEN
         RAISE EXCEPTION 'Asset object actor boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAssetObjectBackfillReceiptsV1(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_asset_object_migrations (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      cursor_kind TEXT,
+      cursor_id TEXT,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      ready_count INTEGER NOT NULL DEFAULT 0,
+      pending_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      missing_count INTEGER NOT NULL DEFAULT 0,
+      mismatch_count INTEGER NOT NULL DEFAULT 0,
+      verification_sha256 TEXT,
+      operation_job_id TEXT,
+      execution_scope JSONB NOT NULL,
+      started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+      CONSTRAINT omni_asset_object_migrations_owner_generation_key
+        UNIQUE (tenant_id, owner_actor_id, generation),
+      CONSTRAINT omni_asset_object_migrations_identity_check CHECK (
+        id ~ '^asset_migration_[a-f0-9]{48}$'
+        AND length(tenant_id) BETWEEN 1 AND 160
+        AND length(owner_actor_id) BETWEEN 1 AND 320
+        AND generation >= 1
+      ),
+      CONSTRAINT omni_asset_object_migrations_status_check CHECK (
+        status IN ('queued', 'running', 'verifying', 'completed', 'failed')
+      ),
+      CONSTRAINT omni_asset_object_migrations_cursor_check CHECK (
+        (cursor_kind IS NULL AND cursor_id IS NULL)
+        OR (
+          cursor_kind IN ('capture_asset', 'capture_segment')
+          AND length(cursor_id) BETWEEN 1 AND 200
+        )
+      ),
+      CONSTRAINT omni_asset_object_migrations_counts_check CHECK (
+        total_count >= 0 AND ready_count >= 0 AND pending_count >= 0
+        AND failed_count >= 0 AND missing_count >= 0 AND mismatch_count >= 0
+        AND ready_count + pending_count + failed_count + missing_count <= total_count
+      ),
+      CONSTRAINT omni_asset_object_migrations_verification_check CHECK (
+        verification_sha256 IS NULL
+        OR verification_sha256 ~ '^[a-f0-9]{64}$'
+      ),
+      CONSTRAINT omni_asset_object_migrations_scope_check CHECK (
+        jsonb_typeof(execution_scope) = 'object'
+        AND execution_scope ->> 'version' = '1'
+        AND execution_scope ->> 'tenantId' = tenant_id
+        AND execution_scope ->> 'initiatingActorId' = owner_actor_id
+      ),
+      CONSTRAINT omni_asset_object_migrations_lifecycle_check CHECK (
+        (status = 'queued' OR started_at IS NOT NULL)
+        AND (status = 'completed') = (completed_at IS NOT NULL)
+        AND (status <> 'completed' OR (
+          ready_count = total_count
+          AND pending_count = 0
+          AND failed_count = 0
+          AND missing_count = 0
+          AND mismatch_count = 0
+          AND verification_sha256 IS NOT NULL
+        ))
+      )
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_asset_object_migrations_owner_idx
+    ON omni_asset_object_migrations (
+      tenant_id, owner_actor_id, generation DESC
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_asset_object_migrations_active_idx
+    ON omni_asset_object_migrations (tenant_id, status, updated_at, id)
+    WHERE status IN ('queued', 'running', 'verifying')
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_asset_object_migrations_actor_scope
+    ON omni_asset_object_migrations
+  `;
+  await sql`
+    CREATE POLICY omni_asset_object_migrations_actor_scope
+    ON omni_asset_object_migrations
+    AS RESTRICTIVE
+    FOR ALL
+    USING (
+      omni_system_scope_enabled()
+      OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+    )
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE
+        ON omni_asset_object_migrations TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE
+        ON omni_asset_object_migrations TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_asset_object_migrations'::regclass
+          AND polname = 'omni_asset_object_migrations_actor_scope'
+          AND NOT polpermissive
+          AND polcmd = '*'
+      ) THEN
+        RAISE EXCEPTION 'Asset object migration actor boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

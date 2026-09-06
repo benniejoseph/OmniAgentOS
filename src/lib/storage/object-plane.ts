@@ -260,6 +260,55 @@ export async function stageAssetObject(
   return object;
 }
 
+export async function retryFailedAssetObjectCommit(
+  input: {
+    tenantId: string;
+    ownerActorId: string;
+    sourceKind: AssetObjectSourceKind;
+    sourceId: string;
+  },
+  options: { sql: ReturnType<typeof getSql> },
+) {
+  const tenantId = requiredText(input.tenantId, 160);
+  const ownerActorId = requiredText(input.ownerActorId, 320);
+  const sourceId = requiredText(input.sourceId, 200);
+  const rows = await options.sql`
+    SELECT * FROM omni_asset_objects
+    WHERE tenant_id = ${tenantId} AND owner_actor_id = ${ownerActorId}
+      AND source_kind = ${input.sourceKind} AND source_id = ${sourceId}
+      AND object_version = 1 AND status = 'failed'
+    LIMIT 1
+  `;
+  if (!rows[0]) return null;
+  const object = assetObjectFromRow(rows[0]);
+  const job = await enqueueOperationJob({
+    tenantId,
+    type: "asset.object.commit",
+    dedupeKey: `asset.object.commit:${object.id}`,
+    dedupeMode: "coalesce",
+    requeueTerminal: false,
+    requeueFailed: true,
+    priority: 3,
+    maxAttempts: 8,
+    payload: {
+      request: {
+        objectId: object.id,
+        requestHash: assetObjectRequestHash(object),
+      },
+      actorId: ownerActorId,
+      executionScope: object.executionScope,
+      progress: { stage: "queued" },
+    },
+  }, { sql: options.sql });
+  await options.sql`
+    UPDATE omni_asset_objects
+    SET upload_job_id = ${job.id}, updated_at = clock_timestamp()
+    WHERE id = ${object.id} AND tenant_id = ${tenantId}
+      AND owner_actor_id = ${ownerActorId} AND status = 'failed'
+  `;
+  return job;
+}
+
 export async function commitAssetObjectJob(
   job: OperationJobRecord,
   options: { adapter?: PrivateAssetBlobAdapter; signal?: AbortSignal } = {},

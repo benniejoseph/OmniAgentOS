@@ -18,7 +18,8 @@ export type OperationJobType =
   | "knowledge.ingest"
   | "evaluation.run"
   | "asset.object.commit"
-  | "asset.object.delete";
+  | "asset.object.delete"
+  | "asset.object.backfill";
 export type OperationJobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
 
 export const BACKGROUND_OPERATION_JOB_TYPES = [
@@ -27,6 +28,7 @@ export const BACKGROUND_OPERATION_JOB_TYPES = [
   "evaluation.run",
   "asset.object.commit",
   "asset.object.delete",
+  "asset.object.backfill",
 ] as const satisfies readonly OperationJobType[];
 
 const OPERATION_PRIORITY_AGING_INTERVAL_MS = 60_000;
