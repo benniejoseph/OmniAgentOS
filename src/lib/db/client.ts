@@ -1026,6 +1026,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[88],
       up: ensureEntityEvidenceLineageBarrier,
     },
+    {
+      ...databaseSchemaMigrations[89],
+      up: ensureLoopV2ClarificationWait,
+    },
   ];
 }
 
@@ -5989,6 +5993,59 @@ async function ensureEntityEvidenceLineageBarrier(sql: SqlClient) {
           AND NOT tgisinternal
       ) <> 2 THEN
         RAISE EXCEPTION 'Entity evidence lineage barrier is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureLoopV2ClarificationWait(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_agent_runs
+    DROP CONSTRAINT IF EXISTS omni_agent_runs_waiting_clarification_thread_check
+  `;
+  await sql`
+    ALTER TABLE omni_agent_runs
+    ADD CONSTRAINT omni_agent_runs_waiting_clarification_thread_check
+    CHECK (
+      status <> 'waiting_clarification'
+      OR thread_id IS NOT NULL
+    ) NOT VALID
+  `;
+  await sql`
+    ALTER TABLE omni_agent_runs
+    VALIDATE CONSTRAINT omni_agent_runs_waiting_clarification_thread_check
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_agent_runs_one_waiting_clarification_per_thread_idx
+    ON omni_agent_runs (tenant_id, owner_actor_id, thread_id)
+    WHERE status = 'waiting_clarification' AND thread_id IS NOT NULL
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'omni_agent_runs_waiting_clarification_thread_check'
+          AND conrelid = 'omni_agent_runs'::regclass
+          AND contype = 'c'
+          AND convalidated
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_index index_record
+        JOIN pg_class index_relation
+          ON index_relation.oid = index_record.indexrelid
+        WHERE index_relation.relname =
+          'omni_agent_runs_one_waiting_clarification_per_thread_idx'
+          AND index_record.indrelid = 'omni_agent_runs'::regclass
+          AND index_record.indisunique
+          AND index_record.indisvalid
+          AND index_record.indpred IS NOT NULL
+      ) THEN
+        RAISE EXCEPTION 'Loop v2 clarification wait invariant is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

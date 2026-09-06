@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the entity evidence lineage barrier migration", () => {
+  it("pins the Loop v2 clarification wait migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 89,
-      name: "entity_evidence_lineage_barrier",
-      checksum: "64021253127ac2dea85c277c942d6d8207f76395a05670dd0afe9ca1ef6fbb38",
+      version: 90,
+      name: "loop_v2_clarification_wait",
+      checksum: "881b5d103e0a13591ad1171cc187754497ba3daa16a3a144649b56027353b9b2",
     });
   });
 
