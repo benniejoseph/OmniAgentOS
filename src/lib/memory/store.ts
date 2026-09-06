@@ -67,6 +67,10 @@ import {
   type MemoryTier,
 } from "@/lib/memory/tier-policy";
 import {
+  memoryLifecycleReasons,
+  memoryRetrievalPriorityMultiplier,
+} from "@/lib/memory/lifecycle";
+import {
   memoryReconciliationDecisionSchema,
   memoryReconciliationDetectionReason,
   memoryReconciliationDetectionReasonSchema,
@@ -133,11 +137,11 @@ export async function listMemories(options: TenantScopedOptions = {}) {
     }
     const readRows = async (sql: MemorySqlClient) => options.includeInactive
       ? options.type
-        ? sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
-        : sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status <> 'forgotten' ORDER BY updated_at DESC LIMIT ${limit}`
+        ? sql`SELECT memory.*, lifecycle.pinned_at AS lifecycle_pinned_at, lifecycle.archived_at AS lifecycle_archived_at, lifecycle.archive_reason AS lifecycle_archive_reason, lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id FROM omni_memories memory LEFT JOIN omni_memory_lifecycle_states lifecycle ON lifecycle.tenant_id = memory.tenant_id AND lifecycle.memory_id = memory.id WHERE memory.tenant_id = ${tenantId} AND memory.type = ${options.type} AND memory.claim_status <> 'forgotten' ORDER BY memory.updated_at DESC LIMIT ${limit}`
+        : sql`SELECT memory.*, lifecycle.pinned_at AS lifecycle_pinned_at, lifecycle.archived_at AS lifecycle_archived_at, lifecycle.archive_reason AS lifecycle_archive_reason, lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id FROM omni_memories memory LEFT JOIN omni_memory_lifecycle_states lifecycle ON lifecycle.tenant_id = memory.tenant_id AND lifecycle.memory_id = memory.id WHERE memory.tenant_id = ${tenantId} AND memory.claim_status <> 'forgotten' ORDER BY memory.updated_at DESC LIMIT ${limit}`
       : options.type
-        ? sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND type = ${options.type} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) AND (retention_expires_at IS NULL OR retention_expires_at > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`
-        : sql`SELECT * FROM omni_memories WHERE tenant_id = ${tenantId} AND claim_status = 'active' AND (valid_from IS NULL OR valid_from <= NOW()) AND (valid_to IS NULL OR valid_to > NOW()) AND (retention_expires_at IS NULL OR retention_expires_at > NOW()) ORDER BY updated_at DESC LIMIT ${limit}`;
+        ? sql`SELECT memory.*, lifecycle.pinned_at AS lifecycle_pinned_at, lifecycle.archived_at AS lifecycle_archived_at, lifecycle.archive_reason AS lifecycle_archive_reason, lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id FROM omni_memories memory LEFT JOIN omni_memory_lifecycle_states lifecycle ON lifecycle.tenant_id = memory.tenant_id AND lifecycle.memory_id = memory.id WHERE memory.tenant_id = ${tenantId} AND memory.type = ${options.type} AND memory.claim_status = 'active' AND lifecycle.archived_at IS NULL AND (memory.valid_from IS NULL OR memory.valid_from <= NOW()) AND (memory.valid_to IS NULL OR memory.valid_to > NOW()) AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW()) ORDER BY memory.updated_at DESC LIMIT ${limit}`
+        : sql`SELECT memory.*, lifecycle.pinned_at AS lifecycle_pinned_at, lifecycle.archived_at AS lifecycle_archived_at, lifecycle.archive_reason AS lifecycle_archive_reason, lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id FROM omni_memories memory LEFT JOIN omni_memory_lifecycle_states lifecycle ON lifecycle.tenant_id = memory.tenant_id AND lifecycle.memory_id = memory.id WHERE memory.tenant_id = ${tenantId} AND memory.claim_status = 'active' AND lifecycle.archived_at IS NULL AND (memory.valid_from IS NULL OR memory.valid_from <= NOW()) AND (memory.valid_to IS NULL OR memory.valid_to > NOW()) AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW()) ORDER BY memory.updated_at DESC LIMIT ${limit}`;
     const rows = options.accessScope
       ? await runWithDatabaseMemoryAccessScope(
           options.accessScope,
@@ -185,12 +189,18 @@ export async function listThreadMemories(
       );
     }
     const readRows = (sql: MemorySqlClient) => sql`
-        SELECT *
-        FROM omni_memories
-        WHERE tenant_id = ${tenantId}
-          AND claim_status <> 'forgotten'
-          AND ${evidenceRef} = ANY(evidence_refs)
-        ORDER BY updated_at DESC
+        SELECT memory.*, lifecycle.pinned_at AS lifecycle_pinned_at,
+               lifecycle.archived_at AS lifecycle_archived_at,
+               lifecycle.archive_reason AS lifecycle_archive_reason,
+               lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id
+        FROM omni_memories memory
+        LEFT JOIN omni_memory_lifecycle_states lifecycle
+          ON lifecycle.tenant_id = memory.tenant_id
+         AND lifecycle.memory_id = memory.id
+        WHERE memory.tenant_id = ${tenantId}
+          AND memory.claim_status <> 'forgotten'
+          AND ${evidenceRef} = ANY(memory.evidence_refs)
+        ORDER BY memory.updated_at DESC
         LIMIT ${limit}
       `;
     const rows = options.accessScope
@@ -706,7 +716,7 @@ export async function searchMemories(
   );
 
   return memories
-    .filter((record) => record.claimStatus === "active")
+    .filter((record) => record.claimStatus === "active" && !record.archivedAt)
     .filter((record) =>
       resolveMemoryTier(record.tier, record.type) !== "working" ||
       Boolean(
@@ -729,14 +739,16 @@ export async function searchMemories(
       const tierWeight = memoryTierPolicy(
         resolveMemoryTier(record.tier, record.type),
       ).retrieval.priorityWeight;
+      const lifecycleWeight = memoryRetrievalPriorityMultiplier(record);
       const score = (lexicalScore + tagScore + importanceScore + embeddingScore) *
-        (0.35 + confidence * 0.65) * tierWeight;
+        (0.35 + confidence * 0.65) * tierWeight * lifecycleWeight;
       const reasons = [
         overlap.length ? `matched ${overlap.slice(0, 5).join(", ")}` : "",
         embeddingScore ? "semantic match" : "",
         record.importance >= 0.8 ? "high importance" : "",
         confidence >= 0.85 ? "high-confidence claim" : confidence < 0.5 ? "low-confidence claim" : "",
         tierWeight > 1 ? `${record.tier} memory priority` : "",
+        ...memoryLifecycleReasons(record),
       ].filter(Boolean);
 
       return {
@@ -762,8 +774,18 @@ export async function getMemory(
   const tenantId = normalizeTenantId(options.tenantId);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const readRows = (sql: MemorySqlClient) =>
-      sql`SELECT * FROM omni_memories WHERE id = ${id} AND tenant_id = ${tenantId} LIMIT 1`;
+    const readRows = (sql: MemorySqlClient) => sql`
+      SELECT memory.*, lifecycle.pinned_at AS lifecycle_pinned_at,
+             lifecycle.archived_at AS lifecycle_archived_at,
+             lifecycle.archive_reason AS lifecycle_archive_reason,
+             lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id
+      FROM omni_memories memory
+      LEFT JOIN omni_memory_lifecycle_states lifecycle
+        ON lifecycle.tenant_id = memory.tenant_id
+       AND lifecycle.memory_id = memory.id
+      WHERE memory.id = ${id} AND memory.tenant_id = ${tenantId}
+      LIMIT 1
+    `;
     const rows = options.accessScope
       ? await runWithDatabaseMemoryAccessScope(
           options.accessScope,
@@ -2448,6 +2470,7 @@ async function searchMemoriesDb(
   const queryText = query.trim();
   const tenantId = normalizeTenantId(options.tenantId);
   const vector = toVectorLiteral(options.queryEmbedding);
+  const candidateLimit = Math.min(limit * 8, 800);
   const workingMemoryReference = normalizeWorkingMemoryReference(
     options.workingMemoryReference,
   ) || "";
@@ -2455,40 +2478,48 @@ async function searchMemoriesDb(
   if (vector) {
     try {
       const rows = await getSql()`
-        SELECT *,
-               GREATEST(0, 1 - (embedding_vector <=> ${vector}::vector)) AS vector_score,
+        SELECT memory.*,
+               lifecycle.pinned_at AS lifecycle_pinned_at,
+               lifecycle.archived_at AS lifecycle_archived_at,
+               lifecycle.archive_reason AS lifecycle_archive_reason,
+               lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id,
+               GREATEST(0, 1 - (memory.embedding_vector <=> ${vector}::vector)) AS vector_score,
                CASE
                  WHEN ${queryText} = '' THEN 0
                  ELSE ts_rank_cd(
-                   to_tsvector('english', title || ' ' || content),
+                   to_tsvector('english', memory.title || ' ' || memory.content),
                    plainto_tsquery('english', ${queryText})
                  )
                END AS lexical_score,
-               1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800) AS recency_score
-        FROM omni_memories
-        WHERE tenant_id = ${tenantId}
-          AND claim_status = 'active'
-          AND (valid_from IS NULL OR valid_from <= NOW())
-          AND (valid_to IS NULL OR valid_to > NOW())
-          AND (retention_expires_at IS NULL OR retention_expires_at > NOW())
+               1 / (1 + EXTRACT(EPOCH FROM (NOW() - memory.updated_at)) / 604800) AS recency_score
+        FROM omni_memories memory
+        LEFT JOIN omni_memory_lifecycle_states lifecycle
+          ON lifecycle.tenant_id = memory.tenant_id
+         AND lifecycle.memory_id = memory.id
+        WHERE memory.tenant_id = ${tenantId}
+          AND memory.claim_status = 'active'
+          AND lifecycle.archived_at IS NULL
+          AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
+          AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
+          AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW())
           AND (
-            tier <> 'working'
-            OR ${workingMemoryReference} = ANY(evidence_refs)
+            memory.tier <> 'working'
+            OR ${workingMemoryReference} = ANY(memory.evidence_refs)
           )
-          AND embedding_vector IS NOT NULL
+          AND memory.embedding_vector IS NOT NULL
         ORDER BY ((
-          (0.52 * GREATEST(0, 1 - (embedding_vector <=> ${vector}::vector))) +
+          (0.52 * GREATEST(0, 1 - (memory.embedding_vector <=> ${vector}::vector))) +
           (0.22 * CASE
             WHEN ${queryText} = '' THEN 0
             ELSE ts_rank_cd(
-              to_tsvector('english', title || ' ' || content),
+              to_tsvector('english', memory.title || ' ' || memory.content),
               plainto_tsquery('english', ${queryText})
             )
           END) +
-          (0.10 * importance) +
-          (0.06 * (1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800))) +
-          (0.10 * confidence)
-        ) * CASE tier
+          (0.10 * memory.importance) +
+          (0.06 * (1 / (1 + EXTRACT(EPOCH FROM (NOW() - memory.updated_at)) / 604800))) +
+          (0.10 * memory.confidence)
+        ) * CASE memory.tier
           WHEN 'commitment' THEN 1.15
           WHEN 'working' THEN 1.12
           WHEN 'procedural' THEN 1.10
@@ -2499,9 +2530,11 @@ async function searchMemoriesDb(
           WHEN 'summary' THEN 0.96
           ELSE 1.00
         END) DESC
-        LIMIT ${limit}
+        LIMIT ${candidateLimit}
       `;
-      return rows.map(memorySearchResultFromRow);
+      return rows.map(memorySearchResultFromRow)
+        .sort((left, right) => right.score - left.score)
+        .slice(0, limit);
     } catch {
       return searchMemoriesLexicalDb(
         queryText,
@@ -2529,28 +2562,36 @@ async function searchMemoriesLexicalDb(
   const rows = await getSql()`
     SELECT ranked.*
     FROM (
-      SELECT *,
+      SELECT memory.*,
+             lifecycle.pinned_at AS lifecycle_pinned_at,
+             lifecycle.archived_at AS lifecycle_archived_at,
+             lifecycle.archive_reason AS lifecycle_archive_reason,
+             lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id,
              CASE
                WHEN ${query} = '' THEN 0
                ELSE ts_rank_cd(
-                 to_tsvector('english', title || ' ' || content),
+                 to_tsvector('english', memory.title || ' ' || memory.content),
                  plainto_tsquery('english', ${query})
                )
              END AS lexical_score,
-             1 / (1 + EXTRACT(EPOCH FROM (NOW() - updated_at)) / 604800) AS recency_score
-      FROM omni_memories
-      WHERE tenant_id = ${tenantId}
-        AND claim_status = 'active'
-        AND (valid_from IS NULL OR valid_from <= NOW())
-        AND (valid_to IS NULL OR valid_to > NOW())
-        AND (retention_expires_at IS NULL OR retention_expires_at > NOW())
+             1 / (1 + EXTRACT(EPOCH FROM (NOW() - memory.updated_at)) / 604800) AS recency_score
+      FROM omni_memories memory
+      LEFT JOIN omni_memory_lifecycle_states lifecycle
+        ON lifecycle.tenant_id = memory.tenant_id
+       AND lifecycle.memory_id = memory.id
+      WHERE memory.tenant_id = ${tenantId}
+        AND memory.claim_status = 'active'
+        AND lifecycle.archived_at IS NULL
+        AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
+        AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
+        AND (memory.retention_expires_at IS NULL OR memory.retention_expires_at > NOW())
         AND (
-          tier <> 'working'
-          OR ${workingMemoryReference} = ANY(evidence_refs)
+          memory.tier <> 'working'
+          OR ${workingMemoryReference} = ANY(memory.evidence_refs)
         )
         AND (
           ${query} = ''
-          OR to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', ${query})
+          OR to_tsvector('english', memory.title || ' ' || memory.content) @@ plainto_tsquery('english', ${query})
         )
     ) ranked
     ORDER BY (
@@ -2570,10 +2611,12 @@ async function searchMemoriesLexicalDb(
              ) DESC,
              ranked.importance DESC,
              ranked.updated_at DESC
-    LIMIT ${limit}
+    LIMIT ${Math.min(limit * 8, 800)}
   `;
 
-  return rows.map(memorySearchResultFromRow);
+  return rows.map(memorySearchResultFromRow)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, limit);
 }
 
 async function runWithDatabaseMemoryAccessScope<T>(
@@ -2965,6 +3008,18 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
       ? memoryTierSchema.parse(row.promoted_from_tier)
       : undefined,
     promotedAt: row.promoted_at ? normalizeDate(row.promoted_at) : undefined,
+    pinnedAt: row.lifecycle_pinned_at
+      ? normalizeDate(row.lifecycle_pinned_at)
+      : undefined,
+    archivedAt: row.lifecycle_archived_at
+      ? normalizeDate(row.lifecycle_archived_at)
+      : undefined,
+    archiveReason: row.lifecycle_archive_reason
+      ? String(row.lifecycle_archive_reason) as MemoryRecord["archiveReason"]
+      : undefined,
+    duplicateOfMemoryId: row.lifecycle_duplicate_of_memory_id
+      ? String(row.lifecycle_duplicate_of_memory_id)
+      : undefined,
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
     embedding: parseEmbedding(row.embedding),
@@ -3157,6 +3212,10 @@ function sanitizeMemoryRecord(record: MemoryRecord): MemoryRecord {
       ? memoryTierSchema.parse(record.promotedFromTier)
       : undefined,
     promotedAt: normalizeOptionalDate(record.promotedAt),
+    pinnedAt: normalizeOptionalDate(record.pinnedAt),
+    archivedAt: normalizeOptionalDate(record.archivedAt),
+    archiveReason: record.archiveReason,
+    duplicateOfMemoryId: normalizeOptionalId(record.duplicateOfMemoryId),
     validFrom: normalizeOptionalDate(record.validFrom),
     validTo: normalizeOptionalDate(record.validTo),
     supersedesId: normalizeOptionalId(record.supersedesId),
@@ -3201,10 +3260,11 @@ function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchRe
   const tierWeight = memoryTierPolicy(
     resolveMemoryTier(memory.tier, memory.type),
   ).retrieval.priorityWeight;
+  const lifecycleWeight = memoryRetrievalPriorityMultiplier(memory);
   const score = (
     vectorScore * 0.52 + lexicalScore * 0.22 + memory.importance * 0.10 +
     recencyScore * 0.06 + confidence * 0.10
-  ) * tierWeight;
+  ) * tierWeight * lifecycleWeight;
 
   return {
     record: memory,
@@ -3216,6 +3276,7 @@ function memorySearchResultFromRow(row: Record<string, unknown>): MemorySearchRe
       recencyScore > 0.5 ? "recent memory" : "",
       confidence >= 0.85 ? "high-confidence claim" : confidence < 0.5 ? "low-confidence claim" : "",
       tierWeight > 1 ? `${memory.tier} memory priority` : "",
+      ...memoryLifecycleReasons(memory),
     ].filter(Boolean),
   };
 }
@@ -3280,6 +3341,7 @@ function normalizeAssertedBy(value: unknown): NonNullable<MemoryRecord["asserted
 
 function isActiveMemory(memory: MemoryRecord) {
   if (memory.claimStatus !== "active") return false;
+  if (memory.archivedAt) return false;
   if (
     memory.retentionExpiresAt &&
     Date.parse(memory.retentionExpiresAt) <= Date.now()

@@ -128,6 +128,8 @@ export const tenantRootPolicyTables = [
   "omni_memory_graph_builds",
   "omni_memory_graph_rebuild_queue",
   "omni_memory_reconciliation_reviews",
+  "omni_memory_lifecycle_states",
+  "omni_memory_promotion_reviews",
   "omni_conversation_summaries",
   "omni_entity_records",
   "omni_entity_aliases",
@@ -1094,6 +1096,13 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[102],
       up: ensureConversationSummaryDeletionBarrierV1,
+    },
+    {
+      ...databaseSchemaMigrations[103],
+      up: async (sql) => {
+        await ensureMemoryLifecycleMaintenanceV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -6821,6 +6830,498 @@ async function ensureConversationSummaryDeletionBarrierV1(sql: SqlClient) {
       END IF;
     END
     $migration$
+  `;
+}
+
+async function ensureMemoryLifecycleMaintenanceV1(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_memories
+    DROP CONSTRAINT IF EXISTS omni_memories_tier_policy_check
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    ADD CONSTRAINT omni_memories_tier_policy_check CHECK (
+      tier IN (
+        'working', 'episodic', 'semantic', 'procedural',
+        'preference', 'decision', 'commitment', 'summary'
+      )
+      AND tier_policy_version = 1
+      AND formation_reason IN (
+        'manual_user_entry', 'explicit_user_request',
+        'canonical_source_observation', 'verified_effect',
+        'assistant_inference_candidate', 'correction',
+        'project_reflection', 'project_artifact', 'workflow_output',
+        'maintenance_promotion', 'portable_restore', 'legacy_record'
+      )
+      AND use_count >= 0
+      AND (
+        (promoted_from_tier IS NULL AND promoted_at IS NULL)
+        OR (
+          promoted_from_tier IN (
+            'working', 'episodic', 'semantic', 'procedural',
+            'preference', 'decision', 'commitment', 'summary'
+          )
+          AND promoted_from_tier <> tier
+          AND promoted_at IS NOT NULL
+        )
+      )
+    ) NOT VALID
+  `;
+  await sql`
+    ALTER TABLE omni_memories
+    VALIDATE CONSTRAINT omni_memories_tier_policy_check
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_memory_lifecycle_states (
+      memory_id TEXT PRIMARY KEY REFERENCES omni_memories(id) ON DELETE CASCADE,
+      tenant_id TEXT NOT NULL,
+      access_contract_version SMALLINT NOT NULL DEFAULT 0,
+      owner_actor_id TEXT,
+      policy_version SMALLINT NOT NULL DEFAULT 1,
+      pinned_at TIMESTAMPTZ,
+      archived_at TIMESTAMPTZ,
+      archive_reason TEXT,
+      duplicate_of_memory_id TEXT REFERENCES omni_memories(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (access_contract_version IN (0, 1)),
+      CHECK (
+        (access_contract_version = 0 AND owner_actor_id IS NULL)
+        OR (access_contract_version = 1 AND omni_source_contract_id_is_valid(owner_actor_id))
+      ),
+      CHECK (policy_version = 1),
+      CHECK (pinned_at IS NULL OR archived_at IS NULL),
+      CHECK (
+        (archived_at IS NULL AND archive_reason IS NULL AND duplicate_of_memory_id IS NULL)
+        OR (
+          archived_at IS NOT NULL
+          AND archive_reason IN ('manual', 'exact_duplicate', 'retention_expired')
+          AND (
+            (archive_reason = 'exact_duplicate' AND duplicate_of_memory_id IS NOT NULL)
+            OR (archive_reason <> 'exact_duplicate' AND duplicate_of_memory_id IS NULL)
+          )
+        )
+      ),
+      CHECK (duplicate_of_memory_id IS NULL OR duplicate_of_memory_id <> memory_id)
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_memory_promotion_reviews (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      access_contract_version SMALLINT NOT NULL DEFAULT 0,
+      owner_actor_id TEXT,
+      policy_version SMALLINT NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'pending',
+      decision TEXT,
+      source_memory_ids TEXT[] NOT NULL,
+      canonical_memory_id TEXT NOT NULL REFERENCES omni_memories(id) ON DELETE CASCADE,
+      source_claim_sha256 TEXT NOT NULL,
+      target_tier TEXT NOT NULL DEFAULT 'procedural',
+      promoted_memory_id TEXT REFERENCES omni_memories(id) ON DELETE SET NULL,
+      resolved_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (access_contract_version IN (0, 1)),
+      CHECK (
+        (access_contract_version = 0 AND owner_actor_id IS NULL)
+        OR (access_contract_version = 1 AND omni_source_contract_id_is_valid(owner_actor_id))
+      ),
+      CHECK (policy_version = 1),
+      CHECK (target_tier = 'procedural'),
+      CHECK (source_claim_sha256 ~ '^[0-9a-f]{64}$'),
+      CHECK (
+        (status = 'pending' AND decision IS NULL AND promoted_memory_id IS NULL AND resolved_at IS NULL)
+        OR (
+          status = 'resolved'
+          AND decision IN ('promote', 'dismiss')
+          AND resolved_at IS NOT NULL
+          AND (
+            (decision = 'promote' AND promoted_memory_id IS NOT NULL)
+            OR (decision = 'dismiss' AND promoted_memory_id IS NULL)
+          )
+        )
+      )
+    )
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_memory_lifecycle_state()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      source_memory public.omni_memories%ROWTYPE;
+      canonical_memory public.omni_memories%ROWTYPE;
+    BEGIN
+      SELECT * INTO source_memory
+      FROM public.omni_memories memory
+      WHERE memory.id = NEW.memory_id
+        AND memory.tenant_id = NEW.tenant_id
+        AND memory.claim_status <> 'forgotten';
+      IF NOT FOUND
+        OR source_memory.access_contract_version <> NEW.access_contract_version
+        OR source_memory.owner_actor_id IS DISTINCT FROM NEW.owner_actor_id
+        OR public.omni_memory_ids_have_deletion_barrier(
+          NEW.tenant_id,
+          ARRAY[NEW.memory_id]
+        )
+      THEN
+        RAISE EXCEPTION 'Memory lifecycle source boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NEW.archive_reason = 'exact_duplicate' THEN
+        SELECT * INTO canonical_memory
+        FROM public.omni_memories memory
+        WHERE memory.id = NEW.duplicate_of_memory_id
+          AND memory.tenant_id = NEW.tenant_id
+          AND memory.claim_status = 'active';
+        IF NOT FOUND
+          OR canonical_memory.access_contract_version <> NEW.access_contract_version
+          OR canonical_memory.owner_actor_id IS DISTINCT FROM NEW.owner_actor_id
+          OR canonical_memory.type <> source_memory.type
+          OR canonical_memory.tier <> source_memory.tier
+          OR canonical_memory.scope <> source_memory.scope
+          OR canonical_memory.tags <> source_memory.tags
+          OR canonical_memory.valid_from IS DISTINCT FROM source_memory.valid_from
+          OR canonical_memory.valid_to IS DISTINCT FROM source_memory.valid_to
+          OR canonical_memory.access_scope_sha256 IS DISTINCT FROM source_memory.access_scope_sha256
+          OR regexp_replace(lower(btrim(canonical_memory.title)), '\\s+', ' ', 'g')
+            <> regexp_replace(lower(btrim(source_memory.title)), '\\s+', ' ', 'g')
+          OR regexp_replace(lower(btrim(canonical_memory.content)), '\\s+', ' ', 'g')
+            <> regexp_replace(lower(btrim(source_memory.content)), '\\s+', ' ', 'g')
+          OR public.omni_memory_ids_have_deletion_barrier(
+            NEW.tenant_id,
+            ARRAY[NEW.duplicate_of_memory_id]
+          )
+        THEN
+          RAISE EXCEPTION 'Exact-duplicate archive boundary is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END IF;
+      IF TG_OP = 'UPDATE' AND ROW(
+        OLD.memory_id, OLD.tenant_id, OLD.access_contract_version,
+        OLD.owner_actor_id, OLD.policy_version, OLD.created_at
+      ) IS DISTINCT FROM ROW(
+        NEW.memory_id, NEW.tenant_id, NEW.access_contract_version,
+        NEW.owner_actor_id, NEW.policy_version, NEW.created_at
+      ) THEN
+        RAISE EXCEPTION 'Memory lifecycle identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_validate_memory_lifecycle_state()
+    FROM PUBLIC
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_lifecycle_validate
+    ON omni_memory_lifecycle_states
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_lifecycle_validate
+    BEFORE INSERT OR UPDATE ON omni_memory_lifecycle_states
+    FOR EACH ROW EXECUTE FUNCTION omni_validate_memory_lifecycle_state()
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_memory_promotion_review()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      canonical_memory public.omni_memories%ROWTYPE;
+      source_count INTEGER;
+      occurrence_count INTEGER;
+      promoted_count INTEGER;
+    BEGIN
+      IF NOT public.omni_source_id_array_is_canonical(NEW.source_memory_ids, 64)
+        OR cardinality(NEW.source_memory_ids) < 2
+        OR NOT (NEW.canonical_memory_id = ANY(NEW.source_memory_ids))
+      THEN
+        RAISE EXCEPTION 'Memory promotion source ids are invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      SELECT * INTO canonical_memory
+      FROM public.omni_memories memory
+      WHERE memory.id = NEW.canonical_memory_id
+        AND memory.tenant_id = NEW.tenant_id;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Memory promotion canonical source is missing'
+          USING ERRCODE = '23503';
+      END IF;
+      SELECT COUNT(*), COUNT(DISTINCT md5(
+        memory.source || ':' || array_to_string(memory.evidence_refs, E'\\x1f')
+      ))
+      INTO source_count, occurrence_count
+      FROM public.omni_memories memory
+      WHERE memory.tenant_id = NEW.tenant_id
+        AND memory.id = ANY(NEW.source_memory_ids)
+        AND memory.claim_status = 'active'
+        AND memory.tier = 'episodic'
+        AND memory.formation_reason IN (
+          'explicit_user_request', 'canonical_source_observation', 'verified_effect'
+        )
+        AND memory.confidence >= 0.8
+        AND cardinality(memory.evidence_refs) > 0
+        AND memory.access_contract_version = NEW.access_contract_version
+        AND memory.owner_actor_id IS NOT DISTINCT FROM NEW.owner_actor_id
+        AND memory.type = canonical_memory.type
+        AND memory.scope = canonical_memory.scope
+        AND memory.tags = canonical_memory.tags
+        AND memory.valid_from IS NOT DISTINCT FROM canonical_memory.valid_from
+        AND memory.valid_to IS NOT DISTINCT FROM canonical_memory.valid_to
+        AND memory.access_scope_sha256 IS NOT DISTINCT FROM canonical_memory.access_scope_sha256
+        AND regexp_replace(lower(btrim(memory.title)), '\\s+', ' ', 'g')
+          = regexp_replace(lower(btrim(canonical_memory.title)), '\\s+', ' ', 'g')
+        AND regexp_replace(lower(btrim(memory.content)), '\\s+', ' ', 'g')
+          = regexp_replace(lower(btrim(canonical_memory.content)), '\\s+', ' ', 'g');
+      IF source_count <> cardinality(NEW.source_memory_ids)
+        OR occurrence_count < 2
+        OR canonical_memory.access_contract_version <> NEW.access_contract_version
+        OR canonical_memory.owner_actor_id IS DISTINCT FROM NEW.owner_actor_id
+        OR public.omni_memory_ids_have_deletion_barrier(
+          NEW.tenant_id,
+          NEW.source_memory_ids
+        )
+      THEN
+        RAISE EXCEPTION 'Memory promotion evidence boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NEW.promoted_memory_id IS NOT NULL THEN
+        SELECT COUNT(*) INTO promoted_count
+        FROM public.omni_memories memory
+        WHERE memory.id = NEW.promoted_memory_id
+          AND memory.tenant_id = NEW.tenant_id
+          AND memory.claim_status = 'active'
+          AND memory.tier = 'procedural'
+          AND memory.formation_reason = 'maintenance_promotion'
+          AND memory.promoted_from_tier = 'episodic'
+          AND memory.access_contract_version = NEW.access_contract_version
+          AND memory.owner_actor_id IS NOT DISTINCT FROM NEW.owner_actor_id
+          AND NEW.source_memory_ids <@ ARRAY(
+            SELECT substring(reference FROM 8)
+            FROM unnest(memory.evidence_refs) reference
+            WHERE reference LIKE 'memory:%'
+          );
+        IF promoted_count <> 1 THEN
+          RAISE EXCEPTION 'Promoted memory lineage is invalid'
+            USING ERRCODE = '55000';
+        END IF;
+      END IF;
+      IF TG_OP = 'UPDATE' THEN
+        IF ROW(
+          OLD.id, OLD.tenant_id, OLD.access_contract_version,
+          OLD.owner_actor_id, OLD.policy_version, OLD.source_memory_ids,
+          OLD.canonical_memory_id, OLD.source_claim_sha256,
+          OLD.target_tier, OLD.created_at
+        ) IS DISTINCT FROM ROW(
+          NEW.id, NEW.tenant_id, NEW.access_contract_version,
+          NEW.owner_actor_id, NEW.policy_version, NEW.source_memory_ids,
+          NEW.canonical_memory_id, NEW.source_claim_sha256,
+          NEW.target_tier, NEW.created_at
+        ) OR OLD.status = 'resolved' AND ROW(
+          OLD.status, OLD.decision, OLD.promoted_memory_id, OLD.resolved_at
+        ) IS DISTINCT FROM ROW(
+          NEW.status, NEW.decision, NEW.promoted_memory_id, NEW.resolved_at
+        ) THEN
+          RAISE EXCEPTION 'Memory promotion review is immutable'
+            USING ERRCODE = '55000';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_validate_memory_promotion_review()
+    FROM PUBLIC
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memory_promotion_review_validate
+    ON omni_memory_promotion_reviews
+  `;
+  await sql`
+    CREATE TRIGGER omni_memory_promotion_review_validate
+    BEFORE INSERT OR UPDATE ON omni_memory_promotion_reviews
+    FOR EACH ROW EXECUTE FUNCTION omni_validate_memory_promotion_review()
+  `;
+
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_scrub_memory_lifecycle_lineage()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      DELETE FROM public.omni_memory_lifecycle_states lifecycle
+      WHERE lifecycle.tenant_id = OLD.tenant_id
+        AND lifecycle.memory_id = OLD.id;
+      DELETE FROM public.omni_memory_promotion_reviews review
+      WHERE review.tenant_id = OLD.tenant_id
+        AND (
+          OLD.id = ANY(review.source_memory_ids)
+          OR review.promoted_memory_id = OLD.id
+        );
+      RETURN OLD;
+    END
+    $function$
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_scrub_memory_lifecycle_lineage()
+    FROM PUBLIC
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memories_scrub_lifecycle_on_forget
+    ON omni_memories
+  `;
+  await sql`
+    CREATE TRIGGER omni_memories_scrub_lifecycle_on_forget
+    AFTER UPDATE OF claim_status ON omni_memories
+    FOR EACH ROW
+    WHEN (NEW.claim_status = 'forgotten' AND OLD.claim_status <> 'forgotten')
+    EXECUTE FUNCTION omni_scrub_memory_lifecycle_lineage()
+  `;
+  await sql`
+    DROP TRIGGER IF EXISTS omni_memories_scrub_lifecycle_on_delete
+    ON omni_memories
+  `;
+  await sql`
+    CREATE TRIGGER omni_memories_scrub_lifecycle_on_delete
+    AFTER DELETE ON omni_memories
+    FOR EACH ROW EXECUTE FUNCTION omni_scrub_memory_lifecycle_lineage()
+  `;
+
+  for (const tableName of [
+    "omni_memory_lifecycle_states",
+    "omni_memory_promotion_reviews",
+  ]) {
+    await sql.query(`ALTER TABLE ${tableName} ENABLE ROW LEVEL SECURITY`);
+    await sql.query(`ALTER TABLE ${tableName} FORCE ROW LEVEL SECURITY`);
+    await sql.query(`DROP POLICY IF EXISTS ${tableName}_actor_scope ON ${tableName}`);
+    await sql.query(`
+      CREATE POLICY ${tableName}_actor_scope
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND omni_user_private_memory_scope_v1_allows_validated(
+            (SELECT omni_current_memory_access_scope_v1()),
+            tenant_id,
+            owner_actor_id,
+            ARRAY[
+              'memory.export.v1', 'memory.forget.v1',
+              'memory.maintenance.v1', 'memory.read.v1', 'memory.retrieve.v1'
+            ]::TEXT[]
+          )
+        )
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR (
+          access_contract_version = 0
+          AND (SELECT omni_current_memory_access_scope_v1()) IS NULL
+        )
+        OR (
+          access_contract_version = 1
+          AND omni_user_private_memory_scope_v1_allows_validated(
+            (SELECT omni_current_memory_access_scope_v1()),
+            tenant_id,
+            owner_actor_id,
+            ARRAY[
+              'memory.export.v1', 'memory.forget.v1',
+              'memory.maintenance.v1', 'memory.read.v1', 'memory.retrieve.v1'
+            ]::TEXT[]
+          )
+        )
+      )
+    `);
+    await sql.query(`DROP POLICY IF EXISTS ${tableName}_mutation_purpose ON ${tableName}`);
+    await sql.query(`DROP POLICY IF EXISTS ${tableName}_insert_purpose ON ${tableName}`);
+    await sql.query(`DROP POLICY IF EXISTS ${tableName}_update_purpose ON ${tableName}`);
+    await sql.query(`DROP POLICY IF EXISTS ${tableName}_delete_purpose ON ${tableName}`);
+    await sql.query(`
+      CREATE POLICY ${tableName}_insert_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR INSERT
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR access_contract_version = 0
+        OR (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId'
+          = 'memory.maintenance.v1'
+      )
+    `);
+    await sql.query(`
+      CREATE POLICY ${tableName}_update_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR UPDATE
+      USING (
+        omni_system_scope_enabled()
+        OR access_contract_version = 0
+        OR (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId'
+          = 'memory.maintenance.v1'
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR access_contract_version = 0
+        OR (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId'
+          = 'memory.maintenance.v1'
+      )
+    `);
+    await sql.query(`
+      CREATE POLICY ${tableName}_delete_purpose
+      ON ${tableName}
+      AS RESTRICTIVE
+      FOR DELETE
+      USING (
+        omni_system_scope_enabled()
+        OR access_contract_version = 0
+        OR (SELECT omni_current_memory_access_scope_v1()) ->> 'purposeId'
+          = 'memory.maintenance.v1'
+      )
+    `);
+  }
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_lifecycle_tenant_archive_idx
+    ON omni_memory_lifecycle_states (tenant_id, archived_at DESC, updated_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_lifecycle_tenant_pin_idx
+    ON omni_memory_lifecycle_states (tenant_id, pinned_at DESC)
+    WHERE pinned_at IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_lifecycle_duplicate_idx
+    ON omni_memory_lifecycle_states (tenant_id, duplicate_of_memory_id)
+    WHERE duplicate_of_memory_id IS NOT NULL
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_promotion_review_status_idx
+    ON omni_memory_promotion_reviews (tenant_id, status, updated_at DESC)
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_memory_promotion_review_actor_idx
+    ON omni_memory_promotion_reviews (tenant_id, owner_actor_id, status, updated_at DESC)
+    WHERE access_contract_version = 1
   `;
 }
 

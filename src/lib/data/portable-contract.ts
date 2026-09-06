@@ -62,7 +62,7 @@ const portableMemoryV2Schema = z.object({
     "manual_user_entry", "explicit_user_request",
     "canonical_source_observation", "verified_effect",
     "assistant_inference_candidate", "correction", "project_reflection",
-    "project_artifact", "workflow_output", "portable_restore",
+    "project_artifact", "workflow_output", "maintenance_promotion", "portable_restore",
     "legacy_record",
   ]).optional(),
   tags: z.array(z.string().trim().min(1).max(100)).max(50),

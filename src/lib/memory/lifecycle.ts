@@ -66,6 +66,22 @@ export type MemoryMaintenanceReport = Readonly<{
   duplicateRateTarget: typeof MEMORY_EXACT_DUPLICATE_RATE_TARGET;
 }>;
 
+export type MemoryMaintenancePlan = Readonly<{
+  archives: readonly Readonly<{
+    memoryId: string;
+    reason: "exact_duplicate" | "retention_expired";
+    duplicateOfMemoryId?: string;
+  }>[];
+  promotionReviews: readonly Readonly<{
+    id: string;
+    sourceMemoryIds: readonly string[];
+    canonicalMemoryId: string;
+    sourceClaimSha256: string;
+    ownerActorId?: string;
+  }>[];
+  report: MemoryMaintenanceReport;
+}>;
+
 export type MemoryLifecyclePolicyV1 = Readonly<{
   version: typeof MEMORY_LIFECYCLE_POLICY_VERSION;
   duplicateRateTarget: typeof MEMORY_EXACT_DUPLICATE_RATE_TARGET;
@@ -246,6 +262,129 @@ export function memoryLifecycleReasons(record: MemoryRecord) {
   if (record.pinnedAt) return ["pinned memory priority"];
   const multiplier = memoryRetrievalPriorityMultiplier(record);
   return multiplier < 0.75 ? ["retrieval priority decayed"] : [];
+}
+
+export function planMemoryMaintenance(
+  records: readonly MemoryRecord[],
+  now: string | number | Date = Date.now(),
+): MemoryMaintenancePlan {
+  const nowMs = now instanceof Date
+    ? now.getTime()
+    : typeof now === "number"
+      ? now
+      : Date.parse(now);
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("Memory maintenance time is invalid.");
+  }
+  const active = records.filter((record) => record.claimStatus === "active");
+  const expired = active.filter((record) =>
+    !record.archivedAt && !record.pinnedAt && Boolean(
+      record.retentionExpiresAt &&
+      Date.parse(record.retentionExpiresAt) <= nowMs,
+    )
+  );
+  const eligible = active.filter((record) =>
+    !record.archivedAt &&
+    (!record.retentionExpiresAt || Date.parse(record.retentionExpiresAt) > nowMs) &&
+    (!record.validFrom || Date.parse(record.validFrom) <= nowMs) &&
+    (!record.validTo || Date.parse(record.validTo) > nowMs)
+  );
+  const groups = groupByClaim(eligible);
+  const duplicateGroups = [...groups.values()].filter((group) => group.length > 1);
+  const archives: Array<MemoryMaintenancePlan["archives"][number]> = [];
+  let duplicateCountBefore = 0;
+  let pinnedDuplicateConflicts = 0;
+  let duplicateCountAfter = 0;
+  const promotionReviews: Array<
+    MemoryMaintenancePlan["promotionReviews"][number]
+  > = [];
+
+  for (const group of duplicateGroups) {
+    const ordered = [...group].sort(compareMemoryCanonicalOrder);
+    const canonical = ordered[0]!;
+    duplicateCountBefore += ordered.length - 1;
+    const retained = [canonical];
+    for (const duplicate of ordered.slice(1)) {
+      if (duplicate.pinnedAt) {
+        retained.push(duplicate);
+        pinnedDuplicateConflicts += 1;
+        continue;
+      }
+      archives.push({
+        memoryId: duplicate.id,
+        reason: "exact_duplicate",
+        duplicateOfMemoryId: canonical.id,
+      });
+    }
+    duplicateCountAfter += Math.max(0, retained.length - 1);
+
+    const verified = ordered.filter(isVerifiedPromotionEpisode);
+    const distinctOccurrences = new Set(
+      verified.map(verifiedMemoryOccurrenceKey),
+    );
+    if (
+      distinctOccurrences.size >=
+        memoryLifecyclePolicyV1.promotion.minimumVerifiedOccurrences
+    ) {
+      const sourceMemoryIds = verified.map((record) => record.id).sort(compareIds);
+      const sourceClaimSha256 = memoryClaimFingerprint(canonical);
+      promotionReviews.push({
+        id: memoryPromotionReviewId({
+          tenantId: canonical.tenantId || "default",
+          ownerActorId: canonical.accessBinding?.ownerActorId,
+          sourceClaimSha256,
+        }),
+        sourceMemoryIds,
+        canonicalMemoryId: canonical.id,
+        sourceClaimSha256,
+        ...(canonical.accessBinding?.ownerActorId
+          ? { ownerActorId: canonical.accessBinding.ownerActorId }
+          : {}),
+      });
+    }
+  }
+
+  for (const record of expired) {
+    archives.push({ memoryId: record.id, reason: "retention_expired" });
+  }
+
+  const rate = (duplicates: number, population: number) =>
+    population ? Number((duplicates / population).toFixed(6)) : 0;
+  return Object.freeze({
+    archives: Object.freeze(archives),
+    promotionReviews: Object.freeze(promotionReviews),
+    report: Object.freeze({
+      policyVersion: MEMORY_LIFECYCLE_POLICY_VERSION,
+      scanned: records.length,
+      eligible: eligible.length,
+      exactDuplicateGroups: duplicateGroups.length,
+      autoArchivedDuplicates: archives.filter(
+        (archive) => archive.reason === "exact_duplicate",
+      ).length,
+      pinnedDuplicateConflicts,
+      promotionReviewsCreated: promotionReviews.length,
+      expiredArchived: expired.length,
+      duplicateRateBefore: rate(duplicateCountBefore, eligible.length),
+      duplicateRateAfter: rate(
+        duplicateCountAfter,
+        eligible.length - archives.filter(
+          (archive) => archive.reason === "exact_duplicate",
+        ).length,
+      ),
+      duplicateRateTarget: MEMORY_EXACT_DUPLICATE_RATE_TARGET,
+    }),
+  });
+}
+
+function groupByClaim(records: readonly MemoryRecord[]) {
+  const groups = new Map<string, MemoryRecord[]>();
+  for (const record of records) {
+    const key = memoryClaimFingerprint(record);
+    const group = groups.get(key) || [];
+    group.push(record);
+    groups.set(key, group);
+  }
+  return groups;
 }
 
 function normalizedClaimText(value: string) {

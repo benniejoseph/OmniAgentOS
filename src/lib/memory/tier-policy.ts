@@ -26,6 +26,7 @@ export const memoryFormationReasonSchema = z.enum([
   "project_reflection",
   "project_artifact",
   "workflow_output",
+  "maintenance_promotion",
   "portable_restore",
   "legacy_record",
 ]);
@@ -270,6 +271,7 @@ export function inferMemoryFormationReason(input: {
   if (source.includes("reflection")) return "project_reflection";
   if (source.includes("artifact")) return "project_artifact";
   if (source.includes("workflow")) return "workflow_output";
+  if (source.startsWith("memory-promotion:")) return "maintenance_promotion";
   return "legacy_record";
 }
 
@@ -284,6 +286,7 @@ export function memoryFormationReasonLabel(reason: MemoryFormationReason) {
     project_reflection: "Formed from a project reflection.",
     project_artifact: "Formed from a project artifact.",
     workflow_output: "Formed from governed workflow output.",
+    maintenance_promotion: "Promoted from repeated verified episodes after explicit review.",
     portable_restore: "Restored from a verified portable archive.",
     legacy_record: "Imported from a record created before tiered memory metadata.",
   };
