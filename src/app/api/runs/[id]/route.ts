@@ -131,6 +131,13 @@ async function PATCHHandler(
   }
   const updated = await recordAgentRunFeedback(id, parsed.data, {
     tenantId: auth.tenantId,
+    executionScope: executionScopeFromSecurityContext(auth, {
+      executingPrincipalType: "user",
+      executingPrincipalId: auth.actorId,
+      correlationId:
+        request.headers.get("x-request-id")?.trim() || crypto.randomUUID(),
+      purpose: "run.feedback",
+    }),
   });
   const affectedMemoryIds = await applyRunMemoryFeedback(id, parsed.data.verdict, {
     tenantId: auth.tenantId,

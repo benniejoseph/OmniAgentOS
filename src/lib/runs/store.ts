@@ -19,6 +19,7 @@ import {
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  createExecutionScope,
   executionScopesEqual,
   parsePersistedExecutionScope,
   type ExecutionScope,
@@ -1020,7 +1021,7 @@ export async function recordRunConsolidation(
 export async function recordAgentRunFeedback(
   runId: string,
   input: { verdict: AgentRunFeedback["verdict"]; correction?: string },
-  options: { tenantId?: string } = {},
+  options: { tenantId?: string; executionScope?: ExecutionScope } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const feedback: AgentRunFeedback = {
@@ -1034,15 +1035,34 @@ export async function recordAgentRunFeedback(
   let updated: AgentRunRecord | undefined;
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_agent_runs
-      SET feedback = ${feedback}::jsonb
-      WHERE id = ${runId}
-        AND tenant_id = ${tenantId}
-        AND status = 'completed'
-      RETURNING *
-    `;
-    updated = rows[0] ? runFromRow(rows[0]) : undefined;
+    if (options.executionScope) {
+      assertExecutionScopeTenant(options.executionScope, tenantId);
+    }
+    updated = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          UPDATE omni_agent_runs
+          SET feedback = ${feedback}::jsonb
+          WHERE id = ${runId}
+            AND tenant_id = ${tenantId}
+            AND status = 'completed'
+          RETURNING *
+        `;
+        if (!rows[0]) return undefined;
+        await appendDomainEvent({
+          tenantId,
+          streamId: `run:${runId}`,
+          type: "run.feedback",
+          payload: {
+            verdict: feedback.verdict,
+            hasCorrection: Boolean(feedback.correction),
+          },
+          correlationId: options.executionScope?.correlationId || runId,
+          executionScope: options.executionScope,
+        }, { sql });
+        return runFromRow(rows[0]);
+      },
+    ) as AgentRunRecord | undefined;
   } else {
     await updateFileRun(runId, (run) => {
       if (
@@ -1055,7 +1075,7 @@ export async function recordAgentRunFeedback(
     });
   }
 
-  if (updated) {
+  if (updated && !hasDatabaseUrl()) {
     await appendDomainEventSafely({
       tenantId,
       streamId: `run:${runId}`,
@@ -1155,55 +1175,92 @@ export async function repairStuckAgentRuns({
   const staleBeforeEpoch = new Date(Date.now() - staleAfterMs).toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    // Use epoch arithmetic to avoid named-parameter / type issues with intervals.
-    const rows = await runWithDatabaseSystemScope(
+    const repaired = await runWithDatabaseSystemScope(
       `Repair stale agent runs for tenant ${tenantId}.`,
-      () => getSql()`
-        UPDATE omni_agent_runs AS run
-        SET status       = 'failed',
-            error        = CASE
-              WHEN status = 'resuming'
-                THEN 'Approved run resume was interrupted; side effects were not replayed.'
-              WHEN status = 'queued'
-                THEN 'Queued durable agent run expired before dispatch.'
-              ELSE 'Run timed out (function invocation limit exceeded).'
-            END,
-            continuation = NULL,
-            completed_at = NOW()
-        WHERE tenant_id = ${tenantId}
-          AND (
-            (status IN ('queued', 'running') AND started_at <= ${staleBeforeEpoch}::timestamptz)
-            OR (
-              status = 'resuming'
-              AND COALESCE(
-                (continuation->>'resumeClaimedAt')::timestamptz,
-                started_at
-              ) <= ${staleBeforeEpoch}::timestamptz
-            )
-          )
-          AND NOT (
-            status = 'resuming'
-            AND continuation ? 'checkpointResumeClaim'
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM omni_agent_loop_v2_checkpoints AS checkpoint
-            WHERE checkpoint.tenant_id = run.tenant_id
-              AND checkpoint.run_id = run.id
-              AND checkpoint.lifecycle_state = 'active'
-              AND checkpoint.sequence = (
-                SELECT MAX(latest.sequence)
-                FROM omni_agent_loop_v2_checkpoints AS latest
-                WHERE latest.tenant_id = run.tenant_id
-                  AND latest.run_id = run.id
+      () => getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+        const candidates = await sql`
+          SELECT id, owner_actor_id, status
+          FROM omni_agent_runs AS run
+          WHERE tenant_id = ${tenantId}
+            AND (
+              (status IN ('queued', 'running') AND started_at <= ${staleBeforeEpoch}::timestamptz)
+              OR (
+                status = 'resuming'
+                AND COALESCE(
+                  (continuation->>'resumeClaimedAt')::timestamptz,
+                  started_at
+                ) <= ${staleBeforeEpoch}::timestamptz
               )
-          )
-        RETURNING id
-      `,
-    );
-    return rows.length;
+            )
+            AND NOT (
+              status = 'resuming'
+              AND continuation ? 'checkpointResumeClaim'
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM omni_agent_loop_v2_checkpoints AS checkpoint
+              WHERE checkpoint.tenant_id = run.tenant_id
+                AND checkpoint.run_id = run.id
+                AND checkpoint.lifecycle_state = 'active'
+                AND checkpoint.sequence = (
+                  SELECT MAX(latest.sequence)
+                  FROM omni_agent_loop_v2_checkpoints AS latest
+                  WHERE latest.tenant_id = run.tenant_id
+                    AND latest.run_id = run.id
+                )
+            )
+          FOR UPDATE SKIP LOCKED
+        `;
+        let count = 0;
+        for (const candidate of candidates) {
+          const runId = String(candidate.id);
+          const actorId = requiredOwnerActorId(String(candidate.owner_actor_id));
+          const priorStatus = String(candidate.status);
+          const message = priorStatus === "resuming"
+            ? "Approved run resume was interrupted; side effects were not replayed."
+            : priorStatus === "queued"
+              ? "Queued durable agent run expired before dispatch."
+              : "Run timed out (function invocation limit exceeded).";
+          const rows = await sql`
+            UPDATE omni_agent_runs
+            SET status = 'failed', error = ${message}, continuation = NULL,
+                completed_at = NOW()
+            WHERE id = ${runId} AND tenant_id = ${tenantId}
+              AND status = ${priorStatus}
+            RETURNING id
+          `;
+          if (!rows[0]) continue;
+          const event: AgentEvent = { type: "error", message };
+          await appendRunEventInTransaction({
+            sql,
+            tenantId,
+            executionScope: createExecutionScope({
+              tenantId,
+              initiatingActorId: actorId,
+              executingPrincipalType: "system",
+              executingPrincipalId: "omniagent-maintenance",
+              correlationId: runId,
+              purpose: "run.repair_stale",
+            }),
+            record: {
+              id: randomUUID(),
+              tenantId,
+              runId,
+              type: event.type,
+              payload: event,
+              createdAt: new Date().toISOString(),
+            },
+            event,
+          });
+          count += 1;
+        }
+        return count;
+      }),
+    ) as number;
+    return repaired;
   }
   let repaired = 0;
+  const repairedRuns: Array<{ runId: string; message: string }> = [];
   await updateRunLedger((ledger) => {
     const staleBefore = Date.parse(staleBeforeEpoch);
     for (const run of ledger.runs) {
@@ -1229,21 +1286,46 @@ export async function repairStuckAgentRuns({
         : wasQueued
           ? "Queued durable agent run expired before dispatch."
           : "Run timed out (function invocation limit exceeded).";
+      repairedRuns.push({ runId: run.id, message: run.error });
       run.continuation = undefined;
       run.completedAt = new Date().toISOString();
     }
     return ledger;
   });
+  for (const repairedRun of repairedRuns) {
+    await appendRunEvent(repairedRun.runId, {
+      type: "error",
+      message: repairedRun.message,
+    }, { tenantId });
+  }
   return repaired;
 }
 
 export async function markAgentRunWaitingForApproval(
   runId: string,
-  values: { response: string; continuation: AgentRunContinuation },
+  values: {
+    response: string;
+    continuation: AgentRunContinuation;
+    message?: string;
+  },
   options: { resumeFence?: AgentRunResumeFence } = {},
 ) {
   const tenantId = normalizeTenantId(values.continuation.context.tenantId);
   const executionId = values.continuation.pendingToolCall.executionId;
+  const waitingEvent: AgentEvent = {
+    type: "waiting_approval",
+    executionId,
+    toolId: values.continuation.pendingToolCall.toolId,
+    message: values.message || "Run paused for governed tool approval.",
+  };
+  const waitingEventRecord: AgentRunEventRecord = {
+    id: randomUUID(),
+    tenantId,
+    runId,
+    type: waitingEvent.type,
+    payload: redactSensitive(waitingEvent) as AgentEvent,
+    createdAt: values.continuation.createdAt,
+  };
   const resumeJobInput = {
     tenantId,
     type: "agent.resume" as const,
@@ -1259,7 +1341,7 @@ export async function markAgentRunWaitingForApproval(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    return getSql().transaction(
+    const parked = await getSql().transaction(
       async (sql: ReturnType<typeof getSql>) => {
         const resumeFence = options.resumeFence;
         if (resumeFence) {
@@ -1345,14 +1427,32 @@ export async function markAgentRunWaitingForApproval(
             throw new Error("Agent next-wait checkpoint fence became stale.");
           }
         }
+        await appendRunEventInTransaction({
+          sql,
+          tenantId,
+          executionScope: values.continuation.executionScope,
+          record: waitingEventRecord,
+          event: waitingEvent,
+        });
         return { parked: true, resumeJob };
       },
-    ) as Promise<{
+    ) as {
       parked: boolean;
       resumeJob:
         | Awaited<ReturnType<typeof enqueueOperationJob>>
         | undefined;
-    }>;
+    };
+    if (parked.parked) {
+      await appendLegacyRunTerminalReceiptSafely(
+        runId,
+        waitingEvent,
+        waitingEventRecord.id,
+        tenantId,
+        values.continuation.executionScope,
+        values.continuation.runContractEnvelope,
+      );
+    }
+    return parked;
   }
 
   // File mode has no cross-file transaction. Pre-arm the durable job first;
@@ -1375,6 +1475,13 @@ export async function markAgentRunWaitingForApproval(
     run.completedAt = undefined;
     parked = true;
   });
+  if (parked) {
+    await appendRunEvent(runId, waitingEvent, {
+      tenantId,
+      executionScope: values.continuation.executionScope,
+      runContractEnvelope: values.continuation.runContractEnvelope,
+    });
+  }
   return { parked, resumeJob };
 }
 
@@ -1383,25 +1490,59 @@ export async function markAgentRunWaitingForApproval(
  * waiting_approval to resuming. Returns false if another approval already
  * claimed the run, so concurrent decisions cannot double-resume it.
  */
-export async function markAgentRunResuming(runId: string): Promise<boolean> {
+export async function markAgentRunResuming(
+  runId: string,
+  options: { tenantId?: string; executionScope?: ExecutionScope } = {},
+): Promise<boolean> {
   const claimedAt = new Date().toISOString();
+  const tenantId = options.tenantId
+    ? normalizeTenantId(options.tenantId)
+    : hasDatabaseUrl()
+      ? await resolveAgentRunTenantId(runId)
+      : normalizeTenantId();
+  const event: AgentEvent = {
+    type: "status",
+    label: "resuming after approval",
+    detail: "A governed tool approval resolved; continuing the same agent run.",
+  };
+  const record: AgentRunEventRecord = {
+    id: randomUUID(),
+    tenantId,
+    runId,
+    type: event.type,
+    payload: event,
+    createdAt: claimedAt,
+  };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_agent_runs
-      SET status = 'resuming',
-          continuation = jsonb_set(
-            continuation,
-            '{resumeClaimedAt}',
-            to_jsonb(${claimedAt}::text),
-            true
-          ),
-          completed_at = NULL
-      WHERE id = ${runId}
-        AND status = 'waiting_approval'
-      RETURNING id
-    `;
-    return Boolean(rows[0]);
+    const executionScope = options.executionScope ||
+      await getAgentRunExecutionScope(runId, { tenantId });
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_agent_runs
+        SET status = 'resuming',
+            continuation = jsonb_set(
+              continuation,
+              '{resumeClaimedAt}',
+              to_jsonb(${claimedAt}::text),
+              true
+            ),
+            completed_at = NULL
+        WHERE id = ${runId}
+          AND tenant_id = ${tenantId}
+          AND status = 'waiting_approval'
+        RETURNING id
+      `;
+      if (!rows[0]) return false;
+      await appendRunEventInTransaction({
+        sql,
+        tenantId,
+        executionScope,
+        record,
+        event,
+      });
+      return true;
+    }) as Promise<boolean>;
   }
 
   let transitioned = false;
@@ -1418,6 +1559,12 @@ export async function markAgentRunResuming(runId: string): Promise<boolean> {
       transitioned = true;
     }
   });
+  if (transitioned) {
+    await appendRunEvent(runId, event, {
+      tenantId: options.tenantId,
+      executionScope: options.executionScope,
+    });
+  }
   return transitioned;
 }
 
@@ -1672,7 +1819,7 @@ async function setRunStatus(
         if (!completed) {
           throw new Error("Agent terminal checkpoint fence became stale.");
         }
-        await appendTerminalRunEventInTransaction({
+        await appendRunEventInTransaction({
           sql,
           tenantId,
           executionScope,
@@ -1714,7 +1861,7 @@ async function setRunStatus(
           RETURNING id
         `;
         if (!rows[0]) return false;
-        await appendTerminalRunEventInTransaction({
+        await appendRunEventInTransaction({
           sql,
           tenantId,
           executionScope,
@@ -1764,7 +1911,7 @@ async function setRunStatus(
   return changed;
 }
 
-async function appendTerminalRunEventInTransaction(input: {
+async function appendRunEventInTransaction(input: {
   sql: ReturnType<typeof getSql>;
   tenantId: string;
   executionScope?: ExecutionScope;
