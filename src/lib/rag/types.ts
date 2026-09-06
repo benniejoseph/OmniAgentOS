@@ -121,6 +121,7 @@ export type RetrievalProfile = {
   queryPlan: RetrievalQueryPlan;
   embedding?: import("@/lib/rag/retrieval-embedding").RetrievalEmbeddingReceipt;
   reranker?: import("@/lib/rag/learned-reranker").RetrievalRerankerReceipt;
+  contextBudget?: import("@/lib/rag/context-budget").ContextBudgetReceipt;
 };
 
 export type ContextEvidenceItem = (
