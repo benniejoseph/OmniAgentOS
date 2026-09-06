@@ -2,10 +2,16 @@ import { createHash } from "node:crypto";
 
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { AGENT_REASONING_EFFORT } from "@/lib/config";
+import {
+  buildCouncilMemberDelegationContractV1,
+  councilContributionJsonSchema,
+  type CouncilDelegationAuthority,
+} from "@/lib/delegation/council-adapter";
 import { generateModelStructured } from "@/lib/models/gateway";
 import type { ModelGenerationResult } from "@/lib/models/types";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
 import type { AgentMode } from "@/lib/orchestration/types";
+import { deriveExecutionScope } from "@/lib/security/execution-scope";
 import type { AiUsageScope } from "@/lib/usage/types";
 
 type CouncilUsageAttribution = Omit<AiUsageScope, "operation" | "purpose">;
@@ -24,6 +30,12 @@ export type CouncilContribution = {
   evidenceIds: string[];
   confidence: number;
   durationMs: number;
+  delegation: {
+    delegationId: string;
+    contractId: string;
+    contractSha256: string;
+    delegatePrincipalId: string;
+  };
   error?: string;
 };
 
@@ -39,6 +51,8 @@ export type CouncilCheckpointHooks = Readonly<{
   beforeDelegation?: (input: Readonly<{
     agentId: CouncilAgentId;
     attempt: number;
+    delegationId: string;
+    contractId: string;
     requestSha256: string;
   }>) => Promise<void>;
   afterDelegation?: (input: Readonly<{
@@ -76,6 +90,7 @@ export async function runCouncilRound(input: {
   specialistIds: CouncilAgentId[];
   contextBlock: string;
   tenantId?: string;
+  delegationAuthority: CouncilDelegationAuthority;
   abortSignal?: AbortSignal;
   usageAttribution?: CouncilUsageAttribution;
   checkpointHooks?: CouncilCheckpointHooks;
@@ -88,16 +103,32 @@ export async function runCouncilRound(input: {
     const agent = councilAgent(agentId);
     const attempt = 1;
     const sourceId = `delegation:${agentId}`;
+    const delegationContract = buildCouncilMemberDelegationContractV1({
+      authority: input.delegationAuthority,
+      agentId,
+      goal: input.goal,
+      mode: input.mode,
+      contextBlock: input.contextBlock,
+      attempt,
+    });
+    const delegationExecutionScope = deriveExecutionScope(
+      input.delegationAuthority.executionScope,
+      {
+        executingPrincipalType: "agent",
+        executingPrincipalId: delegationContract.delegate.principalId,
+        delegationId: delegationContract.delegationId,
+        causationId: delegationContract.contractId,
+        contextGrantIds: delegationContract.grants.contextGrantIds,
+        capabilityGrantIds: delegationContract.grants.capabilityGrantIds,
+        purpose: delegationContract.purpose,
+      },
+    );
     await invokeCheckpointHook(input.checkpointHooks?.beforeDelegation, {
       agentId,
       attempt,
-      requestSha256: contentSha256({
-        schemaVersion: 1,
-        agentId,
-        goal: input.goal,
-        mode: input.mode,
-        contextBlock: input.contextBlock,
-      }),
+      delegationId: delegationContract.delegationId,
+      contractId: delegationContract.contractId,
+      requestSha256: delegationContract.contractSha256,
     });
     let modelBoundaryClosed = false;
     try {
@@ -118,13 +149,12 @@ export async function runCouncilRound(input: {
             "No adaptation is inherited from another Agent. This council member has no separately pinned adaptation manifest.",
           ].filter(Boolean).join("\n\n"),
           input: [
-            `Goal: ${input.goal}`,
-            `Mode: ${input.mode}`,
+            `<delegation_contract schema_version="1" provenance="orchestrator_bound">\n${escapeUntrustedPromptText(JSON.stringify(delegationContract))}\n</delegation_contract>`,
             `<untrusted_context>\n${escapeUntrustedPromptText(input.contextBlock.slice(0, 14_000))}\n</untrusted_context>`,
-            "Return your strongest findings, risks, recommendation, exact evidence IDs you relied on, and calibrated confidence.",
+            "Return the closed output required by the DelegationContract. A completed response remains proposed until parent verification.",
           ].join("\n\n"),
           name: `council_${agentId}_contribution`,
-          schema: contributionSchema,
+          schema: councilContributionJsonSchema,
           reasoningEffort: AGENT_REASONING_EFFORT,
           abortSignal: input.abortSignal,
           tier: "reasoning",
@@ -135,6 +165,9 @@ export async function runCouncilRound(input: {
                   ...input.usageAttribution,
                   operation: "structured_generation" as const,
                   purpose: `council.member.${agentId}`,
+                  correlationId: delegationExecutionScope.correlationId,
+                  causationId: delegationExecutionScope.causationId || undefined,
+                  executionScope: delegationExecutionScope,
                 },
               }
             : {}),
@@ -169,6 +202,7 @@ export async function runCouncilRound(input: {
         evidenceIds: stringArray(parsed.evidenceIds, 12),
         confidence: boundedScore(parsed.confidence),
         durationMs: Date.now() - startedAt,
+        delegation: delegationBinding(delegationContract),
       };
       await invokeCheckpointHook(input.checkpointHooks?.afterDelegation, {
         agentId,
@@ -198,6 +232,7 @@ export async function runCouncilRound(input: {
         evidenceIds: [],
         confidence: 0,
         durationMs: Date.now() - startedAt,
+        delegation: delegationBinding(delegationContract),
         error: error instanceof Error ? error.message : "Council contribution failed.",
       };
       await invokeCheckpointHook(input.checkpointHooks?.afterDelegation, {
@@ -451,7 +486,19 @@ function contributionReceiptSha256(contribution: CouncilContribution) {
     recommendation: contribution.recommendation,
     evidenceIds: contribution.evidenceIds,
     confidence: contribution.confidence,
+    delegation: contribution.delegation,
   });
+}
+
+function delegationBinding(
+  contract: ReturnType<typeof buildCouncilMemberDelegationContractV1>,
+): CouncilContribution["delegation"] {
+  return {
+    delegationId: contract.delegationId,
+    contractId: contract.contractId,
+    contractSha256: contract.contractSha256,
+    delegatePrincipalId: contract.delegate.principalId,
+  };
 }
 
 function contentSha256(value: unknown) {
@@ -462,20 +509,6 @@ function checkpointFailureKind(error: unknown) {
   if (error instanceof DOMException && error.name === "AbortError") return "abort";
   return error instanceof Error ? error.name.slice(0, 80) : "unknown";
 }
-
-const contributionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["summary", "findings", "risks", "recommendation", "evidenceIds", "confidence"],
-  properties: {
-    summary: { type: "string" },
-    findings: { type: "array", items: { type: "string" } },
-    risks: { type: "array", items: { type: "string" } },
-    recommendation: { type: "string" },
-    evidenceIds: { type: "array", items: { type: "string" } },
-    confidence: { type: "number" },
-  },
-} as const;
 
 const verdictSchema = {
   type: "object",

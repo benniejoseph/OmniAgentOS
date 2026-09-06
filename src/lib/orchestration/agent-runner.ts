@@ -13,7 +13,6 @@ import {
   hasGeminiKey,
   hasOpenAIKey,
 } from "@/lib/config";
-import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { getActiveAgentAdaptationGuidance } from "@/lib/agents/adaptation-store";
 import {
   analyzeBrowserCapabilityIntent,
@@ -124,6 +123,7 @@ import {
   type ShadowRunContractSnapshot,
 } from "@/lib/runs/contract-runtime";
 import {
+  DEFAULT_AGENT_RUN_BUDGET_LIMITS,
   RunBudgetExceededError,
   createRunBudgetState,
   isBrowserActionTool,
@@ -1298,6 +1298,18 @@ export async function* runAgent(
         specialistIds: councilAgentIds,
         contextBlock: [retrieval.contextBlock, liveWebContext].filter(Boolean).join("\n\n"),
         tenantId: request.tenantId,
+        delegationAuthority: {
+          parentExecutionId: run.id,
+          executionScope,
+          delegator: {
+            principalId: resolvedAgentIdentity.principal.principalId,
+            agentId: resolvedAgentIdentity.definition.logicalAgentId,
+            definitionVersion:
+              resolvedAgentIdentity.definition.definitionVersion,
+          },
+          parentBudgets: budgetLimits,
+          remainingWallTimeMs: remainingRunBudget(runBudgetState).wallTimeMs,
+        },
         abortSignal: runAbortSignal,
         checkpointHooks: councilCheckpointHooks,
         ...(request.actorId
