@@ -135,7 +135,7 @@ describe("workflow agent node execution", () => {
     expect(mocks.generateModelStructured.mock.calls[0]?.[0]).toMatchObject({
       name: "workflow_node_result_v1",
       maxOutputTokens: 1_800,
-      reasoningEffort: "minimal",
+      reasoningEffort: "low",
       tier: "reasoning",
       usageScope: {
         tenantId: "tenant-1",
