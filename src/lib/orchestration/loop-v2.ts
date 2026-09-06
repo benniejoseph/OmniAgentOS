@@ -22,6 +22,8 @@ export const LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID =
   "agent_loop_v2_model_text_canary_1" as const;
 export const LOOP_V2_CONTRACT_VERSION_ID =
   "agent_loop_transition_checkpoint_v1" as const;
+export const LOOP_V2_MODEL_TEXT_INSTRUCTIONS =
+  "Summarize only the supplied text. Preserve its central facts and qualifications, do not add outside information, and return concise plain text." as const;
 const LOOP_V2_TRANSITIONS = Object.freeze([
   "understand",
   "clarify",
@@ -44,11 +46,16 @@ export const LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256 = sourceContractSha256({
   engineVersionId: LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
   contractVersionId: LOOP_V2_CONTRACT_VERSION_ID,
   taskClass: "bounded_user_text_summary",
-  inputPrefix: "summarize",
+  acceptedInputPrefixes: ["summarize:", "summarize this text:"],
   minInputChars: 80,
   maxInputChars: 4_000,
-  maxModelCalls: 1,
+  instructionsSha256: sourceContractSha256(
+    LOOP_V2_MODEL_TEXT_INSTRUCTIONS,
+  ),
+  maxLogicalModelCalls: 1,
+  maxProviderAttempts: 4,
   maxOutputTokens: 256,
+  maxOutputChars: 4_000,
   contextEvidenceCount: 0,
   toolCount: 0,
   maxRetries: 2,
@@ -242,7 +249,12 @@ export function createInitialLoopV2Checkpoint(input: {
   enginePin: LoopV2EnginePin;
   transitionedAt?: string;
 }): LoopV2Checkpoint {
-  assertLoopScope(input.executionScope, input.tenantId, input.ownerActorId);
+  assertLoopScope(
+    input.executionScope,
+    input.tenantId,
+    input.ownerActorId,
+    input.enginePin,
+  );
   return buildCheckpoint({
     tenantId: input.tenantId,
     runId: input.runId,
@@ -277,6 +289,7 @@ export function advanceLoopV2Checkpoint(input: {
     input.executionScope,
     current.tenantId,
     current.ownerActorId,
+    current.enginePin,
   );
   if (
     loopV2ExecutionScopeSha256(input.executionScope) !==
@@ -472,13 +485,18 @@ function assertLoopScope(
   executionScope: ExecutionScope,
   tenantId: string,
   ownerActorId: string,
+  enginePin: LoopV2EnginePin,
 ) {
   const scope = parsePersistedExecutionScope(executionScope);
+  const expectedPurpose = enginePin.capabilityId ===
+      LOOP_V2_MODEL_TEXT_CAPABILITY_ID
+    ? "agent.loop.v2.model_text_canary"
+    : "agent.loop.v2.read_only_canary";
   if (
     !scope ||
     scope.tenantId !== tenantId ||
     scope.initiatingActorId !== ownerActorId ||
-    scope.purpose !== "agent.loop.v2.read_only_canary" ||
+    scope.purpose !== expectedPurpose ||
     scope.executingPrincipalType !== "agent" ||
     !scope.executingPrincipalId ||
     scope.workspaceId !== null ||
