@@ -245,10 +245,24 @@ export async function resolveAndRecordEntityIdentity(input: {
     accessBinding,
     "entity.resolve.v1",
   );
+  const resolutionIdentity = resolveEntityIdentity({
+    ...input,
+    accessBinding,
+    candidates: [],
+  });
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     return runWithDatabaseActorScope(scope.tenantId, [scope.initiatingActorId], () =>
       getSql().transaction(async (sql: EntitySqlClient) => {
+        const existing = await loadResolution(
+          sql,
+          scope.tenantId,
+          resolutionIdentity.resolutionId,
+        );
+        if (existing) {
+          assertResolutionIdentity(existing, resolutionIdentity);
+          return existing;
+        }
         const candidates = await loadCandidates(sql, input.entityTypeId, accessBinding);
         const resolution = resolveEntityIdentity({ ...input, accessBinding, candidates });
         const rows = await sql`
@@ -283,25 +297,21 @@ export async function resolveAndRecordEntityIdentity(input: {
   let created = false;
   let stored: EntityResolutionDecision | undefined;
   await updateLedger((ledger) => {
+    const existing = ledger.resolutions.find((candidate) =>
+      candidate.tenantId === scope.tenantId &&
+      candidate.resolutionId === resolutionIdentity.resolutionId
+    );
+    if (existing) {
+      stored = parseEntityResolutionDecision(existing);
+      assertResolutionIdentity(stored, resolutionIdentity);
+      return ledger;
+    }
     const candidates = candidatesFromLedger(
       ledger,
       input.entityTypeId,
       accessBinding,
     );
     const resolution = resolveEntityIdentity({ ...input, accessBinding, candidates });
-    const existing = ledger.resolutions.find((candidate) =>
-      candidate.tenantId === scope.tenantId &&
-      candidate.resolutionId === resolution.resolutionId
-    );
-    if (existing) {
-      stored = parseEntityResolutionDecision(existing);
-      assertSameDigest(
-        stored.decisionSha256,
-        resolution.decisionSha256,
-        "entity resolution",
-      );
-      return ledger;
-    }
     stored = resolution;
     created = true;
     return { ...ledger, resolutions: [...ledger.resolutions, resolution] };
@@ -644,6 +654,27 @@ function assertSameDigest(
   if (!actual) throw new Error(`${recordType} was not found in scope.`);
   if (actual !== expected) {
     throw new Error(`${recordType} id is already bound to a different contract.`);
+  }
+}
+
+function assertResolutionIdentity(
+  actual: EntityResolutionDecision,
+  expected: EntityResolutionDecision,
+) {
+  if (
+    actual.resolutionId !== expected.resolutionId ||
+    actual.resolverVersionId !== expected.resolverVersionId ||
+    actual.ontologyVersionId !== expected.ontologyVersionId ||
+    actual.tenantId !== expected.tenantId ||
+    actual.ownerActorId !== expected.ownerActorId ||
+    actual.entityTypeId !== expected.entityTypeId ||
+    actual.inputLabelSha256 !== expected.inputLabelSha256 ||
+    actual.accessScopeSha256 !== expected.accessScopeSha256 ||
+    actual.decidedAt !== expected.decidedAt
+  ) {
+    throw new Error(
+      "Entity resolution id is already bound to different evidence.",
+    );
   }
 }
 

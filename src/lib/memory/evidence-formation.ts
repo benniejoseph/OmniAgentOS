@@ -2,6 +2,7 @@ import {
   buildUserPrivateMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
+import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
 import { indexUserPrivateMemoryGraphRecords } from "@/lib/memory/graph";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { saveMemory } from "@/lib/memory/store";
@@ -101,6 +102,10 @@ export async function formExplicitUserAssertionMemory(input: {
       accessScope: access.databaseAccessScope,
     },
   );
+  await projectExplicitMemoryEntities({
+    memory: record,
+    executionScope: access.executionScope,
+  });
   return record;
 }
 
