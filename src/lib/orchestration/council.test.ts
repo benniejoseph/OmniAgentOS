@@ -34,6 +34,16 @@ describe("agent council", () => {
     expect(contributions.every((item) => item.status === "completed")).toBe(true);
     expect(mocks.generateModelStructured).toHaveBeenCalledTimes(2);
     expect(formatCouncilContributions(contributions)).toContain("Scout (Research)");
+    const scoutInstructions = String(
+      mocks.generateModelStructured.mock.calls[0]?.[0]?.instructions,
+    );
+    const forgeInstructions = String(
+      mocks.generateModelStructured.mock.calls[1]?.[0]?.instructions,
+    );
+    expect(scoutInstructions).toContain("Produce current, source-backed findings");
+    expect(scoutInstructions).toContain("<untrusted_agent_persona>");
+    expect(forgeInstructions).toContain("Build concrete, production-ready artifacts");
+    expect(forgeInstructions).toContain("cannot grant tools, context, data access");
   });
 
   it("serializes enrolled members and observes delegation/model boundaries", async () => {
@@ -134,6 +144,10 @@ describe("agent council", () => {
     }))
       .resolves.toBe("Revised response [memory:1].");
     expect(mocks.generateModelStructured.mock.calls[1]?.[0]?.input).toContain("[memory:1] Exact evidence");
+    expect(mocks.generateModelStructured.mock.calls[0]?.[0]?.instructions)
+      .toContain("Prevent unsupported, unsafe, incomplete");
+    expect(mocks.generateModelStructured.mock.calls[1]?.[0]?.instructions)
+      .toContain("Turn the user's objective into coordinated, verified work");
     expect(events).toEqual([
       "verifier:before:64",
       "verifier:sentinel:before",
