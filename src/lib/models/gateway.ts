@@ -184,6 +184,10 @@ async function executeGateway<
   const gatewayStartedAt = Date.now();
   const usageRecordId = request.usageScope ? randomUUID() : undefined;
   const runtime = getModelRuntime(request);
+  const maxAttempts = Math.min(
+    Math.max(Math.round(request.maxAttempts ?? MAX_TARGET_ATTEMPTS), 1),
+    MAX_TARGET_ATTEMPTS,
+  );
   const candidates = modelTargets({
     tier: request.tier || "fast",
     feature,
@@ -191,7 +195,7 @@ async function executeGateway<
     allowedProviders: request.allowedProviders,
     allowCrossProviderFallback: request.allowCrossProviderFallback,
     runtimeTargets: runtime?.targets,
-  }).slice(0, MAX_TARGET_ATTEMPTS);
+  }).slice(0, maxAttempts);
   if (!candidates.length) {
     const gatewayLatencyMs = Date.now() - gatewayStartedAt;
     let usageReceiptRecorded = false;
