@@ -2275,6 +2275,30 @@ and anonymous graph access remains closed. P5.4 is next: transactionally derive
 and self-correct this projection from canonical claims and evidence. P12/P13
 remain deferred.
 
+P5.4 is complete at exact production release
+`d8550408996a51d0710a8b335787cd60d29b9e63`. The graph projector accepts only
+explicit, line-bounded relation assertions from canonical actor-private memory
+or current canonical text evidence. It validates ontology compatibility and
+exact scoped entity identity, holds ambiguous, cross-scope, and conflicting
+candidates, and never turns retrieval traces, model output, or ordinary prose
+into truth edges. A single deterministic reconciliation path handles
+incremental changes, durable repair, and full rebuild with idempotent create,
+revise, retract, and reactivate behavior; active-state parity is independent of
+revision history.
+
+Migration 106 installs the forced-RLS, actor-scoped repair queue with four
+restrictive policies and preserves lineage-valid retraction after source or
+endpoint retirement without weakening active-claim barriers. Memory and source
+transactions enqueue repair, entity projection closes the convergence race,
+and the maintenance worker drains the same bounded path. Supabase reports
+schema 106, an empty queue and relation ledger, and an active retraction guard.
+One hundred eleven focused checks, affected lint, TypeScript, and the Next 16
+production build passed. Canonical Vercel deployment
+`dpl_bJ4Lp5c2sk5du9yTqVGbJD4sw7Tq`, Fly release 291, protocol 1, the exact
+activation marker, and all worker lanes are healthy on the release; anonymous
+agent and temporal-graph access remain closed. P5.5 graph-aware retrieval and
+relationship-path explanation is next. P12/P13 remain deferred.
+
 The first P6.1 delivery is active only for an exact, low-risk recent-runs read.
 An exact tenant rollout pins the Loop v2 engine, transition contract, and
 configuration. Migration v85 stores the immutable actor-owned checkpoint chain
