@@ -154,6 +154,15 @@ claim from a different tool-contract release remains pending for operator
 resolution; a receipt already finalized by the earlier release remains valid
 historical evidence.
 
+Loop v2 interruption recovery is a separate maintenance path. It claims the
+latest stale active checkpoint under system database scope, then restores the
+exact initiating actor and persisted execution scope before continuing. The
+continuation stores a generation, token hash, and expiry; the plaintext claim
+token exists only in the active process. Idempotent read work reuses its
+original governed-tool idempotency key, while model boundaries and replans
+fail closed. Every recovery checkpoint and finalization validates the exact
+fence, and generic stale-run repair excludes active Loop v2 chains.
+
 This is tool-level evidence only. P1.3 projects the ID of a strictly bound,
 verified canary receipt into its evidence and terminal receipt, but evaluation
 remains `posthoc` and canonical `succeeded` is still impossible. P1.4 now also
