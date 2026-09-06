@@ -1203,6 +1203,24 @@ with a second enqueue; and the maintenance worker drains the forced-RLS queue.
 Typed metadata-only events record requests and results without placing source
 text, retrieval traces, or model output into the truth graph.
 
+P5.5 reads that ledger through an actor-scoped storage adapter and expands only
+paths whose every hop retains exact live evidence. The Context Compiler may add
+those paths only after the same authorization checks, and the Memory workspace
+shows the relationship, validity interval, epistemic kind, and evidence for each
+hop without exposing adjacent private nodes. P5.6 keeps Postgres authoritative,
+records content-free query scale and latency telemetry, and permits a future
+backend only as a non-authoritative shadow until a reviewed parity and scale
+threshold is met. No storage observation can grant graph-read authority or
+change the primary adapter.
+
+The authenticated Phase 5 aggregate gate executes the real ontology, entity
+resolver benchmark, bitemporal claim, projection reconciliation, evidenced
+traversal, storage-adapter parity, and storage-decision contracts over bounded
+synthetic fixtures. It persists only counts, versions, dispositions, and
+digests in `evaluation.phase_five.completed`; labels, queries, graph contents,
+evidence identifiers, and tool or model output are excluded. The gate has no
+model, governed-tool, graph-write, or external-effect authority.
+
 Migration v81 adds immutable actor ownership to agent runs and applies
 restrictive actor policies to runs, threads, turns, run events, checkpoints,
 checkpoint references and resume claims, and fork lineage. Authenticated web
