@@ -291,6 +291,10 @@ type StreamEvent =
       learningState?: "cold_start" | "observing" | "reinforced" | "supported";
       learningSampleSize?: number;
       learningGuidanceCount?: number;
+      adaptationState?: "baseline" | "evidence_ready" | "active";
+      adaptationEvidenceCount?: number;
+      adaptationConfidence?: number;
+      adaptationActivationVersions?: number[];
     }
   | { type: "memory"; title?: string; count?: number }
   | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number }
@@ -990,10 +994,10 @@ export function AgentRunsWorkspace({
         correction: correction?.trim() || undefined,
         updatedAt: new Date().toISOString(),
       });
-      const learning = feedbackResult.learning as { affectedMemories?: number; demotedCapabilities?: string[] } | undefined;
+      const feedbackEffects = feedbackResult.feedbackEffects as { affectedMemories?: number; demotedCapabilities?: string[] } | undefined;
       setRunAnnouncement(verdict === "useful"
-        ? `Useful outcome recorded. ${learning?.affectedMemories || 0} learned memories were reinforced.`
-        : `Correction recorded. ${learning?.affectedMemories || 0} learned memories were quarantined and ${learning?.demotedCapabilities?.length || 0} capability trust profiles were demoted.`);
+        ? `Useful outcome recorded. ${feedbackEffects?.affectedMemories || 0} retained memories were reinforced.`
+        : `Correction recorded. ${feedbackEffects?.affectedMemories || 0} retained memories were quarantined and ${feedbackEffects?.demotedCapabilities?.length || 0} capability safety profiles were narrowed.`);
       void refreshEvidence();
     } catch (feedbackError) {
       setError(
@@ -2601,7 +2605,7 @@ export function AgentRunsWorkspace({
             className="outline-none"
           >
             {activeTab === "memory" ? (
-              <StagePanel title="Conversation memory" description="What Asael learned from this conversation. Forgetting a memory removes it from future conversations everywhere, while the chat transcript stays intact.">
+              <StagePanel title="Conversation memory" description="Context retained from this conversation. Forgetting a memory removes it from future conversations everywhere, while the chat transcript stays intact.">
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -4871,9 +4875,13 @@ function streamEventLabel(event: StreamEvent) {
     }[event.contextDecision];
     const tools = `${event.toolCount} governed tool${event.toolCount === 1 ? "" : "s"} available`;
     const budget = `${event.budgetLimits.modelTurns} turns, ${event.budgetLimits.toolCalls} tool calls, ${event.budgetLimits.tokens.toLocaleString()} tokens, ${(event.budgetLimits.wallTimeMs / 1_000).toFixed(0)}s`;
-    const learning = event.learningSampleSize
-      ? `informed by ${event.learningSampleSize} prior outcome${event.learningSampleSize === 1 ? "" : "s"}`
-      : "learning baseline started";
+    const adaptation = event.adaptationActivationVersions?.length
+      ? `adaptation ${event.adaptationActivationVersions.map((version) => `v${version}`).join(", ")} active`
+      : event.adaptationEvidenceCount
+        ? `${event.adaptationEvidenceCount} outcome${event.adaptationEvidenceCount === 1 ? "" : "s"} observed with no implicit behavior change`
+        : event.learningSampleSize
+          ? `legacy outcome evidence from ${event.learningSampleSize} prior run${event.learningSampleSize === 1 ? "" : "s"}`
+          : "adaptation baseline";
     const reason = event.contextRationale[0];
     const provider = event.provider === "google"
       ? "Gemini"
@@ -4882,7 +4890,7 @@ function streamEventLabel(event: StreamEvent) {
         : event.provider === "anthropic"
           ? "Anthropic"
           : "Local fallback";
-    return `${provider} · ${event.tier} route · ${context} · ${tools} · budget ${budget} · ${learning}.${reason ? ` ${reason}` : ""}`;
+    return `${provider} · ${event.tier} route · ${context} · ${tools} · budget ${budget} · ${adaptation}.${reason ? ` ${reason}` : ""}`;
   }
   if (event.type === "model") {
     const cost = event.estimatedCostUsd === undefined ? "cost rate not configured" : `$${event.estimatedCostUsd.toFixed(6)}`;

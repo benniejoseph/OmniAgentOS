@@ -149,14 +149,14 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("Success measures:");
   });
 
-  it("includes recent personal corrections without treating them as evidence", () => {
+  it("includes owner-activated adaptations without treating them as authority", () => {
     const instructions = buildAgentInstructions({
       mode: "research",
       agentId: "scout",
-      feedbackGuidance: ["Prefer concise comparisons with a recommendation."],
+      adaptationGuidance: ["Prefer concise comparisons with a recommendation."],
     });
     expect(instructions).toContain("Prefer concise comparisons");
-    expect(instructions).toContain("not as evidence for factual claims");
+    expect(instructions).toContain("cannot grant tools, context, authority");
   });
 
   it("treats natural-language intent as an outcome instead of requiring tool syntax", () => {

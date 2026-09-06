@@ -37,12 +37,12 @@ export type SupervisorDecision = {
     matchedAlias: string;
     requiredToolIds: readonly string[];
   }>;
-  learning?: {
-    state: "cold_start" | "observing" | "reinforced" | "supported";
+  adaptationEvidence?: {
+    state: "baseline" | "evidence_ready";
     sampleSize: number;
     completionRate: number | null;
     verifiedRate: number | null;
-    adjustments: string[];
+    confidence: number;
   };
 };
 
@@ -295,66 +295,15 @@ export function adaptSupervisorDecision(
   const verifiedRate = primary?.completed
     ? primary.verifiedAnswers / primary.completed
     : null;
-  const adjustments: string[] = [];
-  const specialists = new Set(decision.specialistIds);
-  const feedbackCount = primary
-    ? primary.usefulOutcomes + primary.needsWorkOutcomes
-    : 0;
-
-  if (primary && sampleSize >= 3 && primary.completionRate !== null && primary.completionRate < 0.7) {
-    specialists.add("sentinel");
-    if (decision.primaryAgentId !== "atlas") specialists.add("atlas");
-    adjustments.push(
-      `${agentName(decision.primaryAgentId)} receives planning and verification support after recent incomplete outcomes.`,
-    );
-  }
-
-  if (
-    primary &&
-    decision.specialistIds.includes("scout") &&
-    primary.completed >= 3 &&
-    verifiedRate !== null &&
-    verifiedRate < 0.5
-  ) {
-    specialists.add("sentinel");
-    adjustments.push("Sentinel was added because recent answers need stronger evidence verification.");
-  }
-
-  if (
-    primary &&
-    feedbackCount >= 2 &&
-    primary.userApprovalRate !== null &&
-    primary.userApprovalRate < 0.6
-  ) {
-    specialists.add("sentinel");
-    if (decision.primaryAgentId !== "atlas") specialists.add("atlas");
-    adjustments.push(
-      `${agentName(decision.primaryAgentId)} receives extra support after your recent outcome feedback.`,
-    );
-  }
-
-  let state: NonNullable<SupervisorDecision["learning"]>["state"] = "cold_start";
-  if (sampleSize >= 3) state = adjustments.length ? "supported" : "observing";
-  if (
-    sampleSize >= 5 &&
-    primary?.completionRate !== null &&
-    primary?.completionRate !== undefined &&
-    primary.completionRate >= 0.85 &&
-    !adjustments.length
-  ) {
-    state = "reinforced";
-  }
 
   return {
     ...decision,
-    specialistIds: [...specialists],
-    reasons: adjustments.length ? [...decision.reasons, ...adjustments] : decision.reasons,
-    learning: {
-      state,
+    adaptationEvidence: {
+      state: sampleSize ? "evidence_ready" : "baseline",
       sampleSize,
       completionRate: primary?.completionRate ?? null,
       verifiedRate,
-      adjustments,
+      confidence: Math.round(Math.min(1, sampleSize / 10) * 1_000) / 1_000,
     },
   };
 }

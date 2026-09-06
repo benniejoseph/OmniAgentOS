@@ -2,9 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ generateModelStructured: vi.fn() }));
 vi.mock("@/lib/models/gateway", () => ({ generateModelStructured: mocks.generateModelStructured }));
-vi.mock("@/lib/agents/learning", () => ({
-  getAgentLearningGuidance: vi.fn(async (agentId: string) => [`Improve ${agentId} output with explicit evidence.`]),
-}));
 
 import {
   formatCouncilContributions,

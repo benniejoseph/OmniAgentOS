@@ -503,8 +503,8 @@ async function POSTHandler(request: Request) {
           preliminaryDecision,
           await getAgentPerformance(context.tenantId).catch((error: unknown) => {
             console.warn(
-              "Agent performance learning was temporarily unavailable.",
-              String(redactSensitive(error instanceof Error ? error.message : "Unknown learning error.")),
+              "Agent adaptation evidence was temporarily unavailable.",
+              String(redactSensitive(error instanceof Error ? error.message : "Unknown adaptation evidence error.")),
             );
             return [];
           }),
@@ -815,7 +815,7 @@ async function POSTHandler(request: Request) {
                 specialistIds: decision.specialistIds,
                 specialistTaskIds: durableSpecialists.map((item) => item.taskId),
                 specialistRunIds: durableSpecialists.map((item) => item.runId),
-                learning: decision.learning,
+                adaptationEvidence: decision.adaptationEvidence,
                 ...(savedProcedure ? { savedProcedure } : {}),
                 ...(parsed.data.contextScope
                   ? { contextScope: parsed.data.contextScope }
@@ -971,7 +971,7 @@ async function POSTHandler(request: Request) {
                 role: context.role,
                 agentId: executingAgentId,
                 specialistIds: decision.specialistIds,
-                learning: decision.learning,
+                adaptationEvidence: decision.adaptationEvidence,
                 agentProfile,
                 budgetLimits,
               },

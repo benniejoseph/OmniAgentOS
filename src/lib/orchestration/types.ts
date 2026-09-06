@@ -79,10 +79,16 @@ export type AgentHarnessEvent = {
   budgetLimits: RunBudgetCountersV1;
   approvalPolicy: "always" | "risk_based" | "read_only";
   autonomy: "assist" | "governed" | "execute";
+  /** Legacy P7.5-and-earlier receipt fields retained for replay. */
   learningState?: "cold_start" | "observing" | "reinforced" | "supported";
   learningSampleSize?: number;
   learningGuidanceCount?: number;
   learningGuidanceSha256?: string;
+  adaptationState?: "baseline" | "evidence_ready" | "active";
+  adaptationEvidenceCount?: number;
+  adaptationConfidence?: number;
+  adaptationActivationVersions?: number[];
+  adaptationGuidanceSha256?: string;
 };
 
 export type AgentEvent =
@@ -167,12 +173,12 @@ export type AgentRunRequest = {
   role?: string;
   agentId?: string;
   specialistIds?: string[];
-  learning?: {
-    state: "cold_start" | "observing" | "reinforced" | "supported";
+  adaptationEvidence?: {
+    state: "baseline" | "evidence_ready";
     sampleSize: number;
     completionRate: number | null;
     verifiedRate: number | null;
-    adjustments: string[];
+    confidence: number;
   };
   agentProfile?: {
     name: string;

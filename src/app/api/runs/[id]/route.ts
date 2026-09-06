@@ -163,7 +163,7 @@ async function PATCHHandler(
     : [];
   return Response.json({
     run: publicAgentRun(updated || run),
-    learning: {
+    feedbackEffects: {
       disposition: parsed.data.verdict === "useful" ? "reinforced" : "quarantined",
       affectedMemories: affectedMemoryIds.length,
       demotedCapabilities,

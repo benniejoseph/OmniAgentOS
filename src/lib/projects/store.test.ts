@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getAgentPerformance } from "@/lib/agents/performance";
-import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import { decomposeProject } from "@/lib/projects/planner";
 import { syncProjectExecution } from "@/lib/projects/execution";
 import { reflectOnProjectArtifact } from "@/lib/projects/reflection";
@@ -429,10 +428,6 @@ describe("personal projects", () => {
       userApprovalRate: 0,
       latestLessons: ["Compare at least two sources before drawing the conclusion."],
     });
-    await expect(getAgentLearningGuidance("scout", { tenantId: "personal" })).resolves.toContain(
-      "Improve: Compare at least two sources before drawing the conclusion.",
-    );
-
     const failedRunId = tasks.find((task) => task.id === second.id)?.workflowRunId;
     await transitionWorkflowRun(failedRunId!, ["queued"], { status: "failed", error: "Transient build failure." }, { tenantId: "personal" });
     await syncProjectExecution({ projectId: project.id, tenantId: "personal", actorId: "owner" });
