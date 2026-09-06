@@ -1,5 +1,13 @@
 import { extractCaptureFile, CaptureFileError } from "@/lib/capture/files";
 import {
+  appendCaptureNote,
+  captureExtractionReceipt,
+  renderCaptureExtractionUnits,
+  terminalCaptureExtractionReceipt,
+  type CaptureExtractionReceipt,
+  type CaptureStructuredExtraction,
+} from "@/lib/capture/extraction";
+import {
   listCaptureAssets,
   saveCaptureAsset,
   updateCaptureAssetStatus,
@@ -71,8 +79,15 @@ async function POSTHandler(request: Request) {
   const requestedTitle = String(form.get("title") || "").trim().slice(0, 240);
   const tags = String(form.get("tags") || "").split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 50);
 
-  let document: { title: string; content: string; source: string; sourceType: "file" | "manual" };
+  let document: {
+    title: string;
+    content: string;
+    source: string;
+    sourceType: "file" | "manual";
+    extraction?: CaptureStructuredExtraction;
+  };
   let asset: Awaited<ReturnType<typeof saveCaptureAsset>> | undefined;
+  let assetExtractionReceipt: CaptureExtractionReceipt | undefined;
   let contentOrigin: "extracted" | "supplied_note" = "extracted";
   try {
     if (file instanceof File && file.size) {
@@ -86,7 +101,7 @@ async function POSTHandler(request: Request) {
         tags,
         metadata: { requestedTitle, note },
       });
-      document = await extractCaptureFile(
+      const extracted = await extractCaptureFile(
         new File([bytes], file.name, { type: file.type }),
         {
           tenantId: context.tenantId,
@@ -99,12 +114,16 @@ async function POSTHandler(request: Request) {
           credentialSource: "deployment_environment",
         },
       );
-      document.source = `capture:asset:${asset.id}`;
-      if (note) {
-        const separator = "\n\n---\nCapture note:\n";
-        const availableDocumentCharacters = Math.max(0, 900_000 - separator.length - note.length);
-        document.content = `${document.content.slice(0, availableDocumentCharacters)}${separator}${note}`;
-      }
+      const extraction = note
+        ? appendCaptureNote(extracted.extraction, note)
+        : extracted.extraction;
+      document = {
+        ...extracted,
+        source: `capture:asset:${asset.id}`,
+        content: renderCaptureExtractionUnits(extraction.units),
+        extraction,
+      };
+      assetExtractionReceipt = captureExtractionReceipt(extraction);
     } else {
       document = {
           title: requestedTitle || note.split(/\r?\n/, 1)[0]?.slice(0, 80) || "Quick note",
@@ -116,6 +135,11 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     if (asset && note && error instanceof CaptureFileError) {
       contentOrigin = "supplied_note";
+      assetExtractionReceipt = terminalCaptureExtractionReceipt({
+        format: error.format || asset.extension || "unknown",
+        state: error.status === 415 ? "unsupported" : "failed",
+        warningCode: error.code,
+      });
       document = {
         title: requestedTitle || captureTitleFromAsset(asset.filename),
         content: note,
@@ -128,6 +152,11 @@ async function POSTHandler(request: Request) {
         status: captureError?.status === 415 ? "unsupported" : "failed",
         extractionStatus: captureError?.status === 415 ? "unsupported" : "failed",
         error: error instanceof Error ? error.message : "The captured file could not be extracted.",
+        extractionReceipt: terminalCaptureExtractionReceipt({
+          format: captureError?.format || asset.extension || "unknown",
+          state: captureError?.status === 415 ? "unsupported" : "failed",
+          warningCode: captureError?.code || "extraction_failed",
+        }),
       });
       return Response.json({
         asset: stored,
@@ -153,11 +182,38 @@ async function POSTHandler(request: Request) {
       executionScope,
       idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || undefined,
       request: {
-        ...document,
+        title: document.title,
+        content: document.content,
+        source: document.source,
+        sourceType: document.sourceType,
         tags,
         ...(asset ? {
-          metadata: { captureAssetId: asset.id, actorId: asset.actorId, filename: asset.filename, mediaType: asset.mediaType, byteCount: asset.byteCount, contentOrigin },
           evidenceRefs: [`capture-asset:${asset.id}`],
+          ...(document.extraction ? {
+            structuredUnits: document.extraction.units,
+            metadata: {
+              captureAssetId: asset.id,
+              actorId: asset.actorId,
+              filename: asset.filename,
+              mediaType: asset.mediaType,
+              byteCount: asset.byteCount,
+              contentOrigin,
+              structuredSourceKind: document.extraction.sourceKind,
+              extractionState: document.extraction.state,
+              extractionReceiptSha256: assetExtractionReceipt?.receiptSha256 || "",
+            },
+          } : {
+            metadata: {
+              captureAssetId: asset.id,
+              actorId: asset.actorId,
+              filename: asset.filename,
+              mediaType: asset.mediaType,
+              byteCount: asset.byteCount,
+              contentOrigin,
+              extractionState: assetExtractionReceipt?.state || "completed",
+              extractionReceiptSha256: assetExtractionReceipt?.receiptSha256 || "",
+            },
+          }),
         } : {}),
       },
     });
@@ -168,8 +224,9 @@ async function POSTHandler(request: Request) {
     if (asset) {
       asset = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
         status: "failed",
-        extractionStatus: "completed",
+        extractionStatus: assetExtractionReceipt?.state || "completed",
         error: error instanceof Error ? error.message : "Capture queue failed.",
+        extractionReceipt: assetExtractionReceipt,
       });
     }
     return Response.json({ error: error instanceof Error ? error.message : "Capture queue failed.", asset }, { status: 500 });
@@ -177,11 +234,21 @@ async function POSTHandler(request: Request) {
   if (asset) {
     asset = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
       status: "queued",
-      extractionStatus: "completed",
+      extractionStatus: assetExtractionReceipt?.state || "completed",
       ingestJobId: job.id,
+      extractionReceipt: assetExtractionReceipt,
     });
   }
-  return Response.json({ job: projectOperationJobStatus(job), asset, capture: { title: document.title, source: document.source, tags } }, {
+  return Response.json({
+    job: projectOperationJobStatus(job),
+    asset,
+    capture: {
+      title: document.title,
+      source: document.source,
+      tags,
+      extraction: assetExtractionReceipt,
+    },
+  }, {
     status: 202,
     headers: { location: `/api/operations/jobs/${job.id}`, "retry-after": "2", "cache-control": "private, no-store" },
   });

@@ -1,3 +1,5 @@
+import type { CaptureExtractionReceipt } from "@/lib/capture/extraction";
+
 export type CaptureRecordingStatus =
   | "recording"
   | "processing"
@@ -113,7 +115,8 @@ export type CaptureAsset = {
   contentSha256: string;
   storageKind: "database" | "filesystem";
   status: CaptureAssetStatus;
-  extractionStatus: "pending" | "completed" | "unsupported" | "failed";
+  extractionStatus: "pending" | "completed" | "partial" | "unsupported" | "failed";
+  extractionReceipt?: CaptureExtractionReceipt;
   ingestJobId?: string;
   knowledgeDocumentId?: string;
   error?: string;

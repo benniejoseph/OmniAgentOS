@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the asset object backfill receipt migration", () => {
+  it("pins the Capture structured extraction migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 98,
-      name: "asset_object_backfill_receipts_v1",
-      checksum: "e10e7e46e2759527ece96ea68a767e6dc75f58f61c868d23b6adcd2117e2141e",
+      version: 99,
+      name: "capture_structured_extraction_v1",
+      checksum: "5b4db49b9aeac3828c4e55850b2b7828fb928aa02e0f9d11778b5becf6e97375",
     });
   });
 
@@ -733,8 +733,8 @@ describe("ordered database schema versions", () => {
     expect(() => getPendingSchemaMigrationVersions([0])).toThrow(
       /unknown migration versions: 0/i,
     );
-    expect(() => getPendingSchemaMigrationVersions([99])).toThrow(
-      /unknown migration versions: 99/i,
+    expect(() => getPendingSchemaMigrationVersions([100])).toThrow(
+      /unknown migration versions: 100/i,
     );
   });
 

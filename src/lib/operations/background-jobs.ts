@@ -496,7 +496,7 @@ async function markCaptureIngestFailureSafely(job: OperationJobRecord, message: 
         executionScope,
       }, {
         status: "failed",
-        extractionStatus: "completed",
+        extractionStatus: captureAssetExtractionState(parsed.data),
         ingestJobId: job.id,
         error: message,
       });
@@ -769,7 +769,7 @@ async function executeBackgroundOperation(
             executionScope,
           }, {
             status: "indexed",
-            extractionStatus: "completed",
+            extractionStatus: captureAssetExtractionState(parsed),
             ingestJobId: job.id,
             knowledgeDocumentId: result.document.id,
           });
@@ -1084,6 +1084,15 @@ function captureStructuredSourceKind(
     return candidate as SourceItemV1["sourceKind"];
   }
   return "capture" as const;
+}
+
+function captureAssetExtractionState(
+  request: KnowledgeIngestJobRequest,
+): "completed" | "partial" | "unsupported" | "failed" {
+  const state = request.metadata?.extractionState;
+  return state === "partial" || state === "unsupported" || state === "failed"
+    ? state
+    : "completed";
 }
 
 function normalizeQueuedContent(value: string) {

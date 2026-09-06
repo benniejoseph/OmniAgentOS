@@ -98,6 +98,22 @@ export const captureExtractionReceiptSchema = z.object({
   if (sourceContractSha256(body) !== receiptSha256) {
     context.addIssue({ code: "custom", message: "Extraction receipt digest does not match its body.", path: ["receiptSha256"] });
   }
+  for (const field of ["locatorKinds", "warningCodes"] as const) {
+    const canonical = [...new Set(value[field])].sort();
+    if (canonical.length !== value[field].length || canonical.some((item, index) => item !== value[field][index])) {
+      context.addIssue({ code: "custom", message: `${field} must be unique and ordered.`, path: [field] });
+    }
+  }
+  if (value.state === "completed" || value.state === "partial") {
+    if (!value.unitCount || !value.locatorKinds.length || !value.contentSha256) {
+      context.addIssue({ code: "custom", message: "Extracted receipts require units, locators, and a content digest." });
+    }
+    if (value.state === "partial" && !value.warningCodes.length) {
+      context.addIssue({ code: "custom", message: "Partial extraction requires a warning code.", path: ["warningCodes"] });
+    }
+  } else if (value.unitCount || value.locatorKinds.length || value.contentSha256 !== null) {
+    context.addIssue({ code: "custom", message: "Terminal extraction receipts cannot claim extracted evidence." });
+  }
 });
 
 export type CaptureExtractionUnit = z.infer<typeof captureExtractionUnitSchema>;
@@ -246,6 +262,78 @@ export function terminalCaptureExtractionReceipt(input: {
   return captureExtractionReceiptSchema.parse({
     ...body,
     receiptSha256: sourceContractSha256(body),
+  });
+}
+
+export function captureRecordingExtraction(input: {
+  durationMs: number;
+  segments: readonly {
+    segmentIndex: number;
+    durationMs: number;
+    transcript: string;
+    transcriptionStatus: "pending" | "completed" | "failed";
+  }[];
+}) {
+  const ordered = [...input.segments].sort(
+    (left, right) => left.segmentIndex - right.segmentIndex,
+  );
+  const warnings = new Set<string>();
+  if (ordered.some((segment) => segment.transcriptionStatus === "failed")) {
+    warnings.add("recording_failed_segments");
+  }
+  let cursorMilliseconds = 0;
+  let extractedCharacters = 0;
+  const totalDuration = Math.max(
+    1,
+    Math.round(input.durationMs),
+    ordered.reduce((sum, segment) => sum + Math.max(0, Math.round(segment.durationMs)), 0),
+  );
+  const units: CaptureExtractionDraftUnit[] = [];
+  for (const segment of ordered) {
+    const startMilliseconds = cursorMilliseconds;
+    const durationMilliseconds = Math.max(0, Math.round(segment.durationMs));
+    cursorMilliseconds += durationMilliseconds;
+    if (segment.transcriptionStatus !== "completed" || !segment.transcript.trim()) continue;
+    let content = normalizeTextForChunking(segment.transcript);
+    if (content.length > MAX_CAPTURE_EXTRACTION_UNIT_CHARACTERS) {
+      content = content.slice(0, MAX_CAPTURE_EXTRACTION_UNIT_CHARACTERS);
+      warnings.add("recording_segment_truncated");
+    }
+    if (extractedCharacters + content.length + (units.length ? 2 : 0) > MAX_CAPTURE_EXTRACTION_CHARACTERS) {
+      warnings.add("recording_transcript_truncated");
+      break;
+    }
+    extractedCharacters += content.length + (units.length ? 2 : 0);
+    if (durationMilliseconds > 0) {
+      units.push({
+        label: `Audio segment ${segment.segmentIndex + 1}`,
+        content,
+        locator: {
+          kind: "media_time_range",
+          mediaKind: "audio",
+          startMilliseconds,
+          endMillisecondsExclusive: Math.min(
+            totalDuration,
+            startMilliseconds + durationMilliseconds,
+          ),
+          durationMilliseconds: totalDuration,
+        },
+      });
+    } else {
+      warnings.add("recording_segment_duration_missing");
+      units.push({
+        label: `Audio segment ${segment.segmentIndex + 1}`,
+        content,
+        locator: { kind: "text_span" },
+      });
+    }
+  }
+  return finalizeCaptureExtraction({
+    sourceKind: "audio",
+    format: "segmented_audio",
+    state: warnings.size ? "partial" : "completed",
+    warningCodes: [...warnings],
+    units,
   });
 }
 

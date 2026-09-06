@@ -1073,6 +1073,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[98],
+      up: ensureCaptureStructuredExtractionV1,
+    },
   ];
 }
 
@@ -5725,6 +5729,154 @@ async function ensureAssetObjectBackfillReceiptsV1(sql: SqlClient) {
           AND polcmd = '*'
       ) THEN
         RAISE EXCEPTION 'Asset object migration actor boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureCaptureStructuredExtractionV1(sql: SqlClient) {
+  await sql`
+    ALTER TABLE omni_capture_assets
+    ADD COLUMN IF NOT EXISTS extraction_receipt JSONB
+  `;
+  await sql`
+    ALTER TABLE omni_asset_objects
+    DROP CONSTRAINT IF EXISTS omni_asset_objects_extraction_check
+  `;
+  await sql`
+    ALTER TABLE omni_asset_objects
+    ADD CONSTRAINT omni_asset_objects_extraction_check CHECK (
+      extraction_state IN ('pending', 'completed', 'partial', 'unsupported', 'failed')
+    ) NOT VALID
+  `;
+  await sql`
+    ALTER TABLE omni_asset_objects
+    VALIDATE CONSTRAINT omni_asset_objects_extraction_check
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_capture_assets'::regclass
+          AND conname = 'omni_capture_assets_extraction_status_check'
+      ) THEN
+        ALTER TABLE omni_capture_assets
+        ADD CONSTRAINT omni_capture_assets_extraction_status_check CHECK (
+          extraction_status IN (
+            'pending', 'completed', 'partial', 'unsupported', 'failed'
+          )
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_capture_assets
+    VALIDATE CONSTRAINT omni_capture_assets_extraction_status_check
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'omni_capture_assets'::regclass
+          AND conname = 'omni_capture_assets_extraction_receipt_check'
+      ) THEN
+        ALTER TABLE omni_capture_assets
+        ADD CONSTRAINT omni_capture_assets_extraction_receipt_check CHECK (
+          extraction_receipt IS NULL
+          OR COALESCE(
+            jsonb_typeof(extraction_receipt) = 'object'
+            AND extraction_receipt ->> 'schemaVersion' = '1'
+            AND extraction_receipt ->> 'state' = extraction_status
+            AND extraction_receipt ->> 'sourceKind' IN (
+              'document', 'spreadsheet', 'presentation', 'email',
+              'calendar_event', 'message', 'webpage', 'image', 'audio',
+              'video', 'record', 'file', 'capture'
+            )
+            AND extraction_receipt ->> 'extractorId' =
+              'asael.capture.structured'
+            AND extraction_receipt ->> 'extractorVersionId' = '1'
+            AND extraction_receipt ->> 'extractorConfigSha256'
+              ~ '^[a-f0-9]{64}$'
+            AND extraction_receipt ->> 'receiptSha256'
+              ~ '^[a-f0-9]{64}$'
+            AND jsonb_typeof(extraction_receipt -> 'warningCodes') = 'array'
+            AND jsonb_typeof(extraction_receipt -> 'locatorKinds') = 'array'
+            AND CASE
+              WHEN extraction_receipt ->> 'unitCount'
+                ~ '^(0|[1-9][0-9]{0,3})$'
+              THEN (extraction_receipt ->> 'unitCount')::integer
+                BETWEEN 0 AND 1024
+              ELSE FALSE
+            END
+            AND CASE
+              WHEN extraction_receipt ->> 'state' IN ('completed', 'partial')
+              THEN CASE
+                  WHEN extraction_receipt ->> 'unitCount'
+                    ~ '^[1-9][0-9]{0,3}$'
+                  THEN (extraction_receipt ->> 'unitCount')::integer
+                    BETWEEN 1 AND 1024
+                  ELSE FALSE
+                END
+                AND extraction_receipt ->> 'contentSha256'
+                  ~ '^[a-f0-9]{64}$'
+                AND CASE
+                  WHEN jsonb_typeof(extraction_receipt -> 'locatorKinds') = 'array'
+                  THEN jsonb_array_length(extraction_receipt -> 'locatorKinds') > 0
+                  ELSE FALSE
+                END
+              ELSE extraction_receipt ->> 'state' IN ('unsupported', 'failed')
+                AND extraction_receipt ->> 'unitCount' = '0'
+                AND extraction_receipt -> 'contentSha256' = 'null'::jsonb
+                AND CASE
+                  WHEN jsonb_typeof(extraction_receipt -> 'locatorKinds') = 'array'
+                  THEN jsonb_array_length(extraction_receipt -> 'locatorKinds') = 0
+                  ELSE FALSE
+                END
+            END,
+            FALSE
+          )
+        ) NOT VALID;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_capture_assets
+    VALIDATE CONSTRAINT omni_capture_assets_extraction_receipt_check
+  `;
+  await sql`
+    DO $migration$
+    DECLARE
+      object_constraint TEXT;
+      asset_status_constraint TEXT;
+      asset_receipt_constraint TEXT;
+    BEGIN
+      SELECT pg_get_constraintdef(oid) INTO object_constraint
+      FROM pg_constraint
+      WHERE conrelid = 'omni_asset_objects'::regclass
+        AND conname = 'omni_asset_objects_extraction_check'
+        AND convalidated;
+      SELECT pg_get_constraintdef(oid) INTO asset_status_constraint
+      FROM pg_constraint
+      WHERE conrelid = 'omni_capture_assets'::regclass
+        AND conname = 'omni_capture_assets_extraction_status_check'
+        AND convalidated;
+      SELECT pg_get_constraintdef(oid) INTO asset_receipt_constraint
+      FROM pg_constraint
+      WHERE conrelid = 'omni_capture_assets'::regclass
+        AND conname = 'omni_capture_assets_extraction_receipt_check'
+        AND convalidated;
+      IF object_constraint NOT LIKE '%partial%'
+        OR asset_status_constraint NOT LIKE '%partial%'
+        OR asset_receipt_constraint NOT LIKE '%receiptSha256%'
+        OR asset_receipt_constraint NOT LIKE '%asael.capture.structured%'
+      THEN
+        RAISE EXCEPTION 'Capture structured extraction boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
