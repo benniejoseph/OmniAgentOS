@@ -1375,14 +1375,19 @@ export async function* runAgent(
             createdAt: new Date().toISOString(),
           };
           await flushDeltas();
-          await markAgentRunWaitingForApproval(run.id, { response, continuation });
-          yield await emit({
+          const waitingEvent = {
             type: "waiting_approval",
             executionId: waiting.executionId,
             toolId: waiting.toolId,
             message:
               "Run paused. Approval will resume this same provider-bound agent turn after the tool executes.",
+          } as const;
+          await markAgentRunWaitingForApproval(run.id, {
+            response,
+            continuation,
+            message: waitingEvent.message,
           });
+          yield waitingEvent;
           await syncMissionExecutorSafely({
             executorType: "agent_run",
             executorId: run.id,
@@ -1753,13 +1758,18 @@ export async function* runAgent(
               createdAt: new Date().toISOString(),
             };
             await flushDeltas();
-            await markAgentRunWaitingForApproval(run.id, { response, continuation });
-            yield await emit({
+            const waitingEvent = {
               type: "waiting_approval",
               executionId: execution.record.id,
               toolId: definition.id,
               message: "Run paused. Approval will resume this same agent run after the tool executes.",
+            } as const;
+            await markAgentRunWaitingForApproval(run.id, {
+              response,
+              continuation,
+              message: waitingEvent.message,
             });
+            yield waitingEvent;
             return;
           }
 
@@ -2901,15 +2911,20 @@ async function resumeAgentRunAfterToolApprovalInScope({
     return { resumed: false, reason: message };
   }
 
-  const claimed = resumeFence ? true : await markAgentRunResuming(run.id);
+  const claimed = resumeFence ? true : await markAgentRunResuming(run.id, {
+    tenantId,
+    executionScope,
+  });
   if (!claimed) {
     return { resumed: false, reason: "Run is already being resumed by another approval decision." };
   }
-  await appendScopedRunEvent({
-    type: "status",
-    label: "resuming after approval",
-    detail: `Tool approval ${executionId} resolved; continuing the same agent run.`,
-  });
+  if (resumeFence) {
+    await appendScopedRunEvent({
+      type: "status",
+      label: "resuming after approval",
+      detail: `Tool approval ${executionId} resolved; continuing the same agent run.`,
+    });
+  }
   await syncMissionExecutorSafely({
     executorType: "agent_run",
     executorId: run.id,
@@ -3066,8 +3081,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
       });
 
       if (execution.record.status === "approval_required") {
+        const waitingMessage =
+          "Run paused for the next queued function call approval.";
         const parked = await markAgentRunWaitingForApproval(run.id, {
           response,
+          message: waitingMessage,
           continuation: {
             executionScope,
             runContractEnvelope: continuation.runContractEnvelope,
@@ -3103,12 +3121,6 @@ async function resumeAgentRunAfterToolApprovalInScope({
         if (!parked.parked) {
           return { resumed: false, reason: "Checkpoint resume fence was lost." };
         }
-        await appendScopedRunEvent({
-          type: "waiting_approval",
-          executionId: execution.record.id,
-          toolId: definition.id,
-          message: "Run paused for the next queued function call approval.",
-        });
         await syncMissionExecutorSafely({
           executorType: "agent_run",
           executorId: run.id,
@@ -3348,8 +3360,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
         });
 
         if (execution.record.status === "approval_required") {
+          const waitingMessage =
+            "Run paused again for a newly required approval.";
           const parked = await markAgentRunWaitingForApproval(run.id, {
             response,
+            message: waitingMessage,
             continuation: {
               executionScope,
               runContractEnvelope: continuation.runContractEnvelope,
@@ -3385,12 +3400,6 @@ async function resumeAgentRunAfterToolApprovalInScope({
           if (!parked.parked) {
             return { resumed: false, reason: "Checkpoint resume fence was lost." };
           }
-          await appendScopedRunEvent({
-            type: "waiting_approval",
-            executionId: execution.record.id,
-            toolId: definition.id,
-            message: "Run paused again for a newly required approval.",
-          });
           await syncMissionExecutorSafely({
             executorType: "agent_run",
             executorId: run.id,
@@ -3745,19 +3754,24 @@ async function resumeProviderBoundAgentRunAfterApproval({
       ? "tenant_vault" as const
       : "deployment_environment" as const;
 
-  const claimed = resumeFence ? true : await markAgentRunResuming(run.id);
+  const claimed = resumeFence ? true : await markAgentRunResuming(run.id, {
+    tenantId,
+    executionScope,
+  });
   if (!claimed) {
     return {
       resumed: false,
       reason: "Run is already being resumed by another approval decision.",
     };
   }
-  await appendScopedRunEvent({
-    type: "status",
-    label: "resuming after approval",
-    detail:
-      `Tool approval ${executionId} resolved; continuing the same ${providerState.provider} agent turn.`,
-  });
+  if (resumeFence) {
+    await appendScopedRunEvent({
+      type: "status",
+      label: "resuming after approval",
+      detail:
+        `Tool approval ${executionId} resolved; continuing the same ${providerState.provider} agent turn.`,
+    });
+  }
   await syncMissionExecutorSafely({
     executorType: "agent_run",
     executorId: run.id,
@@ -3865,20 +3879,16 @@ async function resumeProviderBoundAgentRunAfterApproval({
       createdAt: new Date().toISOString(),
     };
     await flushDeltas();
+    const waitingMessage =
+      "Run paused again for a governed tool approval in the same provider-bound turn.";
     const parked = await markAgentRunWaitingForApproval(run.id, {
       response,
       continuation: nextContinuation,
+      message: waitingMessage,
     }, { resumeFence });
     if (!parked.parked) {
       return { resumed: false, reason: "Checkpoint resume fence was lost." };
     }
-    await appendScopedRunEvent({
-      type: "waiting_approval",
-      executionId: waiting.executionId,
-      toolId: waiting.toolId,
-      message:
-        "Run paused again for a governed tool approval in the same provider-bound turn.",
-    });
     await syncMissionExecutorSafely({
       executorType: "agent_run",
       executorId: run.id,
