@@ -145,7 +145,7 @@ function recoveryClaimStorage(checkpoint: LoopV2Checkpoint) {
   sql.unsafe = async () => [];
   sql.query = async (text: string, params: unknown[] = []) => {
     if (
-      text.includes("FROM omni_agent_runs run") &&
+      text.includes("FROM omni_agent_loop_v2_checkpoints checkpoint") &&
       text.includes("FOR UPDATE OF run")
     ) {
       return [{

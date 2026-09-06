@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the recurring failure feedback migration", () => {
+  it("pins the Loop v2 interruption recovery migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 94,
-      name: "recurring_failure_feedback_v1",
-      checksum: "900cced9921f7ad9fa9062104efefd06151b1ff6837ecdf420d7536c89163641",
+      version: 95,
+      name: "loop_v2_interruption_recovery_v1",
+      checksum: "cfaff4bf0ecbade79687b4e3c30700321556e96a545fefeffaba3d7789c7c5a1",
     });
   });
 

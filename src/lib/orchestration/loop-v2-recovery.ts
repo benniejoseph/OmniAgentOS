@@ -113,20 +113,22 @@ export async function claimInterruptedLoopV2Run(
   const staleBefore = new Date(Date.parse(now) - staleAfterMs).toISOString();
   const rows = await sql.query(
     `SELECT run.id, run.owner_actor_id, run.thread_id, run.mode,
-            run.prompt, run.agent_id, run.continuation,
-            checkpoint.checkpoint_json
-     FROM omni_agent_runs run
-     JOIN LATERAL (
-       SELECT checkpoint_json, lifecycle_state, transitioned_at
-       FROM omni_agent_loop_v2_checkpoints
-       WHERE tenant_id = run.tenant_id AND run_id = run.id
-       ORDER BY sequence DESC
-       LIMIT 1
-     ) checkpoint ON true
+            run.prompt, run.agent_id, run.continuation
+     FROM omni_agent_loop_v2_checkpoints checkpoint
+     JOIN omni_agent_runs run
+       ON run.tenant_id = checkpoint.tenant_id
+      AND run.id = checkpoint.run_id
      WHERE run.tenant_id = $1
        AND run.status IN ('running', 'resuming')
        AND checkpoint.lifecycle_state = 'active'
        AND checkpoint.transitioned_at <= $2::timestamptz
+       AND NOT EXISTS (
+         SELECT 1
+         FROM omni_agent_loop_v2_checkpoints newer
+         WHERE newer.tenant_id = checkpoint.tenant_id
+           AND newer.run_id = checkpoint.run_id
+           AND newer.sequence > checkpoint.sequence
+       )
        AND (
          run.status = 'running'
          OR NOT (COALESCE(run.continuation, '{}'::jsonb) ? 'loopV2Recovery')
