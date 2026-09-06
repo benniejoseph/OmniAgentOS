@@ -182,6 +182,7 @@ export async function buildContextPack(
       limits: options.contextBudget,
       render: () => formatContextPack([], profile),
     });
+    profile = { ...profile, contextBudget: allocated.receipt };
     const pack: ContextPack = {
       query: normalizedQuery,
       profile,
@@ -351,6 +352,7 @@ export async function buildContextPack(
     limits: options.contextBudget,
     render: (items) => formatContextPack(items, profile),
   });
+  profile = { ...profile, contextBudget: allocated.receipt };
   const selected = allocated.items;
   const selectedIdSet = new Set(selected.map(citationIdForEvidence));
   const selectedMemoryResults = memoryResults.filter((result) =>
@@ -531,7 +533,7 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
     budget,
     ...redactionInput
   } = pack;
-  const { queryPlan, embedding, reranker } = redactionInput.profile;
+  const { queryPlan, embedding, reranker, contextBudget } = redactionInput.profile;
   const sanitized = redactSensitive({
     ...redactionInput,
     profile: {
@@ -539,6 +541,7 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
       queryPlan: undefined,
       embedding: undefined,
       reranker: undefined,
+      contextBudget: undefined,
     },
   }) as ContextPack;
   return {
@@ -548,6 +551,7 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
       queryPlan,
       ...(embedding ? { embedding } : {}),
       ...(reranker ? { reranker } : {}),
+      ...(contextBudget ? { contextBudget } : {}),
     },
     ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
     ...(compilerV2Canary ? { compilerV2Canary } : {}),
@@ -1059,6 +1063,7 @@ async function saveRetrievalTrace(
 }
 
 function retrievalTraceFromRow(row: Record<string, unknown>): RetrievalTraceRecord {
+  const profile = parseProfile(row.profile, String(row.query || ""));
   const accessBinding = Number(row.access_contract_version || 0) === 1
     ? memoryAccessBindingV1Schema.parse({
         version: 1,
@@ -1082,13 +1087,14 @@ function retrievalTraceFromRow(row: Record<string, unknown>): RetrievalTraceReco
     tenantId: String(row.tenant_id || "default"),
     accessBinding,
     query: String(row.query || ""),
-    profile: parseProfile(row.profile, String(row.query || "")),
+    profile,
     resultCount: Number(row.result_count || 0),
     selectedCount: Number(row.selected_count || 0),
     latencyMs: Number(row.latency_ms || 0),
     results: Array.isArray(row.results)
       ? (row.results as RetrievalTraceRecord["results"])
       : [],
+    contextBudget: profile.contextBudget,
     createdAt: normalizeDate(row.created_at),
   };
 }
