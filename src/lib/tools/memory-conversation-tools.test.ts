@@ -68,6 +68,17 @@ describe("governed conversational memory tools", () => {
     );
     expect(searched.result).toMatchObject({
       results: [{ record: { id: memory.id } }],
+      retrieval: {
+        embedding: {
+          provider: "local",
+          externalDisclosure: false,
+          requiresCredential: false,
+        },
+        reranker: {
+          algorithm: "pairwise_logistic_regression",
+          externalDisclosure: false,
+        },
+      },
     });
 
     const pinned = await execute(

@@ -55,6 +55,7 @@ import {
 } from "@/lib/memory/access-binding";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { LOCAL_MULTILINGUAL_EMBEDDING_SPACE } from "@/lib/rag/retrieval-embedding";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const actorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
@@ -147,7 +148,10 @@ describe("actor-scoped context retrieval", () => {
     expect(mocks.searchMemories).toHaveBeenNthCalledWith(
       2,
       expect.any(String),
-      expect.objectContaining({ accessScope: accessScope() }),
+      expect.objectContaining({
+        accessScope: accessScope(),
+        queryEmbeddingSpaceId: LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
+      }),
     );
     expect(mocks.searchMemoryGraph).toHaveBeenCalledWith(
       expect.any(String),

@@ -75,6 +75,8 @@ import {
 import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network";
 import { redactExactSecrets } from "@/lib/security/secret-redaction";
 import { ingestTextDocument } from "@/lib/rag/retriever";
+import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
+import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import { searchKnowledge } from "@/lib/rag/store";
 import { listAgentRuns } from "@/lib/runs/store";
 import { publicAgentRun } from "@/lib/runs/public";
@@ -2755,11 +2757,11 @@ async function runTool(
   if (tool.id === "memory.search") {
     const { query, limit } = searchSchema.parse(parsed);
     const safeQuery = String(redactSensitive(query));
-    const queryEmbedding = (await embedTexts(
-      [safeQuery],
+    const embeddingResult = await embedRetrievalTexts([safeQuery], {
       abortSignal,
-      aiUsageScope("embedding", "tool.memory.search"),
-    ))?.[0];
+      usageScope: aiUsageScope("embedding", "tool.memory.search"),
+    });
+    const queryEmbedding = embeddingResult.vectors[0];
     const searchLimit = limit || 5;
     const privateAccess = memoryToolAccess(context, {
       purposeId: MEMORY_PURPOSE_IDS.retrieve,
@@ -2770,28 +2772,44 @@ async function runTool(
       searchMemories(safeQuery, {
         limit: searchLimit,
         queryEmbedding,
+        queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
         tenantId: context?.tenantId,
       }),
       privateAccess
         ? searchMemories(safeQuery, {
             limit: searchLimit,
             queryEmbedding,
+            queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
             tenantId: context?.tenantId,
             accessScope: privateAccess.databaseAccessScope,
           })
         : Promise.resolve([]),
     ]);
-    const results = mergeMemoryToolSearchResults(
+    const mergedResults = mergeMemoryToolSearchResults(
       legacyResults,
       privateResults,
       searchLimit,
     );
+    const reranked = rerankRetrievalCandidates(
+      safeQuery,
+      mergedResults.map((result) => ({
+        value: result,
+        text: `${result.record.title}\n${result.record.content}`,
+        baseScore: result.score,
+        freshnessScore: 0,
+      })),
+    );
     return {
-      results: results.map((result) => ({
-        score: result.score,
+      results: reranked.results.map(({ value: result, score }) => ({
+        score,
+        baseScore: result.score,
         reasons: result.reasons,
         record: publicMemoryToolRecord(result.record),
       })),
+      retrieval: {
+        embedding: embeddingResult.receipt,
+        reranker: reranked.receipt,
+      },
     };
   }
 
@@ -2860,15 +2878,30 @@ async function runTool(
   if (tool.id === "knowledge.search") {
     const { query, limit } = searchSchema.parse(parsed);
     const safeQuery = String(redactSensitive(query));
-    const queryEmbedding = (await embedTexts(
-      [safeQuery],
+    const embeddingResult = await embedRetrievalTexts([safeQuery], {
       abortSignal,
-      aiUsageScope("embedding", "tool.knowledge.search"),
-    ))?.[0];
-    const results = await searchKnowledge(safeQuery, { limit: limit || 5, queryEmbedding, tenantId: context?.tenantId });
+      usageScope: aiUsageScope("embedding", "tool.knowledge.search"),
+    });
+    const queryEmbedding = embeddingResult.vectors[0];
+    const results = await searchKnowledge(safeQuery, {
+      limit: limit || 5,
+      queryEmbedding,
+      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
+      tenantId: context?.tenantId,
+    });
+    const reranked = rerankRetrievalCandidates(
+      safeQuery,
+      results.map((result) => ({
+        value: result,
+        text: `${result.chunk.title}\n${result.chunk.content}`,
+        baseScore: result.score,
+        freshnessScore: result.recencyScore,
+      })),
+    );
     return {
-      results: results.map((result) => ({
-        score: result.score,
+      results: reranked.results.map(({ value: result, score }) => ({
+        score,
+        baseScore: result.score,
         vectorScore: result.vectorScore,
         lexicalScore: result.lexicalScore,
         reasons: result.reasons,
@@ -2878,6 +2911,10 @@ async function runTool(
         },
         document: result.document,
       })),
+      retrieval: {
+        embedding: embeddingResult.receipt,
+        reranker: reranked.receipt,
+      },
     };
   }
 

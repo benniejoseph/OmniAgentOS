@@ -119,6 +119,8 @@ export type RetrievalProfile = {
   expandedQueries: string[];
   rationale: string[];
   queryPlan: RetrievalQueryPlan;
+  embedding?: import("@/lib/rag/retrieval-embedding").RetrievalEmbeddingReceipt;
+  reranker?: import("@/lib/rag/learned-reranker").RetrievalRerankerReceipt;
 };
 
 export type ContextEvidenceItem =

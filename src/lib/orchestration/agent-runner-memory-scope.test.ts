@@ -23,14 +23,18 @@ const mocks = vi.hoisted(() => ({
   updateRunContextCount: vi.fn(),
 }));
 
-vi.mock("@/lib/config", () => ({
-  AGENT_MAX_OUTPUT_TOKENS: 128,
-  AGENT_MAX_TOOL_STEPS: 1,
-  AGENT_REASONING_EFFORT: "minimal",
-  hasAnthropicKey: () => false,
-  hasGeminiKey: () => false,
-  hasOpenAIKey: () => true,
-}));
+vi.mock("@/lib/config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/config")>();
+  return {
+    ...actual,
+    AGENT_MAX_OUTPUT_TOKENS: 128,
+    AGENT_MAX_TOOL_STEPS: 1,
+    AGENT_REASONING_EFFORT: "minimal",
+    hasAnthropicKey: () => false,
+    hasGeminiKey: () => false,
+    hasOpenAIKey: () => true,
+  };
+});
 
 vi.mock("@/lib/agents/learning", () => ({
   getAgentLearningGuidance: mocks.getAgentLearningGuidance,
@@ -282,6 +286,9 @@ describe("agent memory scope", () => {
       contextCompilerV2Shadow: expect.objectContaining({
         runId: "run-memory-scope",
       }),
+      embeddingPolicy: {
+        allowedExternalProviders: ["openai"],
+      },
     }));
     expect(mocks.updateRunContextCount).toHaveBeenCalledWith(
       "run-memory-scope",

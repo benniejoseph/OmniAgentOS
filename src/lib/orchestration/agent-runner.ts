@@ -708,6 +708,13 @@ export async function* runAgent(
             ? { workingMemoryReference: `thread:${request.threadId}` as const }
             : {}),
           evidenceIds: request.contextSelection?.evidenceIds,
+          ...(runtimeModel.provider === "openai"
+            ? {
+                embeddingPolicy: {
+                  allowedExternalProviders: ["openai"] as const,
+                },
+              }
+            : {}),
           ...(request.actorId ? {
             usageScope: {
               tenantId: runTenantId,

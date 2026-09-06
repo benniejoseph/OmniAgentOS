@@ -944,11 +944,19 @@ async function executeStep(
       "embedding",
       "workflow.context.retrieve",
     );
+    const retrievalRuntimeModel = await resolveWorkflowRuntimeModel(detail);
     const retrieval = await buildContextPack(contextSelection?.query || detail.run.goal, {
       limit: 6,
       tenantId: detail.run.tenantId,
       evidenceIds: contextSelection?.evidenceIds,
       ...(usageScope ? { usageScope } : {}),
+      ...(retrievalRuntimeModel.provider === "openai"
+        ? {
+            embeddingPolicy: {
+              allowedExternalProviders: ["openai"] as const,
+            },
+          }
+        : {}),
       queryPlanning: {
         beforeSemanticModelCall: async () => {
           await reserveWorkflowModelCall(

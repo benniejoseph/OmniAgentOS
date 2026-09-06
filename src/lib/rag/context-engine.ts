@@ -21,10 +21,11 @@ import {
   type MemoryAccessContext,
 } from "@/lib/memory/access-context";
 import type { MemorySearchResult } from "@/lib/memory/types";
-import { embedTexts } from "@/lib/openai/client";
 import { searchMemoryGraph } from "@/lib/memory/graph";
 import { searchMemories } from "@/lib/memory/store";
 import { searchKnowledge } from "@/lib/rag/store";
+import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
+import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
@@ -80,6 +81,10 @@ export type BuildContextPackOptions = {
   evidenceIds?: string[];
   /** Trusted server-created attribution for the retrieval embedding call. */
   usageScope?: AiUsageScope;
+  /** External query disclosure is opt-in and provider-specific. */
+  embeddingPolicy?: {
+    allowedExternalProviders?: readonly ["openai"] | readonly [];
+  };
   /** Governs the optional semantic planning turn; deterministic planning remains available. */
   queryPlanning?: {
     allowSemanticModel?: boolean;
@@ -200,15 +205,21 @@ export async function buildContextPack(
   }
 
   const retrievalQuery = profile.expandedQueries.join("\n");
-  const queryEmbedding = (await embedTexts(
+  const embeddingResult = await embedRetrievalTexts(
     [retrievalQuery || normalizedQuery],
-    undefined,
-    options.usageScope,
-  ))?.[0];
+    {
+      usageScope: options.usageScope,
+      allowedExternalProviders:
+        options.embeddingPolicy?.allowedExternalProviders,
+    },
+  );
+  const queryEmbedding = embeddingResult.vectors[0];
+  const queryEmbeddingSpaceId = embeddingResult.receipt.spaceId;
   const [legacyMemoryResults, scopedMemoryResults, knowledgeResults, graphResults] = await Promise.all([
     searchMemories(retrievalQuery || normalizedQuery, {
       limit: candidateLimit,
       queryEmbedding,
+      queryEmbeddingSpaceId,
       tenantId,
       workingMemoryReference: options.workingMemoryReference,
     }),
@@ -216,12 +227,18 @@ export async function buildContextPack(
       ? searchMemories(retrievalQuery || normalizedQuery, {
           limit: candidateLimit,
           queryEmbedding,
+          queryEmbeddingSpaceId,
           tenantId,
           accessScope: databaseMemoryAccessScope,
           workingMemoryReference: options.workingMemoryReference,
         })
       : Promise.resolve([]),
-    searchKnowledge(retrievalQuery || normalizedQuery, { limit: candidateLimit, queryEmbedding, tenantId }),
+    searchKnowledge(retrievalQuery || normalizedQuery, {
+      limit: candidateLimit,
+      queryEmbedding,
+      queryEmbeddingSpaceId,
+      tenantId,
+    }),
     searchMemoryGraph(retrievalQuery || normalizedQuery, {
       limit: Math.min(candidateLimit, 24),
       tenantId,
@@ -249,9 +266,35 @@ export async function buildContextPack(
     knowledgeResults,
     graphResults,
   });
+  const reranked = rerankRetrievalCandidates(
+    normalizedQuery,
+    evidence.map((item) => ({
+      value: item,
+      text: `${item.title}\n${item.content}`,
+      baseScore: item.utilityScore,
+      freshnessScore: item.freshnessScore,
+    })),
+  );
+  const rerankedEvidence = reranked.results.map((result) => ({
+    ...result.value,
+    utilityScore: result.score,
+    confidence: clamp01(
+      result.value.confidence * 0.58 + result.score * 0.42,
+    ),
+    reasons: [...result.value.reasons, "learned multilingual rerank"],
+  }));
+  profile = {
+    ...profile,
+    embedding: embeddingResult.receipt,
+    reranker: reranked.receipt,
+  };
   const evidenceIdSet = evidenceIds ? new Set(evidenceIds) : undefined;
   const legacySelected = selectDiverseEvidence(
-    evidenceIdSet ? evidence.filter((item) => evidenceIdSet.has(citationIdForEvidence(item))) : evidence,
+    evidenceIdSet
+      ? rerankedEvidence.filter((item) =>
+          evidenceIdSet.has(citationIdForEvidence(item))
+        )
+      : rerankedEvidence,
     limit,
   );
   const compilerV2Shadow = options.contextCompilerV2Shadow && compilerCandidatesPromise
@@ -460,12 +503,14 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
     compilerV2Canary,
     ...redactionInput
   } = pack;
-  const queryPlan = redactionInput.profile.queryPlan;
+  const { queryPlan, embedding, reranker } = redactionInput.profile;
   const sanitized = redactSensitive({
     ...redactionInput,
     profile: {
       ...redactionInput.profile,
       queryPlan: undefined,
+      embedding: undefined,
+      reranker: undefined,
     },
   }) as ContextPack;
   return {
@@ -473,6 +518,8 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
     profile: {
       ...sanitized.profile,
       queryPlan,
+      ...(embedding ? { embedding } : {}),
+      ...(reranker ? { reranker } : {}),
     },
     ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
     ...(compilerV2Canary ? { compilerV2Canary } : {}),
