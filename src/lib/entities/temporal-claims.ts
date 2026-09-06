@@ -192,6 +192,8 @@ export function buildTemporalRelationClaim(input: {
 
 export function reviseTemporalRelationClaim(input: {
   current: TemporalRelationClaimRevision;
+  source?: TemporalRelationClaimRevision["source"];
+  target?: TemporalRelationClaimRevision["target"];
   epistemicKind?: RelationEpistemicKind;
   claimState?: "active" | "retracted";
   confidenceBasisPoints?: number;
@@ -211,8 +213,8 @@ export function reviseTemporalRelationClaim(input: {
     claimId: current.claimId,
     previousRevisionId: current.revisionId,
     relationTypeId: current.relationTypeId,
-    source: current.source,
-    target: current.target,
+    source: input.source || current.source,
+    target: input.target || current.target,
     epistemicKind: input.epistemicKind || current.epistemicKind,
     claimState: input.claimState || current.claimState,
     confidenceBasisPoints:
