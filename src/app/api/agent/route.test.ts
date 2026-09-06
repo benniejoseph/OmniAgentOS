@@ -9,6 +9,7 @@ const routeMocks = vi.hoisted(() => ({
   getAgentPerformance: vi.fn(),
   getOwnedProject: vi.fn(),
   getThread: vi.fn(),
+  resolveAgentIdentityForExecution: vi.fn(),
   listConversationSummaries: vi.fn(),
   listThreadTurns: vi.fn(),
   resolveLoopV2ModelTextEnrollment: vi.fn(),
@@ -37,6 +38,12 @@ vi.mock("@/lib/http/rate-limit", async (importOriginal) => ({
 
 vi.mock("@/lib/agents/performance", () => ({
   getAgentPerformance: routeMocks.getAgentPerformance,
+}));
+
+vi.mock("@/lib/agents/identity-store", () => ({
+  AgentIdentityResolutionError: class AgentIdentityResolutionError extends Error {},
+  resolveAgentIdentityForExecution:
+    routeMocks.resolveAgentIdentityForExecution,
 }));
 
 vi.mock("@/lib/projects/store", () => ({
@@ -104,6 +111,15 @@ beforeEach(() => {
     actorId: context.actorId,
   });
   routeMocks.getThread.mockReset().mockResolvedValue(null);
+  routeMocks.resolveAgentIdentityForExecution.mockReset().mockResolvedValue({
+    definition: {
+      logicalAgentId: "atlas",
+      definitionVersionId: "definition:built-in:atlas:v1",
+    },
+    principal: {
+      principalVersionId: "agent:atlas:test:g1",
+    },
+  });
   routeMocks.listConversationSummaries.mockReset().mockResolvedValue([]);
   routeMocks.listThreadTurns.mockReset().mockResolvedValue([]);
   routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockReset()

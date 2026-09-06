@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  buildBuiltInAgentIdentityV1,
   buildCustomAgentIdentityV1,
+  isBuiltInAgentIdentityId,
   parseAgentDefinitionV1,
   parseAgentPrincipalDefinitionV1,
   type ResolvedAgentIdentityV1,
 } from "@/lib/agents/identity-contracts";
-import { getSql } from "@/lib/db/client";
+import {
+  ensureDatabaseSchema,
+  getSql,
+  hasDatabaseUrl,
+} from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
 import { builtInSkills } from "@/lib/skills/catalog";
@@ -27,6 +33,51 @@ export class AgentIdentityResolutionError extends Error {
     super(message);
     this.name = "AgentIdentityResolutionError";
   }
+}
+
+export async function resolveAgentIdentityForExecution(input: {
+  tenantId: string;
+  actorId: string;
+  agentId: string;
+  customAgent?: CustomAgentDefinition;
+  customSkills?: readonly AgentSkill[];
+}): Promise<ResolvedAgentIdentityV1> {
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const sql = getSql();
+    const ownerActorId = await resolveCanonicalOwnerActorId(
+      input.tenantId,
+      input.actorId,
+      sql,
+    );
+    if (isBuiltInAgentIdentityId(input.agentId)) {
+      return buildBuiltInAgentIdentityV1({
+        agentId: input.agentId,
+        tenantId: input.tenantId,
+        controllerActorId: ownerActorId,
+      });
+    }
+    return resolveCustomAgentIdentityWithSql({
+      tenantId: input.tenantId,
+      agentId: input.agentId,
+      ownerActorId,
+      sql,
+    });
+  }
+  if (isBuiltInAgentIdentityId(input.agentId)) {
+    return buildBuiltInAgentIdentityV1({
+      agentId: input.agentId,
+      tenantId: input.tenantId,
+      controllerActorId: input.actorId,
+    });
+  }
+  if (!input.customAgent) throw new AgentIdentityResolutionError();
+  return buildCustomAgentIdentityV1({
+    agent: input.customAgent,
+    skills: input.customSkills || [],
+    definitionVersion: 1,
+    principalGeneration: 1,
+  });
 }
 
 export function createAgentIdentityMutationScope(

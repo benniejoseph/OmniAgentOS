@@ -59,6 +59,10 @@ import {
 } from "@/lib/orchestration/loop-v2-model-text-runtime";
 import { getAgentPerformance } from "@/lib/agents/performance";
 import {
+  AgentIdentityResolutionError,
+  resolveAgentIdentityForExecution,
+} from "@/lib/agents/identity-store";
+import {
   adaptSupervisorDecision,
   applySupervisorStrategy,
   compileThreadContext,
@@ -306,16 +310,37 @@ async function POSTHandler(request: Request) {
   const customSkills = customAgent
     ? (await listAgentSkills({ tenantId: context.tenantId, actorId: context.actorId })).filter((skill) => customAgent.skillIds.includes(skill.id) && skill.status === "active")
     : [];
-  const agentProfile = customAgent ? {
-    name: customAgent.name,
-    role: customAgent.role,
-    description: customAgent.description,
-    instructions: customAgent.instructions,
-    modelPolicy: customAgent.modelPolicy,
-    autonomy: customAgent.autonomy,
-    approvalPolicy: customAgent.approvalPolicy,
-    memoryScope: customAgent.memoryScope,
-    toolIds: customAgent.toolIds,
+  let requestedCustomIdentity;
+  try {
+    requestedCustomIdentity = customAgent
+      ? await resolveAgentIdentityForExecution({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          agentId: customAgent.id,
+          customAgent,
+          customSkills,
+        })
+      : undefined;
+  } catch (error) {
+    if (!(error instanceof AgentIdentityResolutionError)) throw error;
+    return Response.json({
+      error: "Agent identity unavailable",
+      message: "The exact definition and authority versions could not be verified.",
+    }, {
+      status: 409,
+      headers: { "cache-control": "private, no-store" },
+    });
+  }
+  const agentProfile = requestedCustomIdentity ? {
+    name: requestedCustomIdentity.definition.name,
+    role: requestedCustomIdentity.definition.role,
+    description: requestedCustomIdentity.definition.description,
+    instructions: requestedCustomIdentity.definition.instructions,
+    modelPolicy: requestedCustomIdentity.definition.modelPolicy,
+    autonomy: requestedCustomIdentity.principal.autonomy,
+    approvalPolicy: requestedCustomIdentity.principal.approvalPolicy,
+    memoryScope: requestedCustomIdentity.principal.memoryScope,
+    toolIds: requestedCustomIdentity.principal.toolGrantIds,
     skills: customSkills.map(({ id, name, description, instructions, toolIds }) => ({ id, name, description, instructions, toolIds })),
   } : undefined;
   let savedProcedures;
@@ -483,6 +508,13 @@ async function POSTHandler(request: Request) {
             return [];
           }),
         );
+        const executingAgentId = customAgent?.id || decision.primaryAgentId;
+        const agentIdentity = requestedCustomIdentity ||
+          await resolveAgentIdentityForExecution({
+            tenantId: context.tenantId,
+            actorId: context.actorId,
+            agentId: executingAgentId,
+          });
         let loopV2CanaryEnrollment;
         let loopV2ModelTextEnrollment;
         try {
@@ -783,6 +815,7 @@ async function POSTHandler(request: Request) {
                 customAgentName: customAgent?.name,
                 skillIds: customSkills.map((skill) => skill.id),
                 agentProfile,
+                agentIdentity,
                 specialistIds: decision.specialistIds,
                 specialistTaskIds: durableSpecialists.map((item) => item.taskId),
                 specialistRunIds: durableSpecialists.map((item) => item.runId),
@@ -874,7 +907,6 @@ async function POSTHandler(request: Request) {
         if (parsed.data.missionId && mission && !parsed.data.contextScope) {
           safeMessages = includeMissionContext(safeMessages, mission);
         }
-        const executingAgentId = customAgent?.id || decision.primaryAgentId;
         const directExecutionScope = executionScopeFromSecurityContext(
           context,
           {
@@ -900,6 +932,7 @@ async function POSTHandler(request: Request) {
                 agentId: executingAgentId,
                 securityContext: context,
                 executionScope: directExecutionScope,
+                agentIdentity,
                 enrollment: loopV2CanaryEnrollment,
                 resumeRunId: parsed.data.resumeRunId,
               },
@@ -914,6 +947,7 @@ async function POSTHandler(request: Request) {
                   agentId: executingAgentId,
                   securityContext: context,
                   executionScope: directExecutionScope,
+                  agentIdentity,
                   enrollment: loopV2ModelTextEnrollment,
                 },
                 request.signal,
@@ -936,6 +970,7 @@ async function POSTHandler(request: Request) {
                 promptMemoryAccess,
                 promptEntityGraphAccess,
                 executionScope: directExecutionScope,
+                agentIdentity,
                 tenantId: context.tenantId,
                 actorId: context.actorId,
                 role: context.role,

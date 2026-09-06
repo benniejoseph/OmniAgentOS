@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  buildAgentRunIdentityPinV1,
+  buildBuiltInAgentIdentityV1,
+  type AgentRunIdentityPinV1,
+  type ResolvedAgentIdentityV1,
+} from "@/lib/agents/identity-contracts";
 
 import {
   getSql,
@@ -37,9 +43,11 @@ import {
 } from "@/lib/rollouts/tenant-capability-rollouts";
 import {
   appendRunEvent,
+  appendAgentRunIdentityPin,
   bindAgentRunExecutionScope,
   createAgentRun,
   failAgentRun,
+  getAgentRunIdentityPin,
 } from "@/lib/runs/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -110,6 +118,7 @@ export type LoopV2ReadOnlyCanaryRequest = Readonly<{
   securityContext: SecurityContext;
   executionScope: ExecutionScope;
   enrollment: LoopV2ReadOnlyCanaryEnrollment;
+  agentIdentity?: ResolvedAgentIdentityV1;
   resumeRunId?: string;
   recovery?: Readonly<{
     runId: string;
@@ -129,6 +138,8 @@ export type LoopV2RuntimeDependencies = Readonly<{
   resumeClarification: typeof persistClarificationResume;
   finalizeRun: typeof persistTerminalCheckpoint;
   failUncheckpointedRun: typeof failAgentRun;
+  appendIdentityPin?: typeof appendAgentRunIdentityPin;
+  getIdentityPin?: typeof getAgentRunIdentityPin;
 }>;
 
 const runtimeDependencies: LoopV2RuntimeDependencies = Object.freeze({
@@ -142,6 +153,8 @@ const runtimeDependencies: LoopV2RuntimeDependencies = Object.freeze({
   resumeClarification: persistClarificationResume,
   finalizeRun: persistTerminalCheckpoint,
   failUncheckpointedRun: failAgentRun,
+  appendIdentityPin: appendAgentRunIdentityPin,
+  getIdentityPin: getAgentRunIdentityPin,
 });
 
 export function isLoopV2ReadOnlyCanaryCandidate(
@@ -194,6 +207,7 @@ export async function* runLoopV2ReadOnlyCanary(
   let runId: string | undefined;
   let current: LoopV2Checkpoint | undefined;
   let runContract: LoopV2RunContractSnapshot | undefined;
+  let agentIdentityPin: AgentRunIdentityPinV1 | undefined;
   let contractRequest = request.message;
 
   const emit = async (event: AgentEvent) => {
@@ -230,6 +244,12 @@ export async function* runLoopV2ReadOnlyCanary(
     throwIfAborted(abortSignal);
     if (request.recovery) {
       runId = request.recovery.runId;
+      agentIdentityPin = await dependencies.getIdentityPin?.(runId, {
+        tenantId: context.tenantId,
+      });
+      if (dependencies.getIdentityPin && !agentIdentityPin) {
+        throw new Error("Loop v2 recovery requires its original agent identity pin.");
+      }
       current = request.recovery.checkpoint;
       runContract = buildLoopV2PreExecutionRunContract({
         rootCheckpoint: current,
@@ -240,6 +260,7 @@ export async function* runLoopV2ReadOnlyCanary(
           toolId: "runs.list",
         }),
         agentId: request.agentId,
+        agentIdentityPin,
       });
       yield await emit({ type: "run", runId, threadId: request.threadId });
       yield await emit({
@@ -262,6 +283,12 @@ export async function* runLoopV2ReadOnlyCanary(
         ),
       });
       runId = resumed.runId;
+      agentIdentityPin = await dependencies.getIdentityPin?.(runId, {
+        tenantId: context.tenantId,
+      });
+      if (dependencies.getIdentityPin && !agentIdentityPin) {
+        throw new Error("Loop v2 resume requires its original agent identity pin.");
+      }
       executionScope = resumed.executionScope;
       current = resumed.checkpoint;
       contractRequest = resumed.originalPrompt?.trim() || request.message;
@@ -274,6 +301,7 @@ export async function* runLoopV2ReadOnlyCanary(
           toolId: "runs.list",
         }),
         agentId: request.agentId,
+        agentIdentityPin,
       });
       yield await emit({ type: "run", runId, threadId: resumed.threadId });
       yield await emit({
@@ -297,6 +325,18 @@ export async function* runLoopV2ReadOnlyCanary(
       await dependencies.bindRunScope(runId, executionScope, {
         tenantId: context.tenantId,
       });
+      const identity = request.agentIdentity || buildBuiltInAgentIdentityV1({
+        agentId: "atlas",
+        tenantId: context.tenantId,
+        controllerActorId: context.actorId,
+      });
+      agentIdentityPin = buildAgentRunIdentityPinV1({ runId, identity });
+      if (dependencies.appendIdentityPin) {
+        await dependencies.appendIdentityPin(runId, agentIdentityPin, {
+          tenantId: context.tenantId,
+          executionScope,
+        });
+      }
       const root = createInitialLoopV2Checkpoint({
         tenantId: context.tenantId,
         runId,
@@ -313,6 +353,7 @@ export async function* runLoopV2ReadOnlyCanary(
           toolId: "runs.list",
         }),
         agentId: request.agentId,
+        agentIdentityPin,
       });
       await dependencies.persistCheckpoint(
         root,

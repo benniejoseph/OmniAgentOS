@@ -83,6 +83,14 @@ describe("Loop v2 read-only canary runtime", () => {
     ));
 
     expect(harness.executeTool).toHaveBeenCalledTimes(1);
+    expect(harness.appendIdentityPin).toHaveBeenCalledWith(
+      "run-canary",
+      expect.objectContaining({
+        logicalAgentId: "atlas",
+        definitionVersionId: "definition:built-in:atlas:v1",
+      }),
+      expect.objectContaining({ tenantId: "tenant-a" }),
+    );
     expect(harness.executeTool).toHaveBeenCalledWith(expect.objectContaining({
       toolId: "runs.list",
       input: { limit: 6 },
@@ -498,6 +506,7 @@ function runtimeHarness() {
     },
   );
   const failUncheckpointedRun = vi.fn().mockResolvedValue(true);
+  const appendIdentityPin = vi.fn().mockResolvedValue(undefined);
   const dependencies = {
     createRun,
     bindRunScope,
@@ -509,6 +518,7 @@ function runtimeHarness() {
     resumeClarification,
     finalizeRun,
     failUncheckpointedRun,
+    appendIdentityPin,
   } as unknown as LoopV2RuntimeDependencies;
   return {
     dependencies,
@@ -522,6 +532,7 @@ function runtimeHarness() {
     finalizeRun,
     appendAssistantTurn,
     failUncheckpointedRun,
+    appendIdentityPin,
   };
 }
 
