@@ -1955,6 +1955,28 @@ pending an unlocked browser session. P6.1 remains open for bounded
 model-backed work and broader production fault injection; legacy runs remain
 pinned to v1.
 
+The following P6.1 slice adds a separately pinned model-text canary without
+widening the tool or context surface. It accepts only an explicit bounded
+`Summarize:` request under an actor-bound direct Atlas scope and supplies only
+the redacted 80–4,000-character source text to one logical fast-tier model
+gateway call. Retrieved context, prior conversation, tools, web, memory,
+council, workflows, continuations, missions, and specialists remain excluded.
+Success requires bounded non-local output, exactly one completed provider
+attempt within the gateway's four-attempt ceiling, and a durable AI usage
+receipt; provider, receipt, or output verification failures replan and finish
+failed without a second logical call. Migration v91 admits only the exact
+read-canary or model-canary engine/configuration pair and binds every persisted
+pin field back to the checkpoint JSON. It validated all 16 existing read
+checkpoints. The risk-3 rollout API registered and activated generation 1 with
+typed lifecycle events. The authenticated production canary made one model
+call and zero tool calls, persisted the six-state success path, recorded one
+completed `text_generation` usage receipt, and finished at exact healthy web,
+Fly, and worker release
+`1b2a87055283dcd3c7db3adab26fcc0820aa41c0`. Root admission still rechecks the
+current rollout, while an already admitted run continues under its immutable
+pin after pause or supersession. P6.1 remains open for broader interrupted-run
+recovery and bounded production fault injection; legacy v1 runs are unchanged.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
