@@ -143,6 +143,21 @@ describe("agent intent clarification", () => {
 });
 
 describe("agent Loop v2 canary routing", () => {
+  it("rejects a resume identifier without its actor-owned thread binding", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "yes",
+        resumeRunId: "00000000-0000-4000-8000-000000000001",
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(routeMocks.runLoopV2ReadOnlyCanary).not.toHaveBeenCalled();
+  });
+
   it("uses the pinned canary runner without invoking the legacy loop", async () => {
     const enrollment = { enginePin: { engineVersionId: "loop-v2-test" } };
     routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockResolvedValue(
@@ -190,5 +205,58 @@ describe("agent Loop v2 canary routing", () => {
       }),
       expect.any(AbortSignal),
     );
+  });
+
+  it("routes an explicit confirmation back to the exact paused run", async () => {
+    const enrollment = { enginePin: { engineVersionId: "loop-v2-test" } };
+    routeMocks.getThread.mockResolvedValue({
+      id: "00000000-0000-4000-8000-000000000002",
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      mode: "orchestrate",
+    });
+    routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockResolvedValue(
+      enrollment,
+    );
+    routeMocks.runLoopV2ReadOnlyCanary.mockImplementation(async function* () {
+      yield {
+        type: "run",
+        runId: "00000000-0000-4000-8000-000000000001",
+        threadId: "00000000-0000-4000-8000-000000000002",
+      };
+      yield { type: "done", response: "Here are your recent runs." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "yes",
+        threadId: "00000000-0000-4000-8000-000000000002",
+        resumeRunId: "00000000-0000-4000-8000-000000000001",
+        requestId: "loop-v2-clarification-a",
+        strategy: "auto",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain("event: done");
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "yes",
+        resumeRunId: "00000000-0000-4000-8000-000000000001",
+      }),
+    );
+    expect(routeMocks.runLoopV2ReadOnlyCanary).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "yes",
+        threadId: "00000000-0000-4000-8000-000000000002",
+        resumeRunId: "00000000-0000-4000-8000-000000000001",
+        enrollment,
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 });
