@@ -2,6 +2,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { listStreamEvents } from "@/lib/events/store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { ToolDefinition } from "@/lib/tools/types";
 
 const mocks = vi.hoisted(() => ({
@@ -78,6 +80,17 @@ beforeEach(() => {
 
 describe("workflow tool node execution contract", () => {
   it("binds governed tool output to typed input, artifacts, and receipts", async () => {
+    mocks.getWorkflowRunExecutionAuthority.mockResolvedValue({
+      executionScope: createExecutionScope({
+        tenantId: "tenant-1",
+        initiatingActorId: "workflow-owner",
+        executingPrincipalType: "agent",
+        executingPrincipalId: "workflow-executor",
+        correlationId: "workflow-tool-contract-1",
+        purpose: "workflow.execute",
+      }),
+      requesterRole: "admin",
+    });
     const node = withWorkflowNodeContract({
       id: "inspect-runs",
       label: "Inspect runs",
@@ -188,5 +201,18 @@ describe("workflow tool node execution contract", () => {
         },
       }],
     });
+    const mutationEvents = (await listStreamEvents(
+      "workflow:workflow-tool-contract-1",
+      { tenantId: "tenant-1" },
+    )).filter((event) => event.type === "workflow.plan_node.execution_upserted");
+    expect(mutationEvents).toHaveLength(2);
+    expect(mutationEvents.map((event) => event.payload.status)).toEqual([
+      "running",
+      "completed",
+    ]);
+    expect(mutationEvents.every((event) =>
+      typeof event.payload.idempotencyKeySha256 === "string"
+    )).toBe(true);
+    expect(JSON.stringify(mutationEvents)).not.toContain("run-123");
   });
 });

@@ -16,6 +16,9 @@ import {
 import { generateModelStructured } from "@/lib/models/gateway";
 import { redactSensitive } from "@/lib/security/context";
 import {
+  appendScopedDomainEvent,
+} from "@/lib/events/store";
+import {
   deriveExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -201,6 +204,11 @@ export async function executeDynamicWorkflowPlan(
         }),
       }
     : rootExecutionAuthority;
+  const persistNodeExecution = (record: WorkflowPlanNodeExecutionRecord) =>
+    saveWorkflowPlanNodeExecution(
+      record,
+      executionAuthority?.executionScope,
+    );
 
   const sortedNodes = topologicalSort(parsedPlan.plan.nodes);
   const priorRecords = await listWorkflowPlanNodeExecutionsForRun(detail.run.id, 250);
@@ -261,7 +269,7 @@ export async function executeDynamicWorkflowPlan(
       dependencyRecords,
     });
 
-    const runningRecord = await saveWorkflowPlanNodeExecution({
+    const runningRecord = await persistNodeExecution({
       ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing, nodeInput }),
       status: "running",
       startedAt: new Date().toISOString(),
@@ -304,7 +312,7 @@ export async function executeDynamicWorkflowPlan(
           return toolExecution;
         },
       );
-      const record = await saveWorkflowPlanNodeExecution({
+      const record = await persistNodeExecution({
         ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord, nodeInput }),
         status: result.status,
         toolExecutionIds: persistedToolExecutions.map((tool) => tool.id),
@@ -326,7 +334,7 @@ export async function executeDynamicWorkflowPlan(
       return { record, haltScheduling: false };
     } catch (error) {
       if (options.abortSignal?.aborted) {
-        await saveWorkflowPlanNodeExecution({
+        await persistNodeExecution({
           ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord, nodeInput }),
           status: "pending",
           error: undefined,
@@ -346,7 +354,7 @@ export async function executeDynamicWorkflowPlan(
         finalizedEffectReceipt
       ) {
         try {
-          const pendingRecord = await saveWorkflowPlanNodeExecution({
+          const pendingRecord = await persistNodeExecution({
             ...baseNodeExecutionRecord({
               detail,
               planId: parsedPlan.id,
@@ -377,7 +385,7 @@ export async function executeDynamicWorkflowPlan(
         }
       }
       const message = error instanceof Error ? error.message : "Plan node execution failed.";
-      const record = await saveWorkflowPlanNodeExecution({
+      const record = await persistNodeExecution({
         ...baseNodeExecutionRecord({ detail, planId: parsedPlan.id, node, existing: runningRecord, nodeInput }),
         status: "failed",
         error: message,
@@ -414,7 +422,7 @@ export async function executeDynamicWorkflowPlan(
         const blockedDependencies = node.dependsOn
           .map((dependencyId) => recordsByNode.get(dependencyId))
           .filter((record) => record && record.status !== "completed");
-        const record = await saveWorkflowPlanNodeExecution({
+        const record = await persistNodeExecution({
           ...baseNodeExecutionRecord({
             detail,
             planId: parsedPlan.id,
@@ -1441,7 +1449,10 @@ function buildBaseToolInput({
   );
 }
 
-async function saveWorkflowPlanNodeExecution(record: WorkflowPlanNodeExecutionRecord) {
+async function saveWorkflowPlanNodeExecution(
+  record: WorkflowPlanNodeExecutionRecord,
+  executionScope?: ExecutionScope,
+) {
   const nextRecord = sanitizeWorkflowPlanNodeExecution({
     ...record,
     tenantId: normalizeTenantId(record.tenantId),
@@ -1450,39 +1461,49 @@ async function saveWorkflowPlanNodeExecution(record: WorkflowPlanNodeExecutionRe
   });
 
   if (hasDatabaseUrl()) {
+    if (!executionScope) {
+      throw new Error("Workflow node persistence requires bound execution authority.");
+    }
     await ensureDatabaseSchema();
-    await getSql()`
-      INSERT INTO omni_workflow_node_executions (
-        id, tenant_id, workflow_run_id, plan_id, node_id, node_label, node_kind, status,
-        policy, risk_level, approval_required, tool_execution_ids, input, output,
-        error, started_at, completed_at, created_at, updated_at
-      )
-      VALUES (
-        ${nextRecord.id}, ${nextRecord.tenantId}, ${nextRecord.workflowRunId}, ${nextRecord.planId},
-        ${nextRecord.nodeId}, ${nextRecord.nodeLabel}, ${nextRecord.nodeKind},
-        ${nextRecord.status}, ${nextRecord.policy}, ${nextRecord.riskLevel},
-        ${nextRecord.approvalRequired}, ${nextRecord.toolExecutionIds},
-        ${nextRecord.input || {}}::jsonb,
-        ${nextRecord.output || null}::jsonb,
-        ${nextRecord.error || null}, ${nextRecord.startedAt || null},
-        ${nextRecord.completedAt || null}, ${nextRecord.createdAt}, ${nextRecord.updatedAt}
-      )
-      ON CONFLICT (plan_id, node_id) DO UPDATE SET
-        tenant_id = EXCLUDED.tenant_id,
-        node_label = EXCLUDED.node_label,
-        node_kind = EXCLUDED.node_kind,
-        status = EXCLUDED.status,
-        policy = EXCLUDED.policy,
-        risk_level = EXCLUDED.risk_level,
-        approval_required = EXCLUDED.approval_required,
-        tool_execution_ids = EXCLUDED.tool_execution_ids,
-        input = EXCLUDED.input,
-        output = EXCLUDED.output,
-        error = EXCLUDED.error,
-        started_at = EXCLUDED.started_at,
-        completed_at = EXCLUDED.completed_at,
-        updated_at = EXCLUDED.updated_at
-    `;
+    await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      await sql`
+        INSERT INTO omni_workflow_node_executions (
+          id, tenant_id, workflow_run_id, plan_id, node_id, node_label, node_kind, status,
+          policy, risk_level, approval_required, tool_execution_ids, input, output,
+          error, started_at, completed_at, created_at, updated_at
+        )
+        VALUES (
+          ${nextRecord.id}, ${nextRecord.tenantId}, ${nextRecord.workflowRunId}, ${nextRecord.planId},
+          ${nextRecord.nodeId}, ${nextRecord.nodeLabel}, ${nextRecord.nodeKind},
+          ${nextRecord.status}, ${nextRecord.policy}, ${nextRecord.riskLevel},
+          ${nextRecord.approvalRequired}, ${nextRecord.toolExecutionIds},
+          ${nextRecord.input || {}}::jsonb,
+          ${nextRecord.output || null}::jsonb,
+          ${nextRecord.error || null}, ${nextRecord.startedAt || null},
+          ${nextRecord.completedAt || null}, ${nextRecord.createdAt}, ${nextRecord.updatedAt}
+        )
+        ON CONFLICT (plan_id, node_id) DO UPDATE SET
+          tenant_id = EXCLUDED.tenant_id,
+          node_label = EXCLUDED.node_label,
+          node_kind = EXCLUDED.node_kind,
+          status = EXCLUDED.status,
+          policy = EXCLUDED.policy,
+          risk_level = EXCLUDED.risk_level,
+          approval_required = EXCLUDED.approval_required,
+          tool_execution_ids = EXCLUDED.tool_execution_ids,
+          input = EXCLUDED.input,
+          output = EXCLUDED.output,
+          error = EXCLUDED.error,
+          started_at = EXCLUDED.started_at,
+          completed_at = EXCLUDED.completed_at,
+          updated_at = EXCLUDED.updated_at
+      `;
+      await appendWorkflowNodeMutationEvent(
+        nextRecord,
+        executionScope,
+        sql,
+      );
+    });
     return nextRecord;
   }
 
@@ -1490,7 +1511,54 @@ async function saveWorkflowPlanNodeExecution(record: WorkflowPlanNodeExecutionRe
     ledger.records = [nextRecord, ...ledger.records.filter((item) => item.id !== nextRecord.id && !(item.planId === nextRecord.planId && item.nodeId === nextRecord.nodeId))];
     return trimNodeExecutionLedger(ledger);
   });
+  if (executionScope) {
+    await appendWorkflowNodeMutationEvent(nextRecord, executionScope);
+  }
   return nextRecord;
+}
+
+async function appendWorkflowNodeMutationEvent(
+  record: WorkflowPlanNodeExecutionRecord,
+  executionScope: ExecutionScope,
+  sql?: ReturnType<typeof getSql>,
+) {
+  const projection = {
+    schemaVersion: 1,
+    workflowRunId: record.workflowRunId,
+    planId: record.planId,
+    nodeId: record.nodeId,
+    nodeKind: record.nodeKind,
+    status: record.status,
+    policy: record.policy,
+    riskLevel: record.riskLevel,
+    approvalRequired: record.approvalRequired,
+    toolExecutionIds: [...record.toolExecutionIds].sort(),
+    inputSha256: canonicalJsonSha256(record.input || {}),
+    outputSha256: canonicalJsonSha256(record.output || null),
+    errorSha256: record.error
+      ? canonicalJsonSha256({ error: record.error })
+      : null,
+    startedAt: record.startedAt || null,
+    completedAt: record.completedAt || null,
+  };
+  const idempotencyKeySha256 = canonicalJsonSha256({
+    tenantId: record.tenantId,
+    executionId: record.id,
+    projection,
+  });
+  await appendScopedDomainEvent({
+    id: `workflow-node:${idempotencyKeySha256}`,
+    streamId: `workflow:${record.workflowRunId}`,
+    type: "workflow.plan_node.execution_upserted",
+    executionScope: deriveExecutionScope(executionScope, {
+      causationId: `workflow-plan:${record.planId}:node:${record.nodeId}:${record.status}`,
+      purpose: "workflow.plan_node.persist",
+    }),
+    payload: {
+      ...projection,
+      idempotencyKeySha256,
+    },
+  }, sql ? { sql } : {});
 }
 
 function baseNodeExecutionRecord({

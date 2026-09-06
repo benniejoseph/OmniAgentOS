@@ -402,4 +402,67 @@ describe("workflow conditional transitions (file mode)", () => {
       planner.getWorkflowPlanById(plan.id, { tenantId: "tenant-cas" }),
     ).resolves.toMatchObject({ workflowRunId: first.run.id });
   });
+
+  it("attributes reviewed plan creation and claim without logging plan content", async () => {
+    const planner = await import("@/lib/workflows/planner");
+    const store = await import("@/lib/workflows/store");
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-plan-ledger",
+      initiatingActorId: "plan-owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "plan-owner",
+      correlationId: "workflow-plan-request-1",
+      purpose: "workflow.plan.create",
+    });
+    const plan = await planner.buildDynamicWorkflowPlan({
+      tenantId: "tenant-plan-ledger",
+      actorId: "plan-owner",
+      goal: "Private reviewed workflow plan content",
+      executionScope,
+    });
+    const createdEvents = await listStreamEvents(`workflow-plan:${plan.id}`, {
+      tenantId: "tenant-plan-ledger",
+    });
+    expect(createdEvents).toEqual([
+      expect.objectContaining({
+        actorId: "plan-owner",
+        correlationId: "workflow-plan-request-1",
+        type: "workflow.plan.created",
+        payload: expect.objectContaining({
+          schemaVersion: 1,
+          planId: plan.id,
+          goalSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          planSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          idempotencyKeySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      }),
+    ]);
+
+    const workflow = await store.createWorkflowRun({
+      tenantId: "tenant-plan-ledger",
+      goal: plan.goal,
+      executionAuthority: { executionScope, requesterRole: "admin" },
+    });
+    await planner.claimWorkflowPlanForRun({
+      planId: plan.id,
+      workflowRunId: workflow.run.id,
+      tenantId: "tenant-plan-ledger",
+    });
+    const workflowEvents = await listStreamEvents(`workflow:${workflow.run.id}`, {
+      tenantId: "tenant-plan-ledger",
+    });
+    expect(workflowEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "workflow.plan.claimed",
+        payload: expect.objectContaining({
+          planId: plan.id,
+          workflowRunId: workflow.run.id,
+          idempotencyKeySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      }),
+    ]));
+    expect(JSON.stringify([...createdEvents, ...workflowEvents])).not.toContain(
+      "Private reviewed workflow plan content",
+    );
+  });
 });

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { loadProgressiveAgentTools } from "@/lib/capabilities/toolbox";
 import { WORKFLOW_PLANNER_TIMEOUT_MS } from "@/lib/config";
@@ -9,9 +9,15 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
+import { appendScopedDomainEvent } from "@/lib/events/store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  deriveExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -22,6 +28,7 @@ import { normalizeWorkflowNodeInputBindings } from "@/lib/workflows/dependency-b
 import { withWorkflowNodeContract } from "@/lib/workflows/node-contract";
 import { applyWorkflowSubtreeReplan } from "@/lib/workflows/replan";
 import type { SavedProcedureToolBinding } from "@/lib/workflows/saved-procedures";
+import { getWorkflowRunExecutionAuthority } from "@/lib/workflows/store";
 import type {
   WorkflowDynamicPlan,
   WorkflowPlanNode,
@@ -58,6 +65,7 @@ type BuildWorkflowPlanInput = {
   abortSignal?: AbortSignal;
   modelMaxAttempts?: number;
   usageAttribution?: Pick<AiUsageScope, "actorId" | "executionScope" | "correlationId" | "causationId">;
+  executionScope?: ExecutionScope;
 };
 
 type WorkflowPlanLedger = {
@@ -272,7 +280,10 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     updatedAt: new Date().toISOString(),
   };
 
-  return saveWorkflowPlan(record);
+  return saveWorkflowPlan(
+    record,
+    input.executionScope || input.usageAttribution?.executionScope,
+  );
 }
 
 function validateContextSelection(
@@ -442,17 +453,34 @@ export async function claimWorkflowPlanForRun({
   const updatedAt = new Date().toISOString();
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      UPDATE omni_workflow_plans
-      SET workflow_run_id = ${workflowRunId},
-          updated_at = ${updatedAt}
-      WHERE id = ${planId}
-        AND tenant_id = ${tenantId}
-        AND workflow_run_id IS NULL
-        AND status = 'planned'
-      RETURNING *
-    `;
-    return rows[0] ? workflowPlanFromRow(rows[0]) : null;
+    const authority = await getWorkflowRunExecutionAuthority(workflowRunId, {
+      tenantId,
+    });
+    if (!authority) {
+      throw new Error("Workflow plan claim requires bound execution authority.");
+    }
+    assertExecutionScopeTenant(authority.executionScope, tenantId);
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_workflow_plans
+        SET workflow_run_id = ${workflowRunId},
+            updated_at = ${updatedAt}
+        WHERE id = ${planId}
+          AND tenant_id = ${tenantId}
+          AND workflow_run_id IS NULL
+          AND status = 'planned'
+        RETURNING *
+      `;
+      if (!rows[0]) return null;
+      const claimed = workflowPlanFromRow(rows[0]);
+      await appendWorkflowPlanMutationEvent({
+        operation: "claimed",
+        record: claimed,
+        executionScope: authority.executionScope,
+        sql,
+      });
+      return claimed;
+    });
   }
 
   let claimed: WorkflowPlanRecord | null = null;
@@ -471,6 +499,18 @@ export async function claimWorkflowPlanForRun({
     });
     return ledger;
   });
+  if (claimed) {
+    const authority = await getWorkflowRunExecutionAuthority(workflowRunId, {
+      tenantId,
+    });
+    if (authority) {
+      await appendWorkflowPlanMutationEvent({
+        operation: "claimed",
+        record: claimed,
+        executionScope: authority.executionScope,
+      });
+    }
+  }
   return claimed;
 }
 
@@ -1142,13 +1182,29 @@ export function validateWorkflowPlan(
   };
 }
 
-async function saveWorkflowPlan(record: WorkflowPlanRecord) {
+async function saveWorkflowPlan(
+  record: WorkflowPlanRecord,
+  requestedExecutionScope?: ExecutionScope,
+) {
   const planRecord = {
     ...record,
     tenantId: normalizeTenantId(record.tenantId),
   };
+  const executionScope = requestedExecutionScope || (
+    planRecord.workflowRunId
+      ? (await getWorkflowRunExecutionAuthority(planRecord.workflowRunId, {
+          tenantId: planRecord.tenantId,
+        }))?.executionScope
+      : undefined
+  );
+  if (executionScope) {
+    assertExecutionScopeTenant(executionScope, planRecord.tenantId);
+  }
 
   if (hasDatabaseUrl()) {
+    if (!executionScope) {
+      throw new Error("Workflow plan persistence requires bound execution authority.");
+    }
     await ensureDatabaseSchema();
     await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
       if (planRecord.contextTraceId) {
@@ -1184,6 +1240,12 @@ async function saveWorkflowPlan(record: WorkflowPlanRecord) {
           ${planRecord.createdAt}, ${planRecord.updatedAt}
         )
       `;
+      await appendWorkflowPlanMutationEvent({
+        operation: "created",
+        record: planRecord,
+        executionScope,
+        sql,
+      });
     });
     return planRecord;
   }
@@ -1191,7 +1253,80 @@ async function saveWorkflowPlan(record: WorkflowPlanRecord) {
   await mutateWorkflowPlanLedger((ledger) => ({
     plans: [planRecord, ...ledger.plans.filter((plan) => plan.id !== planRecord.id)].slice(0, 500),
   }));
+  if (executionScope) {
+    await appendWorkflowPlanMutationEvent({
+      operation: "created",
+      record: planRecord,
+      executionScope,
+    });
+  }
   return planRecord;
+}
+
+async function appendWorkflowPlanMutationEvent({
+  operation,
+  record,
+  executionScope,
+  sql,
+}: {
+  operation: "created" | "claimed";
+  record: WorkflowPlanRecord;
+  executionScope: ExecutionScope;
+  sql?: ReturnType<typeof getSql>;
+}) {
+  const idempotencyIdentity = {
+    tenantId: record.tenantId,
+    operation,
+    planId: record.id,
+    workflowRunId: record.workflowRunId || null,
+  };
+  const payload = {
+    schemaVersion: 1,
+    operation,
+    planId: record.id,
+    workflowRunId: record.workflowRunId || null,
+    status: record.status,
+    planner: record.planner,
+    model: record.model,
+    highestRiskLevel: record.highestRiskLevel,
+    approvalRequired: record.approvalRequired,
+    goalSha256: workflowPlanSha256(record.goal),
+    planSha256: workflowPlanSha256(record.plan),
+    validationSha256: workflowPlanSha256(record.validation),
+    idempotencyKeySha256: workflowPlanSha256(idempotencyIdentity),
+  };
+  const mutationScope = deriveExecutionScope(executionScope, {
+    causationId: `workflow-plan:${record.id}:${operation}`,
+    purpose: `workflow.plan.${operation}`,
+  });
+  await appendScopedDomainEvent({
+    id: `workflow-plan:${workflowPlanSha256({ ...idempotencyIdentity, payload })}`,
+    streamId: record.workflowRunId
+      ? `workflow:${record.workflowRunId}`
+      : `workflow-plan:${record.id}`,
+    type: `workflow.plan.${operation}`,
+    executionScope: mutationScope,
+    payload,
+  }, sql ? { sql } : {});
+}
+
+function workflowPlanSha256(value: unknown) {
+  return createHash("sha256")
+    .update(stableWorkflowPlanJson(value))
+    .digest("hex");
+}
+
+function stableWorkflowPlanJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableWorkflowPlanJson).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableWorkflowPlanJson(record[key])}`
+  ).join(",")}}`;
 }
 
 function workflowPlanFromRow(row: Record<string, unknown>): WorkflowPlanRecord {

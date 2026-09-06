@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -7,6 +8,7 @@ import {
 } from "@/lib/http/body";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats, listWorkflowPlans } from "@/lib/workflows/planner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -109,6 +111,13 @@ async function POSTHandler(request: Request) {
     requireApproval: parsed.data.requireApproval,
     source: "api",
     reuseExisting: parsed.data.reuseExisting,
+    executionScope: executionScopeFromSecurityContext(context, {
+      correlationId:
+        request.headers.get("x-idempotency-key")?.trim().slice(0, 240) ||
+        request.headers.get("x-request-id")?.trim().slice(0, 240) ||
+        `workflow-plan:${randomUUID()}`,
+      purpose: "workflow.plan.create",
+    }),
   });
 
   return Response.json({ plan, stats: await getWorkflowPlanStats({ tenantId: context.tenantId }) }, { status: 201 });
