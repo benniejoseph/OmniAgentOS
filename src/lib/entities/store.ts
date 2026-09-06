@@ -66,6 +66,7 @@ export async function saveEntityRecord(input: {
         await lockAndAssertActiveMemoryLineage(
           sql,
           scope.tenantId,
+          scope.initiatingActorId,
           entity.lineage,
         );
         const rows = await sql`
@@ -167,6 +168,7 @@ export async function saveEntityAlias(input: {
         await lockAndAssertActiveMemoryLineage(
           sql,
           scope.tenantId,
+          scope.initiatingActorId,
           [alias.lineage],
         );
         const parent = await loadEntityRecord(sql, scope.tenantId, entity.entityId);
@@ -286,6 +288,7 @@ export async function addEntityLineage(input: {
         await lockAndAssertActiveMemoryLineage(
           sql,
           scope.tenantId,
+          scope.initiatingActorId,
           [input.lineage],
         );
         const entity = await loadEntityRecord(
@@ -949,6 +952,7 @@ async function updateEntityRecord(
 async function lockAndAssertActiveMemoryLineage(
   sql: EntitySqlClient,
   tenantId: string,
+  ownerActorId: string,
   lineage: readonly EntityRecord["lineage"][number][],
 ) {
   const memoryIds = lineageMemoryIds(lineage);
@@ -962,16 +966,13 @@ async function lockAndAssertActiveMemoryLineage(
     )
   `;
   const rows = await sql`
-    SELECT id
-    FROM omni_memories
-    WHERE tenant_id = ${tenantId}
-      AND id = ANY(${memoryIds}::TEXT[])
-      AND claim_status = 'active'
-    ORDER BY id COLLATE "C"
-    FOR SHARE
+    SELECT omni_active_memory_lineage_owned_by(
+      ${tenantId},
+      ${ownerActorId},
+      ${memoryIds}
+    ) AS allowed
   `;
-  const activeIds = new Set(rows.map((row) => String(row.id)));
-  if (memoryIds.some((memoryId) => !activeIds.has(memoryId))) {
+  if (rows[0]?.allowed !== true) {
     throw new Error(
       "Entity projection requires active, actor-visible memory lineage.",
     );
