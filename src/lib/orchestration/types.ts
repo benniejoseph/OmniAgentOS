@@ -1,3 +1,4 @@
+import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { AiUsageCallInput } from "@/lib/usage/types";
@@ -109,6 +110,8 @@ export type AgentRunRequest = {
     query: string;
     evidenceIds: string[];
   };
+  /** Trusted request-bound access for an explicit owner-reviewed selection. */
+  promptMemoryAccess?: RequestMemoryAccessV1;
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */
   preclaimedRunId?: string;
   threadId?: string;

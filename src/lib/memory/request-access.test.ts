@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
-import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
+import {
+  agentPromptMemoryAccessFromSecurityContext,
+  requestMemoryAccessFromSecurityContext,
+  resolveAgentPromptMemoryAccess,
+} from "@/lib/memory/request-access";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 
 const sessionContext = {
@@ -53,5 +58,60 @@ describe("request memory access", () => {
       auditPurpose: "api.memory.read",
       correlationId: "memory_read_test",
     })).toBeUndefined();
+  });
+
+  it("binds an explicit owner selection to the matching direct agent run", () => {
+    const promptAccess = agentPromptMemoryAccessFromSecurityContext(
+      sessionContext,
+      { correlationId: "agent_request_a" },
+    );
+    const agentExecutionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "owner@example.test",
+      executingPrincipalType: "agent",
+      executingPrincipalId: "atlas",
+      correlationId: "agent_request_a",
+      purpose: "agent.run",
+    });
+
+    expect(resolveAgentPromptMemoryAccess(promptAccess, {
+      agentExecutionScope,
+      explicitEvidenceCount: 2,
+      memoryMode: "all",
+    })).toEqual(promptAccess?.databaseAccessScope);
+  });
+
+  it("rejects ambient, cross-request, and non-personal prompt access", () => {
+    const promptAccess = agentPromptMemoryAccessFromSecurityContext(
+      sessionContext,
+      { correlationId: "agent_request_a" },
+    );
+    const agentExecutionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "owner@example.test",
+      executingPrincipalType: "agent",
+      executingPrincipalId: "atlas",
+      correlationId: "agent_request_a",
+      purpose: "agent.run",
+    });
+
+    expect(() => resolveAgentPromptMemoryAccess(promptAccess, {
+      agentExecutionScope,
+      explicitEvidenceCount: 0,
+      memoryMode: "all",
+    })).toThrow("Explicit private-memory prompt access is invalid.");
+    expect(() => resolveAgentPromptMemoryAccess(promptAccess, {
+      agentExecutionScope,
+      explicitEvidenceCount: 1,
+      memoryMode: "project",
+    })).toThrow("Explicit private-memory prompt access is invalid.");
+    expect(() => resolveAgentPromptMemoryAccess(promptAccess, {
+      agentExecutionScope: createExecutionScope({
+        ...agentExecutionScope,
+        correlationId: "agent_request_b",
+      }),
+      explicitEvidenceCount: 1,
+      memoryMode: "all",
+    })).toThrow("Explicit private-memory prompt access is invalid.");
   });
 });
