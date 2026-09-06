@@ -1287,6 +1287,15 @@ purposes. Existing revisions are not mutated and therefore fail the v2 purpose
 gate until independently reauthorized or re-ingested. Promotion and a
 pre-retrieval authorization cutover remain later P4.1 work.
 
+One explicit actor-private path is promoted beyond shadow. When a direct request
+names a non-empty private-memory selection, the compiler may only shrink the
+legacy-selected set to evidence that independently passes the v2 gates; it can
+never widen selection. The resulting `run.context_compiler_v2.canary` receipt
+uses the same content-free hashing boundary and is appended strictly before the
+provider call. Receipt validation or persistence failure aborts the run before
+model disclosure. Automatic retrieval, shared scopes, and authorization before
+candidate retrieval remain outside this canary and keep P4.1 open.
+
 ## Capture asset object plane
 
 Capture files and recording segments retain database bytes through the rollback

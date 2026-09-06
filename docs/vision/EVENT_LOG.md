@@ -1353,6 +1353,14 @@ legacy prompt pack. New canonical text revisions advertise
 `agent.context.compile.v2`; existing immutable source revisions are not
 backfilled by this event.
 
+`run.context_compiler_v2.canary` uses the same schema-closed, metadata-only
+receipt boundary for a non-empty explicit actor-private selection. Its selected
+set must be a subset of the legacy-selected set, so it can remove unauthorized
+evidence but cannot add evidence. Unlike the observational shadow writer, the
+canary append is strict and must complete on the actor-bound run stream before
+the provider call. A malformed receipt or persistence failure terminates the run
+without model disclosure.
+
 ## Phase 0 aggregate evaluation
 
 `evaluation.phase_zero.completed` is the content-free terminal receipt for the
