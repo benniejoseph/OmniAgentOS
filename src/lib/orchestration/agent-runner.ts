@@ -109,6 +109,14 @@ import {
   type ShadowRunContractSnapshot,
 } from "@/lib/runs/contract-runtime";
 import {
+  RunBudgetExceededError,
+  createRunBudgetState,
+  isBrowserActionTool,
+  reserveRunBudget,
+  type RunBudgetCountersV1,
+  type RunBudgetStateV1,
+} from "@/lib/runs/budgets";
+import {
   isExpandedCheckpointCanaryEnrollment,
   isExpandedCheckpointShadowEnrollment,
   resolveApprovalCheckpointShadowEnrollment,
@@ -244,6 +252,21 @@ export async function* runAgent(
         agentId: request.agentId,
         specialistIds: request.specialistIds,
       });
+  let runBudgetState = createRunBudgetState(budgetLimits, {
+    startedAt: run.startedAt,
+  });
+
+  function reserveBudget(reservation: Partial<RunBudgetCountersV1>) {
+    runBudgetState = reserveRunBudget(runBudgetState, reservation);
+  }
+
+  function reserveModelTurnBudget() {
+    runBudgetState = reserveAgentModelTurn(runBudgetState);
+  }
+
+  function reserveToolBudget(tools: readonly ToolDefinition[]) {
+    runBudgetState = reserveAgentTools(runBudgetState, tools);
+  }
 
   // Persist non-delta events immediately; buffer text deltas so streaming does
   // not produce one store write per token. Delta writes are queued onto a
@@ -424,6 +447,7 @@ export async function* runAgent(
     model: string;
     tier: "fast" | "reasoning";
   }) {
+    reserveModelTurnBudget();
     if (!shadowRunContract) return;
     try {
       await persistModelBeforeCheckpointShadow({
@@ -1002,6 +1026,10 @@ export async function* runAgent(
     const councilRequested = hasModelProviderFeature("json_schema", "reasoning") &&
       councilAgentIds.length > 1;
     const councilActive = councilRequested && !promptMemoryAccessScope;
+    reserveBudget({
+      agents: councilActive ? councilAgentIds.length : 1,
+      fanOut: councilActive ? Math.max(0, councilAgentIds.length - 1) : 0,
+    });
     if (councilRequested && promptMemoryAccessScope) {
       yield await emit({
         type: "status",
@@ -1190,6 +1218,7 @@ export async function* runAgent(
             }),
           checkpointBeforeTool: checkpointBeforeGovernedTool,
           checkpointAfterTool: checkpointAfterGovernedTool,
+          reserveTools: reserveToolBudget,
           serializeToolCalls: isExpandedCheckpointShadowEnrollment(
             checkpointShadowEnrollment,
           ),
@@ -1275,6 +1304,7 @@ export async function* runAgent(
             executionScope,
             runContractEnvelope: shadowRunContract?.envelope,
             checkpointShadowEnrollment,
+            budgetState: runBudgetState,
             conversationItems: [],
             canonicalConversation:
               waiting.providerState.continuation.conversation
@@ -1511,6 +1541,7 @@ export async function* runAgent(
 
         if (canRunInParallel) {
           const prepared = parallelCalls.filter((item): item is NonNullable<typeof item> => Boolean(item));
+          reserveToolBudget(prepared.map((item) => item.entry.definition));
           for (const item of prepared) {
             yield await emit({
               type: "tool",
@@ -1599,6 +1630,7 @@ export async function* runAgent(
             }));
             continue;
           }
+          reserveToolBudget([definition]);
           // dryRun=false lets policy decide: low-risk tools execute live,
           // gated tools persist an approval_required record that the
           // Approvals workspace can later approve and execute for real.
@@ -1646,6 +1678,7 @@ export async function* runAgent(
               executionScope,
               runContractEnvelope: shadowRunContract?.envelope,
               checkpointShadowEnrollment,
+              budgetState: runBudgetState,
               conversationItems: withContinuationQueue(
                 conversationItems ?? [],
                 queuedCallsAfterPause(turn.functionCalls, callIndex),
@@ -1854,7 +1887,9 @@ export async function* runAgent(
       yield await emit({ type: "status", label: "Canceled", detail: message });
       return;
     }
-    const message = error instanceof Error ? error.message : "Agent run failed.";
+    const message = error instanceof RunBudgetExceededError
+      ? `${error.message} The run stopped before starting more work; increase the limit and start a new run if needed.`
+      : error instanceof Error ? error.message : "Agent run failed.";
     await failAgentRun(run.id, message);
     yield await emit({ type: "error", message });
   }
@@ -1939,6 +1974,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     input: GovernedToolCheckpointInput,
   ) => Promise<void>;
   serializeToolCalls?: boolean;
+  reserveTools?: (tools: readonly ToolDefinition[]) => void;
   executeTool?: typeof executeGovernedTool;
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
   const generateTurn = input.generateTurn || generateModelToolTurn;
@@ -2143,6 +2179,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
       const prepared = parallelCalls.filter(
         (item): item is NonNullable<typeof item> => Boolean(item),
       );
+      input.reserveTools?.(prepared.map((item) => item.entry.definition));
       for (const item of prepared) {
         yield {
           type: "tool",
@@ -2242,6 +2279,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
         const toolExecutionScope = input.executionScope
           ? agentToolExecutionScope(input.executionScope, call.callId)
           : undefined;
+        input.reserveTools?.([definition]);
         const execution = await executeTool({
           toolId: definition.id,
           input: parsedArguments,
@@ -2352,6 +2390,73 @@ function agentToolExecutionScope(
   return deriveExecutionScope(runScope, {
     causationId: callId,
     purpose: "agent.tool.execute",
+  });
+}
+
+function reserveAgentModelTurn(state: RunBudgetStateV1) {
+  return reserveRunBudget(state, {
+    modelTurns: 1,
+    tokens: Math.ceil(
+      state.limits.tokens / Math.max(1, state.limits.modelTurns),
+    ),
+    costMicrousd: Math.ceil(
+      state.limits.costMicrousd / Math.max(1, state.limits.modelTurns),
+    ),
+  });
+}
+
+function reserveAgentTools(
+  state: RunBudgetStateV1,
+  tools: readonly ToolDefinition[],
+) {
+  return reserveRunBudget(state, {
+    toolCalls: tools.length,
+    browserActions: tools.filter((tool) => isBrowserActionTool(tool)).length,
+  });
+}
+
+function restoreAgentRunBudgetState(
+  run: AgentRunRecord,
+  continuation: AgentRunContinuation,
+) {
+  const persisted = continuation.budgetState;
+  if (persisted) {
+    return createRunBudgetState(persisted.limits, {
+      used: persisted.used,
+      startedAt: new Date(
+        Date.now() - persisted.used.wallTimeMs,
+      ).toISOString(),
+    });
+  }
+  const modelTurns = Math.min(
+    DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
+    Math.max(1, continuation.toolSteps + 1),
+  );
+  return createRunBudgetState(DEFAULT_AGENT_RUN_BUDGET_LIMITS, {
+    startedAt: run.startedAt,
+    used: {
+      modelTurns,
+      tokens: Math.min(
+        DEFAULT_AGENT_RUN_BUDGET_LIMITS.tokens,
+        modelTurns * Math.ceil(
+          DEFAULT_AGENT_RUN_BUDGET_LIMITS.tokens
+            / DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
+        ),
+      ),
+      costMicrousd: Math.min(
+        DEFAULT_AGENT_RUN_BUDGET_LIMITS.costMicrousd,
+        modelTurns * Math.ceil(
+          DEFAULT_AGENT_RUN_BUDGET_LIMITS.costMicrousd
+            / DEFAULT_AGENT_RUN_BUDGET_LIMITS.modelTurns,
+        ),
+      ),
+      toolCalls: Math.min(
+        DEFAULT_AGENT_RUN_BUDGET_LIMITS.toolCalls,
+        continuation.toolSteps * MAX_TOOL_CALLS_PER_TURN,
+      ),
+      browserActions: DEFAULT_AGENT_RUN_BUDGET_LIMITS.browserActions,
+      agents: 1,
+    },
   });
 }
 
@@ -2537,6 +2642,14 @@ async function resumeAgentRunAfterToolApprovalInScope({
     });
   }
 
+  let runBudgetState = restoreAgentRunBudgetState(run, continuation);
+  const reserveResumeModelTurn = () => {
+    runBudgetState = reserveAgentModelTurn(runBudgetState);
+  };
+  const reserveResumeTools = (tools: readonly ToolDefinition[]) => {
+    runBudgetState = reserveAgentTools(runBudgetState, tools);
+  };
+
   const appendScopedRunEvent = async (event: AgentEvent) => {
     const record = await appendRunEvent(run.id, event, {
       tenantId,
@@ -2573,6 +2686,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
     model: string;
     tier: "fast" | "reasoning";
   }) => {
+    reserveResumeModelTurn();
     if (!executionScope || !continuation.runContractEnvelope) return;
     try {
       await persistModelBeforeCheckpointShadow({
@@ -2797,6 +2911,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       }
 
       const definition = entry.definition;
+      reserveResumeTools([definition]);
       await appendScopedRunEvent({
         type: "tool",
         toolId: definition.id,
@@ -2856,6 +2971,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             runContractEnvelope: continuation.runContractEnvelope,
             checkpointShadowEnrollment:
               continuation.checkpointShadowEnrollment,
+            budgetState: runBudgetState,
             conversationItems: withContinuationQueue(
               conversationItems,
               queuedCalls.slice(queueIndex + 1),
@@ -3064,6 +3180,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         }
 
         const definition = entry.definition;
+        reserveResumeTools([definition]);
         await appendScopedRunEvent({
           type: "tool",
           toolId: definition.id,
@@ -3135,6 +3252,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               runContractEnvelope: continuation.runContractEnvelope,
               checkpointShadowEnrollment:
                 continuation.checkpointShadowEnrollment,
+              budgetState: runBudgetState,
             conversationItems: withContinuationQueue(
               conversationItems,
               queuedCallsAfterPause(turn.functionCalls, callIndex),
@@ -3299,6 +3417,13 @@ async function resumeProviderBoundAgentRunAfterApproval({
     tenantId: normalizeTenantId(tenantId),
     resumeFence,
   };
+  let runBudgetState = restoreAgentRunBudgetState(run, continuation);
+  const reserveResumeModelTurn = () => {
+    runBudgetState = reserveAgentModelTurn(runBudgetState);
+  };
+  const reserveResumeTools = (tools: readonly ToolDefinition[]) => {
+    runBudgetState = reserveAgentTools(runBudgetState, tools);
+  };
   const appendScopedRunEvent = async (event: AgentEvent) => {
     const record = await appendRunEvent(run.id, event, {
       tenantId,
@@ -3335,6 +3460,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     model: string;
     tier: "fast" | "reasoning";
   }) => {
+    reserveResumeModelTurn();
     if (!executionScope || !continuation.runContractEnvelope) return;
     try {
       await persistModelBeforeCheckpointShadow({
@@ -3582,6 +3708,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       executionScope,
       runContractEnvelope: continuation.runContractEnvelope,
       checkpointShadowEnrollment: continuation.checkpointShadowEnrollment,
+      budgetState: runBudgetState,
       conversationItems: [],
       canonicalConversation: waiting.providerState.continuation.conversation
         ? [...waiting.providerState.continuation.conversation]
@@ -3674,6 +3801,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         carriedResults.push(providerToolResult(call, { error: message }, true));
         continue;
       }
+      reserveResumeTools([definition]);
 
       const toolExecutionScope = executionScope
         ? agentToolExecutionScope(executionScope, call.callId)
@@ -3807,6 +3935,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       },
       checkpointBeforeTool: checkpointBeforeResumeTool,
       checkpointAfterTool: checkpointAfterResumeTool,
+      reserveTools: reserveResumeTools,
       serializeToolCalls: isExpandedCheckpointShadowEnrollment(
         continuation.checkpointShadowEnrollment,
       ),

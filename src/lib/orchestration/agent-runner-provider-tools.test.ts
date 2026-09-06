@@ -227,6 +227,54 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(maximumActiveExecutions).toBe(1);
   });
 
+  it("reserves the complete tool batch before starting any governed execution", async () => {
+    const executeTool = vi.fn();
+    const reserveTools = vi.fn(() => {
+      throw new Error("Run tool-call budget is exhausted");
+    });
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Use tools.",
+      prompt: "Search both stores.",
+      tools: [modelTool("memory_search"), modelTool("knowledge_search")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["memory_search", {
+            definition: toolDefinition("memory.search"),
+            functionName: "memory_search",
+          }],
+          ["knowledge_search", {
+            definition: toolDefinition("knowledge.search"),
+            functionName: "knowledge_search",
+          }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-budgeted",
+      reserveTools,
+      generateTurn: vi.fn(async () => turn({
+        toolCalls: [
+          { callId: "call-a", name: "memory_search", argumentsJson: "{}" },
+          { callId: "call-b", name: "knowledge_search", argumentsJson: "{}" },
+        ],
+      })),
+      executeTool: executeTool as never,
+    });
+
+    await expect(collect(loop)).rejects.toThrow("tool-call budget");
+    expect(reserveTools).toHaveBeenCalledWith([
+      expect.objectContaining({ id: "memory.search" }),
+      expect.objectContaining({ id: "knowledge.search" }),
+    ]);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it("closes the observed model boundary when generation fails", async () => {
     const failure = new Error("provider unavailable");
     const afterModelFailure = vi.fn(async () => undefined);

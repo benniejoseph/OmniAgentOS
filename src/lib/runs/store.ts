@@ -40,6 +40,7 @@ import {
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
 } from "@/lib/runs/contracts";
+import { runBudgetStateV1Schema } from "@/lib/runs/budgets";
 import {
   parseApprovalCheckpointShadowEnrollment,
   recordApprovalWaitingCheckpointShadow,
@@ -1925,6 +1926,10 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
   } catch {
     return undefined;
   }
+  const budgetState = candidate.budgetState === undefined
+    ? undefined
+    : runBudgetStateV1Schema.safeParse(candidate.budgetState);
+  if (budgetState && !budgetState.success) return undefined;
   const canonicalConversation = candidate.canonicalConversation === undefined
     ? undefined
     : modelConversationSchema.safeParse(candidate.canonicalConversation);
@@ -1935,6 +1940,7 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
     runContractEnvelope,
     checkpointShadowEnrollment,
     checkpointResumeClaim,
+    budgetState: budgetState?.success ? budgetState.data : undefined,
     conversationItems: Array.isArray(candidate.conversationItems)
       ? (candidate.conversationItems as Array<Record<string, unknown>>)
       : [],

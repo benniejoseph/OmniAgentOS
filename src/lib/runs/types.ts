@@ -3,6 +3,7 @@ import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { RunContractEnvelopeV1 } from "@/lib/runs/contracts";
 import type { ApprovalCheckpointShadowEnrollment } from "@/lib/runs/approval-checkpoint-shadow";
+import type { RunBudgetStateV1 } from "@/lib/runs/budgets";
 import type {
   ModelToolCall,
   ModelToolContinuation,
@@ -47,6 +48,8 @@ export type AgentRunContinuation = {
   runContractEnvelope?: RunContractEnvelopeV1;
   /** New-run-only P1.6 rollout pin. The pin alone grants no resume authority. */
   checkpointShadowEnrollment?: ApprovalCheckpointShadowEnrollment;
+  /** Complete budget counters survive governed approval pauses. */
+  budgetState?: RunBudgetStateV1;
   /** Metadata-only checkpoint fence; the raw claim token is never persisted. */
   checkpointResumeClaim?: {
     schemaVersion: 1;
