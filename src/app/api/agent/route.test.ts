@@ -260,6 +260,58 @@ describe("agent semantic intent routing", () => {
       expect.any(AbortSignal),
     );
   });
+
+  it("narrows an explicit budget and keeps that run on the governed agent loop", async () => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-budgeted", threadId: "thread-a" };
+      yield { type: "done", response: "Bounded result." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Summarize this safely.",
+        requestId: "budgeted-agent-a",
+        budgets: { toolCalls: 2, browserActions: 0, fanOut: 0 },
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment)
+      .not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        budgetLimits: expect.objectContaining({
+          toolCalls: 2,
+          browserActions: 0,
+          fanOut: 0,
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("rejects a requested budget above server authority before execution", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Use an unlimited run.",
+        requestId: "budget-broadening-a",
+        budgets: { agents: 6 },
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid run budget",
+      message: expect.stringMatching(/cannot exceed its parent limit/i),
+    });
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledTimes(1);
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
 });
 
 describe("agent Loop v2 canary routing", () => {

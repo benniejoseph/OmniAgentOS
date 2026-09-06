@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { AGENT_MAX_MESSAGE_CHARS, AGENT_MAX_MESSAGES, AGENT_RUNS_PER_MINUTE } from "@/lib/config";
+import {
+  AGENT_MAX_MESSAGE_CHARS,
+  AGENT_MAX_MESSAGES,
+  AGENT_RUN_BUDGET_LIMITS,
+  AGENT_RUNS_PER_MINUTE,
+} from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -26,6 +31,10 @@ import {
 } from "@/lib/memory/evidence-formation";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import { runAgent } from "@/lib/orchestration/agent-runner";
+import {
+  narrowRunBudgetLimits,
+  runBudgetCountersV1Schema,
+} from "@/lib/runs/budgets";
 import {
   resolveLoopV2ReadOnlyCanaryEnrollment,
   runLoopV2ReadOnlyCanary,
@@ -91,6 +100,7 @@ const requestSchema = z.object({
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   contextSelection: contextSelectionSchema.optional(),
+  budgets: runBudgetCountersV1Schema.partial().optional(),
 }).strict()
   .refine((value) => Boolean(value.message || value.messages?.length), {
     message: "A message is required.",
@@ -98,6 +108,10 @@ const requestSchema = z.object({
   .refine((value) => !value.resumeRunId || Boolean(value.threadId), {
     message: "A thread is required to resume a run.",
     path: ["threadId"],
+  })
+  .refine((value) => !value.resumeRunId || !value.budgets, {
+    message: "A resumed run keeps the budget authorized when it started.",
+    path: ["budgets"],
   });
 
 async function POSTHandler(request: Request) {
@@ -166,6 +180,23 @@ async function POSTHandler(request: Request) {
         correlationId: requestId,
       })
     : undefined;
+  let budgetLimits;
+  try {
+    budgetLimits = narrowRunBudgetLimits(
+      AGENT_RUN_BUDGET_LIMITS,
+      parsed.data.budgets,
+    );
+  } catch (error) {
+    return Response.json(
+      {
+        error: "Invalid run budget",
+        message: error instanceof Error
+          ? error.message
+          : "The requested run budget is invalid.",
+      },
+      { status: 400 },
+    );
+  }
 
   let rate;
   try {
@@ -364,7 +395,9 @@ async function POSTHandler(request: Request) {
         let loopV2CanaryEnrollment;
         let loopV2ModelTextEnrollment;
         try {
-          loopV2CanaryEnrollment =
+          loopV2CanaryEnrollment = parsed.data.budgets
+            ? undefined
+            :
             await resolveLoopV2ReadOnlyCanaryEnrollment({
               tenantId: context.tenantId,
               message: safeRequestMessage,
@@ -380,7 +413,7 @@ async function POSTHandler(request: Request) {
               contextEvidenceIds: contextSelection?.evidenceIds,
               resumeRunId: parsed.data.resumeRunId,
             });
-          if (!loopV2CanaryEnrollment) {
+          if (!loopV2CanaryEnrollment && !parsed.data.budgets) {
             loopV2ModelTextEnrollment =
               await resolveLoopV2ModelTextEnrollment({
                 tenantId: context.tenantId,
@@ -527,6 +560,7 @@ async function POSTHandler(request: Request) {
                 mode,
                 primaryAgentId: decision.primaryAgentId,
                 specialistIds: decision.specialistIds,
+                parentBudgetLimits: budgetLimits,
               });
             }
             missionTask = await ensureMissionTask(mission.id, {
@@ -724,6 +758,7 @@ async function POSTHandler(request: Request) {
                 specialistIds: decision.specialistIds,
                 learning: decision.learning,
                 agentProfile,
+                budgetLimits,
               },
               request.signal,
             );

@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
+import {
+  AGENT_RUN_BUDGET_LIMITS,
+  OPERATION_QUEUE_LEASE_SECONDS,
+} from "@/lib/config";
 import {
   runWithDatabaseActorScope,
   runWithDatabaseTenantScope,
@@ -27,6 +30,10 @@ import {
   getAgentRun,
 } from "@/lib/runs/store";
 import {
+  narrowRunBudgetLimits,
+  runBudgetCountersV1Schema,
+} from "@/lib/runs/budgets";
+import {
   assertExecutionScopeTenant,
   executionScopesEqual,
   parsePersistedExecutionScope,
@@ -51,6 +58,7 @@ const specialistJobSchema = z.object({
   requestId: z.string().min(1).max(200).optional(),
   delegationId: z.string().min(1).max(200).optional(),
   executionScope: z.unknown().optional(),
+  budgetLimits: runBudgetCountersV1Schema.optional(),
   workflowRunId: z.string().min(1).max(200).optional(),
   ready: z.boolean(),
   preparedAt: z.string().datetime(),
@@ -141,6 +149,15 @@ async function processSpecialistJob(
     return failInfrastructureJob(job, "Durable specialist job payload is invalid.");
   }
   const payload = parsed.data as DurableSpecialistJobPayload;
+  const budgetLimits = payload.budgetLimits
+    ? narrowRunBudgetLimits(AGENT_RUN_BUDGET_LIMITS, payload.budgetLimits)
+    : narrowRunBudgetLimits(AGENT_RUN_BUDGET_LIMITS, {
+        agents: 1,
+        fanOut: 0,
+        browserActions: 0,
+        retries: 0,
+        replans: 0,
+      });
   let executionScope = await specialistExecutionScope(
     payload,
     job.tenantId,
@@ -283,6 +300,7 @@ async function processSpecialistJob(
       agentId: payload.agentId,
       specialistIds: [],
       agentProfile: profile,
+      budgetLimits,
     }, controller.signal)) {
       // runAgent owns event persistence; the worker only waits for a terminal receipt.
       void event;

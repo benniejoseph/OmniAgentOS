@@ -1,4 +1,5 @@
 import type { AgentMode, AgentRunRequest } from "@/lib/orchestration/types";
+import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 
 export const DURABLE_SPECIALIST_SCOPE_PURPOSE =
@@ -20,6 +21,7 @@ export type PreparedDurableSpecialist = {
   taskId: string;
   attemptId: string;
   executionScope: ExecutionScope;
+  budgetLimits: RunBudgetCountersV1;
 };
 
 export type DurableSpecialistJobPayload = {
@@ -31,6 +33,7 @@ export type DurableSpecialistJobPayload = {
   requestId?: string;
   delegationId?: string;
   executionScope?: ExecutionScope;
+  budgetLimits?: RunBudgetCountersV1;
   ready: boolean;
   preparedAt: string;
   workflowRunId?: string;
