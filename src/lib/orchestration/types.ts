@@ -4,6 +4,7 @@ import type { GroundingReport } from "@/lib/rag/citations";
 import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
+import type { ResolvedAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
 import type { AiUsageCallInput } from "@/lib/usage/types";
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
@@ -144,6 +145,8 @@ export type AgentRunRequest = {
   };
   /** Trusted server-created attribution; authorization remains in SecurityContext. */
   executionScope?: ExecutionScope;
+  /** Exact immutable behavior and authority versions selected before execution. */
+  agentIdentity?: ResolvedAgentIdentityV1;
   /** Server-validated saved-context selection using canonical `kind:id` evidence IDs. */
   contextSelection?: ContextSelectionLockBinding;
   /** User-reviewed P4.2 context boundary for this direct run. */

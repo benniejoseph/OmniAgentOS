@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  buildAgentRunIdentityPinV1,
+  buildBuiltInAgentIdentityV1,
+  buildCustomAgentIdentityV1,
+  isBuiltInAgentIdentityId,
+} from "@/lib/agents/identity-contracts";
+import {
   AGENT_MAX_OUTPUT_TOKENS,
   AGENT_MAX_TOOL_STEPS,
   AGENT_REASONING_EFFORT,
@@ -96,6 +102,7 @@ import {
   appendContextUseReceiptEvent,
   appendRunEvent,
   appendRunContractEventSafely,
+  appendAgentRunIdentityPin,
   bindAgentRunExecutionScope,
   cancelAgentRun,
   completeAgentRun,
@@ -318,6 +325,41 @@ export async function* runAgent(
     await failAgentRun(runId, message).catch(() => undefined);
     throw error;
   }
+  const resolvedAgentIdentity = request.agentIdentity || (
+    isBuiltInAgentIdentityId(run.agentId || "atlas")
+      ? buildBuiltInAgentIdentityV1({
+          agentId: (run.agentId || "atlas") as Parameters<
+            typeof buildBuiltInAgentIdentityV1
+          >[0]["agentId"],
+          tenantId: runTenantId,
+          controllerActorId:
+            request.securityContext?.actorId ||
+            executionScope.initiatingActorId ||
+            "local:file-runtime",
+        })
+      : buildCompatibilityAgentIdentity(request, runTenantId, run.agentId)
+  );
+  if (!resolvedAgentIdentity) {
+    const message = "The exact custom agent identity is unavailable.";
+    await Promise.resolve(failAgentRun(runId, message)).catch(() => undefined);
+    throw new Error(message);
+  }
+  const agentIdentityPin = buildAgentRunIdentityPinV1({
+    runId,
+    identity: resolvedAgentIdentity,
+  });
+  try {
+    await appendAgentRunIdentityPin(runId, agentIdentityPin, {
+      tenantId: runTenantId,
+      executionScope,
+    });
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : "Agent run identity could not be bound.";
+    await Promise.resolve(failAgentRun(runId, message)).catch(() => undefined);
+    throw error;
+  }
   let shadowRunContract: ShadowRunContractSnapshot | undefined;
   let checkpointShadowEnrollment:
     | ApprovalCheckpointShadowEnrollment
@@ -327,6 +369,7 @@ export async function* runAgent(
       runId,
       tenantId: runTenantId,
       agentId: run.agentId,
+      agentIdentityPin,
       executionScope,
       requestSha256: createHash("sha256")
         .update(JSON.stringify({ mode, messages: safeMessages }))
@@ -5110,6 +5153,56 @@ function runContractScopeDecision(
   if (decision === "selected_by_user") return "user_selected" as const;
   if (decision === "retrieved") return "automatic" as const;
   return "skipped" as const;
+}
+
+function buildCompatibilityAgentIdentity(
+  request: AgentRunRequest,
+  tenantId: string,
+  agentId?: string,
+) {
+  const profile = request.agentProfile;
+  const logicalAgentId = agentId?.trim();
+  const actorId = request.securityContext?.actorId ||
+    request.executionScope?.initiatingActorId || request.actorId?.trim();
+  if (!profile || !logicalAgentId || !actorId) return undefined;
+  const effectiveAt = "2026-09-07T00:00:00.000Z";
+  return buildCustomAgentIdentityV1({
+    agent: {
+      id: logicalAgentId,
+      tenantId,
+      actorId,
+      slug: logicalAgentId,
+      name: profile.name,
+      role: profile.role,
+      description: profile.description,
+      instructions: profile.instructions,
+      status: "ready",
+      accent: "emerald",
+      modelPolicy: profile.modelPolicy,
+      autonomy: profile.autonomy,
+      approvalPolicy: profile.approvalPolicy,
+      memoryScope: profile.memoryScope,
+      skillIds: profile.skills.map((skill) => skill.id),
+      toolIds: profile.toolIds,
+      createdAt: effectiveAt,
+      updatedAt: effectiveAt,
+    },
+    skills: profile.skills.map((skill) => ({
+      ...skill,
+      tenantId,
+      actorId,
+      slug: skill.id,
+      category: "personal" as const,
+      status: "active" as const,
+      version: 1,
+      tags: [],
+      knowledgeTags: [],
+      createdAt: effectiveAt,
+      updatedAt: effectiveAt,
+    })),
+    definitionVersion: 1,
+    principalGeneration: 1,
+  });
 }
 
 function logRunContractShadowFailure(

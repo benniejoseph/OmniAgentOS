@@ -14,6 +14,7 @@ import {
   type RunContractEventPayloadV1,
 } from "@/lib/runs/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import type { AgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
 
 export type ShadowRunContractSnapshot = Readonly<{
   envelope: RunContractEnvelopeV1;
@@ -40,6 +41,7 @@ export type BuildInitialShadowRunContractInput = Readonly<{
   runId: string;
   tenantId: string;
   agentId?: string;
+  agentIdentityPin?: AgentRunIdentityPinV1;
   executionScope: ExecutionScope;
   requestSha256: string;
   requestedOutcomeSha256: string;
@@ -95,27 +97,26 @@ export function buildInitialShadowRunContract(
   input: BuildInitialShadowRunContractInput,
 ): ShadowRunContractSnapshot {
   const { executionScope, runId } = input;
+  const identityPin = input.agentIdentityPin;
   const budgets = assessedBudgets(input.budget);
   const agentPrincipal = buildAgentPrincipalV1({
     agentPrincipalId: `${runId}:principal:v1`,
     runId,
     tenantId: contractReferenceId("tenant", input.tenantId),
     principalType: executionScope.executingPrincipalType,
-    executingPrincipalId: optionalContractReferenceId(
-      "principal",
-      executionScope.executingPrincipalId,
-    ),
+    executingPrincipalId: identityPin?.principalVersionId ||
+      optionalContractReferenceId("principal", executionScope.executingPrincipalId),
     authoritySource: authoritySourceFor(executionScope),
-    ownerActorId: optionalContractReferenceId(
-      "actor",
-      executionScope.initiatingActorId,
+    ownerActorId: identityPin?.actorId || optionalContractReferenceId(
+      "actor", executionScope.initiatingActorId,
     ),
     initiatingActorId: optionalContractReferenceId(
       "actor",
       executionScope.initiatingActorId,
     ),
-    agentDefinitionId: optionalContractReferenceId("agent", input.agentId),
-    agentDefinitionVersionId: null,
+    agentDefinitionId: identityPin?.definitionId ||
+      optionalContractReferenceId("agent", input.agentId),
+    agentDefinitionVersionId: identityPin?.definitionVersionId || null,
     workspaceId: optionalContractReferenceId(
       "workspace",
       executionScope.workspaceId,
@@ -148,7 +149,9 @@ export function buildInitialShadowRunContract(
       "capability-grant",
       executionScope.capabilityGrantIds,
     ),
-    budgetPolicyId: null,
+    budgetPolicyId: identityPin?.policyPins.find((policy) =>
+      policy.policyId === "agent-policy:budget"
+    )?.policyVersionId || null,
     budgets,
   });
   const intentSpec = buildIntentSpecV1({
@@ -184,10 +187,10 @@ export function buildInitialShadowRunContract(
     agentPrincipalId: agentPrincipal.agentPrincipalId,
     intentSpecId: intentSpec.intentSpecId,
     outcomeContractId: outcomeContract.outcomeContractId,
-    manifestState: "unassessed",
+    manifestState: identityPin ? "partially_pinned" : "unassessed",
     engineVersionId: null,
-    agentDefinitionVersionId: null,
-    promptContractVersionId: null,
+    agentDefinitionVersionId: identityPin?.definitionVersionId || null,
+    promptContractVersionId: identityPin?.promptContractVersionId || null,
     modelProvider: "unassessed",
     modelId: null,
     modelTier: "unassessed",
@@ -200,8 +203,18 @@ export function buildInitialShadowRunContract(
     initialContextManifestId: null,
     initialContextManifestSha256: null,
     tools: [],
-    skills: [],
-    policies: [],
+    skills: identityPin?.skillPins.map((skill) => ({
+      id: skill.skillId,
+      pinState: "pinned" as const,
+      versionId: skill.skillVersionId,
+      sha256: skill.skillSha256,
+    })) || [],
+    policies: identityPin?.policyPins.map((policy) => ({
+      id: policy.policyId,
+      pinState: "pinned" as const,
+      versionId: policy.policyVersionId,
+      sha256: policy.policySha256,
+    })) || [],
     contextGrantIds: agentPrincipal.contextGrantIds,
     capabilityGrantIds: agentPrincipal.capabilityGrantIds,
     budgets,
@@ -210,8 +223,8 @@ export function buildInitialShadowRunContract(
     outcomeContractSha256,
     instructionsSha256: null,
     toolboxSha256: null,
-    skillSetSha256: null,
-    policySetSha256: null,
+    skillSetSha256: identityPin ? sha256Json(identityPin.skillPins) : null,
+    policySetSha256: identityPin ? sha256Json(identityPin.policyPins) : null,
   });
 
   return snapshot(buildRunContractEnvelopeV1({
@@ -288,6 +301,14 @@ export function resolveShadowRunContract(
   const toolIds = contractReferenceIds("tool", input.toolIds);
   const skillIds = contractReferenceIds("skill", input.skillIds);
   const policyIds = contractReferenceIds("policy", input.policyIds);
+  const skills = preservePinnedReferences(
+    active.harnessManifest.skills,
+    skillIds,
+  );
+  const policies = preservePinnedReferences(
+    active.harnessManifest.policies,
+    policyIds,
+  );
   const harnessManifest = buildHarnessManifestV1({
     harnessManifestId: `${runId}:harness:resolved:v1`,
     runId,
@@ -297,7 +318,7 @@ export function resolveShadowRunContract(
     manifestState: "partially_pinned",
     engineVersionId: null,
     agentDefinitionVersionId: active.agentPrincipal.agentDefinitionVersionId,
-    promptContractVersionId: null,
+    promptContractVersionId: active.harnessManifest.promptContractVersionId,
     modelProvider: input.modelProvider,
     modelId: input.modelProvider === "unassessed"
       ? null
@@ -312,8 +333,8 @@ export function resolveShadowRunContract(
     initialContextManifestId: contextManifest.contextManifestId,
     initialContextManifestSha256: contextManifestSha256,
     tools: unassessedReferences(toolIds),
-    skills: unassessedReferences(skillIds),
-    policies: unassessedReferences(policyIds),
+    skills,
+    policies,
     contextGrantIds: active.agentPrincipal.contextGrantIds,
     capabilityGrantIds: active.agentPrincipal.capabilityGrantIds,
     budgets: active.agentPrincipal.budgets,
@@ -322,8 +343,8 @@ export function resolveShadowRunContract(
     outcomeContractSha256: sha256Json(active.outcomeContract),
     instructionsSha256: input.instructionsSha256,
     toolboxSha256: input.toolboxSha256,
-    skillSetSha256: sha256Json(skillIds),
-    policySetSha256: sha256Json(policyIds),
+    skillSetSha256: sha256Json(skills),
+    policySetSha256: sha256Json(policies),
   });
 
   return snapshot(buildRunContractEnvelopeV1({
@@ -391,6 +412,17 @@ function unassessedReferences(ids: readonly string[]) {
     versionId: null,
     sha256: null,
   }));
+}
+
+function preservePinnedReferences(
+  existing: HarnessManifestV1["skills"],
+  ids: readonly string[],
+) {
+  const byId = new Map(existing.map((reference) => [reference.id, reference]));
+  for (const reference of unassessedReferences(ids)) {
+    if (!byId.has(reference.id)) byId.set(reference.id, reference);
+  }
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function uniqueContextItems(
