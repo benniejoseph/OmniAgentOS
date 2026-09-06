@@ -1260,7 +1260,16 @@ export async function migrateDatabaseSchema(
           if (!pendingVersions.has(migration.version)) {
             continue;
           }
-          await migration.up(sql);
+          try {
+            await migration.up(sql);
+          } catch (error) {
+            throw new Error(
+              `Database migration ${migration.version} (${migration.name}) failed: ${
+                error instanceof Error ? error.message : "unknown migration error"
+              }`,
+              { cause: error },
+            );
+          }
           await tx`
             INSERT INTO omni_schema_version (version, name, checksum, applied_at)
             VALUES (
