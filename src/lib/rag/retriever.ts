@@ -1,14 +1,12 @@
 import { createHash } from "node:crypto";
 import { embedTexts } from "@/lib/openai/client";
-import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
-import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import { chunkText, normalizeTextForChunking } from "@/lib/rag/chunk";
 import { indexMemoryGraphRecords } from "@/lib/memory/graph";
-import { saveMemories, searchMemories } from "@/lib/memory/store";
-import type { MemorySearchResult } from "@/lib/memory/types";
-import { createKnowledgeDocument, searchKnowledge } from "@/lib/rag/store";
+import { saveMemories } from "@/lib/memory/store";
+import { createKnowledgeDocument } from "@/lib/rag/store";
+import { buildContextPack } from "@/lib/rag/context-engine";
 import { jsonbSafeText, jsonbSafeTruncate } from "@/lib/rag/text-safety";
-import type { KnowledgeSearchResult, KnowledgeSourceType } from "@/lib/rag/types";
+import type { KnowledgeSourceType } from "@/lib/rag/types";
 import { redactSensitive } from "@/lib/security/context";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import {
@@ -255,90 +253,23 @@ export async function retrieveContext(
   // deliberately remains on the legacy tenant-scoped index until P3.1 adds
   // actor/visibility/grant enforcement to every read path before cutover.
   const safeQuery = String(redactSensitive(query));
-  const embeddingResult = await embedRetrievalTexts([safeQuery], {
+  const pack = await buildContextPack(safeQuery, {
+    limit,
+    tenantId: options.tenantId,
     usageScope: options.usageScope,
+    persistTrace: false,
+    queryPlanning: { allowSemanticModel: false },
   });
-  const queryEmbedding = embeddingResult.vectors[0];
-  const [memoryResults, knowledgeResults] = await Promise.all([
-    searchMemories(safeQuery, {
-      limit,
-      queryEmbedding,
-      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
-      tenantId: options.tenantId,
-    }),
-    searchKnowledge(safeQuery, {
-      limit,
-      queryEmbedding,
-      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
-      tenantId: options.tenantId,
-    }),
-  ]);
-  const candidates = [
-    ...memoryResults.map((result) => ({ kind: "memory" as const, result })),
-    ...knowledgeResults.map((result) => ({ kind: "knowledge" as const, result })),
-  ];
-  const reranked = rerankRetrievalCandidates(
-    safeQuery,
-    candidates.map((candidate) => ({
-      value: candidate,
-      text: candidate.kind === "memory"
-        ? `${candidate.result.record.title}\n${candidate.result.record.content}`
-        : `${candidate.result.chunk.title}\n${candidate.result.chunk.content}`,
-      baseScore: candidate.result.score,
-      freshnessScore: candidate.kind === "knowledge"
-        ? candidate.result.recencyScore
-        : 0,
-    })),
-  );
-  const contextItems = reranked.results
-    .slice(0, limit)
-    .map((result) => result.value);
 
   return {
-    results: contextItems,
-    memoryResults,
-    knowledgeResults,
-    contextBlock: formatContext(contextItems),
+    results: pack.results,
+    memoryResults: pack.memoryResults,
+    knowledgeResults: pack.knowledgeResults,
+    contextBlock: pack.contextBlock,
+    budget: pack.budget,
     retrieval: {
-      embedding: embeddingResult.receipt,
-      reranker: reranked.receipt,
+      embedding: pack.profile.embedding,
+      reranker: pack.profile.reranker,
     },
   };
-}
-
-function formatContext(
-  items: Array<
-    | { kind: "memory"; result: MemorySearchResult }
-    | { kind: "knowledge"; result: KnowledgeSearchResult }
-  >,
-) {
-  if (items.length === 0) {
-    return "No relevant long-term memory or RAG records were found.";
-  }
-
-  return String(
-    redactSensitive(
-      items
-        .map((item, index) => {
-          if (item.kind === "memory") {
-            const memory = item.result.record;
-            return [
-              `[${index + 1}] Memory: ${memory.title}`,
-              `type: ${memory.type}; tags: ${memory.tags.join(", ") || "none"}; score: ${item.result.score.toFixed(2)}`,
-              `reasons: ${item.result.reasons.join(", ") || "ranked context"}`,
-              memory.content,
-            ].join("\n");
-          }
-
-          const { chunk, document } = item.result;
-          return [
-            `[${index + 1}] Knowledge: ${chunk.title}`,
-            `source: ${document?.title || chunk.source}; tags: ${chunk.tags.join(", ") || "none"}; score: ${item.result.score.toFixed(2)}`,
-            `reasons: ${item.result.reasons.join(", ") || "ranked context"}`,
-            chunk.content,
-          ].join("\n");
-        })
-        .join("\n\n---\n\n"),
-    ),
-  );
 }
