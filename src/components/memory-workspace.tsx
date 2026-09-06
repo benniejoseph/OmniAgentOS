@@ -21,6 +21,11 @@ import {
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
+import {
+  countPendingEntityMergeReviews,
+  EntityRegistryDialog,
+  type EntityRegistryPayload,
+} from "@/components/entity-registry-dialog";
 import type { MemoryGraphEdge, MemoryGraphNode, MemoryGraphStats, MemoryRecord, MemoryType } from "@/lib/memory/types";
 import styles from "@/components/memory-workspace.module.css";
 
@@ -48,6 +53,9 @@ type MemoryDeletionPreview = {
 };
 type MemoryDeletionResult = {
   deletionGuarantee: "scope_bound_receipt" | "legacy_unattributed_receipt" | "best_effort";
+  affectedEntityCount: number;
+  retiredEntityCount: number;
+  retiredEntityAliasCount: number;
   invalidatedAgentRunCount: number;
   invalidatedWorkflowRunCount: number;
   invalidatedDailyBriefCount: number;
@@ -84,6 +92,9 @@ export function MemoryWorkspace() {
   const [selectedNodeId, setSelectedNodeId] = useState<string>();
   const [draft, setDraft] = useState<{ title: string; content: string; confidence: number }>();
   const [showCreate, setShowCreate] = useState(false);
+  const [showEntities, setShowEntities] = useState(false);
+  const [entityRegistry, setEntityRegistry] = useState<EntityRegistryPayload>();
+  const [entityRegistryError, setEntityRegistryError] = useState<string>();
   const [indexCollapsed, setIndexCollapsed] = useState(false);
   const [forgetState, setForgetState] = useState<ForgetState>("idle");
   const [forgetPreview, setForgetPreview] = useState<MemoryDeletionPreview>();
@@ -113,10 +124,32 @@ export function MemoryWorkspace() {
     }
   }, []);
 
+  const loadEntityRegistry = useCallback(async () => {
+    try {
+      const response = await fetch("/api/entities", { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || "Entity registry could not be loaded.");
+      }
+      const registry = payload as EntityRegistryPayload;
+      setEntityRegistry(registry);
+      setEntityRegistryError(undefined);
+      return registry;
+    } catch (registryError) {
+      setEntityRegistryError(message(registryError));
+      return undefined;
+    }
+  }, []);
+
   useEffect(() => {
     const task = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(task);
   }, [load]);
+
+  useEffect(() => {
+    const task = window.setTimeout(() => void loadEntityRegistry(), 0);
+    return () => window.clearTimeout(task);
+  }, [loadEntityRegistry]);
 
   const filtered = useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -132,6 +165,7 @@ export function MemoryWorkspace() {
   const positionedNodes = useMemo(() => positionGraphNodes(nodes.slice(0, 42)), [nodes]);
   const visibleNodeIds = useMemo(() => new Set(positionedNodes.map((node) => node.id)), [positionedNodes]);
   const visibleEdges = edges.filter((edge) => visibleNodeIds.has(edge.sourceNodeId) && visibleNodeIds.has(edge.targetNodeId)).slice(0, 90);
+  const pendingEntityReviews = countPendingEntityMergeReviews(entityRegistry);
 
   function selectMemory(memory: MemoryRecord) {
     setSelectedMemoryId(memory.id);
@@ -171,6 +205,7 @@ export function MemoryWorkspace() {
       setSaveState("saved");
       setAnnouncement("Memory corrected. The previous claim remains in its provenance lineage.");
       void refreshGraph();
+      void loadEntityRegistry();
     } catch (saveError) {
       setSaveState("error");
       setError(message(saveError));
@@ -221,6 +256,7 @@ export function MemoryWorkspace() {
       setSaveState("idle");
       setAnnouncement("Memory deletion committed. Its receipt and affected projection counts are available.");
       void refreshGraph();
+      void loadEntityRegistry();
     } catch (forgetError) {
       setForgetState("ready");
       setSaveState("error");
@@ -250,6 +286,7 @@ export function MemoryWorkspace() {
           <div className={styles.stat}><Database size={14} aria-hidden="true" /><span><strong>{memories.length}</strong><small>Memories</small></span></div>
           <div className={styles.stat}><Brain size={14} aria-hidden="true" /><span><strong>{stats?.nodes || 0}</strong><small>Concepts</small></span></div>
           <div className={styles.stat}><Network size={14} aria-hidden="true" /><span><strong>{stats?.edges || 0}</strong><small>Links</small></span></div>
+          <button type="button" className={clsx(styles.stat, styles.entityTrigger)} onClick={() => setShowEntities(true)}><GitMerge size={14} aria-hidden="true" /><span><strong>{entityRegistry?.entities.length || 0}</strong><small>{pendingEntityReviews ? `${pendingEntityReviews} to review` : "Entities"}</small></span></button>
           <button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> Add memory</button>
         </div>
       </header>
@@ -292,7 +329,8 @@ export function MemoryWorkspace() {
           </> : deletionResult ? <DeletionReceipt result={deletionResult} onClose={() => setDeletionResult(undefined)} /> : selectedNode ? <div className="memory-node-inspector"><CircleDot size={22} aria-hidden="true" /><p>{selectedNode.kind}</p><h2>{selectedNode.label}</h2><span>{selectedNode.summary}</span><dl><dt>Sources</dt><dd>{selectedNode.sourceCount}</dd><dt>Weight</dt><dd>{selectedNode.weight.toFixed(1)}</dd><dt>Memories</dt><dd>{selectedNode.memoryIds.length}</dd></dl></div> : <div className="memory-inspector-empty"><Brain size={26} aria-hidden="true" /><h2>Select a memory</h2><p>Inspect provenance, correct a claim, or forget information that should no longer influence your agents.</p></div>}
         </aside>
       </div>
-      {showCreate ? <CreateMemoryDialog onClose={() => setShowCreate(false)} onCreated={(memory, projection) => { setShowCreate(false); setMemories((current) => [memory, ...current]); selectMemory(memory); setAnnouncement(projection?.candidateCount ? `Memory added. ${projection.createdCount} new and ${projection.linkedCount} existing private entities matched; ${projection.reviewRequiredCount} require review.` : "Memory added."); void refreshGraph(); }} /> : null}
+      {showCreate ? <CreateMemoryDialog onClose={() => setShowCreate(false)} onCreated={(memory, projection) => { setShowCreate(false); setMemories((current) => [memory, ...current]); selectMemory(memory); setAnnouncement(projection?.candidateCount ? `Memory added. ${projection.createdCount} new and ${projection.linkedCount} existing private entities matched; ${projection.reviewRequiredCount} require review.` : "Memory added."); void refreshGraph(); void loadEntityRegistry(); }} /> : null}
+      {showEntities ? <EntityRegistryDialog registry={entityRegistry} loadError={entityRegistryError} onClose={() => setShowEntities(false)} onReload={loadEntityRegistry} onAnnouncement={setAnnouncement} /> : null}
     </main>
   );
 }
@@ -304,7 +342,7 @@ function DeletionPreview({ preview }: { preview: MemoryDeletionPreview }) {
 
 function DeletionReceipt({ result, onClose }: { result: MemoryDeletionResult; onClose: () => void }) {
   const receipt = result.deletionReceipt;
-  return <div className={styles.deletionReceipt}><ShieldCheck size={25} aria-hidden="true" /><p>Deletion committed</p><h2>{receipt ? "Receipt verified" : "Best-effort local deletion"}</h2><span>{receipt ? `The permanent barrier was recorded ${formatDate(receipt.forgottenAt)}.` : "The memory was removed from the local development store."}</span>{receipt ? <><dl><dt>Descendant memories</dt><dd>{receipt.descendantMemoryCount}</dd><dt>Retrieval traces</dt><dd>{receipt.retrievalTraceCount}</dd><dt>Graph projections</dt><dd>{receipt.graphNodeCount + receipt.graphEdgeCount}</dd><dt>Briefs invalidated</dt><dd>{result.invalidatedDailyBriefCount}</dd><dt>Runs canceled</dt><dd>{result.invalidatedAgentRunCount + result.invalidatedWorkflowRunCount}</dd></dl><code title={receipt.receiptSha256 || receipt.id}>{receipt.receiptSha256 || receipt.id}</code></> : null}<button type="button" onClick={onClose}>Back to memory</button></div>;
+  return <div className={styles.deletionReceipt}><ShieldCheck size={25} aria-hidden="true" /><p>Deletion committed</p><h2>{receipt ? "Receipt verified" : "Best-effort local deletion"}</h2><span>{receipt ? `The permanent barrier was recorded ${formatDate(receipt.forgottenAt)}.` : "The memory was removed from the local development store."}</span>{receipt ? <><dl><dt>Descendant memories</dt><dd>{receipt.descendantMemoryCount}</dd><dt>Retrieval traces</dt><dd>{receipt.retrievalTraceCount}</dd><dt>Graph projections</dt><dd>{receipt.graphNodeCount + receipt.graphEdgeCount}</dd><dt>Entity records affected</dt><dd>{result.affectedEntityCount}</dd><dt>Entities retired</dt><dd>{result.retiredEntityCount}</dd><dt>Aliases retired</dt><dd>{result.retiredEntityAliasCount}</dd><dt>Briefs invalidated</dt><dd>{result.invalidatedDailyBriefCount}</dd><dt>Runs canceled</dt><dd>{result.invalidatedAgentRunCount + result.invalidatedWorkflowRunCount}</dd></dl><code title={receipt.receiptSha256 || receipt.id}>{receipt.receiptSha256 || receipt.id}</code></> : null}<button type="button" onClick={onClose}>Back to memory</button></div>;
 }
 
 function CreateMemoryDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (memory: MemoryRecord, entityProjection?: EntityProjectionSummary) => void }) {
