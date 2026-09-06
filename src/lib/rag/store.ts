@@ -6,10 +6,12 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
+import { retireEntityEvidenceLineage } from "@/lib/entities/store";
 import { getDataPath } from "@/lib/storage/paths";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
+  deriveExecutionScope,
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -369,6 +371,28 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
         sourceKind: prefix.startsWith("capture:") ? "capture" : "knowledge",
         sourceReference: prefix,
       });
+      if (ids.length && invalidationScope) {
+        const evidenceRows = await sql`
+          SELECT DISTINCT evidence.id, evidence.owner_actor_id
+          FROM omni_knowledge_chunks chunk
+          JOIN omni_evidence_units evidence
+            ON evidence.tenant_id = chunk.tenant_id
+           AND evidence.id = chunk.evidence_unit_id
+          WHERE chunk.tenant_id = ${tenantId}
+            AND chunk.document_id = ANY(${ids}::TEXT[])
+            AND chunk.evidence_unit_id IS NOT NULL
+          ORDER BY evidence.owner_actor_id COLLATE "C", evidence.id COLLATE "C"
+        `;
+        if (evidenceRows.length) {
+          await retireKnowledgeEntityEvidence({
+            tenantId,
+            evidenceRows,
+            executionScope: invalidationScope,
+            retiredAt,
+            sql,
+          });
+        }
+      }
       if (ids.length) {
         await sql`DELETE FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND id = ANY(${ids})`;
       }
@@ -389,6 +413,16 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   }
   const ledger = await readKnowledgeLedger();
   const ids = new Set(ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId && document.source.startsWith(prefix)).map((document) => document.id));
+  const evidenceRows = canonicalFileEvidenceRows(ledger, ids);
+  const invalidationScope = mutation?.executionScope || options.invalidationScope;
+  if (invalidationScope && evidenceRows.length) {
+    await retireKnowledgeEntityEvidence({
+      tenantId,
+      evidenceRows,
+      executionScope: invalidationScope,
+      retiredAt,
+    });
+  }
   await updateJsonFile<KnowledgeLedger>(getKnowledgeFile(), { documents: [], chunks: [] }, (current) => ({
     ...current,
     documents: current.documents.filter((document) => !ids.has(document.id)),
@@ -410,6 +444,65 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
     await appendKnowledgeDeletionEvent(prefix, mutation);
   }
   return { documents: ids.size, memories };
+}
+
+async function retireKnowledgeEntityEvidence(input: {
+  tenantId: string;
+  evidenceRows: readonly Readonly<Record<string, unknown>>[];
+  executionScope: ExecutionScope;
+  retiredAt: string;
+  sql?: RagSqlClient;
+}) {
+  const scope = parsePersistedExecutionScope(input.executionScope);
+  if (!scope?.initiatingActorId || scope.tenantId !== input.tenantId) {
+    throw new Error(
+      "Knowledge evidence retirement requires an actor-bound execution scope.",
+    );
+  }
+  const ownerIds = new Set(input.evidenceRows.map((row) =>
+    String(row.owner_actor_id)
+  ));
+  if (ownerIds.size !== 1 || !ownerIds.has(scope.initiatingActorId)) {
+    throw new Error(
+      "Knowledge evidence retirement cannot cross actor ownership.",
+    );
+  }
+  await retireEntityEvidenceLineage({
+    tenantId: input.tenantId,
+    ownerActorId: scope.initiatingActorId,
+    evidenceUnitIds: input.evidenceRows.map((row) => String(row.id)),
+    executionScope: deriveExecutionScope(scope, {
+      purpose: "entity.source.lifecycle.v1",
+    }),
+    retiredAt: input.retiredAt,
+    sql: input.sql,
+  });
+}
+
+function canonicalFileEvidenceRows(
+  ledger: KnowledgeLedger,
+  documentIds: ReadonlySet<string>,
+) {
+  const evidenceIds = new Set(ledger.chunks
+    .filter((chunk) => documentIds.has(chunk.documentId))
+    .map((chunk) => chunk.evidenceUnitId)
+    .filter((id): id is string => Boolean(id)));
+  if (!evidenceIds.size) return [];
+  const rows: Array<{ id: string; owner_actor_id: string }> = [];
+  for (const outputValue of ledger.sourceLineage?.adapterOutputs || []) {
+    const output = sourceAdapterUpsertV1Schema.parse(outputValue);
+    for (const evidence of output.evidenceUnits) {
+      if (!evidenceIds.has(evidence.evidenceUnitId)) continue;
+      rows.push({
+        id: evidence.evidenceUnitId,
+        owner_actor_id: evidence.ownerActorId,
+      });
+    }
+  }
+  return rows.sort((left, right) =>
+    left.owner_actor_id.localeCompare(right.owner_actor_id) ||
+    left.id.localeCompare(right.id)
+  );
 }
 
 function exactKnowledgeDeletionMutation(
