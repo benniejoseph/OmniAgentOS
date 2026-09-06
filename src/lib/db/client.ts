@@ -142,6 +142,8 @@ export const tenantRootPolicyTables = [
   "omni_agent_definition_versions",
   "omni_agent_principal_policies",
   "omni_agent_identity_backfill_holds",
+  "omni_agent_release_channels",
+  "omni_agent_release_evaluations",
   "omni_agent_loop_v2_checkpoints",
   "omni_workflow_triggers",
   "omni_operation_jobs",
@@ -1160,6 +1162,13 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[111],
       up: ensureAgentMemoryGrantLifecycleV1,
+    },
+    {
+      ...databaseSchemaMigrations[112],
+      up: async (sql) => {
+        await ensureAgentReleaseLifecycleV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -9725,6 +9734,493 @@ async function ensureAgentMemoryGrantLifecycleV1(sql: SqlClient) {
           AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
       ) THEN
         RAISE EXCEPTION 'Agent memory grant lifecycle boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentReleaseLifecycleV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 112
+          AND name = 'agent_memory_grant_lifecycle_v1'
+          AND checksum =
+            '1f4938099e3912d33c92a483db1563bdb6ad76e90c090d2a85b8b456da61c715'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Agent release lifecycle predecessor is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    LOCK TABLE
+      omni_custom_agents,
+      omni_agent_definition_versions
+    IN SHARE ROW EXCLUSIVE MODE
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_agent_release_evaluations (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      evaluation_id TEXT NOT NULL,
+      agent_definition_id TEXT NOT NULL,
+      definition_version BIGINT NOT NULL,
+      baseline_definition_version BIGINT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      evaluated_by_actor_id TEXT NOT NULL,
+      policy_version_id TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      changed_fields TEXT[] NOT NULL,
+      checks JSONB NOT NULL,
+      verdict TEXT NOT NULL,
+      definition_sha256 TEXT NOT NULL,
+      baseline_definition_sha256 TEXT NOT NULL,
+      definition_snapshot JSONB NOT NULL,
+      evaluation_sha256 TEXT NOT NULL,
+      evaluated_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, evaluation_id),
+      UNIQUE (
+        tenant_id, agent_definition_id, definition_version,
+        baseline_definition_version
+      ),
+      CHECK (schema_version = 1),
+      CHECK (char_length(evaluation_id) BETWEEN 1 AND 240),
+      CHECK (definition_version BETWEEN 1 AND 9007199254740991),
+      CHECK (baseline_definition_version BETWEEN 1 AND 9007199254740991),
+      CHECK (definition_version <> baseline_definition_version),
+      CHECK (policy_version_id = 'agent-release-policy:1'),
+      CHECK (
+        (direction = 'promotion' AND definition_version > baseline_definition_version)
+        OR (direction = 'rollback' AND definition_version < baseline_definition_version)
+      ),
+      CHECK (
+        cardinality(changed_fields) BETWEEN 1 AND 10
+        AND changed_fields <@ ARRAY[
+          'slug', 'name', 'role', 'description', 'instructions', 'persona',
+          'status', 'accent', 'model_policy', 'skills'
+        ]::TEXT[]
+      ),
+      CHECK (
+        checks = '{
+          "exactOwnerBinding": true,
+          "versionTransition": true,
+          "immutableDefinitionDigest": true,
+          "personaContract": true,
+          "skillPins": true,
+          "authorityExcluded": true,
+          "materialChange": true
+        }'::JSONB
+      ),
+      CHECK (verdict = 'passed'),
+      CHECK (definition_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (baseline_definition_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (evaluation_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (jsonb_typeof(definition_snapshot) = 'object'),
+      FOREIGN KEY (tenant_id, agent_definition_id, definition_version)
+        REFERENCES omni_agent_definition_versions (
+          tenant_id, agent_definition_id, definition_version
+        ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (
+        tenant_id, agent_definition_id, baseline_definition_version
+      ) REFERENCES omni_agent_definition_versions (
+        tenant_id, agent_definition_id, definition_version
+      ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (owner_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (evaluated_by_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_release_evaluations_owner_idx
+    ON omni_agent_release_evaluations (
+      tenant_id, owner_actor_id, agent_definition_id,
+      definition_version DESC, evaluated_at DESC
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_agent_release_channels (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      agent_definition_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'active',
+      release_revision BIGINT NOT NULL DEFAULT 1,
+      active_definition_version BIGINT NOT NULL,
+      previous_definition_version BIGINT,
+      last_evaluation_id TEXT,
+      updated_by_actor_id TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      retired_at TIMESTAMPTZ,
+      PRIMARY KEY (tenant_id, agent_definition_id),
+      CHECK (schema_version = 1),
+      CHECK (state IN ('active', 'retired')),
+      CHECK (release_revision BETWEEN 1 AND 9007199254740991),
+      CHECK (active_definition_version BETWEEN 1 AND 9007199254740991),
+      CHECK (
+        previous_definition_version IS NULL
+        OR previous_definition_version BETWEEN 1 AND 9007199254740991
+      ),
+      CHECK ((state = 'retired') = (retired_at IS NOT NULL)),
+      FOREIGN KEY (
+        tenant_id, agent_definition_id, active_definition_version
+      ) REFERENCES omni_agent_definition_versions (
+        tenant_id, agent_definition_id, definition_version
+      ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (
+        tenant_id, agent_definition_id, previous_definition_version
+      ) REFERENCES omni_agent_definition_versions (
+        tenant_id, agent_definition_id, definition_version
+      ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (tenant_id, last_evaluation_id)
+        REFERENCES omni_agent_release_evaluations (tenant_id, evaluation_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (owner_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (updated_by_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_release_channels_owner_idx
+    ON omni_agent_release_channels (
+      tenant_id, owner_actor_id, state, updated_at DESC
+    )
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_agent_release_evaluation_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Agent release evaluations are immutable'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_agent_release_evaluation_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id), hashtext(NEW.agent_definition_id)
+      );
+      IF NEW.evaluated_by_actor_id IS DISTINCT FROM NEW.owner_actor_id
+        OR cardinality(NEW.changed_fields) IS DISTINCT FROM (
+          SELECT count(DISTINCT field)::INTEGER
+          FROM unnest(NEW.changed_fields) field
+        )
+        OR NOT EXISTS (
+          SELECT 1
+          FROM public.omni_agent_definition_versions definition
+          WHERE definition.tenant_id = NEW.tenant_id
+            AND definition.agent_definition_id = NEW.agent_definition_id
+            AND definition.definition_version = NEW.definition_version
+            AND definition.owner_actor_id = NEW.owner_actor_id
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM public.omni_agent_definition_versions baseline
+          WHERE baseline.tenant_id = NEW.tenant_id
+            AND baseline.agent_definition_id = NEW.agent_definition_id
+            AND baseline.definition_version = NEW.baseline_definition_version
+            AND baseline.owner_actor_id = NEW.owner_actor_id
+        ) OR NOT EXISTS (
+          SELECT 1
+          FROM public.omni_agent_release_channels channel
+          WHERE channel.tenant_id = NEW.tenant_id
+            AND channel.agent_definition_id = NEW.agent_definition_id
+            AND channel.owner_actor_id = NEW.owner_actor_id
+            AND channel.state = 'active'
+            AND channel.active_definition_version =
+              NEW.baseline_definition_version
+        )
+      THEN
+        RAISE EXCEPTION 'Agent release evaluation binding is invalid'
+          USING ERRCODE = '23503';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_agent_release_channel_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      transition_at TIMESTAMPTZ;
+    BEGIN
+      IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'Agent release channels cannot be removed'
+          USING ERRCODE = '55000';
+      END IF;
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id), hashtext(NEW.agent_definition_id)
+      );
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.state <> 'active'
+          OR NEW.release_revision <> 1
+          OR NEW.previous_definition_version IS NOT NULL
+          OR NEW.last_evaluation_id IS NOT NULL
+          OR NEW.retired_at IS NOT NULL
+          OR NEW.updated_by_actor_id IS DISTINCT FROM NEW.owner_actor_id
+          OR NOT EXISTS (
+            SELECT 1
+            FROM public.omni_agent_definition_versions definition
+            WHERE definition.tenant_id = NEW.tenant_id
+              AND definition.agent_definition_id = NEW.agent_definition_id
+              AND definition.definition_version =
+                NEW.active_definition_version
+              AND definition.owner_actor_id = NEW.owner_actor_id
+          )
+        THEN
+          RAISE EXCEPTION 'Initial Agent release channel is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF OLD.state = 'retired'
+        OR ROW(NEW.schema_version, NEW.tenant_id, NEW.agent_definition_id,
+          NEW.owner_actor_id) IS DISTINCT FROM
+          ROW(OLD.schema_version, OLD.tenant_id, OLD.agent_definition_id,
+          OLD.owner_actor_id)
+        OR NEW.release_revision IS DISTINCT FROM OLD.release_revision + 1
+        OR NEW.updated_by_actor_id IS DISTINCT FROM OLD.owner_actor_id
+      THEN
+        RAISE EXCEPTION 'Agent release channel transition is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      transition_at := GREATEST(
+        statement_timestamp(), OLD.updated_at + INTERVAL '1 microsecond'
+      );
+      NEW.updated_at := transition_at;
+      IF NEW.state = 'retired' THEN
+        IF NEW.active_definition_version IS DISTINCT FROM
+            OLD.active_definition_version
+          OR NEW.previous_definition_version IS DISTINCT FROM
+            OLD.previous_definition_version
+          OR NEW.last_evaluation_id IS DISTINCT FROM OLD.last_evaluation_id
+        THEN
+          RAISE EXCEPTION 'Agent retirement cannot rebind a release'
+            USING ERRCODE = '23514';
+        END IF;
+        NEW.retired_at := transition_at;
+        RETURN NEW;
+      END IF;
+      IF NEW.state <> 'active'
+        OR NEW.active_definition_version = OLD.active_definition_version
+        OR NEW.previous_definition_version IS DISTINCT FROM
+          OLD.active_definition_version
+        OR NEW.last_evaluation_id IS NULL
+        OR NEW.retired_at IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM public.omni_agent_release_evaluations evaluation
+          WHERE evaluation.tenant_id = NEW.tenant_id
+            AND evaluation.evaluation_id = NEW.last_evaluation_id
+            AND evaluation.agent_definition_id = NEW.agent_definition_id
+            AND evaluation.owner_actor_id = NEW.owner_actor_id
+            AND evaluation.definition_version =
+              NEW.active_definition_version
+            AND evaluation.baseline_definition_version =
+              OLD.active_definition_version
+            AND evaluation.verdict = 'passed'
+        )
+      THEN
+        RAISE EXCEPTION 'Agent release promotion requires an exact evaluation'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      DROP TRIGGER IF EXISTS omni_agent_release_evaluation_validate
+        ON omni_agent_release_evaluations;
+      CREATE TRIGGER omni_agent_release_evaluation_validate
+      BEFORE INSERT ON omni_agent_release_evaluations
+      FOR EACH ROW
+      EXECUTE FUNCTION omni_validate_agent_release_evaluation_v1();
+      DROP TRIGGER IF EXISTS omni_agent_release_evaluation_protect
+        ON omni_agent_release_evaluations;
+      CREATE TRIGGER omni_agent_release_evaluation_protect
+      BEFORE UPDATE OR DELETE ON omni_agent_release_evaluations
+      FOR EACH ROW
+      EXECUTE FUNCTION omni_protect_agent_release_evaluation_v1();
+      DROP TRIGGER IF EXISTS omni_agent_release_evaluation_no_truncate
+        ON omni_agent_release_evaluations;
+      CREATE TRIGGER omni_agent_release_evaluation_no_truncate
+      BEFORE TRUNCATE ON omni_agent_release_evaluations
+      FOR EACH STATEMENT
+      EXECUTE FUNCTION omni_protect_agent_release_evaluation_v1();
+      DROP TRIGGER IF EXISTS omni_agent_release_channel_protect
+        ON omni_agent_release_channels;
+      CREATE TRIGGER omni_agent_release_channel_protect
+      BEFORE INSERT OR UPDATE OR DELETE ON omni_agent_release_channels
+      FOR EACH ROW
+      EXECUTE FUNCTION omni_protect_agent_release_channel_v1();
+      DROP TRIGGER IF EXISTS omni_agent_release_channel_no_truncate
+        ON omni_agent_release_channels;
+      CREATE TRIGGER omni_agent_release_channel_no_truncate
+      BEFORE TRUNCATE ON omni_agent_release_channels
+      FOR EACH STATEMENT
+      EXECUTE FUNCTION omni_protect_agent_release_evaluation_v1();
+    END
+    $migration$
+  `;
+  await sql`
+    INSERT INTO omni_agent_release_channels (
+      tenant_id, agent_definition_id, owner_actor_id,
+      active_definition_version, updated_by_actor_id, updated_at
+    )
+    SELECT
+      definition.tenant_id,
+      definition.agent_definition_id,
+      definition.owner_actor_id,
+      definition.definition_version,
+      definition.owner_actor_id,
+      definition.published_at
+    FROM omni_agent_definition_versions definition
+    WHERE definition.definition_version = (
+      SELECT MAX(candidate.definition_version)
+      FROM omni_agent_definition_versions candidate
+      WHERE candidate.tenant_id = definition.tenant_id
+        AND candidate.agent_definition_id = definition.agent_definition_id
+    )
+    ON CONFLICT (tenant_id, agent_definition_id) DO NOTHING
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      ALTER TABLE omni_agent_release_channels ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_release_channels FORCE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_release_evaluations ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_release_evaluations FORCE ROW LEVEL SECURITY;
+      DROP POLICY IF EXISTS omni_agent_release_channels_actor
+        ON omni_agent_release_channels;
+      CREATE POLICY omni_agent_release_channels_actor
+      ON omni_agent_release_channels AS RESTRICTIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      DROP POLICY IF EXISTS omni_agent_release_evaluations_actor
+        ON omni_agent_release_evaluations;
+      CREATE POLICY omni_agent_release_evaluations_actor
+      ON omni_agent_release_evaluations AS RESTRICTIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_agent_release_channels FROM PUBLIC`;
+  await sql`REVOKE ALL ON TABLE omni_agent_release_evaluations FROM PUBLIC`;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_validate_agent_release_evaluation_v1()
+    FROM PUBLIC
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_protect_agent_release_evaluation_v1()
+    FROM PUBLIC
+  `;
+  await sql`
+    REVOKE ALL ON FUNCTION omni_protect_agent_release_channel_v1()
+    FROM PUBLIC
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_agent_release_channels FROM omni_runtime';
+        EXECUTE 'REVOKE ALL ON TABLE omni_agent_release_evaluations FROM omni_runtime';
+        GRANT SELECT, INSERT ON omni_agent_release_channels TO omni_runtime;
+        GRANT UPDATE (
+          state, release_revision, active_definition_version,
+          previous_definition_version, last_evaluation_id,
+          updated_by_actor_id, updated_at, retired_at
+        ) ON omni_agent_release_channels TO omni_runtime;
+        GRANT SELECT, INSERT ON omni_agent_release_evaluations TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_agent_release_channels FROM omni_maintenance';
+        EXECUTE 'REVOKE ALL ON TABLE omni_agent_release_evaluations FROM omni_maintenance';
+        GRANT SELECT, INSERT ON omni_agent_release_channels TO omni_maintenance;
+        GRANT UPDATE (
+          state, release_revision, active_definition_version,
+          previous_definition_version, last_evaluation_id,
+          updated_by_actor_id, updated_at, retired_at
+        ) ON omni_agent_release_channels TO omni_maintenance;
+        GRANT SELECT, INSERT ON omni_agent_release_evaluations TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_agent_release_channels'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_agent_release_evaluations'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_agent_release_channels'::regclass
+          AND tgname = 'omni_agent_release_channel_protect'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_agent_release_evaluations'::regclass
+          AND tgname = 'omni_agent_release_evaluation_protect'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+            'omni_agent_release_channels',
+            'omni_agent_release_evaluations'
+          )
+          AND grantee IN ('omni_runtime', 'omni_maintenance')
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) THEN
+        RAISE EXCEPTION 'Agent release lifecycle boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

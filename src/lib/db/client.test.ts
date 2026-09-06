@@ -700,30 +700,35 @@ describe("database timing classification", () => {
 
 describe("ordered database schema versions", () => {
   it("pins the split agent identity and private-memory migrations", () => {
-    expect(databaseSchemaMigrations.at(-5)).toEqual({
+    expect(databaseSchemaMigrations.at(-6)).toEqual({
       version: 108,
       name: "agent_identity_versions_v1",
       checksum: "0061d42b7a5638ffb41b2c51038df6d082c183b08f94aec5d3196920430be476",
     });
-    expect(databaseSchemaMigrations.at(-4)).toEqual({
+    expect(databaseSchemaMigrations.at(-5)).toEqual({
       version: 109,
       name: "agent_definition_persona_v1",
       checksum: "4c853b38ba5b8a2643c10c9a17789f0c2762feeb4dcc50e7eae1e2b0a086dc89",
     });
-    expect(databaseSchemaMigrations.at(-3)).toEqual({
+    expect(databaseSchemaMigrations.at(-4)).toEqual({
       version: 110,
       name: "agent_private_memory_v1",
       checksum: "7472b7f5f3ce4099e0b74f6a71bd661cc5de465b014b0df06d9e85571d4ce54b",
     });
-    expect(databaseSchemaMigrations.at(-2)).toEqual({
+    expect(databaseSchemaMigrations.at(-3)).toEqual({
       version: 111,
       name: "agent_memory_grants_v1",
       checksum: "7e438818cab0afcf73dfe6aeda9d36edbf6bd7d81c83a26c92b1370f4a0b1dc6",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.at(-2)).toEqual({
       version: 112,
       name: "agent_memory_grant_lifecycle_v1",
       checksum: "1f4938099e3912d33c92a483db1563bdb6ad76e90c090d2a85b8b456da61c715",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 113,
+      name: "agent_release_lifecycle_v1",
+      checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
   });
 

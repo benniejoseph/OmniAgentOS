@@ -28,6 +28,7 @@ describe("P7.5 agent release contracts", () => {
       agentId: "agent-one",
       definitionVersion: 2,
       baselineDefinitionVersion: 1,
+      direction: "promotion",
       changedFields: ["instructions"],
       verdict: "passed",
       checks: { authorityExcluded: true },
@@ -37,7 +38,7 @@ describe("P7.5 agent release contracts", () => {
     expect(parseAgentReleaseEvaluationV1(evaluation)).toEqual(evaluation);
   });
 
-  it("rejects cross-owner, backward, and no-op candidates", () => {
+  it("rejects cross-owner, same-version, and no-op candidates", () => {
     const baseline = definition(1, agent());
     expect(() => evaluateAgentReleaseCandidateV1({
       baseline,
@@ -47,13 +48,33 @@ describe("P7.5 agent release contracts", () => {
       }),
     })).toThrow("exact owner");
     expect(() => evaluateAgentReleaseCandidateV1({
-      baseline: definition(2, { ...agent(), description: "Changed." }),
-      candidate: baseline,
-    })).toThrow("advance");
+      baseline,
+      candidate: definition(1, { ...agent(), description: "Changed." }),
+    })).toThrow("change the active version");
     expect(() => evaluateAgentReleaseCandidateV1({
       baseline,
       candidate: definition(2, agent()),
     })).toThrow("material behavior change");
+  });
+
+  it("produces a separately bound rollback evaluation", () => {
+    const target = definition(1, agent());
+    const active = definition(2, {
+      ...agent(),
+      description: "A candidate that can be rolled back.",
+      updatedAt: "2026-09-07T02:00:00.000Z",
+    });
+    const evaluation = evaluateAgentReleaseCandidateV1({
+      baseline: active,
+      candidate: target,
+      evaluatedAt: "2026-09-07T03:00:00.000Z",
+    });
+    expect(evaluation).toMatchObject({
+      direction: "rollback",
+      definitionVersion: 1,
+      baselineDefinitionVersion: 2,
+      changedFields: ["description"],
+    });
   });
 
   it("validates active, rollback, candidate, and retirement coordinates", () => {
