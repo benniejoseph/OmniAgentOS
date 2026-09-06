@@ -41,6 +41,44 @@ export const governedTools: ToolDefinition[] = [
     }),
   },
   {
+    id: "memory.inspect",
+    name: "Inspect Memory",
+    description:
+      "Read one exact memory by ID with its provenance, current scope, validity, lifecycle state, and retrieval eligibility. Returns no embedding.",
+    category: "memory",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    operationClass: "read_only",
+    reversible: true,
+    inputSchema: {
+      ...objectSchema({
+        id: { type: "string", description: "Exact memory record ID to inspect.", minLength: 1, maxLength: 200 },
+      }),
+      required: ["id"],
+    },
+  },
+  {
+    id: "memory.forget.preview",
+    name: "Preview Permanent Memory Deletion",
+    description:
+      "Preview the exact memory descendants, retrieval traces, graph projections, and pending runs affected by permanent deletion. Call this before memory.forget and pass its receipt-manifest digest unchanged.",
+    category: "memory",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    operationClass: "read_only",
+    reversible: true,
+    inputSchema: {
+      ...objectSchema({
+        id: { type: "string", description: "Exact memory record ID to preview.", minLength: 1, maxLength: 200 },
+      }),
+      required: ["id"],
+    },
+  },
+  {
     id: "knowledge.search",
     name: "Search Knowledge",
     description: "Read-only hybrid search over RAG source chunks.",
@@ -118,6 +156,26 @@ export const governedTools: ToolDefinition[] = [
     },
   },
   {
+    id: "memory.lifecycle",
+    name: "Change Memory Lifecycle",
+    description:
+      "Pin, unpin, reversibly archive, or restore one exact memory. Archival removes the claim from recall without deleting or rewriting historical truth.",
+    category: "memory",
+    status: "active",
+    riskLevel: 1,
+    dryRunSupported: true,
+    approvalRequired: false,
+    operationClass: "mutation",
+    reversible: true,
+    inputSchema: {
+      ...objectSchema({
+        id: { type: "string", description: "Exact memory record ID to update.", minLength: 1, maxLength: 200 },
+        action: { type: "string", enum: ["pin", "unpin", "archive", "restore"] },
+      }),
+      required: ["id", "action"],
+    },
+  },
+  {
     id: "memory.forget",
     name: "Forget Memory",
     description:
@@ -131,9 +189,30 @@ export const governedTools: ToolDefinition[] = [
     inputSchema: {
       ...objectSchema({
         id: { type: "string", description: "Exact memory record ID to forget.", minLength: 1, maxLength: 200 },
+        expectedReceiptManifestSha256: {
+          type: "string",
+          description: "Exact 64-character receipt-manifest digest returned by memory.forget.preview.",
+          minLength: 64,
+          maxLength: 64,
+          pattern: "^[a-f0-9]{64}$",
+        },
       }),
-      required: ["id"],
+      required: ["id", "expectedReceiptManifestSha256"],
     },
+  },
+  {
+    id: "memory.export",
+    name: "Export Memory",
+    description:
+      "Return the authenticated exact-owner download route and privacy receipt for Asael portable archive v2. Archive contents are downloaded directly to the user and never copied into the agent transcript or tool ledger.",
+    category: "memory",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    operationClass: "read_only",
+    reversible: true,
+    inputSchema: objectSchema({}),
   },
   {
     id: "knowledge.ingest",
