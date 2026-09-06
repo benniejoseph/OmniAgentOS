@@ -787,6 +787,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
       return {
         schemaVersion,
         type: event.type,
+        runId: event.runId,
         threadId: event.threadId,
         reasonCode: event.reasonCode,
         ...hashedTextFields("message", event.message),
@@ -1711,10 +1712,10 @@ async function updateRunLedger(mutate: (ledger: RunLedger) => RunLedger) {
 
 function trimLedger(ledger: RunLedger): RunLedger {
   const nonterminal = ledger.runs.filter((run) =>
-    ["queued", "running", "waiting_approval", "resuming"].includes(run.status),
+    ["queued", "running", "waiting_clarification", "waiting_approval", "resuming"].includes(run.status),
   );
   const terminal = ledger.runs.filter(
-    (run) => !["queued", "running", "waiting_approval", "resuming"].includes(run.status),
+    (run) => !["queued", "running", "waiting_clarification", "waiting_approval", "resuming"].includes(run.status),
   );
   const runs = [
     ...nonterminal,

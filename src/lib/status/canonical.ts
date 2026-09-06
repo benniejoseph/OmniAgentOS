@@ -85,6 +85,7 @@ type LegacyStatusMap = Readonly<Record<string, LegacyCanonicalStatus>>;
 const agentRunStatuses = {
   queued: "waiting",
   running: "running",
+  waiting_clarification: "waiting",
   waiting_approval: "waiting",
   resuming: "running",
   completed: "unverified",

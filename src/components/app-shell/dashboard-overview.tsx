@@ -747,7 +747,7 @@ function formatTime(value: string) {
 function toneForStatus(value: unknown): Tone {
   const status = stringValue(value).toLowerCase();
   if (["completed", "success", "succeeded", "approved", "healthy", "ready"].includes(status)) return "success";
-  if (["running", "queued", "pending", "waiting", "waiting_approval", "partial", "paused", "degraded"].includes(status)) return "warning";
+  if (["running", "queued", "pending", "waiting", "waiting_clarification", "waiting_approval", "partial", "paused", "degraded"].includes(status)) return "warning";
   if (["failed", "blocked", "rejected", "canceled", "error", "unhealthy", "open"].includes(status)) return "danger";
   return "neutral";
 }

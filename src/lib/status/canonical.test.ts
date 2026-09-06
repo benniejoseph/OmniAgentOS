@@ -55,6 +55,7 @@ describe("canonical status projections", () => {
     expect(canonicalStatusForToolExecution("dry_run").status).toBe("preview");
     expect(canonicalStatusForWorkflowPlan("planned").status).toBe("preview");
     expect(canonicalStatusForAgentRun("waiting_approval").status).toBe("waiting");
+    expect(canonicalStatusForAgentRun("waiting_clarification").status).toBe("waiting");
     expect(canonicalStatusForToolExecution("blocked").status).toBe("blocked");
     expect(canonicalStatusForWorkflowPlanNode("skipped").status).toBe("unverified");
     expect(canonicalStatusForWorkflowRun("failed").status).toBe("failed");

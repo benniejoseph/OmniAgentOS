@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  advanceLoopV2Checkpoint,
+  createInitialLoopV2Checkpoint,
   LOOP_V2_CAPABILITY_ID,
   LOOP_V2_CONFIGURATION_SHA256,
   LOOP_V2_CONTRACT_VERSION_ID,
@@ -48,6 +50,21 @@ describe("Loop v2 read-only canary enrollment", () => {
     expect(isLoopV2ReadOnlyCanaryCandidate({
       ...candidate,
       message: "delete my recent runs",
+    })).toBe(false);
+    expect(isLoopV2ReadOnlyCanaryCandidate({
+      ...candidate,
+      message: "Show my runs",
+    })).toBe(true);
+    expect(isLoopV2ReadOnlyCanaryCandidate({
+      ...candidate,
+      message: "yes",
+      route: "clarify",
+      resumeRunId: "00000000-0000-4000-8000-000000000001",
+    })).toBe(true);
+    expect(isLoopV2ReadOnlyCanaryCandidate({
+      ...candidate,
+      message: "no",
+      resumeRunId: "00000000-0000-4000-8000-000000000001",
     })).toBe(false);
     await expect(resolveLoopV2ReadOnlyCanaryEnrollment(
       candidate,
@@ -163,6 +180,85 @@ describe("Loop v2 read-only canary runtime", () => {
     );
     expect(events.at(-1)).toMatchObject({ type: "canceled" });
   });
+
+  it("pauses an ambiguous read at a durable clarification checkpoint", async () => {
+    const harness = runtimeHarness();
+    const events = await collect(runLoopV2ReadOnlyCanary(
+      {
+        ...canaryRequest(),
+        message: "Show my runs",
+        messages: [{ role: "user", content: "Show my runs" }],
+      },
+      undefined,
+      harness.dependencies,
+    ));
+
+    expect(harness.checkpoints.map((checkpoint) => checkpoint.toState)).toEqual([
+      "understand",
+      "clarify",
+    ]);
+    expect(harness.waitForClarification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toState: "clarify",
+        lifecycleState: "waiting",
+      }),
+      expect.anything(),
+      expect.objectContaining({
+        clarificationPrompt: expect.stringContaining("Reply “yes”"),
+      }),
+    );
+    expect(harness.executeTool).not.toHaveBeenCalled();
+    expect(harness.finalizeRun).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({
+      type: "clarification",
+      runId: "run-canary",
+      threadId: "thread-a",
+      reasonCode: "ambiguous_read_target",
+    });
+  });
+
+  it("resumes the same run from clarification under its original scope", async () => {
+    const harness = runtimeHarness();
+    const events = await collect(runLoopV2ReadOnlyCanary(
+      {
+        ...canaryRequest(),
+        message: "yes",
+        messages: [{ role: "user", content: "yes" }],
+        resumeRunId: "run-canary",
+      },
+      undefined,
+      harness.dependencies,
+    ));
+
+    expect(harness.createRun).not.toHaveBeenCalled();
+    expect(harness.bindRunScope).not.toHaveBeenCalled();
+    expect(harness.resumeClarification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        runId: "run-canary",
+        threadId: "thread-a",
+        ownerActorId: "actor-a",
+        agentId: "atlas",
+        clarificationReceiptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+    expect(harness.executeTool).toHaveBeenCalledTimes(1);
+    expect(harness.checkpoints.map((checkpoint) => checkpoint.toState)).toEqual([
+      "understand",
+      "clarify",
+      "plan",
+      "act",
+      "observe",
+      "verify",
+      "finish",
+    ]);
+    expect(events[0]).toMatchObject({
+      type: "run",
+      runId: "run-canary",
+      threadId: "thread-a",
+    });
+    expect(events.at(-1)).toMatchObject({ type: "done" });
+  });
 });
 
 function canaryCandidate() {
@@ -273,6 +369,47 @@ function runtimeHarness() {
       return undefined as never;
     },
   );
+  const waitForClarification = vi.fn().mockImplementation(
+    async (checkpoint: LoopV2Checkpoint) => {
+      checkpoints.push(checkpoint);
+      return undefined as never;
+    },
+  );
+  const resumeClarification = vi.fn().mockImplementation(
+    async (input: { runId: string; clarificationReceiptSha256: string }) => {
+      const originalScope = canaryRequest().executionScope;
+      const root = createInitialLoopV2Checkpoint({
+        tenantId: "tenant-a",
+        runId: input.runId,
+        ownerActorId: "actor-a",
+        executionScope: originalScope,
+        enginePin: enginePin(),
+        transitionedAt: "2026-01-01T00:00:00.000Z",
+      });
+      const clarification = advanceLoopV2Checkpoint({
+        current: root,
+        executionScope: originalScope,
+        trigger: "ambiguity_detected",
+        outputReceiptSha256: "a".repeat(64),
+        transitionedAt: "2026-01-01T00:00:01.000Z",
+      });
+      const plan = advanceLoopV2Checkpoint({
+        current: clarification,
+        executionScope: originalScope,
+        trigger: "clarified",
+        inputReceiptSha256: input.clarificationReceiptSha256,
+        transitionedAt: "2026-01-01T00:00:02.000Z",
+      });
+      checkpoints.push(root, clarification, plan);
+      return {
+        checkpoint: plan,
+        executionScope: originalScope,
+        runId: input.runId,
+        threadId: "thread-a",
+        inserted: true,
+      };
+    },
+  );
   const finalizeRun = vi.fn().mockImplementation(
     async (checkpoint: LoopV2Checkpoint) => {
       checkpoints.push(checkpoint);
@@ -287,13 +424,19 @@ function runtimeHarness() {
     appendAssistantTurn,
     executeTool,
     persistCheckpoint,
+    waitForClarification,
+    resumeClarification,
     finalizeRun,
     failUncheckpointedRun,
   } as unknown as LoopV2RuntimeDependencies;
   return {
     dependencies,
     checkpoints,
+    createRun,
+    bindRunScope,
     executeTool,
+    waitForClarification,
+    resumeClarification,
     finalizeRun,
     appendAssistantTurn,
     failUncheckpointedRun,

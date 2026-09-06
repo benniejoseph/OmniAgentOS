@@ -420,7 +420,7 @@ export function ResultsCenter() {
               icon={RefreshCw}
               title="Active"
               body="Open Activity to follow progress. A running or queued item is not a completed result."
-              active={["running", "queued", "pending"].includes(primaryResult.status)}
+              active={["running", "queued", "pending", "waiting_clarification"].includes(primaryResult.status)}
             />
             <NextStepRow
               icon={AlertTriangle}

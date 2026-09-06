@@ -3,6 +3,7 @@ import {
   type DomainEvent,
 } from "@/lib/events/store";
 import {
+  advanceLoopV2Checkpoint,
   LOOP_V2_CAPABILITY_ID,
   LOOP_V2_CONFIGURATION_SHA256,
   LOOP_V2_CONTRACT_VERSION_ID,
@@ -41,6 +42,19 @@ export type FinalizeLoopV2RunResult = RecordLoopV2CheckpointResult &
   Readonly<{
     runStatus: "completed" | "failed" | "canceled";
   }>;
+
+export type WaitForLoopV2ClarificationResult = RecordLoopV2CheckpointResult &
+  Readonly<{
+    runStatus: "waiting_clarification";
+  }>;
+
+export type ResumeLoopV2ClarificationResult = Readonly<{
+  checkpoint: LoopV2Checkpoint;
+  executionScope: ExecutionScope;
+  runId: string;
+  threadId: string;
+  inserted: boolean;
+}>;
 
 export async function recordLoopV2Checkpoint(
   input: {
@@ -279,6 +293,214 @@ export async function finalizeLoopV2Run(
     throw new Error("Loop v2 terminal run disposition did not commit.");
   }
   return Object.freeze({ ...recorded, runStatus });
+}
+
+/** Commits a clarification checkpoint and the matching nonterminal run state. */
+export async function waitForLoopV2Clarification(
+  input: {
+    checkpoint: unknown;
+    executionScope: ExecutionScope;
+    clarificationPrompt: string;
+  },
+  sql: LoopV2CheckpointWriterSql,
+): Promise<WaitForLoopV2ClarificationResult> {
+  if (!sql.transactionScoped) {
+    throw new Error("Loop v2 clarification wait requires an existing transaction.");
+  }
+  const checkpoint = parseLoopV2Checkpoint(input.checkpoint);
+  if (
+    checkpoint.toState !== "clarify" ||
+    checkpoint.lifecycleState !== "waiting" ||
+    checkpoint.terminalDisposition !== null
+  ) {
+    throw new Error("Loop v2 clarification wait requires a waiting checkpoint.");
+  }
+  const clarificationPrompt = boundedTerminalText(
+    input.clarificationPrompt,
+    2_000,
+  );
+  if (!clarificationPrompt) {
+    throw new Error("Loop v2 clarification wait requires a prompt.");
+  }
+
+  const recorded = await recordLoopV2Checkpoint({
+    checkpoint,
+    executionScope: input.executionScope,
+  }, sql);
+  const rows = await sql.query(
+    `UPDATE omni_agent_runs
+     SET status = 'waiting_clarification',
+         response = $4,
+         grounding = NULL,
+         error = NULL,
+         continuation = NULL,
+         completed_at = NULL
+     WHERE tenant_id = $1
+       AND id = $2
+       AND owner_actor_id = $3
+       AND thread_id IS NOT NULL
+       AND status = 'running'
+     RETURNING id`,
+    [
+      checkpoint.tenantId,
+      checkpoint.runId,
+      checkpoint.ownerActorId,
+      clarificationPrompt,
+    ],
+  );
+  if (rows.length !== 1) {
+    throw new Error("Loop v2 clarification run state did not commit.");
+  }
+  return Object.freeze({
+    ...recorded,
+    runStatus: "waiting_clarification" as const,
+  });
+}
+
+/**
+ * Claims one exact clarification wait and records `clarified -> plan` in the
+ * same transaction. The original execution scope remains authoritative.
+ */
+export async function resumeLoopV2Clarification(
+  input: {
+    tenantId: string;
+    runId: string;
+    threadId: string;
+    ownerActorId: string;
+    agentId: string;
+    requestExecutionScope: ExecutionScope;
+    clarificationReceiptSha256: string;
+    transitionedAt?: string;
+  },
+  sql: LoopV2CheckpointWriterSql,
+): Promise<ResumeLoopV2ClarificationResult> {
+  if (!sql.transactionScoped) {
+    throw new Error("Loop v2 clarification resume requires an existing transaction.");
+  }
+  const requestScope = parsePersistedExecutionScope(input.requestExecutionScope);
+  if (
+    !requestScope ||
+    requestScope.tenantId !== input.tenantId ||
+    requestScope.initiatingActorId !== input.ownerActorId ||
+    requestScope.executingPrincipalType !== "agent" ||
+    requestScope.executingPrincipalId !== input.agentId ||
+    requestScope.purpose !== "agent.loop.v2.read_only_canary" ||
+    !/^[a-f0-9]{64}$/.test(input.clarificationReceiptSha256)
+  ) {
+    throw new Error("Loop v2 clarification resume request scope is invalid.");
+  }
+
+  const runRows = await sql.query(
+    `SELECT id, owner_actor_id, thread_id, agent_id, status
+     FROM omni_agent_runs
+     WHERE tenant_id = $1 AND id = $2
+     LIMIT 2
+     FOR UPDATE`,
+    [input.tenantId, input.runId],
+  );
+  const run = exactlyOne(runRows, "Loop v2 clarification run");
+  if (
+    run.owner_actor_id !== input.ownerActorId ||
+    run.thread_id !== input.threadId ||
+    run.agent_id !== input.agentId ||
+    !["waiting_clarification", "resuming"].includes(String(run.status))
+  ) {
+    throw new Error("Loop v2 clarification run binding is invalid.");
+  }
+
+  const scopeRows = await sql.query(
+    `SELECT payload
+     FROM omni_events
+     WHERE tenant_id = $1
+       AND stream_id = $2
+       AND type = 'run.scope_bound'
+     ORDER BY seq ASC
+     LIMIT 2
+     FOR SHARE`,
+    [input.tenantId, `run:${input.runId}`],
+  );
+  const scopePayload = plainRecord(
+    exactlyOne(scopeRows, "Loop v2 clarification scope binding").payload,
+  );
+  const originalExecutionScope = parsePersistedExecutionScope(
+    scopePayload._executionScope,
+  );
+  if (
+    !originalExecutionScope ||
+    originalExecutionScope.tenantId !== input.tenantId ||
+    originalExecutionScope.initiatingActorId !== input.ownerActorId ||
+    originalExecutionScope.executingPrincipalType !== "agent" ||
+    originalExecutionScope.executingPrincipalId !== input.agentId ||
+    originalExecutionScope.purpose !== "agent.loop.v2.read_only_canary"
+  ) {
+    throw new Error("Loop v2 clarification original scope is invalid.");
+  }
+
+  const chain = await readLoopV2CheckpointChain({
+    tenantId: input.tenantId,
+    runId: input.runId,
+  }, sql);
+  const current = chain.at(-1);
+  if (!current) {
+    throw new Error("Loop v2 clarification checkpoint is missing.");
+  }
+  if (String(run.status) === "resuming") {
+    if (
+      current.fromState !== "clarify" ||
+      current.toState !== "plan" ||
+      current.trigger !== "clarified" ||
+      current.inputReceiptSha256 !== input.clarificationReceiptSha256
+    ) {
+      throw new Error("Loop v2 clarification resume is already claimed differently.");
+    }
+    return Object.freeze({
+      checkpoint: current,
+      executionScope: originalExecutionScope,
+      runId: input.runId,
+      threadId: input.threadId,
+      inserted: false,
+    });
+  }
+  if (
+    current.toState !== "clarify" ||
+    current.lifecycleState !== "waiting" ||
+    current.terminalDisposition !== null
+  ) {
+    throw new Error("Loop v2 run is not waiting for clarification.");
+  }
+
+  const claimedRows = await sql.query(
+    `UPDATE omni_agent_runs
+     SET status = 'resuming', response = NULL, error = NULL
+     WHERE tenant_id = $1
+       AND id = $2
+       AND owner_actor_id = $3
+       AND thread_id = $4
+       AND status = 'waiting_clarification'
+     RETURNING id`,
+    [input.tenantId, input.runId, input.ownerActorId, input.threadId],
+  );
+  if (claimedRows.length !== 1) {
+    throw new Error("Loop v2 clarification claim did not commit.");
+  }
+  const checkpoint = advanceLoopV2Checkpoint({
+    current,
+    executionScope: originalExecutionScope,
+    trigger: "clarified",
+    inputReceiptSha256: input.clarificationReceiptSha256,
+    transitionedAt: input.transitionedAt,
+  });
+  const recorded = await recordLoopV2Checkpoint({
+    checkpoint,
+    executionScope: originalExecutionScope,
+  }, sql);
+  return Object.freeze({
+    checkpoint: recorded.checkpoint,
+    executionScope: originalExecutionScope,
+    runId: input.runId,
+    threadId: input.threadId,
+    inserted: recorded.inserted,
+  });
 }
 
 export async function readLoopV2CheckpointChain(

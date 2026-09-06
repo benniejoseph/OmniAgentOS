@@ -77,6 +77,7 @@ const contextSelectionSchema = z.object({
 const requestSchema = z.object({
   messages: z.array(chatMessageSchema).min(1).max(AGENT_MAX_MESSAGES).optional(),
   threadId: z.string().uuid().optional(),
+  resumeRunId: z.string().uuid().optional(),
   missionId: z.string().uuid().optional(),
   requestId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9._:-]+$/).optional(),
   message: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS).optional(),
@@ -85,7 +86,14 @@ const requestSchema = z.object({
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
   contextSelection: contextSelectionSchema.optional(),
-}).strict().refine((value) => Boolean(value.message || value.messages?.length), { message: "A message is required." });
+}).strict()
+  .refine((value) => Boolean(value.message || value.messages?.length), {
+    message: "A message is required.",
+  })
+  .refine((value) => !value.resumeRunId || Boolean(value.threadId), {
+    message: "A thread is required to resume a run.",
+    path: ["threadId"],
+  });
 
 async function POSTHandler(request: Request) {
   let body: unknown;
@@ -284,6 +292,7 @@ async function POSTHandler(request: Request) {
               requestedSpecialistIds: parsed.data.specialistIds,
               missionId: parsed.data.missionId,
               contextEvidenceIds: contextSelection?.evidenceIds,
+              resumeRunId: parsed.data.resumeRunId,
             });
         } catch (error) {
           console.warn(
@@ -333,7 +342,7 @@ async function POSTHandler(request: Request) {
               count: 1,
             })));
           }
-          if (decision.route === "clarify") {
+          if (decision.route === "clarify" && !loopV2CanaryEnrollment) {
             const ambiguity = decision.ambiguity.state === "detected"
               ? decision.ambiguity
               : {
@@ -568,6 +577,7 @@ async function POSTHandler(request: Request) {
                 securityContext: context,
                 executionScope: directExecutionScope,
                 enrollment: loopV2CanaryEnrollment,
+                resumeRunId: parsed.data.resumeRunId,
               },
               request.signal,
             )

@@ -1375,7 +1375,7 @@ async function collectPendingRunsForDeletionPreview(
       SELECT run.id
       FROM omni_agent_runs run
       WHERE run.tenant_id = ${tenantId}
-        AND run.status IN ('running', 'waiting_approval', 'resuming')
+        AND run.status IN ('running', 'waiting_clarification', 'waiting_approval', 'resuming')
         AND EXISTS (
           SELECT 1
           FROM omni_agent_events event

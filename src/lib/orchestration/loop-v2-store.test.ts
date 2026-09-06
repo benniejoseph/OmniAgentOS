@@ -14,6 +14,8 @@ import {
   finalizeLoopV2Run,
   readLoopV2CheckpointChain,
   recordLoopV2Checkpoint,
+  resumeLoopV2Clarification,
+  waitForLoopV2Clarification,
   type LoopV2CheckpointWriterSql,
 } from "@/lib/orchestration/loop-v2-store";
 import type { TenantCapabilityRollout } from "@/lib/rollouts/tenant-capability-rollouts";
@@ -141,6 +143,83 @@ describe("Loop v2 checkpoint store", () => {
     });
     expect(storage.runStatus()).toBe("completed");
   });
+
+  it("atomically waits and resumes one exact actor-bound clarification", async () => {
+    const storage = fakeStorage();
+    const root = initial();
+    await recordLoopV2Checkpoint({
+      checkpoint: root,
+      executionScope: executionScope(),
+    }, storage.sql);
+    const clarification = advanceLoopV2Checkpoint({
+      current: root,
+      executionScope: executionScope(),
+      trigger: "ambiguity_detected",
+      outputReceiptSha256: sourceContractSha256("ambiguous-read"),
+      transitionedAt: "2026-09-06T03:01:00.000Z",
+    });
+
+    await expect(waitForLoopV2Clarification({
+      checkpoint: clarification,
+      executionScope: executionScope(),
+      clarificationPrompt: "List the five most recent runs?",
+    }, storage.sql)).resolves.toMatchObject({
+      runStatus: "waiting_clarification",
+      checkpoint: { toState: "clarify" },
+    });
+    expect(storage.runStatus()).toBe("waiting_clarification");
+
+    const receipt = sourceContractSha256("yes");
+    const resumed = await resumeLoopV2Clarification({
+      tenantId: "tenant-a",
+      runId: "run-a",
+      threadId: "thread-a",
+      ownerActorId: "actor-a",
+      agentId: "atlas",
+      requestExecutionScope: createExecutionScope({
+        tenantId: "tenant-a",
+        initiatingActorId: "actor-a",
+        executingPrincipalType: "agent",
+        executingPrincipalId: "atlas",
+        correlationId: "clarification-response-a",
+        purpose: "agent.loop.v2.read_only_canary",
+      }),
+      clarificationReceiptSha256: receipt,
+      transitionedAt: "2026-09-06T03:02:00.000Z",
+    }, storage.sql);
+    expect(resumed).toMatchObject({
+      runId: "run-a",
+      threadId: "thread-a",
+      inserted: true,
+      checkpoint: {
+        fromState: "clarify",
+        toState: "plan",
+        trigger: "clarified",
+        inputReceiptSha256: receipt,
+      },
+    });
+    expect(resumed.executionScope).toEqual(executionScope());
+    expect(storage.runStatus()).toBe("resuming");
+
+    await expect(resumeLoopV2Clarification({
+      tenantId: "tenant-a",
+      runId: "run-a",
+      threadId: "thread-a",
+      ownerActorId: "actor-a",
+      agentId: "atlas",
+      requestExecutionScope: executionScope(),
+      clarificationReceiptSha256: receipt,
+    }, storage.sql)).resolves.toMatchObject({ inserted: false });
+    const chain = await readLoopV2CheckpointChain(
+      { tenantId: "tenant-a", runId: "run-a" },
+      storage.sql,
+    );
+    expect(chain.map((checkpoint) => checkpoint.toState)).toEqual([
+      "understand",
+      "clarify",
+      "plan",
+    ]);
+  });
 });
 
 function fakeStorage(options: {
@@ -169,7 +248,13 @@ function fakeStorage(options: {
   sql.unsafe = async () => [];
   sql.query = async (text: string, params: unknown[] = []) => {
     if (text.includes("FROM omni_agent_runs")) {
-      return [{ owner_actor_id: "actor-a", status: currentRunStatus }];
+      return [{
+        id: "run-a",
+        owner_actor_id: "actor-a",
+        thread_id: "thread-a",
+        agent_id: "atlas",
+        status: currentRunStatus,
+      }];
     }
     if (text.includes("type = 'run.scope_bound'")) {
       return [{ payload: { _executionScope: executionScope() } }];
@@ -222,6 +307,16 @@ function fakeStorage(options: {
         .map((checkpoint) => ({ checkpoint_json: checkpoint }));
     }
     if (text.includes("UPDATE omni_agent_runs")) {
+      if (text.includes("SET status = 'waiting_clarification'")) {
+        if (currentRunStatus !== "running") return [];
+        currentRunStatus = "waiting_clarification";
+        return [{ id: "run-a" }];
+      }
+      if (text.includes("SET status = 'resuming'")) {
+        if (currentRunStatus !== "waiting_clarification") return [];
+        currentRunStatus = "resuming";
+        return [{ id: "run-a" }];
+      }
       if (!["running", "resuming"].includes(currentRunStatus)) return [];
       currentRunStatus = String(params[3]);
       return [{ id: "run-a" }];
