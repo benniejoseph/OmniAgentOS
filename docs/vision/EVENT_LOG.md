@@ -1593,3 +1593,20 @@ memory IDs plus access, content, and artifact digests. The event and artifact do
 not copy the shared content. Retrying the same idempotency key converges on the
 same copy and artifact; changing an authenticated coordinate or digest fails
 closed.
+
+## Agent context and capability grant lifecycle
+
+P7.4 adds `memory.access_grant.held`, `memory.access_grant.activated`, and
+`memory.access_grant.revoked` for exact custom-Agent authority changes. These
+events carry only grant kind/ID/generation, exact principal generation, purpose,
+visibility, lifecycle revision, target and operation counts, bounded budgets,
+expiry, and contract digests. They contain no memory content, tool output,
+persona prose, credential, tenant/actor identity, or private reasoning.
+
+A mutation locks the owned Agent, creates the next held principal generation,
+reissues retained grants against that generation, revokes the prior grants and
+principal, pins only the resulting context/capability grant IDs in the next
+principal policy, and then activates them. Revocation is terminal; changing any
+authority coordinate requires another generation. The events describe the
+transition but never grant authority independently of the database record and
+principal-policy pin.

@@ -1400,6 +1400,27 @@ copy are committed together and emit metadata-only
 `memory.agent_private.shared`; the source Agent remains the only principal able
 to read the original.
 
+P7.4 gives an Agent owner one explicit editor for context and capability
+authority in Arsenal and Settings. A grant is a typed, immutable authority
+record: it names the exact Agent principal generation, purpose, visibility,
+target coordinates and resource IDs, operation IDs, item/byte/invocation/cost/
+duration budgets, activation window, and expiry. Empty or wildcard targets do
+not acquire authority, built-in Agents remain under server policy, and readable
+compatibility Agents remain read-only. The editor derives its explanation from
+the validated record rather than from persona or display metadata.
+
+Creating or revoking a grant locks the owned custom Agent and rotates its
+execution principal. Retained, unexpired grants are reissued to the new exact
+principal generation; old grants and the old principal are revoked, and the new
+principal policy pins only the new context and capability grant IDs before it
+becomes active. New direct, clarification, Mission, specialist, and workflow
+execution scopes carry those exact IDs and use the security principal ID rather
+than the logical Agent ID. Existing run identity manifests remain immutable and
+therefore cannot silently gain the new generation. Migration v112 permits only
+held-to-active/revoked and active-to-revoked transitions, preserves every
+authority coordinate as immutable, forces tenant/actor RLS, and gives serving
+roles no delete, truncate, table-wide update, or authority-field update.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,
