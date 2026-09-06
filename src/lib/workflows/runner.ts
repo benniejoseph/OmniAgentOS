@@ -1,8 +1,8 @@
 import { WORKFLOW_EXECUTOR_TIMEOUT_MS } from "@/lib/config";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
+import { formVerifiedEffectMemories } from "@/lib/memory/consolidator";
 import { saveMemory } from "@/lib/memory/store";
 import { generateModelStructured } from "@/lib/models/gateway";
-import { embedTexts } from "@/lib/openai/client";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
@@ -1114,6 +1114,7 @@ async function executeGoal(detail: WorkflowRunDetail, abortSignal?: AbortSignal)
 }
 
 async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: AbortSignal) {
+  abortSignal?.throwIfAborted();
   const executeOutput = stepOutput(detail, "execute");
   const verifyOutput = stepOutput(detail, "verify");
   const planOutput = stepOutput(detail, "plan");
@@ -1132,22 +1133,8 @@ async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: Ab
     `Execution: ${String(executeOutput?.response || executeOutput?.deliverable || "No execution output.")}`,
     `Verification: ${JSON.stringify(verifyOutput || {})}`,
   ].filter(Boolean).join("\n\n");
-  let embedding: number[] | undefined;
-  try {
-    const usageScope = await workflowUsageScope(
-      detail,
-      "embedding",
-      "workflow.report.embedding",
-    );
-    embedding = (await embedTexts([content], abortSignal, usageScope))?.[0];
-  } catch (error) {
-    if (abortSignal?.aborted) {
-      throw abortSignal.reason || error;
-    }
-    // A workflow report remains durable and lexically searchable even when
-    // the optional embedding provider is temporarily unavailable.
-  }
   const threadId = detail.run.input.metadata?.threadId;
+  const { executionScope } = await workflowAttribution(detail);
   const memory = await saveMemory({
     id: `workflow_report_${detail.run.id}`,
     tenantId: detail.run.tenantId,
@@ -1155,15 +1142,23 @@ async function persistWorkflowReport(detail: WorkflowRunDetail, abortSignal?: Ab
     title: `Workflow report: ${detail.run.goal.slice(0, 72)}`,
     content,
     tags: ["workflow", "durable", detail.run.workflowType],
-    source: "workflow",
+    source: "workflow-inference",
     importance: 0.7,
+    confidence: 0.35,
+    claimStatus: "candidate",
+    assertedBy: "agent",
     evidenceRefs: [
-      `workflow:${detail.run.id}`,
+      `run:${detail.run.id}`,
       ...(typeof threadId === "string" && threadId.trim()
         ? [`thread:${threadId.trim()}`]
         : []),
     ],
-    embedding,
+    ...(executionScope
+      ? {
+          executionScope,
+          formationOrigin: "assistant_inference" as const,
+        }
+      : {}),
   });
 
   return {
@@ -1188,8 +1183,8 @@ async function completeWorkflow(
     planExecutionStatus: reportOutput?.planExecutionStatus,
   };
   let outcomeEventPayload: Record<string, unknown> | undefined;
+  let authoritativeToolExecutions: ToolExecutionRecord[] = [];
   if (detail) {
-    let authoritativeToolExecutions: ToolExecutionRecord[] = [];
     const effectReceiptCandidateIds =
       workflowOutcomeEffectReceiptCandidateExecutionIds(detail);
     if (detail.run.tenantId && effectReceiptCandidateIds.length) {
@@ -1237,6 +1232,30 @@ async function completeWorkflow(
         // The validated receipt is already stored atomically with the legacy
         // completion record; event transactionalization belongs to P1.1.
         console.error("Workflow outcome event persistence failed.");
+      }
+    }
+    if (detail && authoritativeToolExecutions.length) {
+      try {
+        const authority = await getWorkflowRunExecutionAuthority(
+          detail.run.id,
+          { tenantId: detail.run.tenantId },
+        );
+        if (authority?.executionScope) {
+          const reportThreadId = detail.run.input.metadata?.threadId;
+          await formVerifiedEffectMemories({
+            records: authoritativeToolExecutions,
+            runId: detail.run.id,
+            threadId: typeof reportThreadId === "string"
+              ? reportThreadId
+              : undefined,
+            executionScope: authority.executionScope,
+          });
+        }
+      } catch (error) {
+        console.error(
+          "Workflow verified-effect memory formation failed.",
+          error instanceof Error ? error.message : "Unknown formation error.",
+        );
       }
     }
     await appendWorkflowEvent(runId, "workflow.completed", {});

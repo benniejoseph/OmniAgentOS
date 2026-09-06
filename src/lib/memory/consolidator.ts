@@ -103,16 +103,14 @@ export async function consolidateRunMemory({
     const executions = await getToolExecutionsByIds(executionIds, {
       tenantId: scopedTenantId,
     });
-    const memoryInputs = executions.flatMap((record) => {
-      const formed = verifiedEffectMemoryInput({
-        record,
-        runId,
-        threadId,
-        executionScope,
-      });
-      return formed ? [formed] : [];
+    const saved = await formVerifiedEffectMemories({
+      records: executions,
+      runId,
+      threadId,
+      executionScope,
+      abortSignal,
     });
-    if (!memoryInputs.length) {
+    if (!saved.length) {
       return {
         summary: "No verified effects formed durable memory.",
         saved: [],
@@ -120,10 +118,6 @@ export async function consolidateRunMemory({
       };
     }
 
-    abortSignal?.throwIfAborted();
-    const saved = await saveMemories(memoryInputs);
-    abortSignal?.throwIfAborted();
-    await indexMemoryGraphRecords(saved, "memory.verified_effect");
     return {
       summary: `${saved.length} verified effect${saved.length === 1 ? "" : "s"} formed durable memory.`,
       saved,
@@ -138,6 +132,30 @@ export async function consolidateRunMemory({
       error: error instanceof Error ? error.message : "Unknown formation error",
     };
   }
+}
+
+export async function formVerifiedEffectMemories(input: {
+  records: ToolExecutionRecord[];
+  runId: string;
+  threadId?: string;
+  executionScope: ExecutionScope;
+  abortSignal?: AbortSignal;
+}) {
+  const memoryInputs = input.records.flatMap((record) => {
+    const formed = verifiedEffectMemoryInput({
+      record,
+      runId: input.runId,
+      threadId: input.threadId,
+      executionScope: input.executionScope,
+    });
+    return formed ? [formed] : [];
+  });
+  if (!memoryInputs.length) return [];
+  input.abortSignal?.throwIfAborted();
+  const saved = await saveMemories(memoryInputs);
+  input.abortSignal?.throwIfAborted();
+  await indexMemoryGraphRecords(saved, "memory.verified_effect");
+  return saved;
 }
 
 export function verifiedEffectMemoryInput(input: {

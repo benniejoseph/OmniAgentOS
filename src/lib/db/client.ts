@@ -4906,9 +4906,17 @@ async function ensureEvidenceBasedMemoryFormation(sql: SqlClient) {
     AS
     SELECT tenant_id, id
     FROM omni_memories
-    WHERE source IN ('agent', 'consolidator')
-      AND asserted_by = 'agent'
-      AND claim_status = 'active'
+    WHERE claim_status = 'active'
+      AND (
+        (
+          source IN ('agent', 'consolidator')
+          AND asserted_by = 'agent'
+        )
+        OR (
+          source = 'workflow'
+          AND type = 'episode'
+        )
+      )
   `;
   await sql`
     INSERT INTO omni_events (
