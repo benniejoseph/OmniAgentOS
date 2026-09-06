@@ -113,6 +113,7 @@ export function applySemanticIntentPolicy(input: {
       candidate,
       input.capabilityCandidates,
       input.message,
+      input.mode,
     ),
   ])]
     .map((id) => capabilityById.get(id))
@@ -256,6 +257,7 @@ function semanticCapabilityPolicyIds(
   candidate: SemanticIntentCandidate,
   capabilities: readonly CapabilityDescriptor[],
   message: string,
+  mode: AgentMode,
 ) {
   const available = new Set(capabilities.map((capability) => capability.id));
   const selected = new Set<string>();
@@ -271,7 +273,7 @@ function semanticCapabilityPolicyIds(
     add("memory.write");
   }
 
-  if (candidate.workKinds.includes("memory")) {
+  if (mode === "learn" || candidate.workKinds.includes("memory")) {
     if (
       candidate.intent === "retrieve" ||
       candidate.intent === "question" ||
