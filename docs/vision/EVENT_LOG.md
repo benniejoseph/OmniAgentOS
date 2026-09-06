@@ -1384,3 +1384,15 @@ hashed cursor, verification digest, and operation-job references. They never
 contain source identifiers, filenames, bytes, object locators, credentials, or
 content. A completed event is emitted only in the same transaction that records
 exact parity and unlocks the persisted reader gate.
+
+## Structured capture extraction
+
+P2.6 extends `capture_asset.status_changed` with a metadata-only extraction
+receipt digest, unit count, locator-kind set, and bounded warning-code set. The
+event never contains extracted text, filenames, notes, original bytes, provider
+output, or direct object locations. The full schema-closed receipt remains on
+the exact owner-scoped Capture asset and binds the extractor version/config,
+source kind, format, terminal state, content digest when evidence exists, and
+its own digest. Canonical `EvidenceUnit` rows remain the authoritative
+page/slide/sheet/region/time-range derivatives and inherit or narrow the source
+permission and retention boundary; no new unscoped content event is created.
