@@ -1934,9 +1934,26 @@ terminal checkpoint with the run disposition. The production generation-1
 canary completed the six-state success path at release
 `74a543ad029f0a061b80c65db821da5d514b0fc6`; the matching web and Fly services
 are healthy. This completes the first safe sequence slice, not all of P6.1.
-General model-backed work, clarification inside the v2 loop, durable
-interruption/resume, and broader fault-injection remain pending. Legacy runs
-stay pinned to v1.
+General model-backed work and broader fault-injection remain pending. Legacy
+runs stay pinned to v1.
+
+The next P6.1 slice adds the first persisted clarification without widening the
+task or tool surface. An ambiguous recent-runs read now records
+`understand -> clarify` and atomically pauses the exact actor-owned run as
+`waiting_clarification` before tool execution. Migration v90 requires its
+thread binding and prevents multiple waiting clarification runs for one
+tenant/actor/thread. An affirmative reply carrying the exact run and thread
+revalidates the run/actor/thread/agent tuple, restores the original immutable
+execution scope, records `clarified -> plan`, and continues through the same
+governed risk-0 `runs.list` path. The conversation remains writable while
+waiting and restores that pending run after reload. Focused route, runtime,
+store, status, type, and production-build checks pass. Migration 90 and the
+paired Vercel/Fly release are healthy at
+`b8d26701c8cb281ae822eeae7cbb8807e67d7939`; all worker startup lanes passed
+and canonical work is active. The authenticated interaction canary is still
+pending an unlocked browser session. P6.1 remains open for bounded
+model-backed work and broader production fault injection; legacy runs remain
+pinned to v1.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
