@@ -23,7 +23,7 @@ function createSql(transactionScoped = false) {
       return [{ id: "memory-reconciliation-a" }];
     }
     if (
-      query.includes("SELECT *") &&
+      (query.includes("SELECT *") || query.includes("SELECT memory.*")) &&
       query.includes("FROM omni_memories")
     ) {
       return mocks.returnedMemoryRows;
@@ -77,6 +77,10 @@ import {
 } from "@/lib/memory/store";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
+  embedLocalMultilingualTexts,
+} from "@/lib/rag/retrieval-embedding";
 
 const ownerActorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
 
@@ -188,6 +192,43 @@ describe("Postgres memory recall", () => {
       databaseAccessScope: accessScope(MEMORY_PURPOSE_IDS.read),
       executionScope: executionScope(MEMORY_PURPOSE_IDS.read),
     })).rejects.toThrow("not authorized for this operation");
+  });
+
+  it("authorizes the bounded candidate read before local semantic scoring", async () => {
+    mocks.returnedMemoryRows.push({
+      id: "private-local-memory",
+      tenant_id: "tenant-a",
+      type: "procedure",
+      tier: "procedural",
+      title: "Database restore procedure",
+      content: "Restore the latest database backup.",
+      tags: [],
+      evidence_refs: [],
+      scope: "user",
+      source: "manual",
+      importance: 0.8,
+      confidence: 1,
+      claim_status: "active",
+      asserted_by: "user",
+      created_at: "2026-09-06T00:00:00.000Z",
+      updated_at: "2026-09-06T00:00:00.000Z",
+    });
+    const query = "restaurar la copia de la base de datos";
+    const results = await searchMemories(query, {
+      tenantId: "tenant-a",
+      accessScope: accessScope(MEMORY_PURPOSE_IDS.retrieve),
+      queryEmbedding: embedLocalMultilingualTexts([query])[0],
+      queryEmbeddingSpaceId: LOCAL_MULTILINGUAL_EMBEDDING_SPACE,
+    });
+
+    expect(mocks.events.slice(0, 2)).toEqual(["scope", "query"]);
+    expect(results[0]).toMatchObject({
+      record: { id: "private-local-memory" },
+      reasons: expect.arrayContaining(["semantic match"]),
+    });
+    expect(mocks.queries.some((queryText) =>
+      queryText.includes("embedding_vector <=>")
+    )).toBe(false);
   });
 
   it("uses indexed trace lineage for governed deletion previews", async () => {
