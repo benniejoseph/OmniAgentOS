@@ -6,6 +6,7 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 
 const mocks = vi.hoisted(() => ({
+  appendContextCompilerV2CanaryEvent: vi.fn(),
   appendContextCompilerV2ShadowEventSafely: vi.fn(),
   appendRunContractEventSafely: vi.fn(),
   appendRunEvent: vi.fn(),
@@ -78,6 +79,8 @@ vi.mock("@/lib/rag/context-engine", () => ({
 }));
 
 vi.mock("@/lib/runs/store", () => ({
+  appendContextCompilerV2CanaryEvent:
+    mocks.appendContextCompilerV2CanaryEvent,
   appendContextCompilerV2ShadowEventSafely:
     mocks.appendContextCompilerV2ShadowEventSafely,
   appendRunContractEventSafely: mocks.appendRunContractEventSafely,
@@ -112,6 +115,7 @@ describe("agent memory scope", () => {
       id: "run-event-a",
       createdAt: "2026-09-06T00:00:00.000Z",
     });
+    mocks.appendContextCompilerV2CanaryEvent.mockResolvedValue(undefined);
     mocks.appendContextCompilerV2ShadowEventSafely.mockResolvedValue(undefined);
     mocks.appendRunContractEventSafely.mockResolvedValue(undefined);
     mocks.bindAgentRunExecutionScope.mockResolvedValue({ id: "run-memory-scope" });
@@ -121,7 +125,10 @@ describe("agent memory scope", () => {
     mocks.getAgentLearningGuidance.mockResolvedValue([]);
     mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [] });
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
-    mocks.buildContextPack.mockResolvedValue({
+    mocks.buildContextPack.mockImplementation(async (
+      _query: string,
+      options: { contextCompilerV2Canary?: unknown },
+    ) => ({
       query: "hello",
       profile: {
         mode: "memory_first",
@@ -137,11 +144,20 @@ describe("agent memory scope", () => {
       knowledgeResults: [],
       graphResults: [],
       contextBlock: "DURABLE_MEMORY_CONTEXT",
-      compilerV2Shadow: {
-        selectedEvidenceIds: [],
-        receipt: { receiptId: "context-receipt-a" },
-      },
-    });
+      ...(options.contextCompilerV2Canary
+        ? {
+            compilerV2Canary: {
+              selectedEvidenceIds: ["memory:private-memory"],
+              receipt: { receiptId: "context-canary-receipt-a" },
+            },
+          }
+        : {
+            compilerV2Shadow: {
+              selectedEvidenceIds: [],
+              receipt: { receiptId: "context-receipt-a" },
+            },
+          }),
+    }));
     mocks.streamResponseTurn.mockImplementation(async (request) => {
       await request.onDelta("ASAEL_LIVE_OK");
       return {
@@ -312,8 +328,17 @@ describe("agent memory scope", () => {
         accessContext: undefined,
         databaseMemoryAccessScope: promptAccess?.databaseAccessScope,
         evidenceIds: ["memory:private-memory"],
+        contextCompilerV2Canary: expect.objectContaining({
+          runId: "run-memory-scope",
+        }),
       }),
     );
+    expect(mocks.appendContextCompilerV2CanaryEvent).toHaveBeenCalledWith(
+      "run-memory-scope",
+      { receiptId: "context-canary-receipt-a" },
+      expect.objectContaining({ tenantId: "paid-test-tenant" }),
+    );
+    expect(mocks.appendContextCompilerV2ShadowEventSafely).not.toHaveBeenCalled();
     expect(mocks.runCouncilRound).not.toHaveBeenCalled();
     expect(mocks.loadProgressiveAgentTools).not.toHaveBeenCalled();
     expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
@@ -321,6 +346,38 @@ describe("agent memory scope", () => {
       type: "status",
       label: "private context isolated",
     }));
+  });
+
+  it("blocks private disclosure when the canary receipt cannot persist", async () => {
+    const promptAccess = agentPromptMemoryAccessFromSecurityContext(
+      privateOwnerContext,
+      { correlationId: "agent-private-receipt-failure" },
+    );
+    const scopedRequest = request("all");
+    scopedRequest.actorId = privateOwnerContext.actorId;
+    scopedRequest.executionScope = createExecutionScope({
+      tenantId: privateOwnerContext.tenantId,
+      initiatingActorId: privateOwnerContext.actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "paid-test-agent",
+      correlationId: "agent-private-receipt-failure",
+      purpose: "agent.run",
+    });
+    scopedRequest.contextSelection = {
+      query: "hello",
+      evidenceIds: ["memory:private-memory"],
+    };
+    scopedRequest.promptMemoryAccess = promptAccess;
+    mocks.appendContextCompilerV2CanaryEvent.mockRejectedValueOnce(
+      new Error("receipt unavailable"),
+    );
+
+    const events = await collectRequest(scopedRequest);
+    expect(events).toContainEqual({
+      type: "error",
+      message: "receipt unavailable",
+    });
+    expect(mocks.streamResponseTurn).not.toHaveBeenCalled();
   });
 
   it("fails closed when private prompt access belongs to another request", async () => {

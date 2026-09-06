@@ -28,7 +28,9 @@ import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/typ
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import { parseRuntimeClaimEvidenceV1 } from "@/lib/rag/claim-evidence-runtime";
 import {
+  parseContextCompilerV2CanaryReceipt,
   parseContextCompilerV2ShadowReceipt,
+  type ContextCompilerV2CanaryReceipt,
   type ContextCompilerV2ShadowReceipt,
 } from "@/lib/rag/context-compiler-v2";
 import {
@@ -396,6 +398,38 @@ export async function appendContextCompilerV2ShadowEventSafely(
     );
     return undefined;
   }
+}
+
+/**
+ * The explicit-private canary receipt is a disclosure barrier: it must commit
+ * before the selected context may be sent to a model, so this writer has no
+ * best-effort variant.
+ */
+export async function appendContextCompilerV2CanaryEvent(
+  runId: string,
+  receipt: ContextCompilerV2CanaryReceipt,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const parsed = parseContextCompilerV2CanaryReceipt(receipt);
+  if (parsed.runId !== runId || parsed.tenantId !== tenantId) {
+    throw new Error("Context Compiler v2 canary receipt is bound to another run scope.");
+  }
+  const run = await getAgentRun(runId, { tenantId });
+  if (!run) {
+    throw new Error("Context Compiler v2 canary receipt requires an existing run.");
+  }
+  const boundScope = await getAgentRunExecutionScope(runId, { tenantId });
+  if (!boundScope || !executionScopesEqual(boundScope, options.executionScope)) {
+    throw new Error("Context Compiler v2 canary receipt scope does not match the run binding.");
+  }
+  return appendScopedDomainEvent({
+    streamId: `run:${runId}`,
+    type: "run.context_compiler_v2.canary",
+    payload: parsed,
+    executionScope: options.executionScope,
+  });
 }
 
 /** Exactly one queue delivery may move a pre-created run into execution. */
