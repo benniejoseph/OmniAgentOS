@@ -179,6 +179,11 @@ export function buildCustomAgentIdentityV1(input: {
   principalGeneration: number;
   previousPrincipalVersionId?: string | null;
   principalState?: "held" | "active" | "revoked";
+  principalAuthorityMode?: "server_policy" | "explicit_grants";
+  principalContextGrantIds?: readonly string[];
+  principalCapabilityGrantIds?: readonly string[];
+  principalBudgetPolicyVersionId?: string;
+  principalExpiresAt?: string | null;
   principalCreatedAt?: string;
   principalRevokedAt?: string | null;
 }) {
@@ -221,15 +226,16 @@ export function buildCustomAgentIdentityV1(input: {
     logicalAgentId: input.agent.id,
     definitionId: definition.definitionId,
     state: input.principalState || "active",
-    authorityMode: "explicit_grants",
+    authorityMode: input.principalAuthorityMode || "explicit_grants",
     autonomy: input.agent.autonomy,
     approvalPolicy: input.agent.approvalPolicy,
     memoryScope: input.agent.memoryScope,
     toolGrantIds: input.agent.toolIds,
-    contextGrantIds: [],
-    capabilityGrantIds: [],
-    budgetPolicyVersionId: "agent-run-budget:2",
-    expiresAt: null,
+    contextGrantIds: [...(input.principalContextGrantIds || [])],
+    capabilityGrantIds: [...(input.principalCapabilityGrantIds || [])],
+    budgetPolicyVersionId:
+      input.principalBudgetPolicyVersionId || "agent-run-budget:2",
+    expiresAt: input.principalExpiresAt || null,
     revokedAt: input.principalRevokedAt || null,
     createdAt: input.principalCreatedAt || input.agent.createdAt,
   });
