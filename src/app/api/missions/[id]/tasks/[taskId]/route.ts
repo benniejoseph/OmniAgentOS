@@ -10,6 +10,7 @@ import {
   updateMissionTask,
 } from "@/lib/missions/store";
 import { reconcileMissionState } from "@/lib/missions/runtime";
+import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   missionTaskMutationError,
@@ -96,7 +97,15 @@ async function PATCHHandler(
   }
 
   try {
-    const owner = { tenantId: context.tenantId, actorId: context.actorId };
+    const owner = {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      ...missionMutationFromRequest(request, context, {
+        purpose: "mission.task.update",
+        missionId: id,
+        causationId: taskId,
+      }),
+    };
     let task = await getMissionTask(taskId, owner);
     if (!task || task.missionId !== id) {
       return Response.json({ error: "Mission task not found." }, {

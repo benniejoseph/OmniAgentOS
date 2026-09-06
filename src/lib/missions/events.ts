@@ -24,6 +24,19 @@ export function missionDomainEventPayloadV1(
   });
 }
 
+export function missionLifecycleEventId(input: {
+  tenantId: string;
+  missionId: string;
+  eventType: string;
+  idempotencyKey: string;
+  payload: Record<string, unknown>;
+}) {
+  const digest = createHash("sha256")
+    .update(canonicalJson(input), "utf8")
+    .digest("hex");
+  return `mission_mutation_event_${digest}`;
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;

@@ -9,6 +9,7 @@ import {
   requestMissionTaskChanges,
   requestMissionTaskReview,
 } from "@/lib/missions/store";
+import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   missionTaskMutationError,
@@ -70,7 +71,15 @@ async function POSTHandler(
   }
 
   try {
-    const owner = { tenantId: context.tenantId, actorId: context.actorId };
+    const owner = {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      ...missionMutationFromRequest(request, context, {
+        purpose: `mission.task.review.${parsed.data.action}`,
+        missionId: id,
+        causationId: taskId,
+      }),
+    };
     const current = await getMissionTask(taskId, owner);
     if (!current || current.missionId !== id) {
       return Response.json({ error: "Mission task not found." }, {

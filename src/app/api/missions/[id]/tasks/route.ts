@@ -2,6 +2,7 @@ import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { ensureMissionTask } from "@/lib/missions/store";
+import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
 import { toMissionTaskView } from "@/lib/missions/public";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
@@ -92,7 +93,14 @@ async function POSTHandler(
         reviewerKey: parsed.data.reviewerKey,
         reviewerName: parsed.data.reviewerName,
       },
-    }, { tenantId: context.tenantId, actorId: context.actorId });
+    }, {
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      ...missionMutationFromRequest(request, context, {
+        purpose: "mission.task.create",
+        missionId: id,
+      }),
+    });
     return Response.json({ task: toMissionTaskView(task) }, {
       status: 201,
       headers: PRIVATE_NO_STORE_HEADERS,

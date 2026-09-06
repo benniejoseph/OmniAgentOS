@@ -5,8 +5,15 @@ import {
   getSql,
   hasDatabaseUrl,
 } from "@/lib/db/client";
-import { appendDomainEventSafely } from "@/lib/events/store";
-import { missionDomainEventPayloadV1 } from "@/lib/missions/events";
+import {
+  appendDomainEvent,
+  appendDomainEventSafely,
+  appendScopedDomainEvent,
+} from "@/lib/events/store";
+import {
+  missionDomainEventPayloadV1,
+  missionLifecycleEventId,
+} from "@/lib/missions/events";
 import { missionActorReadOrder } from "@/lib/missions/actor-scope";
 import type {
   Mission,
@@ -24,11 +31,27 @@ import type {
 } from "@/lib/missions/types";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import {
+  assertExecutionScopeTenant,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import { canonicalStatusForMission } from "@/lib/status/canonical";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 
-type MissionOwner = { tenantId?: string; actorId: string };
+export type MissionOwner = {
+  tenantId?: string;
+  actorId: string;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
+};
+
+type NormalizedMissionOwner = {
+  tenantId: string;
+  actorId: string;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
+};
 
 type MissionRequestOwner = MissionOwner & {
   requestActorBinding?: CanonicalRequestActorBindingV1;
@@ -80,6 +103,8 @@ export class MissionReadConflictError extends Error {
 export async function createMission(input: {
   tenantId?: string;
   actorId: string;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
   title: string;
   objective: string;
   priority?: MissionPriority;
@@ -107,34 +132,48 @@ export async function createMission(input: {
   };
   let created = false;
   let saved: Mission;
+  let eventCommitted = false;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      INSERT INTO omni_missions (
-        id, tenant_id, actor_id, title, objective, status, priority, source,
-        source_key, metadata, created_at, updated_at
-      ) VALUES (
-        ${mission.id}, ${mission.tenantId}, ${mission.actorId}, ${mission.title},
-        ${mission.objective}, ${mission.status}, ${mission.priority}, ${mission.source},
-        ${mission.sourceKey}, ${mission.metadata}::jsonb, ${now}, ${now}
-      )
-      ON CONFLICT (tenant_id, actor_id, source_key) DO NOTHING
-      RETURNING *
-    `;
-    if (rows[0]) {
-      created = true;
-      saved = missionFromRow(rows[0]);
-    } else {
-      const existing = await getSql()`
-        SELECT * FROM omni_missions
-        WHERE tenant_id = ${mission.tenantId} AND actor_id = ${mission.actorId}
-          AND source_key = ${mission.sourceKey}
-        LIMIT 1
-      `;
-      if (!existing[0]) throw new MissionConflictError("Mission source key collided.");
-      saved = missionFromRow(existing[0]);
-    }
+    const result = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          INSERT INTO omni_missions (
+            id, tenant_id, actor_id, title, objective, status, priority, source,
+            source_key, metadata, created_at, updated_at
+          ) VALUES (
+            ${mission.id}, ${mission.tenantId}, ${mission.actorId}, ${mission.title},
+            ${mission.objective}, ${mission.status}, ${mission.priority}, ${mission.source},
+            ${mission.sourceKey}, ${mission.metadata}::jsonb, ${now}, ${now}
+          )
+          ON CONFLICT (tenant_id, actor_id, source_key) DO NOTHING
+          RETURNING *
+        `;
+        if (rows[0]) {
+          const inserted = missionFromRow(rows[0]);
+          await appendMissionLifecycleEventForOwner(
+            inserted.id,
+            owner,
+            "mission.created",
+            { status: inserted.status, source: inserted.source },
+            sql,
+          );
+          return { created: true, saved: inserted };
+        }
+        const existing = await sql`
+          SELECT * FROM omni_missions
+          WHERE tenant_id = ${mission.tenantId} AND actor_id = ${mission.actorId}
+            AND source_key = ${mission.sourceKey}
+          LIMIT 1
+        `;
+        if (!existing[0]) throw new MissionConflictError("Mission source key collided.");
+        return { created: false, saved: missionFromRow(existing[0]) };
+      },
+    ) as { created: boolean; saved: Mission };
+    created = result.created;
+    saved = result.saved;
+    eventCommitted = created;
   } else {
     saved = mission;
     await updateLedger((ledger) => {
@@ -152,8 +191,8 @@ export async function createMission(input: {
     });
   }
 
-  if (created) {
-    await appendMissionLifecycleEvent(saved, "mission.created", {
+  if (created && !eventCommitted) {
+    await appendMissionLifecycleEventForOwner(saved.id, owner, "mission.created", {
       status: saved.status,
       source: saved.source,
     });
@@ -527,6 +566,7 @@ export async function ensureMissionTask(
   await validateTaskReferences(task, owner);
   let created = false;
   let saved: MissionTask;
+  let eventCommitted = false;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -558,7 +598,15 @@ export async function ensureMissionTask(
           RETURNING *
         `;
         if (rows[0]) {
-          return { created: true, saved: taskFromRow(rows[0]) };
+          const inserted = taskFromRow(rows[0]);
+          await appendMissionLifecycleEventForOwner(
+            mission.id,
+            owner,
+            "mission.task.created",
+            { taskId: inserted.id, status: inserted.status },
+            sql,
+          );
+          return { created: true, saved: inserted };
         }
         const existing = await sql`
           SELECT * FROM omni_mission_tasks
@@ -572,6 +620,7 @@ export async function ensureMissionTask(
     ) as { created: boolean; saved: MissionTask };
     created = transactionResult.created;
     saved = transactionResult.saved;
+    eventCommitted = created;
   } else {
     saved = task;
     await updateLedger((ledger) => {
@@ -596,8 +645,8 @@ export async function ensureMissionTask(
     });
   }
 
-  if (created) {
-    await appendMissionLifecycleEvent(mission, "mission.task.created", {
+  if (created && !eventCommitted) {
+    await appendMissionLifecycleEventForOwner(mission.id, owner, "mission.task.created", {
       taskId: saved.id,
       status: saved.status,
     });
@@ -703,7 +752,15 @@ export async function updateMissionTask(
       if (!updated[0]) {
         throw new MissionConflictError("Mission task changed concurrently.");
       }
-      return taskFromRow(updated[0]);
+      const savedTask = taskFromRow(updated[0]);
+      await appendMissionLifecycleEventForOwner(
+        savedTask.missionId,
+        owner,
+        "mission.task.updated",
+        { taskId: savedTask.id, fields: changedFields },
+        sql,
+      );
+      return savedTask;
     }) as MissionTask;
   } else {
     let updated: MissionTask | undefined;
@@ -728,10 +785,12 @@ export async function updateMissionTask(
     saved = updated;
   }
 
-  await appendMissionLifecycleEventForOwner(saved.missionId, owner, "mission.task.updated", {
-    taskId: saved.id,
-    fields: changedFields,
-  });
+  if (!hasDatabaseUrl()) {
+    await appendMissionLifecycleEventForOwner(saved.missionId, owner, "mission.task.updated", {
+      taskId: saved.id,
+      fields: changedFields,
+    });
+  }
   return saved;
 }
 
@@ -964,6 +1023,7 @@ export async function startMissionAttempt(
   };
   let created = false;
   let saved: MissionAttempt;
+  let eventCommitted = false;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -1001,7 +1061,20 @@ export async function startMissionAttempt(
           RETURNING *
         `;
         if (rows[0]) {
-          return { created: true, saved: attemptFromRow(rows[0]) };
+          const inserted = attemptFromRow(rows[0]);
+          await appendMissionLifecycleEventForOwner(
+            inserted.missionId,
+            owner,
+            "mission.attempt.created",
+            {
+              taskId: inserted.taskId,
+              attemptId: inserted.id,
+              status: inserted.status,
+              executorType: inserted.executorType,
+            },
+            sql,
+          );
+          return { created: true, saved: inserted };
         }
         const existing = await sql`
           SELECT * FROM omni_mission_attempts
@@ -1015,6 +1088,7 @@ export async function startMissionAttempt(
     ) as { created: boolean; saved: MissionAttempt };
     created = transactionResult.created;
     saved = transactionResult.saved;
+    eventCommitted = created;
   } else {
     saved = attempt;
     await updateLedger((ledger) => {
@@ -1040,7 +1114,7 @@ export async function startMissionAttempt(
     });
   }
 
-  if (created) {
+  if (created && !eventCommitted) {
     await appendMissionLifecycleEventForOwner(saved.missionId, owner, "mission.attempt.created", {
       taskId: saved.taskId,
       attemptId: saved.id,
@@ -1145,15 +1219,29 @@ export async function transitionMission(
   let saved: Mission;
   let transitionedFrom: MissionStatus | undefined;
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_missions SET status = ${next.status}, started_at = ${next.startedAt || null},
-        terminal_at = ${next.terminalAt || null}, updated_at = ${now}
-      WHERE id = ${current.id} AND tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
-        AND status = ${current.status}
-      RETURNING *
-    `;
-    if (!rows[0]) return resolveMissionTransitionRace(current.id, status, owner);
-    saved = missionFromRow(rows[0]);
+    const transitioned = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          UPDATE omni_missions SET status = ${next.status}, started_at = ${next.startedAt || null},
+            terminal_at = ${next.terminalAt || null}, updated_at = ${now}
+          WHERE id = ${current.id} AND tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+            AND status = ${current.status}
+          RETURNING *
+        `;
+        if (!rows[0]) return null;
+        const changed = missionFromRow(rows[0]);
+        await appendMissionLifecycleEventForOwner(
+          changed.id,
+          owner,
+          "mission.status.changed",
+          { from: current.status, to: changed.status },
+          sql,
+        );
+        return changed;
+      },
+    ) as Mission | null;
+    if (!transitioned) return resolveMissionTransitionRace(current.id, status, owner);
+    saved = transitioned;
     transitionedFrom = current.status;
   } else {
     saved = next;
@@ -1177,8 +1265,8 @@ export async function transitionMission(
       return { ...ledger, missions: replaceAt(ledger.missions, index, saved) };
     });
   }
-  if (transitionedFrom) {
-    await appendMissionLifecycleEvent(saved, "mission.status.changed", {
+  if (transitionedFrom && !hasDatabaseUrl()) {
+    await appendMissionLifecycleEventForOwner(saved.id, owner, "mission.status.changed", {
       from: transitionedFrom,
       to: saved.status,
     });
@@ -1211,15 +1299,29 @@ export async function transitionMissionTask(
   let saved: MissionTask;
   let transitionedFrom: MissionTaskStatus | undefined;
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_mission_tasks SET status = ${next.status}, started_at = ${next.startedAt || null},
-        terminal_at = ${next.terminalAt || null}, updated_at = ${now}
-      WHERE id = ${current.id} AND tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
-        AND status = ${current.status}
-      RETURNING *
-    `;
-    if (!rows[0]) return resolveTaskTransitionRace(current.id, status, owner);
-    saved = taskFromRow(rows[0]);
+    const transitioned = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          UPDATE omni_mission_tasks SET status = ${next.status}, started_at = ${next.startedAt || null},
+            terminal_at = ${next.terminalAt || null}, updated_at = ${now}
+          WHERE id = ${current.id} AND tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+            AND status = ${current.status}
+          RETURNING *
+        `;
+        if (!rows[0]) return null;
+        const changed = taskFromRow(rows[0]);
+        await appendMissionLifecycleEventForOwner(
+          changed.missionId,
+          owner,
+          "mission.task.status.changed",
+          { taskId: changed.id, from: current.status, to: changed.status },
+          sql,
+        );
+        return changed;
+      },
+    ) as MissionTask | null;
+    if (!transitioned) return resolveTaskTransitionRace(current.id, status, owner);
+    saved = transitioned;
     transitionedFrom = current.status;
   } else {
     saved = next;
@@ -1244,7 +1346,7 @@ export async function transitionMissionTask(
       return { ...ledger, tasks: replaceAt(ledger.tasks, index, saved) };
     });
   }
-  if (transitionedFrom) {
+  if (transitionedFrom && !hasDatabaseUrl()) {
     await appendMissionLifecycleEventForOwner(saved.missionId, owner, "mission.task.status.changed", {
       taskId: saved.id,
       from: transitionedFrom,
@@ -1288,18 +1390,41 @@ export async function transitionMissionAttempt(
   let saved: MissionAttempt;
   let transitionedFrom: MissionAttemptStatus | undefined;
   if (hasDatabaseUrl()) {
-    const rows = await getSql()`
-      UPDATE omni_mission_attempts SET status = ${next.status},
-        agent_run_id = ${next.agentRunId || null}, workflow_run_id = ${next.workflowRunId || null},
-        output = ${next.output || null}::jsonb, error = ${next.error || null},
-        started_at = ${next.startedAt || null}, terminal_at = ${next.terminalAt || null},
-        updated_at = ${now}
-      WHERE id = ${current.id} AND tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
-        AND status = ${current.status} AND fence_token = ${current.fenceToken}
-      RETURNING *
-    `;
-    if (!rows[0]) return resolveAttemptTransitionRace(current.id, status, input.fenceToken, owner);
-    saved = attemptFromRow(rows[0]);
+    const transitioned = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          UPDATE omni_mission_attempts SET status = ${next.status},
+            agent_run_id = ${next.agentRunId || null}, workflow_run_id = ${next.workflowRunId || null},
+            output = ${next.output || null}::jsonb, error = ${next.error || null},
+            started_at = ${next.startedAt || null}, terminal_at = ${next.terminalAt || null},
+            updated_at = ${now}
+          WHERE id = ${current.id} AND tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+            AND status = ${current.status} AND fence_token = ${current.fenceToken}
+          RETURNING *
+        `;
+        if (!rows[0]) return null;
+        const changed = attemptFromRow(rows[0]);
+        if (current.status !== changed.status) {
+          await appendMissionLifecycleEventForOwner(
+            changed.missionId,
+            owner,
+            "mission.attempt.status.changed",
+            {
+              taskId: changed.taskId,
+              attemptId: changed.id,
+              from: current.status,
+              to: changed.status,
+            },
+            sql,
+          );
+        }
+        return changed;
+      },
+    ) as MissionAttempt | null;
+    if (!transitioned) {
+      return resolveAttemptTransitionRace(current.id, status, input.fenceToken, owner);
+    }
+    saved = transitioned;
     if (current.status !== saved.status) transitionedFrom = current.status;
   } else {
     saved = next;
@@ -1329,7 +1454,7 @@ export async function transitionMissionAttempt(
       return { ...ledger, attempts: replaceAt(ledger.attempts, index, saved) };
     });
   }
-  if (transitionedFrom) {
+  if (transitionedFrom && !hasDatabaseUrl()) {
     await appendMissionLifecycleEventForOwner(saved.missionId, owner, "mission.attempt.status.changed", {
       taskId: saved.taskId,
       attemptId: saved.id,
@@ -1344,6 +1469,8 @@ export async function recordMissionArtifact(
   input: {
     tenantId?: string;
     actorId: string;
+    executionScope?: ExecutionScope;
+    idempotencyKey?: string;
     missionId: string;
     sourceKey: string;
     taskId?: string;
@@ -1386,35 +1513,54 @@ export async function recordMissionArtifact(
   };
   let created = false;
   let saved: MissionArtifact;
+  let eventCommitted = false;
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = await getSql()`
-      INSERT INTO omni_mission_artifacts (
-        id, tenant_id, actor_id, mission_id, task_id, attempt_id, source_key,
-        kind, title, uri, mime_type, data, created_at, updated_at
-      ) VALUES (
-        ${artifact.id}, ${artifact.tenantId}, ${artifact.actorId}, ${artifact.missionId},
-        ${artifact.taskId || null}, ${artifact.attemptId || null}, ${artifact.sourceKey},
-        ${artifact.kind}, ${artifact.title}, ${artifact.uri || null}, ${artifact.mimeType || null},
-        ${artifact.data}::jsonb, ${now}, ${now}
-      )
-      ON CONFLICT (tenant_id, actor_id, mission_id, source_key) DO NOTHING
-      RETURNING *
-    `;
-    if (rows[0]) {
-      created = true;
-      saved = artifactFromRow(rows[0]);
-    } else {
-      const existing = await getSql()`
-        SELECT * FROM omni_mission_artifacts
-        WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
-          AND mission_id = ${mission.id} AND source_key = ${artifact.sourceKey}
-        LIMIT 1
-      `;
-      if (!existing[0]) throw new MissionConflictError("Artifact source key collided.");
-      saved = artifactFromRow(existing[0]);
-    }
+    const result = await getSql().transaction(
+      async (sql: ReturnType<typeof getSql>) => {
+        const rows = await sql`
+          INSERT INTO omni_mission_artifacts (
+            id, tenant_id, actor_id, mission_id, task_id, attempt_id, source_key,
+            kind, title, uri, mime_type, data, created_at, updated_at
+          ) VALUES (
+            ${artifact.id}, ${artifact.tenantId}, ${artifact.actorId}, ${artifact.missionId},
+            ${artifact.taskId || null}, ${artifact.attemptId || null}, ${artifact.sourceKey},
+            ${artifact.kind}, ${artifact.title}, ${artifact.uri || null}, ${artifact.mimeType || null},
+            ${artifact.data}::jsonb, ${now}, ${now}
+          )
+          ON CONFLICT (tenant_id, actor_id, mission_id, source_key) DO NOTHING
+          RETURNING *
+        `;
+        if (rows[0]) {
+          const inserted = artifactFromRow(rows[0]);
+          await appendMissionLifecycleEventForOwner(
+            mission.id,
+            owner,
+            "mission.artifact.recorded",
+            {
+              artifactId: inserted.id,
+              taskId: inserted.taskId,
+              attemptId: inserted.attemptId,
+              kind: inserted.kind,
+            },
+            sql,
+          );
+          return { created: true, saved: inserted };
+        }
+        const existing = await sql`
+          SELECT * FROM omni_mission_artifacts
+          WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+            AND mission_id = ${mission.id} AND source_key = ${artifact.sourceKey}
+          LIMIT 1
+        `;
+        if (!existing[0]) throw new MissionConflictError("Artifact source key collided.");
+        return { created: false, saved: artifactFromRow(existing[0]) };
+      },
+    ) as { created: boolean; saved: MissionArtifact };
+    created = result.created;
+    saved = result.saved;
+    eventCommitted = created;
   } else {
     saved = artifact;
     await updateLedger((ledger) => {
@@ -1429,8 +1575,8 @@ export async function recordMissionArtifact(
       return { ...ledger, artifacts: [artifact, ...ledger.artifacts] };
     });
   }
-  if (created) {
-    await appendMissionLifecycleEvent(mission, "mission.artifact.recorded", {
+  if (created && !eventCommitted) {
+    await appendMissionLifecycleEventForOwner(mission.id, owner, "mission.artifact.recorded", {
       artifactId: saved.id,
       taskId: saved.taskId,
       attemptId: saved.attemptId,
@@ -1481,29 +1627,58 @@ export async function appendMissionLifecycleEvent(
 
 async function appendMissionLifecycleEventForOwner(
   missionId: string,
-  owner: Required<MissionOwner>,
+  owner: NormalizedMissionOwner,
   type: string,
   payload: Record<string, unknown>,
+  sql?: ReturnType<typeof getSql>,
 ) {
-  return appendDomainEventSafely({
+  const compactPayload = compactEventPayload(payload);
+  const event = {
+    ...(owner.idempotencyKey
+      ? {
+          id: missionLifecycleEventId({
+            tenantId: owner.tenantId,
+            missionId,
+            eventType: safeText(type, 120),
+            idempotencyKey: owner.idempotencyKey,
+            payload: compactPayload,
+          }),
+        }
+      : {}),
     streamId: `mission:${missionId}`,
     type: safeText(type, 120),
-    tenantId: owner.tenantId,
-    actorId: owner.actorId,
     payload: missionDomainEventPayloadV1(
       safeText(type, 120),
-      compactEventPayload(payload),
+      compactPayload,
     ),
+  };
+  if (owner.executionScope) {
+    return appendScopedDomainEvent({
+      ...event,
+      executionScope: owner.executionScope,
+    }, sql ? { sql } : {});
+  }
+  if (sql) {
+    return appendDomainEvent({
+      ...event,
+      tenantId: owner.tenantId,
+      actorId: owner.actorId,
+    }, { sql });
+  }
+  return appendDomainEventSafely({
+    ...event,
+    tenantId: owner.tenantId,
+    actorId: owner.actorId,
   });
 }
 
-async function requireMission(missionId: string, owner: Required<MissionOwner>) {
+async function requireMission(missionId: string, owner: NormalizedMissionOwner) {
   const mission = await getMission(missionId, owner);
   if (!mission) throw new MissionNotFoundError("Mission not found.");
   return mission;
 }
 
-async function requireMissionTask(taskId: string, owner: Required<MissionOwner>) {
+async function requireMissionTask(taskId: string, owner: NormalizedMissionOwner) {
   const task = await getMissionTask(taskId, owner);
   if (!task) throw new MissionNotFoundError("Mission task not found.");
   return task;
@@ -1512,7 +1687,7 @@ async function requireMissionTask(taskId: string, owner: Required<MissionOwner>)
 async function findAttemptByExecutorKey(
   taskId: string,
   executorKey: string,
-  owner: Required<MissionOwner>,
+  owner: NormalizedMissionOwner,
 ) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -1530,7 +1705,7 @@ async function findAttemptByExecutorKey(
   );
 }
 
-async function validateTaskReferences(task: MissionTask, owner: Required<MissionOwner>) {
+async function validateTaskReferences(task: MissionTask, owner: NormalizedMissionOwner) {
   const tasks = await listMissionTasks(task.missionId, owner);
   validateTaskGraph(task, [...tasks, task]);
 }
@@ -1573,7 +1748,7 @@ function validateTaskGraph(candidate: MissionTask, tasks: MissionTask[]) {
 
 async function assertTaskDependenciesSucceeded(
   task: MissionTask,
-  owner: Required<MissionOwner>,
+  owner: NormalizedMissionOwner,
 ) {
   if (!task.dependencyIds.length) return;
   const tasks = await listMissionTasks(task.missionId, owner);
@@ -1591,7 +1766,7 @@ async function assertTaskDependenciesSucceeded(
 async function resolveMissionTransitionRace(
   missionId: string,
   status: MissionStatus,
-  owner: Required<MissionOwner>,
+  owner: NormalizedMissionOwner,
 ): Promise<Mission> {
   const latest = await getMission(missionId, owner);
   if (!latest) throw new MissionNotFoundError("Mission not found.");
@@ -1602,7 +1777,7 @@ async function resolveMissionTransitionRace(
 async function resolveTaskTransitionRace(
   taskId: string,
   status: MissionTaskStatus,
-  owner: Required<MissionOwner>,
+  owner: NormalizedMissionOwner,
 ): Promise<MissionTask> {
   const latest = await getMissionTask(taskId, owner);
   if (!latest) throw new MissionNotFoundError("Mission task not found.");
@@ -1614,7 +1789,7 @@ async function resolveAttemptTransitionRace(
   attemptId: string,
   status: MissionAttemptStatus,
   fenceToken: string,
-  owner: Required<MissionOwner>,
+  owner: NormalizedMissionOwner,
 ): Promise<MissionAttempt> {
   const latest = await getMissionAttempt(attemptId, owner);
   if (!latest) throw new MissionNotFoundError("Mission attempt not found.");
@@ -2311,12 +2486,30 @@ function artifactFromRow(row: Record<string, unknown>): MissionArtifact {
   };
 }
 
-function normalizeOwner(input: MissionOwner): Required<MissionOwner> {
+function normalizeOwner(input: MissionOwner): NormalizedMissionOwner {
   const actorId = safeText(input.actorId, 200);
   if (!actorId) throw new Error("An actor id is required for mission storage.");
+  const tenantId = normalizeTenantId(input.tenantId);
+  if (input.executionScope) {
+    assertExecutionScopeTenant(input.executionScope, tenantId);
+    if (input.executionScope.initiatingActorId !== actorId) {
+      throw new Error("Mission owner does not match the executing scope actor.");
+    }
+  }
+  const idempotencyKey = input.idempotencyKey?.trim();
+  if (
+    input.idempotencyKey !== undefined &&
+    (!idempotencyKey ||
+      idempotencyKey.length > 200 ||
+      !/^[A-Za-z0-9._:-]+$/.test(idempotencyKey))
+  ) {
+    throw new Error("Mission idempotency key is invalid.");
+  }
   return {
-    tenantId: normalizeTenantId(input.tenantId),
+    tenantId,
     actorId,
+    executionScope: input.executionScope,
+    idempotencyKey,
   };
 }
 
@@ -2331,7 +2524,7 @@ function normalizeTenantId(value?: string) {
 
 function owns(
   value: { tenantId: string; actorId: string },
-  owner: Required<MissionOwner>,
+  owner: NormalizedMissionOwner,
 ) {
   return value.tenantId === owner.tenantId && value.actorId === owner.actorId;
 }

@@ -583,7 +583,12 @@ async function finalizeTerminalRun(
   payload: DurableSpecialistJobPayload,
   run: NonNullable<Awaited<ReturnType<typeof getAgentRun>>>,
 ): Promise<SpecialistJobResult> {
-  const owner = { tenantId: job.tenantId, actorId: payload.actorId };
+  const owner = {
+    tenantId: job.tenantId,
+    actorId: payload.actorId,
+    executionScope: payload.executionScope,
+    idempotencyKey: job.dedupeKey,
+  };
   if (run.status === "completed") {
     const response = (run.response || "").slice(0, 12_000);
     const label = durableSpecialistLabel(payload.agentId);

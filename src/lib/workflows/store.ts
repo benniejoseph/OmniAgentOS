@@ -735,6 +735,14 @@ export async function transitionWorkflowRun(
   if (!existing || !expectedStatuses.includes(existing.run.status)) {
     return null;
   }
+  const transitionAuthority = existing.run.input.executionAuthorityRequired
+    ? await getWorkflowRunExecutionAuthority(runId, { tenantId })
+    : undefined;
+  if (existing.run.input.executionAuthorityRequired && !transitionAuthority) {
+    throw new WorkflowRunExecutionScopeBindingError(
+      "Workflow transition requires its bound execution authority.",
+    );
+  }
   const now = new Date().toISOString();
   const nextRun = sanitizeWorkflowRunRecord({
     ...existing.run,
@@ -788,7 +796,11 @@ export async function transitionWorkflowRun(
     `;
     const transitioned = rows[0] ? workflowRunFromRow(rows[0]) : null;
     if (transitioned) {
-      await syncWorkflowMissionTransition(existing.run, transitioned);
+      await syncWorkflowMissionTransition(
+        existing.run,
+        transitioned,
+        transitionAuthority?.executionScope,
+      );
     }
     return transitioned;
   }
@@ -814,7 +826,11 @@ export async function transitionWorkflowRun(
     return ledger;
   });
   if (transitioned) {
-    await syncWorkflowMissionTransition(existing.run, transitioned);
+    await syncWorkflowMissionTransition(
+      existing.run,
+      transitioned,
+      transitionAuthority?.executionScope,
+    );
   }
   return transitioned;
 }
@@ -944,7 +960,11 @@ export async function transitionWorkflowRunWithEvents(
       },
     ) as WorkflowRunRecord | null;
     if (transitioned) {
-      await syncWorkflowMissionTransition(existing.run, transitioned);
+      await syncWorkflowMissionTransition(
+        existing.run,
+        transitioned,
+        authority?.executionScope,
+      );
     }
     return transitioned;
   }
@@ -984,13 +1004,18 @@ export async function transitionWorkflowRunWithEvents(
       );
     }
   }
-  await syncWorkflowMissionTransition(existing.run, transitioned);
+  await syncWorkflowMissionTransition(
+    existing.run,
+    transitioned,
+    authority?.executionScope,
+  );
   return transitioned;
 }
 
 async function syncWorkflowMissionTransition(
   previous: WorkflowRunRecord,
   current: WorkflowRunRecord,
+  executionScope?: ExecutionScope,
 ) {
   if (previous.status === current.status) return;
   const metadata = current.input.metadata;
@@ -1011,7 +1036,12 @@ async function syncWorkflowMissionTransition(
     status,
     output: current.status === "completed" ? workflowResultReceipt(current.result) : undefined,
     error: current.status === "failed" ? current.error : undefined,
-  }, { tenantId: current.tenantId, actorId });
+  }, {
+    tenantId: current.tenantId,
+    actorId,
+    executionScope,
+    idempotencyKey: `workflow:${current.id}:mission:${status}`,
+  });
 }
 
 function workflowResultReceipt(result?: Record<string, unknown>) {

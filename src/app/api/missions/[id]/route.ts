@@ -14,6 +14,7 @@ import {
 import { toMissionDetailView, toMissionSummaryView } from "@/lib/missions/public";
 import type { MissionDetail } from "@/lib/missions/types";
 import { syncMissionExecutor } from "@/lib/missions/runtime";
+import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
 import {
   cancelOperationJobByDedupeKey,
   getAgentExecuteJobDedupeKey,
@@ -142,6 +143,10 @@ async function PATCHHandler(
     const owner = {
       tenantId: context.tenantId,
       actorId: context.actorId,
+      ...missionMutationFromRequest(request, context, {
+        purpose: `mission.${parsed.data.status}`,
+        missionId: id,
+      }),
     };
     const detail = await getMissionDetail(id, owner);
     if (!detail) {

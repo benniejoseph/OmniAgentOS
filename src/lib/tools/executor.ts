@@ -2814,7 +2814,7 @@ async function runTool(
 
   if (tool.id === "missions.list") {
     const { limit = 20, status } = missionsListSchema.parse(parsed);
-    const owner = requireMissionToolContext(context);
+    const owner = requireMissionToolContext(context, executionScope, idempotencyKey);
     const missions = await listMissions(status ? 200 : limit, owner);
     return {
       missions: missions
@@ -2826,7 +2826,7 @@ async function runTool(
 
   if (tool.id === "mission.show") {
     const { missionId } = missionShowSchema.parse(parsed);
-    const owner = requireMissionToolContext(context);
+    const owner = requireMissionToolContext(context, executionScope, idempotencyKey);
     const detail = await getMissionDetail(missionId, owner, {
       tasks: 200,
       attempts: 200,
@@ -2840,7 +2840,7 @@ async function runTool(
 
   if (tool.id === "mission.task.create") {
     const value = missionTaskCreateSchema.parse(parsed);
-    const owner = requireMissionToolContext(context);
+    const owner = requireMissionToolContext(context, executionScope, idempotencyKey);
     const safeValue = redactSensitive(value) as typeof value;
     const task = await ensureMissionTask(
       safeValue.missionId,
@@ -3514,13 +3514,22 @@ function stripEmbedding<T extends { embedding?: number[] }>(value: T) {
   };
 }
 
-function requireMissionToolContext(context?: SecurityContext) {
+function requireMissionToolContext(
+  context?: SecurityContext,
+  executionScope?: ExecutionScope,
+  idempotencyKey?: string,
+) {
   const tenantId = context?.tenantId?.trim();
   const actorId = context?.actorId?.trim();
   if (!tenantId || !actorId) {
     throw new Error("Mission tools require an authenticated tenant and actor context.");
   }
-  return { tenantId, actorId };
+  return {
+    tenantId,
+    actorId,
+    executionScope,
+    idempotencyKey: idempotencyKey?.trim(),
+  };
 }
 
 function missionToolSourceKey(

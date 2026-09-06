@@ -248,7 +248,10 @@ describe("Mission collection route", () => {
       "http://localhost/api/missions?ownerScope=readable",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "mission-create-test",
+        },
         body: JSON.stringify({
           title: exactMission.title,
           objective: exactMission.objective,
@@ -268,6 +271,15 @@ describe("Mission collection route", () => {
       tenantId: context.tenantId,
       actorId: context.actorId,
       source: "user",
+      idempotencyKey: "mission-create-test",
+      executionScope: expect.objectContaining({
+        tenantId: context.tenantId,
+        initiatingActorId: context.actorId,
+        executingPrincipalType: "user",
+        executingPrincipalId: context.actorId,
+        correlationId: "mission-create-test",
+        purpose: "mission.create",
+      }),
     });
     const payload = await response.json();
     expect(payload).toMatchObject({

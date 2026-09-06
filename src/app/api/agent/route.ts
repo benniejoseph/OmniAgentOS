@@ -451,9 +451,18 @@ async function POSTHandler(request: Request) {
         }
         const loopV2Enrollment =
           loopV2CanaryEnrollment || loopV2ModelTextEnrollment;
-        const missionOwner = {
+        let missionOwner = {
           tenantId: context.tenantId,
           actorId: context.actorId,
+          idempotencyKey: `agent-request:${requestId}`,
+          executionScope: executionScopeFromSecurityContext(context, {
+            executingPrincipalType: "agent",
+            executingPrincipalId:
+              customAgent?.id || decision.primaryAgentId,
+            missionId: parsed.data.missionId,
+            correlationId: requestId,
+            purpose: "mission.orchestrate",
+          }),
         };
         let mission = parsed.data.missionId
           ? await getMission(parsed.data.missionId, missionOwner)
@@ -541,6 +550,19 @@ async function POSTHandler(request: Request) {
                 metadata: { threadId: thread.id, turnId: userTurn.id, requestId, route: decision.route },
               });
             if (!mission) throw new Error("Mission not found.");
+            if (missionOwner.executionScope.missionId !== mission.id) {
+              missionOwner = {
+                ...missionOwner,
+                executionScope: executionScopeFromSecurityContext(context, {
+                  executingPrincipalType: "agent",
+                  executingPrincipalId:
+                    customAgent?.id || decision.primaryAgentId,
+                  missionId: mission.id,
+                  correlationId: requestId,
+                  purpose: "mission.orchestrate",
+                }),
+              };
+            }
             assertMissionAcceptsWork(mission);
             const executionMessage = parsed.data.missionId
               ? missionInstruction(mission, safeMessage)
