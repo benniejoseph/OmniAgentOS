@@ -9,8 +9,10 @@ const routeMocks = vi.hoisted(() => ({
   getAgentPerformance: vi.fn(),
   getThread: vi.fn(),
   listThreadTurns: vi.fn(),
+  resolveLoopV2ModelTextEnrollment: vi.fn(),
   resolveLoopV2ReadOnlyCanaryEnrollment: vi.fn(),
   runAgent: vi.fn(),
+  runLoopV2ModelText: vi.fn(),
   runLoopV2ReadOnlyCanary: vi.fn(),
 }));
 
@@ -55,6 +57,12 @@ vi.mock("@/lib/orchestration/loop-v2-runtime", () => ({
   runLoopV2ReadOnlyCanary: routeMocks.runLoopV2ReadOnlyCanary,
 }));
 
+vi.mock("@/lib/orchestration/loop-v2-model-text-runtime", () => ({
+  resolveLoopV2ModelTextEnrollment:
+    routeMocks.resolveLoopV2ModelTextEnrollment,
+  runLoopV2ModelText: routeMocks.runLoopV2ModelText,
+}));
+
 import { POST } from "@/app/api/agent/route";
 
 const context = {
@@ -81,7 +89,10 @@ beforeEach(() => {
   routeMocks.listThreadTurns.mockReset().mockResolvedValue([]);
   routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockReset()
     .mockResolvedValue(null);
+  routeMocks.resolveLoopV2ModelTextEnrollment.mockReset()
+    .mockResolvedValue(null);
   routeMocks.runAgent.mockReset();
+  routeMocks.runLoopV2ModelText.mockReset();
   routeMocks.runLoopV2ReadOnlyCanary.mockReset();
 });
 
@@ -205,6 +216,55 @@ describe("agent Loop v2 canary routing", () => {
       }),
       expect.any(AbortSignal),
     );
+  });
+
+  it("uses the model-text canary only after the read canary declines", async () => {
+    const enrollment = { enginePin: { engineVersionId: "model-v2-test" } };
+    routeMocks.resolveLoopV2ModelTextEnrollment.mockResolvedValue(enrollment);
+    routeMocks.runLoopV2ModelText.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-model-v2", threadId: "thread-a" };
+      yield { type: "done", response: "A bounded summary." };
+    });
+    const message = `Summarize: ${"A governed agent action preserves explicit tenant and actor attribution. ".repeat(2)}`;
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message,
+        requestId: "loop-v2-model-text-a",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('event: run');
+    expect(body).toContain('event: done');
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment)
+      .toHaveBeenCalledTimes(1);
+    expect(routeMocks.resolveLoopV2ModelTextEnrollment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        message,
+        mode: "orchestrate",
+        route: "direct",
+        requestUsesMessageField: true,
+      }),
+    );
+    expect(routeMocks.runLoopV2ModelText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message,
+        agentId: "atlas",
+        enrollment,
+        executionScope: expect.objectContaining({
+          purpose: "agent.loop.v2.model_text_canary",
+          initiatingActorId: "actor-a",
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(routeMocks.runLoopV2ReadOnlyCanary).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 
   it("routes an explicit confirmation back to the exact paused run", async () => {

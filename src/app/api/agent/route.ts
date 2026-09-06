@@ -30,6 +30,10 @@ import {
   resolveLoopV2ReadOnlyCanaryEnrollment,
   runLoopV2ReadOnlyCanary,
 } from "@/lib/orchestration/loop-v2-runtime";
+import {
+  resolveLoopV2ModelTextEnrollment,
+  runLoopV2ModelText,
+} from "@/lib/orchestration/loop-v2-model-text-runtime";
 import { getAgentPerformance } from "@/lib/agents/performance";
 import {
   adaptSupervisorDecision,
@@ -112,6 +116,7 @@ async function POSTHandler(request: Request) {
   }
 
   const requestMessage = parsed.data.message || parsed.data.messages?.at(-1)?.content || "";
+  const safeRequestMessage = String(redactSensitive(requestMessage));
   if (
     parsed.data.contextSelection &&
     normalizeTaskQuery(parsed.data.contextSelection.query) !== normalizeTaskQuery(requestMessage)
@@ -277,11 +282,12 @@ async function POSTHandler(request: Request) {
           }),
         );
         let loopV2CanaryEnrollment;
+        let loopV2ModelTextEnrollment;
         try {
           loopV2CanaryEnrollment =
             await resolveLoopV2ReadOnlyCanaryEnrollment({
               tenantId: context.tenantId,
-              message: requestMessage,
+              message: safeRequestMessage,
               mode,
               route: decision.route,
               requiresApproval: decision.requiresApproval,
@@ -294,6 +300,24 @@ async function POSTHandler(request: Request) {
               contextEvidenceIds: contextSelection?.evidenceIds,
               resumeRunId: parsed.data.resumeRunId,
             });
+          if (!loopV2CanaryEnrollment) {
+            loopV2ModelTextEnrollment =
+              await resolveLoopV2ModelTextEnrollment({
+                tenantId: context.tenantId,
+                message: safeRequestMessage,
+                mode,
+                route: decision.route,
+                requiresApproval: decision.requiresApproval,
+                requestUsesMessageField: Boolean(
+                  parsed.data.message && !parsed.data.messages?.length,
+                ),
+                requestedAgentId: parsed.data.agentId,
+                requestedSpecialistIds: parsed.data.specialistIds,
+                missionId: parsed.data.missionId,
+                contextEvidenceIds: contextSelection?.evidenceIds,
+                resumeRunId: parsed.data.resumeRunId,
+              });
+          }
         } catch (error) {
           console.warn(
             "Loop v2 canary enrollment was unavailable.",
@@ -306,6 +330,8 @@ async function POSTHandler(request: Request) {
             ).slice(0, 1_000),
           );
         }
+        const loopV2Enrollment =
+          loopV2CanaryEnrollment || loopV2ModelTextEnrollment;
         const missionOwner = {
           tenantId: context.tenantId,
           actorId: context.actorId,
@@ -342,7 +368,7 @@ async function POSTHandler(request: Request) {
               count: 1,
             })));
           }
-          if (decision.route === "clarify" && !loopV2CanaryEnrollment) {
+          if (decision.route === "clarify" && !loopV2Enrollment) {
             const ambiguity = decision.ambiguity.state === "detected"
               ? decision.ambiguity
               : {
@@ -563,13 +589,15 @@ async function POSTHandler(request: Request) {
             correlationId: requestId,
             purpose: loopV2CanaryEnrollment
               ? "agent.loop.v2.read_only_canary"
-              : "agent.run",
+              : loopV2ModelTextEnrollment
+                ? "agent.loop.v2.model_text_canary"
+                : "agent.run",
           },
         );
         const directEvents = loopV2CanaryEnrollment
           ? runLoopV2ReadOnlyCanary(
               {
-                message: requestMessage,
+                message: safeRequestMessage,
                 messages: safeMessages,
                 mode,
                 threadId,
@@ -581,6 +609,19 @@ async function POSTHandler(request: Request) {
               },
               request.signal,
             )
+          : loopV2ModelTextEnrollment
+            ? runLoopV2ModelText(
+                {
+                  message: safeRequestMessage,
+                  mode,
+                  threadId,
+                  agentId: executingAgentId,
+                  securityContext: context,
+                  executionScope: directExecutionScope,
+                  enrollment: loopV2ModelTextEnrollment,
+                },
+                request.signal,
+              )
           : runAgent(
               {
                 mode: parsed.data.mode,
@@ -662,7 +703,7 @@ async function POSTHandler(request: Request) {
           if (
             event.type === "done" &&
             directExecutorId &&
-            !loopV2CanaryEnrollment
+            !loopV2Enrollment
           ) {
             await formAssistantInferenceCandidate({
               context,
