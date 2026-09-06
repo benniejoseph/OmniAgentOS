@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { captureActorReadOrder } from "@/lib/capture/actor-scope";
@@ -135,22 +135,36 @@ export async function createCaptureRecording(input: ScopedOwner & {
 }) {
   const executionScope = requireCaptureRecordingMutationScope(input);
   const now = new Date().toISOString();
-  const id = randomUUID();
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = normalizeActorId(input.actorId);
+  const title = safeTitle(input.title || `Conversation ${formatCaptureDate(now)}`);
+  const language = normalizeLanguage(input.language);
+  const tags = normalizeTags(input.tags || []);
+  const metadata = sanitizeMetadata(input.metadata);
+  const id = `capture_recording_${sha256Json({
+    tenantId,
+    actorId,
+    correlationId: executionScope.correlationId,
+    requestedTitle: input.title ? title : null,
+    language,
+    tags,
+    metadata,
+  }).slice(0, 48)}`;
   const recording: CaptureRecording = {
     id,
-    tenantId: normalizeTenantId(input.tenantId),
-    actorId: normalizeActorId(input.actorId),
-    title: safeTitle(input.title || `Conversation ${formatCaptureDate(now)}`),
+    tenantId,
+    actorId,
+    title,
     status: "recording",
-    language: normalizeLanguage(input.language),
-    tags: normalizeTags(input.tags || []),
+    language,
+    tags,
     startedAt: now,
     durationMs: 0,
     byteCount: 0,
     segmentCount: 0,
     transcript: "",
     source: `capture:recording:${id}`,
-    metadata: sanitizeMetadata(input.metadata),
+    metadata,
     createdAt: now,
     updatedAt: now,
   };
@@ -171,8 +185,27 @@ export async function createCaptureRecording(input: ScopedOwner & {
           ${recording.source}, ${recording.metadata}::jsonb, ${recording.createdAt},
           ${recording.updatedAt}
         )
+        ON CONFLICT (id) DO NOTHING
         RETURNING *
       `;
+      if (!rows[0]) {
+        const existing = await sql`
+          SELECT *
+          FROM omni_capture_recordings
+          WHERE id = ${recording.id}
+            AND tenant_id = ${recording.tenantId}
+            AND actor_id = ${recording.actorId}
+          LIMIT 1
+        `;
+        if (!existing[0]) {
+          throw new CaptureRecordingError(
+            "Capture recording idempotency conflict.",
+            409,
+            "recording_conflict",
+          );
+        }
+        return recordingFromRow(existing[0]);
+      }
       const saved = recordingFromRow(rows[0]);
       await appendCaptureRecordingEvent(saved.id, executionScope, "capture_recording.scope_bound", {
         schemaVersion: CAPTURE_EVENT_SCHEMA_VERSION,
@@ -188,6 +221,13 @@ export async function createCaptureRecording(input: ScopedOwner & {
     }) as Promise<CaptureRecording>;
   }
 
+  const existingLedger = await readCaptureLedger();
+  const existingRecording = existingLedger.recordings.find((item) =>
+    item.id === id &&
+    item.tenantId === recording.tenantId &&
+    item.actorId === recording.actorId
+  );
+  if (existingRecording) return existingRecording;
   await updateJsonFile<CaptureLedger>(getCaptureLedgerFile(), emptyLedger(), (ledger) => ({
     recordings: [recording, ...ledger.recordings],
     segments: ledger.segments,
@@ -584,7 +624,13 @@ export async function saveCaptureSegment(input: ScopedOwner & {
   const now = new Date().toISOString();
   const hash = createHash("sha256").update(input.audio).digest("hex");
   const segment: CaptureSegment = {
-    id: randomUUID(),
+    id: `capture_segment_${sha256Json({
+      tenantId: recording.tenantId,
+      actorId: recording.actorId,
+      recordingId: recording.id,
+      segmentIndex: input.segmentIndex,
+      audioSha256: hash,
+    }).slice(0, 48)}`,
     tenantId: recording.tenantId,
     actorId: recording.actorId,
     recordingId: recording.id,
@@ -665,6 +711,19 @@ export async function saveCaptureSegment(input: ScopedOwner & {
     return result as { segment: CaptureSegment; created: boolean };
   }
 
+  const existingSegment = recording.segments.find((item) =>
+    item.segmentIndex === segment.segmentIndex
+  );
+  if (existingSegment) {
+    if (existingSegment.audioSha256 !== hash) {
+      throw new CaptureRecordingError(
+        "A different audio segment already uses this position.",
+        409,
+        "segment_conflict",
+      );
+    }
+    return { segment: existingSegment, created: false };
+  }
   const directory = getCaptureAudioDirectory(recording.id);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const audioPath = path.join(directory, `${segment.id}.bin`);
@@ -992,6 +1051,13 @@ async function appendCaptureRecordingEvent(
   options: { sql?: ReturnType<typeof getSql> } = {},
 ) {
   await appendScopedDomainEvent({
+    id: `capture_recording_event_${sha256Json({
+      recordingId,
+      type,
+      correlationId: executionScope.correlationId,
+      causationId: executionScope.causationId,
+      payload,
+    })}`,
     streamId: `capture-recording:${recordingId}`,
     type,
     payload,
@@ -1040,6 +1106,13 @@ async function appendCaptureSegmentEvent(
   options: { sql?: ReturnType<typeof getSql> } = {},
 ) {
   await appendScopedDomainEvent({
+    id: `capture_segment_event_${sha256Json({
+      segmentId: segment.id,
+      type,
+      correlationId: executionScope.correlationId,
+      causationId: executionScope.causationId,
+      payload,
+    })}`,
     streamId: `capture-segment:${segment.id}`,
     type,
     payload,
