@@ -631,10 +631,11 @@ export async function* runAgent(
       ...request.agentProfile.toolIds,
       ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
-    const groundToolDiscoveryInMemory = durableMemoryEnabled &&
+    const groundToolDiscoveryInMemory = !promptMemoryAccessScope &&
+      durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
       isShortOrReferentialRequest(query);
-    const toolboxPromise = !providerConfigured
+    const toolboxPromise = promptMemoryAccessScope || !providerConfigured
       ? Promise.resolve(emptyAgentToolbox())
       : groundToolDiscoveryInMemory
         ? undefined
@@ -769,6 +770,13 @@ export async function* runAgent(
       readOnly: false,
       forceApproval: false,
     };
+    if (promptMemoryAccessScope) {
+      agentToolPolicy = {
+        allowedToolIds: [],
+        readOnly: true,
+        forceApproval: true,
+      };
+    }
     const workspaceAccess = await workspaceAccessPromise;
     const workspaceCapabilityContext = workspaceAccess
       ? formatWorkspaceAccessContext(workspaceAccess, {
