@@ -138,6 +138,9 @@ export const tenantRootPolicyTables = [
   "omni_entity_relation_claims",
   "omni_entity_relation_projection_queue",
   "omni_graph_query_telemetry",
+  "omni_agent_definition_versions",
+  "omni_agent_principal_policies",
+  "omni_agent_identity_backfill_holds",
   "omni_agent_loop_v2_checkpoints",
   "omni_workflow_triggers",
   "omni_operation_jobs",
@@ -1125,6 +1128,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[106],
       up: async (sql) => {
         await ensureGraphQueryTelemetryV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[107],
+      up: async (sql) => {
+        await ensureAgentIdentityVersionsV1(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -8258,6 +8268,597 @@ async function ensureEntityRelationProjectionV1(sql: SqlClient) {
         'public.omni_validate_entity_relation_claim_insert()'
       ) IS NULL THEN
         RAISE EXCEPTION 'Entity relation projection boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureAgentIdentityVersionsV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 107
+          AND name = 'graph_query_telemetry_v1'
+          AND checksum =
+            'b827edb34b4b148e950daf528fefed302ba2584eeb8d552cb241e47c7b256383'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Agent identity v107 predecessor marker is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    LOCK TABLE
+      omni_custom_agents,
+      omni_auth_users,
+      omni_auth_user_actor_identifiers,
+      omni_tenant_execution_principals
+    IN SHARE ROW EXCLUSIVE MODE
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_agent_definition_versions (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      agent_definition_id TEXT NOT NULL,
+      definition_version BIGINT NOT NULL,
+      previous_definition_version BIGINT,
+      owner_actor_id TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      description TEXT NOT NULL,
+      instructions TEXT NOT NULL,
+      status TEXT NOT NULL,
+      accent TEXT NOT NULL,
+      model_policy TEXT NOT NULL,
+      skill_ids TEXT[] NOT NULL DEFAULT '{}',
+      published_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, agent_definition_id, definition_version),
+      CHECK (schema_version = 1),
+      CHECK (char_length(agent_definition_id) BETWEEN 1 AND 240),
+      CHECK (definition_version BETWEEN 1 AND 9007199254740991),
+      CHECK (
+        (definition_version = 1 AND previous_definition_version IS NULL)
+        OR previous_definition_version = definition_version - 1
+      ),
+      CHECK (
+        owner_actor_id ~
+          '^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      ),
+      CHECK (char_length(slug) BETWEEN 1 AND 80),
+      CHECK (char_length(name) BETWEEN 1 AND 120),
+      CHECK (char_length(role) BETWEEN 1 AND 120),
+      CHECK (char_length(description) BETWEEN 1 AND 700),
+      CHECK (char_length(instructions) <= 12000),
+      CHECK (status IN ('ready', 'learning', 'paused')),
+      CHECK (accent IN ('emerald', 'blue', 'amber', 'violet', 'rose')),
+      CHECK (model_policy IN (
+        'auto', 'openai_fast', 'openai_reasoning', 'gemini_fast',
+        'anthropic_fast', 'anthropic_reasoning'
+      )),
+      CHECK (cardinality(skill_ids) <= 50),
+      FOREIGN KEY (tenant_id)
+        REFERENCES omni_auth_tenants (id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (owner_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_definition_versions_owner_idx
+    ON omni_agent_definition_versions (
+      tenant_id, owner_actor_id, agent_definition_id, definition_version DESC
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_agent_principal_policies (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      principal_id TEXT NOT NULL,
+      principal_generation BIGINT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      agent_definition_id TEXT NOT NULL,
+      agent_definition_version BIGINT NOT NULL,
+      authority_mode TEXT NOT NULL DEFAULT 'explicit_grants',
+      autonomy TEXT NOT NULL,
+      approval_policy TEXT NOT NULL,
+      memory_scope TEXT NOT NULL,
+      tool_grant_ids TEXT[] NOT NULL DEFAULT '{}',
+      context_grant_ids TEXT[] NOT NULL DEFAULT '{}',
+      capability_grant_ids TEXT[] NOT NULL DEFAULT '{}',
+      budget_policy_version_id TEXT NOT NULL DEFAULT 'agent-run-budget:2',
+      expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, principal_id, principal_generation),
+      CHECK (schema_version = 1),
+      CHECK (authority_mode IN ('server_policy', 'explicit_grants')),
+      CHECK (autonomy IN ('assist', 'governed', 'execute')),
+      CHECK (approval_policy IN ('always', 'risk_based', 'read_only')),
+      CHECK (memory_scope IN ('session', 'project', 'all')),
+      CHECK (cardinality(tool_grant_ids) <= 50),
+      CHECK (cardinality(context_grant_ids) <= 256),
+      CHECK (cardinality(capability_grant_ids) <= 256),
+      CHECK (
+        authority_mode <> 'server_policy'
+        OR (
+          cardinality(tool_grant_ids) = 0
+          AND cardinality(context_grant_ids) = 0
+          AND cardinality(capability_grant_ids) = 0
+        )
+      ),
+      CHECK (expires_at IS NULL OR expires_at > created_at),
+      FOREIGN KEY (tenant_id, principal_id, principal_generation)
+        REFERENCES omni_tenant_execution_principals (
+          tenant_id, principal_id, principal_generation
+        )
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (
+        tenant_id, agent_definition_id, agent_definition_version
+      ) REFERENCES omni_agent_definition_versions (
+        tenant_id, agent_definition_id, definition_version
+      ) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (owner_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_agent_principal_policies_owner_idx
+    ON omni_agent_principal_policies (
+      tenant_id, owner_actor_id, agent_definition_id,
+      principal_generation DESC
+    )
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_agent_identity_backfill_holds (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      agent_definition_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, agent_definition_id),
+      CHECK (schema_version = 1),
+      CHECK (reason IN ('missing_controller', 'ambiguous_controller')),
+      FOREIGN KEY (tenant_id)
+        REFERENCES omni_auth_tenants (id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_agent_identity_history_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      RAISE EXCEPTION 'Agent identity history is immutable'
+        USING ERRCODE = '55000';
+    END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_agent_definition_version_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      expected_version BIGINT;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(NEW.tenant_id), hashtext(NEW.agent_definition_id)
+      );
+      SELECT COALESCE(MAX(definition_version), 0) + 1
+      INTO expected_version
+      FROM public.omni_agent_definition_versions
+      WHERE tenant_id = NEW.tenant_id
+        AND agent_definition_id = NEW.agent_definition_id;
+      IF NEW.definition_version IS DISTINCT FROM expected_version
+        OR NEW.previous_definition_version IS DISTINCT FROM
+          CASE WHEN expected_version = 1 THEN NULL ELSE expected_version - 1 END
+      THEN
+        RAISE EXCEPTION 'Agent definition version is not the next revision'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM public.omni_custom_agents definition
+        JOIN public.omni_auth_user_actor_identifiers identifier
+          ON identifier.actor_identifier COLLATE "C" =
+            definition.actor_id COLLATE "C"
+          AND identifier.canonical_actor_id = NEW.owner_actor_id
+        WHERE definition.tenant_id = NEW.tenant_id
+          AND definition.id = NEW.agent_definition_id
+      ) THEN
+        RAISE EXCEPTION 'Agent definition owner is invalid'
+          USING ERRCODE = '23503';
+      END IF;
+      NEW.published_at := GREATEST(
+        statement_timestamp(),
+        COALESCE((
+          SELECT published_at + INTERVAL '1 microsecond'
+          FROM public.omni_agent_definition_versions
+          WHERE tenant_id = NEW.tenant_id
+            AND agent_definition_id = NEW.agent_definition_id
+          ORDER BY definition_version DESC
+          LIMIT 1
+        ), '-infinity'::TIMESTAMPTZ)
+      );
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_validate_agent_principal_activation_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF NEW.principal_kind = 'agent'
+        AND NEW.state = 'active'
+        AND OLD.state IS DISTINCT FROM 'active'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.omni_agent_principal_policies policy
+          WHERE policy.tenant_id = NEW.tenant_id
+            AND policy.principal_id = NEW.principal_id
+            AND policy.principal_generation = NEW.principal_generation
+            AND policy.owner_actor_id = NEW.controller_actor_id
+            AND policy.agent_definition_id = NEW.agent_definition_id
+        )
+      THEN
+        RAISE EXCEPTION 'Agent principal activation requires an exact policy version'
+          USING ERRCODE = '23503';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      DROP TRIGGER IF EXISTS omni_agent_definition_version_validate
+        ON omni_agent_definition_versions;
+      CREATE TRIGGER omni_agent_definition_version_validate
+      BEFORE INSERT ON omni_agent_definition_versions
+      FOR EACH ROW EXECUTE FUNCTION omni_validate_agent_definition_version_v1();
+      DROP TRIGGER IF EXISTS omni_agent_definition_history_protect
+        ON omni_agent_definition_versions;
+      CREATE TRIGGER omni_agent_definition_history_protect
+      BEFORE UPDATE OR DELETE ON omni_agent_definition_versions
+      FOR EACH ROW EXECUTE FUNCTION omni_protect_agent_identity_history_v1();
+      DROP TRIGGER IF EXISTS omni_agent_definition_history_no_truncate
+        ON omni_agent_definition_versions;
+      CREATE TRIGGER omni_agent_definition_history_no_truncate
+      BEFORE TRUNCATE ON omni_agent_definition_versions
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_agent_identity_history_v1();
+      DROP TRIGGER IF EXISTS omni_agent_principal_policy_history_protect
+        ON omni_agent_principal_policies;
+      CREATE TRIGGER omni_agent_principal_policy_history_protect
+      BEFORE UPDATE OR DELETE ON omni_agent_principal_policies
+      FOR EACH ROW EXECUTE FUNCTION omni_protect_agent_identity_history_v1();
+      DROP TRIGGER IF EXISTS omni_agent_principal_policy_history_no_truncate
+        ON omni_agent_principal_policies;
+      CREATE TRIGGER omni_agent_principal_policy_history_no_truncate
+      BEFORE TRUNCATE ON omni_agent_principal_policies
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_agent_identity_history_v1();
+      DROP TRIGGER IF EXISTS omni_execution_principal_policy_activation
+        ON omni_tenant_execution_principals;
+      CREATE TRIGGER omni_execution_principal_policy_activation
+      BEFORE UPDATE OF state ON omni_tenant_execution_principals
+      FOR EACH ROW EXECUTE FUNCTION omni_validate_agent_principal_activation_v1();
+    END
+    $migration$
+  `;
+  await sql`
+    INSERT INTO omni_agent_identity_backfill_holds (
+      tenant_id, agent_definition_id, reason
+    )
+    SELECT
+      agent.tenant_id,
+      agent.id,
+      CASE WHEN COUNT(DISTINCT identifier.canonical_actor_id) = 0
+        THEN 'missing_controller'
+        ELSE 'ambiguous_controller'
+      END
+    FROM omni_custom_agents agent
+    LEFT JOIN omni_auth_user_actor_identifiers identifier
+      ON identifier.actor_identifier COLLATE "C" = agent.actor_id COLLATE "C"
+    GROUP BY agent.tenant_id, agent.id
+    HAVING COUNT(DISTINCT identifier.canonical_actor_id) <> 1
+    ON CONFLICT (tenant_id, agent_definition_id) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO omni_agent_definition_versions (
+      tenant_id, agent_definition_id, definition_version,
+      previous_definition_version, owner_actor_id, slug, name, role,
+      description, instructions, status, accent, model_policy, skill_ids,
+      published_at
+    )
+    SELECT
+      agent.tenant_id,
+      agent.id,
+      1,
+      NULL,
+      MIN(identifier.canonical_actor_id),
+      agent.slug,
+      agent.name,
+      agent.role,
+      agent.description,
+      agent.instructions,
+      agent.status,
+      agent.accent,
+      agent.model_policy,
+      agent.skill_ids,
+      agent.updated_at
+    FROM omni_custom_agents agent
+    JOIN omni_auth_user_actor_identifiers identifier
+      ON identifier.actor_identifier COLLATE "C" = agent.actor_id COLLATE "C"
+    GROUP BY
+      agent.tenant_id, agent.id, agent.slug, agent.name, agent.role,
+      agent.description, agent.instructions, agent.status, agent.accent,
+      agent.model_policy, agent.skill_ids, agent.updated_at
+    HAVING COUNT(DISTINCT identifier.canonical_actor_id) = 1
+    ON CONFLICT (tenant_id, agent_definition_id, definition_version)
+      DO NOTHING
+  `;
+  await sql`
+    INSERT INTO omni_tenant_execution_principals (
+      tenant_id, principal_kind, principal_id, principal_generation,
+      controller_actor_id, agent_definition_id, system_principal_class,
+      state, lifecycle_revision, created_by_actor_id
+    )
+    SELECT
+      definition.tenant_id,
+      'agent',
+      'agent:' || definition.agent_definition_id,
+      1,
+      definition.owner_actor_id,
+      definition.agent_definition_id,
+      NULL,
+      'held',
+      0,
+      definition.owner_actor_id
+    FROM omni_agent_definition_versions definition
+    WHERE definition.definition_version = 1
+      AND NOT EXISTS (
+        SELECT 1
+        FROM omni_tenant_execution_principals principal
+        WHERE principal.tenant_id = definition.tenant_id
+          AND principal.principal_id = 'agent:' || definition.agent_definition_id
+      )
+  `;
+  await sql`
+    INSERT INTO omni_agent_principal_policies (
+      tenant_id, principal_id, principal_generation, owner_actor_id,
+      agent_definition_id, agent_definition_version, authority_mode,
+      autonomy, approval_policy, memory_scope, tool_grant_ids,
+      context_grant_ids, capability_grant_ids, budget_policy_version_id,
+      created_at
+    )
+    SELECT
+      principal.tenant_id,
+      principal.principal_id,
+      principal.principal_generation,
+      principal.controller_actor_id,
+      principal.agent_definition_id,
+      1,
+      'explicit_grants',
+      agent.autonomy,
+      agent.approval_policy,
+      agent.memory_scope,
+      agent.tool_ids,
+      '{}',
+      '{}',
+      'agent-run-budget:2',
+      principal.created_at
+    FROM omni_tenant_execution_principals principal
+    JOIN omni_custom_agents agent
+      ON agent.tenant_id = principal.tenant_id
+      AND agent.id = principal.agent_definition_id
+    WHERE principal.principal_kind = 'agent'
+      AND principal.principal_generation = 1
+    ON CONFLICT (tenant_id, principal_id, principal_generation) DO NOTHING
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_execution_principals
+    DROP CONSTRAINT IF EXISTS omni_execution_principal_activation_hold_check
+  `;
+  await sql`
+    UPDATE omni_tenant_execution_principals principal
+    SET state = 'active',
+        lifecycle_revision = 1,
+        activated_by_actor_id = principal.controller_actor_id
+    WHERE principal.principal_kind = 'agent'
+      AND principal.state = 'held'
+      AND EXISTS (
+        SELECT 1
+        FROM omni_agent_principal_policies policy
+        WHERE policy.tenant_id = principal.tenant_id
+          AND policy.principal_id = principal.principal_id
+          AND policy.principal_generation = principal.principal_generation
+      )
+  `;
+  await sql`
+    ALTER TABLE omni_tenant_execution_principals
+    DROP CONSTRAINT IF EXISTS omni_execution_principal_agent_definition_fkey
+  `;
+  await sql`
+    DO $migration$
+    DECLARE
+      policy_name TEXT;
+    BEGIN
+      ALTER TABLE omni_agent_definition_versions ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_definition_versions FORCE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_principal_policies ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_principal_policies FORCE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_identity_backfill_holds ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_agent_identity_backfill_holds FORCE ROW LEVEL SECURITY;
+      FOREACH policy_name IN ARRAY ARRAY[
+        'omni_execution_principal_holdback',
+        'omni_execution_principal_actor_select',
+        'omni_execution_principal_actor_insert',
+        'omni_execution_principal_actor_update'
+      ] LOOP
+        EXECUTE format(
+          'DROP POLICY IF EXISTS %I ON omni_tenant_execution_principals',
+          policy_name
+        );
+      END LOOP;
+      CREATE POLICY omni_execution_principal_actor_select
+      ON omni_tenant_execution_principals AS RESTRICTIVE FOR SELECT
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, controller_actor_id)
+      );
+      CREATE POLICY omni_execution_principal_actor_insert
+      ON omni_tenant_execution_principals AS RESTRICTIVE FOR INSERT
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, controller_actor_id)
+      );
+      CREATE POLICY omni_execution_principal_actor_update
+      ON omni_tenant_execution_principals AS RESTRICTIVE FOR UPDATE
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, controller_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, controller_actor_id)
+      );
+      CREATE POLICY omni_agent_definition_versions_actor
+      ON omni_agent_definition_versions AS RESTRICTIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      CREATE POLICY omni_agent_principal_policies_actor
+      ON omni_agent_principal_policies AS RESTRICTIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+      CREATE POLICY omni_agent_identity_backfill_holds_system
+      ON omni_agent_identity_backfill_holds AS RESTRICTIVE FOR ALL
+      USING (omni_system_scope_enabled())
+      WITH CHECK (omni_system_scope_enabled());
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_agent_definition_versions FROM PUBLIC`;
+  await sql`REVOKE ALL ON TABLE omni_agent_principal_policies FROM PUBLIC`;
+  await sql`REVOKE ALL ON TABLE omni_agent_identity_backfill_holds FROM PUBLIC`;
+  await sql`REVOKE ALL ON TABLE omni_tenant_execution_principals FROM PUBLIC`;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT ON omni_agent_definition_versions TO omni_runtime;
+        GRANT SELECT, INSERT ON omni_agent_principal_policies TO omni_runtime;
+        GRANT SELECT, INSERT ON omni_tenant_execution_principals TO omni_runtime;
+        GRANT UPDATE (
+          state, lifecycle_revision, activated_by_actor_id, revoked_by_actor_id
+        ) ON omni_tenant_execution_principals TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT ON omni_agent_definition_versions TO omni_maintenance;
+        GRANT SELECT, INSERT ON omni_agent_principal_policies TO omni_maintenance;
+        GRANT SELECT ON omni_agent_identity_backfill_holds TO omni_maintenance;
+        GRANT SELECT, INSERT ON omni_tenant_execution_principals TO omni_maintenance;
+        GRANT UPDATE (
+          state, lifecycle_revision, activated_by_actor_id, revoked_by_actor_id
+        ) ON omni_tenant_execution_principals TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM omni_custom_agents agent
+        JOIN omni_auth_user_actor_identifiers identifier
+          ON identifier.actor_identifier COLLATE "C" = agent.actor_id COLLATE "C"
+        GROUP BY agent.tenant_id, agent.id
+        HAVING COUNT(DISTINCT identifier.canonical_actor_id) = 1
+          AND (
+            NOT EXISTS (
+              SELECT 1 FROM omni_agent_definition_versions definition
+              WHERE definition.tenant_id = agent.tenant_id
+                AND definition.agent_definition_id = agent.id
+            )
+            OR NOT EXISTS (
+              SELECT 1 FROM omni_tenant_execution_principals principal
+              JOIN omni_agent_principal_policies policy
+                ON policy.tenant_id = principal.tenant_id
+                AND policy.principal_id = principal.principal_id
+                AND policy.principal_generation = principal.principal_generation
+              WHERE principal.tenant_id = agent.tenant_id
+                AND principal.agent_definition_id = agent.id
+                AND principal.state = 'active'
+            )
+          )
+      ) THEN
+        RAISE EXCEPTION 'Agent identity backfill parity is incomplete'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_tenant_execution_principals principal
+        WHERE principal.principal_kind = 'agent'
+          AND principal.state = 'active'
+          AND NOT EXISTS (
+            SELECT 1 FROM omni_agent_principal_policies policy
+            WHERE policy.tenant_id = principal.tenant_id
+              AND policy.principal_id = principal.principal_id
+              AND policy.principal_generation = principal.principal_generation
+          )
+      ) THEN
+        RAISE EXCEPTION 'Active agent principal is missing its policy version'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND grantee = 'omni_runtime'
+          AND table_name IN (
+            'omni_agent_definition_versions',
+            'omni_agent_principal_policies',
+            'omni_agent_identity_backfill_holds'
+          )
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND grantee = 'omni_runtime'
+          AND table_name = 'omni_tenant_execution_principals'
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) THEN
+        RAISE EXCEPTION 'Agent identity runtime grants are too broad'
           USING ERRCODE = '55000';
       END IF;
     END

@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the actor-scoped graph query telemetry migration", () => {
+  it("pins the split agent identity migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 107,
-      name: "graph_query_telemetry_v1",
-      checksum: "b827edb34b4b148e950daf528fefed302ba2584eeb8d552cb241e47c7b256383",
+      version: 108,
+      name: "agent_identity_versions_v1",
+      checksum: "0061d42b7a5638ffb41b2c51038df6d082c183b08f94aec5d3196920430be476",
     });
   });
 
@@ -733,8 +733,8 @@ describe("ordered database schema versions", () => {
     expect(() => getPendingSchemaMigrationVersions([0])).toThrow(
       /unknown migration versions: 0/i,
     );
-    expect(() => getPendingSchemaMigrationVersions([108])).toThrow(
-      /unknown migration versions: 108/i,
+    expect(() => getPendingSchemaMigrationVersions([109])).toThrow(
+      /unknown migration versions: 109/i,
     );
   });
 
