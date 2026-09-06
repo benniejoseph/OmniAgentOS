@@ -1894,6 +1894,21 @@ canaries passed in production, and web and Fly report exact healthy release
 UX; P5.2 remains open for canonical source/evidence extraction and a
 representative production-like benchmark.
 
+The canonical source/evidence lane is now deployed for exact typed markers in
+actor-owned, coordinate-free `user_private` text evidence. Each entity keeps
+the immutable evidence-unit ID and digest that formed it; shared, system,
+expired, stale, deleted, or purpose-ineligible evidence cannot create or expose
+an entity. Migration v89 enforces indexed evidence lineage, contract/index
+consistency, current-revision ownership, retention, source-head state, and
+restrictive reads in Postgres. Revision replacement, canonical tombstones, and
+direct Knowledge source deletion remove evidence lineage transactionally;
+final-reference removal retires and scrubs the entity, and cross-actor cleanup
+fails closed. Focused ingestion/deletion integration and schema checks passed,
+and web/Fly report exact healthy release
+`702928ed5f056d53180ffdda9285bd1d214809a9`. P5.2 now remains open only for a
+representative production-like entity-resolution benchmark; legacy
+topic/co-occurrence projection remains unchanged pending P5.3/P5.4.
+
 The first P6.1 delivery is active only for an exact, low-risk recent-runs read.
 An exact tenant rollout pins the Loop v2 engine, transition contract, and
 configuration. Migration v85 stores the immutable actor-owned checkpoint chain
