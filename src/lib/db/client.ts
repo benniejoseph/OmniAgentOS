@@ -8484,17 +8484,16 @@ async function ensureAgentIdentityVersionsV1(sql: SqlClient) {
         RAISE EXCEPTION 'Agent definition owner is invalid'
           USING ERRCODE = '23503';
       END IF;
-      NEW.published_at := GREATEST(
-        statement_timestamp(),
-        COALESCE((
-          SELECT published_at + INTERVAL '1 microsecond'
-          FROM public.omni_agent_definition_versions
-          WHERE tenant_id = NEW.tenant_id
-            AND agent_definition_id = NEW.agent_definition_id
-          ORDER BY definition_version DESC
-          LIMIT 1
-        ), '-infinity'::TIMESTAMPTZ)
-      );
+      IF EXISTS (
+        SELECT 1
+        FROM public.omni_agent_definition_versions
+        WHERE tenant_id = NEW.tenant_id
+          AND agent_definition_id = NEW.agent_definition_id
+          AND published_at >= NEW.published_at
+      ) THEN
+        RAISE EXCEPTION 'Agent definition publication time is not monotonic'
+          USING ERRCODE = '23514';
+      END IF;
       RETURN NEW;
     END
     $function$
