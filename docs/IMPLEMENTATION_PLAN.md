@@ -1,5 +1,12 @@
 # OmniAgent OS Implementation Plan
 
+> P3.1 status after item 56: migration v82 makes governed tool rows and their
+> tool-event streams actor-private, binds unowned history to verified lineage
+> or quarantine, prevents tool identity/input rebinding, and preserves risk-3
+> quorum through a narrow active-admin review policy plus exact-owner execution
+> scope. Prompt assembly, agent-private/shared visibility, standing formation,
+> and private-memory worker consumption remain pending, so P3.1 is not complete.
+
 ## North Star
 
 Build a durable AI agentic orchestration framework that can reason with OpenAI models, retrieve project knowledge, remember durable facts, connect to external systems, run governed tools, and verify work before it is considered complete.

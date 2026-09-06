@@ -146,6 +146,11 @@ tool IDs, risk/quorum counts, closed outcome enums, and SHA-256 bindings.
 Approval reasons, sealed inputs, outputs, credentials, and claim tokens are
 excluded. Legacy internal callers remain compatible but do not receive a
 fabricated decision event without an explicit scope.
+Migration v82 restricts every `tool_execution:<id>` stream through its
+actor-private parent tool record. The original owner can append the scope
+binding before the parent insert, while an explicitly authorized risk-3 admin
+can append only under the narrow review policy. Unrelated sibling actors can
+read neither the row nor its metadata-only decision events.
 
 Workflow dual-writes no longer copy goals, reports, errors, model output, or
 arbitrary workflow payloads into `omni_events`. The canonical projection is a

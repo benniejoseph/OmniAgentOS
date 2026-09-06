@@ -1134,9 +1134,17 @@ and native requests install the canonical/current-owner actor set in the
 database scope. Resume, specialist, consolidation, daily-brief, and workflow
 workers re-enter the persisted owner scope before touching protected run data;
 legacy queued resume and consolidation jobs are backfilled during migration.
-This closes the durable run/thread prerequisite, but private memory still does
-not enter agent context: governed tool inputs, outputs, and approval records
-remain tenant-scoped copies. Agent-private/shared visibility, context
+Migration v82 adds the same immutable owner boundary to governed tool records
+and their tool-event streams. Ordinary siblings cannot list, inspect, update,
+or observe those inputs, outputs, decisions, and metadata. Pending risk-3
+records remain visible only to active tenant admins so the existing distinct-
+admin quorum can complete; after the pending state, access is limited to the
+owner and admins who actually recorded a decision. The approval route carries
+the already-authorized record owner only for that exact decision and effect.
+
+These migrations close the durable run/thread/tool prerequisites, but private
+memory still does not enter agent context until prompt assembly and remaining
+context copies enforce the same actor boundary. Agent-private/shared visibility, context
 compilation, standing formation, and private-memory worker consumption remain
 closed, so P3.1 is still incomplete.
 
