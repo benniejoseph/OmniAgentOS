@@ -158,6 +158,7 @@ export const tenantRootPolicyTables = [
   "omni_capture_recordings",
   "omni_capture_segments",
   "omni_capture_assets",
+  "omni_asset_objects",
   "omni_provider_connections",
   "omni_model_catalog",
   "omni_model_assignments",
@@ -1056,6 +1057,13 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[95],
       up: ensureAgentRunTerminalReceiptsV1,
+    },
+    {
+      ...databaseSchemaMigrations[96],
+      up: async (sql) => {
+        await ensureTenantScopedAssetObjectPlaneV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
     },
   ];
 }
@@ -5425,6 +5433,159 @@ async function ensureAgentRunTerminalReceiptsV1(sql: SqlClient) {
         OR receipt_constraint NOT LIKE '%runId%'
       THEN
         RAISE EXCEPTION 'Agent-run terminal receipt invariant is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureTenantScopedAssetObjectPlaneV1(sql: SqlClient) {
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_asset_objects (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      workspace_id TEXT,
+      project_id TEXT,
+      mission_id TEXT,
+      source_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      object_version INTEGER NOT NULL,
+      storage_provider TEXT NOT NULL,
+      storage_locator TEXT NOT NULL,
+      storage_etag TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      content_sha256 TEXT NOT NULL,
+      byte_count BIGINT NOT NULL,
+      media_type TEXT NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'user_private',
+      sensitivity TEXT NOT NULL DEFAULT 'confidential',
+      permission_grant_ids TEXT[] NOT NULL DEFAULT '{}',
+      allowed_purpose_ids TEXT[] NOT NULL DEFAULT '{}',
+      retention_policy_id TEXT NOT NULL,
+      retention_expires_at TIMESTAMPTZ,
+      extraction_state TEXT NOT NULL,
+      upload_job_id TEXT,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      failure_code TEXT,
+      execution_scope JSONB NOT NULL,
+      ready_at TIMESTAMPTZ,
+      deleted_at TIMESTAMPTZ,
+      scrubbed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+      CONSTRAINT omni_asset_objects_source_version_key
+        UNIQUE (tenant_id, source_kind, source_id, object_version),
+      CONSTRAINT omni_asset_objects_storage_locator_key
+        UNIQUE (tenant_id, storage_provider, storage_locator),
+      CONSTRAINT omni_asset_objects_identity_check CHECK (
+        id ~ '^asset_object_[a-f0-9]{48}$'
+        AND length(tenant_id) BETWEEN 1 AND 160
+        AND length(owner_actor_id) BETWEEN 1 AND 320
+        AND length(source_id) BETWEEN 1 AND 200
+        AND object_version >= 1
+      ),
+      CONSTRAINT omni_asset_objects_source_kind_check CHECK (
+        source_kind IN ('capture_asset', 'capture_segment')
+      ),
+      CONSTRAINT omni_asset_objects_provider_check CHECK (
+        storage_provider = 'vercel_blob_private'
+      ),
+      CONSTRAINT omni_asset_objects_status_check CHECK (
+        status IN ('pending', 'ready', 'failed', 'deleted')
+      ),
+      CONSTRAINT omni_asset_objects_integrity_check CHECK (
+        content_sha256 ~ '^[a-f0-9]{64}$'
+        AND byte_count > 0
+        AND length(media_type) BETWEEN 1 AND 200
+        AND storage_locator ~ '^v1/[a-f0-9]{32}/[a-f0-9]{32}/(capture_asset|capture_segment)/[a-f0-9]{48}/v[1-9][0-9]*/[a-f0-9]{64}\\.bin$'
+      ),
+      CONSTRAINT omni_asset_objects_access_check CHECK (
+        visibility = 'user_private'
+        AND sensitivity IN ('confidential', 'restricted')
+        AND cardinality(permission_grant_ids) >= 1
+        AND cardinality(allowed_purpose_ids) >= 1
+        AND length(retention_policy_id) BETWEEN 1 AND 120
+      ),
+      CONSTRAINT omni_asset_objects_extraction_check CHECK (
+        extraction_state IN ('pending', 'completed', 'unsupported', 'failed')
+      ),
+      CONSTRAINT omni_asset_objects_scope_check CHECK (
+        jsonb_typeof(execution_scope) = 'object'
+        AND execution_scope ->> 'version' = '1'
+        AND execution_scope ->> 'tenantId' = tenant_id
+        AND execution_scope ->> 'initiatingActorId' = owner_actor_id
+        AND COALESCE(execution_scope ->> 'workspaceId', '') = COALESCE(workspace_id, '')
+        AND COALESCE(execution_scope ->> 'projectId', '') = COALESCE(project_id, '')
+        AND COALESCE(execution_scope ->> 'missionId', '') = COALESCE(mission_id, '')
+      ),
+      CONSTRAINT omni_asset_objects_lifecycle_check CHECK (
+        failure_count >= 0
+        AND (failure_code IS NULL OR failure_code ~ '^[a-z0-9_]{1,80}$')
+        AND (status <> 'ready' OR (ready_at IS NOT NULL AND deleted_at IS NULL))
+        AND (status <> 'deleted' OR deleted_at IS NOT NULL)
+        AND (scrubbed_at IS NULL OR status = 'deleted')
+      )
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_asset_objects_owner_source_idx
+    ON omni_asset_objects (
+      tenant_id, owner_actor_id, source_kind, source_id, object_version DESC
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_asset_objects_pending_idx
+    ON omni_asset_objects (tenant_id, created_at ASC, id)
+    WHERE status IN ('pending', 'failed')
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_asset_objects_retention_idx
+    ON omni_asset_objects (retention_expires_at, tenant_id, id)
+    WHERE status <> 'deleted' AND retention_expires_at IS NOT NULL
+  `;
+  await sql`
+    DROP POLICY IF EXISTS omni_asset_objects_actor_scope
+    ON omni_asset_objects
+  `;
+  await sql`
+    CREATE POLICY omni_asset_objects_actor_scope
+    ON omni_asset_objects
+    AS RESTRICTIVE
+    FOR ALL
+    USING (
+      omni_system_scope_enabled()
+      OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+    )
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON omni_asset_objects TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON omni_asset_objects TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_asset_objects'::regclass
+          AND polname = 'omni_asset_objects_actor_scope'
+          AND NOT polpermissive
+          AND polcmd = '*'
+      ) THEN
+        RAISE EXCEPTION 'Asset object actor boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

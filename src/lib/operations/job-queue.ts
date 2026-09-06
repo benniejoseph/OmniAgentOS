@@ -16,13 +16,17 @@ export type OperationJobType =
   | "agent.resume"
   | "memory.consolidate"
   | "knowledge.ingest"
-  | "evaluation.run";
+  | "evaluation.run"
+  | "asset.object.commit"
+  | "asset.object.delete";
 export type OperationJobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
 
 export const BACKGROUND_OPERATION_JOB_TYPES = [
   "memory.consolidate",
   "knowledge.ingest",
   "evaluation.run",
+  "asset.object.commit",
+  "asset.object.delete",
 ] as const satisfies readonly OperationJobType[];
 
 const OPERATION_PRIORITY_AGING_INTERVAL_MS = 60_000;
