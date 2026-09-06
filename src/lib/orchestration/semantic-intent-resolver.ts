@@ -205,12 +205,39 @@ export function createSemanticIntentResolver(
       });
     }
 
-    const resolution = applySemanticIntentPolicy({
+    const initialResolution = applySemanticIntentPolicy({
       baseline: input.baseline,
       candidate: parsedCandidate.data,
       mode: input.mode,
       preferredAgentId: input.preferredAgentId,
       capabilityCandidates,
+    });
+    const semanticCatalogCandidates = initialResolution.capabilitySearchQuery
+      ? await dependencies.searchCapabilities({
+          tenantId: input.tenantId,
+          query: initialResolution.capabilitySearchQuery,
+          limit: 3,
+        }).then(
+          (result) => result.capabilities,
+          () => [] as CapabilityDescriptor[],
+        )
+      : [];
+    const validatedCandidateIds = [...new Set([
+      ...parsedCandidate.data.candidateCapabilityIds,
+      ...semanticCatalogCandidates.map((capability) => capability.id),
+    ])].slice(0, 12);
+    const resolution = applySemanticIntentPolicy({
+      baseline: input.baseline,
+      candidate: {
+        ...parsedCandidate.data,
+        candidateCapabilityIds: validatedCandidateIds,
+      },
+      mode: input.mode,
+      preferredAgentId: input.preferredAgentId,
+      capabilityCandidates: mergeCapabilities(
+        capabilityCandidates,
+        semanticCatalogCandidates,
+      ),
     });
     return attachSemanticModelReceipt(resolution, {
       provider: generated.provider,
@@ -338,6 +365,18 @@ function parseGeneratedJson(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function mergeCapabilities(
+  primary: readonly CapabilityDescriptor[],
+  secondary: readonly CapabilityDescriptor[],
+) {
+  return [...new Map(
+    [...primary, ...secondary].map((capability) => [
+      capability.id,
+      capability,
+    ]),
+  ).values()];
 }
 
 export const semanticIntentCandidateContract = Object.freeze({
