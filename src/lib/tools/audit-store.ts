@@ -11,6 +11,8 @@ import { redactSensitive } from "@/lib/security/context";
 import { recordApprovalDecisionCheckpointShadow } from "@/lib/runs/approval-checkpoint-shadow";
 import {
   assertExecutionScopeTenant,
+  createExecutionScope,
+  deriveExecutionScope,
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -54,6 +56,18 @@ type EffectReceipt = EffectReceiptV1 | EffectReceiptV2;
 
 const DEFAULT_STALE_TOOL_EXECUTION_CLAIM_MS = 5 * 60_000;
 
+export type ToolExecutionMutationOptions = {
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
+};
+
+type ToolExecutionMutationOperation =
+  | "saved"
+  | "claimed"
+  | "reclaimed"
+  | "completed"
+  | "recovered";
+
 export type ToolApprovalClaimResult = {
   outcome: "not_found" | "conflict" | "pending" | "claimed";
   record?: ToolExecutionRecord;
@@ -82,7 +96,10 @@ export function createToolExecutionRecord(
   };
 }
 
-export async function saveToolExecution(record: ToolExecutionRecord) {
+export async function saveToolExecution(
+  record: ToolExecutionRecord,
+  options: ToolExecutionMutationOptions = {},
+) {
   if (record.effectReceipt !== undefined) {
     throw new Error(
       "Effect receipts may only be attached while finalizing a claimed execution.",
@@ -90,7 +107,16 @@ export async function saveToolExecution(record: ToolExecutionRecord) {
   }
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await writeToolExecutionDb(getSql(), record);
+    await getSql().transaction(async (sql: SqlClient) => {
+      await writeToolExecutionDb(sql, record);
+      await appendToolExecutionMutationEvent({
+        record,
+        operation: "saved",
+        executionScope: options.executionScope,
+        idempotencyKey: options.idempotencyKey,
+        sql,
+      });
+    });
     return record;
   }
 
@@ -107,11 +133,18 @@ export async function saveToolExecution(record: ToolExecutionRecord) {
       ]),
     };
   });
+  await appendToolExecutionMutationEvent({
+    record,
+    operation: "saved",
+    executionScope: options.executionScope,
+    idempotencyKey: options.idempotencyKey,
+  });
   return record;
 }
 
 export async function claimIdempotentToolExecution(
   record: ToolExecutionRecord,
+  options: ToolExecutionMutationOptions = {},
 ): Promise<IdempotentToolExecutionClaimResult> {
   if (record.effectReceipt !== undefined) {
     throw new Error("An execution claim cannot begin with an effect receipt.");
@@ -144,9 +177,17 @@ export async function claimIdempotentToolExecution(
         RETURNING *
       `;
       if (inserted[0]) {
+        const claimedRecord = recordFromRow(inserted[0]);
+        await appendToolExecutionMutationEvent({
+          record: claimedRecord,
+          operation: "claimed",
+          executionScope: options.executionScope,
+          idempotencyKey: options.idempotencyKey || record.id,
+          sql,
+        });
         return {
           outcome: "claimed" as const,
-          record: recordFromRow(inserted[0]),
+          record: claimedRecord,
         };
       }
       const rows = await sql`
@@ -166,6 +207,13 @@ export async function claimIdempotentToolExecution(
       const reclaimed = reclaimStaleEffectExecutionRecord(existing, record);
       if (reclaimed) {
         await writeToolExecutionDb(sql, reclaimed);
+        await appendToolExecutionMutationEvent({
+          record: reclaimed,
+          operation: "reclaimed",
+          executionScope: options.executionScope,
+          idempotencyKey: options.idempotencyKey || record.id,
+          sql,
+        });
         return {
           outcome: "claimed" as const,
           record: reclaimed,
@@ -179,6 +227,7 @@ export async function claimIdempotentToolExecution(
   }
 
   let result: IdempotentToolExecutionClaimResult | undefined;
+  let operation: ToolExecutionMutationOperation | undefined;
   await updateJsonFile<ToolExecutionLedger>(
     getToolLedgerFile(),
     { records: [] },
@@ -193,15 +242,25 @@ export async function claimIdempotentToolExecution(
         const reclaimed = reclaimStaleEffectExecutionRecord(existing, record);
         if (reclaimed) {
           result = { outcome: "claimed", record: reclaimed };
+          operation = "reclaimed";
           return replaceLedgerRecord(ledger, reclaimed);
         }
         result = { outcome: "existing", record: existing };
         return ledger;
       }
       result = { outcome: "claimed", record };
+      operation = "claimed";
       return replaceLedgerRecord(ledger, record);
     },
   );
+  if (operation && result) {
+    await appendToolExecutionMutationEvent({
+      record: result.record,
+      operation,
+      executionScope: options.executionScope,
+      idempotencyKey: options.idempotencyKey || record.id,
+    });
+  }
   return result!;
 }
 
@@ -224,6 +283,9 @@ export async function approveAndClaimToolExecution(input: {
     : undefined;
 
   if (hasDatabaseUrl()) {
+    if (!mutation) {
+      throw new Error("Tool approval persistence requires a mutation envelope.");
+    }
     await ensureDatabaseSchema();
     return getSql().transaction(async (sql: SqlClient) => {
       const rows = await sql`
@@ -239,23 +301,21 @@ export async function approveAndClaimToolExecution(input: {
       const result = applyApprovalClaim(recordFromRow(rows[0]), input);
       if (result.record && (result.outcome === "pending" || result.outcome === "claimed")) {
         await writeToolExecutionDb(sql, result.record);
-        if (mutation) {
-          await appendToolApprovalDecisionEvent({
-            mutation,
-            record: result.record,
+        await appendToolApprovalDecisionEvent({
+          mutation,
+          record: result.record,
+          decision: "approved",
+          outcome: result.outcome === "pending"
+            ? "quorum_pending"
+            : "execution_claimed",
+          decisionActorId: input.approvedBy,
+        }, sql);
+        if (result.outcome === "claimed") {
+          await recordApprovalDecisionCheckpointShadow({
+            tenantId,
+            approvalExecutionId: result.record.id,
             decision: "approved",
-            outcome: result.outcome === "pending"
-              ? "quorum_pending"
-              : "execution_claimed",
-            decisionActorId: input.approvedBy,
           }, sql);
-          if (result.outcome === "claimed") {
-            await recordApprovalDecisionCheckpointShadow({
-              tenantId,
-              approvalExecutionId: result.record.id,
-              decision: "approved",
-            }, sql);
-          }
         }
       }
       return result;
@@ -337,6 +397,9 @@ export async function rejectPendingToolExecution(input: {
   };
 
   if (hasDatabaseUrl()) {
+    if (!mutation) {
+      throw new Error("Tool rejection persistence requires a mutation envelope.");
+    }
     await ensureDatabaseSchema();
     return getSql().transaction(async (sql: SqlClient) => {
       const rows = await sql`
@@ -352,20 +415,18 @@ export async function rejectPendingToolExecution(input: {
       const result = reject(recordFromRow(rows[0]));
       if (result.outcome === "rejected") {
         await writeToolExecutionDb(sql, result.record);
-        if (mutation) {
-          await appendToolApprovalDecisionEvent({
-            mutation,
-            record: result.record,
-            decision: "rejected",
-            outcome: "rejected",
-            decisionActorId: input.rejectedBy,
-          }, sql);
-          await recordApprovalDecisionCheckpointShadow({
-            tenantId,
-            approvalExecutionId: result.record.id,
-            decision: "rejected",
-          }, sql);
-        }
+        await appendToolApprovalDecisionEvent({
+          mutation,
+          record: result.record,
+          decision: "rejected",
+          outcome: "rejected",
+          decisionActorId: input.rejectedBy,
+        }, sql);
+        await recordApprovalDecisionCheckpointShadow({
+          tenantId,
+          approvalExecutionId: result.record.id,
+          decision: "rejected",
+        }, sql);
       }
       return result;
     }) as Promise<{ outcome: "not_found" | "conflict" | "rejected"; record?: ToolExecutionRecord }>;
@@ -402,7 +463,7 @@ export async function rejectPendingToolExecution(input: {
 export async function completeClaimedToolExecution(
   record: ToolExecutionRecord,
   claimToken: string,
-  options: { executionScope?: ExecutionScope } = {},
+  options: ToolExecutionMutationOptions = {},
 ): Promise<ToolExecutionRecord | undefined> {
   const tenantId = normalizeTenantId(record.tenantId);
   const effectReceipt = parseRecordEffectReceipt(record);
@@ -441,6 +502,13 @@ export async function completeClaimedToolExecution(
       await writeToolExecutionDb(sql, durableRecord, {
         finalizeEffectReceipt: Boolean(effectReceipt),
         persistEffectIntentV2: hasEffectIntentV2,
+      });
+      await appendToolExecutionMutationEvent({
+        record: durableRecord,
+        operation: "completed",
+        executionScope: options.executionScope,
+        idempotencyKey: options.idempotencyKey || record.id,
+        sql,
       });
       if (effectReceipt && options.executionScope) {
         await appendToolEffectReceiptEvent(
@@ -481,6 +549,14 @@ export async function completeClaimedToolExecution(
     );
     return replaceLedgerRecord(ledger, completed);
   });
+  if (completed) {
+    await appendToolExecutionMutationEvent({
+      record: completed,
+      operation: "completed",
+      executionScope: options.executionScope,
+      idempotencyKey: options.idempotencyKey || record.id,
+    });
+  }
   if (completed && effectReceipt && options.executionScope) {
     try {
       await appendToolEffectReceiptEvent(effectReceipt, options.executionScope);
@@ -633,6 +709,8 @@ export async function failClaimedToolExecution(input: {
   record: ToolExecutionRecord;
   claimToken: string;
   reason: string;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
 }) {
   const reason = String(redactSensitive(input.reason)).slice(0, 1_000);
   return completeClaimedToolExecution(
@@ -644,6 +722,10 @@ export async function failClaimedToolExecution(input: {
       completedAt: new Date().toISOString(),
     },
     input.claimToken,
+    {
+      executionScope: input.executionScope,
+      idempotencyKey: input.idempotencyKey,
+    },
   );
 }
 
@@ -653,6 +735,8 @@ export async function reclaimStaleMemoryForgetToolExecutionClaim(
     tenantId?: string;
     claimToken: string;
     staleAfterMs?: number;
+    executionScope?: ExecutionScope;
+    idempotencyKey?: string;
   },
 ): Promise<ToolExecutionRecord | undefined> {
   if (!options.claimToken.trim()) {
@@ -688,6 +772,13 @@ export async function reclaimStaleMemoryForgetToolExecutionClaim(
         : undefined;
       if (reclaimed) {
         await writeToolExecutionDb(sql, reclaimed);
+        await appendToolExecutionMutationEvent({
+          record: reclaimed,
+          operation: "reclaimed",
+          executionScope: options.executionScope,
+          idempotencyKey: options.idempotencyKey || expected.id,
+          sql,
+        });
       }
       return reclaimed;
     }) as Promise<ToolExecutionRecord | undefined>;
@@ -714,12 +805,25 @@ export async function reclaimStaleMemoryForgetToolExecutionClaim(
       return reclaimed ? replaceLedgerRecord(ledger, reclaimed) : ledger;
     },
   );
+  if (reclaimed) {
+    await appendToolExecutionMutationEvent({
+      record: reclaimed,
+      operation: "reclaimed",
+      executionScope: options.executionScope,
+      idempotencyKey: options.idempotencyKey || expected.id,
+    });
+  }
   return reclaimed;
 }
 
 export async function recoverStaleToolExecutionClaim(
   id: string,
-  options: { tenantId?: string; staleAfterMs?: number } = {},
+  options: {
+    tenantId?: string;
+    staleAfterMs?: number;
+    executionScope?: ExecutionScope;
+    idempotencyKey?: string;
+  } = {},
 ): Promise<ToolExecutionRecord | undefined> {
   const tenantId = normalizeTenantId(options.tenantId);
   const staleAfterMs = Math.max(
@@ -742,6 +846,13 @@ export async function recoverStaleToolExecutionClaim(
         : undefined;
       if (recovered) {
         await writeToolExecutionDb(sql, recovered);
+        await appendToolExecutionMutationEvent({
+          record: recovered,
+          operation: "recovered",
+          executionScope: options.executionScope,
+          idempotencyKey: options.idempotencyKey || id,
+          sql,
+        });
       }
       return recovered;
     }) as Promise<ToolExecutionRecord | undefined>;
@@ -757,11 +868,25 @@ export async function recoverStaleToolExecutionClaim(
       : undefined;
     return recovered ? replaceLedgerRecord(ledger, recovered) : ledger;
   });
+  if (recovered) {
+    await appendToolExecutionMutationEvent({
+      record: recovered,
+      operation: "recovered",
+      executionScope: options.executionScope,
+      idempotencyKey: options.idempotencyKey || id,
+    });
+  }
   return recovered;
 }
 
 export async function recoverStaleToolExecutionClaims(
-  options: { tenantId?: string; staleAfterMs?: number; limit?: number } = {},
+  options: {
+    tenantId?: string;
+    staleAfterMs?: number;
+    limit?: number;
+    executionScope?: ExecutionScope;
+    idempotencyKey?: string;
+  } = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const staleAfterMs = Math.max(
@@ -815,6 +940,13 @@ export async function recoverStaleToolExecutionClaims(
         );
       for (const record of recovered) {
         await writeToolExecutionDb(sql, record);
+        await appendToolExecutionMutationEvent({
+          record,
+          operation: "recovered",
+          executionScope: options.executionScope,
+          idempotencyKey: `${options.idempotencyKey || "tool-recovery"}:${record.id}`,
+          sql,
+        });
       }
       return recovered.map(sanitizeToolExecutionRecord);
     }) as Promise<ToolExecutionRecord[]>;
@@ -842,6 +974,14 @@ export async function recoverStaleToolExecutionClaims(
       return { records: trimToolExecutionRecords(records) };
     },
   );
+  for (const record of recovered) {
+    await appendToolExecutionMutationEvent({
+      record,
+      operation: "recovered",
+      executionScope: options.executionScope,
+      idempotencyKey: `${options.idempotencyKey || "tool-recovery"}:${record.id}`,
+    });
+  }
   return recovered.map(sanitizeToolExecutionRecord);
 }
 
@@ -1365,6 +1505,107 @@ function assertEffectReceiptV2Finalization(input: {
       "Effect receipt v2 does not finalize the exact persisted intent.",
     );
   }
+}
+
+async function appendToolExecutionMutationEvent({
+  record,
+  operation,
+  executionScope: requestedExecutionScope,
+  idempotencyKey,
+  sql,
+}: {
+  record: ToolExecutionRecord;
+  operation: ToolExecutionMutationOperation;
+  executionScope?: ExecutionScope;
+  idempotencyKey?: string;
+  sql?: SqlClient;
+}) {
+  const tenantId = normalizeTenantId(record.tenantId);
+  const executionScope = toolExecutionMutationScope(
+    record,
+    operation,
+    requestedExecutionScope,
+  );
+  const effectReceipt = parseRecordEffectReceipt(record);
+  const stateSha256 = canonicalJsonSha256({
+    executionId: record.id,
+    tenantId,
+    actorId: record.actorId || null,
+    toolId: record.toolId,
+    riskLevel: record.riskLevel,
+    status: record.status,
+    dryRun: record.dryRun,
+    approvalRequired: record.approvalRequired,
+    inputSha256: canonicalJsonSha256(record.input),
+    outputSha256: canonicalJsonSha256(record.output ?? null),
+    reasonSha256: record.reason
+      ? canonicalJsonSha256({ reason: record.reason })
+      : null,
+    approvalDecision: record.approvalDecision || null,
+    approvalCount: record.approvals?.length || 0,
+    effectReceiptId: effectReceipt?.effectReceiptId || null,
+    effectReceiptSha256: effectReceipt?.receiptSha256 || null,
+    createdAt: record.createdAt,
+    completedAt: record.completedAt || null,
+  });
+  const idempotencyKeySha256 = canonicalJsonSha256({
+    tenantId,
+    idempotencyKey:
+      idempotencyKey || `${record.id}:${operation}:${stateSha256}`,
+  });
+  await appendScopedDomainEvent({
+    id: `tool-execution:${canonicalJsonSha256({
+      executionId: record.id,
+      operation,
+      stateSha256,
+      idempotencyKeySha256,
+    })}`,
+    streamId: `tool_execution:${record.id}`,
+    type: "tool.execution.upserted",
+    executionScope,
+    payload: {
+      schemaVersion: 1,
+      executionId: record.id,
+      operation,
+      toolId: record.toolId,
+      riskLevel: record.riskLevel,
+      status: record.status,
+      dryRun: record.dryRun,
+      approvalRequired: record.approvalRequired,
+      approvalDecision: record.approvalDecision || null,
+      approvalCount: record.approvals?.length || 0,
+      effectReceiptId: effectReceipt?.effectReceiptId || null,
+      effectReceiptSha256: effectReceipt?.receiptSha256 || null,
+      createdAt: record.createdAt,
+      completedAt: record.completedAt || null,
+      stateSha256,
+      idempotencyKeySha256,
+    },
+  }, sql ? { sql } : {});
+}
+
+function toolExecutionMutationScope(
+  record: ToolExecutionRecord,
+  operation: ToolExecutionMutationOperation,
+  requestedExecutionScope?: ExecutionScope,
+) {
+  const tenantId = normalizeTenantId(record.tenantId);
+  if (requestedExecutionScope) {
+    assertExecutionScopeTenant(requestedExecutionScope, tenantId);
+    return deriveExecutionScope(requestedExecutionScope, {
+      causationId: `tool-execution:${record.id}:${operation}`,
+      purpose: `tool.execution.${operation}`,
+    });
+  }
+  return createExecutionScope({
+    tenantId,
+    initiatingActorId: record.actorId?.trim() || null,
+    executingPrincipalType: "system",
+    executingPrincipalId: "tool-ledger",
+    correlationId: `tool-execution:${record.id}`,
+    causationId: `tool-execution:${record.id}:${operation}`,
+    purpose: `tool.execution.${operation}.legacy_compatibility`,
+  });
 }
 
 async function appendToolEffectReceiptEvent(
