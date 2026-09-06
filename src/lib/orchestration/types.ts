@@ -1,6 +1,7 @@
 import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import type { SecurityContext } from "@/lib/security/types";
 import type { AiUsageCallInput } from "@/lib/usage/types";
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
 
@@ -121,6 +122,12 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /**
+   * Live authenticated request identity for owner-scoped governed tools.
+   * This value is never persisted in a continuation; approval resumes under
+   * the approving request's freshly authorized context.
+   */
+  securityContext?: SecurityContext;
   /**
    * Descriptive semantic discovery hints produced before the run. These are
    * never capability grants or allowlists; the toolbox still resolves active,

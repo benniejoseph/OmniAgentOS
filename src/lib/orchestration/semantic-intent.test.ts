@@ -51,6 +51,22 @@ const memorySearchCapability: CapabilityDescriptor = {
   reversible: true,
 };
 
+function memoryCapability(
+  id: string,
+  riskLevel: CapabilityDescriptor["riskLevel"] = 0,
+): CapabilityDescriptor {
+  return {
+    id,
+    name: id,
+    description: id,
+    category: "memory",
+    source: "native",
+    riskLevel,
+    approvalRequired: id === "memory.forget",
+    reversible: id !== "memory.forget",
+  };
+}
+
 function candidate(
   overrides: Partial<SemanticIntentCandidate> = {},
 ): SemanticIntentCandidate {
@@ -237,6 +253,63 @@ describe("semantic intent policy", () => {
     expect(resolution.receipt.matchedCapabilityIds).toEqual([
       "memory.search",
     ]);
+  });
+
+  it("pairs conversational forgetting with its exact preview tool", () => {
+    const resolution = applySemanticIntentPolicy({
+      message: "Forget memory memory-42 permanently.",
+      baseline: routeAgentRequest("Forget memory memory-42 permanently."),
+      mode: "learn",
+      capabilityCandidates: [
+        memoryCapability("memory.forget.preview"),
+        memoryCapability("memory.forget", 2),
+      ],
+      candidate: candidate({
+        intent: "delete",
+        executionShape: "single_action",
+        workKinds: ["memory"],
+      }),
+    });
+
+    expect(resolution.receipt.matchedCapabilityIds).toEqual([
+      "memory.forget",
+      "memory.forget.preview",
+    ]);
+    expect(resolution.decision.requiresApproval).toBe(true);
+  });
+
+  it("discovers lifecycle, inspection, and portable export controls", () => {
+    const lifecycle = applySemanticIntentPolicy({
+      message: "Pin memory memory-42 and show me its scope.",
+      baseline: routeAgentRequest("Pin memory memory-42 and show me its scope."),
+      mode: "learn",
+      capabilityCandidates: [
+        memoryCapability("memory.inspect"),
+        memoryCapability("memory.lifecycle", 1),
+      ],
+      candidate: candidate({
+        intent: "update",
+        executionShape: "single_action",
+        workKinds: ["memory"],
+      }),
+    });
+    expect(lifecycle.receipt.matchedCapabilityIds).toEqual([
+      "memory.inspect",
+      "memory.lifecycle",
+    ]);
+
+    const archive = applySemanticIntentPolicy({
+      message: "Export my memory as a portable archive.",
+      baseline: routeAgentRequest("Export my memory as a portable archive."),
+      mode: "learn",
+      capabilityCandidates: [memoryCapability("memory.export")],
+      candidate: candidate({
+        intent: "retrieve",
+        executionShape: "single_action",
+        workKinds: ["memory"],
+      }),
+    });
+    expect(archive.receipt.matchedCapabilityIds).toEqual(["memory.export"]);
   });
 
   it("persists multi-step work even when coordination was omitted", () => {

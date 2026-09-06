@@ -264,6 +264,7 @@ describe("agent semantic intent routing", () => {
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId: "scout",
+        securityContext: context,
         semanticRouting: {
           capabilitySearchQuery: "list github issues",
           matchedCapabilityIds: ["github.issues.list"],

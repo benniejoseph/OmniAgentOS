@@ -843,6 +843,7 @@ async function POSTHandler(request: Request) {
                 mode: parsed.data.mode,
                 threadId,
                 messages: safeMessages,
+                securityContext: context,
                 semanticRouting: {
                   capabilitySearchQuery:
                     semanticResolution.capabilitySearchQuery,

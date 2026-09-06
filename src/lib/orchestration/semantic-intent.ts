@@ -262,6 +262,7 @@ function semanticCapabilityPolicyIds(
   const available = new Set(capabilities.map((capability) => capability.id));
   const selected = new Set<string>();
   const semanticSurface = [
+    message,
     ...candidate.capabilityQueries,
     ...candidate.entities.flatMap((entity) => [entity.kind, entity.reference]),
   ].join(" ").toLowerCase();
@@ -274,18 +275,29 @@ function semanticCapabilityPolicyIds(
   }
 
   if (mode === "learn" || candidate.workKinds.includes("memory")) {
-    if (
+    if (/\b(?:export|download|portable\s+archive)\b/.test(semanticSurface)) {
+      add("memory.export");
+    } else if (
       candidate.intent === "retrieve" ||
       candidate.intent === "question" ||
       candidate.intent === "research"
     ) {
       add("memory.search");
+      if (/\b(?:inspect|show|explain|scope|visibility|source|why)\b/.test(semanticSurface)) {
+        add("memory.inspect");
+      }
     } else if (candidate.intent === "delete") {
+      add("memory.forget.preview");
       add("memory.forget");
     } else if (candidate.intent === "update") {
-      add(/\b(?:correct|correction|replace|fix)\b/.test(semanticSurface)
-        ? "memory.correct"
-        : "memory.write");
+      if (/\b(?:pin|unpin|archive|restore)\b/.test(semanticSurface)) {
+        add("memory.inspect");
+        add("memory.lifecycle");
+      } else {
+        add(/\b(?:correct|correction|replace|fix)\b/.test(semanticSurface)
+          ? "memory.correct"
+          : "memory.write");
+      }
     } else if (candidate.intent === "create") {
       add("memory.write");
     }
