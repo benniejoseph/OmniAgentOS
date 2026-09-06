@@ -11,6 +11,12 @@ import { sourceContractSha256 } from "@/lib/sources/contracts";
 export const ENTITY_REGISTRY_SCHEMA_VERSION = 1 as const;
 export const ENTITY_REGISTRY_RESOLVER_VERSION_ID =
   "entity-resolver:deterministic-v1" as const;
+export const ENTITY_PURPOSE_IDS = Object.freeze([
+  "entity.read.v1",
+  "entity.resolve.v1",
+  "entity.review.v1",
+  "entity.write.v1",
+]);
 
 const idSchema = z.string().trim().min(1).max(240).regex(
   /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
