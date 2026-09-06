@@ -27,6 +27,10 @@ import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/typ
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import { parseRuntimeClaimEvidenceV1 } from "@/lib/rag/claim-evidence-runtime";
 import {
+  parseContextCompilerV2ShadowReceipt,
+  type ContextCompilerV2ShadowReceipt,
+} from "@/lib/rag/context-compiler-v2";
+import {
   buildLegacyTerminalReceiptV1,
   buildRunContractEnvelopeV1,
   buildRunContractEventPayloadV1,
@@ -338,6 +342,52 @@ export async function appendRunContractEventSafely(
       "Run contract shadow event append failed.",
       String(redactSensitive(
         error instanceof Error ? error.message : "Unknown contract event error.",
+      )).slice(0, 1_000),
+    );
+    return undefined;
+  }
+}
+
+export async function appendContextCompilerV2ShadowEvent(
+  runId: string,
+  receipt: ContextCompilerV2ShadowReceipt,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const parsed = parseContextCompilerV2ShadowReceipt(receipt);
+  if (parsed.runId !== runId || parsed.tenantId !== tenantId) {
+    throw new Error("Context Compiler v2 receipt is bound to another run scope.");
+  }
+  const run = await getAgentRun(runId, { tenantId });
+  if (!run) {
+    throw new Error("Context Compiler v2 receipt requires an existing run.");
+  }
+  const boundScope = await getAgentRunExecutionScope(runId, { tenantId });
+  if (!boundScope || !executionScopesEqual(boundScope, options.executionScope)) {
+    throw new Error("Context Compiler v2 receipt scope does not match the run binding.");
+  }
+  return appendScopedDomainEvent({
+    streamId: `run:${runId}`,
+    type: "run.context_compiler_v2.shadow",
+    payload: parsed,
+    executionScope: options.executionScope,
+  });
+}
+
+/** Shadow comparison telemetry cannot change the active run control path. */
+export async function appendContextCompilerV2ShadowEventSafely(
+  runId: string,
+  receipt: ContextCompilerV2ShadowReceipt,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  try {
+    return await appendContextCompilerV2ShadowEvent(runId, receipt, options);
+  } catch (error) {
+    console.warn(
+      "Context Compiler v2 shadow event append failed.",
+      String(redactSensitive(
+        error instanceof Error ? error.message : "Unknown context compiler event error.",
       )).slice(0, 1_000),
     );
     return undefined;

@@ -38,8 +38,13 @@ import type {
   RetrievalTraceRecord,
 } from "@/lib/rag/types";
 import { citationIdForEvidence } from "@/lib/rag/citations";
+import {
+  buildContextCompilerV2Shadow,
+  prepareContextCompilerV2Candidates,
+} from "@/lib/rag/context-compiler-v2";
 import { normalizeExplicitEvidenceIds } from "@/lib/rag/evidence-selection";
 import { redactSensitive } from "@/lib/security/context";
+import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { AiUsageScope } from "@/lib/usage/types";
 
 export type BuildContextPackOptions = {
@@ -67,6 +72,14 @@ export type BuildContextPackOptions = {
   evidenceIds?: string[];
   /** Trusted server-created attribution for the retrieval embedding call. */
   usageScope?: AiUsageScope;
+  /**
+   * Runs Context Compiler v2 as a metadata-only comparison. The legacy pack
+   * remains authoritative until a later rollout promotes the compiler.
+   */
+  contextCompilerV2Shadow?: {
+    runId: string;
+    executionScope: ExecutionScope;
+  };
 };
 
 type RetrievalTraceLedger = {
@@ -116,8 +129,22 @@ export async function buildContextPack(
   const limit = Math.min(Math.max(options.limit || 8, evidenceIds?.length || 1), 24);
   const candidateLimit = Math.min(Math.max(options.candidateLimit || limit * 3, limit), 60);
   const profile = profileQuery(normalizedQuery);
+  const compilerAsOfTime = new Date().toISOString();
+  assertContextCompilerV2Scope(options.contextCompilerV2Shadow, tenantId);
 
   if (!profile.shouldRetrieve || evidenceIds?.length === 0) {
+    const compilerV2Shadow = options.contextCompilerV2Shadow
+      ? buildContextCompilerV2Shadow({
+          runId: options.contextCompilerV2Shadow.runId,
+          tenantId: normalizeTenantId(tenantId),
+          query: normalizedQuery,
+          candidates: [],
+          legacySelectedEvidenceIds: [],
+          explicitEvidenceIds: evidenceIds,
+          limit,
+          asOfTime: compilerAsOfTime,
+        })
+      : undefined;
     const pack: ContextPack = {
       query: normalizedQuery,
       profile,
@@ -126,6 +153,7 @@ export async function buildContextPack(
       knowledgeResults: [],
       graphResults: [],
       contextBlock: formatContextPack([], profile),
+      ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
     };
     if (options.persistTrace !== false && !databaseMemoryAccessScope) {
       pack.trace = await saveRetrievalTrace({
@@ -179,6 +207,16 @@ export async function buildContextPack(
     scopedMemoryResults,
     candidateLimit,
   );
+  const compilerCandidatesPromise = options.contextCompilerV2Shadow
+    ? prepareContextCompilerV2Candidates({
+        executionScope: options.contextCompilerV2Shadow.executionScope,
+        memoryAccessScope: databaseMemoryAccessScope,
+        memoryResults,
+        knowledgeResults,
+        graphResults,
+        asOfTime: compilerAsOfTime,
+      })
+    : undefined;
   const evidence = scoreEvidenceItems({
     profile,
     memoryResults,
@@ -218,6 +256,18 @@ export async function buildContextPack(
   const privateTraceResults = traceResults.filter(
     (result) => result.kind === "memory" && privateMemoryIds.has(result.id),
   );
+  const compilerV2Shadow = options.contextCompilerV2Shadow && compilerCandidatesPromise
+    ? buildContextCompilerV2Shadow({
+        runId: options.contextCompilerV2Shadow.runId,
+        tenantId: normalizeTenantId(tenantId),
+        query: normalizedQuery,
+        candidates: await compilerCandidatesPromise,
+        legacySelectedEvidenceIds: selected.map(citationIdForEvidence),
+        explicitEvidenceIds: evidenceIds,
+        limit,
+        asOfTime: compilerAsOfTime,
+      })
+    : undefined;
   const trace =
     options.persistTrace === false
       ? undefined
@@ -252,7 +302,21 @@ export async function buildContextPack(
     graphResults: selectedGraphResults,
     contextBlock: formatContextPack(selected, profile),
     trace,
+    ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
   });
+}
+
+function assertContextCompilerV2Scope(
+  shadow: BuildContextPackOptions["contextCompilerV2Shadow"],
+  tenantId: string | undefined,
+) {
+  if (!shadow) return;
+  if (normalizeTenantId(shadow.executionScope.tenantId) !== normalizeTenantId(tenantId)) {
+    throw new Error("Context Compiler v2 scope does not match the retrieval tenant.");
+  }
+  if (!shadow.executionScope.initiatingActorId) {
+    throw new Error("Context Compiler v2 requires an initiating actor.");
+  }
 }
 
 function resolveContextTenantId(

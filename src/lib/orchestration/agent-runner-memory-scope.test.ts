@@ -6,6 +6,8 @@ import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 
 const mocks = vi.hoisted(() => ({
+  appendContextCompilerV2ShadowEventSafely: vi.fn(),
+  appendRunContractEventSafely: vi.fn(),
   appendRunEvent: vi.fn(),
   bindAgentRunExecutionScope: vi.fn(),
   buildContextPack: vi.fn(),
@@ -76,6 +78,9 @@ vi.mock("@/lib/rag/context-engine", () => ({
 }));
 
 vi.mock("@/lib/runs/store", () => ({
+  appendContextCompilerV2ShadowEventSafely:
+    mocks.appendContextCompilerV2ShadowEventSafely,
+  appendRunContractEventSafely: mocks.appendRunContractEventSafely,
   appendRunEvent: mocks.appendRunEvent,
   bindAgentRunExecutionScope: mocks.bindAgentRunExecutionScope,
   cancelAgentRun: vi.fn(),
@@ -103,7 +108,12 @@ describe("agent memory scope", () => {
       tenantId: "paid-test-tenant",
       agentId: "paid-test-agent",
     });
-    mocks.appendRunEvent.mockResolvedValue(undefined);
+    mocks.appendRunEvent.mockResolvedValue({
+      id: "run-event-a",
+      createdAt: "2026-09-06T00:00:00.000Z",
+    });
+    mocks.appendContextCompilerV2ShadowEventSafely.mockResolvedValue(undefined);
+    mocks.appendRunContractEventSafely.mockResolvedValue(undefined);
     mocks.bindAgentRunExecutionScope.mockResolvedValue({ id: "run-memory-scope" });
     mocks.completeAgentRun.mockResolvedValue({ id: "run-memory-scope" });
     mocks.updateRunContextCount.mockResolvedValue(undefined);
@@ -127,6 +137,10 @@ describe("agent memory scope", () => {
       knowledgeResults: [],
       graphResults: [],
       contextBlock: "DURABLE_MEMORY_CONTEXT",
+      compilerV2Shadow: {
+        selectedEvidenceIds: [],
+        receipt: { receiptId: "context-receipt-a" },
+      },
     });
     mocks.streamResponseTurn.mockImplementation(async (request) => {
       await request.onDelta("ASAEL_LIVE_OK");
@@ -189,10 +203,20 @@ describe("agent memory scope", () => {
     expect(mocks.buildContextPack).toHaveBeenCalledWith("hello", expect.objectContaining({
       limit: 8,
       tenantId: "paid-test-tenant",
+      contextCompilerV2Shadow: expect.objectContaining({
+        runId: "run-memory-scope",
+      }),
     }));
     expect(mocks.updateRunContextCount).toHaveBeenCalledWith(
       "run-memory-scope",
       0,
+    );
+    expect(
+      mocks.appendContextCompilerV2ShadowEventSafely,
+    ).toHaveBeenCalledWith(
+      "run-memory-scope",
+      { receiptId: "context-receipt-a" },
+      expect.objectContaining({ tenantId: "paid-test-tenant" }),
     );
     expect(mocks.getAgentLearningGuidance).toHaveBeenCalledWith(
       "paid-test-agent",

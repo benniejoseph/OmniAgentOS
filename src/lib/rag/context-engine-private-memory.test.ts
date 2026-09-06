@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   embedTexts: vi.fn(async () => [[0.2, 0.4]]),
   getSql: vi.fn(),
+  getActiveMemoriesByIds: vi.fn(async () => []),
+  getCanonicalKnowledgeEvidenceByChunkIds: vi.fn(async () => []),
   searchKnowledge: vi.fn(async () => []),
   searchMemoryGraph: vi.fn(async () => []),
   searchMemories: vi.fn(),
@@ -31,9 +33,12 @@ vi.mock("@/lib/memory/graph", () => ({
   searchMemoryGraph: mocks.searchMemoryGraph,
 }));
 vi.mock("@/lib/memory/store", () => ({
+  getActiveMemoriesByIds: mocks.getActiveMemoriesByIds,
   searchMemories: mocks.searchMemories,
 }));
 vi.mock("@/lib/rag/store", () => ({
+  getCanonicalKnowledgeEvidenceByChunkIds:
+    mocks.getCanonicalKnowledgeEvidenceByChunkIds,
   searchKnowledge: mocks.searchKnowledge,
 }));
 vi.mock("@/lib/storage/json", () => ({
@@ -44,9 +49,13 @@ vi.mock("@/lib/storage/paths", () => ({
   getDataPath: vi.fn(() => "/tmp/context-engine-private-memory.json"),
 }));
 
-import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
+import {
+  buildUserPrivateMemoryAccessBindingV1,
+  MEMORY_PURPOSE_IDS,
+} from "@/lib/memory/access-binding";
 import type { MemorySearchResult } from "@/lib/memory/types";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const actorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
 
@@ -88,6 +97,14 @@ function memoryResult(
       createdAt: "2026-09-06T00:00:00.000Z",
       updatedAt: "2026-09-06T00:00:00.000Z",
       embedding: [0.1, 0.3],
+      ...(id === "private-memory" ? {
+        accessBinding: buildUserPrivateMemoryAccessBindingV1({
+          tenantId: "tenant-a",
+          ownerActorId: actorId,
+          originPurpose: "user.remember",
+          accessBoundAt: "2026-09-06T00:00:00.000Z",
+        }),
+      } : {}),
     },
     score,
     reasons: ["matched preference"],
@@ -182,5 +199,41 @@ describe("actor-scoped context retrieval", () => {
       databaseMemoryAccessScope: accessScope(MEMORY_PURPOSE_IDS.read),
     })).rejects.toThrow("canonical memory retrieval purpose");
     expect(mocks.searchMemories).not.toHaveBeenCalled();
+  });
+
+  it("compares the legacy pack with an independently authorized v2 selection", async () => {
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "context-v2-shadow",
+      purpose: "agent.run",
+    });
+    const pack = await buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope(),
+      persistTrace: false,
+      limit: 8,
+      contextCompilerV2Shadow: {
+        runId: "run-context-v2",
+        executionScope,
+      },
+    });
+
+    expect(pack.compilerV2Shadow?.selectedEvidenceIds).toEqual([
+      "memory:private-memory",
+    ]);
+    expect(pack.compilerV2Shadow?.receipt).toMatchObject({
+      candidateCount: 2,
+      authorizedCandidateCount: 1,
+      selectedCount: 1,
+      legacySelectedCount: 2,
+      legacyOnlyCount: 1,
+      comparisonState: "diverged",
+    });
+    expect(JSON.stringify(pack.compilerV2Shadow?.receipt)).not.toContain(
+      "private-memory",
+    );
   });
 });
