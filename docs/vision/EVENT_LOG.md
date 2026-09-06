@@ -1473,3 +1473,20 @@ priority or eligibility without rewriting the underlying claim. Promotion
 remains a review proposal until the authorized actor decides it, and reviewed
 permanent deletion remains an independent barrier that also scrubs lifecycle
 and promotion projections.
+
+## Governed conversational memory controls
+
+P3.7 adds no parallel mutation or event path. `memory.inspect`,
+`memory.forget.preview`, `memory.lifecycle`, `memory.forget`, and
+`memory.export` all enter the governed tool executor and its actor-owned tool
+execution/event stream. Inspection and preview receipts contain opaque memory
+IDs, current state, bounded counts, enums, and digests. Lifecycle uses the P3.6
+metadata-only events above. Correction uses `memory.corrected`, and permanent
+forget retains the existing immutable deletion receipt and deletion event.
+
+The export tool records only the authenticated portable-route handoff, archive
+version, exact-owner scope, and declared include/exclude categories; the archive
+and its private contents are never copied into the tool event. The forget tool
+records the reviewed preview digest and resulting deletion-receipt digest, not
+memory content or the user's prose. A process-loss reconciliation must re-enter
+the same actor-purpose memory scope before finalizing the governed execution.

@@ -2020,8 +2020,31 @@ The authenticated production maintenance pass scanned 1,825 records, archived
 19 exact duplicates across 14 groups, and reduced the active exact-duplicate
 rate from 1.0851% to zero; an immediate replay made zero changes. Canonical
 Vercel and Fly protocol 1 are healthy at the same exact release. This closes
-P3.6; P3.7 is next. P3.1 remains externally authority-gated, and P12/P13 remain
-deferred.
+P3.6. P3.1 remains externally authority-gated, and P12/P13 remain deferred.
+
+P3.7 is complete at production release
+`84dbdd15b58831c318bc1108e65107cb935805f7`. The governed tool catalog now
+supports exact memory inspection, reviewed deletion preview, pin/unpin,
+archive/restore, and a transcript-safe portable-export handoff alongside the
+existing search, correction, and forget tools. Plain-language routing supplies
+the authenticated request scope to those tools, resolves exact records before a
+mutation, and requires the deletion-preview manifest digest plus ordinary human
+approval before permanent forgetting. Process-loss reconciliation re-enters the
+same private-memory scope before reading the immutable deletion receipt, so a
+committed private deletion cannot be replayed because its receipt is hidden from
+an unscoped reader.
+
+The Memory workspace renders visibility, boundary, and sensitivity as readable
+ownership language and downloads the verified v2 archive while announcing its
+receipt and exclusions. Forty-nine focused tool, routing, route, archive, and UI
+checks pass with TypeScript and the Next 16 production build. A focused
+authenticated browser canary created a user-private record, displayed `Only
+you`, `Personal`, and `Confidential`, then downloaded the v2 archive without a
+page error. Canonical Vercel and Fly protocol 1 are healthy at the exact release.
+No migration was required. This closes P3.7 for the authorized user-private and
+legacy-compatibility lanes; P3.1 still holds agent/mission/project/workspace
+sharing and any scope-broadening control until its authority resolver is active.
+P12/P13 remain deferred.
 
 The first P4.1 delivery is active only as a shadow comparison. Context Compiler
 v2 independently gates canonical source evidence, bound memory claims and

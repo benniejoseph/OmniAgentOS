@@ -1251,6 +1251,23 @@ no promoted memory is written until the actor approves it. The maintenance
 worker enumerates tenants, groups private records by their persisted owner, and
 re-enters that exact maintenance scope before changing lifecycle state.
 
+P3.7 exposes the supported memory controls through the same governed executor
+used by every other agent action. Search merges the legacy-compatibility and
+current actor-private lanes only in application memory. Inspection returns a
+bounded public record plus scope and retrieval-eligibility receipt. Lifecycle
+actions are reversible and receipt-bearing. Permanent forget is a separate
+approval-gated operation: the agent must inspect the exact record, obtain the
+current descendant/projection/run impact manifest, and submit its digest
+unchanged. Crash reconciliation re-enters the request actor's forget scope before
+reading the immutable receipt and forgotten shell. Portable export returns only
+the authenticated download route and declared inclusions/exclusions; archive
+content never enters the model transcript or tool ledger.
+
+The Memory workspace translates access bindings into readable visibility,
+boundary, and sensitivity labels. It does not reinterpret legacy scope or offer
+shared-scope mutation. Agent-, mission-, project-, and workspace-sharing remain
+behind P3.1's unresolved membership, grant, consent, and authority gates.
+
 The first P4.1 slice runs Context Compiler v2 beside, not instead of, the
 adaptive context engine. It normalizes the current candidate surfaces into
 canonical evidence, claims, summaries, and graph neighborhoods, then applies
