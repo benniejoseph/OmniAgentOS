@@ -204,11 +204,13 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
     writerModules: Object.freeze([
       "src/lib/capture/assets.ts",
       "src/lib/capture/recordings.ts",
+      "src/lib/storage/object-plane.ts",
     ]),
     mutationSurfaces: Object.freeze([
       "captured files",
       "recordings",
       "recording segments and transcription",
+      "private immutable asset objects and delivery revocation",
     ]),
     eventTypes: Object.freeze([
       "capture_asset.scope_bound",
@@ -220,6 +222,12 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "capture_recording.deleted",
       "capture_segment.scope_bound",
       "capture_segment.transcription_changed",
+      "asset_object.staged",
+      "asset_object.ready",
+      "asset_object.failed",
+      "asset_object.extraction_changed",
+      "asset_object.deleted",
+      "asset_object.scrubbed",
     ]),
   }),
   Object.freeze({

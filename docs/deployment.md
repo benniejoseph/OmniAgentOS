@@ -18,6 +18,8 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_PLAYWRIGHT_MCP_PREVIOUS_TOKEN`: optional Fly-only overlap secret during browser-service token rotation.
 - `CRON_SECRET`: authenticates the scheduled `/api/workflows/tick` backstop.
 - `OMNIAGENT_INTERNAL_AUTH_SECRET`: shared by the worker and production smoke runner. Generate an independent high-entropy value.
+- `BLOB_READ_WRITE_TOKEN`: private Vercel Blob store credential for immutable Capture asset candidates. Link only a private store; never expose this token or a direct Blob URL to clients.
+- `OMNIAGENT_ASSET_DELIVERY_SECRET`: optional independent 32+ byte HMAC key for five-minute, actor- and purpose-bound application delivery URLs. It falls back to a domain-separated key derived from `OMNIAGENT_INTERNAL_AUTH_SECRET` when unset.
 - `OMNIAGENT_CREDENTIAL_KEYRING`: independent versioned AES-256-GCM keyring for tenant-managed model and outbound MCP credentials, formatted as `{"activeKeyId":"v1","keys":{"v1":"<32-byte-base64url>"}}`. Without it, app-managed credential writes fail closed while deployment-environment provider keys remain available.
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, and `AWS_BEDROCK_*_MODEL`: optional deployment fallback for Bedrock. Prefer Settings-managed, tenant-scoped Bedrock credentials and assignments; never expose either credential path to the browser.
 - `OMNIAGENT_MCP_ALLOWED_HOSTS` and `OMNIAGENT_MCP_ALLOWED_ORIGINS`: optional comma-separated additions to the inbound MCP DNS-rebinding and browser-origin allowlists. The canonical `NEXT_PUBLIC_APP_URL` and Vercel deployment hosts are included automatically.
@@ -43,7 +45,7 @@ Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it,
 - Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. The Playwright service token uses this vault path and is scoped again with an opaque tenant+actor+run HMAC on every request. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
 - Model credentials and inbound MCP: `OMNIAGENT_CREDENTIAL_KEYRING`, `OMNIAGENT_MCP_ALLOWED_HOSTS`, and `OMNIAGENT_MCP_ALLOWED_ORIGINS`. MCP remains disabled per actor until enabled in Settings and requires a scoped, hash-only service key.
 - Workflow triggers: use dedicated `OMNIAGENT_TRIGGER_*` HMAC keys. Put legacy server-only names in `OMNIAGENT_TRIGGER_SECRET_ALLOWLIST`; platform credentials are always rejected, and unauthenticated triggers remain disabled at dispatch time in production.
-- Diagnostics/storage: `OMNIAGENT_LOG_PGVECTOR_FAILURES`, `OMNIAGENT_DATA_DIR`, and the demo-storage switch.
+- Diagnostics/storage: `BLOB_READ_WRITE_TOKEN`, `OMNIAGENT_ASSET_DELIVERY_SECRET`, `OMNIAGENT_LOG_PGVECTOR_FAILURES`, `OMNIAGENT_DATA_DIR`, and the demo-storage switch.
 
 Platform-provided `VERCEL_*` values supply deployment metadata and are not copied into `.env.example`. See [api-reference.md](api-reference.md) for route authentication and response expectations.
 

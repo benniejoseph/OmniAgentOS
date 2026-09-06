@@ -46,6 +46,10 @@ import {
   updateOperationJobPayload,
   type OperationJobRecord,
 } from "@/lib/operations/job-queue";
+import {
+  commitAssetObjectJob,
+  deleteAssetObjectJob,
+} from "@/lib/storage/object-plane";
 
 export const evaluationJobRequestSchema = z
   .object({
@@ -402,6 +406,17 @@ function executeBackgroundOperationInAccessScope(
   job: OperationJobRecord,
   abortSignal: AbortSignal,
 ) {
+  if (job.type === "asset.object.commit" || job.type === "asset.object.delete") {
+    const actorId = typeof job.payload.actorId === "string"
+      ? normalizeQueuedActorId(job.payload.actorId)
+      : undefined;
+    if (!actorId) {
+      throw new Error("Asset object job is missing its owner actor binding.");
+    }
+    return runWithDatabaseActorScope(job.tenantId, [actorId], () =>
+      executeBackgroundOperation(job, abortSignal)
+    );
+  }
   if (job.type !== "memory.consolidate") {
     return executeBackgroundOperation(job, abortSignal);
   }
@@ -501,9 +516,29 @@ async function resolveKnowledgeIngestActorId(
 async function executeBackgroundOperation(
   job: OperationJobRecord,
   abortSignal: AbortSignal,
-) {
+): Promise<Record<string, unknown>> {
   abortSignal.throwIfAborted();
   const request = job.payload.request;
+  if (job.type === "asset.object.commit") {
+    const object = await commitAssetObjectJob(job, { signal: abortSignal });
+    return {
+      objectId: object.id,
+      objectVersion: object.objectVersion,
+      status: object.status,
+      contentSha256: object.contentSha256,
+      byteCount: object.byteCount,
+    };
+  }
+  if (job.type === "asset.object.delete") {
+    const object = await deleteAssetObjectJob(job);
+    return "id" in object
+      ? {
+          objectId: object.id,
+          status: object.status,
+          scrubbedAt: object.scrubbedAt,
+        }
+      : object;
+  }
   if (job.type === "memory.consolidate") {
     const parsed = memoryConsolidationJobRequestSchema.parse(request);
     const run = await getAgentRun(parsed.runId, { tenantId: job.tenantId });

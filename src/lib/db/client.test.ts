@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the agent-run terminal receipt migration", () => {
+  it("pins the tenant-scoped asset object plane migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 96,
-      name: "agent_run_terminal_receipts_v1",
-      checksum: "423502a50edaef9e43b7b518506ed097893c901dcb1d8aa10619044ed5d2bc6d",
+      version: 97,
+      name: "tenant_scoped_asset_object_plane_v1",
+      checksum: "ff8189b689c62c78e596c35d022f88eac29d02de63c9b3aa9c10ee1d6e2f04d8",
     });
   });
 
