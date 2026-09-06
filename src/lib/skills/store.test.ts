@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { builtInSkills } from "@/lib/skills/catalog";
+import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
 import {
@@ -48,6 +49,11 @@ describe("agent and skill studio store", () => {
       role: "Daily chief of staff",
       description: "Keeps the owner focused on the highest-leverage work.",
       instructions: "Use evidence before recommendations and make uncertainty explicit.",
+      persona: {
+        ...DEFAULT_CUSTOM_AGENT_PERSONA,
+        charter: "Keep each day aligned to the owner's highest-leverage outcome.",
+        allowedDomains: ["Planning", "Daily review"],
+      },
       status: "ready",
       accent: "emerald",
       modelPolicy: "openai_fast",
@@ -59,12 +65,20 @@ describe("agent and skill studio store", () => {
     }, scope);
 
     expect((await listAgentSkills(scope)).some((item) => item.id === skill.id)).toBe(true);
-    expect(await listCustomAgents(scope)).toMatchObject([{ id: agent.id, skillIds: [skill.id] }]);
+    expect(await listCustomAgents(scope)).toMatchObject([{
+      id: agent.id,
+      skillIds: [skill.id],
+      persona: {
+        charter: "Keep each day aligned to the owner's highest-leverage outcome.",
+        allowedDomains: ["Planning", "Daily review"],
+      },
+    }]);
     expect(await listCustomAgents({ tenantId: "private", actorId: "someone-else" })).toEqual([]);
 
     const patched = await updateCustomAgent(agent.id, customAgentPatchSchema.parse({
       description: "Updated without changing the configured capabilities.",
       accent: "blue",
+      persona: { ...agent.persona, voice: "Warm, brief, and decisive." },
     }), scope);
     expect(patched).toMatchObject({
       description: "Updated without changing the configured capabilities.",
@@ -75,6 +89,7 @@ describe("agent and skill studio store", () => {
       memoryScope: "project",
       skillIds: [skill.id],
       toolIds: ["runs.list"],
+      persona: { voice: "Warm, brief, and decisive." },
     });
 
     expect(await deleteAgentSkill(skill.id, scope)).toBe(true);

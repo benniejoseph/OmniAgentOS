@@ -370,6 +370,32 @@
   letter-spacing: -.045em;
 }
 .shell :global(.agent-status-chip) { border: 1px solid currentColor; background: var(--arsenal-surface); }
+.personaCard {
+  display: grid;
+  gap: .65rem;
+  margin-top: 1rem;
+  border: 1px solid color-mix(in oklab, var(--agent-color) 24%, var(--arsenal-line));
+  border-radius: 1rem;
+  padding: .9rem;
+  background: color-mix(in oklab, var(--agent-color) 4%, var(--arsenal-surface));
+}
+.personaCard > p,
+.personaGrid span {
+  color: var(--agent-color);
+  font-size: .52rem;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.personaCard > strong { color: var(--arsenal-ink); font-size: .72rem; line-height: 1.5; }
+.personaGrid { display: grid; gap: .65rem; }
+.personaGrid div { border-top: 1px solid var(--arsenal-line); padding-top: .55rem; }
+.personaGrid p { margin-top: .2rem; color: var(--arsenal-muted); font-size: .63rem; line-height: 1.45; }
+.personaDomains { display: flex; flex-wrap: wrap; gap: .3rem; }
+.personaDomains span { border-radius: 999px; padding: .23rem .45rem; color: var(--agent-color); background: color-mix(in oklab, var(--agent-color) 9%, transparent); font-size: .54rem; font-weight: 700; }
+.personaCard details { border-top: 1px solid var(--arsenal-line); padding-top: .55rem; color: var(--arsenal-muted); font-size: .62rem; }
+.personaCard summary { cursor: pointer; color: var(--arsenal-ink); font-weight: 700; }
+.personaCard ul { display: grid; gap: .3rem; margin-top: .5rem; padding-left: 1rem; line-height: 1.45; list-style: disc; }
 .shell :global(.agent-performance) {
   border-color: color-mix(in oklab, var(--agent-color) 28%, var(--arsenal-line));
   border-radius: 1rem;
@@ -432,6 +458,15 @@
 .shell :global(.builder-choice.is-selected) {
   border-color: color-mix(in oklab, var(--arsenal-primary) 56%, var(--arsenal-line));
   background: color-mix(in oklab, var(--arsenal-primary) 8%, var(--arsenal-surface));
+}
+.personaNotice {
+  border: 1px solid color-mix(in oklab, var(--arsenal-primary) 28%, var(--arsenal-line));
+  border-radius: .8rem;
+  padding: .7rem .8rem;
+  color: var(--arsenal-muted);
+  background: color-mix(in oklab, var(--arsenal-primary) 5%, transparent);
+  font-size: .65rem;
+  line-height: 1.5;
 }
 
 @keyframes fieldPulse {
