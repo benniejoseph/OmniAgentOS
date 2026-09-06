@@ -823,6 +823,7 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         maxToolCallsPerTurn: event.maxToolCallsPerTurn,
         maxToolResultChars: event.maxToolResultChars,
         maxOutputTokens: event.maxOutputTokens,
+        budgetLimits: event.budgetLimits,
         approvalPolicy: event.approvalPolicy,
         autonomy: event.autonomy,
         learningState: event.learningState,

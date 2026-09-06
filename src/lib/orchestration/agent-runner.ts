@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { AGENT_MAX_OUTPUT_TOKENS, AGENT_MAX_TOOL_STEPS, AGENT_REASONING_EFFORT, hasAnthropicKey, hasGeminiKey, hasOpenAIKey } from "@/lib/config";
+import {
+  AGENT_MAX_OUTPUT_TOKENS,
+  AGENT_MAX_TOOL_STEPS,
+  AGENT_REASONING_EFFORT,
+  hasAnthropicKey,
+  hasGeminiKey,
+  hasOpenAIKey,
+} from "@/lib/config";
+import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { getAgentLearningGuidance } from "@/lib/agents/learning";
 import {
   analyzeBrowserCapabilityIntent,
@@ -165,6 +173,7 @@ export async function* runAgent(
   abortSignal?: AbortSignal,
 ): AsyncGenerator<AgentEvent> {
   const mode = request.mode || "orchestrate";
+  const budgetLimits = request.budgetLimits || DEFAULT_AGENT_RUN_BUDGET_LIMITS;
   const safeMessages = redactSensitive(
     request.messages,
   ) as AgentRunRequest["messages"];
@@ -286,14 +295,21 @@ export async function* runAgent(
       autonomy: request.agentProfile?.autonomy || "governed",
       approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
       budget: {
-        maxModelTurns: AGENT_MAX_TOOL_STEPS + 1,
-        maxToolCalls: AGENT_MAX_TOOL_STEPS * MAX_TOOL_CALLS_PER_TURN,
-        maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+        maxModelTurns: budgetLimits.modelTurns,
+        maxToolCalls: budgetLimits.toolCalls,
+        maxOutputTokens: budgetLimits.tokens,
         maxToolResultBytes:
           AGENT_MAX_TOOL_STEPS *
           MAX_TOOL_CALLS_PER_TURN *
           MAX_TOOL_RESULT_CHARS,
         maxExternalEffects: AGENT_MAX_TOOL_STEPS * MAX_TOOL_CALLS_PER_TURN,
+        maxCostMicrousd: budgetLimits.costMicrousd,
+        maxWallClockMs: budgetLimits.wallTimeMs,
+        maxBrowserActions: budgetLimits.browserActions,
+        maxAgents: budgetLimits.agents,
+        maxFanOut: budgetLimits.fanOut,
+        maxRetries: budgetLimits.retries,
+        maxReplans: budgetLimits.replans,
       },
     });
     await appendRunContractEventSafely(
@@ -971,6 +987,7 @@ export async function* runAgent(
       maxToolCallsPerTurn: MAX_TOOL_CALLS_PER_TURN,
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,
       maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+      budgetLimits,
       approvalPolicy: request.agentProfile?.approvalPolicy || "risk_based",
       autonomy: request.agentProfile?.autonomy || "governed",
       learningState: request.learning?.state || "cold_start",

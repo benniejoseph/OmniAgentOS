@@ -165,7 +165,8 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
       "contextDecision", "contextMode", "contextCount", "contextTraceId",
       "liveWeb", "toolCount", "approvalToolCount", "toolboxSha256",
       "instructionsSha256", "maxToolSteps", "maxToolCallsPerTurn",
-      "maxToolResultChars", "maxOutputTokens", "approvalPolicy", "autonomy",
+      "maxToolResultChars", "maxOutputTokens", "budgetLimits",
+      "approvalPolicy", "autonomy",
       "learningState", "learningSampleSize", "learningGuidanceCount",
       "learningGuidanceSha256",
     ]);

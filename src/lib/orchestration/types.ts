@@ -2,6 +2,7 @@ import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { AiUsageCallInput } from "@/lib/usage/types";
+import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
 
 export type ChatRole = "user" | "assistant";
 
@@ -68,6 +69,7 @@ export type AgentHarnessEvent = {
   maxToolCallsPerTurn: number;
   maxToolResultChars: number;
   maxOutputTokens: number;
+  budgetLimits: RunBudgetCountersV1;
   approvalPolicy: "always" | "risk_based" | "read_only";
   autonomy: "assist" | "governed" | "execute";
   learningState?: "cold_start" | "observing" | "reinforced" | "supported";
@@ -130,6 +132,8 @@ export type AgentRunRequest = {
   };
   /** Trusted request-bound access for an explicit owner-reviewed selection. */
   promptMemoryAccess?: RequestMemoryAccessV1;
+  /** Server-validated effective limits; delegated callers may only narrow them. */
+  budgetLimits?: RunBudgetCountersV1;
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */
   preclaimedRunId?: string;
   threadId?: string;

@@ -171,6 +171,18 @@ type StreamEvent =
       maxToolCallsPerTurn: number;
       maxToolResultChars: number;
       maxOutputTokens: number;
+      budgetLimits: {
+        modelTurns: number;
+        tokens: number;
+        costMicrousd: number;
+        wallTimeMs: number;
+        toolCalls: number;
+        browserActions: number;
+        agents: number;
+        fanOut: number;
+        retries: number;
+        replans: number;
+      };
       approvalPolicy: "always" | "risk_based" | "read_only";
       autonomy: "assist" | "governed" | "execute";
       learningState?: "cold_start" | "observing" | "reinforced" | "supported";
@@ -4166,6 +4178,7 @@ function streamEventLabel(event: StreamEvent) {
       skipped: "memory retrieval skipped as unnecessary",
     }[event.contextDecision];
     const tools = `${event.toolCount} governed tool${event.toolCount === 1 ? "" : "s"} available`;
+    const budget = `${event.budgetLimits.modelTurns} turns, ${event.budgetLimits.toolCalls} tool calls, ${event.budgetLimits.tokens.toLocaleString()} tokens, ${(event.budgetLimits.wallTimeMs / 1_000).toFixed(0)}s`;
     const learning = event.learningSampleSize
       ? `informed by ${event.learningSampleSize} prior outcome${event.learningSampleSize === 1 ? "" : "s"}`
       : "learning baseline started";
@@ -4177,7 +4190,7 @@ function streamEventLabel(event: StreamEvent) {
         : event.provider === "anthropic"
           ? "Anthropic"
           : "Local fallback";
-    return `${provider} · ${event.tier} route · ${context} · ${tools} · ${learning}.${reason ? ` ${reason}` : ""}`;
+    return `${provider} · ${event.tier} route · ${context} · ${tools} · budget ${budget} · ${learning}.${reason ? ` ${reason}` : ""}`;
   }
   if (event.type === "model") {
     const cost = event.estimatedCostUsd === undefined ? "cost rate not configured" : `$${event.estimatedCostUsd.toFixed(6)}`;
