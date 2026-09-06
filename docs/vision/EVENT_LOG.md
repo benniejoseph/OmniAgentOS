@@ -1560,3 +1560,21 @@ and learned rerank. The allocator may remove or truncate a candidate but cannot
 add evidence, widen scope, change lifecycle state, or alter the P4.1 compiler's
 authorization decision. Existing retrieval-profile JSON storage carries the
 receipt without a migration.
+
+## Reviewed context selection and use receipt
+
+P4.6 adds `run.context.receipt` to the exact actor-owned run stream. The event
+is appended after final authorized packing and strictly before model
+disclosure. It records schema version, opaque run ID, preview/lock identifiers,
+candidate, inclusion, exclusion, actually-used, and selected-but-dropped
+evidence IDs, bounded counts, and selection, pack, context-manifest,
+compiled-context, budget, and receipt digests. It contains no query, evidence
+content, raw preview or lock token, credential, provider payload, tenant/actor
+identity, or private reasoning.
+
+The signed preview and lock are request-bound authorization checks, not domain
+events and not grants. The runner must reverify the lock and persist the receipt
+under the run's original execution scope; validation or persistence failure
+blocks provider disclosure. Run detail and trajectory read the same immutable
+event projection so later UI inspection cannot diverge from execution history.
+No database migration is required.

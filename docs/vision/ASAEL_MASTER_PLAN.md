@@ -2124,8 +2124,23 @@ its content-free receipt persists in the existing retrieval profile. The
 16-case gate achieved 100% compliance, lineage accuracy, and priority-tier
 coverage with 0.96% average duplicate share and 97.26% utilization. Production
 returned matching pack/profile receipts and all web, gateway, and worker-lane
-health checks passed. P4.6 preview, exclusion, locking, and run-bound receipts
-is next.
+health checks passed.
+
+P4.6 is complete at production release
+`1e91e219c9f5cf124000c71afa72f886149d9714`. Retrieval Plan now issues a
+short-lived signed preview bound to the authenticated actor, exact query,
+candidate order, and context-pack digest. The user can include or exclude any
+candidate and lock that reviewed partition; any goal, scope, or selection
+change invalidates the lock. Direct and durable workflow execution reverify
+the lock before use and never persist its raw token. Before model disclosure,
+the run writes a strict content-free receipt that binds previewed, included,
+excluded, actually-used, and selected-but-dropped evidence IDs to the resolved
+manifest, compiled context, and budget digests. The Conversation Results view
+loads the same receipt from run detail so review and actual use remain
+inspectable after completion. Thirty-seven focused tests, affected lint,
+TypeScript, and the production build passed; no migration was required.
+Canonical Vercel, Fly protocol 1, and all activated worker lanes are healthy on
+the exact release. P4.7 provider-bound continuation and caching is next.
 
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
