@@ -53,7 +53,7 @@ export async function invalidateRunsForDeletedContext(input: {
         continuation = NULL,
         completed_at = ${invalidatedAt}
     WHERE run.tenant_id = ${input.tenantId}
-      AND run.status IN ('running', 'waiting_approval', 'resuming')
+      AND run.status IN ('running', 'waiting_clarification', 'waiting_approval', 'resuming')
       AND EXISTS (
         SELECT 1
         FROM omni_agent_events event

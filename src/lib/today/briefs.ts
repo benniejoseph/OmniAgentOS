@@ -514,7 +514,7 @@ export async function generateDailyBrief(options: {
     listProjects(8, ownerScope),
   ]);
   const openItems = items.filter((item) => item.status === "open");
-  const activeStatuses = new Set(["running", "queued", "pending", "waiting_approval", "paused"]);
+  const activeStatuses = new Set(["running", "queued", "pending", "waiting_clarification", "waiting_approval", "paused"]);
   const activeWork = [
     ...runs.filter((run) => activeStatuses.has(run.status)).map((run) => ({
       type: "agent",

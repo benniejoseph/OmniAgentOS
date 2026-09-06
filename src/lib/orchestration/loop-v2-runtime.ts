@@ -17,6 +17,8 @@ import {
 import {
   finalizeLoopV2Run,
   recordLoopV2Checkpoint,
+  resumeLoopV2Clarification,
+  waitForLoopV2Clarification,
   type LoopV2CheckpointWriterSql,
 } from "@/lib/orchestration/loop-v2-store";
 import type {
@@ -50,12 +52,15 @@ import { getGovernedTool } from "@/lib/tools/registry";
 
 const LOOP_V2_LIST_INPUT = Object.freeze({ limit: 6 });
 const LOOP_V2_RESULT_LIMIT = 5;
+const LOOP_V2_CLARIFICATION_PROMPT =
+  "Do you want me to list your five most recent agent runs? Reply “yes” to continue.";
 
 const recentRunSchema = z.object({
   id: z.string().min(1).max(240),
   status: z.enum([
     "queued",
     "running",
+    "waiting_clarification",
     "waiting_approval",
     "resuming",
     "completed",
@@ -87,6 +92,7 @@ export type LoopV2ReadOnlyCanaryCandidate = Readonly<{
   requestedSpecialistIds?: readonly string[];
   missionId?: string;
   contextEvidenceIds?: readonly string[];
+  resumeRunId?: string;
 }>;
 
 export type LoopV2ReadOnlyCanaryRequest = Readonly<{
@@ -98,6 +104,7 @@ export type LoopV2ReadOnlyCanaryRequest = Readonly<{
   securityContext: SecurityContext;
   executionScope: ExecutionScope;
   enrollment: LoopV2ReadOnlyCanaryEnrollment;
+  resumeRunId?: string;
 }>;
 
 export type LoopV2RuntimeDependencies = Readonly<{
@@ -107,6 +114,8 @@ export type LoopV2RuntimeDependencies = Readonly<{
   appendAssistantTurn: typeof appendThreadTurn;
   executeTool: typeof executeGovernedTool;
   persistCheckpoint: typeof persistCheckpoint;
+  waitForClarification: typeof persistClarificationWait;
+  resumeClarification: typeof persistClarificationResume;
   finalizeRun: typeof persistTerminalCheckpoint;
   failUncheckpointedRun: typeof failAgentRun;
 }>;
@@ -118,6 +127,8 @@ const runtimeDependencies: LoopV2RuntimeDependencies = Object.freeze({
   appendAssistantTurn: appendThreadTurn,
   executeTool: executeGovernedTool,
   persistCheckpoint,
+  waitForClarification: persistClarificationWait,
+  resumeClarification: persistClarificationResume,
   finalizeRun: persistTerminalCheckpoint,
   failUncheckpointedRun: failAgentRun,
 });
@@ -129,14 +140,18 @@ export function isLoopV2ReadOnlyCanaryCandidate(
     hasDatabaseUrl() &&
       input.tenantId.trim() &&
       input.mode === "orchestrate" &&
-      input.route === "direct" &&
+      (input.route === "direct" ||
+        Boolean(input.resumeRunId && input.route === "clarify")) &&
       !input.requiresApproval &&
       input.requestUsesMessageField &&
       (!input.requestedAgentId || input.requestedAgentId === "atlas") &&
       !input.requestedSpecialistIds?.length &&
       !input.missionId &&
       !input.contextEvidenceIds?.length &&
-      isRecentRunsIntent(input.message),
+      (input.resumeRunId
+        ? isClarificationConfirmation(input.message)
+        : isRecentRunsIntent(input.message) ||
+          isAmbiguousRecentRunsIntent(input.message)),
   );
 }
 
@@ -164,13 +179,13 @@ export async function* runLoopV2ReadOnlyCanary(
   dependencies: LoopV2RuntimeDependencies = runtimeDependencies,
 ): AsyncGenerator<AgentEvent> {
   const context = request.securityContext;
-  const executionScope = request.executionScope;
-  let run: Awaited<ReturnType<typeof createAgentRun>> | undefined;
+  let executionScope = request.executionScope;
+  let runId: string | undefined;
   let current: LoopV2Checkpoint | undefined;
 
   const emit = async (event: AgentEvent) => {
-    if (!run) throw new Error("Loop v2 cannot emit before creating its run.");
-    await dependencies.appendEvent(run.id, event, {
+    if (!runId) throw new Error("Loop v2 cannot emit before creating its run.");
+    await dependencies.appendEvent(runId, event, {
       tenantId: context.tenantId,
       executionScope,
     });
@@ -196,48 +211,117 @@ export async function* runLoopV2ReadOnlyCanary(
   try {
     assertRuntimeRequest(request);
     throwIfAborted(abortSignal);
-    run = await dependencies.createRun({
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      threadId: request.threadId,
-      mode: request.mode,
-      prompt: request.message,
-      messages: [...request.messages],
-      model: LOOP_V2_ENGINE_VERSION_ID,
-      agentId: request.agentId,
-      specialistIds: [request.agentId],
-    });
-    await dependencies.bindRunScope(run.id, executionScope, {
-      tenantId: context.tenantId,
-    });
-    const root = createInitialLoopV2Checkpoint({
-      tenantId: context.tenantId,
-      runId: run.id,
-      ownerActorId: context.actorId,
-      executionScope,
-      enginePin: request.enrollment.enginePin,
-    });
-    await dependencies.persistCheckpoint(root, executionScope);
-    current = root;
+    if (request.resumeRunId) {
+      const resumed = await dependencies.resumeClarification({
+        tenantId: context.tenantId,
+        runId: request.resumeRunId,
+        threadId: request.threadId!,
+        ownerActorId: context.actorId,
+        agentId: request.agentId,
+        requestExecutionScope: request.executionScope,
+        clarificationReceiptSha256: clarificationReceiptSha256(
+          request.resumeRunId,
+          request.message,
+        ),
+      });
+      runId = resumed.runId;
+      executionScope = resumed.executionScope;
+      current = resumed.checkpoint;
+      yield await emit({ type: "run", runId, threadId: resumed.threadId });
+      yield await emit({
+        type: "status",
+        label: "Loop v2 clarification received",
+        detail: "The original actor-bound run resumed from its persisted checkpoint.",
+      });
+    } else {
+      const run = await dependencies.createRun({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        threadId: request.threadId,
+        mode: request.mode,
+        prompt: request.message,
+        messages: [...request.messages],
+        model: LOOP_V2_ENGINE_VERSION_ID,
+        agentId: request.agentId,
+        specialistIds: [request.agentId],
+      });
+      runId = run.id;
+      await dependencies.bindRunScope(runId, executionScope, {
+        tenantId: context.tenantId,
+      });
+      const root = createInitialLoopV2Checkpoint({
+        tenantId: context.tenantId,
+        runId,
+        ownerActorId: context.actorId,
+        executionScope,
+        enginePin: request.enrollment.enginePin,
+      });
+      await dependencies.persistCheckpoint(root, executionScope);
+      current = root;
 
-    yield await emit({ type: "run", runId: run.id, threadId: request.threadId });
-    yield await emit({
-      type: "status",
-      label: "Loop v2 canary",
-      detail: "Running one bounded read-only task through persisted checkpoints.",
-    });
+      yield await emit({ type: "run", runId, threadId: request.threadId });
+      yield await emit({
+        type: "status",
+        label: "Loop v2 canary",
+        detail: "Running one bounded read-only task through persisted checkpoints.",
+      });
 
-    await transition("plan_bound", {
-      taskClass: "single_read_only_governed_tool",
-      toolId: "runs.list",
-      toolInputSha256: sourceContractSha256(LOOP_V2_LIST_INPUT),
-      requestedOutcomeSha256: sourceContractSha256(
-        normalizedRecentRunsIntent(request.message),
-      ),
-    });
+      if (isAmbiguousRecentRunsIntent(request.message)) {
+        const waiting = advanceLoopV2Checkpoint({
+          current,
+          executionScope,
+          trigger: "ambiguity_detected",
+          outputReceiptSha256: sourceContractSha256({
+            reasonCode: "ambiguous_read_target",
+            clarificationPromptSha256: sourceContractSha256(
+              LOOP_V2_CLARIFICATION_PROMPT,
+            ),
+          }),
+        });
+        await dependencies.waitForClarification(
+          waiting,
+          executionScope,
+          { clarificationPrompt: LOOP_V2_CLARIFICATION_PROMPT },
+        );
+        current = waiting;
+        if (request.threadId) {
+          await dependencies.appendAssistantTurn({
+            tenantId: context.tenantId,
+            threadId: request.threadId,
+            runId,
+            role: "assistant",
+            content: LOOP_V2_CLARIFICATION_PROMPT,
+          }).catch((error: unknown) => {
+            console.error(
+              "Loop v2 clarification turn persistence failed.",
+              safeErrorMessage(error),
+            );
+          });
+        }
+        const event: AgentEvent = {
+          type: "clarification",
+          threadId: request.threadId!,
+          runId,
+          message: LOOP_V2_CLARIFICATION_PROMPT,
+          reasonCode: "ambiguous_read_target",
+        };
+        await emit(event);
+        yield event;
+        return;
+      }
+
+      await transition("plan_bound", {
+        taskClass: "single_read_only_governed_tool",
+        toolId: "runs.list",
+        toolInputSha256: sourceContractSha256(LOOP_V2_LIST_INPUT),
+        requestedOutcomeSha256: sourceContractSha256(
+          normalizedRecentRunsIntent(request.message),
+        ),
+      });
+    }
     throwIfAborted(abortSignal);
 
-    const callId = `${run.id}:runs.list:1`;
+    const callId = `${runId}:runs.list:1`;
     const toolScope = deriveExecutionScope(executionScope, {
       causationId: callId,
       purpose: "agent.tool.execute",
@@ -315,7 +399,7 @@ export async function* runLoopV2ReadOnlyCanary(
 
     const observed = runsListResultSchema.parse(execution.result);
     const recentRuns = observed.runs
-      .filter((candidate) => candidate.id !== run?.id)
+      .filter((candidate) => candidate.id !== runId)
       .slice(0, LOOP_V2_RESULT_LIMIT);
     await transition("observation_recorded", {
       executionId: execution.record.id,
@@ -365,7 +449,7 @@ export async function* runLoopV2ReadOnlyCanary(
       await dependencies.appendAssistantTurn({
         tenantId: context.tenantId,
         threadId: request.threadId,
-        runId: run.id,
+        runId,
         role: "assistant",
         content: response,
       }).catch((error: unknown) => {
@@ -377,7 +461,7 @@ export async function* runLoopV2ReadOnlyCanary(
     }
     await appendTerminalEventSafely(
       dependencies,
-      run.id,
+      runId,
       { type: "done", response },
       context.tenantId,
       executionScope,
@@ -388,8 +472,9 @@ export async function* runLoopV2ReadOnlyCanary(
     const message = canceled
       ? "Loop v2 run canceled after the client stopped the request."
       : safeErrorMessage(error);
-    let terminalCommitted = current?.toState === "finish";
-    if (run && current && current.toState !== "finish") {
+    let terminalCommitted = current?.toState === "finish" ||
+      current?.toState === "clarify";
+    if (runId && current && current.toState !== "finish") {
       try {
         if (canceled) {
           const terminal = advanceLoopV2Checkpoint({
@@ -441,18 +526,18 @@ export async function* runLoopV2ReadOnlyCanary(
         );
       }
     }
-    if (run && !terminalCommitted) {
-      await dependencies.failUncheckpointedRun(run.id, message, {
+    if (runId && !terminalCommitted) {
+      await dependencies.failUncheckpointedRun(runId, message, {
         tenantId: context.tenantId,
       }).catch(() => undefined);
     }
-    if (run) {
+    if (runId) {
       const event: AgentEvent = canceled
         ? { type: "canceled", message }
         : { type: "error", message };
       await appendTerminalEventSafely(
         dependencies,
-        run.id,
+        runId,
         event,
         context.tenantId,
         executionScope,
@@ -474,7 +559,10 @@ function assertRuntimeRequest(request: LoopV2ReadOnlyCanaryRequest) {
     request.executionScope.purpose !== "agent.loop.v2.read_only_canary" ||
     request.mode !== "orchestrate" ||
     request.agentId !== "atlas" ||
-    !isRecentRunsIntent(request.message)
+    (request.resumeRunId
+      ? !request.threadId || !isClarificationConfirmation(request.message)
+      : !isRecentRunsIntent(request.message) &&
+        (!request.threadId || !isAmbiguousRecentRunsIntent(request.message)))
   ) {
     throw new Error("Loop v2 runtime request is outside the read-only canary.");
   }
@@ -483,6 +571,25 @@ function assertRuntimeRequest(request: LoopV2ReadOnlyCanaryRequest) {
 function isRecentRunsIntent(value: string) {
   return /^(?:please )?(?:show|list|get)(?: me)?(?: my)? (?:recent|latest)(?: agent)? runs(?: please)?$/
     .test(normalizedRecentRunsIntent(value));
+}
+
+function isAmbiguousRecentRunsIntent(value: string) {
+  return /^(?:please )?(?:show|list|get)(?: me)?(?: my)?(?: agent)? runs(?: please)?$/
+    .test(normalizedRecentRunsIntent(value));
+}
+
+function isClarificationConfirmation(value: string) {
+  const normalized = normalizedRecentRunsIntent(value);
+  return isRecentRunsIntent(value) ||
+    /^(?:yes|yes please|continue|list recent runs)$/.test(normalized);
+}
+
+function clarificationReceiptSha256(runId: string, value: string) {
+  return sourceContractSha256({
+    domain: "agent-loop-v2-clarification-response-v1",
+    runId,
+    response: normalizedRecentRunsIntent(value),
+  });
 }
 
 function normalizedRecentRunsIntent(value: string) {
@@ -540,6 +647,40 @@ async function persistCheckpoint(
         (sql: LoopV2CheckpointWriterSql) =>
           recordLoopV2Checkpoint({ checkpoint, executionScope }, sql),
       ) as Promise<Awaited<ReturnType<typeof recordLoopV2Checkpoint>>>,
+  );
+}
+
+async function persistClarificationWait(
+  checkpoint: LoopV2Checkpoint,
+  executionScope: ExecutionScope,
+  wait: { clarificationPrompt: string },
+) {
+  return runWithDatabaseActorScope(
+    checkpoint.tenantId,
+    [checkpoint.ownerActorId],
+    () =>
+      getSql().transaction(
+        (sql: LoopV2CheckpointWriterSql) =>
+          waitForLoopV2Clarification({
+            checkpoint,
+            executionScope,
+            clarificationPrompt: wait.clarificationPrompt,
+          }, sql),
+      ) as Promise<Awaited<ReturnType<typeof waitForLoopV2Clarification>>>,
+  );
+}
+
+async function persistClarificationResume(
+  input: Parameters<typeof resumeLoopV2Clarification>[0],
+) {
+  return runWithDatabaseActorScope(
+    input.tenantId,
+    [input.ownerActorId],
+    () =>
+      getSql().transaction(
+        (sql: LoopV2CheckpointWriterSql) =>
+          resumeLoopV2Clarification(input, sql),
+      ) as Promise<Awaited<ReturnType<typeof resumeLoopV2Clarification>>>,
   );
 }
 

@@ -195,7 +195,7 @@ type StreamEvent =
   | { type: "waiting_approval"; executionId?: string; toolId?: string; message?: string }
   | { type: "done"; response?: string; grounding?: GroundingReport }
   | { type: "delegated"; threadId?: string; workflowId?: string; missionId?: string; acknowledgement?: string; reason?: string }
-  | { type: "clarification"; threadId?: string; message?: string; reasonCode?: "ambiguous_destructive_target" | "ambiguous_known_procedure" }
+  | { type: "clarification"; runId?: string; threadId?: string; message?: string; reasonCode?: "ambiguous_destructive_target" | "ambiguous_known_procedure" | "ambiguous_read_target" }
   | { type: "canceled"; message?: string }
   | { type: "error"; message?: string };
 
@@ -253,6 +253,7 @@ export function AgentRunsWorkspace({
   const [workflowSyncError, setWorkflowSyncError] = useState<string>();
   const [runAnnouncement, setRunAnnouncement] = useState("Run workspace ready.");
   const [waitingApproval, setWaitingApproval] = useState<Extract<StreamEvent, { type: "waiting_approval" }>>();
+  const [clarificationRunId, setClarificationRunId] = useState("");
   const [threadId, setThreadId] = useState(initialThreadId || "");
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [turns, setTurns] = useState<ThreadTurn[]>([]);
@@ -357,7 +358,9 @@ export function AgentRunsWorkspace({
       !["completed", "failed", "canceled"].includes(activeWorkflowStatus),
   );
   const directRunInProgress = Boolean(
-    loading === "agent" || waitingApproval || (activeAgentRunId && !agentRunTerminal),
+    loading === "agent" ||
+      waitingApproval ||
+      (activeAgentRunId && !agentRunTerminal && !clarificationRunId),
   );
   const conversationLocked = workflowInProgress || directRunInProgress;
   const workflowReport = stringPath(workflowRun, "run.result.report", "");
@@ -406,6 +409,9 @@ export function AgentRunsWorkspace({
     if (waitingApproval) {
       return { label: "Approval required", tone: "warning" as const };
     }
+    if (clarificationRunId) {
+      return { label: "Clarification needed", tone: "warning" as const };
+    }
     if (streamEvents.some((event) => event.type === "error")) {
       return { label: "Failed", tone: "danger" as const };
     }
@@ -434,6 +440,7 @@ export function AgentRunsWorkspace({
   }, [
     activeWorkflowStatus,
     agentResponse,
+    clarificationRunId,
     contextPack,
     loading,
     streamEvents,
@@ -666,8 +673,27 @@ export function AgentRunsWorkspace({
         void refreshBrowserActivity(activeAgentRunId);
         const statusChanged = Boolean(status && status !== directRunStatusRef.current);
         if (status) directRunStatusRef.current = status;
-        if (status === "waiting_approval") {
+        if (status === "waiting_clarification") {
+          const clarification = stringValue(
+            run.response,
+            "Reply to the clarification request to continue this run.",
+          );
+          setWaitingApproval(undefined);
+          setClarificationRunId(activeAgentRunId);
+          setAgentResponse(clarification);
+          setStreamEvents((current) => current.some((event) =>
+            event.type === "clarification" && event.runId === activeAgentRunId
+          ) ? current : [...current, {
+            type: "clarification",
+            runId: activeAgentRunId,
+            threadId: stringValue(run.threadId) || threadId || undefined,
+            message: clarification,
+            reasonCode: "ambiguous_read_target",
+          }]);
+          if (statusChanged) setRunAnnouncement("Agent run is waiting for clarification.");
+        } else if (status === "waiting_approval") {
           const approval = asRecord(run.waitingApproval);
+          setClarificationRunId("");
           setWaitingApproval({
             type: "waiting_approval",
             executionId: stringValue(approval.executionId),
@@ -677,6 +703,7 @@ export function AgentRunsWorkspace({
           if (statusChanged) setRunAnnouncement("Agent run is waiting for approval.");
         } else if (status === "running" || status === "resuming" || status === "queued") {
           setWaitingApproval(undefined);
+          setClarificationRunId("");
           if (statusChanged) {
             setRunAnnouncement(status === "resuming" ? "Approved. The task is resuming." : `Agent run is ${status}.`);
           }
@@ -684,6 +711,7 @@ export function AgentRunsWorkspace({
           const response = stringValue(run.response);
           const nextGrounding = asRecord(run.grounding) as unknown as GroundingReport;
           setWaitingApproval(undefined);
+          setClarificationRunId("");
           setAgentResponse(response);
           if (run.grounding) setGrounding(nextGrounding);
           setStreamEvents((current) => current.some((event) => event.type === "done")
@@ -700,11 +728,13 @@ export function AgentRunsWorkspace({
         } else if (status === "failed") {
           const message = stringValue(run.error, "Agent run failed.");
           setWaitingApproval(undefined);
+          setClarificationRunId("");
           setError(message);
           setStreamEvents((current) => [...current, { type: "error", message }]);
           setRunAnnouncement("Agent run failed.");
         } else if (status === "canceled") {
           setWaitingApproval(undefined);
+          setClarificationRunId("");
           setStreamEvents((current) => [...current, { type: "canceled", message: "The task was canceled." }]);
           setRunAnnouncement("Agent run canceled.");
         }
@@ -1332,6 +1362,7 @@ export function AgentRunsWorkspace({
       setRunAnnouncement("Context preparation finished. Review the selection, then run the task again.");
       return;
     }
+    const resumeRunId = clarificationRunId || undefined;
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setLoading("agent");
@@ -1341,8 +1372,8 @@ export function AgentRunsWorkspace({
     setWorkflowSyncError(undefined);
     setAgentResponse("");
     setGrounding(undefined);
-    setActiveAgentRunId("");
-    currentRunIdRef.current = "";
+    setActiveAgentRunId(resumeRunId || "");
+    currentRunIdRef.current = resumeRunId || "";
     clearBrowserActivity();
     setRunFeedback(undefined);
     setStreamEvents([{ type: "status", label: "Starting", detail: "Opening the durable conversation." }]);
@@ -1369,6 +1400,7 @@ export function AgentRunsWorkspace({
         body: JSON.stringify({
           mode,
           threadId: threadId || undefined,
+          resumeRunId,
           missionId: initialMissionId || undefined,
           message: submittedGoal,
           requestId,
@@ -1411,6 +1443,7 @@ export function AgentRunsWorkspace({
         if (event.type === "delegated") {
           terminalEvent = "delegated";
           agentRequestIdRef.current = "";
+          setClarificationRunId("");
           const acknowledgement = event.acknowledgement || "This task is continuing as a durable workflow.";
           if (event.threadId) setThreadId(event.threadId);
           if (event.workflowId) setWorkflowRun({ run: { id: event.workflowId } });
@@ -1426,6 +1459,7 @@ export function AgentRunsWorkspace({
         if (event.type === "clarification") {
           terminalEvent = "clarification";
           agentRequestIdRef.current = "";
+          setClarificationRunId(event.runId || currentRunIdRef.current || "");
           const clarification = event.message || "Name or identify the exact item you want changed before I continue.";
           if (event.threadId) setThreadId(event.threadId);
           setAgentResponse(clarification);
@@ -1440,6 +1474,7 @@ export function AgentRunsWorkspace({
         if (event.type === "done") {
           terminalEvent = "done";
           agentRequestIdRef.current = "";
+          setClarificationRunId("");
           flushPendingDeltas();
           setAgentResponse(event.response || "");
           setGrounding(event.grounding);
@@ -1459,12 +1494,14 @@ export function AgentRunsWorkspace({
         if (event.type === "waiting_approval") {
           terminalEvent = "waiting_approval";
           agentRequestIdRef.current = "";
+          setClarificationRunId("");
           setWaitingApproval(event);
           setRunAnnouncement("Agent run paused for approval.");
         }
         if (event.type === "error") {
           terminalEvent = "error";
           agentRequestIdRef.current = "";
+          setClarificationRunId("");
           setError(event.message || "Agent run failed.");
           setRunAnnouncement("Agent run failed.");
         }
@@ -1585,10 +1622,35 @@ export function AgentRunsWorkspace({
     try {
       const result = asRecord(await readJson(`/api/threads/${encodeURIComponent(id)}`));
       const thread = asRecord(result.thread);
+      const loadedTurns = arrayPath(result, "turns") as unknown as ThreadTurn[];
+      const latestRunId = [...loadedTurns]
+        .reverse()
+        .find((turn) => Boolean(turn.runId))
+        ?.runId;
+      let waitingClarification: { runId: string; message: string } | undefined;
+      if (latestRunId) {
+        try {
+          const runPayload = asRecord(await readJson(
+            `/api/runs/${encodeURIComponent(latestRunId)}`,
+          ));
+          const run = asRecord(runPayload.run);
+          if (stringValue(run.status) === "waiting_clarification") {
+            waitingClarification = {
+              runId: latestRunId,
+              message: stringValue(
+                run.response,
+                "Reply to the clarification request to continue this run.",
+              ),
+            };
+          }
+        } catch {
+          // The conversation remains usable even if its latest run cannot be restored.
+        }
+      }
       setThreadId(stringValue(thread.id));
       setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
-      setTurns(arrayPath(result, "turns") as unknown as ThreadTurn[]);
-      setAgentResponse("");
+      setTurns(loadedTurns);
+      setAgentResponse(waitingClarification?.message || "");
       contextControllerRef.current?.abort();
       contextVersionRef.current += 1;
       setContextPack(undefined);
@@ -1600,11 +1662,23 @@ export function AgentRunsWorkspace({
       setWorkflowPlan(undefined);
       setWorkflowRun(undefined);
       setWorkflowSyncError(undefined);
-      setActiveAgentRunId("");
-      currentRunIdRef.current = "";
+      setActiveAgentRunId(waitingClarification?.runId || "");
+      setClarificationRunId(waitingClarification?.runId || "");
+      currentRunIdRef.current = waitingClarification?.runId || "";
       clearBrowserActivity();
-      directRunStatusRef.current = "";
-      setStreamEvents([]);
+      directRunStatusRef.current = waitingClarification
+        ? "waiting_clarification"
+        : "";
+      setStreamEvents(waitingClarification ? [
+        { type: "run", runId: waitingClarification.runId, threadId: id },
+        {
+          type: "clarification",
+          runId: waitingClarification.runId,
+          threadId: id,
+          message: waitingClarification.message,
+          reasonCode: "ambiguous_read_target",
+        },
+      ] : []);
       setWaitingApproval(undefined);
       setGrounding(undefined);
       setActiveTab("execute");
@@ -1635,6 +1709,7 @@ export function AgentRunsWorkspace({
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
     setActiveAgentRunId("");
+    setClarificationRunId("");
     currentRunIdRef.current = "";
     clearBrowserActivity();
     directRunStatusRef.current = "";

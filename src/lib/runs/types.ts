@@ -14,6 +14,7 @@ import type {
 export type RunStatus =
   | "queued"
   | "running"
+  | "waiting_clarification"
   | "waiting_approval"
   | "resuming"
   | "completed"
