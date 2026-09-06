@@ -5,6 +5,7 @@ import {
   memoryClaimFingerprint,
   memoryLifecyclePolicyV1,
   memoryRetrievalPriorityMultiplier,
+  planMemoryMaintenance,
   verifiedMemoryOccurrenceKey,
 } from "@/lib/memory/lifecycle";
 import type { MemoryRecord } from "@/lib/memory/types";
@@ -93,5 +94,50 @@ describe("memory lifecycle policy", () => {
       formationReason: "assistant_inference_candidate",
     })).toBe(false);
     expect(isVerifiedPromotionEpisode({ ...base, evidenceRefs: [] })).toBe(false);
+  });
+
+  it("archives exact duplicates and opens one lineage-bound promotion review", () => {
+    const repeated = {
+      ...base,
+      id: "memory-b",
+      source: "effect-receipt:43",
+      evidenceRefs: ["effect:43"],
+      createdAt: "2026-01-02T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const plan = planMemoryMaintenance(
+      [base, repeated],
+      "2026-01-03T00:00:00.000Z",
+    );
+    expect(plan.archives).toEqual([{
+      memoryId: "memory-b",
+      reason: "exact_duplicate",
+      duplicateOfMemoryId: "memory-a",
+    }]);
+    expect(plan.promotionReviews).toHaveLength(1);
+    expect(plan.promotionReviews[0]?.sourceMemoryIds).toEqual([
+      "memory-a",
+      "memory-b",
+    ]);
+    expect(plan.report).toMatchObject({
+      exactDuplicateGroups: 1,
+      autoArchivedDuplicates: 1,
+      duplicateRateBefore: 0.5,
+      duplicateRateAfter: 0,
+    });
+  });
+
+  it("never auto-archives pinned duplicates", () => {
+    const plan = planMemoryMaintenance([
+      { ...base, pinnedAt: "2026-01-02T00:00:00.000Z" },
+      {
+        ...base,
+        id: "memory-b",
+        pinnedAt: "2026-01-02T00:00:00.000Z",
+      },
+    ]);
+    expect(plan.archives).toEqual([]);
+    expect(plan.report.pinnedDuplicateConflicts).toBe(1);
+    expect(plan.report.duplicateRateAfter).toBe(0.5);
   });
 });

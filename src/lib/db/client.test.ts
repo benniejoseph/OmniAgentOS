@@ -699,11 +699,11 @@ describe("database timing classification", () => {
 });
 
 describe("ordered database schema versions", () => {
-  it("pins the conversation summary deletion barrier migration", () => {
+  it("pins the memory lifecycle maintenance migration", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 103,
-      name: "conversation_summary_deletion_barrier_v1",
-      checksum: "217b5f80d37caf761ef2165f6b66755f9d14b5309fef5881249468f2355bbe7f",
+      version: 104,
+      name: "memory_lifecycle_maintenance_v1",
+      checksum: "b717c250b1e743cbe103ec0a60686a5bc2029a79845442ee138b34d3dead8e5b",
     });
   });
 
@@ -733,8 +733,8 @@ describe("ordered database schema versions", () => {
     expect(() => getPendingSchemaMigrationVersions([0])).toThrow(
       /unknown migration versions: 0/i,
     );
-    expect(() => getPendingSchemaMigrationVersions([104])).toThrow(
-      /unknown migration versions: 104/i,
+    expect(() => getPendingSchemaMigrationVersions([105])).toThrow(
+      /unknown migration versions: 105/i,
     );
   });
 
