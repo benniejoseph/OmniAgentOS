@@ -2,7 +2,7 @@ import { z } from "zod";
 import { buildCapabilitySearchQuery } from "@/lib/capabilities/autonomy";
 import { searchCapabilities } from "@/lib/capabilities/catalog";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
-import { generateModelStructured } from "@/lib/models/gateway";
+import { generateModelText } from "@/lib/models/gateway";
 import type { ModelGenerationResult } from "@/lib/models/types";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
 import {
@@ -128,15 +128,15 @@ export type SemanticIntentResolverInput = Readonly<{
 type SemanticIntentResolverDependencies = Readonly<{
   searchCapabilities: typeof searchCapabilities;
   resolveRuntimeModelAssignment: typeof resolveRuntimeModelAssignment;
-  generateModelStructured: (
-    request: Parameters<typeof generateModelStructured>[0],
+  generateModelText: (
+    request: Parameters<typeof generateModelText>[0],
   ) => Promise<ModelGenerationResult>;
 }>;
 
 const defaultDependencies: SemanticIntentResolverDependencies = {
   searchCapabilities,
   resolveRuntimeModelAssignment,
-  generateModelStructured,
+  generateModelText,
 };
 
 export function createSemanticIntentResolver(
@@ -166,7 +166,7 @@ export function createSemanticIntentResolver(
       actorId: input.actorId,
       scope: "orchestrator",
       tier: "fast",
-      requiredFeature: "json_schema",
+      requiredFeature: "text",
     });
     if (!runtimeModel.configured) {
       return deterministicSemanticFallback({
@@ -237,10 +237,8 @@ async function generateCandidate(input: {
     SEMANTIC_INTENT_TIMEOUT_MS,
   );
   try {
-    return await input.dependencies.generateModelStructured(
+    return await input.dependencies.generateModelText(
       input.runtimeModel.bind({
-        name: "semantic_intent_candidate_v1",
-        schema: semanticIntentJsonSchema,
         instructions: semanticIntentInstructions(),
         input: semanticIntentInput(input.input, input.capabilityCandidates),
         abortSignal: controller.signal,
@@ -251,7 +249,7 @@ async function generateCandidate(input: {
           tenantId: input.input.tenantId,
           actorId: input.input.actorId,
           sourceStreamId: `intent:${input.input.requestId}`,
-          operation: "structured_generation",
+          operation: "text_generation",
           purpose: "agent.intent.semantic_resolution",
           correlationId: input.input.requestId,
           executionScope: input.input.executionScope,
@@ -301,6 +299,8 @@ function semanticIntentInstructions() {
     "Return candidateCapabilityIds only from the provided catalog. They are descriptive matches, never grants.",
     "Capability queries should be short action-and-resource phrases that improve catalog search.",
     "Do not choose tools, permissions, context, approval exemptions, routes, or policy outcomes.",
+    "Return only one JSON object matching this schema, with no markdown or commentary:",
+    JSON.stringify(semanticIntentJsonSchema),
   ].join(" ");
 }
 
