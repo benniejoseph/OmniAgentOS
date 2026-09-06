@@ -15,6 +15,11 @@ import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
+import {
+  retireAssetObjectsForSource,
+  stageAssetObject,
+  updateAssetObjectExtractionState,
+} from "@/lib/storage/object-plane";
 import { getDataPath } from "@/lib/storage/paths";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import type {
@@ -677,7 +682,9 @@ export async function saveCaptureSegment(input: ScopedOwner & {
         if (!existing[0] || String(existing[0].audio_sha256) !== hash) {
           throw new CaptureRecordingError("A different audio segment already uses this position.", 409, "segment_conflict");
         }
-        return { segment: segmentFromRow(existing[0]), created: false };
+        const saved = segmentFromRow(existing[0]);
+        await stageCaptureSegmentObject(saved, executionScope, sql);
+        return { segment: saved, created: false };
       }
       const updated = await sql`
         UPDATE omni_capture_recordings
@@ -706,6 +713,7 @@ export async function saveCaptureSegment(input: ScopedOwner & {
         scopeVersion: executionScope.version,
         scopeSha256: sha256Json(executionScope),
       }, { sql });
+      await stageCaptureSegmentObject(saved, executionScope, sql);
       return { segment: saved, created: true };
     });
     return result as { segment: CaptureSegment; created: boolean };
@@ -795,6 +803,14 @@ export async function updateCaptureSegmentTranscription(input: ScopedOwner & {
       `;
       if (!rows[0]) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
       const updated = segmentFromRow(rows[0]);
+      await updateAssetObjectExtractionState({
+        tenantId: updated.tenantId,
+        ownerActorId: updated.actorId,
+        sourceKind: "capture_segment",
+        sourceId: updated.id,
+        extractionState: updated.transcriptionStatus,
+        executionScope,
+      }, { sql });
       await appendCaptureSegmentTranscriptionEvent(previous, updated, executionScope, { sql });
       return updated;
     }) as Promise<CaptureSegment>;
@@ -945,6 +961,15 @@ export async function deleteCaptureRecording(
     : await requireCaptureRecording(id, owner);
   if (hasDatabaseUrl()) {
     const deleteWithSql = async (sql: ReturnType<typeof getSql>) => {
+      for (const segment of detail.segments) {
+        await retireAssetObjectsForSource({
+          tenantId: detail.tenantId,
+          ownerActorId: detail.actorId,
+          sourceKind: "capture_segment",
+          sourceId: segment.id,
+          executionScope,
+        }, { sql });
+      }
       const rows = await sql`DELETE FROM omni_capture_recordings WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId} AND actor_id = ${detail.actorId} RETURNING id`;
       if (!rows[0]) return false;
       await appendCaptureRecordingEvent(detail.id, executionScope, "capture_recording.deleted", captureRecordingReferencePayload(detail, {
@@ -965,6 +990,30 @@ export async function deleteCaptureRecording(
     previousStatus: detail.status,
   }));
   return true;
+}
+
+function stageCaptureSegmentObject(
+  segment: CaptureSegment,
+  executionScope: ExecutionScope,
+  sql: ReturnType<typeof getSql>,
+) {
+  return stageAssetObject({
+    tenantId: segment.tenantId,
+    ownerActorId: segment.actorId,
+    sourceKind: "capture_segment",
+    sourceId: segment.id,
+    contentSha256: segment.audioSha256,
+    byteCount: segment.byteCount,
+    mediaType: segment.mimeType,
+    extractionState: segment.transcriptionStatus,
+    executionScope,
+    permissionGrantIds: ["first_party.capture"],
+    allowedPurposeIds: [
+      "capture.recording.playback",
+      "capture.recording.transcribe",
+    ],
+    retentionPolicyId: "retention.capture.owner-controlled",
+  }, { sql });
 }
 
 function exactCaptureRecordingForDeletion(
