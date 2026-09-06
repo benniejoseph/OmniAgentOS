@@ -8782,6 +8782,10 @@ async function ensureAgentIdentityVersionsV1(sql: SqlClient) {
     DO $migration$
     BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        REVOKE ALL ON TABLE omni_agent_definition_versions FROM omni_runtime;
+        REVOKE ALL ON TABLE omni_agent_principal_policies FROM omni_runtime;
+        REVOKE ALL ON TABLE omni_agent_identity_backfill_holds FROM omni_runtime;
+        REVOKE ALL ON TABLE omni_tenant_execution_principals FROM omni_runtime;
         GRANT SELECT, INSERT ON omni_agent_definition_versions TO omni_runtime;
         GRANT SELECT, INSERT ON omni_agent_principal_policies TO omni_runtime;
         GRANT SELECT, INSERT ON omni_tenant_execution_principals TO omni_runtime;
@@ -8790,6 +8794,10 @@ async function ensureAgentIdentityVersionsV1(sql: SqlClient) {
         ) ON omni_tenant_execution_principals TO omni_runtime;
       END IF;
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        REVOKE ALL ON TABLE omni_agent_definition_versions FROM omni_maintenance;
+        REVOKE ALL ON TABLE omni_agent_principal_policies FROM omni_maintenance;
+        REVOKE ALL ON TABLE omni_agent_identity_backfill_holds FROM omni_maintenance;
+        REVOKE ALL ON TABLE omni_tenant_execution_principals FROM omni_maintenance;
         GRANT SELECT, INSERT ON omni_agent_definition_versions TO omni_maintenance;
         GRANT SELECT, INSERT ON omni_agent_principal_policies TO omni_maintenance;
         GRANT SELECT ON omni_agent_identity_backfill_holds TO omni_maintenance;
@@ -9177,9 +9185,11 @@ async function ensureGraphQueryTelemetryV1(sql: SqlClient) {
     DO $migration$
     BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        REVOKE ALL ON TABLE omni_graph_query_telemetry FROM omni_runtime;
         GRANT SELECT, INSERT ON omni_graph_query_telemetry TO omni_runtime;
       END IF;
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        REVOKE ALL ON TABLE omni_graph_query_telemetry FROM omni_maintenance;
         GRANT SELECT, INSERT, DELETE
         ON omni_graph_query_telemetry TO omni_maintenance;
       END IF;
