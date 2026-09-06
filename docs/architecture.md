@@ -1142,11 +1142,16 @@ admin quorum can complete; after the pending state, access is limited to the
 owner and admins who actually recorded a decision. The approval route carries
 the already-authorized record owner only for that exact decision and effect.
 
-These migrations close the durable run/thread/tool prerequisites, but private
-memory still does not enter agent context until prompt assembly and remaining
-context copies enforce the same actor boundary. Agent-private/shared visibility, context
-compilation, standing formation, and private-memory worker consumption remain
-closed, so P3.1 is still incomplete.
+These migrations close the durable run/thread/tool prerequisites. A direct
+authenticated agent request may now add canonical user-private evidence to its
+prompt only through a non-empty explicit context selection. The request builds
+a user-principal retrieval scope, and the prompt compiler verifies its exact
+tenant, canonical/legacy actor binding, request correlation, purpose, null
+shared coordinates, direct agent principal, and personal `all` memory mode
+before resolving the selected IDs. Automatic retrieval and session/project
+modes do not receive that scope. Workflows, forks, specialist/background
+workers, standing formation, agent-private/shared visibility, and the full
+authority resolver remain closed, so P3.1 is still incomplete.
 
 ## Where things live
 

@@ -1788,18 +1788,25 @@ records a quorum decision retains access after the pending state. The approval
 route then carries the exact requester owner alongside the authorized reviewer
 while executing the already-bound action; unrelated sibling actors remain
 excluded.
+Direct authenticated prompt compilation is now open only for an explicit,
+non-empty context selection. The request creates a canonical user-principal
+retrieval scope, and the agent runner verifies the exact canonical/legacy actor
+binding, tenant, correlation, purpose, null shared coordinates, direct agent
+principal, and personal `all` memory mode before it independently resolves the
+selected IDs. Automatic retrieval, session/project modes, workflows, forks,
+specialist/background workers, and formation do not receive that scope. Raw
+private content stays out of context manifests; only IDs, hashes, counts, and
+the separately actor-private retrieval trace are persisted.
 Migration v74 repairs the daily-brief memory-lineage column used by governed
 deletion invalidation. Migrations v75-v76 index immutable deletion barriers and
 remove redundant derived-row read scans after an integrity-gated cutover; the
 production scoped Retrieval Plan and governed-forget canary passes without
 exposing embeddings. Migration v78 applies the same integrity-gated indexed
-lineage cutover to retrieval-trace deletion lookup. Private memory still cannot
-enter agent-run context until prompt assembly and every remaining context copy
-use the actor boundary. Agent-private and
-mission/project/workspace-shared memory, context compilation, standing
-consent-driven formation, private-memory worker consumption, and the full
-authority resolver remain pending. This canary therefore advances P3.1 without
-marking it done.
+lineage cutover to retrieval-trace deletion lookup. Agent-private and
+mission/project/workspace-shared memory, automatic and worker context
+compilation, standing consent-driven formation, private-memory worker
+consumption, and the full authority resolver remain pending. This canary
+therefore advances P3.1 without marking it done.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
