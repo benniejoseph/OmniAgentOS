@@ -1981,6 +1981,28 @@ review and zero owner-scope mismatches. An authenticated live canary returned
 review actor identifiers. This closes P3.4 without claiming the externally
 authority-held P3.1 or the remaining Phase 3 slices; P3.5 is next.
 
+P3.5 is complete at production release
+`363a7aac985f57628187ed1ef406366f3f2d0418`. Conversation history now has a
+deterministic actor-private hierarchy of source-linked turn summaries,
+12-turn episodes, project buckets, and lifetime indexes. Every record retains
+its exact source-turn and child-summary lineage, content/source digests, and a
+purpose-bound access-scope digest, so it can be rebuilt without treating model
+prose as truth. Project association is explicit and must resolve to the same
+tenant and actor; it is never inferred from a prompt.
+
+The thread compiler keeps current turns verbatim and adds a bounded historical
+episode block only when raw turns are omitted. That block is explicitly marked
+as untrusted data. Migration v102 installed the forced-RLS hierarchy, lineage
+and project-scope triggers, and five indexes under checksum
+`e979bae8e96750841821717ed37b3dcf04c95732f28b5aba092052d07cc8545b`.
+The first production canary revealed that a lifetime index could outlive a
+deleted source turn; migration v103 added the deletion barrier, scrubbed the
+orphan, and proved zero dangling links under checksum
+`217b5f80d37caf761ef2165f6b66755f9d14b5309fef5881249468f2355bbe7f`.
+The repeated live canary created and rebuilt turn, episode, and lifetime
+records, then removed the canary thread with zero turns, summaries, or dangling
+lineage remaining. This closes P3.5; P3.6 is next.
+
 The first P4.1 delivery is active only as a shadow comparison. Context Compiler
 v2 independently gates canonical source evidence, bound memory claims and
 summaries, and bound graph neighborhoods by exact tenant, actor, scope, grant,

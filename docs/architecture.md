@@ -1230,6 +1230,16 @@ episode. Migration v83 quarantines legacy active response-derived memories as
 `candidate`, removes their graph and brief projections, and schedules graph
 rebuilding.
 
+P3.5 adds a rebuildable conversation projection without widening memory
+authority. Immutable owner-scoped turns derive deterministic turn, episode,
+project, and lifetime summary buckets with exact source-turn and child-summary
+lineage plus content, source, and access-scope digests. The forced-RLS store
+admits only the owning actor and the single context-compilation purpose. The
+thread compiler keeps recent turns verbatim and substitutes an explicitly
+untrusted bounded episode block only for omitted history. Summary writes emit
+metadata-only change events, and the source-turn deletion trigger removes every
+derived aggregate before the source disappears.
+
 The first P4.1 slice runs Context Compiler v2 beside, not instead of, the
 adaptive context engine. It normalizes the current candidate surfaces into
 canonical evidence, claims, summaries, and graph neighborhoods, then applies
