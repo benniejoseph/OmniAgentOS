@@ -5670,7 +5670,10 @@ async function ensureEntityRegistryIdentityTriggerDispatch(sql: SqlClient) {
       IF (
         SELECT count(*)
         FROM pg_trigger
-        WHERE tgname = 'omni_entity_registry_identity_immutable'
+        WHERE tgname IN (
+          'omni_entity_records_identity_immutable',
+          'omni_entity_aliases_identity_immutable'
+        )
           AND tgrelid IN (
             'omni_entity_records'::regclass,
             'omni_entity_aliases'::regclass
