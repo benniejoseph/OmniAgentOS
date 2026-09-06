@@ -1853,6 +1853,20 @@ precision and recall. Legacy topic/co-occurrence graph projection remains
 unchanged until P5.3/P5.4 introduce temporal claims and transactional truth
 projection.
 
+The first P6.1 delivery is active only for an exact, low-risk recent-runs read.
+An exact tenant rollout pins the Loop v2 engine, transition contract, and
+configuration. Migration v85 stores the immutable actor-owned checkpoint chain
+with forced RLS and typed transition events. The runtime invokes only governed
+`runs.list`, bounds safe retries and replanning, verifies that the tool was a
+live risk-0 read with no approval or effect receipt, and atomically commits the
+terminal checkpoint with the run disposition. The production generation-1
+canary completed the six-state success path at release
+`74a543ad029f0a061b80c65db821da5d514b0fc6`; the matching web and Fly services
+are healthy. This completes the first safe sequence slice, not all of P6.1.
+General model-backed work, clarification inside the v2 loop, durable
+interruption/resume, and broader fault-injection remain pending. Legacy runs
+stay pinned to v1.
+
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
 ## 14. Program completion definition
