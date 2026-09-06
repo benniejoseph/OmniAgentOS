@@ -56,8 +56,74 @@ export type ModelConversationSeedItem = Extract<
   { type: "message" | "observation" }
 >;
 
+type ConversationToolResult = Readonly<{
+  callId: string;
+  name: string;
+  output: string;
+  isError?: boolean;
+}>;
+
+type ConversationToolCall = Readonly<{
+  callId: string;
+  name: string;
+  argumentsJson: string;
+}>;
+
 export function parseModelConversation(value: unknown) {
   return modelConversationSchema.parse(value);
+}
+
+export function modelConversationForToolTurn(input: {
+  prompt: string;
+  conversation?: readonly ModelConversationItem[];
+  continuationConversation?: readonly ModelConversationItem[];
+  toolResults?: readonly ConversationToolResult[];
+}) {
+  const initial = input.continuationConversation?.length
+    ? parseModelConversation(input.continuationConversation)
+    : input.conversation?.length
+      ? parseModelConversation(input.conversation)
+      : parseModelConversation([{
+          type: "message",
+          role: "user",
+          content: input.prompt,
+        }]);
+  if (!input.toolResults?.length) return initial;
+  return parseModelConversation([
+    ...initial,
+    ...input.toolResults.map((result) => ({
+      type: "tool_result" as const,
+      callId: result.callId,
+      name: result.name,
+      content: result.output,
+      ...(result.isError ? { isError: true } : {}),
+    })),
+  ]);
+}
+
+export function appendModelTurnToConversation(
+  conversation: readonly ModelConversationItem[],
+  output: {
+    text: string;
+    toolCalls: readonly ConversationToolCall[];
+  },
+) {
+  return parseModelConversation([
+    ...conversation,
+    ...(output.text.trim()
+      ? [{
+          type: "message" as const,
+          role: "assistant" as const,
+          content: output.text.trim(),
+        }]
+      : []),
+    ...output.toolCalls.map((call) => ({
+      type: "tool_call" as const,
+      callId: call.callId,
+      name: call.name,
+      argumentsJson: call.argumentsJson,
+    })),
+  ]);
 }
 
 export function renderUntrustedObservation(
