@@ -71,6 +71,11 @@ describe("saved procedure planning", () => {
     expect(record.plan.selectedToolIds).toContain(requiredTool.id);
     const boundNodes = record.plan.nodes.filter((node) => node.toolIds.includes(requiredTool.id));
     expect(boundNodes.length).toBeGreaterThan(0);
+    expect(record.plan.nodes.every((node) =>
+      node.execution?.schemaVersion === 1 &&
+      node.execution.dependencyNodeIds.join("\0") === node.dependsOn.join("\0") &&
+      node.execution.grantedToolIds.join("\0") === node.toolIds.join("\0")
+    )).toBe(true);
     expect(boundNodes.every((node) => node.toolInputs?.some((binding) =>
       binding.toolId === requiredTool.id && binding.inputJson === JSON.stringify(input)
     ))).toBe(true);
