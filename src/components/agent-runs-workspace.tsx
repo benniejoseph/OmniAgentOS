@@ -2631,10 +2631,13 @@ export function AgentRunsWorkspace({
                     </Link>
                   </div>
                 ) : null}
-                {selectedActivityRunId || activeAgentRunId ? (
+                {activeWorkflowId || selectedActivityRunId || activeAgentRunId ? (
                   <RunTraceJourney
-                    runId={selectedActivityRunId || activeAgentRunId}
-                    live={loading === "agent" && (!selectedActivityRunId || selectedActivityRunId === activeAgentRunId)}
+                    runId={activeWorkflowId || selectedActivityRunId || activeAgentRunId}
+                    kind={activeWorkflowId ? "workflow" : "run"}
+                    live={activeWorkflowId
+                      ? !["completed", "failed", "canceled"].includes(activeWorkflowStatus)
+                      : loading === "agent" && (!selectedActivityRunId || selectedActivityRunId === activeAgentRunId)}
                   />
                 ) : null}
                 <BrowserActivityTimeline
@@ -3160,7 +3163,15 @@ function InlineBrowserView({
   );
 }
 
-function RunTraceJourney({ runId, live }: { runId: string; live: boolean }) {
+function RunTraceJourney({
+  runId,
+  kind,
+  live,
+}: {
+  runId: string;
+  kind: "run" | "workflow";
+  live: boolean;
+}) {
   const [stages, setStages] = useState<RunTraceStage[]>([]);
   const [traceRef, setTraceRef] = useState("");
   const [outcome, setOutcome] = useState("");
@@ -3175,7 +3186,9 @@ function RunTraceJourney({ runId, live }: { runId: string; live: boolean }) {
       if (showLoading) setState("loading");
       try {
         const payload = asRecord(await readJson(
-          `/api/runs/${encodeURIComponent(runId)}/trajectory`,
+          kind === "workflow"
+            ? `/api/workflows/${encodeURIComponent(runId)}/trajectory`
+            : `/api/runs/${encodeURIComponent(runId)}/trajectory`,
           { signal: controller.signal },
         ));
         if (controller.signal.aborted) return;
@@ -3200,7 +3213,7 @@ function RunTraceJourney({ runId, live }: { runId: string; live: boolean }) {
       controller.abort();
       if (timer) clearInterval(timer);
     };
-  }, [live, refreshVersion, runId]);
+  }, [kind, live, refreshVersion, runId]);
 
   const observed = stages.filter((stage) => stage.status === "observed").length;
   const gaps = stages.filter((stage) => stage.status === "missing").length;
