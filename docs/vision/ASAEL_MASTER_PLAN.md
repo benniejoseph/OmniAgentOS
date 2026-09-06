@@ -2142,6 +2142,27 @@ TypeScript, and the production build passed; no migration was required.
 Canonical Vercel, Fly protocol 1, and all activated worker lanes are healthy on
 the exact release. P4.7 provider-bound continuation and caching is next.
 
+P4.7 is complete at production release
+`a2ebb5fa5692b148b47af37f283267ec4aa337b3`. The already-deployed native-role
+canonical transcript remains the server-owned recovery source and the gateway
+continues to reject continuation state at a provider boundary. Repeated stable
+prefixes now receive provider-specific optimization without enabling stored
+conversation state: OpenAI gets a content-free HMAC cache bucket scoped to the
+tenant actor and run while `store:false` remains enforced; Anthropic uses its
+ephemeral automatic cache; Gemini retains exact stateless Interactions replay
+and its default implicit cache; and documented cache-capable Bedrock Converse
+families receive an explicit checkpoint after stable instructions. Anthropic
+cache creation/read tokens and Bedrock cache read/write tokens now contribute
+to logical input and total usage. Thirty-two focused provider, gateway,
+continuation, cache, and accounting tests passed with affected lint,
+TypeScript, and the Next 16 production build. No migration was required.
+Canonical Vercel deployment `dpl_EapYKVX52jW2aJNnRCBwVGQauoB6`, Fly release
+289 image `sha256:b1d49a519f7b1c5853aaacf8c6407dd72ac7855f0ce07100e406b2553ed23d01`,
+protocol 1, the exact activation marker, and all worker lanes are healthy.
+P4.1/P4.2 retain their separately declared authority work; P12/P13 remain
+deferred. The next actionable master-plan slice is the remaining P5.2 entity
+registry integration and benchmark.
+
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
 types and 13 typed relations with mandatory scope, sensitivity, purpose,
