@@ -6,6 +6,11 @@ import {
   hasDatabaseUrl,
 } from "@/lib/db/client";
 import {
+  retrieveGraphRelationshipPaths,
+  type GraphRelationshipPath,
+} from "@/lib/entities/graph-retrieval";
+import type { RequestEntityAccessV1 } from "@/lib/entities/request-access";
+import {
   parseDatabaseMemoryAccessScope,
   setTransactionLocalDatabaseMemoryAccessScope,
   type DatabaseMemoryAccessScope,
@@ -115,6 +120,8 @@ export type BuildContextPackOptions = {
     runId: string;
     executionScope: ExecutionScope;
   };
+  /** Exact user-principal authority for P5.5 actor-private relation traversal. */
+  entityGraphAccess?: RequestEntityAccessV1;
 };
 
 type RetrievalTraceLedger = {
@@ -190,6 +197,7 @@ export async function buildContextPack(
       memoryResults: [],
       knowledgeResults: [],
       graphResults: [],
+      graphRelationshipPaths: [],
       contextBlock: allocated.contextBlock,
       budget: allocated.receipt,
       ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
@@ -232,7 +240,20 @@ export async function buildContextPack(
   );
   const queryEmbedding = embeddingResult.vectors[0];
   const queryEmbeddingSpaceId = embeddingResult.receipt.spaceId;
-  const [legacyMemoryResults, scopedMemoryResults, knowledgeResults, graphResults] = await Promise.all([
+  const graphPathPromise = options.entityGraphAccess && databaseMemoryAccessScope &&
+      queryPlan.domains.some((domain) => domain === "entity" || domain === "relationship")
+    ? retrieveGraphRelationshipPaths(normalizedQuery, {
+        entityAccess: options.entityGraphAccess,
+        memoryAccessScope: databaseMemoryAccessScope,
+        contextExecutionScope:
+          compilerV2Request?.executionScope ||
+          options.entityGraphAccess.executionScope,
+        maxHops: 2,
+        limit: Math.min(candidateLimit, 24),
+        asOfTime: compilerAsOfTime,
+      })
+    : Promise.resolve(undefined);
+  const [legacyMemoryResults, scopedMemoryResults, knowledgeResults, graphResults, graphPathResult] = await Promise.all([
     searchMemories(retrievalQuery || normalizedQuery, {
       limit: candidateLimit,
       queryEmbedding,
@@ -261,7 +282,9 @@ export async function buildContextPack(
       tenantId,
       accessScope: databaseMemoryAccessScope,
     }),
+    graphPathPromise,
   ]);
+  const graphRelationshipPaths = graphPathResult?.paths || [];
   const memoryResults = mergeMemorySearchResults(
     legacyMemoryResults,
     scopedMemoryResults,
@@ -274,6 +297,7 @@ export async function buildContextPack(
         memoryResults,
         knowledgeResults,
         graphResults,
+        relationshipPaths: graphRelationshipPaths,
         asOfTime: compilerAsOfTime,
       })
     : undefined;
@@ -282,6 +306,7 @@ export async function buildContextPack(
     memoryResults,
     knowledgeResults,
     graphResults,
+    graphRelationshipPaths,
   });
   const reranked = rerankRetrievalCandidates(
     normalizedQuery,
@@ -364,6 +389,9 @@ export async function buildContextPack(
   const selectedGraphResults = graphResults.filter((result) =>
     selectedIdSet.has(`graph:${result.node.id}`)
   );
+  const selectedGraphRelationshipPaths = graphRelationshipPaths.filter((path) =>
+    selectedIdSet.has(`graph:${path.pathId}`)
+  );
   const traceResults = selected.map((item) => ({
     id: item.id,
     kind: item.kind,
@@ -391,7 +419,7 @@ export async function buildContextPack(
           tenantId,
           query: normalizedQuery,
           profile,
-          resultCount: memoryResults.length + knowledgeResults.length + graphResults.length,
+          resultCount: memoryResults.length + knowledgeResults.length + graphResults.length + graphRelationshipPaths.length,
           selectedCount: selected.length,
           latencyMs: Date.now() - startedAt,
           results: traceResults,
@@ -417,6 +445,10 @@ export async function buildContextPack(
     memoryResults: selectedMemoryResults,
     knowledgeResults: selectedKnowledgeResults,
     graphResults: selectedGraphResults,
+    graphRelationshipPaths: selectedGraphRelationshipPaths,
+    ...(graphPathResult
+      ? { graphRetrievalReceipt: graphPathResult.receipt }
+      : {}),
     contextBlock: allocated.contextBlock,
     budget: allocated.receipt,
     trace,
@@ -778,11 +810,13 @@ function scoreEvidenceItems({
   memoryResults,
   knowledgeResults,
   graphResults,
+  graphRelationshipPaths,
 }: {
   profile: RetrievalProfile;
   memoryResults: MemorySearchResult[];
   knowledgeResults: KnowledgeSearchResult[];
   graphResults: import("@/lib/memory/types").MemoryGraphSearchResult[];
+  graphRelationshipPaths: readonly GraphRelationshipPath[];
 }) {
   const memoryItems = memoryResults.map<ContextEvidenceItem>((result) => {
     const record = result.record;
@@ -867,7 +901,43 @@ function scoreEvidenceItems({
     };
   });
 
-  return [...memoryItems, ...knowledgeItems, ...graphItems].sort((left, right) => right.utilityScore - left.utilityScore);
+  const relationshipItems = graphRelationshipPaths.map<ContextEvidenceItem>((path) => {
+    const supportScore = clamp01(
+      path.hops.reduce(
+        (minimum, hop) => Math.min(minimum, hop.confidenceBasisPoints / 10_000),
+        1,
+      ),
+    );
+    const multiHopBoost = path.hopCount > 1 ? 0.08 : 0.04;
+    const utilityScore = clamp01(path.score * 0.78 + supportScore * 0.14 + multiHopBoost);
+    return {
+      id: path.pathId,
+      kind: "graph",
+      sourceKey: `graph:relationship:${path.anchor.entityId}`,
+      title: `Relationship path: ${path.anchor.label} to ${path.terminal.label}`,
+      content: formatRelationshipPathEvidence(path),
+      score: path.score,
+      utilityScore,
+      supportScore,
+      diversityScore: 1,
+      freshnessScore: freshnessFromDate(
+        path.hops.reduce(
+          (latest, hop) => hop.validFrom > latest ? hop.validFrom : latest,
+          path.hops[0]?.validFrom || new Date(0).toISOString(),
+        ),
+      ),
+      confidence: clamp01(utilityScore * 0.58 + supportScore * 0.42),
+      reasons: [
+        `authorized ${path.hopCount}-hop temporal path`,
+        "live evidence verified at every hop",
+        `intent: ${profile.intent}`,
+      ],
+      result: path,
+    };
+  });
+
+  return [...memoryItems, ...knowledgeItems, ...graphItems, ...relationshipItems]
+    .sort((left, right) => right.utilityScore - left.utilityScore);
 }
 
 function selectDiverseEvidence(
@@ -1356,6 +1426,25 @@ function formatGraphEvidence(result: import("@/lib/memory/types").MemoryGraphSea
     result.node.tags.length ? `Tags: ${result.node.tags.join(", ")}` : "",
     neighbors ? `Connected signals:\n${neighbors}` : "Connected signals: none recorded yet.",
   ].filter(Boolean).join("\n");
+}
+
+function formatRelationshipPathEvidence(path: GraphRelationshipPath) {
+  const hops = path.hops.map((hop, index) => {
+    const evidence = hop.evidence.map((item) =>
+      `  - [${item.evidenceId}] ${item.title}: ${item.excerpt}`
+    ).join("\n");
+    return [
+      `${index + 1}. ${hop.source.label} —${hop.relationLabel}→ ${hop.target.label}`,
+      `   epistemic kind: ${hop.epistemicKind}; confidence: ${(hop.confidenceBasisPoints / 10_000).toFixed(2)}; valid: ${hop.validFrom}${hop.validTo ? ` to ${hop.validTo}` : " onward"}`,
+      evidence || "  - no eligible evidence",
+    ].join("\n");
+  });
+  return [
+    path.explanation,
+    `Authorized path length: ${path.hopCount}`,
+    "Relationship evidence:",
+    ...hops,
+  ].join("\n");
 }
 
 function evidenceKindLabel(kind: ContextEvidenceItem["kind"]) {

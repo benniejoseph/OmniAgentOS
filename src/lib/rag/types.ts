@@ -168,7 +168,9 @@ export type ContextEvidenceItem = (
       freshnessScore: number;
       confidence: number;
       reasons: string[];
-      result: import("@/lib/memory/types").MemoryGraphSearchResult;
+      result:
+        | import("@/lib/memory/types").MemoryGraphSearchResult
+        | import("@/lib/entities/graph-retrieval").GraphRelationshipPath;
     }
 ) & {
   /** Content-free digest shared by evidence derived from one underlying source. */
@@ -215,6 +217,9 @@ export type ContextPack = {
   memoryResults: import("@/lib/memory/types").MemorySearchResult[];
   knowledgeResults: KnowledgeSearchResult[];
   graphResults: import("@/lib/memory/types").MemoryGraphSearchResult[];
+  /** Authorized P5.5 paths; every hop retains at least one live evidence item. */
+  graphRelationshipPaths?: import("@/lib/entities/graph-retrieval").GraphRelationshipPath[];
+  graphRetrievalReceipt?: import("@/lib/entities/graph-retrieval").GraphRetrievalReceipt;
   contextBlock: string;
   budget: import("@/lib/rag/context-budget").ContextBudgetReceipt;
   trace?: RetrievalTraceRecord;

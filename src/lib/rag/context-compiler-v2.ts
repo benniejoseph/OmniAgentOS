@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { DatabaseMemoryAccessScope } from "@/lib/db/memory-access-scope";
+import type { GraphRelationshipPath } from "@/lib/entities/graph-retrieval";
 import {
   memoryAccessBindingAllows,
 } from "@/lib/memory/access-binding";
@@ -168,6 +169,7 @@ export async function prepareContextCompilerV2Candidates(input: {
   memoryResults: readonly MemorySearchResult[];
   knowledgeResults: readonly KnowledgeSearchResult[];
   graphResults: readonly MemoryGraphSearchResult[];
+  relationshipPaths?: readonly GraphRelationshipPath[];
   asOfTime?: string;
 }): Promise<ContextCompilerV2PreparedCandidate[]> {
   const asOfTime = canonicalTimestamp(input.asOfTime || new Date().toISOString());
@@ -209,7 +211,27 @@ export async function prepareContextCompilerV2Candidates(input: {
       graphBackingById,
       asOfTime,
     )),
+    ...(input.relationshipPaths || []).map(prepareRelationshipPathCandidate),
   ].slice(0, MAX_CANDIDATES);
+}
+
+function prepareRelationshipPathCandidate(
+  path: GraphRelationshipPath,
+): ContextCompilerV2PreparedCandidate {
+  const authorized =
+    path.hopCount >= 1 &&
+    path.hopCount === path.hops.length &&
+    path.hops.every((hop) => hop.evidence.length > 0);
+  return Object.freeze({
+    evidenceId: `graph:${path.pathId}`,
+    itemClass: "graph_neighborhood",
+    sourceRevisionId: null,
+    score: path.score,
+    authorizationState: authorized ? "authorized" : "rejected",
+    authorizationReason: authorized
+      ? "authorized"
+      : "graph_lineage_missing",
+  });
 }
 
 export function buildContextCompilerV2Shadow(input: {

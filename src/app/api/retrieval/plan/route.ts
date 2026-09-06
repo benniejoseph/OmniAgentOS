@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { requestEntityAccessFromSecurityContext } from "@/lib/entities/request-access";
 import {
   jsonBodyErrorResponse,
   parseBoundedInteger,
@@ -44,14 +45,20 @@ async function GETHandler(request: Request) {
   }
 
   if (query) {
+    const correlationId = `retrieval_plan_${randomUUID()}`;
     const requestAccess = requestMemoryAccessFromSecurityContext(context, {
       purposeId: MEMORY_PURPOSE_IDS.retrieve,
       auditPurpose: "api.retrieval.plan",
-      correlationId: `retrieval_plan_${randomUUID()}`,
+      correlationId,
+    });
+    const entityGraphAccess = requestEntityAccessFromSecurityContext(context, {
+      purposeId: "entity.read.v1",
+      correlationId,
     });
     const pack = await buildContextPack(query, {
         tenantId: context.tenantId,
         databaseMemoryAccessScope: requestAccess?.databaseAccessScope,
+        entityGraphAccess,
         limit: Math.min(limit, 24),
         persistTrace: url.searchParams.get("persistTrace") !== "false",
         usageScope: {
@@ -70,13 +77,14 @@ async function GETHandler(request: Request) {
         tenantId: context.tenantId,
         accessScope: requestAccess?.databaseAccessScope,
       }),
-    });
+    }, { headers: { "cache-control": "private, no-store" } });
   }
 
+  const correlationId = `retrieval_plan_${randomUUID()}`;
   const requestAccess = requestMemoryAccessFromSecurityContext(context, {
     purposeId: MEMORY_PURPOSE_IDS.read,
     auditPurpose: "api.retrieval.traces.read",
-    correlationId: `retrieval_traces_${randomUUID()}`,
+    correlationId,
   });
   return Response.json({
     traces: await listRetrievalTraces(limit, {
@@ -121,14 +129,20 @@ async function POSTHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
+  const correlationId = `retrieval_plan_${randomUUID()}`;
   const requestAccess = requestMemoryAccessFromSecurityContext(context, {
     purposeId: MEMORY_PURPOSE_IDS.retrieve,
     auditPurpose: "api.retrieval.plan",
-    correlationId: `retrieval_plan_${randomUUID()}`,
+    correlationId,
+  });
+  const entityGraphAccess = requestEntityAccessFromSecurityContext(context, {
+    purposeId: "entity.read.v1",
+    correlationId,
   });
   const pack = await buildContextPack(parsed.data.query, {
       tenantId: context.tenantId,
       databaseMemoryAccessScope: requestAccess?.databaseAccessScope,
+      entityGraphAccess,
       limit: parsed.data.limit,
       persistTrace: parsed.data.persistTrace,
       usageScope: {
@@ -147,7 +161,7 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       accessScope: requestAccess?.databaseAccessScope,
     }),
-  });
+  }, { headers: { "cache-control": "private, no-store" } });
 }
 
 function contextSelectionPreview(
