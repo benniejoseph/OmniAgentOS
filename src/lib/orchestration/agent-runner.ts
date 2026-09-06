@@ -16,6 +16,7 @@ import {
 import { CAPABILITY_MAX_QUERY_LENGTH } from "@/lib/capabilities/types";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { generateModelToolTurn } from "@/lib/models/gateway";
+import type { ModelConversationItem } from "@/lib/models/conversation";
 import {
   getModelProviderResponseReceipt,
   ModelProviderError,
@@ -1128,7 +1129,8 @@ export async function* runAgent(
           provider: modelRoute.provider,
           tier: modelRoute.tier,
           instructions,
-          prompt: modelPromptForConversation(initialConversationItems),
+          prompt: query,
+          conversation: initialConversationItems,
           tools: toolbox.openAITools.map((tool) => ({
             type: tool.type,
             name: tool.name,
@@ -1858,6 +1860,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   tier: "fast" | "reasoning";
   instructions: string;
   prompt: string;
+  conversation?: readonly ModelConversationItem[];
   tools: readonly ModelToolDefinition[];
   toolbox: {
     byFunctionName: Map<string, ToolboxEntry>;
@@ -1956,6 +1959,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
     });
     const turnRequest: ModelToolTurnRequest = {
       input: input.prompt,
+      ...(input.conversation ? { conversation: input.conversation } : {}),
       instructions: input.instructions,
       tier: input.tier,
       preferredProvider: activeProvider,
@@ -2293,14 +2297,6 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   }
 
   return finish();
-}
-
-function modelPromptForConversation(items: ConversationItem[]) {
-  return items.flatMap((item) => {
-    if ("role" in item) return [`${item.role.toUpperCase()}: ${item.content}`];
-    if (item.type === "function_call_output") return [`TOOL RESULT: ${item.output}`];
-    return [];
-  }).join("\n\n").slice(0, 120_000);
 }
 
 function agentDisplayName(agentId: string) {

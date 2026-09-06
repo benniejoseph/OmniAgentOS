@@ -18,6 +18,17 @@ describe("non-OpenAI governed provider tool loop", () => {
     ];
     const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
       if (!request.toolResults) {
+        expect(request.input).toBe("Find Ada Lovelace");
+        expect(request.conversation).toEqual([
+          { type: "message", role: "user", content: "Find Ada." },
+          { type: "message", role: "assistant", content: "Which Ada?" },
+          {
+            type: "observation",
+            source: "knowledge",
+            content: "Ada Lovelace",
+            untrusted: true,
+          },
+        ]);
         return turn({ toolCalls: firstCalls, inputTokens: 10, outputTokens: 2, cost: 0.001 });
       }
       expect(request.preferredProvider).toBe("google");
@@ -41,6 +52,16 @@ describe("non-OpenAI governed provider tool loop", () => {
       tier: "fast",
       instructions: "Use tools when needed.",
       prompt: "Find Ada Lovelace",
+      conversation: [
+        { type: "message", role: "user", content: "Find Ada." },
+        { type: "message", role: "assistant", content: "Which Ada?" },
+        {
+          type: "observation",
+          source: "knowledge",
+          content: "Ada Lovelace",
+          untrusted: true,
+        },
+      ],
       tools: [modelTool("memory_search"), modelTool("knowledge_search")],
       toolbox: {
         byFunctionName: new Map([
