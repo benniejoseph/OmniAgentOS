@@ -145,6 +145,7 @@ export const tenantRootPolicyTables = [
   "omni_agent_release_channels",
   "omni_agent_release_evaluations",
   "omni_agent_adaptations",
+  "omni_delegation_tasks",
   "omni_agent_loop_v2_checkpoints",
   "omni_workflow_triggers",
   "omni_operation_jobs",
@@ -1179,6 +1180,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[114],
       up: async (sql) => {
         await ensureAgentAdaptationLifecycleV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[115],
+      up: async (sql) => {
+        await ensureDelegationTaskLifecycleV1(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -10729,6 +10737,326 @@ async function ensureAgentAdaptationLifecycleV1(sql: SqlClient) {
           )
       ) THEN
         RAISE EXCEPTION 'Agent adaptation lifecycle boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 115
+          AND name = 'agent_adaptation_lifecycle_v1'
+          AND checksum =
+            'adb861cb8c067108beaa6e0f92eb206086541f766e5665421fe887e2a11d90e5'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Delegation task lifecycle predecessor is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_delegation_tasks (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      parent_execution_id TEXT NOT NULL,
+      parent_principal_id TEXT NOT NULL,
+      parent_delegation_id TEXT,
+      delegation_id TEXT NOT NULL,
+      contract_id TEXT NOT NULL,
+      contract_sha256 TEXT NOT NULL,
+      delegate_principal_id TEXT NOT NULL,
+      delegate_agent_id TEXT NOT NULL,
+      delegate_definition_version BIGINT NOT NULL,
+      verifier_agent_id TEXT NOT NULL,
+      verifier_definition_version BIGINT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'proposed',
+      lifecycle_revision SMALLINT NOT NULL DEFAULT 0,
+      task JSONB NOT NULL,
+      task_sha256 TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      accept_by TIMESTAMPTZ NOT NULL,
+      complete_by TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      terminal_at TIMESTAMPTZ,
+      PRIMARY KEY (tenant_id, task_id),
+      UNIQUE (tenant_id, delegation_id),
+      CHECK (schema_version = 1),
+      CHECK (char_length(task_id) BETWEEN 1 AND 240),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (char_length(parent_execution_id) BETWEEN 1 AND 240),
+      CHECK (char_length(parent_principal_id) BETWEEN 1 AND 240),
+      CHECK (parent_delegation_id IS NULL OR char_length(parent_delegation_id) BETWEEN 1 AND 240),
+      CHECK (char_length(delegation_id) BETWEEN 1 AND 240),
+      CHECK (char_length(contract_id) BETWEEN 1 AND 240),
+      CHECK (contract_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (char_length(delegate_principal_id) BETWEEN 1 AND 240),
+      CHECK (char_length(delegate_agent_id) BETWEEN 1 AND 240),
+      CHECK (delegate_definition_version BETWEEN 1 AND 9007199254740991),
+      CHECK (char_length(verifier_agent_id) BETWEEN 1 AND 240),
+      CHECK (verifier_definition_version BETWEEN 1 AND 9007199254740991),
+      CHECK (state IN (
+        'proposed', 'accepted', 'working', 'waiting', 'challenged',
+        'completed_proposed', 'result_accepted', 'rejected', 'canceled',
+        'expired'
+      )),
+      CHECK (lifecycle_revision BETWEEN 0 AND 32),
+      CHECK (jsonb_typeof(task) = 'object'),
+      CHECK (task_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (created_at <= updated_at),
+      CHECK (created_at <= accept_by AND accept_by < complete_by),
+      CHECK ((state IN ('result_accepted', 'rejected', 'canceled', 'expired')) = (terminal_at IS NOT NULL)),
+      CHECK (task->>'version' = 'p8.3-delegation-task:1'),
+      CHECK (task->>'taskId' = task_id),
+      CHECK (task->>'taskSha256' = task_sha256),
+      CHECK (task->>'tenantId' = tenant_id),
+      CHECK (task->>'ownerActorId' = owner_actor_id),
+      CHECK (task->>'parentExecutionId' = parent_execution_id),
+      CHECK (task->>'parentPrincipalId' = parent_principal_id),
+      CHECK ((task->>'parentDelegationId') IS NOT DISTINCT FROM parent_delegation_id),
+      CHECK (task->>'delegationId' = delegation_id),
+      CHECK (task->>'contractId' = contract_id),
+      CHECK (task->>'contractSha256' = contract_sha256),
+      CHECK (task->>'delegatePrincipalId' = delegate_principal_id),
+      CHECK (task->>'delegateAgentId' = delegate_agent_id),
+      CHECK ((task->>'delegateDefinitionVersion')::BIGINT = delegate_definition_version),
+      CHECK (task->>'verifierAgentId' = verifier_agent_id),
+      CHECK ((task->>'verifierDefinitionVersion')::BIGINT = verifier_definition_version),
+      CHECK (task->>'state' = state),
+      CHECK ((task->>'lifecycleRevision')::SMALLINT = lifecycle_revision),
+      CHECK ((task->>'createdAt')::TIMESTAMPTZ = created_at),
+      CHECK ((task->>'acceptBy')::TIMESTAMPTZ = accept_by),
+      CHECK ((task->>'completeBy')::TIMESTAMPTZ = complete_by),
+      CHECK ((task->>'updatedAt')::TIMESTAMPTZ = updated_at),
+      CHECK (
+        CASE WHEN terminal_at IS NULL
+          THEN task->'terminalAt' = 'null'::jsonb
+          ELSE (task->>'terminalAt')::TIMESTAMPTZ = terminal_at
+        END
+      ),
+      CHECK (
+        (state IN ('completed_proposed', 'result_accepted', 'rejected')) =
+        (task->'proposal' <> 'null'::jsonb)
+      ),
+      CHECK (
+        (state IN ('result_accepted', 'rejected')) =
+        (task->'evaluation' <> 'null'::jsonb)
+      ),
+      CHECK (
+        state <> 'result_accepted'
+        OR task->'evaluation'->>'verdict' = 'accepted'
+      ),
+      CHECK (
+        state <> 'rejected'
+        OR task->'evaluation'->>'verdict' = 'rejected'
+      ),
+      FOREIGN KEY (owner_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_delegation_tasks_parent_idx
+    ON omni_delegation_tasks (
+      tenant_id, owner_actor_id, parent_execution_id, created_at, task_id
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_delegation_tasks_active_idx
+    ON omni_delegation_tasks (tenant_id, state, complete_by)
+    WHERE state NOT IN ('result_accepted', 'rejected', 'canceled', 'expired')
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_delegation_task_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION 'Delegation tasks cannot be removed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.state <> 'proposed'
+          OR NEW.lifecycle_revision <> 0
+          OR NEW.updated_at IS DISTINCT FROM NEW.created_at
+          OR NEW.terminal_at IS NOT NULL
+          OR NEW.task->'proposal' <> 'null'::jsonb
+          OR NEW.task->'evaluation' <> 'null'::jsonb
+        THEN
+          RAISE EXCEPTION 'Initial delegation task is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF ROW(
+        NEW.schema_version, NEW.tenant_id, NEW.task_id, NEW.owner_actor_id,
+        NEW.parent_execution_id, NEW.parent_principal_id,
+        NEW.parent_delegation_id, NEW.delegation_id, NEW.contract_id,
+        NEW.contract_sha256, NEW.delegate_principal_id,
+        NEW.delegate_agent_id, NEW.delegate_definition_version,
+        NEW.verifier_agent_id, NEW.verifier_definition_version,
+        NEW.created_at, NEW.accept_by, NEW.complete_by
+      ) IS DISTINCT FROM ROW(
+        OLD.schema_version, OLD.tenant_id, OLD.task_id, OLD.owner_actor_id,
+        OLD.parent_execution_id, OLD.parent_principal_id,
+        OLD.parent_delegation_id, OLD.delegation_id, OLD.contract_id,
+        OLD.contract_sha256, OLD.delegate_principal_id,
+        OLD.delegate_agent_id, OLD.delegate_definition_version,
+        OLD.verifier_agent_id, OLD.verifier_definition_version,
+        OLD.created_at, OLD.accept_by, OLD.complete_by
+      ) OR NEW.lifecycle_revision IS DISTINCT FROM OLD.lifecycle_revision + 1
+        OR NEW.updated_at < OLD.updated_at
+      THEN
+        RAISE EXCEPTION 'Delegation task identity or revision is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NOT (
+        (OLD.state = 'proposed' AND NEW.state IN ('accepted', 'rejected', 'canceled', 'expired'))
+        OR (OLD.state = 'accepted' AND NEW.state IN ('working', 'rejected', 'canceled', 'expired'))
+        OR (OLD.state = 'working' AND NEW.state IN ('waiting', 'challenged', 'completed_proposed', 'rejected', 'canceled', 'expired'))
+        OR (OLD.state = 'waiting' AND NEW.state IN ('working', 'challenged', 'rejected', 'canceled', 'expired'))
+        OR (OLD.state = 'challenged' AND NEW.state IN ('working', 'completed_proposed', 'rejected', 'canceled', 'expired'))
+        OR (OLD.state = 'completed_proposed' AND NEW.state IN ('result_accepted', 'rejected', 'challenged', 'canceled', 'expired'))
+      ) THEN
+        RAISE EXCEPTION 'Delegation task transition is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NEW.state = 'accepted' AND NEW.updated_at >= NEW.accept_by THEN
+        RAISE EXCEPTION 'Delegation acceptance deadline has expired'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NEW.state = 'expired' AND NEW.updated_at < NEW.complete_by THEN
+        RAISE EXCEPTION 'Delegation cannot expire before its deadline'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NEW.state <> 'expired' AND NEW.updated_at >= NEW.complete_by THEN
+        RAISE EXCEPTION 'Delegation completion deadline has expired'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      DROP TRIGGER IF EXISTS omni_delegation_task_protect
+        ON omni_delegation_tasks;
+      CREATE TRIGGER omni_delegation_task_protect
+      BEFORE INSERT OR UPDATE OR DELETE ON omni_delegation_tasks
+      FOR EACH ROW EXECUTE FUNCTION omni_protect_delegation_task_v1();
+      DROP TRIGGER IF EXISTS omni_delegation_task_no_truncate
+        ON omni_delegation_tasks;
+      CREATE TRIGGER omni_delegation_task_no_truncate
+      BEFORE TRUNCATE ON omni_delegation_tasks
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_delegation_task_v1();
+      ALTER TABLE omni_delegation_tasks ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_delegation_tasks FORCE ROW LEVEL SECURITY;
+      DROP POLICY IF EXISTS omni_delegation_tasks_actor
+        ON omni_delegation_tasks;
+      CREATE POLICY omni_delegation_tasks_actor
+      ON omni_delegation_tasks AS RESTRICTIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_delegation_tasks FROM PUBLIC`;
+  await sql`REVOKE ALL ON FUNCTION omni_protect_delegation_task_v1() FROM PUBLIC`;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_delegation_tasks FROM omni_runtime';
+        GRANT SELECT, INSERT ON omni_delegation_tasks TO omni_runtime;
+        GRANT UPDATE (
+          state, lifecycle_revision, task, task_sha256, updated_at, terminal_at
+        ) ON omni_delegation_tasks TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_delegation_tasks FROM omni_maintenance';
+        GRANT SELECT, INSERT ON omni_delegation_tasks TO omni_maintenance;
+        GRANT UPDATE (
+          state, lifecycle_revision, task, task_sha256, updated_at, terminal_at
+        ) ON omni_delegation_tasks TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_delegation_tasks'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_delegation_tasks'::regclass
+          AND tgname = 'omni_delegation_task_protect'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_delegation_tasks'::regclass
+          AND tgname = 'omni_delegation_task_no_truncate'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_proc
+        WHERE oid = 'omni_protect_delegation_task_v1()'::regprocedure
+          AND NOT prosecdef
+      ) OR EXISTS (
+        SELECT 1
+        FROM pg_proc function_row
+        CROSS JOIN LATERAL aclexplode(COALESCE(
+          function_row.proacl,
+          acldefault('f', function_row.proowner)
+        )) function_acl
+        WHERE function_row.oid =
+          'omni_protect_delegation_task_v1()'::regprocedure
+          AND function_acl.grantee = 0
+          AND function_acl.privilege_type = 'EXECUTE'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_delegation_tasks'::regclass
+          AND polname = 'omni_delegation_tasks_actor'
+          AND NOT polpermissive AND polcmd = '*'
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_delegation_tasks'
+          AND grantee IN ('omni_runtime', 'omni_maintenance')
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_column_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_delegation_tasks'
+          AND grantee IN ('omni_runtime', 'omni_maintenance')
+          AND privilege_type = 'UPDATE'
+          AND column_name NOT IN (
+            'state', 'lifecycle_revision', 'task', 'task_sha256',
+            'updated_at', 'terminal_at'
+          )
+      ) THEN
+        RAISE EXCEPTION 'Delegation task lifecycle boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END
