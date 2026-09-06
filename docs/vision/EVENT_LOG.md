@@ -1668,3 +1668,12 @@ evidence IDs; content is resolved separately as untrusted model input. Contract
 records and checkpoint/event payloads are evidence and attribution, not
 authority: actual execution uses the derived child scope and the governed model
 or tool boundary.
+
+P8.2 broker progress is currently content-free runtime telemetry, not the
+authoritative delegation lifecycle; P8.3 adds that ledger and its typed state
+events. Each delegated governed call still creates the existing canonical tool
+execution/checkpoint/effect records with the exact delegated principal,
+delegation ID, parent correlation, call causation, and idempotency binding.
+Returned broker artifacts carry only the bounded redacted output, digest, byte
+count, and governed execution evidence ID. An approval-required receipt stops
+the broker at `waiting`; it is never converted into a successful effect event.
