@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/auth/native_client_info.dart';
+import '../../../core/auth/biometric_gate.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/storage/secure_session_store.dart';
@@ -8,11 +9,15 @@ import '../../../generated/native_contract.g.dart';
 import '../domain/app_session.dart';
 
 class SessionRepository {
-  const SessionRepository(this._api, this._store);
+  const SessionRepository(this._api, this._store, this._biometricGate);
   final ApiClient _api;
   final SecureSessionStore _store;
+  final BiometricGate _biometricGate;
 
   Future<AppSession?> restore() async {
+    if (!await _store.hasStoredCredentials()) return null;
+    if (await _api.clearAndAcknowledgeRemoteWipe()) return null;
+    await unlockBiometricRelease();
     final accessToken = await _store.readToken();
     final refreshToken = await _store.readRefreshToken();
     if (accessToken == null && refreshToken == null) return null;
@@ -37,9 +42,7 @@ class SessionRepository {
         deviceId: deviceId,
       );
       await _persistTokens(rotated);
-      return AppSession.fromJson(
-        await _api.getJson(NativePaths.bootstrapGet),
-      );
+      return AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet));
     } on ApiException catch (error) {
       if (error.statusCode != 401) rethrow;
       await _store.clear();
@@ -70,6 +73,32 @@ class SessionRepository {
       // remains bounded by its expiry when the service is unreachable.
       await _store.clear();
     }
+  }
+
+  Future<bool> isBiometricEnabled() => _store.readBiometricEnabled();
+
+  Future<bool> isBiometricAvailable() => _biometricGate.isAvailable();
+
+  Future<void> setBiometricEnabled(bool enabled) async {
+    if (enabled || await _store.readBiometricEnabled()) {
+      await _biometricGate.authenticate();
+    }
+    await _store.setBiometricEnabled(enabled);
+  }
+
+  Future<void> unlockBiometricRelease() async {
+    if (!await _store.readBiometricEnabled()) {
+      _store.unlockBiometricRelease();
+      return;
+    }
+    await _biometricGate.authenticate();
+    _store.unlockBiometricRelease();
+  }
+
+  Future<bool> lockBiometricRelease() async {
+    if (!await _store.readBiometricEnabled()) return false;
+    _store.lockBiometricRelease();
+    return true;
   }
 
   Future<void> _persistTokens(Map<String, dynamic> response) async {
@@ -146,19 +175,16 @@ class SessionRepository {
       if (error.statusCode != 400) rethrow;
       return _api.postJson(
         NativePaths.authRefresh,
-        data: {
-          'refreshToken': refreshToken,
-          'deviceId': deviceId,
-        },
+        data: {'refreshToken': refreshToken, 'deviceId': deviceId},
       );
     }
   }
-
 }
 
 final sessionRepositoryProvider = Provider<SessionRepository>(
   (ref) => SessionRepository(
     ref.watch(apiClientProvider),
     ref.watch(secureSessionStoreProvider),
+    ref.watch(biometricGateProvider),
   ),
 );

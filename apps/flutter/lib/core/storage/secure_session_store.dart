@@ -4,16 +4,27 @@ import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../auth/biometric_gate.dart';
+
 class SecureSessionStore {
-  const SecureSessionStore(this._storage);
+  SecureSessionStore(this._storage);
   static const _tokenKey = 'asael.session_token';
   static const _refreshTokenKey = 'asael.refresh_token';
   static const _accessExpiresAtKey = 'asael.access_expires_at';
   static const _deviceIdKey = 'asael.device_id';
+  static const _biometricEnabledKey = 'asael.biometric_enabled';
   static const _legacyTokenKey = 'omniagent.session_token';
   final FlutterSecureStorage _storage;
+  bool _biometricReleaseUnlocked = false;
 
   Future<String?> readToken() async {
+    await _requireBiometricRelease();
+    return _readTokenWithoutRelease();
+  }
+
+  Future<String?> readTokenForRemoteWipe() => _readTokenWithoutRelease();
+
+  Future<String?> _readTokenWithoutRelease() async {
     final token = await _storage.read(key: _tokenKey);
     if (token != null) return token;
     final legacyToken = await _storage.read(key: _legacyTokenKey);
@@ -28,8 +39,15 @@ class SecureSessionStore {
     await _storage.delete(key: _legacyTokenKey);
   }
 
-  Future<String?> readRefreshToken() =>
-      _storage.read(key: _refreshTokenKey);
+  Future<String?> readRefreshToken() async {
+    await _requireBiometricRelease();
+    return _storage.read(key: _refreshTokenKey);
+  }
+
+  Future<bool> hasStoredCredentials() async =>
+      await _storage.read(key: _tokenKey) != null ||
+      await _storage.read(key: _refreshTokenKey) != null ||
+      await _storage.read(key: _legacyTokenKey) != null;
 
   Future<void> writeTokens({
     required String accessToken,
@@ -43,6 +61,7 @@ class SecureSessionStore {
     await _storage.write(key: _accessExpiresAtKey, value: accessExpiresAt);
     await _storage.write(key: _tokenKey, value: accessToken);
     await _storage.delete(key: _legacyTokenKey);
+    _biometricReleaseUnlocked = true;
   }
 
   Future<bool> accessTokenNeedsRefresh({
@@ -65,14 +84,53 @@ class SecureSessionStore {
     return created;
   }
 
+  Future<String?> readExistingDeviceId() => _storage.read(key: _deviceIdKey);
+
+  Future<bool> readBiometricEnabled() async =>
+      await _storage.read(key: _biometricEnabledKey) == 'true';
+
+  Future<void> setBiometricEnabled(bool enabled) async {
+    if (enabled) {
+      await _storage.write(key: _biometricEnabledKey, value: 'true');
+      _biometricReleaseUnlocked = true;
+    } else {
+      await _storage.delete(key: _biometricEnabledKey);
+      _biometricReleaseUnlocked = true;
+    }
+  }
+
+  void unlockBiometricRelease() => _biometricReleaseUnlocked = true;
+
+  void lockBiometricRelease() => _biometricReleaseUnlocked = false;
+
+  Future<void> _requireBiometricRelease() async {
+    if (_biometricReleaseUnlocked || !await readBiometricEnabled()) return;
+    throw const BiometricGateException(BiometricGateFailure.notRecognized);
+  }
+
   Future<void> clear() async {
-    await _storage.delete(key: _tokenKey);
-    await _storage.delete(key: _refreshTokenKey);
-    await _storage.delete(key: _accessExpiresAtKey);
-    await _storage.delete(key: _legacyTokenKey);
+    await Future.wait([
+      _storage.delete(key: _tokenKey),
+      _storage.delete(key: _refreshTokenKey),
+      _storage.delete(key: _accessExpiresAtKey),
+      _storage.delete(key: _legacyTokenKey),
+    ]);
+    _biometricReleaseUnlocked = false;
+  }
+
+  Future<void> clearForRemoteWipe() async {
+    await Future.wait([
+      _storage.delete(key: _tokenKey),
+      _storage.delete(key: _refreshTokenKey),
+      _storage.delete(key: _accessExpiresAtKey),
+      _storage.delete(key: _legacyTokenKey),
+      _storage.delete(key: _deviceIdKey),
+      _storage.delete(key: _biometricEnabledKey),
+    ]);
+    _biometricReleaseUnlocked = false;
   }
 }
 
 final secureSessionStoreProvider = Provider<SecureSessionStore>(
-  (_) => const SecureSessionStore(FlutterSecureStorage()),
+  (_) => SecureSessionStore(const FlutterSecureStorage()),
 );
