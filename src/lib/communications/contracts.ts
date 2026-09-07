@@ -78,6 +78,12 @@ export const messageDraftSchema = z.object({
   updatedAt: timestampSchema,
   draftSha256: sha256Schema,
 }).strict().superRefine((value, context) => {
+  if (value.channel === "email" && !z.string().email().safeParse(value.recipient).success) {
+    context.addIssue({ code: "custom", path: ["recipient"], message: "Draft email recipient is invalid." });
+  }
+  if (/[\r\n]/.test(value.subject)) {
+    context.addIssue({ code: "custom", path: ["subject"], message: "Draft subject cannot contain line breaks." });
+  }
   const digest = canonicalJsonSha256({
     version: value.version,
     id: value.id,

@@ -7,6 +7,8 @@ export const GOOGLE_PHOTOS_PICKER_SCOPE =
   "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
 export const GOOGLE_CALENDAR_WRITE_SCOPE =
   "https://www.googleapis.com/auth/calendar.events";
+export const GOOGLE_GMAIL_SEND_SCOPE =
+  "https://www.googleapis.com/auth/gmail.send";
 
 const oauthReturnPaths = new Set(["/app/capture", "/app/connectors"]);
 
@@ -19,6 +21,7 @@ export const oauthProviders = {
     clientSecretEnv: "GOOGLE_OAUTH_CLIENT_SECRET",
     scopes: [
       "https://www.googleapis.com/auth/gmail.readonly",
+      GOOGLE_GMAIL_SEND_SCOPE,
       GOOGLE_CALENDAR_WRITE_SCOPE,
       "https://www.googleapis.com/auth/drive.readonly",
       GOOGLE_PHOTOS_PICKER_SCOPE,

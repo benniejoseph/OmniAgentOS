@@ -79,6 +79,11 @@ describe("governed communication contracts", () => {
       body: "A different message.",
       draftSha256,
     })).toThrow(/draftSha256/i);
+    expect(() => messageDraftSchema.parse({
+      ...body,
+      subject: "Update\r\nBcc: attacker@example.com",
+      draftSha256,
+    })).toThrow(/line breaks/i);
   });
 
   it("marks mapped inbound content as untrusted and self-verifying", () => {
