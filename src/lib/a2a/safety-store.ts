@@ -297,6 +297,7 @@ async function loadLineage(
       FROM omni_delegation_tasks task
       LEFT JOIN omni_a2a_task_mappings mapping
         ON mapping.tenant_id = task.tenant_id
+       AND mapping.owner_actor_id = task.owner_actor_id
        AND mapping.internal_delegation_id = task.delegation_id
       WHERE task.tenant_id = ${contract.scope.tenantId}
         AND task.owner_actor_id = ${contract.scope.initiatingActorId}
