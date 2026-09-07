@@ -168,9 +168,44 @@ export const ap2MandateAuthorizationSchema = authorizationBodySchema.extend({
   }
 });
 
+const mandateVerificationReceiptBodySchema = z.object({
+  version: z.literal("p9.16-ap2-mandate-verification:1"),
+  reviewId: z.string().regex(/^ap2_review:[0-9a-f-]{36}$/),
+  authorizationId: z.string().regex(/^ap2_authorization:[0-9a-f-]{36}$/),
+  authorizationSha256: sha256Schema,
+  authorizationDigest: sha256Schema,
+  credentialIdSha256: sha256Schema,
+  trustPolicySha256: sha256Schema,
+  accepted: z.literal(true),
+  checks: z.tuple([
+    z.literal("exact_review_digest"),
+    z.literal("exact_checkout_mandate_content"),
+    z.literal("exact_payment_mandate_content"),
+    z.literal("credential_and_trust_anchor"),
+    z.literal("webauthn_signature"),
+    z.literal("counter_progression"),
+    z.literal("user_verification_and_backup_state"),
+    z.literal("authorization_time_and_expiry"),
+  ]),
+  verifiedAt: timestampSchema,
+}).strict();
+
+export const ap2MandateVerificationReceiptSchema =
+  mandateVerificationReceiptBodySchema.extend({
+    receiptSha256: sha256Schema,
+  }).strict().superRefine((receipt, context) => {
+    const { receiptSha256, ...body } = receipt;
+    if (receiptSha256 !== canonicalJsonSha256(body)) {
+      issue(context, ["receiptSha256"], "Mandate verification receipt digest does not match.");
+    }
+  });
+
 export type Ap2WebAuthnTrustPolicy = z.infer<typeof ap2WebAuthnTrustPolicySchema>;
 export type Ap2PaymentSigningCredential = z.infer<typeof ap2PaymentSigningCredentialSchema>;
 export type Ap2MandateAuthorization = z.infer<typeof ap2MandateAuthorizationSchema>;
+export type Ap2MandateVerificationReceipt = z.infer<
+  typeof ap2MandateVerificationReceiptSchema
+>;
 
 type RegistrationChallenge = {
   version: 1;
@@ -430,6 +465,109 @@ export async function verifyAp2MandateAuthorization(input: {
   return ap2MandateAuthorizationSchema.parse({
     ...body,
     authorizationSha256: canonicalJsonSha256(body),
+  });
+}
+
+export async function verifyPersistedAp2Mandates(input: {
+  review: Ap2HumanPresentReview;
+  authorization: Ap2MandateAuthorization;
+  credential: Ap2PaymentSigningCredential;
+  policy: Ap2WebAuthnTrustPolicy;
+  now?: Date;
+  verify?: typeof verifyAuthenticationResponse;
+}): Promise<Ap2MandateVerificationReceipt> {
+  const now = input.now || new Date();
+  const review = ap2HumanPresentReviewSchema.parse(input.review);
+  const authorization = ap2MandateAuthorizationSchema.parse(input.authorization);
+  const credential = ap2PaymentSigningCredentialSchema.parse(input.credential);
+  const policy = ap2WebAuthnTrustPolicySchema.parse(input.policy);
+  if (
+    review.state !== "authorized" ||
+    authorization.reviewId !== review.reviewId ||
+    authorization.tenantId !== review.tenantId ||
+    authorization.ownerActorId !== review.ownerActorId ||
+    authorization.authorizationDigest !== review.authorizationDigest
+  ) {
+    throw new Error("Persisted AP2 authorization belongs to a different or unauthorized review.");
+  }
+  if (
+    authorization.checkoutMandateContentSha256 !==
+      canonicalJsonSha256(review.checkoutMandateContent) ||
+    authorization.paymentMandateContentSha256 !==
+      canonicalJsonSha256(review.paymentMandateContent)
+  ) {
+    throw new Error("Persisted AP2 mandate content changed after authorization.");
+  }
+  if (
+    credential.credentialId !== authorization.credentialId ||
+    credential.tenantId !== review.tenantId ||
+    credential.ownerActorId !== review.ownerActorId ||
+    credential.trustPolicyId !== authorization.trustPolicyId ||
+    credential.trustPolicySha256 !== authorization.trustPolicySha256 ||
+    policy.policyId !== authorization.trustPolicyId ||
+    policy.policySha256 !== authorization.trustPolicySha256 ||
+    !policy.allowedAaguids.includes(credential.aaguid) ||
+    !policy.acceptedAttestationFormats.includes(credential.attestationFormat)
+  ) {
+    throw new Error("Persisted AP2 authorization has no matching trusted credential authority.");
+  }
+  const authorizedTime = Date.parse(authorization.verifiedAt);
+  if (
+    authorizedTime < Date.parse(policy.validFrom) ||
+    authorizedTime >= Date.parse(policy.validUntil) ||
+    authorizedTime >= Date.parse(review.terms.expiresAt) ||
+    now.getTime() >= Date.parse(review.terms.expiresAt)
+  ) {
+    throw new Error("Persisted AP2 authorization is outside its trusted validity interval.");
+  }
+  const verification = await (input.verify || verifyAuthenticationResponse)({
+    response: authorization.assertion as AuthenticationResponseJSON,
+    expectedChallenge: ap2AuthorizationChallenge(review),
+    expectedOrigin: policy.expectedOrigin,
+    expectedRPID: policy.rpId,
+    expectedType: "webauthn.get",
+    requireUserVerification: true,
+    advancedFIDOConfig: { userVerification: "required" },
+    credential: {
+      id: credential.credentialId,
+      publicKey: Buffer.from(credential.publicKey, "base64url"),
+      counter: authorization.previousCounter,
+      transports: credential.transports,
+    },
+  });
+  if (
+    !verification.verified ||
+    !verification.authenticationInfo.userVerified ||
+    verification.authenticationInfo.credentialDeviceType !== "singleDevice" ||
+    verification.authenticationInfo.credentialBackedUp ||
+    verification.authenticationInfo.newCounter !== authorization.newCounter
+  ) {
+    throw new Error("Persisted AP2 WebAuthn authorization proof is invalid.");
+  }
+  const body = mandateVerificationReceiptBodySchema.parse({
+    version: "p9.16-ap2-mandate-verification:1",
+    reviewId: review.reviewId,
+    authorizationId: authorization.authorizationId,
+    authorizationSha256: authorization.authorizationSha256,
+    authorizationDigest: authorization.authorizationDigest,
+    credentialIdSha256: sha256(credential.credentialId),
+    trustPolicySha256: policy.policySha256,
+    accepted: true,
+    checks: [
+      "exact_review_digest",
+      "exact_checkout_mandate_content",
+      "exact_payment_mandate_content",
+      "credential_and_trust_anchor",
+      "webauthn_signature",
+      "counter_progression",
+      "user_verification_and_backup_state",
+      "authorization_time_and_expiry",
+    ],
+    verifiedAt: now.toISOString(),
+  });
+  return ap2MandateVerificationReceiptSchema.parse({
+    ...body,
+    receiptSha256: canonicalJsonSha256(body),
   });
 }
 
