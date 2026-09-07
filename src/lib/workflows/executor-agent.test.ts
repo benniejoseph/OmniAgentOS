@@ -2,12 +2,15 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const mocks = vi.hoisted(() => ({
   generateModelStructured: vi.fn(),
   resolveRuntimeModelAssignment: vi.fn(),
   appendWorkflowEvent: vi.fn(),
   getWorkflowRunExecutionAuthority: vi.fn(),
+  shareDelegationMissionArtifact: vi.fn(),
+  sendDelegationMessage: vi.fn(),
 }));
 
 vi.mock("@/lib/models/gateway", () => ({
@@ -19,6 +22,10 @@ vi.mock("@/lib/settings/runtime-models", () => ({
 vi.mock("@/lib/workflows/store", () => ({
   appendWorkflowEvent: mocks.appendWorkflowEvent,
   getWorkflowRunExecutionAuthority: mocks.getWorkflowRunExecutionAuthority,
+}));
+vi.mock("@/lib/delegation/channel-store", () => ({
+  shareDelegationMissionArtifact: mocks.shareDelegationMissionArtifact,
+  sendDelegationMessage: mocks.sendDelegationMessage,
 }));
 
 import {
@@ -86,12 +93,21 @@ describe("workflow agent node execution", () => {
     mocks.resolveRuntimeModelAssignment.mockReset();
     mocks.appendWorkflowEvent.mockReset();
     mocks.getWorkflowRunExecutionAuthority.mockReset();
+    mocks.shareDelegationMissionArtifact.mockReset();
+    mocks.sendDelegationMessage.mockReset();
     mocks.getWorkflowRunExecutionAuthority.mockResolvedValue(undefined);
     mocks.resolveRuntimeModelAssignment.mockResolvedValue({
       configured: true,
       source: "deployment_environment",
       assignmentId: undefined,
       bind: <T>(request: T) => request,
+    });
+    mocks.shareDelegationMissionArtifact.mockResolvedValue({
+      artifactId: `delegation-artifact:${"c".repeat(64)}`,
+      artifactSha256: "c".repeat(64),
+    });
+    mocks.sendDelegationMessage.mockResolvedValue({
+      messageId: `delegation-message:${"d".repeat(64)}`,
     });
   });
 
@@ -247,6 +263,62 @@ describe("workflow agent node execution", () => {
       expect.objectContaining({
         delegationId: expect.stringMatching(/^delegation:[a-f0-9]{64}$/),
         delegationContractSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+  });
+
+  it("shares a Mission completion proposal before parent acceptance", async () => {
+    mockSuccessfulNodeGeneration();
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-1",
+      initiatingActorId: "actor-1",
+      executingPrincipalType: "agent",
+      executingPrincipalId: "principal:atlas:1",
+      missionId: "mission-one",
+      correlationId: detail.run.id,
+      purpose: "workflow.run",
+    });
+    const nodeInput = buildWorkflowNodeInput({
+      objective: detail.run.goal,
+      node,
+      dependencyRecords: [],
+    });
+    const contract = buildWorkflowNodeDelegationContractV1({
+      detail,
+      planId: "plan-test",
+      node,
+      nodeInput,
+      dependencyRecords: [],
+      parentExecutionScope: executionScope,
+      remainingWallTimeMs: 30_000,
+      createdAt: "2026-09-07T06:00:00.000Z",
+    });
+
+    const result = await executeAgentPlanNode({
+      detail,
+      node,
+      nodeInput,
+      delegationContract: contract,
+      dependencyRecords: [],
+      executionAuthority: { executionScope, requesterRole: "admin" },
+      budget: createWorkflowExecutionBudget(),
+    });
+
+    expect(result.executionReceipt.delegation?.lifecycleState)
+      .toBe("result_accepted");
+    expect(mocks.shareDelegationMissionArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-one",
+        recipients: { parent: true, delegationTaskIds: [] },
+        task: expect.objectContaining({ state: "completed_proposed" }),
+      }),
+    );
+    expect(mocks.sendDelegationMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-one",
+        artifactReferences: [expect.objectContaining({
+          artifactSha256: "c".repeat(64),
+        })],
       }),
     );
   });

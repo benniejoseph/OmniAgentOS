@@ -4,8 +4,16 @@ import { DEFAULT_AGENT_RUN_BUDGET_LIMITS } from "@/lib/runs/budgets";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 
-const mocks = vi.hoisted(() => ({ generateModelStructured: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  generateModelStructured: vi.fn(),
+  shareDelegationMissionArtifact: vi.fn(),
+  sendDelegationMessage: vi.fn(),
+}));
 vi.mock("@/lib/models/gateway", () => ({ generateModelStructured: mocks.generateModelStructured }));
+vi.mock("@/lib/delegation/channel-store", () => ({
+  shareDelegationMissionArtifact: mocks.shareDelegationMissionArtifact,
+  sendDelegationMessage: mocks.sendDelegationMessage,
+}));
 
 import {
   formatCouncilContributions,
@@ -15,7 +23,18 @@ import {
 } from "@/lib/orchestration/council";
 
 describe("agent council", () => {
-  beforeEach(() => mocks.generateModelStructured.mockReset());
+  beforeEach(() => {
+    mocks.generateModelStructured.mockReset();
+    mocks.shareDelegationMissionArtifact.mockReset();
+    mocks.sendDelegationMessage.mockReset();
+    mocks.shareDelegationMissionArtifact.mockResolvedValue({
+      artifactId: `delegation-artifact:${"a".repeat(64)}`,
+      artifactSha256: "a".repeat(64),
+    });
+    mocks.sendDelegationMessage.mockResolvedValue({
+      messageId: `delegation-message:${"b".repeat(64)}`,
+    });
+  });
 
   it("runs non-primary specialists independently and reserves Sentinel for review", async () => {
     mocks.generateModelStructured
@@ -29,7 +48,13 @@ describe("agent council", () => {
       specialistIds: ["atlas", "scout", "forge", "sentinel"],
       contextBlock: "[memory:1] Existing evidence",
       tenantId: "personal",
-      delegationAuthority,
+      delegationAuthority: {
+        ...delegationAuthority,
+        executionScope: {
+          ...delegationAuthority.executionScope,
+          missionId: "mission-one",
+        },
+      },
       usageAttribution: {
         tenantId: "personal",
         actorId: "actor-one",
@@ -51,6 +76,17 @@ describe("agent council", () => {
       item.delegation.taskId === `delegation-task:${item.delegation.delegationId}`
     )).toBe(true);
     expect(mocks.generateModelStructured).toHaveBeenCalledTimes(2);
+    expect(mocks.shareDelegationMissionArtifact).toHaveBeenCalledTimes(2);
+    expect(mocks.sendDelegationMessage).toHaveBeenCalledTimes(2);
+    expect(mocks.sendDelegationMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: "mission-one",
+        recipients: { parent: true, delegationTaskIds: [] },
+        artifactReferences: [expect.objectContaining({
+          artifactSha256: "a".repeat(64),
+        })],
+      }),
+    );
     expect(formatCouncilContributions(contributions)).toContain("Scout (Research)");
     const scoutInstructions = String(
       mocks.generateModelStructured.mock.calls[0]?.[0]?.instructions,
