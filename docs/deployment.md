@@ -373,6 +373,17 @@ progress, and exact-ledger cost semantics; also verify an existing
 render through `local_projection`, but new write paths must continue failing if
 their canonical shadow cannot be verified.
 
+P11.5 Agent Council is a web-only projection and UI release with no migration,
+backfill, environment change, or Fly release. New delegation proposal events
+carry an immutable, digest-verified authority receipt; historical delegations
+without that receipt must show authority as unavailable rather than infer it.
+The private Council read installs the authenticated user's canonical/current
+actor scope and resolves exact AgentDefinition versions, run events, explicitly
+shared Mission-channel content, and AI-usage receipts. Verify anonymous access
+returns 401, an authenticated empty or populated Council projection renders in
+Arsenal without client errors, and populated rows show only receipt-derived
+context, capability, tool, scope, and budget authority.
+
 ## Production smoke state
 
 The `Production Smoke` workflow supports schedule and manual dispatch. Configure:
