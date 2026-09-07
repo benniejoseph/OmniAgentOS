@@ -1241,6 +1241,51 @@ export function MissionWorkspace({
     }
   }
 
+  async function startAssignedTask(taskId: string, expectedUpdatedAt: string) {
+    const missionId = selectedIdRef.current;
+    const blockedReason = currentTaskActionBlocked(missionId);
+    const taskIsCurrent = detailsRef.current[missionId]?.tasks.some(
+      (task) => task.id === taskId,
+    );
+    if (!missionId || blockedReason || !taskIsCurrent) {
+      setTaskActionError(
+        blockedReason || "This task is no longer available in the current mission.",
+      );
+      return;
+    }
+    const requestGeneration = ++mutationGeneration.current;
+    mutationRecoveryController.current?.abort();
+    mutationRecoveryController.current = null;
+    setMutatingTaskId(taskId);
+    setTaskActionError(undefined);
+    try {
+      await readJson(
+        `/api/missions/${encodeURIComponent(missionId)}/tasks/${encodeURIComponent(taskId)}/start`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `mission-task-start-${taskId}-${Date.parse(expectedUpdatedAt)}`,
+          },
+          body: JSON.stringify({ expectedUpdatedAt }),
+        },
+      );
+      if (mutationGeneration.current !== requestGeneration) return;
+      await refreshDetail(missionId, requestGeneration);
+      if (mutationGeneration.current === requestGeneration) {
+        setAnnouncement("Governed execution queued for the assigned Agent.");
+      }
+    } catch (mutationError) {
+      if (mutationGeneration.current === requestGeneration) {
+        setTaskActionError(friendlyMessage(mutationError, "update"));
+      }
+    } finally {
+      if (mutationGeneration.current === requestGeneration) {
+        setMutatingTaskId("");
+      }
+    }
+  }
+
   async function addComment(taskId: string, body: string) {
     const missionId = selectedIdRef.current;
     const blockedReason = currentTaskActionBlocked(missionId);
@@ -1371,7 +1416,7 @@ export function MissionWorkspace({
 
       {showCreate && !createActionBlocked ? <MissionCreateDialog title={title} objective={objective} priority={priority} creating={creating} error={error} onTitleChange={setTitle} onObjectiveChange={setObjective} onPriorityChange={setPriority} onClose={() => setShowCreate(false)} onSubmit={createMission} /> : null}
       {showTaskCreate && selectedMission && !taskActionBlocked ? <TaskCreateDialog missionTitle={selectedMission.title} agents={agents} creating={creatingTask} error={taskActionError} onClose={() => { setShowTaskCreate(false); setTaskActionError(undefined); }} onCreate={createTask} /> : null}
-      {selectedTask && selectedDetail ? <TaskDrawer key={`${selectedTask.id}:${selectedTask.updatedAt}`} task={selectedTask} allTasks={tasks} detail={selectedDetail} agents={agents} agentNames={agentNameMap} asOf={asOf} busy={mutatingTaskId === selectedTask.id} disabledReason={taskActionBlocked} error={taskActionError} onClose={() => { setSelectedTaskId(""); setTaskActionError(undefined); }} onSave={(input) => patchTask(selectedTask.id, { expectedUpdatedAt: selectedTask.updatedAt, ...input }, "Task details saved.")} onAction={(action) => patchTask(selectedTask.id, { expectedUpdatedAt: selectedTask.updatedAt, ...taskActionPatch(action, selectedTask) }, taskActionLabel(action))} onReview={(action, note) => reviewTask(selectedTask.id, action, note)} onComment={(body) => addComment(selectedTask.id, body)} /> : null}
+      {selectedTask && selectedDetail ? <TaskDrawer key={`${selectedTask.id}:${selectedTask.updatedAt}`} task={selectedTask} allTasks={tasks} detail={selectedDetail} agents={agents} agentNames={agentNameMap} asOf={asOf} busy={mutatingTaskId === selectedTask.id} disabledReason={taskActionBlocked} error={taskActionError} onClose={() => { setSelectedTaskId(""); setTaskActionError(undefined); }} onSave={(input) => patchTask(selectedTask.id, { expectedUpdatedAt: selectedTask.updatedAt, ...input }, "Task details saved.")} onAction={(action) => action === "start" && taskAssigneeId(selectedTask) !== "unassigned" ? startAssignedTask(selectedTask.id, selectedTask.updatedAt) : patchTask(selectedTask.id, { expectedUpdatedAt: selectedTask.updatedAt, ...taskActionPatch(action, selectedTask) }, taskActionLabel(action))} onReview={(action, note) => reviewTask(selectedTask.id, action, note)} onComment={(body) => addComment(selectedTask.id, body)} /> : null}
     </section>
   );
 }
@@ -1510,6 +1555,10 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
   const originalAssigneeId = taskAssigneeId(task);
   const [assigneeId, setAssigneeId] = useState(originalAssigneeId === "unassigned" ? "" : originalAssigneeId); const [reviewRequired, setReviewRequired] = useState(taskReviewRequired(task)); const [blockerReason, setBlockerReason] = useState(taskBlockerReason(task)); const [dependencyIds, setDependencyIds] = useState(task.dependencyIds); const [comment, setComment] = useState(""); const [reviewNote, setReviewNote] = useState("");
   const column = boardColumnForTask(task, allTasks); const attempts = attemptsForTask(detail, task.id); const comments = commentsForTask(detail, task); const artifacts = artifactsForTask(detail, task.id).filter((artifact) => !isCommentArtifact(artifact));
+  const activeGovernedAttempt = attempts.some((attempt) =>
+    ["queued", "running", "waiting"].includes(attempt.status)
+  );
+  const availableTaskActions = taskActionsFor(column, task, activeGovernedAttempt);
   const assignmentOptions = agents.filter(
     (agent) => agent.selectable || agent.id === assigneeId,
   );
@@ -1552,7 +1601,7 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
       <details className={styles.drawerDisclosure} open><summary><span><GitBranch size={14} aria-hidden="true" /> Dependencies</span><b>{dependencyIds.length}</b></summary><div className={styles.dependencyEditor}>{allTasks.filter((candidate) => candidate.id !== task.id).length ? allTasks.filter((candidate) => candidate.id !== task.id).map((candidate) => <label key={candidate.id}><input type="checkbox" checked={dependencyIds.includes(candidate.id)} onChange={() => toggleDependency(candidate.id)} disabled={Boolean(disabledReason)} /><span><strong>{candidate.title}</strong><small>{boardColumnLabel(boardColumnForTask(candidate, allTasks))}</small></span></label>) : <p>No other tasks can be linked yet.</p>}</div></details>
       <button className={styles.saveTask} type="submit" disabled={busy || Boolean(disabledReason) || !title.trim()}>{busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Save changes</button>
     </form>
-    <section className={styles.taskActions} aria-labelledby="task-actions-title"><header><div><p>State controls</p><h3 id="task-actions-title">Move work forward</h3></div>{busy ? <Loader2 size={15} className="animate-spin" aria-label="Saving" /> : null}</header>{column === "review" ? <label className={styles.reviewNote}>Review note<textarea value={reviewNote} onChange={(event) => setReviewNote(event.currentTarget.value)} rows={2} maxLength={4000} placeholder="Add acceptance notes or explain the requested changes." disabled={Boolean(disabledReason)} /></label> : null}<div>{taskActionsFor(column, task).map((action) => action.kind === "review" ? <button key={action.action} type="button" disabled={busy || Boolean(disabledReason) || (action.action === "request_changes" && !reviewNote.trim())} className={action.tone === "primary" ? styles.actionPrimary : action.tone === "danger" ? styles.actionDanger : undefined} onClick={() => onReview(action.action as ReviewAction, reviewNote)}>{actionIcon(action.action)} {action.label}</button> : <button key={action.action} type="button" disabled={busy || Boolean(disabledReason)} className={action.tone === "primary" ? styles.actionPrimary : action.tone === "danger" ? styles.actionDanger : undefined} onClick={() => onAction(action.action as TaskAction)}>{actionIcon(action.action)} {action.label}</button>)}</div></section>
+    <section className={styles.taskActions} aria-labelledby="task-actions-title"><header><div><p>State controls</p><h3 id="task-actions-title">Move work forward</h3></div>{busy ? <Loader2 size={15} className="animate-spin" aria-label="Saving" /> : null}</header>{column === "review" ? <label className={styles.reviewNote}>Review note<textarea value={reviewNote} onChange={(event) => setReviewNote(event.currentTarget.value)} rows={2} maxLength={4000} placeholder="Add acceptance notes or explain the requested changes." disabled={Boolean(disabledReason)} /></label> : null}<div>{availableTaskActions.map((action) => action.kind === "review" ? <button key={action.action} type="button" disabled={busy || Boolean(disabledReason) || (action.action === "request_changes" && !reviewNote.trim())} className={action.tone === "primary" ? styles.actionPrimary : action.tone === "danger" ? styles.actionDanger : undefined} onClick={() => onReview(action.action as ReviewAction, reviewNote)}>{actionIcon(action.action)} {action.label}</button> : <button key={action.action} type="button" disabled={busy || Boolean(disabledReason)} className={action.tone === "primary" ? styles.actionPrimary : action.tone === "danger" ? styles.actionDanger : undefined} onClick={() => onAction(action.action as TaskAction)}>{actionIcon(action.action)} {action.label}</button>)}</div>{!availableTaskActions.length && taskAssigneeId(task) !== "unassigned" ? <p>The governed run controls progress for this assigned WorkItem.</p> : null}</section>
     <section className={styles.drawerSection} aria-labelledby="comments-title"><header><div><p>Collaboration</p><h3 id="comments-title">Comments</h3></div><span>{comments.length}</span></header><div className={styles.commentList}>{comments.length ? comments.map((item) => <article key={item.id}><span>{initials(item.authorName || "You")}</span><div><strong>{item.authorName || "You"}<small>{relativeTime(item.createdAt, asOf)}</small></strong><p>{item.body}</p></div></article>) : <p>No comments yet. Add context without interrupting the task history.</p>}</div><form className={styles.commentForm} onSubmit={(event) => { event.preventDefault(); if (!comment.trim() || disabledReason) return; void onComment(comment).then((saved) => { if (saved) setComment(""); }); }}><label className="sr-only" htmlFor={`comment-${task.id}`}>Add a comment</label><textarea id={`comment-${task.id}`} value={comment} onChange={(event) => setComment(event.currentTarget.value)} rows={2} placeholder="Add context or an instruction…" disabled={Boolean(disabledReason)} /><button type="submit" disabled={busy || Boolean(disabledReason) || !comment.trim()}><Send size={13} aria-hidden="true" /> Comment</button></form></section>
     <section className={styles.drawerSection} aria-labelledby="attempts-title"><header><div><p>Execution</p><h3 id="attempts-title">Attempt history</h3></div><span>{attempts.length}</span></header><div className={styles.timeline}>{attempts.length ? attempts.map((attempt) => <article key={attempt.id}><i className={statusToneClass(attempt.status)} aria-hidden="true" /><div><strong>{attempt.executorType.replaceAll("_", " ")}</strong><p>{attemptStatusCopy(attempt.status)}</p><small>{relativeTime(attempt.updatedAt, asOf)}</small></div></article>) : <p>No agent attempt has been attached to this task.</p>}</div></section>
     <section className={styles.drawerSection} aria-labelledby="evidence-title"><header><div><p>Proof</p><h3 id="evidence-title">Evidence & handoffs</h3></div><span>{artifacts.length}</span></header><div className={styles.evidenceList}>{artifacts.length ? artifacts.map((artifact) => <article key={artifact.id}><span>{isHandoffArtifact(artifact) ? <CheckCircle2 size={15} /> : <FileText size={15} />}</span><div><strong>{artifact.title}</strong><p>{artifactPreview(artifact) || `${artifact.kind.replaceAll("_", " ")} recorded for this task.`}</p><small>{relativeTime(artifact.createdAt, asOf)}</small></div></article>) : <p>Receipts, files, and structured handoffs will appear here.</p>}</div></section>
@@ -1580,10 +1629,17 @@ function AgentAssignmentIdentity({ agent }: { agent: AgentOption }) {
 
 type TaskAction = "promote" | "start" | "block" | "unblock" | "complete" | "cancel";
 
-function taskActionsFor(column: BoardColumnId, task: BoardTask) {
+export function taskActionsFor(
+  column: BoardColumnId,
+  task: BoardTask,
+  activeGovernedAttempt = false,
+) {
+  const assigned = taskAssigneeId(task) !== "unassigned";
+  if (assigned && activeGovernedAttempt && column !== "review") return [];
   if (column === "inbox") return [{ kind: "task", action: "promote", label: "Move to Ready", tone: "primary" }, { kind: "task", action: "cancel", label: "Cancel", tone: "danger" }];
   if (column === "waiting") return [{ kind: "task", action: "block", label: "Mark blocked", tone: "default" }, { kind: "task", action: "cancel", label: "Cancel", tone: "danger" }];
-  if (column === "ready") return [{ kind: "task", action: "start", label: "Mark in progress", tone: "primary" }, { kind: "task", action: "block", label: "Block", tone: "default" }, { kind: "task", action: "cancel", label: "Cancel", tone: "danger" }];
+  if (column === "ready") return [{ kind: "task", action: "start", label: assigned ? "Start assigned Agent" : "Mark in progress", tone: "primary" }, { kind: "task", action: "block", label: "Block", tone: "default" }, { kind: "task", action: "cancel", label: "Cancel", tone: "danger" }];
+  if (assigned && column === "working") return [];
   if (column === "working") return [...(taskReviewRequired(task) ? [{ kind: "review", action: "request_review", label: "Request review", tone: "primary" }] : [{ kind: "task", action: "complete", label: "Complete", tone: "primary" }]), { kind: "task", action: "block", label: "Block", tone: "default" }, { kind: "task", action: "cancel", label: "Cancel", tone: "danger" }];
   if (column === "needs-you") return [{ kind: "task", action: "unblock", label: "Unblock", tone: "primary" }, { kind: "task", action: "cancel", label: "Cancel", tone: "danger" }];
   if (column === "review") return [{ kind: "review", action: "approve", label: "Approve", tone: "primary" }, { kind: "review", action: "request_changes", label: "Request changes", tone: "default" }, { kind: "task", action: "cancel", label: "Cancel", tone: "danger" }];
