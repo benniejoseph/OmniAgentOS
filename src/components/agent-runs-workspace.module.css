@@ -494,6 +494,48 @@
   background: oklch(0.17 0.023 220);
 }
 
+.browserAccessibility {
+  border-top: 1px solid oklch(1 0 0 / .08);
+  background: oklch(0.145 0.02 220);
+}
+
+.browserAccessibility summary {
+  display: flex;
+  min-height: 2.75rem;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .65rem .85rem;
+  color: oklch(0.9 0.025 210);
+  font-size: .7rem;
+  font-weight: 650;
+  list-style: none;
+}
+
+.browserAccessibility summary::-webkit-details-marker { display: none; }
+.browserAccessibility summary > span:last-child { color: oklch(0.7 0.025 210); font-size: .62rem; font-weight: 500; }
+
+.browserAccessibility > div {
+  max-height: 14rem;
+  overflow: auto;
+  border-top: 1px solid oklch(1 0 0 / .06);
+  padding: .75rem .85rem;
+  color: oklch(0.76 0.025 210);
+  background: oklch(0.105 0.016 220);
+  scrollbar-width: thin;
+}
+
+.browserAccessibility p,
+.browserAccessibility pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: .66rem;
+  line-height: 1.18rem;
+}
+
 .browserFrameControl {
   display: grid;
   width: 2.2rem;

@@ -127,7 +127,13 @@ async function pumpActivity(input: {
       ].join("\n")));
     }
   } finally {
-    if (!input.isCanceled()) input.controller.close();
+    if (!input.isCanceled()) {
+      try {
+        input.controller.close();
+      } catch {
+        // The client may have disconnected between the final check and close.
+      }
+    }
   }
 }
 
