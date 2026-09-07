@@ -13191,7 +13191,11 @@ async function ensureGovernedCommunicationsV1(sql: SqlClient) {
       ON omni_inbound_communications (tenant_id, owner_actor_id, external_thread_id, received_at DESC);
 
     CREATE OR REPLACE FUNCTION omni_protect_governed_communications_v1()
-    RETURNS TRIGGER LANGUAGE plpgsql AS $function$
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
     BEGIN
       IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
         RAISE EXCEPTION 'Governed communication records are lifecycle controlled'
