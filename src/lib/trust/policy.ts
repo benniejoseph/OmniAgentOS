@@ -90,7 +90,7 @@ export function computeAutonomy(
       stage: "autonomous",
       eligible: true,
       progress: 1,
-      reason: `Earned autonomy: ${profile.cleanStreak} clean executions, reliability ${formatPercent(score)}, confidence ${formatPercent(confidence)}. Runs automatically with alerting inside a ${budget.maxActions}-action hourly budget.`,
+      reason: `Grant-eligible evidence: ${profile.cleanStreak} clean executions, reliability ${formatPercent(score)}, confidence ${formatPercent(confidence)}. Execution still requires an exact actor-, principal-, plan-, contract-, target-, budget-, and expiry-bound grant.`,
     };
   }
 
