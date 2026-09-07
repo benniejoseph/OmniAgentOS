@@ -51,7 +51,7 @@ export const customerFactKindSchema = z.enum(CUSTOMER_FACT_KINDS);
 
 export const customerCrmPermissionsSchema = z.object({
   readScope: z.literal("workspace_members"),
-  writeScope: z.literal("workspace_contributors"),
+  writeScope: z.literal("account_owner"),
   externalWriteState: z.literal("disabled"),
   customerDataPurposeIds: z.array(customerDataPurposeIdSchema).min(2).max(5),
 }).strict().superRefine((value, context) => {
