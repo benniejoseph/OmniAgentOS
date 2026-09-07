@@ -14,6 +14,7 @@ import {
   assertA2AProtocolVersion,
 } from "@/lib/a2a/v1-contracts";
 import { A2ATaskStoreError } from "@/lib/a2a/task-store";
+import { A2ADelegatedToolError } from "@/lib/a2a/delegated-tools";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import type { ServiceApiScope } from "@/lib/settings/service-api-keys";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
@@ -65,16 +66,22 @@ export function a2aErrorResponse(error: unknown, allowedOrigin?: string) {
   const access = error instanceof A2AAccessError ? error : undefined;
   const protocol = error instanceof A2AProtocolError ? error : undefined;
   const task = error instanceof A2ATaskStoreError ? error : undefined;
+  const delegatedTool = error instanceof A2ADelegatedToolError ? error : undefined;
   const validation = error instanceof ZodError;
-  const status = access?.status || protocol?.status || task?.status ||
+  const status = access?.status || protocol?.status || task?.status || delegatedTool?.status ||
     (validation ? 400 : 500);
-  const code = protocol?.code ||
+  const code = protocol?.code || delegatedTool?.code ||
     (validation ? "invalid_request" : status === 401 ? "unauthenticated" : status === 403 ? "forbidden" : "internal_error");
-  const message = access?.message || protocol?.message || task?.message ||
+  const message = access?.message || protocol?.message || task?.message || delegatedTool?.message ||
     (validation ? "The A2A request payload is invalid." : "The A2A request could not be completed.");
   const headers = new Headers();
   if (status === 401) {
-    headers.set("WWW-Authenticate", a2aBearerChallenge(access?.requiredScope));
+    headers.set(
+      "WWW-Authenticate",
+      delegatedTool
+        ? 'Bearer realm="Asael A2A delegated tools"'
+        : a2aBearerChallenge(access?.requiredScope),
+    );
   }
   return a2aJsonResponse({
     error: { code, message, details: [] },
