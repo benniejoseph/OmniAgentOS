@@ -364,6 +364,15 @@ before reading every source authority. Verify both a workspace-wide map and an
 exact Conversation map after the ordinary web release; the latter should open
 an exact run's existing Activity record.
 
+P11.4 Projects/Missions WorkItem unification is a web-only read and UI contract
+change with no migration, environment change, backfill, or Fly release. Deploy
+it as one complete Vercel feature. Verify one Project task and one Mission task
+or root expose the same canonical status, assignment, artifact, workflow
+progress, and exact-ledger cost semantics; also verify an existing
+`/app/missions/:id` deep link. Historical rows without a canonical shadow may
+render through `local_projection`, but new write paths must continue failing if
+their canonical shadow cannot be verified.
+
 ## Production smoke state
 
 The `Production Smoke` workflow supports schedule and manual dispatch. Configure:
