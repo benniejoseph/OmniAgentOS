@@ -176,18 +176,27 @@ export async function listDelegationChannelForTask(input: {
 }
 
 export async function listDelegationChannelForParent(input: {
-  tenantId: string;
-  ownerActorId: string;
+  parentExecutionScope: ExecutionScope;
   parentExecutionId: string;
   missionId: string;
 }) {
+  const scope = input.parentExecutionScope;
+  if (
+    scope.missionId !== input.missionId ||
+    !scope.executingPrincipalId.trim() ||
+    !input.parentExecutionId.trim()
+  ) {
+    throw new Error("Delegation Mission channel does not match its parent scope.");
+  }
   const records = await readMissionChannel(
     input.missionId,
-    input.tenantId,
-    input.ownerActorId,
+    scope.tenantId,
+    scope.initiatingActorId,
   );
   return records.filter((record) =>
     record.value.parentExecutionId === input.parentExecutionId &&
+    record.value.parentPrincipalId === scope.executingPrincipalId &&
+    record.value.parentDelegationId === (scope.delegationId || null) &&
     record.value.recipients.parent
   );
 }
@@ -330,6 +339,7 @@ function appendChannelEvent(input: {
       schemaVersion: 1,
       missionId: input.missionId,
       parentExecutionId: input.task.parentExecutionId,
+      parentPrincipalId: input.task.parentPrincipalId,
       parentDelegationId: input.task.parentDelegationId,
       taskId: input.task.taskId,
       delegationId: input.task.delegationId,
