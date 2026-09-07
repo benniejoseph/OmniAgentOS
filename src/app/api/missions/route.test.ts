@@ -165,6 +165,11 @@ describe("Mission collection route", () => {
     await expect(response.json()).resolves.toEqual({
       missions: [readableSummary],
       requestReadContracts: { missions: "readable_v1" },
+      serviceReceipt: expect.objectContaining({
+        boundaryVersion: "p9.1-app-service-boundary:1",
+        operation: "missions.list",
+        accessMode: "read",
+      }),
     });
     expect(routeMocks.listMissions).not.toHaveBeenCalled();
   });

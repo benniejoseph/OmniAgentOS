@@ -1,26 +1,21 @@
-import { z } from "zod";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import {
+  createMissionService,
+  listMissionsService,
+  missionCreateServiceInputSchema,
+} from "@/lib/app-services/missions";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
-  createMission,
-  listMissions,
-  listMissionSummariesForRequest,
   MissionReadConflictError,
 } from "@/lib/missions/store";
 import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
-import { toMissionSummaryView } from "@/lib/missions/public";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
-const createSchema = z.object({
-  title: z.string().trim().min(1).max(240),
-  objective: z.string().trim().min(1).max(4_000),
-  priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
-}).strict();
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request) {
@@ -39,23 +34,17 @@ async function GETHandler(request: Request) {
   const requestedLimit = rawLimit === null ? Number.NaN : Number(rawLimit);
   const limit = Number.isFinite(requestedLimit) ? requestedLimit : 50;
   const readableOwnerScope = url.searchParams.get("ownerScope") === "readable";
-  const owner = {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-  };
   try {
-    const missions = readableOwnerScope
-      ? await listMissionSummariesForRequest(limit, {
-          ...owner,
-          requestActorBinding:
-            canonicalRequestActorBindingFromSecurityContext(context),
-        })
-      : (await listMissions(limit, owner)).map(toMissionSummaryView);
-    return Response.json({
-      missions,
-      requestReadContracts: {
-        missions: readableOwnerScope ? "readable_v1" : "exact_v1",
+    const result = await listMissionsService(
+      createAppServiceCaller({ context }),
+      {
+        limit: Math.min(Math.max(limit, 1), 100),
+        ownerScope: readableOwnerScope ? "readable" : "exact",
       },
+    );
+    return Response.json({
+      ...result.data,
+      serviceReceipt: result.receipt,
     }, { headers: privateNoStoreHeaders });
   } catch (error) {
     if (!readableOwnerScope) throw error;
@@ -70,7 +59,7 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
-  const parsed = createSchema.safeParse(body);
+  const parsed = missionCreateServiceInputSchema.safeParse(body);
   if (!parsed.success) {
     return Response.json({
       error: "Invalid mission",
@@ -87,16 +76,21 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const mission = await createMission({
-    ...parsed.data,
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    source: "user",
-    ...missionMutationFromRequest(request, context, {
+  const mutation = missionMutationFromRequest(request, context, {
       purpose: "mission.create",
+    });
+  const result = await createMissionService(
+    createAppServiceCaller({
+      context,
+      executionScope: mutation.executionScope,
+      idempotencyKey: mutation.idempotencyKey,
     }),
-  });
-  return Response.json({ mission: toMissionSummaryView(mission) }, { status: 201 });
+    parsed.data,
+  );
+  return Response.json({
+    ...result.data,
+    serviceReceipt: result.receipt,
+  }, { status: 201 });
 }
 
 function missionCollectionReadErrorResponse(error: unknown) {

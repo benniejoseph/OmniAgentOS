@@ -1,9 +1,10 @@
 import { z } from "zod";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { showMissionService } from "@/lib/app-services/missions";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
   getMissionDetail,
-  getMissionSummaryForRequest,
   MissionConflictError,
   MissionNotFoundError,
   MissionReadConflictError,
@@ -12,7 +13,7 @@ import {
   transitionMissionTask,
   type MissionOwner,
 } from "@/lib/missions/store";
-import { toMissionDetailView, toMissionSummaryView } from "@/lib/missions/public";
+import { toMissionSummaryView } from "@/lib/missions/public";
 import type { MissionDetail } from "@/lib/missions/types";
 import { syncMissionExecutor } from "@/lib/missions/runtime";
 import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
@@ -25,7 +26,6 @@ import {
   cancelAgentRun,
   getAgentRun,
 } from "@/lib/runs/store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { cancelWorkflowRunTick } from "@/lib/workflows/queue";
 import {
@@ -65,16 +65,17 @@ async function GETHandler(
     url.searchParams.get("view") === "summary";
   if (readableSummary) {
     try {
-      const mission = await getMissionSummaryForRequest(id, {
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        requestActorBinding:
-          canonicalRequestActorBindingFromSecurityContext(context),
-      });
-      return mission
+      const result = await showMissionService(
+        createAppServiceCaller({ context }),
+        { missionId: id, view: "readable_summary" },
+      );
+      if (!result.data || !("requestReadContracts" in result.data)) {
+        throw new Error("Mission summary service returned an invalid view.");
+      }
+      return result.data.mission
         ? Response.json({
-            mission,
-            requestReadContracts: { missionSummary: "readable_v1" },
+            ...result.data,
+            serviceReceipt: result.receipt,
           }, { headers: privateNoStoreHeaders })
         : Response.json(
             { error: "Mission not found." },
@@ -84,12 +85,15 @@ async function GETHandler(
       return missionSummaryReadErrorResponse(error);
     }
   }
-  const detail = await getMissionDetail(id, {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-  }, { tasks: 30, attempts: 100, artifacts: 50 });
-  return detail
-    ? Response.json(toMissionDetailView(detail), { headers: { "cache-control": "private, no-store" } })
+  const result = await showMissionService(
+    createAppServiceCaller({ context }),
+    { missionId: id },
+  );
+  return result.data
+    ? Response.json({
+        ...result.data,
+        serviceReceipt: result.receipt,
+      }, { headers: privateNoStoreHeaders })
     : Response.json({ error: "Mission not found." }, { status: 404 });
 }
 
