@@ -1114,7 +1114,7 @@ Meetings remains an actor-visible read projection. Flutter keeps old data
 visible when a refresh source fails, reports partial sources independently,
 and requires explicit retry or user action. Short microphone audio is used
 only to obtain editable transcript text and does not itself authorize or send
-an Agent command. P12.5 owns APNs/FCM registration and delivery.
+an Agent command.
 
 P12.4 adds a device Capture outbox, not a general offline command queue. Flutter
 stores the 256-bit encryption key only in Keychain/Keystore and atomically
@@ -1131,6 +1131,23 @@ fresh bearer context before deriving execution scope; deterministic correlation
 then reuses the same asset identity and the existing ingest queue deduplicates
 the same request. Only Capture participates. Agent commands and other
 consequential mutations still require a live request and fresh authorization.
+
+P12.5 binds each APNs or FCM registration to the exact tenant, actor, user,
+native session, and installation. Migration v146 stores only an encrypted token
+bundle plus its digest, applies forced actor RLS, and installs a separate leased
+delivery outbox. Notification occurrences deterministically deduplicate per
+installation; delivery workers decrypt only inside system scope, retain only a
+provider receipt digest, bound retries, and disable permanently rejected tokens.
+Preview policy is enforced before provider transport, so hidden previews contain
+only causal data and generic previews cannot reveal user content. Contract v4
+adds registration and acknowledgement without withdrawing the frozen v3 product
+surface. Flutter validates each untrusted envelope against a locally derived
+deep link, persists an actor/tenant-bound acknowledgement queue before opening
+the exact target, and converges repeated opens through the server's first
+acknowledgement. Session lifecycle changes revoke registrations in the same
+database transaction. The workflow tick dispatches the outbox, reusing the
+existing Fly-to-Vercel worker topology without granting the worker a device or
+actor session.
 
 The thirteenth request-bound slice extends only the public Capture asset byte
 GET. PostgreSQL selects the globally unique, non-internal asset and its bytes
