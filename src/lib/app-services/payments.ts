@@ -9,6 +9,10 @@ import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { loadAp2Readiness } from "@/lib/payments/ap2-readiness";
 import { ap2HumanPresentTermsSchema } from "@/lib/payments/ap2-mandates";
 import {
+  getAp2PaymentTransaction,
+  listAp2PaymentTransactions,
+} from "@/lib/payments/ap2-payment-store";
+import {
   createAp2HumanPresentReview,
   listAp2HumanPresentReviews,
   requireConfiguredMerchantCheckoutVerifier,
@@ -60,6 +64,50 @@ export async function listAp2MandateReviewsService(
     authorized,
     { mandates },
     { resourceCount: mandates.length },
+  );
+}
+
+export async function listAp2PaymentTransactionsService(
+  caller: AppServiceCaller,
+  input: z.input<typeof emptySchema>,
+) {
+  emptySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.payments.ap2.transactions.list"),
+  );
+  const transactions = await listAp2PaymentTransactions({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+  });
+  return completeAppServiceCall(
+    authorized,
+    { transactions },
+    { resourceCount: transactions.length },
+  );
+}
+
+const showTransactionSchema = z.object({
+  transactionId: z.string().regex(/^ap2_payment:[0-9a-f-]{36}$/),
+}).strict();
+
+export async function showAp2PaymentTransactionService(
+  caller: AppServiceCaller,
+  input: z.input<typeof showTransactionSchema>,
+) {
+  const parsed = showTransactionSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.payments.ap2.transactions.show"),
+  );
+  const transaction = await getAp2PaymentTransaction(parsed.transactionId, {
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+  });
+  return completeAppServiceCall(
+    authorized,
+    { transaction: transaction || null },
+    { resourceCount: transaction ? 1 : 0 },
   );
 }
 

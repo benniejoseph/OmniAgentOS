@@ -342,6 +342,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     reviewedRecipient: text(3, 500), reviewedSubject: text(1, 998), reviewedBody: text(1, 50_000),
   }, ["draftId", "expectedDraftSha256", "reviewedRecipient", "reviewedSubject", "reviewedBody"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   readTool("app.payments.ap2.readiness", "Show AP2 readiness", "Inspect the pinned AP2 protocol, all five role and verification boundaries, accepted adapters and key authorities, credential isolation policy, and disabled payment-capability gates. This cannot initiate a purchase or payment.", objectSchema({})),
+  readTool("app.payments.ap2.transactions.list", "List AP2 payment evidence", "List the current actor's evidence-derived AP2 payment projections, including recoverable discrepancies. This returns no raw receipt, credential, or provider authorization and cannot initiate payment.", objectSchema({})),
+  readTool("app.payments.ap2.transactions.show", "Show AP2 payment evidence", "Inspect one actor-private AP2 payment projection derived from signed receipts and provider reconciliation. This returns no raw receipt, credential, or provider authorization and cannot initiate payment.", requiredObjectSchema({
+    transactionId: { type: "string", pattern: "^ap2_payment:[0-9a-f-]{36}$", maxLength: 48 },
+  }, ["transactionId"])),
   readTool("app.payments.ap2.mandates.list", "List AP2 mandate reviews", "List metadata and digests for the current actor's human-present AP2 reviews without returning shipping details, credential material, or signing assertions.", objectSchema({})),
   mutationTool("app.payments.ap2.mandates.prepare", "Prepare AP2 mandate review", "Create an exact human-present Checkout and Payment Mandate review only after the configured deterministic merchant adapter verifies the signed checkout. This cannot sign, approve, request a payment credential, or initiate payment.", requiredObjectSchema({
     shoppingAgentPrincipalId: opaqueId("Exact governed Shopping Agent principal ID."),
