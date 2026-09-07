@@ -774,7 +774,7 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 is complete; P9.2 is the next actionable slice, while P12 and P13 remain
+P9.1 and P9.2 are complete; P9.3 is the next actionable slice, while P12 and P13 remain
 deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -792,13 +792,17 @@ deferred.
 | P9.3 | Add reversible trash, undo, compensation, and two-step destructive action UX. | Modify domain deletes; create trash/compensation contracts. | Irreversible/high-impact deletes remain approval-gated and never graduate automatically. | Edit/archive/delete actions have clear preview, effect receipt, undo/compensation where possible, and final deletion receipt. |
 | P9.4 | Add plan/domain/action-class approval grants. | Modify trust policy. | Grants bind actor, agent, tool contract, target, plan digest, budget, and expiry; replanning invalidates them. | Repetitive safe operations avoid per-click approval without permitting new targets or action classes. |
 
-**Implementation status:** P9.1 is complete. Fifteen current first-party Main
-Agent operations across memory, knowledge, Missions, and runs now use the same
-transport-neutral application services as their overlapping UI routes. P9.2
-is next. Vercel rejected the complete-feature promotion at
-`98e27c9eb676a6a1c2cffbb4065f35cfb528da50` before upload because the team
-still reports an overdue balance, so Fly was intentionally left unchanged.
-P12 and P13 remain deferred.
+**Implementation status:** P9.1 and P9.2 are complete. The governed catalog now
+contains 102 active `app.*` operations across every required family, all bound
+to the shared application-service registry and dispatcher. Risk-two and
+risk-three effects require approval; permanent memory, knowledge, Agent,
+release, grant, Skill, connector, provider, API-key, and asset effects require
+an exact preview digest. Eight raw-secret, raw-binary/frame, and recursive-fork
+paths are explicitly excluded from model authority. Overlapping project,
+capture, Agent, run, workflow, Today, notification, Skill, memory, knowledge,
+and Mission routes share the same services. No migration is required. P9.3 is
+next. Sixty-six focused checks, affected lint, TypeScript, and the 97-page
+Next 16 production build pass; P12 and P13 remain deferred.
 
 #### Browser and computer use
 
@@ -2739,16 +2743,15 @@ production build pass. Vercel rejected the complete-feature promotion at
 still reports an overdue balance; Fly was intentionally left unchanged. This
 closes Phase 8.
 
-P9.1 is complete with a strict shared service registry for the current
-memory, knowledge, Mission, and run application operations. Nine overlapping
-UI route surfaces and all 15 current Main Agent application tools now share
-tenant/actor/RBAC validation, mutation scope and idempotency requirements,
-existing typed domain events, and one metadata-only service receipt. The
-governed executor has no direct import path to those stores or retrievers and
-no product-DOM path. The complete-feature Vercel promotion at
-`98e27c9eb676a6a1c2cffbb4065f35cfb528da50` was rejected before upload by the
-same overdue team balance, so Fly remains on the prior paired release. P9.2 is
-next; P12/P13 remain deferred.
+P9.1 and P9.2 are complete. The shared registry and dispatcher expose 102
+active `app.*` tools across all thirteen required product families with
+tenant/actor/RBAC revalidation, exact mutation scope and idempotency,
+content-free service receipts, governed typed domain events, risk-based
+approval, and digest-bound previews for every permanent effect. Eight unsafe
+secret, binary/frame, and recursive-fork paths remain explicitly outside model
+authority. Overlapping UI routes use the same services; the governed executor
+has no direct domain-store or product-DOM path. No migration is required. P9.3
+is next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
