@@ -166,6 +166,42 @@ describe("Fly OpenAI egress gateway", () => {
     expect(wrongMethod.headers.get("allow")).toBe("POST");
   });
 
+  it("streams bounded speech audio through the exact synthesis route", async () => {
+    const observations: RequestOptions[] = [];
+    let receivedBody = "";
+    const upstream = await startServer(async (request, response) => {
+      for await (const chunk of request) receivedBody += chunk.toString();
+      response.writeHead(200, { "content-type": "audio/pcm" });
+      response.write(Buffer.from([1, 2]));
+      response.end(Buffer.from([3, 4]));
+    });
+    const gateway = await startGateway(upstream.baseUrl, { observations });
+    const body = JSON.stringify({
+      model: "gpt-4o-mini-tts",
+      voice: "cedar",
+      input: "The exact agent result.",
+      response_format: "pcm",
+      stream_format: "audio",
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/v1/audio/speech`, {
+      method: "POST",
+      headers: gatewayHeaders(),
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("audio/pcm");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+      new Uint8Array([1, 2, 3, 4]),
+    );
+    expect(observations[0]).toMatchObject({
+      method: "POST",
+      path: "/v1/audio/speech",
+    });
+    expect(receivedBody).toBe(body);
+  });
+
   it("supports the allowlisted US OpenAI origin", async () => {
     const observations: RequestOptions[] = [];
     const upstream = await startServer(async (request, response) => {
