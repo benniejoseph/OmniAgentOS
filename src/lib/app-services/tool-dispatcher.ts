@@ -60,6 +60,10 @@ import {
   configureSalesforceWritesService,
   executeSalesforceRecordWriteService,
 } from "@/lib/app-services/salesforce-writes";
+import {
+  evaluateCustomerHealthService,
+  showCustomerHealthService,
+} from "@/lib/app-services/customer-health";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -222,6 +226,8 @@ export async function executeFirstPartyAppTool(input: {
     "app.customer_accounts.create": () => createCustomerAccountService(caller, input.toolInput as never),
     "app.customer_accounts.revise": () => reviseCustomerAccountService(caller, input.toolInput as never),
     "app.customer_accounts.facts.record": () => recordCustomerFactService(caller, input.toolInput as never),
+    "app.customer_accounts.health.show": () => showCustomerHealthService(caller, input.toolInput as never),
+    "app.customer_accounts.health.evaluate": () => evaluateCustomerHealthService(caller, input.toolInput as never),
     "app.customer_accounts.salesforce.writes.configure": () => configureSalesforceWritesService(caller, input.toolInput as never),
     "app.customer_accounts.salesforce.contact.create": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.contact.create", input.toolInput),
     "app.customer_accounts.salesforce.contact.update": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.contact.update", input.toolInput),
