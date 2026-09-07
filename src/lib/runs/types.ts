@@ -85,6 +85,8 @@ export type AgentRunContinuation = {
     allowedToolIds: string[];
     readOnly: boolean;
     forceApproval: boolean;
+    /** Force approval only when tool risk is greater than this threshold. */
+    forceApprovalAboveRisk?: number;
   };
   /** Preserves the owner's memory boundary across approval resumes. */
   memoryScope?: "session" | "project" | "all";

@@ -49,7 +49,33 @@ const completionSchema = z.object({
   turnCount: z.number().int().min(0).max(1_000),
   reconnectCount: z.number().int().min(0).max(3),
   transcriptCharacters: z.number().int().min(0).max(100_000),
-}).strict();
+  confidenceBand: z.enum(["high", "low", "unavailable", "edited"]),
+  confidenceMean: z.number().min(0).max(1).optional(),
+  confidenceMinimum: z.number().min(0).max(1).optional(),
+  confidenceSampleCount: z.number().int().min(0).max(10_000),
+  reviewRequired: z.boolean(),
+  reviewAttested: z.boolean(),
+}).strict().superRefine((value, context) => {
+  if (value.outcome === "sent" && !value.reviewAttested) {
+    context.addIssue({
+      code: "custom",
+      message: "Sent voice commands require a review attestation.",
+      path: ["reviewAttested"],
+    });
+  }
+  if (
+    value.confidenceBand === "high" &&
+    (value.confidenceMean === undefined ||
+      value.confidenceMinimum === undefined ||
+      value.confidenceSampleCount < 1)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "High-confidence completion metadata is incomplete.",
+      path: ["confidenceBand"],
+    });
+  }
+});
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
@@ -214,6 +240,12 @@ async function PATCHHandler(request: Request) {
       turnCount: parsed.turnCount,
       reconnectCount: parsed.reconnectCount,
       transcriptCharacters: parsed.transcriptCharacters,
+      confidenceBand: parsed.confidenceBand,
+      confidenceMean: parsed.confidenceMean ?? null,
+      confidenceMinimum: parsed.confidenceMinimum ?? null,
+      confidenceSampleCount: parsed.confidenceSampleCount,
+      reviewRequired: parsed.reviewRequired,
+      reviewAttested: parsed.reviewAttested,
     },
   });
   return Response.json({ recorded: true }, { headers: privateNoStoreHeaders });

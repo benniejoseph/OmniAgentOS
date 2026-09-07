@@ -215,6 +215,94 @@ describe("agent intent clarification", () => {
 });
 
 describe("agent semantic intent routing", () => {
+  it("binds a reviewed voice command to its owned conversation and governed runner", async () => {
+    const voiceThreadId = "22222222-2222-4222-8222-222222222222";
+    const voiceSessionId = "33333333-3333-4333-8333-333333333333";
+    routeMocks.getThread.mockResolvedValue({
+      id: voiceThreadId,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-voice", threadId: voiceThreadId };
+      yield { type: "done", response: "Calendar loaded." };
+    });
+    const voiceInput = {
+      schemaVersion: 1,
+      source: "realtime_voice",
+      sessionId: voiceSessionId,
+      conversationId: voiceThreadId,
+      provider: "openai",
+      confidenceBand: "low",
+      confidenceMean: 0.48,
+      confidenceMinimum: 0.09,
+      confidenceSampleCount: 4,
+      reviewMethod: "explicit_checkbox",
+      reviewAttested: true,
+    } as const;
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Show tomorrow's calendar.",
+        threadId: voiceThreadId,
+        requestId: "voice-command-a",
+        strategy: "direct",
+        voiceInput,
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamId: `thread:${voiceThreadId}`,
+        type: "voice.command_reviewed",
+        payload: expect.objectContaining({
+          voiceSessionId,
+          confidenceBand: "low",
+          reviewMethod: "explicit_checkbox",
+          reviewAttested: true,
+          forceApprovalAboveRisk: 0,
+          transcriptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      }),
+    );
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ voiceInput }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("rejects voice metadata bound to another conversation", async () => {
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Run this.",
+        threadId: "22222222-2222-4222-8222-222222222222",
+        voiceInput: {
+          schemaVersion: 1,
+          source: "realtime_voice",
+          sessionId: "33333333-3333-4333-8333-333333333333",
+          conversationId: "44444444-4444-4444-8444-444444444444",
+          provider: "openai",
+          confidenceBand: "unavailable",
+          confidenceSampleCount: 0,
+          reviewMethod: "explicit_checkbox",
+          reviewAttested: true,
+        },
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
   it("rejects an unsigned explicit context selection after authentication", async () => {
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",

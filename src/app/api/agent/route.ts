@@ -98,6 +98,20 @@ const chatMessageSchema = z.object({
   content: z.string().min(1).max(AGENT_MAX_MESSAGE_CHARS),
 }).strict();
 
+const voiceInputSchema = z.object({
+  schemaVersion: z.literal(1),
+  source: z.literal("realtime_voice"),
+  sessionId: z.string().uuid(),
+  conversationId: z.string().uuid(),
+  provider: z.literal("openai"),
+  confidenceBand: z.enum(["high", "low", "unavailable", "edited"]),
+  confidenceMean: z.number().min(0).max(1).optional(),
+  confidenceMinimum: z.number().min(0).max(1).optional(),
+  confidenceSampleCount: z.number().int().min(0).max(10_000),
+  reviewMethod: z.enum(["send_button", "explicit_checkbox"]),
+  reviewAttested: z.literal(true),
+}).strict();
+
 const requestSchema = z.object({
   messages: z.array(chatMessageSchema).min(1).max(AGENT_MAX_MESSAGES).optional(),
   threadId: z.string().uuid().optional(),
@@ -114,6 +128,7 @@ const requestSchema = z.object({
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
+  voiceInput: voiceInputSchema.optional(),
 }).strict()
   .refine((value) => Boolean(value.message || value.messages?.length), {
     message: "A message is required.",
@@ -125,6 +140,14 @@ const requestSchema = z.object({
   .refine((value) => !value.resumeRunId || !value.budgets, {
     message: "A resumed run keeps the budget authorized when it started.",
     path: ["budgets"],
+  })
+  .refine((value) => !value.voiceInput || value.threadId === value.voiceInput.conversationId, {
+    message: "The voice review must be bound to its conversation.",
+    path: ["voiceInput", "conversationId"],
+  })
+  .refine((value) => !value.voiceInput || Boolean(value.message) && !value.resumeRunId, {
+    message: "A voice review applies only to a new direct command.",
+    path: ["voiceInput"],
   });
 
 async function POSTHandler(request: Request) {
@@ -531,7 +554,7 @@ async function POSTHandler(request: Request) {
         let loopV2CanaryEnrollment;
         let loopV2ModelTextEnrollment;
         try {
-          loopV2CanaryEnrollment = parsed.data.budgets || parsed.data.contextScope
+          loopV2CanaryEnrollment = parsed.data.budgets || parsed.data.contextScope || parsed.data.voiceInput
             ? undefined
             :
             await resolveLoopV2ReadOnlyCanaryEnrollment({
@@ -552,7 +575,8 @@ async function POSTHandler(request: Request) {
           if (
             !loopV2CanaryEnrollment &&
             !parsed.data.budgets &&
-            !parsed.data.contextScope
+            !parsed.data.contextScope &&
+            !parsed.data.voiceInput
           ) {
             loopV2ModelTextEnrollment =
               await resolveLoopV2ModelTextEnrollment({
@@ -634,6 +658,37 @@ async function POSTHandler(request: Request) {
           }
           threadProjectId = thread.projectId;
           const userTurn = await appendThreadTurn({ tenantId: context.tenantId, threadId: thread.id, role: "user", content: safeMessage });
+          if (parsed.data.voiceInput) {
+            const voiceInput = parsed.data.voiceInput;
+            await appendScopedDomainEvent({
+              streamId: `thread:${thread.id}`,
+              type: "voice.command_reviewed",
+              executionScope: executionScopeFromSecurityContext(context, {
+                ...agentPrincipalExecution,
+                projectId: threadProjectId,
+                correlationId: requestId,
+                causationId: userTurn.id,
+                purpose: "voice.command.review",
+              }),
+              payload: {
+                schemaVersion: 1,
+                threadId: thread.id,
+                voiceSessionId: voiceInput.sessionId,
+                provider: voiceInput.provider,
+                transcriptSha256: createHash("sha256")
+                  .update(safeMessage, "utf8")
+                  .digest("hex"),
+                transcriptCharacters: safeMessage.length,
+                confidenceBand: voiceInput.confidenceBand,
+                confidenceMean: voiceInput.confidenceMean ?? null,
+                confidenceMinimum: voiceInput.confidenceMinimum ?? null,
+                confidenceSampleCount: voiceInput.confidenceSampleCount,
+                reviewMethod: voiceInput.reviewMethod,
+                reviewAttested: true,
+                forceApprovalAboveRisk: 0,
+              },
+            });
+          }
           const explicitMemory = await formExplicitUserAssertionMemory({
             context,
             requestId,
@@ -803,7 +858,7 @@ async function POSTHandler(request: Request) {
               },
               goal: executionMessage,
               mode,
-              requireApproval: decision.requiresApproval || customAgent?.approvalPolicy === "always",
+              requireApproval: Boolean(parsed.data.voiceInput) || decision.requiresApproval || customAgent?.approvalPolicy === "always",
               budgetLimits: workflowBudgetLimits,
               metadata: {
                 source: "atomic_supervisor",
@@ -980,6 +1035,7 @@ async function POSTHandler(request: Request) {
                 adaptationEvidence: decision.adaptationEvidence,
                 agentProfile,
                 budgetLimits,
+                voiceInput: parsed.data.voiceInput,
               },
               request.signal,
             );

@@ -36,7 +36,7 @@ import {
   type GovernedToolCheckpointInput,
 } from "@/lib/tools/executor";
 import { getGovernedTool } from "@/lib/tools/registry";
-import { RISK3_QUORUM } from "@/lib/tools/types";
+import { RISK3_QUORUM, type ToolExecutionRecord } from "@/lib/tools/types";
 import { toolApprovalMutationFromRequest } from "@/lib/tools/approval-events";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -49,6 +49,7 @@ import {
 } from "@/lib/workflows/runner";
 
 export const runtime = "nodejs";
+export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
 const approvalDecisionSchema = z.object({
@@ -62,6 +63,97 @@ const approvalDecisionSchema = z.object({
 const legacyMemoryForgetRecoveryInputSchema = z.object({
   id: z.string().trim().min(1).max(200),
 }).strict();
+
+async function GETHandler(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  const { id } = await context.params;
+  let securityContext;
+  try {
+    securityContext = await authorizeRequest({
+      request,
+      action: "execute.tool",
+      resourceType: "tool_execution",
+      resourceId: id,
+      metadata: { operation: "review_approval" },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+
+  const record = await getToolExecution(id, {
+    tenantId: securityContext.tenantId,
+  });
+  if (!record) {
+    return Response.json(
+      { error: "Tool approval record not found." },
+      { status: 404, headers: { "cache-control": "private, no-store" } },
+    );
+  }
+  const tool = getGovernedTool(record.toolId) ||
+    await getMcpGovernedTool(record.toolId, {
+      tenantId: securityContext.tenantId,
+    }) ||
+    await getOpenApiGovernedTool(record.toolId, {
+      tenantId: securityContext.tenantId,
+    });
+  const publicRecord = publicToolExecution(record);
+  const approvers = new Set(
+    (record.approvals || [])
+      .filter((approval) => ["admin", "system"].includes(approval.role))
+      .map((approval) => approval.by),
+  );
+  const approvalProgress = record.riskLevel >= 3
+    ? { approvals: approvers.size, required: RISK3_QUORUM }
+    : { approvals: record.approvalDecision === "approved" ? 1 : 0, required: 1 };
+  const blockReason = toolApprovalBlockReason(record, securityContext);
+
+  return Response.json({
+    schemaVersion: 1,
+    approval: {
+      id: record.id,
+      status: record.status,
+      toolId: record.toolId,
+      title: tool?.name || record.toolName,
+      description: tool?.description || "Governed tool action",
+      riskLevel: record.riskLevel,
+      reversible: tool?.reversible ?? false,
+      reason: record.reason || "This action requires a visible approval decision.",
+      input: publicRecord.input,
+      requestedBy: record.actorId || null,
+      approvalProgress,
+      canApprove: !blockReason,
+      blockReason: blockReason || null,
+      canReject: record.status === "approval_required",
+    },
+  }, {
+    headers: { "cache-control": "private, no-store" },
+  });
+}
+
+function toolApprovalBlockReason(
+  record: ToolExecutionRecord,
+  securityContext: { actorId: string; role: string },
+) {
+  if (record.status !== "approval_required") {
+    return "This approval is no longer pending.";
+  }
+  if (
+    record.approvals?.some((approval) => approval.by === securityContext.actorId)
+  ) {
+    return "Your approval is already recorded. Another eligible approver must review this action.";
+  }
+  if (record.riskLevel >= 3) {
+    if (!["admin", "system"].includes(securityContext.role)) {
+      return "Risk 3 tool calls require an admin approval.";
+    }
+    if (record.actorId === securityContext.actorId) {
+      return "The requester cannot approve their own risk 3 tool call.";
+    }
+  }
+  return undefined;
+}
 
 async function POSTHandler(
   request: Request,

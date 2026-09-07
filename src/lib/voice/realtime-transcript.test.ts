@@ -3,6 +3,7 @@ import {
   applyRealtimeTranscriptEvent,
   editRealtimeTranscript,
   EMPTY_REALTIME_TRANSCRIPT,
+  realtimeTranscriptConfidence,
   realtimeTranscriptText,
 } from "@/lib/voice/realtime-transcript";
 
@@ -82,5 +83,55 @@ describe("realtime transcription projection", () => {
 
     expect(realtimeTranscriptText(malformed)).toBe("Complete.");
     expect(malformed).toEqual(completed);
+  });
+
+  it("projects completed log probabilities into content-free confidence", () => {
+    const high = applyRealtimeTranscriptEvent(EMPTY_REALTIME_TRANSCRIPT, {
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "item_safe",
+      transcript: "Email the reviewed report.",
+      logprobs: [
+        { token: "Email", bytes: [69], logprob: Math.log(0.9) },
+        { token: " report", bytes: [32], logprob: Math.log(0.8) },
+      ],
+    });
+    expect(realtimeTranscriptConfidence(high)).toEqual({
+      band: "high",
+      mean: 0.85,
+      minimum: 0.8,
+      sampleCount: 2,
+      requiresExplicitAttestation: false,
+    });
+    expect(JSON.stringify(high.itemConfidence)).not.toContain("Email");
+
+    const low = applyRealtimeTranscriptEvent(EMPTY_REALTIME_TRANSCRIPT, {
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "item_unclear",
+      transcript: "Delete it.",
+      logprobs: [{ token: "Delete", bytes: [68], logprob: Math.log(0.09) }],
+    });
+    expect(realtimeTranscriptConfidence(low)).toMatchObject({
+      band: "low",
+      minimum: 0.09,
+      requiresExplicitAttestation: true,
+    });
+  });
+
+  it("requires explicit review when confidence is unavailable or text was edited", () => {
+    const completed = applyRealtimeTranscriptEvent(EMPTY_REALTIME_TRANSCRIPT, {
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "item_without_logprobs",
+      transcript: "Show my calendar.",
+    });
+    expect(realtimeTranscriptConfidence(completed)).toEqual({
+      band: "unavailable",
+      sampleCount: 0,
+      requiresExplicitAttestation: true,
+    });
+    expect(realtimeTranscriptConfidence(editRealtimeTranscript(completed, "Show tomorrow's calendar."))).toEqual({
+      band: "edited",
+      sampleCount: 0,
+      requiresExplicitAttestation: true,
+    });
   });
 });

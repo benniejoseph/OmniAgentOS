@@ -180,6 +180,12 @@ describe("realtime voice session route", () => {
       turnCount: 2,
       reconnectCount: 1,
       transcriptCharacters: 84,
+      confidenceBand: "high",
+      confidenceMean: 0.92,
+      confidenceMinimum: 0.71,
+      confidenceSampleCount: 12,
+      reviewRequired: false,
+      reviewAttested: true,
     }));
 
     expect(response.status).toBe(200);
@@ -192,11 +198,38 @@ describe("realtime voice session route", () => {
           turnCount: 2,
           reconnectCount: 1,
           transcriptCharacters: 84,
+          confidenceBand: "high",
+          confidenceMean: 0.92,
+          confidenceMinimum: 0.71,
+          confidenceSampleCount: 12,
+          reviewRequired: false,
+          reviewAttested: true,
         }),
       }),
     );
     const event = routeMocks.appendScopedDomainEvent.mock.calls[0]?.[0];
     expect(JSON.stringify(event)).not.toContain("transcript\":");
+  });
+
+  it("rejects a sent command without the required review attestation", async () => {
+    const response = await PATCH(request("PATCH", {
+      sessionId,
+      conversationId,
+      outcome: "sent",
+      durationMilliseconds: 1_000,
+      turnCount: 1,
+      reconnectCount: 0,
+      transcriptCharacters: 20,
+      confidenceBand: "low",
+      confidenceMean: 0.4,
+      confidenceMinimum: 0.08,
+      confidenceSampleCount: 3,
+      reviewRequired: true,
+      reviewAttested: false,
+    }));
+
+    expect(response.status).toBe(400);
+    expect(routeMocks.appendScopedDomainEvent).not.toHaveBeenCalled();
   });
 
   it("fails closed when the shared cost limiter is unavailable", async () => {

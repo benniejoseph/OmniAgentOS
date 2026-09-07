@@ -394,6 +394,62 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
+  it("forces approval only for risk-bearing tools under the voice policy", async () => {
+    const executeTool = vi.fn(async (request: {
+      toolId: string;
+      forceApproval?: boolean;
+    }) => ({
+      record: executionRecord(request.toolId, "executed"),
+      result: { ok: true },
+    }));
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Use governed tools.",
+      prompt: "Read and then update.",
+      tools: [modelTool("safe_read"), modelTool("risky_update")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["safe_read", {
+            definition: toolDefinition("safe.read"),
+            functionName: "safe_read",
+          }],
+          ["risky_update", {
+            definition: toolDefinition("risky.update", { riskLevel: 1 }),
+            functionName: "risky_update",
+          }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-voice-policy",
+      forceApprovalAboveRisk: 0,
+      generateTurn: vi.fn()
+        .mockResolvedValueOnce(turn({
+          toolCalls: [
+            { callId: "call-read", name: "safe_read", argumentsJson: "{}" },
+            { callId: "call-update", name: "risky_update", argumentsJson: "{}" },
+          ],
+        }))
+        .mockResolvedValueOnce(turn({ text: "Finished." })),
+      executeTool: executeTool as never,
+    });
+
+    await collect(loop);
+    expect(executeTool).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ toolId: "safe.read", forceApproval: false }),
+    );
+    expect(executeTool).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ toolId: "risky.update", forceApproval: true }),
+    );
+  });
+
   it("closes the observed model boundary when generation fails", async () => {
     const failure = new Error("provider unavailable");
     const afterModelFailure = vi.fn(async () => undefined);

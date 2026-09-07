@@ -2464,6 +2464,12 @@ function parseToolPolicy(
       .slice(0, 50),
     readOnly: candidate.readOnly,
     forceApproval: candidate.forceApproval,
+    ...(typeof candidate.forceApprovalAboveRisk === "number" &&
+        Number.isInteger(candidate.forceApprovalAboveRisk) &&
+        candidate.forceApprovalAboveRisk >= 0 &&
+        candidate.forceApprovalAboveRisk <= 3
+      ? { forceApprovalAboveRisk: candidate.forceApprovalAboveRisk }
+      : {}),
   };
 }
 

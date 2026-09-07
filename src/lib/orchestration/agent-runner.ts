@@ -987,6 +987,12 @@ export async function* runAgent(
       readOnly: false,
       forceApproval: false,
     };
+    if (request.voiceInput) {
+      agentToolPolicy = {
+        ...agentToolPolicy,
+        forceApprovalAboveRisk: 0,
+      };
+    }
     if (promptMemoryAccessScope) {
       agentToolPolicy = {
         allowedToolIds: [],
@@ -1347,7 +1353,7 @@ export async function* runAgent(
             context: securityContext,
             abortSignal: delegatedAbortSignal || runAbortSignal,
             idempotencyKey,
-            forceApproval: agentToolPolicy?.forceApproval,
+            forceApproval: forceApprovalForTool(agentToolPolicy, tool.riskLevel),
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
             executionScope: delegatedToolScope,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
@@ -1464,6 +1470,7 @@ export async function* runAgent(
             : "deployment_environment",
           abortSignal: runAbortSignal,
           forceApproval: agentToolPolicy?.forceApproval,
+          forceApprovalAboveRisk: agentToolPolicy?.forceApprovalAboveRisk,
           bindModelRequest: (turnRequest) => runtimeModel.bind(turnRequest),
           beforeModelTurn: ({ attempt, provider, tier }) =>
             checkpointBeforeModelTurn({
@@ -1831,7 +1838,10 @@ export async function* runAgent(
             context: securityContext,
             abortSignal: runAbortSignal,
             idempotencyKey: `${run.id}:${item.call.callId}`,
-            forceApproval: agentToolPolicy?.forceApproval,
+            forceApproval: forceApprovalForTool(
+              agentToolPolicy,
+              item.entry.definition.riskLevel,
+            ),
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
             executionScope: agentToolExecutionScope(
               executionScope,
@@ -1924,7 +1934,10 @@ export async function* runAgent(
             context: securityContext,
             abortSignal: runAbortSignal,
             idempotencyKey: `${run.id}:${call.callId}`,
-            forceApproval: agentToolPolicy?.forceApproval,
+            forceApproval: forceApprovalForTool(
+              agentToolPolicy,
+              definition.riskLevel,
+            ),
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
             executionScope: toolExecutionScope,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
@@ -2260,6 +2273,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   credentialSource?: "tenant_vault" | "deployment_environment";
   abortSignal?: AbortSignal;
   forceApproval?: boolean;
+  forceApprovalAboveRisk?: number;
   continuation?: ModelToolTurnResult["continuation"];
   toolResults?: readonly ModelToolResult[];
   toolSteps?: number;
@@ -2515,7 +2529,11 @@ export async function* runNonOpenAIProviderToolLoop(input: {
             abortSignal: input.abortSignal,
             idempotencyKey:
               `${input.runId}:${activeProvider}:${item.call.callId}`,
-            forceApproval: input.forceApproval,
+            forceApproval: forceApprovalForRisk(
+              input.forceApproval,
+              input.forceApprovalAboveRisk,
+              item.entry.definition.riskLevel,
+            ),
             mcpSessionScope: agentMcpSessionScope(
               input.runId,
               input.securityContext,
@@ -2605,7 +2623,11 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           context: input.securityContext,
           abortSignal: input.abortSignal,
           idempotencyKey: `${input.runId}:${activeProvider}:${call.callId}`,
-          forceApproval: input.forceApproval,
+          forceApproval: forceApprovalForRisk(
+            input.forceApproval,
+            input.forceApprovalAboveRisk,
+            definition.riskLevel,
+          ),
           mcpSessionScope: agentMcpSessionScope(input.runId, input.securityContext),
           executionScope: toolExecutionScope,
           checkpointBeforeEffect: input.checkpointBeforeTool,
@@ -3309,7 +3331,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
         },
         abortSignal: resumeAbortSignal,
         idempotencyKey: `${run.id}:${call.callId}`,
-        forceApproval: continuation.toolPolicy?.forceApproval,
+        forceApproval: forceApprovalForTool(
+          continuation.toolPolicy,
+          definition.riskLevel,
+        ),
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
         executionScope: toolExecutionScope,
         checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -3598,7 +3623,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
           },
           abortSignal: resumeAbortSignal,
           idempotencyKey: `${run.id}:${call.callId}`,
-          forceApproval: continuation.toolPolicy?.forceApproval,
+          forceApproval: forceApprovalForTool(
+            continuation.toolPolicy,
+            definition.riskLevel,
+          ),
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
           executionScope: toolExecutionScope,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -4240,7 +4268,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
         abortSignal: resumeAbortSignal,
         idempotencyKey:
           `${run.id}:${providerState.provider}:${call.callId}`,
-        forceApproval: continuation.toolPolicy?.forceApproval,
+        forceApproval: forceApprovalForTool(
+          continuation.toolPolicy,
+          definition.riskLevel,
+        ),
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
         executionScope: toolExecutionScope,
         checkpointBeforeEffect: checkpointBeforeResumeTool,
@@ -4311,6 +4342,8 @@ async function resumeProviderBoundAgentRunAfterApproval({
       credentialSource: resumeCredentialSource,
       abortSignal: resumeAbortSignal,
       forceApproval: continuation.toolPolicy?.forceApproval,
+      forceApprovalAboveRisk:
+        continuation.toolPolicy?.forceApprovalAboveRisk,
       continuation: providerState.continuation,
       toolResults: carriedResults,
       toolSteps,
@@ -5257,6 +5290,29 @@ function normalizeRole(role?: string): SecurityRole {
   return role === "viewer" || role === "operator" || role === "admin" || role === "system"
     ? role
     : "operator";
+}
+
+function forceApprovalForTool(
+  policy: AgentRunContinuation["toolPolicy"],
+  riskLevel: number,
+) {
+  return forceApprovalForRisk(
+    policy?.forceApproval,
+    policy?.forceApprovalAboveRisk,
+    riskLevel,
+  );
+}
+
+function forceApprovalForRisk(
+  forceApproval: boolean | undefined,
+  forceApprovalAboveRisk: number | undefined,
+  riskLevel: number,
+) {
+  return Boolean(
+    forceApproval ||
+      (forceApprovalAboveRisk !== undefined &&
+        riskLevel > forceApprovalAboveRisk),
+  );
 }
 
 function toolExecutionStatus(status: ToolExecutionRecord["status"]): "executed" | "dry_run" | "approval_required" | "blocked" | "failed" {

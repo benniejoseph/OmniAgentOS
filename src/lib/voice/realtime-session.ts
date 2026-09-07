@@ -17,6 +17,7 @@ export async function issueRealtimeTranscriptionSecret(input: {
     },
     session: {
       type: "transcription",
+      include: ["item.input_audio_transcription.logprobs"],
       audio: {
         input: {
           noise_reduction: { type: "near_field" },
