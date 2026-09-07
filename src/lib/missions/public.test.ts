@@ -22,6 +22,19 @@ describe("browser-safe mission projections", () => {
     expect(view.attempts[0]).not.toHaveProperty("fenceToken");
     expect(view.attempts[0]).not.toHaveProperty("input");
     expect(view.attempts[0]).not.toHaveProperty("output");
+    expect(view.tasks[0].execution).toMatchObject({
+      schemaVersion: 1,
+      authority: "governed_execution_v1",
+      attemptId: "attempt-1",
+      executorType: "agent_run",
+      agentRunId: "run-1",
+      sourceStatus: "running",
+      canonicalStatus: {
+        domain: "mission_attempt",
+        status: "running",
+      },
+    });
+    expect(view.tasks[0].execution).not.toHaveProperty("executorId");
     expect(view.artifacts[0]).not.toHaveProperty("data");
     expect(serialized).not.toContain("secret-fence");
     expect(serialized).not.toContain("private executor input");
