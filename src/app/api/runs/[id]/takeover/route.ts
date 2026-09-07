@@ -93,6 +93,17 @@ async function POSTHandler(
   route: { params: Promise<{ id: string }> },
 ) {
   const { id: runId } = await route.params;
+  let context;
+  try {
+    context = await authorizeRequest({
+      request,
+      action: "execute.tool",
+      resourceType: "browser_takeover",
+      resourceId: runId,
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
   let body: unknown;
   try {
     body = await parseJsonBody(request);
@@ -105,18 +116,6 @@ async function POSTHandler(
       status: 400,
       headers: privateNoStoreHeaders,
     });
-  }
-  let context;
-  try {
-    context = await authorizeRequest({
-      request,
-      action: "execute.tool",
-      resourceType: "browser_takeover",
-      resourceId: runId,
-      metadata: { action: parsed.data.action },
-    });
-  } catch (error) {
-    return forbiddenResponse(error);
   }
 
   try {
