@@ -1,15 +1,7 @@
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { inspectRunTrajectoryService } from "@/lib/app-services/runs";
 import { withDatabaseRequestScope } from "@/lib/db/client";
-import { listCorrelatedEvents, listStreamEvents } from "@/lib/events/store";
-import { getAgentRun } from "@/lib/runs/store";
-import { listRunForkLineage } from "@/lib/runs/fork-store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { buildRunTrajectory } from "@/lib/trajectories/builder";
-import { evaluateTrajectoryOutcome } from "@/lib/trajectories/evaluate";
-import {
-  buildRunTraceHierarchy,
-  resolveRunCorrelationId,
-} from "@/lib/trajectories/hierarchy";
-import { verifyRunTrajectory } from "@/lib/trajectories/verify";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -31,51 +23,15 @@ async function GETHandler(
     return forbiddenResponse(error);
   }
 
-  const run = await getAgentRun(id, { tenantId: auth.tenantId });
-  if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
-  if (run.ownerActorId !== auth.actorId) {
+  try {
+    const result = await inspectRunTrajectoryService(createAppServiceCaller({ context: auth }), { runId: id });
+    if (!result.data.trajectory) return Response.json({ error: "Run not found." }, { status: 404 });
+    return Response.json(
+      { ...result.data, serviceReceipt: result.receipt },
+      { headers: { "cache-control": "private, no-store", "content-disposition": `attachment; filename="asael-trajectory-${id}.json"` } },
+    );
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "Run not found.") throw error;
     return Response.json({ error: "Run not found." }, { status: 404 });
   }
-
-  const runEvents = await listStreamEvents(`run:${id}`, {
-    tenantId: auth.tenantId,
-    actorId: run.ownerActorId,
-    limit: 2_000,
-  });
-  const correlationId = resolveRunCorrelationId(run, runEvents);
-  const correlatedEvents = await listCorrelatedEvents(correlationId, {
-    tenantId: auth.tenantId,
-    actorId: run.ownerActorId,
-    limit: 2_000,
-  });
-  const traceEvents = [
-    ...new Map(
-      [...runEvents, ...correlatedEvents].map((event) => [event.id, event]),
-    ).values(),
-  ];
-  const trajectory = buildRunTrajectory(run, runEvents);
-  const verification = verifyRunTrajectory(trajectory, run);
-  const traceHierarchy = buildRunTraceHierarchy(
-    run,
-    traceEvents,
-    correlationId,
-  );
-  const lineage = await listRunForkLineage(id, {
-    tenantId: auth.tenantId,
-  });
-  return Response.json(
-    {
-      trajectory,
-      verification,
-      traceHierarchy,
-      lineage,
-      outcomeEvaluation: evaluateTrajectoryOutcome(trajectory, verification),
-    },
-    {
-      headers: {
-        "cache-control": "private, no-store",
-        "content-disposition": `attachment; filename="asael-trajectory-${id}.json"`,
-      },
-    },
-  );
 }
