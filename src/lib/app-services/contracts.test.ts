@@ -98,6 +98,7 @@ describe("P9.1 application service boundary", () => {
       operationCount: APP_SERVICE_OPERATION_CONTRACTS.length,
       duplicateOperations: [],
       invalidMutationContracts: [],
+      missingAgentOperations: [],
       agentAccessPaths: ["governed_tool_executor", "application_service"],
       forbiddenAgentAccessPaths: [],
       passed: true,
