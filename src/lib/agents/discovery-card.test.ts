@@ -5,6 +5,7 @@ import {
   listInternalAgentCardsV1,
   parseInternalAgentCardV1,
 } from "@/lib/agents/discovery-card";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 describe("P8.5 internal Agent Card", () => {
   it("advertises versioned capabilities, schemas, modalities, auth needs, and limits", () => {
@@ -77,5 +78,28 @@ describe("P8.5 internal Agent Card", () => {
     const tampered = JSON.parse(JSON.stringify(cards[0]));
     tampered.limits.maxFanOut = 16;
     expect(() => parseInternalAgentCardV1(tampered)).toThrow(/integrity/i);
+  });
+
+  it("rejects a correctly rehashed card with an open nested schema", () => {
+    const tampered = JSON.parse(JSON.stringify(buildInternalAgentCardV1({
+      agentId: "scout",
+      tenantId: "tenant-one",
+      controllerActorId: "actor-one",
+    })));
+    tampered.capabilities[1].inputSchema.properties.inputArtifacts.items
+      .additionalProperties = true;
+    tampered.capabilities[1].inputSchemaSha256 = canonicalJsonSha256(
+      tampered.capabilities[1].inputSchema,
+    );
+    const { capabilitySha256: _capabilitySha256, ...capabilityBody } =
+      tampered.capabilities[1];
+    tampered.capabilities[1].capabilitySha256 = canonicalJsonSha256(
+      capabilityBody,
+    );
+    const { cardId: _cardId, cardSha256: _cardSha256, ...cardBody } = tampered;
+    tampered.cardSha256 = canonicalJsonSha256(cardBody);
+    tampered.cardId = `agent-card:${tampered.cardSha256}`;
+
+    expect(() => parseInternalAgentCardV1(tampered)).toThrow(/closed/i);
   });
 });
