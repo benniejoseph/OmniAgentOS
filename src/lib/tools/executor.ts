@@ -1560,7 +1560,11 @@ async function resolveBrowserExecutionPolicy(input: {
   executionScope?: ExecutionScope;
   tenantId?: string;
   forceApproval?: boolean;
-}) {
+}): Promise<{
+  tool: ToolDefinition;
+  sessionScope?: McpSessionScope;
+  decision?: BrowserActionPolicyDecision;
+}> {
   const unchanged = {
     tool: input.tool,
     sessionScope: input.sessionScope,
@@ -1591,9 +1595,10 @@ async function resolveBrowserExecutionPolicy(input: {
         executionScope: input.executionScope,
       })
     : undefined;
-  const sessionScope = profile
-    ? { ...input.sessionScope, browserProfile: profile }
-    : input.sessionScope;
+  let sessionScope = input.sessionScope;
+  if (profile && input.sessionScope) {
+    sessionScope = { ...input.sessionScope, browserProfile: profile };
+  }
   const specialized = specializeBrowserActionTool({
     tool: input.tool,
     toolName: mcpTool.name,
