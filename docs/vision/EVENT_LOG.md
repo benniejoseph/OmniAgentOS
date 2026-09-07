@@ -1807,3 +1807,18 @@ account/run/workflow/Project IDs, terminal state, artifact-receipt count, and
 receipt/run digests. Exact artifact and evidence references remain inside the
 forced-RLS run ledger. Neither event authorizes communication delivery or a CRM
 write; those effects still require their own governed approval and receipt.
+
+## Customer-success intelligence projections
+
+P10.14 emits no new domain event. Portfolio ranking, account timeline, risks,
+commitments, related approvals, and next-best action are read-only projections
+over existing immutable authorities and return the standard content-free
+`app_service_receipt` with `read_only:no_domain_mutation`. A projection digest
+binds the client response, but it is not an approval, effect intent, workflow
+start, CRM write, communication delivery, or source of customer truth.
+
+If a user follows a suggestion, the chosen operation re-enters its existing
+application service and governed executor and produces that domain's ordinary
+typed event, approval, and effect receipt. The suggestion itself remains
+`authoritative: false`, carries uncertainty and exact cited revisions, and is
+never recorded as a completed decision or action.
