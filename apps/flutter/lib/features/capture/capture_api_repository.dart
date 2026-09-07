@@ -25,6 +25,7 @@ class ApiCaptureRepository implements CaptureRepository {
       headers: {
         'idempotency-key': idempotencyKey,
         'x-request-id': idempotencyKey,
+        'x-omni-correlation-id': idempotencyKey,
         'x-asael-capture-owner-sha256': await owner.sha256(),
       },
     );

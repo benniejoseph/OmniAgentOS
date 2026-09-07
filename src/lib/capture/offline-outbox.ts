@@ -12,6 +12,7 @@ export class OfflineCaptureOwnerBindingError extends Error {
 
 export function assertOfflineCaptureOwnerBinding(input: {
   idempotencyKey?: string;
+  correlationId?: string;
   ownerSha256?: string;
   tenantId: string;
   actorId: string;
@@ -21,6 +22,11 @@ export function assertOfflineCaptureOwnerBinding(input: {
   if (!OFFLINE_CAPTURE_KEY.test(idempotencyKey)) {
     throw new OfflineCaptureOwnerBindingError(
       "The offline capture idempotency key is invalid.",
+    );
+  }
+  if (input.correlationId?.trim() !== idempotencyKey) {
+    throw new OfflineCaptureOwnerBindingError(
+      "The offline capture correlation binding is invalid.",
     );
   }
   const supplied = input.ownerSha256?.trim() || "";

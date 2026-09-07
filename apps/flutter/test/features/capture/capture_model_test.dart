@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:asael/core/network/api_exception.dart';
@@ -55,6 +56,30 @@ void main() {
       expect(controller.receipt?.jobId, 'job-one');
     },
   );
+
+  test('drops decrypted state when the application locks mid-sync', () async {
+    final repository = _BlockingCaptureRepository();
+    final outbox = _MemoryOutbox();
+    final controller = CaptureController(
+      repository,
+      outbox,
+      const CaptureOwnerBinding(tenantId: 'tenant-one', actorId: 'actor:one'),
+    );
+
+    final submission = controller.submit(
+      const CaptureDraft(content: 'Private offline note'),
+    );
+    await repository.called.future;
+    controller.lock();
+    repository.result.complete(
+      const CaptureReceipt(jobId: 'job-one', title: 'Private', tags: []),
+    );
+    await submission;
+
+    expect(controller.pending, isEmpty);
+    expect(controller.receipt, isNull);
+    expect(outbox.entries, hasLength(1));
+  });
 }
 
 class _CaptureRepository implements CaptureRepository {
@@ -100,5 +125,20 @@ class _MemoryOutbox implements CaptureOutbox {
   @override
   Future<void> remove(CaptureOwnerBinding owner, String entryId) async {
     entries.removeWhere((entry) => entry.id == entryId && owner.owns(entry));
+  }
+}
+
+class _BlockingCaptureRepository implements CaptureRepository {
+  final called = Completer<void>();
+  final result = Completer<CaptureReceipt>();
+
+  @override
+  Future<CaptureReceipt> submit(
+    CaptureDraft draft, {
+    required String idempotencyKey,
+    required CaptureOwnerBinding owner,
+  }) {
+    called.complete();
+    return result.future;
   }
 }

@@ -128,6 +128,8 @@ describe("request-bound Capture asset collection route", () => {
       method: "POST",
       headers: {
         "idempotency-key": "capture-offline-abcdefghijklmnopqrstuvwx",
+        "x-omni-correlation-id":
+          "capture-offline-abcdefghijklmnopqrstuvwx",
       },
       body: new FormData(),
     }));

@@ -94,7 +94,7 @@ class CaptureController extends ChangeNotifier {
       pending = restored;
       error = null;
     } catch (e) {
-      error = e;
+      if (generation == _generation) error = e;
     } finally {
       loadingOutbox = false;
       _emit();
@@ -115,26 +115,33 @@ class CaptureController extends ChangeNotifier {
     syncError = null;
     lastSubmitQueued = false;
     receipt = null;
+    final generation = _generation;
     _emit();
     try {
       final entry = await outbox.enqueue(owner!, draft);
+      if (generation != _generation) return true;
       pending = await outbox.list(owner!);
+      if (generation != _generation) return true;
       _emit();
       try {
-        receipt = await repository.submit(
+        final synced = await repository.submit(
           entry.draft,
           idempotencyKey: entry.idempotencyKey,
           owner: owner!,
         );
+        if (generation != _generation) return true;
+        receipt = synced;
         await outbox.remove(owner!, entry.id);
         pending = await outbox.list(owner!);
       } catch (e) {
-        syncError = e;
-        lastSubmitQueued = true;
+        if (generation == _generation) {
+          syncError = e;
+          lastSubmitQueued = true;
+        }
       }
       return true;
     } catch (e) {
-      error = e;
+      if (generation == _generation) error = e;
       return false;
     } finally {
       submitting = false;
@@ -150,15 +157,20 @@ class CaptureController extends ChangeNotifier {
     _emit();
     try {
       final entries = await outbox.list(owner!);
+      if (generation != _generation) return;
       for (final entry in entries) {
+        if (generation != _generation) break;
         try {
-          receipt = await repository.submit(
+          final synced = await repository.submit(
             entry.draft,
             idempotencyKey: entry.idempotencyKey,
             owner: owner!,
           );
+          if (generation != _generation) break;
+          receipt = synced;
           await outbox.remove(owner!, entry.id);
         } catch (e) {
+          if (generation != _generation) break;
           syncError = e;
           if (_stopBatchAfter(e)) break;
         }
@@ -166,7 +178,7 @@ class CaptureController extends ChangeNotifier {
       final restored = await outbox.list(owner!);
       if (generation == _generation) pending = restored;
     } catch (e) {
-      error = e;
+      if (generation == _generation) error = e;
     } finally {
       syncing = false;
       _emit();
