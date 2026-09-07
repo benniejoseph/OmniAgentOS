@@ -774,7 +774,7 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 through P9.3 are complete; P9.4 is the next actionable slice, while P12
+P9.1 through P9.4 are complete; P9.5 is the next actionable slice, while P12
 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -792,7 +792,7 @@ and P13 remain deferred.
 | P9.3 | Add reversible trash, undo, compensation, and two-step destructive action UX. | Modify domain deletes; create trash/compensation contracts. | Irreversible/high-impact deletes remain approval-gated and never graduate automatically. | Edit/archive/delete actions have clear preview, effect receipt, undo/compensation where possible, and final deletion receipt. |
 | P9.4 | Add plan/domain/action-class approval grants. | Modify trust policy. | Grants bind actor, agent, tool contract, target, plan digest, budget, and expiry; replanning invalidates them. | Repetitive safe operations avoid per-click approval without permitting new targets or action classes. |
 
-**Implementation status:** P9.1 through P9.3 are complete. The governed catalog
+**Implementation status:** P9.1 through P9.4 are complete. The governed catalog
 now contains 109 active `app.*` operations, including actor-private Trash list,
 detail, receipt, restore-preview, restore, purge-preview, and purge tools. Custom
 Agent, custom Skill, MCP, and OpenAPI removal first requires an exact expiring
@@ -811,8 +811,22 @@ and append-only receipts. Forty-eight focused checks, affected lint, TypeScript,
 and the 98-page production build pass. Vercel deployment
 `dpl_kguF9AgjzQvoc4w2m2tt7Q22JMWy` is Ready at the canonical alias on exact
 revision `9b1eaf446ddd576ba44a6c55a786e721eba6d370`; the compatible Fly worker/OpenAI
-gateway and Playwright gateway remain healthy. P9.4 is next. P12 and P13 remain
-deferred.
+gateway and Playwright gateway remain healthy. P9.4 replaces earned-autonomy
+auto-approval with actor-private, short-lived, budgeted grants derived only from
+a persisted workflow approval. Each grant binds the exact plan and digest,
+approver and executing principal, domain/action/tool and contract digest, and
+the digest of the complete reviewed static tool input. Consumption is atomic and
+idempotent, replanning revokes the prior plan's grants, and changed or dynamic
+inputs fall back to per-action approval. Risk-three and irreversible operations
+are never grant-eligible. Migration 121 is installed with checksum
+`74a51bdd87e583b6380533d34571455ba717829e390de8ef0806b2a818f37bd6`;
+readback confirms forced RLS, restrictive actor policies, append-only claims,
+and lifecycle-only grant updates. Ninety-two focused checks, affected lint,
+TypeScript, and the 98-page build pass. Vercel deployment
+`dpl_DtNitGtzr8sLfTuwgHZ2fhtYkJzQ` is Ready at exact revision
+`c17aba2c40166f1f09ad9beee9f463ac6bba9dfe`; the web, worker/OpenAI gateway,
+and Playwright gateway all return HTTP 200 health. P9.5 is next. P12 and P13
+remain deferred.
 
 #### Browser and computer use
 
@@ -2753,7 +2767,7 @@ production build pass. Vercel rejected the complete-feature promotion at
 still reports an overdue balance; Fly was intentionally left unchanged. This
 closes Phase 8.
 
-P9.1 through P9.3 are complete. The shared registry and dispatcher expose 109
+P9.1 through P9.4 are complete. The shared registry and dispatcher expose 109
 active `app.*` tools across all thirteen required product families with
 tenant/actor/RBAC revalidation, exact mutation scope and idempotency,
 content-free service receipts, governed typed domain events, risk-based
@@ -2764,10 +2778,17 @@ has no direct domain-store or product-DOM path. P9.3 routes custom Agent, Skill,
 MCP, and OpenAPI removal through an actor-private 30-day Trash ledger with exact
 previews, internal snapshots, typed lifecycle receipts, restore/compensation,
 and separately previewed approval-gated permanent purge. Migration 120 is
-installed with forced RLS and narrow lifecycle-only serving privileges. P9.4 is
-next. Vercel deployment `dpl_kguF9AgjzQvoc4w2m2tt7Q22JMWy` serves exact
-revision `9b1eaf446ddd576ba44a6c55a786e721eba6d370`; the unchanged compatible Fly
-worker/OpenAI gateway and Playwright gateway are healthy. P12/P13 remain deferred.
+installed with forced RLS and narrow lifecycle-only serving privileges. P9.4
+adds persisted exact-plan approval grants for reversible risk-one and risk-two
+static workflow actions. Grants bind approver, principal, plan, tool contract,
+full reviewed input target, budget, and expiry; claims are atomic and idempotent,
+and replanning revokes old authority. Dynamic inputs, changed targets,
+irreversible actions, and risk-three actions remain per-action gated. Migration
+121 is installed with forced actor RLS and narrow lifecycle-only mutation.
+Vercel deployment `dpl_DtNitGtzr8sLfTuwgHZ2fhtYkJzQ` serves exact revision
+`c17aba2c40166f1f09ad9beee9f463ac6bba9dfe`; the compatible Fly worker/OpenAI
+gateway and Playwright gateway remain healthy. P9.5 is next. P12/P13 remain
+deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
