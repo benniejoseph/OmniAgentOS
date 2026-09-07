@@ -10813,11 +10813,22 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
       )),
       CHECK (lifecycle_revision BETWEEN 0 AND 32),
       CHECK (jsonb_typeof(task) = 'object'),
+      CHECK (task ?& ARRAY[
+        'schemaVersion', 'version', 'taskId', 'taskSha256', 'tenantId',
+        'ownerActorId', 'parentExecutionId', 'parentPrincipalId',
+        'parentDelegationId', 'delegationId', 'contractId',
+        'contractSha256', 'delegatePrincipalId', 'delegateAgentId',
+        'delegateDefinitionVersion', 'verifierAgentId',
+        'verifierDefinitionVersion', 'verifierAcceptanceThreshold', 'state',
+        'lifecycleRevision', 'proposal', 'evaluation', 'createdAt', 'acceptBy',
+        'completeBy', 'updatedAt', 'terminalAt'
+      ]),
       CHECK (task_sha256 ~ '^[a-f0-9]{64}$'),
       CHECK (created_at <= updated_at),
       CHECK (created_at <= accept_by AND accept_by < complete_by),
       CHECK ((state IN ('result_accepted', 'rejected', 'canceled', 'expired')) = (terminal_at IS NOT NULL)),
       CHECK (task->>'version' = 'p8.3-delegation-task:1'),
+      CHECK (task->>'schemaVersion' = '1'),
       CHECK (task->>'taskId' = task_id),
       CHECK (task->>'taskSha256' = task_sha256),
       CHECK (task->>'tenantId' = tenant_id),
@@ -10861,6 +10872,24 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
       CHECK (
         state <> 'rejected'
         OR task->'evaluation'->>'verdict' = 'rejected'
+      ),
+      CHECK (
+        state NOT IN ('result_accepted', 'rejected')
+        OR (
+          task->'evaluation'->>'evaluatorPrincipalId' = parent_principal_id
+          AND task->'evaluation'->>'evaluatorAgentId' = verifier_agent_id
+          AND (task->'evaluation'->>'evaluatorDefinitionVersion')::BIGINT =
+            verifier_definition_version
+          AND task->'evaluation'->>'proposalReceiptSha256' =
+            task->'proposal'->>'proposalReceiptSha256'
+          AND task->'evaluation'->>'evaluationSha256' ~ '^[a-f0-9]{64}$'
+          AND (task->'evaluation'->>'score')::DOUBLE PRECISION BETWEEN 0 AND 1
+        )
+      ),
+      CHECK (
+        state <> 'result_accepted'
+        OR (task->'evaluation'->>'score')::DOUBLE PRECISION >=
+          verifier_acceptance_threshold
       ),
       FOREIGN KEY (owner_actor_id)
         REFERENCES omni_auth_users (actor_id)
