@@ -22,37 +22,39 @@ export const SALESFORCE_OBJECT_FIELDS = Object.freeze({
   Account: [
     "Id", "Name", "Industry", "Website", "OwnerId", "Type",
     "BillingCountry", "LastActivityDate", "LastModifiedDate", "SystemModstamp",
+    "IsDeleted",
   ],
   Contact: [
     "Id", "AccountId", "Name", "Email", "Title", "Department", "OwnerId",
-    "LastActivityDate", "LastModifiedDate", "SystemModstamp",
+    "LastActivityDate", "LastModifiedDate", "SystemModstamp", "IsDeleted",
   ],
   Opportunity: [
     "Id", "AccountId", "Name", "StageName", "Amount", "CurrencyIsoCode",
     "Probability", "CloseDate", "IsClosed", "IsWon", "OwnerId",
-    "LastModifiedDate", "SystemModstamp",
+    "LastModifiedDate", "SystemModstamp", "IsDeleted",
   ],
   Case: [
     "Id", "AccountId", "Subject", "Status", "Priority", "Type", "Reason",
-    "OwnerId", "ClosedDate", "LastModifiedDate", "SystemModstamp",
+    "OwnerId", "ClosedDate", "LastModifiedDate", "SystemModstamp", "IsDeleted",
   ],
   Task: [
     "Id", "AccountId", "WhatId", "WhoId", "Subject", "Status", "Priority",
     "ActivityDate", "CompletedDateTime", "OwnerId", "LastModifiedDate",
-    "SystemModstamp",
+    "SystemModstamp", "IsDeleted",
   ],
   Event: [
     "Id", "AccountId", "WhatId", "WhoId", "Subject", "StartDateTime",
     "EndDateTime", "Location", "OwnerId", "LastModifiedDate", "SystemModstamp",
+    "IsDeleted",
   ],
   Asset: [
     "Id", "AccountId", "Name", "Status", "Quantity", "Product2Id",
     "PurchaseDate", "InstallDate", "UsageEndDate", "LastModifiedDate",
-    "SystemModstamp",
+    "SystemModstamp", "IsDeleted",
   ],
   Contract: [
     "Id", "AccountId", "Status", "StartDate", "EndDate", "ContractTerm",
-    "OwnerId", "LastModifiedDate", "SystemModstamp",
+    "OwnerId", "LastModifiedDate", "SystemModstamp", "IsDeleted",
   ],
 } satisfies Record<SalesforceObjectType, readonly string[]>);
 
