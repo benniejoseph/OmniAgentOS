@@ -154,6 +154,7 @@ function rolloutInput() {
     inboundServiceApiKeyId: null,
     outboundCredentialConfigured: true,
     allowedSkillIds: ["skill:research"],
+    allowedInboundAgentIds: [],
     maxOutputBytes: 262_144,
     createdAt: "2026-09-07T00:00:00.000Z",
   };

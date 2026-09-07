@@ -25,6 +25,13 @@ const timestampSchema = z.string().datetime({ offset: true });
 const peerDirectionSchema = z.enum(["inbound", "outbound", "bidirectional"]);
 const peerModeSchema = z.enum(["shadow", "enabled"]);
 const peerStatusSchema = z.enum(["registered", "active", "paused", "revoked"]);
+const inboundAgentIdSchema = z.enum([
+  "atlas",
+  "scout",
+  "forge",
+  "sentinel",
+  "mnemosyne",
+]);
 
 export const a2aPeerRolloutV1Schema = z.object({
   schemaVersion: z.literal(1),
@@ -49,6 +56,10 @@ export const a2aPeerRolloutV1Schema = z.object({
   allowedSkillIds: z.array(idSchema).min(1).max(64).refine(
     (values) => new Set(values).size === values.length,
     "A2A allowed skills must be unique.",
+  ),
+  allowedInboundAgentIds: z.array(inboundAgentIdSchema).max(5).refine(
+    (values) => new Set(values).size === values.length,
+    "A2A inbound Agent IDs must be unique.",
   ),
   maxTaskDurationMs: z.number().int().min(1_000).max(3_600_000),
   maxInputBytes: z.number().int().min(1).max(1_000_000),
@@ -95,6 +106,13 @@ export const a2aPeerRolloutV1Schema = z.object({
       message: "A2A inbound rollouts require one exact service API key.",
     });
   }
+  if (requiresInbound !== (value.allowedInboundAgentIds.length > 0)) {
+    context.addIssue({
+      code: "custom",
+      path: ["allowedInboundAgentIds"],
+      message: "A2A inbound rollouts require explicitly allowed local Agents.",
+    });
+  }
   const requiresOutbound = value.direction !== "inbound";
   if (requiresOutbound !== value.outboundCredentialConfigured) {
     context.addIssue({
@@ -129,6 +147,7 @@ export function buildA2APeerRolloutV1(input: {
   inboundServiceApiKeyId?: string | null;
   outboundCredentialConfigured?: boolean;
   allowedSkillIds: readonly string[];
+  allowedInboundAgentIds?: readonly A2APeerRolloutV1["allowedInboundAgentIds"][number][];
   maxTaskDurationMs?: number;
   maxInputBytes?: number;
   maxOutputBytes?: number;
@@ -155,6 +174,7 @@ export function buildA2APeerRolloutV1(input: {
     outboundCredentialConfigured:
       input.outboundCredentialConfigured === true,
     allowedSkillIds: [...new Set(input.allowedSkillIds)].sort(),
+    allowedInboundAgentIds: [...new Set(input.allowedInboundAgentIds || [])].sort(),
     maxTaskDurationMs: input.maxTaskDurationMs || 300_000,
     maxInputBytes: input.maxInputBytes || 65_536,
     maxOutputBytes: input.maxOutputBytes || 262_144,

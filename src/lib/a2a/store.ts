@@ -48,6 +48,7 @@ export async function registerA2APeer(input: {
   inboundServiceApiKeyId?: string;
   outboundBearerToken?: string;
   allowedSkillIds: readonly string[];
+  allowedInboundAgentIds?: A2APeerRolloutV1["allowedInboundAgentIds"];
   maxTaskDurationMs?: number;
   maxInputBytes?: number;
   maxOutputBytes?: number;
@@ -139,6 +140,7 @@ export async function registerA2APeer(input: {
       inboundServiceApiKeyId: input.inboundServiceApiKeyId || null,
       outboundCredentialConfigured: Boolean(outboundBearerToken),
       allowedSkillIds: input.allowedSkillIds,
+      allowedInboundAgentIds: input.allowedInboundAgentIds,
       maxTaskDurationMs: input.maxTaskDurationMs,
       maxInputBytes: input.maxInputBytes,
       maxOutputBytes: input.maxOutputBytes,
@@ -165,7 +167,8 @@ export async function registerA2APeer(input: {
         protocol_binding, adapter_release, adapter_artifact_sha256,
         inbound_service_api_key_id, outbound_credential_configured,
         credential_version, credential_origin, credential_fingerprint,
-        sealed_credential, allowed_skill_ids, max_task_duration_ms,
+        sealed_credential, allowed_skill_ids, allowed_inbound_agent_ids,
+        max_task_duration_ms,
         max_input_bytes, max_output_bytes, rollout, created_at, updated_at
       ) VALUES (
         1, ${rollout.tenantId}, ${rollout.ownerActorId}, ${rollout.peerId},
@@ -179,6 +182,7 @@ export async function registerA2APeer(input: {
         ${rollout.outboundCredentialConfigured}, ${credentialVersion},
         ${credentialOrigin}, ${credentialFingerprint},
         ${sealedCredential}::jsonb, ${rollout.allowedSkillIds},
+        ${rollout.allowedInboundAgentIds},
         ${rollout.maxTaskDurationMs}, ${rollout.maxInputBytes},
         ${rollout.maxOutputBytes}, ${rollout}::jsonb,
         ${rollout.createdAt}, ${rollout.updatedAt}

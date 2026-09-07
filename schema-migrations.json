@@ -582,6 +582,11 @@
   {
     "version": 117,
     "name": "a2a_peer_rollouts_v1",
-    "checksum": "0ddc785b4b7bbf2f35335857adcbfdc3b097d35c09b18fd9ff5de2697790eca9"
+    "checksum": "a11e97b868005023fe398d66bb795bd9939ca3b19963515452a54fe849aecb67"
+  },
+  {
+    "version": 118,
+    "name": "a2a_task_mappings_v1",
+    "checksum": "2bbc12a59b5769690bc467d3820688b51645ca168784ff35c95ccaf00da4371e"
   }
 ]

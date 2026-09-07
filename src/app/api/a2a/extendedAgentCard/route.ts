@@ -24,10 +24,13 @@ async function GETHandler(request: Request) {
     allowedOrigin = assertTrustedA2ANetworkBoundary(request);
     assertA2AProtocolVersion(request);
     const principal = await authenticateA2ARequest(request, ["a2a:discover"]);
+    const allowedAgentIds = new Set(principal.peer.allowedInboundAgentIds);
     const cards = listInternalAgentCardsV1({
       tenantId: principal.tenantId,
       controllerActorId: principal.actorId,
-    });
+    }).filter((card) => allowedAgentIds.has(
+      card.logicalAgentId as typeof principal.peer.allowedInboundAgentIds[number],
+    ));
     return secureA2AResponse(Response.json(
       buildAsaelA2AAgentCardV1({
         baseUrl: process.env.NEXT_PUBLIC_APP_URL?.trim() || new URL(request.url).origin,
