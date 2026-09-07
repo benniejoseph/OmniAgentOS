@@ -77,11 +77,11 @@ import {
   listWorkflowsService,
   planWorkflowService,
   showWorkflowService,
-  showWorkflowTrajectoryService,
   signalWorkflowService,
   startWorkflowService,
   tickWorkflowService,
 } from "@/lib/app-services/workflows";
+import { showWorkflowTrajectoryService } from "@/lib/app-services/workflow-inspection";
 import {
   deleteConnectorService,
   listConnectorsService,
