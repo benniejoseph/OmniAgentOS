@@ -1790,3 +1790,20 @@ The event observes a versioned deterministic decision; it does not authorize a
 CRM write or customer communication. Exact fact and source evidence remains in
 the owner/Workspace-scoped score ledger. Model suggestions remain untrusted,
 explicitly non-authoritative annotations and never become event authority.
+
+## Customer-success workflow receipts
+
+P10.13 adds `customer.success.workflow.started` after the Account 360 revision
+has been rechecked and the immutable initial run plus current projection commit.
+Its metadata-only payload contains the account/run revision IDs, workflow ID,
+definition/input/run digests, Project ID, WorkItem count, initial outcome state,
+and outcome-receipt digest. It contains no typed customer input, account fact,
+artifact content, evidence content, tenant/actor coordinate, or private
+reasoning.
+
+`customer.success.workflow.outcome_recorded` follows an append-only completed,
+blocked, or cancelled revision and monotonic projection update. It records the
+account/run/workflow/Project IDs, terminal state, artifact-receipt count, and
+receipt/run digests. Exact artifact and evidence references remain inside the
+forced-RLS run ledger. Neither event authorizes communication delivery or a CRM
+write; those effects still require their own governed approval and receipt.
