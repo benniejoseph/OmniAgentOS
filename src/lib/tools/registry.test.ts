@@ -61,4 +61,20 @@ describe("governed native tool schemas", () => {
       operationClass: "read_only",
     });
   });
+
+  it("registers executable workspace, project, and work-item app tools", () => {
+    expect(getGovernedTool("app.workspaces.summary")).toMatchObject({
+      category: "app",
+      riskLevel: 0,
+      operationClass: "read_only",
+    });
+    expect(getGovernedTool("app.projects.create")).toMatchObject({
+      category: "app",
+      riskLevel: 1,
+      operationClass: "mutation",
+    });
+    expect(getGovernedTool("app.work_items.update")?.inputSchema).toMatchObject({
+      required: ["projectId", "workItemId"],
+    });
+  });
 });

@@ -25,6 +25,7 @@ import {
   showMissionService,
 } from "@/lib/app-services/missions";
 import { listRunsService } from "@/lib/app-services/runs";
+import { executeFirstPartyAppTool } from "@/lib/app-services/tool-dispatcher";
 import { captureBrowserFrameAfterToolSafely } from "@/lib/browser/frames";
 import {
   createGoogleCalendarEvent,
@@ -2666,6 +2667,15 @@ async function runTool(
     purpose,
   );
 
+  const appDispatch = await executeFirstPartyAppTool({
+    toolId: tool.id,
+    toolInput: parsed,
+    context,
+    executionScope,
+    idempotencyKey,
+  });
+  if (appDispatch.handled) return appDispatch.result;
+
   if (tool.id === "memory.search") {
     const { query, limit } = searchSchema.parse(parsed);
     const service = await searchMemoryService(
@@ -3628,6 +3638,9 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
 }
 
 function describeSideEffects(toolId: string) {
+  if (toolId.startsWith("app.")) {
+    return ["tenant-and-actor-scoped first-party application operation through the shared service boundary"];
+  }
   if (toolId === "memory.inspect") {
     return ["read-only exact memory inspection without embeddings"];
   }
