@@ -2,6 +2,19 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
+  AppServiceEffectReceiptFinalizationError,
+  correctMemoryService,
+  forgetMemoryService,
+  inspectMemoryService,
+  prepareMemoryExportService,
+  previewMemoryForgetService,
+  readMemoryDeletionReconciliation,
+  readMemoryEffectRecord,
+  searchMemoryService,
+  updateMemoryLifecycleService,
+  writeMemoryService,
+} from "@/lib/app-services/memory";
+import {
   commentOnMissionTaskService,
   createMissionTaskService,
   listMissionsService,
@@ -16,7 +29,6 @@ import {
   googleCalendarTargetState,
   reconcileGoogleCalendarEvent,
 } from "@/lib/connectors/google-calendar-write";
-import { embedTexts } from "@/lib/openai/client";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { validateConnectorInput } from "@/lib/connectors/input-validation";
 import {
@@ -29,39 +41,16 @@ import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/o
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
-import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
-import { retireEntityMemoryLineage } from "@/lib/entities/store";
-import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import {
   publicMemoryDeletionReceiptV1,
   type MemoryDeletionReceiptV1,
 } from "@/lib/memory/deletion-receipt";
-import {
-  indexUserPrivateMemoryGraphRecords,
-  queueMemoryGraphRebuild,
-} from "@/lib/memory/graph";
 import { memoryLifecycleActionSchema } from "@/lib/memory/lifecycle";
-import {
-  MemoryLifecycleConflictError,
-  setMemoryLifecycle,
-} from "@/lib/memory/maintenance-store";
-import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
-import {
-  correctMemory,
-  forgetMemoryWithReceipt,
-  getMemory,
-  getMemoryDeletionReceipt,
-  previewMemoryDeletion,
-  saveMemory,
-  saveMemoryWithCommitStatus,
-  searchMemories,
-} from "@/lib/memory/store";
-import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
+import type { MemoryRecord } from "@/lib/memory/types";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
-  deriveExecutionScope,
   executionScopesEqual,
   executionScopeFromSecurityContext,
   type ExecutionScope,
@@ -1884,9 +1873,10 @@ async function reconcileExistingMemoryWriteEffect(input: {
   if (!effectContext) return undefined;
   let observed: MemoryRecord | null;
   try {
-    observed = await getMemory(effectContext.targetId, {
-      tenantId: effectContext.executionScope.tenantId,
-    });
+    observed = await readMemoryEffectRecord(
+      effectContext.targetId,
+      effectContext.executionScope.tenantId,
+    );
   } catch (error) {
     throw new EffectReceiptFinalizationError({ cause: error });
   }
@@ -2069,20 +2059,17 @@ async function reconcileExistingMemoryForgetEffect(input: {
   let receipt: MemoryDeletionReceiptV1 | null = null;
   let memory: MemoryRecord | null = null;
   try {
-    const forgetAccess = memoryToolAccess(input.context, {
-      purposeId: MEMORY_PURPOSE_IDS.forget,
-      auditPurpose: "tool.memory.forget.reconcile",
-      correlationId: input.executionScope.correlationId,
+    const reconciliation = await readMemoryDeletionReconciliation({
+      caller: toolAppServiceCaller(
+        input.context,
+        input.executionScope,
+        input.record.id,
+      ),
+      id,
     });
-    receipt = await getMemoryDeletionReceipt(id, {
-      tenantId: input.executionScope.tenantId,
-      accessScope: forgetAccess?.databaseAccessScope,
-    });
+    receipt = reconciliation.receipt;
+    memory = reconciliation.memory;
     if (!receipt) return undefined;
-    memory = await getMemory(id, {
-      tenantId: input.executionScope.tenantId,
-      accessScope: forgetAccess?.databaseAccessScope,
-    });
     if (!memory) {
       throw new Error(
         "Memory deletion receipt is missing its canonical forgotten shell.",
@@ -2478,9 +2465,10 @@ async function buildMemoryWriteEffectReceipt(input: {
     "read_unavailable";
   let observedTargetStateSha256: string | null = null;
   try {
-    const observed = await getMemory(input.context.targetId, {
-      tenantId: input.context.executionScope.tenantId,
-    });
+    const observed = await readMemoryEffectRecord(
+      input.context.targetId,
+      input.context.executionScope.tenantId,
+    );
     if (!observed) {
       verificationState = "failed";
       verificationReasonCode = "target_missing";
@@ -2656,73 +2644,6 @@ function requiredEffectSha256(value: string, field: string) {
   return value;
 }
 
-function memoryToolAccess(
-  context: SecurityContext | undefined,
-  input: {
-    purposeId: string;
-    auditPurpose: string;
-    correlationId?: string;
-  },
-) {
-  if (!context) return undefined;
-  return requestMemoryAccessFromSecurityContext(context, {
-    purposeId: input.purposeId,
-    auditPurpose: input.auditPurpose,
-    correlationId: input.correlationId || randomUUID(),
-  });
-}
-
-function publicMemoryScope(memory: MemoryRecord) {
-  const binding = memory.accessBinding;
-  if (!binding) {
-    return {
-      visibility: memory.scope === "user"
-        ? "user_legacy"
-        : memory.scope === "project"
-          ? "project_legacy"
-          : "workspace_legacy",
-      sensitivity: "legacy_unspecified",
-      scope: memory.scope,
-    };
-  }
-  return {
-    visibility: binding.visibility,
-    sensitivity: binding.sensitivity,
-    scope: memory.scope,
-    owner: binding.visibility === "user_private" ? "current_user" : undefined,
-    agentId: binding.ownerAgentId,
-    workspaceId: binding.workspaceId,
-    projectId: binding.projectId,
-    missionId: binding.missionId,
-  };
-}
-
-function publicMemoryToolRecord(memory: MemoryRecord) {
-  const {
-    embedding: _embedding,
-    accessBinding: _accessBinding,
-    ...record
-  } = memory;
-  void _embedding;
-  void _accessBinding;
-  return {
-    ...record,
-    access: publicMemoryScope(memory),
-  };
-}
-
-function mergeMemoryToolSearchResults(
-  legacy: Array<{ record: MemoryRecord; score: number; reasons: string[] }>,
-  scoped: Array<{ record: MemoryRecord; score: number; reasons: string[] }>,
-  limit: number,
-) {
-  return [...new Map(
-    [...legacy, ...scoped].map((result) => [result.record.id, result] as const),
-  ).values()]
-    .sort((left, right) => right.score - left.score)
-    .slice(0, limit);
-}
-
 async function runTool(
   tool: ToolDefinition,
   input: Record<string, unknown>,
@@ -2748,122 +2669,45 @@ async function runTool(
 
   if (tool.id === "memory.search") {
     const { query, limit } = searchSchema.parse(parsed);
-    const safeQuery = String(redactSensitive(query));
-    const embeddingResult = await embedRetrievalTexts([safeQuery], {
-      abortSignal,
-      usageScope: aiUsageScope("embedding", "tool.memory.search"),
-    });
-    const queryEmbedding = embeddingResult.vectors[0];
-    const searchLimit = limit || 5;
-    const privateAccess = memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.retrieve,
-      auditPurpose: "tool.memory.search",
-      correlationId: idempotencyKey,
-    });
-    const [legacyResults, privateResults] = await Promise.all([
-      searchMemories(safeQuery, {
-        limit: searchLimit,
-        queryEmbedding,
-        queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
-        tenantId: context?.tenantId,
-      }),
-      privateAccess
-        ? searchMemories(safeQuery, {
-            limit: searchLimit,
-            queryEmbedding,
-            queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
-            tenantId: context?.tenantId,
-            accessScope: privateAccess.databaseAccessScope,
-          })
-        : Promise.resolve([]),
-    ]);
-    const mergedResults = mergeMemoryToolSearchResults(
-      legacyResults,
-      privateResults,
-      searchLimit,
-    );
-    const reranked = rerankRetrievalCandidates(
-      safeQuery,
-      mergedResults.map((result) => ({
-        value: result,
-        text: `${result.record.title}\n${result.record.content}`,
-        baseScore: result.score,
-        freshnessScore: 0,
-      })),
+    const service = await searchMemoryService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { query, limit: limit || 5 },
+      {
+        abortSignal,
+        usageScope: aiUsageScope("embedding", "tool.memory.search"),
+      },
     );
     return {
-      results: reranked.results.map(({ value: result, score }) => ({
-        score,
-        baseScore: result.score,
-        reasons: result.reasons,
-        record: publicMemoryToolRecord(result.record),
-      })),
-      retrieval: {
-        embedding: embeddingResult.receipt,
-        reranker: reranked.receipt,
-      },
+      ...service.data,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "memory.inspect") {
     const { id } = memoryIdSchema.parse(parsed);
-    const access = memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.read,
-      auditPurpose: "tool.memory.inspect",
-      correlationId: idempotencyKey,
-    });
-    const privateMemory = access
-      ? await getMemory(id, {
-          tenantId: context?.tenantId,
-          accessScope: access.databaseAccessScope,
-        })
-      : null;
-    const memory = privateMemory || await getMemory(id, {
-      tenantId: context?.tenantId,
-    });
-    if (!memory) throw new Error("Memory not found.");
+    const service = await inspectMemoryService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { id },
+    );
+    if (!service.data.memory) throw new Error("Memory not found.");
     return {
-      memory: publicMemoryToolRecord(memory),
-      receipt: {
-        operation: "inspect",
-        memoryId: memory.id,
-        scope: publicMemoryScope(memory),
-        claimStatus: memory.claimStatus || "active",
-        retrievalEligible:
-          (memory.claimStatus || "active") === "active" &&
-          !memory.archivedAt,
-      },
+      memory: service.data.memory,
+      receipt: service.data.operationReceipt,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "memory.forget.preview") {
     const { id } = memoryIdSchema.parse(parsed);
-    const access = memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.forget,
-      auditPurpose: "tool.memory.forget.preview",
-      correlationId: idempotencyKey,
-    });
-    const privatePreview = access
-      ? await previewMemoryDeletion(id, {
-          tenantId: context?.tenantId,
-          accessScope: access.databaseAccessScope,
-        })
-      : null;
-    const preview = privatePreview || await previewMemoryDeletion(id, {
-      tenantId: context?.tenantId,
-    });
-    if (!preview) throw new Error("Memory not found.");
+    const service = await previewMemoryForgetService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { id },
+    );
+    if (!service.data.preview) throw new Error("Memory not found.");
     return {
-      preview,
-      receipt: {
-        operation: "forget_preview",
-        memoryId: preview.memory.id,
-        expectedReceiptManifestSha256:
-          preview.expectedReceiptManifestSha256,
-        state: preview.state,
-        guarantee: preview.guarantee,
-        irreversible: true,
-      },
+      preview: service.data.preview,
+      receipt: service.data.operationReceipt,
+      serviceReceipt: service.receipt,
     };
   }
 
@@ -2924,321 +2768,92 @@ async function runTool(
 
   if (tool.id === "memory.write") {
     const value = memoryWriteSchema.parse(parsed);
-    const safeValue = redactSensitive(value) as typeof value;
-    const contentForEmbedding = `${safeValue.title}\n\n${safeValue.content}`;
-    const embedding = (await embedTexts(
-      [contentForEmbedding],
-      abortSignal,
-      aiUsageScope("embedding", "tool.memory.write"),
-    ))?.[0];
-    const memoryInput: Parameters<typeof saveMemory>[0] = {
-        id: effectTargetId,
-        tenantId: context?.tenantId,
-        title: safeValue.title,
-        content: safeValue.content,
-        type: safeValue.type as MemoryType | undefined,
-        tags: safeValue.tags || ["tool-execution"],
-        importance: safeValue.importance ?? 0.5,
-        source: "tool-executor",
-        scope: "workspace",
-        embedding,
-        executionScope,
-      };
-    if (effectTargetId) {
-      const committed = await saveMemoryWithCommitStatus(memoryInput);
-      return {
-        record: stripEmbedding(committed.record),
-        __effectCommitInserted: committed.inserted,
-      };
-    }
+    const service = await writeMemoryService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      value,
+      {
+        abortSignal,
+        usageScope: aiUsageScope("embedding", "tool.memory.write"),
+        storageProfile: "governed_effect",
+        effectTargetId,
+      },
+    );
     return {
-      record: stripEmbedding(await saveMemory(memoryInput)),
+      ...service.data,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "memory.correct") {
-    const { id, ...correction } = memoryCorrectSchema.parse(parsed);
-    const readAccess = memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.read,
-      auditPurpose: "tool.memory.correct.read",
-      correlationId: idempotencyKey,
-    });
-    const correctionAccess = memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.correct,
-      auditPurpose: "tool.memory.correct",
-      correlationId: idempotencyKey,
-    });
-    const scopedExisting = readAccess
-      ? await getMemory(id, {
-          tenantId: context?.tenantId,
-          accessScope: readAccess.databaseAccessScope,
-        })
-      : null;
-    const existing = scopedExisting || await getMemory(id, {
-      tenantId: context?.tenantId,
-    });
-    if (!existing || existing.claimStatus === "forgotten") {
-      throw new Error("Memory not found.");
-    }
-    if (scopedExisting && !correctionAccess) {
-      throw new Error("Private memory correction scope is unavailable.");
-    }
-    const safeCorrection = redactSensitive(correction) as typeof correction;
-    const title = safeCorrection.title ?? existing.title;
-    const content = safeCorrection.content ?? existing.content;
-    const embedding = (await embedTexts(
-      [`${title}\n\n${content}`],
-      abortSignal,
-      aiUsageScope("embedding", "tool.memory.correct"),
-    ))?.[0];
-    const result = await correctMemory(
-      id,
-      { ...safeCorrection, embedding },
+    const value = memoryCorrectSchema.parse(parsed);
+    const { id, ...correction } = value;
+    const service = await correctMemoryService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { id, correction },
       {
-        tenantId: context?.tenantId,
-        actorId: scopedExisting
-          ? correctionAccess?.actorBinding.canonicalActorId
-          : context?.actorId,
-        accessScope: scopedExisting
-          ? correctionAccess?.databaseAccessScope
-          : undefined,
-        executionScope: scopedExisting
-          ? correctionAccess?.executionScope
-          : executionScope,
+        abortSignal,
+        usageScope: aiUsageScope("embedding", "tool.memory.correct"),
+        projectionSource: "tool",
       },
     );
-    if (!result) {
-      throw new Error("Memory not found.");
-    }
-    if (
-      result.review?.status !== "pending" &&
-      result.corrected.accessBinding &&
-      correctionAccess
-    ) {
-      await indexUserPrivateMemoryGraphRecords(
-        [result.corrected],
-        "memory.tool.correct",
-        {
-          tenantId: context?.tenantId,
-          accessScope: correctionAccess.databaseAccessScope,
-        },
-      );
-      await projectExplicitMemoryEntities({
-        memory: result.corrected,
-        executionScope: correctionAccess.executionScope,
-      });
-      await retireEntityMemoryLineage({
-        tenantId: context?.tenantId || "default",
-        ownerActorId: correctionAccess.actorBinding.canonicalActorId,
-        memoryIds: [result.previous.id],
-        executionScope: deriveExecutionScope(correctionAccess.executionScope, {
-          purpose: "memory.correct.v1",
-        }),
-      });
-    } else if (!result.corrected.accessBinding) {
-      await queueMemoryGraphRebuild({ tenantId: context?.tenantId });
-    }
+    if (!service.data.correction) throw new Error("Memory not found.");
     return {
-      previous: publicMemoryToolRecord(result.previous),
-      corrected: publicMemoryToolRecord(result.corrected),
-      ...(result.review
-        ? {
-            review: {
-              id: result.review.id,
-              kind: result.review.kind,
-              status: result.review.status,
-              decision: result.review.decision,
-            },
-          }
-        : {}),
-      receipt: {
-        operation: correction.contradiction
-          ? "propose_contradiction"
-          : "correct",
-        previousMemoryId: result.previous.id,
-        correctedMemoryId: result.corrected.id,
-        previousClaimStatus: result.previous.claimStatus,
-        reviewRequired: result.review?.status === "pending",
-      },
+      ...service.data.correction,
+      receipt: service.data.operationReceipt,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "memory.lifecycle") {
     const { id, action } = memoryLifecycleSchema.parse(parsed);
-    const readAccess = memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.read,
-      auditPurpose: "tool.memory.lifecycle.read",
-      correlationId: idempotencyKey,
-    });
-    const maintenanceAccess = memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.maintenance,
-      auditPurpose: "tool.memory.lifecycle.update",
-      correlationId: idempotencyKey,
-    });
-    const scopedMemory = readAccess
-      ? await getMemory(id, {
-          tenantId: context?.tenantId,
-          accessScope: readAccess.databaseAccessScope,
-        })
-      : null;
-    const memory = scopedMemory || await getMemory(id, {
-      tenantId: context?.tenantId,
-    });
-    if (!memory) throw new Error("Memory not found.");
-    if (scopedMemory && !maintenanceAccess) {
-      throw new Error("Private memory maintenance scope is unavailable.");
-    }
-    const lifecycleExecutionScope = scopedMemory
-      ? maintenanceAccess?.executionScope
-      : executionScope;
-    if (!lifecycleExecutionScope) {
-      throw new Error("Governed memory lifecycle requires an execution scope.");
-    }
-    let lifecycle;
-    try {
-      lifecycle = await setMemoryLifecycle(memory, action, {
-        tenantId: context?.tenantId || lifecycleExecutionScope.tenantId,
-        accessScope: scopedMemory
-          ? maintenanceAccess?.databaseAccessScope
-          : undefined,
-        executionScope: lifecycleExecutionScope,
-      });
-    } catch (error) {
-      if (error instanceof MemoryLifecycleConflictError) {
-        throw new Error(error.message);
-      }
-      throw error;
-    }
-    if (!lifecycle) throw new Error("Memory not found.");
-    const refreshed = scopedMemory && readAccess
-      ? await getMemory(id, {
-          tenantId: context?.tenantId,
-          accessScope: readAccess.databaseAccessScope,
-        })
-      : await getMemory(id, { tenantId: context?.tenantId });
+    const service = await updateMemoryLifecycleService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { id, action },
+    );
+    if (!service.data.lifecycle) throw new Error("Memory not found.");
     return {
-      memory: refreshed ? publicMemoryToolRecord(refreshed) : undefined,
-      lifecycle,
-      receipt: {
-        operation: `lifecycle_${action}`,
-        memoryId: id,
-        action,
-        historicalTruthChanged: false,
-        permanentDeletion: false,
-      },
+      memory: service.data.memory,
+      lifecycle: service.data.lifecycle,
+      receipt: service.data.operationReceipt,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "memory.forget") {
     const { id, expectedReceiptManifestSha256 } = memoryForgetSchema.parse(parsed);
-    if (!executionScope) {
-      throw new Error("Governed memory deletion requires an execution scope.");
-    }
-    if (!executionScope.initiatingActorId) {
-      throw new Error(
-        "Governed memory deletion requires a non-null initiating actor.",
-      );
-    }
-    const forgetAccess = memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.forget,
-      auditPurpose: "tool.memory.forget",
-      correlationId: idempotencyKey,
-    });
-    let result: Awaited<ReturnType<typeof forgetMemoryWithReceipt>>;
+    let service;
     try {
-      const scopedResult = forgetAccess
-        ? await forgetMemoryWithReceipt(id, {
-            tenantId: executionScope.tenantId,
-            expectedDescendantManifestSha256:
-              expectedReceiptManifestSha256,
-            executionScope: forgetAccess.executionScope,
-            accessScope: forgetAccess.databaseAccessScope,
-          })
-        : null;
-      result = scopedResult || await forgetMemoryWithReceipt(id, {
-          tenantId: executionScope.tenantId,
-          expectedDescendantManifestSha256:
-            expectedReceiptManifestSha256,
-          executionScope,
-        });
+      service = await forgetMemoryService(
+        toolAppServiceCaller(context, executionScope, idempotencyKey),
+        { id, expectedReceiptManifestSha256 },
+      );
     } catch (error) {
-      let committedReceipt: MemoryDeletionReceiptV1 | null;
-      try {
-        committedReceipt = await getMemoryDeletionReceipt(id, {
-          tenantId: executionScope.tenantId,
-          accessScope: forgetAccess?.databaseAccessScope,
-        });
-      } catch (receiptLookupError) {
-        throw new EffectReceiptFinalizationError({
-          cause: receiptLookupError,
-        });
-      }
-      if (committedReceipt) {
+      if (error instanceof AppServiceEffectReceiptFinalizationError) {
         throw new EffectReceiptFinalizationError({ cause: error });
       }
       throw error;
     }
-    if (!result) {
+    if (!service.data.forgotten) {
       throw new MemoryForgetNotFoundError();
     }
     return {
       forgotten: true,
-      id,
-      record: stripEmbedding(result.memory),
-      deletionGuarantee: result.deletionGuarantee,
-      deletionDisposition: result.deletionDisposition,
-      deletionReceipt: result.receipt
-        ? publicMemoryDeletionReceiptV1(result.receipt)
-        : null,
-      receipt: {
-        operation: "forget",
-        memoryId: id,
-        expectedReceiptManifestSha256,
-        deletionDisposition: result.deletionDisposition,
-        deletionReceiptSha256: result.receipt?.receiptSha256 || null,
-        irreversible: true,
-      },
+      ...service.data.forgotten,
+      receipt: service.data.operationReceipt,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "memory.export") {
     memoryExportSchema.parse(parsed);
-    if (!memoryToolAccess(context, {
-      purposeId: MEMORY_PURPOSE_IDS.export,
-      auditPurpose: "tool.memory.export",
-      correlationId: idempotencyKey,
-    })) {
-      throw new Error("Portable export requires an authenticated user session.");
-    }
+    const service = prepareMemoryExportService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+    );
     return {
-      ready: true,
-      downloadUrl: "/api/data/export",
-      archiveFormat: "asael-portable-archive",
-      archiveVersion: 2,
-      includes: [
-        "knowledge",
-        "memories",
-        "threads",
-        "today",
-        "projects",
-        "connections_reauthorization_metadata",
-        "skills",
-        "agents",
-      ],
-      excludes: [
-        "credentials",
-        "secrets",
-        "embeddings",
-        "provider_cursors",
-        "operational_audit_content",
-        "original_assets",
-      ],
-      receipt: {
-        operation: "prepare_portable_export",
-        scope: "exact_owner",
-        contentCopiedIntoAgentTranscript: false,
-        encryptedAssetExportRequiresSettings: true,
-      },
+      ...service.data,
+      receipt: service.data.operationReceipt,
+      operationReceipt: undefined,
+      serviceReceipt: service.receipt,
     };
   }
 

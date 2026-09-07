@@ -18,6 +18,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("memory.search", "read", "memory"),
   read("memory.inspect", "read", "memory"),
   read("memory.forget.preview", "write.memory", "memory"),
+  read("memory.export", "read", "memory"),
   mutation("memory.write", "write.memory", "memory", "memory.atomic-events.v1"),
   mutation("memory.correct", "write.memory", "memory", "memory.atomic-events.v1"),
   mutation("memory.lifecycle", "write.memory", "memory", "memory.atomic-events.v1"),

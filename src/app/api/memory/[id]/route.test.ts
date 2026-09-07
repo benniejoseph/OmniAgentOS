@@ -13,6 +13,7 @@ const routeMocks = vi.hoisted(() => {
     executionScopeFromSecurityContext: vi.fn(),
     correctMemory: vi.fn(),
     getMemory: vi.fn(),
+    getMemoryDeletionReceipt: vi.fn(),
     indexUserPrivateMemoryGraphRecords: vi.fn(),
     queueMemoryGraphRebuild: vi.fn(),
     embedTexts: vi.fn(),
@@ -46,6 +47,7 @@ vi.mock("@/lib/memory/store", () => ({
   correctMemory: routeMocks.correctMemory,
   forgetMemoryWithReceipt: routeMocks.forgetMemoryWithReceipt,
   getMemory: routeMocks.getMemory,
+  getMemoryDeletionReceipt: routeMocks.getMemoryDeletionReceipt,
   previewMemoryDeletion: routeMocks.previewMemoryDeletion,
 }));
 
@@ -110,14 +112,27 @@ describe("memory deletion route", () => {
     routeMocks.previewMemoryDeletion.mockReset().mockResolvedValue(preview);
     routeMocks.correctMemory.mockReset();
     routeMocks.getMemory.mockReset();
+    routeMocks.getMemoryDeletionReceipt.mockReset().mockResolvedValue(null);
     routeMocks.indexUserPrivateMemoryGraphRecords.mockReset();
     routeMocks.queueMemoryGraphRebuild.mockReset();
     routeMocks.embedTexts.mockReset().mockResolvedValue([]);
     routeMocks.projectExplicitMemoryEntities.mockReset();
     routeMocks.retireEntityMemoryLineage.mockReset();
     routeMocks.executionScopeFromSecurityContext.mockReset().mockReturnValue({
+      version: 1,
       tenantId: "tenant-a",
       initiatingActorId: "owner@example.test",
+      executingPrincipalType: "user",
+      executingPrincipalId: "owner@example.test",
+      workspaceId: null,
+      projectId: null,
+      missionId: null,
+      delegationId: null,
+      correlationId: "memory-route-test",
+      causationId: "memory-a",
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purpose: "api.memory.test",
     });
     routeMocks.forgetMemoryWithReceipt.mockReset().mockResolvedValue({
       memory: { id: "memory-a" },
