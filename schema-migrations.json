@@ -668,5 +668,10 @@
     "version": 134,
     "name": "meeting_domain_v1",
     "checksum": "2dd5db3415b794678d2dcfff211e0621623e66b814b8ac166058ab2737fb3c56"
+  },
+  {
+    "version": 135,
+    "name": "resumable_capture_media_v1",
+    "checksum": "6504f48c638bb483fdbeb30a1a6efa72e8d97d2c7bdca4c7a266ff36fc9c7c1c"
   }
 ]
