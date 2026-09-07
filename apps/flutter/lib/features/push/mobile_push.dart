@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
@@ -419,7 +420,17 @@ final mobilePushCoordinatorProvider = Provider<MobilePushCoordinator?>((ref) {
     ref.watch(secureSessionStoreProvider),
     session,
   );
-  ref.onDispose(coordinator.dispose);
+  final connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+    states,
+  ) {
+    if (states.any((state) => state != ConnectivityResult.none)) {
+      unawaited(coordinator.initialize());
+    }
+  });
+  ref.onDispose(() {
+    unawaited(connectivitySubscription.cancel());
+    coordinator.dispose();
+  });
   unawaited(coordinator.initialize());
   return coordinator;
 });
