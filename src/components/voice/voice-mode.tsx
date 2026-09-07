@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioLines, Loader2, Mic, RotateCcw, Send, ShieldCheck, Square, X } from "lucide-react";
+import { AlertTriangle, AudioLines, Check, Loader2, Mic, RotateCcw, Send, ShieldCheck, Square, X } from "lucide-react";
 import { clsx } from "clsx";
 import {
   applyRealtimeTranscriptEvent,
   editRealtimeTranscript,
   EMPTY_REALTIME_TRANSCRIPT,
+  realtimeTranscriptConfidence,
   realtimeTranscriptText,
   type RealtimeTranscriptState,
 } from "@/lib/voice/realtime-transcript";
@@ -14,6 +15,12 @@ import {
   StreamingPcmPlayer,
   streamVersionedSpeech,
 } from "@/lib/voice/pcm-player";
+import {
+  parseVoiceApprovalEvidence,
+  type VoiceApprovalEvidence,
+  type VoiceCommandReply,
+  type VoiceCommandReview,
+} from "@/lib/voice/command-review";
 
 type VoicePhase =
   | "consent"
@@ -27,6 +34,9 @@ type VoicePhase =
   | "sending"
   | "waiting"
   | "replying"
+  | "approval"
+  | "deciding"
+  | "resolved"
   | "error";
 
 type VoiceSession = Readonly<{
@@ -46,12 +56,6 @@ type VoiceSession = Readonly<{
 
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 type SessionOutcome = "sent" | "canceled" | "failed";
-type VoiceCommandReply = Readonly<{
-  text: string;
-  runId?: string;
-  agentId?: string;
-}>;
-
 const REALTIME_TRANSPORT_URL = "https://api.openai.com/v1/realtime/calls";
 const restingMeter = [0.18, 0.28, 0.42, 0.24, 0.52, 0.34, 0.62, 0.3, 0.48, 0.24, 0.16];
 const languageOptions = [
@@ -86,6 +90,7 @@ export function VoiceMode({
   onTranscript: (
     text: string,
     conversationId: string,
+    review: VoiceCommandReview,
   ) => Promise<VoiceCommandReply | undefined>;
 }) {
   const [open, setOpen] = useState(false);
@@ -95,6 +100,10 @@ export function VoiceMode({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [meterLevels, setMeterLevels] = useState(restingMeter);
   const [transcriptState, setTranscriptState] = useState<RealtimeTranscriptState>(EMPTY_REALTIME_TRANSCRIPT);
+  const [reviewAttested, setReviewAttested] = useState(false);
+  const [pendingApproval, setPendingApproval] = useState<VoiceApprovalEvidence>();
+  const [approvalNote, setApprovalNote] = useState("");
+  const [decisionMessage, setDecisionMessage] = useState("");
   const [announcement, setAnnouncement] = useState("Voice mode ready.");
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
@@ -118,6 +127,10 @@ export function VoiceMode({
   const reconnectingRef = useRef(false);
   const reconnectCountRef = useRef(0);
   const reportedRef = useRef(false);
+  const reviewAttestedRef = useRef(false);
+  const approvalRunIdRef = useRef("");
+  const approvalAgentIdRef = useRef<string | undefined>(undefined);
+  const approvalConversationIdRef = useRef("");
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -179,6 +192,7 @@ export function VoiceMode({
     if (!session || reportedRef.current) return;
     reportedRef.current = true;
     const transcript = realtimeTranscriptText(transcriptStateRef.current).trim();
+    const confidence = realtimeTranscriptConfidence(transcriptStateRef.current);
     await fetch("/api/voice/realtime/session", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -190,6 +204,12 @@ export function VoiceMode({
         turnCount: transcriptStateRef.current.turnCount,
         reconnectCount: reconnectCountRef.current,
         transcriptCharacters: transcript.length,
+        confidenceBand: confidence.band,
+        confidenceMean: confidence.mean,
+        confidenceMinimum: confidence.minimum,
+        confidenceSampleCount: confidence.sampleCount,
+        reviewRequired: confidence.requiresExplicitAttestation,
+        reviewAttested: reviewAttestedRef.current,
       }),
       keepalive: true,
     }).catch(() => undefined);
@@ -200,7 +220,15 @@ export function VoiceMode({
     transcriptStateRef.current = EMPTY_REALTIME_TRANSCRIPT;
     reconnectCountRef.current = 0;
     reportedRef.current = false;
+    reviewAttestedRef.current = false;
+    approvalRunIdRef.current = "";
+    approvalAgentIdRef.current = undefined;
+    approvalConversationIdRef.current = "";
     setTranscriptState(EMPTY_REALTIME_TRANSCRIPT);
+    setReviewAttested(false);
+    setPendingApproval(undefined);
+    setApprovalNote("");
+    setDecisionMessage("");
     setElapsedSeconds(0);
     setError("");
     setAnnouncement("Voice mode ready.");
@@ -480,6 +508,8 @@ export function VoiceMode({
     await delay(1_200);
     if (token !== sessionTokenRef.current) return;
     stopTransport();
+    reviewAttestedRef.current = false;
+    setReviewAttested(false);
     setPhase("review");
     setAnnouncement("Transcription stopped. Review and edit before sending.");
   }
@@ -492,7 +522,9 @@ export function VoiceMode({
     transcriptStateRef.current = EMPTY_REALTIME_TRANSCRIPT;
     reconnectCountRef.current = 0;
     reportedRef.current = false;
+    reviewAttestedRef.current = false;
     setTranscriptState(EMPTY_REALTIME_TRANSCRIPT);
+    setReviewAttested(false);
     setElapsedSeconds(0);
     setAnnouncement("Reopening listening so you can interrupt the reply.");
     const stream = await requestMicrophone();
@@ -561,11 +593,34 @@ export function VoiceMode({
   async function sendTranscript() {
     const session = sessionRef.current;
     const transcript = realtimeTranscriptText(transcriptStateRef.current).trim();
+    const confidence = realtimeTranscriptConfidence(transcriptStateRef.current);
     if (!session || !transcript) {
       setError("No speech was recognized. Nothing was sent.");
       setPhase("error");
       return;
     }
+    if (confidence.requiresExplicitAttestation && !reviewAttestedRef.current) {
+      setError("Confirm that the visible transcript matches what you intend before sending.");
+      setAnnouncement("The transcript still needs explicit review.");
+      return;
+    }
+    reviewAttestedRef.current = true;
+    setReviewAttested(true);
+    const review: VoiceCommandReview = {
+      schemaVersion: 1,
+      source: "realtime_voice",
+      sessionId: session.sessionId,
+      conversationId: session.conversationId,
+      provider: "openai",
+      confidenceBand: confidence.band,
+      confidenceMean: confidence.mean,
+      confidenceMinimum: confidence.minimum,
+      confidenceSampleCount: confidence.sampleCount,
+      reviewMethod: confidence.requiresExplicitAttestation
+        ? "explicit_checkbox"
+        : "send_button",
+      reviewAttested: true,
+    };
     setPhase("sending");
     setAnnouncement("Sending the reviewed transcript to the conversation.");
     stopTransport();
@@ -576,10 +631,23 @@ export function VoiceMode({
     setPhase("waiting");
     setAnnouncement(`${agentName} is working on the reviewed command.`);
     try {
-      const reply = await onTranscript(transcript, session.conversationId);
+      const reply = await onTranscript(transcript, session.conversationId, review);
       if (!mountedRef.current || token !== sessionTokenRef.current) return;
       if (!reply?.text.trim()) {
         throw new Error(`${agentName} did not return a speakable response.`);
+      }
+      if (reply.approval) {
+        approvalRunIdRef.current = reply.runId || "";
+        approvalAgentIdRef.current = reply.agentId;
+        approvalConversationIdRef.current = session.conversationId;
+        setPendingApproval(reply.approval);
+        setDecisionMessage("");
+        await streamReply(reply, session.conversationId, token);
+        if (token === sessionTokenRef.current) {
+          setPhase("approval");
+          setAnnouncement("Review the exact visible action. Spoken words cannot approve it.");
+        }
+        return;
       }
       await startContinuationListening(session.conversationId, token);
       const completed = await streamReply(reply, session.conversationId, token);
@@ -598,8 +666,94 @@ export function VoiceMode({
   function interruptReply() {
     if (!speechActiveRef.current) return;
     stopSpeech();
-    setPhase("listening");
-    setAnnouncement("Reply interrupted. Listening for your next turn.");
+    if (pendingApproval) {
+      setPhase("approval");
+      setAnnouncement("Reply interrupted. Review the visible action to approve or reject it.");
+    } else {
+      setPhase("listening");
+      setAnnouncement("Reply interrupted. Listening for your next turn.");
+    }
+  }
+
+  async function decideApproval(decision: "approve" | "reject") {
+    const approval = pendingApproval;
+    const runId = approvalRunIdRef.current;
+    if (!approval || (decision === "approve" && !approval.canApprove)) return;
+    if (decision === "reject" && !approval.canReject) return;
+    const token = sessionTokenRef.current;
+    setPhase("deciding");
+    setError("");
+    setAnnouncement(`${decision === "approve" ? "Approving" : "Rejecting"} the exact visible action.`);
+    try {
+      const response = await fetch(`/api/approvals/${encodeURIComponent(approval.id)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "tool",
+          decision,
+          ...(approvalNote.trim() ? { reason: approvalNote.trim() } : {}),
+        }),
+      });
+      const body: unknown = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(errorMessage(body, "The approval decision could not be recorded."));
+      if (token !== sessionTokenRef.current) return;
+      if (response.status === 202) {
+        const refreshed = await loadApprovalEvidence(approval.id);
+        setPendingApproval(refreshed);
+        setDecisionMessage("Your approval is recorded. Another eligible admin must review this action.");
+        setPhase("approval");
+        setAnnouncement("Approval recorded. The required quorum is not complete.");
+        return;
+      }
+      if (decision === "reject") {
+        setDecisionMessage("Rejection recorded. The visible action did not run.");
+        setPhase("resolved");
+        setAnnouncement("Rejection recorded. The action did not run.");
+        return;
+      }
+      setDecisionMessage("Approval recorded. Waiting for the governed run to finish.");
+      if (!runId) {
+        setPhase("resolved");
+        return;
+      }
+      const outcome = await waitForVoiceRun(
+        runId,
+        approval.id,
+        () => token === sessionTokenRef.current,
+      );
+      if (token !== sessionTokenRef.current) return;
+      if (outcome.approval) {
+        setPendingApproval(outcome.approval);
+        setApprovalNote("");
+        setDecisionMessage("The next risk-bearing action also needs visible approval.");
+        setPhase("approval");
+        setAnnouncement("The next action is waiting for visible approval.");
+        return;
+      }
+      if (outcome.response) {
+        setPendingApproval(undefined);
+        const activeConversationId = outcome.threadId || approvalConversationIdRef.current;
+        if (!activeConversationId) throw new Error("The voice conversation binding was lost.");
+        await startContinuationListening(activeConversationId, token);
+        const completed = await streamReply({
+          text: outcome.response,
+          runId,
+          agentId: approvalAgentIdRef.current,
+        }, activeConversationId, token);
+        if (completed && token === sessionTokenRef.current) {
+          setPhase("listening");
+          setAnnouncement("Approved task complete. Listening for your next turn.");
+        }
+        return;
+      }
+      setDecisionMessage(outcome.message || "Approval recorded. The task continues in Activity.");
+      setPhase("resolved");
+    } catch (decisionError) {
+      if (token !== sessionTokenRef.current) return;
+      setError(decisionError instanceof Error ? decisionError.message : "The approval decision failed.");
+      setPhase("approval");
+      setAnnouncement("The approval decision was not recorded.");
+    }
   }
 
   function retryVoice() {
@@ -611,6 +765,7 @@ export function VoiceMode({
   }
 
   const transcript = realtimeTranscriptText(transcriptState);
+  const confidence = realtimeTranscriptConfidence(transcriptState);
   const status = voiceStatus(phase, elapsedSeconds, error);
 
   return (
@@ -667,30 +822,78 @@ export function VoiceMode({
                 </label>
               </div>
             ) : (
-              <div className="relative flex flex-1 flex-col items-center px-6 pb-4 pt-2 text-center">
+              <div className="relative flex flex-1 flex-col items-center overflow-y-auto px-6 pb-4 pt-2 text-center">
                 <div className={clsx("relative grid size-32 place-items-center rounded-full border transition-all duration-300", ["speaking", "replying"].includes(phase) ? "border-primary/40 bg-primary/10 shadow-[0_0_55px_color-mix(in_oklab,var(--color-primary)_25%,transparent)]" : "border-line bg-surface")} aria-hidden="true">
                   <div className="flex h-20 items-center gap-1">
                     {meterLevels.map((level, index) => <span key={index} className={clsx("w-1 rounded-full transition-[height,opacity] duration-100", isActivePhase(phase) ? "bg-primary opacity-90" : "bg-muted/45 opacity-55")} style={{ height: `${Math.round(8 + level * 50)}px` }} />)}
                   </div>
-                  {["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting"].includes(phase) ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/72 backdrop-blur-sm"><Loader2 size={28} className="animate-spin text-primary" /></span> : null}
+                  {["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting", "deciding"].includes(phase) ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/72 backdrop-blur-sm"><Loader2 size={28} className="animate-spin text-primary" /></span> : null}
                   {phase === "error" ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/80"><Mic size={28} className="text-danger" /></span> : null}
                 </div>
                 <p id="voice-mode-status" className="mt-5 text-lg font-semibold tracking-tight">{status.title}</p>
                 <p id="voice-mode-detail" className={clsx("mt-1.5 max-w-sm text-sm leading-6", phase === "error" ? "text-danger" : "text-muted")}>{status.detail}</p>
                 <p role="status" aria-live="polite" className="sr-only">{announcement}</p>
-                <label className="mt-4 block w-full text-left text-xs font-semibold text-foreground">
-                  Editable transcript
-                  <textarea
-                    value={transcript}
-                    onChange={(event) => setTranscriptState((current) => editRealtimeTranscript(current, event.currentTarget.value))}
-                    rows={5}
-                    maxLength={100_000}
-                    disabled={["requesting", "connecting", "sending", "waiting", "replying"].includes(phase)}
-                    placeholder={isActivePhase(phase) ? "Partial transcription will appear here…" : "No speech recognized yet."}
-                    className="mt-1.5 min-h-28 w-full resize-none rounded-xl border border-line bg-surface px-3 py-2.5 text-sm font-normal leading-6 outline-none focus:border-primary disabled:opacity-65"
-                  />
-                </label>
-                {agentVoice ? <p className="mt-2 text-xs leading-5 text-muted">{agentName}&apos;s identity ({agentVoice}) is spoken through Asael&apos;s governed voice profile.</p> : null}
+                {pendingApproval && ["approval", "deciding", "resolved"].includes(phase) ? (
+                  <div className="mt-4 w-full rounded-xl border border-warning/40 bg-warning/5 p-4 text-left">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">{pendingApproval.title}</p>
+                        <p className="mt-1 text-xs leading-5 text-muted">{pendingApproval.description}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-warning/15 px-2.5 py-1 text-[11px] font-semibold text-warning">Risk {pendingApproval.riskLevel}</span>
+                    </div>
+                    <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                      <div><dt className="text-muted">Tool</dt><dd className="mt-0.5 font-mono text-foreground">{pendingApproval.toolId}</dd></div>
+                      <div><dt className="text-muted">Reversible</dt><dd className="mt-0.5 font-semibold text-foreground">{pendingApproval.reversible ? "Yes" : "No"}</dd></div>
+                    </dl>
+                    <p className="mt-3 text-xs leading-5 text-muted">{pendingApproval.reason}</p>
+                    <div className="mt-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted">Exact reviewed input</p>
+                      <pre className="mt-1.5 max-h-28 overflow-auto rounded-lg border border-line bg-background p-2.5 text-[11px] leading-5 text-foreground">{JSON.stringify(pendingApproval.input, null, 2)}</pre>
+                    </div>
+                    <label className="mt-3 block text-xs font-semibold text-foreground">
+                      Decision note (optional)
+                      <textarea value={approvalNote} onChange={(event) => setApprovalNote(event.currentTarget.value)} maxLength={1_000} rows={2} disabled={phase !== "approval"} className="mt-1.5 w-full resize-none rounded-lg border border-line bg-background px-3 py-2 text-sm font-normal outline-none focus:border-primary disabled:opacity-60" />
+                    </label>
+                    <p className="mt-2 flex items-start gap-2 text-xs leading-5 text-warning"><AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />Spoken words cannot approve this action. Use a visible button below.</p>
+                    {pendingApproval.approvalProgress.required > 1 ? <p className="mt-1 text-xs text-muted">{pendingApproval.approvalProgress.approvals}/{pendingApproval.approvalProgress.required} eligible approvals recorded.</p> : null}
+                    {pendingApproval.blockReason ? <p className="mt-1 text-xs leading-5 text-muted">{pendingApproval.blockReason}</p> : null}
+                    {decisionMessage ? <p className="mt-2 text-xs font-medium leading-5 text-foreground">{decisionMessage}</p> : null}
+                    {error ? <p className="mt-2 text-xs font-medium leading-5 text-danger">{error}</p> : null}
+                  </div>
+                ) : (
+                  <>
+                    <label className="mt-4 block w-full text-left text-xs font-semibold text-foreground">
+                      Editable transcript
+                      <textarea
+                        value={transcript}
+                        onChange={(event) => {
+                          reviewAttestedRef.current = false;
+                          setReviewAttested(false);
+                          setError("");
+                          setTranscriptState((current) => editRealtimeTranscript(current, event.currentTarget.value));
+                        }}
+                        rows={5}
+                        maxLength={100_000}
+                        disabled={["requesting", "connecting", "sending", "waiting", "replying"].includes(phase)}
+                        placeholder={isActivePhase(phase) ? "Partial transcription will appear here…" : "No speech recognized yet."}
+                        className="mt-1.5 min-h-28 w-full resize-none rounded-xl border border-line bg-surface px-3 py-2.5 text-sm font-normal leading-6 outline-none focus:border-primary disabled:opacity-65"
+                      />
+                    </label>
+                    {phase === "review" && confidence.requiresExplicitAttestation ? (
+                      <label className="mt-3 flex w-full items-start gap-2 rounded-lg border border-warning/35 bg-warning/5 px-3 py-2.5 text-left text-xs leading-5 text-foreground">
+                        <input type="checkbox" checked={reviewAttested} onChange={(event) => {
+                          reviewAttestedRef.current = event.currentTarget.checked;
+                          setReviewAttested(event.currentTarget.checked);
+                          setError("");
+                        }} className="mt-1" />
+                        <span>I reviewed the visible transcript and it matches the exact command I intend to send. Risk-bearing actions will still require a separate visible approval.</span>
+                      </label>
+                    ) : null}
+                    {phase === "review" ? <p className="mt-2 w-full text-left text-xs text-muted">Transcription confidence: {confidenceLabel(confidence.band)}.</p> : null}
+                    {agentVoice ? <p className="mt-2 text-xs leading-5 text-muted">{agentName}&apos;s identity ({agentVoice}) is spoken through Asael&apos;s governed voice profile.</p> : null}
+                  </>
+                )}
               </div>
             )}
 
@@ -708,8 +911,17 @@ export function VoiceMode({
               ) : phase === "review" ? (
                 <>
                   <button type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">Cancel</button>
-                  <button ref={primaryActionRef} type="button" onClick={() => void sendTranscript()} disabled={!transcript.trim()} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90 disabled:opacity-35"><Send size={15} aria-hidden="true" />Send to {agentName}</button>
+                  <button ref={primaryActionRef} type="button" onClick={() => void sendTranscript()} disabled={!transcript.trim() || (confidence.requiresExplicitAttestation && !reviewAttested)} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90 disabled:opacity-35"><Send size={15} aria-hidden="true" />Send to {agentName}</button>
                 </>
+              ) : phase === "approval" && pendingApproval ? (
+                <>
+                  <button type="button" onClick={() => void decideApproval("reject")} disabled={!pendingApproval.canReject} className="min-h-11 rounded-full px-5 text-sm font-semibold text-danger transition hover:bg-danger/10 disabled:opacity-35">Reject</button>
+                  <button ref={primaryActionRef} type="button" onClick={() => void decideApproval("approve")} disabled={!pendingApproval.canApprove} title={pendingApproval.blockReason} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90 disabled:opacity-35"><Check size={15} aria-hidden="true" />Approve exact action</button>
+                </>
+              ) : phase === "deciding" ? (
+                <button type="button" disabled className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background opacity-60"><Loader2 size={15} className="animate-spin" aria-hidden="true" />Recording decision</button>
+              ) : phase === "resolved" ? (
+                <button ref={primaryActionRef} type="button" onClick={() => closeDialog("sent")} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background"><Check size={15} aria-hidden="true" />Done</button>
               ) : phase === "replying" ? (
                 <>
                   <button type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">End voice mode</button>
@@ -802,8 +1014,20 @@ function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string) {
   if (phase === "sending") return { title: "Sending command", detail: "The reviewed text is being attributed to this conversation." };
   if (phase === "waiting") return { title: "Waiting for the result", detail: "The governed agent run is completing before speech playback starts." };
   if (phase === "replying") return { title: "Speaking response", detail: "This is the exact agent result. Speak or use Interrupt reply to stop it." };
+  if (phase === "approval") return { title: "Visible approval required", detail: "Review the exact action and target below. Voice confirmation is disabled." };
+  if (phase === "deciding") return { title: "Recording your decision", detail: "The governed executor is persisting the visible approval decision." };
+  if (phase === "resolved") return { title: "Decision recorded", detail: "The durable approval record is available in Activity." };
   if (phase === "error") return { title: "Voice mode needs attention", detail: error || "Nothing was sent." };
   return { title: "Realtime voice", detail: "Review provider use before starting." };
+}
+
+function confidenceLabel(
+  band: ReturnType<typeof realtimeTranscriptConfidence>["band"],
+) {
+  if (band === "high") return "high";
+  if (band === "low") return "low — explicit review required";
+  if (band === "edited") return "edited — explicit review required";
+  return "unavailable — explicit review required";
 }
 
 function isActivePhase(phase: VoicePhase) {
@@ -818,6 +1042,61 @@ function formatDuration(seconds: number) {
 
 function delay(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function loadApprovalEvidence(id: string) {
+  const response = await fetch(`/api/approvals/${encodeURIComponent(id)}`);
+  const body: unknown = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(errorMessage(body, "Approval evidence is temporarily unavailable."));
+  }
+  return parseVoiceApprovalEvidence(isRecord(body) ? body.approval : undefined);
+}
+
+async function waitForVoiceRun(
+  runId: string,
+  previousApprovalId: string,
+  isCurrent: () => boolean,
+): Promise<{
+  response?: string;
+  threadId?: string;
+  approval?: VoiceApprovalEvidence;
+  message?: string;
+}> {
+  for (let attempt = 0; attempt < 45; attempt += 1) {
+    if (!isCurrent()) return { message: "The voice session ended." };
+    const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
+    const body: unknown = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(errorMessage(body, "The approved run status is unavailable."));
+    }
+    const run = isRecord(body) && isRecord(body.run) ? body.run : {};
+    const status = typeof run.status === "string" ? run.status : "";
+    if (status === "completed") {
+      return {
+        response: typeof run.response === "string" ? run.response : "Task completed.",
+        threadId: typeof run.threadId === "string" ? run.threadId : undefined,
+      };
+    }
+    if (status === "waiting_approval") {
+      const waiting = isRecord(run.waitingApproval) ? run.waitingApproval : {};
+      if (
+        typeof waiting.executionId === "string" &&
+        waiting.executionId !== previousApprovalId
+      ) {
+        return { approval: await loadApprovalEvidence(waiting.executionId) };
+      }
+    }
+    if (["failed", "canceled", "rejected"].includes(status)) {
+      return {
+        message: typeof run.error === "string"
+          ? run.error
+          : `The run ended with status ${status}.`,
+      };
+    }
+    await delay(2_000);
+  }
+  return { message: "Approval recorded. The task continues in Activity." };
 }
 
 async function waitForDataChannelOpen(

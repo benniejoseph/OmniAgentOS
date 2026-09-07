@@ -53,6 +53,12 @@ import {
   StreamingPcmPlayer,
   streamVersionedSpeech,
 } from "@/lib/voice/pcm-player";
+import {
+  parseVoiceApprovalEvidence,
+  type VoiceApprovalEvidence,
+  type VoiceCommandReply,
+  type VoiceCommandReview,
+} from "@/lib/voice/command-review";
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
@@ -67,11 +73,6 @@ type AgentPresentation = {
   visualIdentity: string;
   accent: "emerald" | "blue" | "amber" | "violet" | "rose";
 };
-type VoiceCommandReply = Readonly<{
-  text: string;
-  runId?: string;
-  agentId?: string;
-}>;
 type ActiveContextScopeId = Extract<
   ContextScopeId,
   "none" | "current_turn" | "session" | "agent_private" | "explicit_selection"
@@ -1767,6 +1768,7 @@ export function AgentRunsWorkspace({
     submittedGoal?: string;
     submittedThreadId?: string;
     prepareContextAutomatically?: boolean;
+    voiceReview?: VoiceCommandReview;
   }): Promise<VoiceCommandReply | undefined> {
     if (runPermission) {
       setError(runPermission);
@@ -1833,6 +1835,8 @@ export function AgentRunsWorkspace({
     let completedResponse = "";
     let streamedResponse = "";
     let completedRunId = resumeRunId || "";
+    let pendingVoiceApproval: VoiceApprovalEvidence | undefined;
+    let waitingApprovalEvent: Extract<StreamEvent, { type: "waiting_approval" }> | undefined;
     agentRequestIdRef.current = requestId;
     setTurns((current) => [
       ...current,
@@ -1854,6 +1858,7 @@ export function AgentRunsWorkspace({
           agentId: submittedAgentId,
           contextScope: resumeRunId ? undefined : contextScope,
           contextSelection: resumeRunId ? undefined : contextSelection,
+          voiceInput: resumeRunId ? undefined : options?.voiceReview,
         }),
         signal: controller.signal,
       });
@@ -1940,6 +1945,7 @@ export function AgentRunsWorkspace({
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           setWaitingApproval(event);
+          waitingApprovalEvent = event;
           setRunAnnouncement("Agent run paused for approval.");
         }
         if (event.type === "error") {
@@ -1954,6 +1960,14 @@ export function AgentRunsWorkspace({
         throw new Error(
           "The agent stream ended before a final status was received. Check Activity before retrying.",
         );
+      }
+      if (terminalEvent === "waiting_approval" && waitingApprovalEvent?.executionId) {
+        const detail = asRecord(await readJson(
+          `/api/approvals/${encodeURIComponent(waitingApprovalEvent.executionId)}`,
+        ));
+        pendingVoiceApproval = parseVoiceApprovalEvidence(detail.approval);
+        completedResponse = waitingApprovalEvent.message ||
+          `Review the exact ${pendingVoiceApproval.title} action before it runs.`;
       }
       flushPendingDeltas();
       void refreshEvidence();
@@ -1976,11 +1990,12 @@ export function AgentRunsWorkspace({
       abortControllerRef.current = null;
       setLoading(undefined);
     }
-    return completedResponse.trim()
+    return completedResponse.trim() || pendingVoiceApproval
       ? {
-          text: completedResponse,
+          text: completedResponse || "Review the exact action before it runs.",
           runId: completedRunId || undefined,
           agentId: submittedAgentId,
+          approval: pendingVoiceApproval,
         }
       : undefined;
   }
@@ -2710,15 +2725,15 @@ export function AgentRunsWorkspace({
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent({ prepareContextAutomatically: true })}
               onVoiceConversationBound={setThreadId}
-              onVoiceTranscript={async (transcript, voiceConversationId) => {
-                const existingDraft = goal.trim();
-                const voiceGoal = existingDraft ? `${existingDraft}\n\n${transcript}` : transcript;
+              onVoiceTranscript={async (transcript, voiceConversationId, review) => {
+                const voiceGoal = transcript;
                 setThreadId(voiceConversationId);
                 changeGoal(voiceGoal);
                 return await runAgent({
                   submittedGoal: voiceGoal,
                   submittedThreadId: voiceConversationId,
                   prepareContextAutomatically: true,
+                  voiceReview: review,
                 });
               }}
               onStop={stopAgent}
@@ -4872,6 +4887,7 @@ function GoalStage({
   onVoiceTranscript: (
     transcript: string,
     conversationId: string,
+    review: VoiceCommandReview,
   ) => Promise<VoiceCommandReply | undefined>;
   onStop: () => void;
   onWorkflow: () => void;
