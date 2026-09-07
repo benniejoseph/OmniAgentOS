@@ -247,7 +247,7 @@ describe("agent memory scope", () => {
     scopedRequest.semanticRouting = {
       capabilitySearchQuery: "create calendar event",
       matchedCapabilityIds: ["calendar.create"],
-      policyVersion: "semantic-intent-policy-v1",
+      policyVersion: "semantic-intent-policy-v2",
     };
 
     await collectRequest(scopedRequest);

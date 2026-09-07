@@ -430,6 +430,12 @@ async function POSTHandler(request: Request) {
           : null,
         matchedCapabilityIds:
           semanticResolution.receipt.matchedCapabilityIds,
+        selectedAgentCardSha256s:
+          semanticResolution.receipt.selectedAgentCardSha256s || [],
+        agentSelectionSha256:
+          semanticResolution.receipt.agentSelectionSha256 || null,
+        agentDiscoveryReceiptSha256s:
+          semanticResolution.receipt.agentDiscoveryReceiptSha256s || [],
         semanticRoute: semanticResolution.receipt.route,
         appliedRoute: preliminaryDecision.route,
         requiresApproval: preliminaryDecision.requiresApproval,

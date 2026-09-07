@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { normalizeCapabilityQuery } from "@/lib/capabilities/catalog";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
+import {
+  selectAgentTeamFromCardsV1,
+  type AgentDiscoveryReceiptV1,
+} from "@/lib/agents/discovery";
+import type { InternalAgentCardV1 } from "@/lib/agents/discovery-card";
 import type { AgentMode } from "@/lib/orchestration/types";
 import type {
   SupervisorAgentId,
@@ -9,7 +14,7 @@ import type {
 
 export const SEMANTIC_INTENT_SCHEMA_VERSION = 1 as const;
 export const SEMANTIC_INTENT_POLICY_VERSION =
-  "semantic-intent-policy-v1" as const;
+  "semantic-intent-policy-v2" as const;
 
 export const semanticIntentCandidateSchema = z.object({
   intent: z.enum([
@@ -73,6 +78,9 @@ export type SemanticIntentReceipt = Readonly<{
   unresolvedEntityCount: number;
   capabilityQuery: string;
   matchedCapabilityIds: readonly string[];
+  selectedAgentCardSha256s?: readonly string[];
+  agentSelectionSha256?: string;
+  agentDiscoveryReceiptSha256s?: readonly string[];
   route: SupervisorDecision["route"];
   requiresApproval: boolean;
   clarificationAdvisory: boolean;
@@ -102,6 +110,7 @@ export function applySemanticIntentPolicy(input: {
   mode: AgentMode;
   preferredAgentId?: SupervisorAgentId;
   capabilityCandidates: readonly CapabilityDescriptor[];
+  agentCards?: readonly InternalAgentCardV1[];
 }): SemanticSupervisorResolution {
   const candidate = semanticIntentCandidateSchema.parse(input.candidate);
   const capabilityById = new Map(
@@ -144,11 +153,21 @@ export function applySemanticIntentPolicy(input: {
     };
   }
 
-  const team = semanticAgentTeam(
-    candidate,
-    input.mode,
-    input.preferredAgentId,
-  );
+  const cardSelection = input.agentCards?.length
+    ? selectAgentTeamFromCardsV1({
+        cards: input.agentCards,
+        query: input.message,
+        taskKinds: semanticAgentTaskKinds(candidate, input.mode),
+        consequential: candidate.consequential,
+        preferredAgentId: input.preferredAgentId,
+      })
+    : undefined;
+  const team = cardSelection
+    ? {
+        primaryAgentId: asSupervisorAgentId(cardSelection.primaryAgentId),
+        specialistIds: cardSelection.specialistIds.map(asSupervisorAgentId),
+      }
+    : semanticAgentTeam(candidate, input.mode, input.preferredAgentId);
   const route = semanticRoute(candidate, input.baseline);
   const requiresCapabilityApproval = matchedCapabilities.some(
     (capability) =>
@@ -181,6 +200,7 @@ export function applySemanticIntentPolicy(input: {
       capabilitySearchQuery,
       matchedCapabilities,
       decision,
+      cardSelection,
     }),
   };
 }
@@ -389,6 +409,24 @@ function semanticAgentTeam(
   return { primaryAgentId, specialistIds: [...specialistIds] };
 }
 
+function semanticAgentTaskKinds(
+  candidate: SemanticIntentCandidate,
+  mode: AgentMode,
+) {
+  const workKinds = new Set(candidate.workKinds);
+  if (mode === "research") workKinds.add("research");
+  if (mode === "execute") workKinds.add("build");
+  if (mode === "learn") workKinds.add("memory");
+  return [...workKinds];
+}
+
+function asSupervisorAgentId(value: string): SupervisorAgentId {
+  if (["atlas", "scout", "forge", "sentinel", "mnemosyne"].includes(value)) {
+    return value as SupervisorAgentId;
+  }
+  throw new Error("Agent Card selected an unsupported internal Agent.");
+}
+
 function buildSemanticCapabilityQuery(
   candidate: SemanticIntentCandidate,
   matchedCapabilities: readonly CapabilityDescriptor[],
@@ -408,6 +446,11 @@ function buildReceipt(input: {
   capabilitySearchQuery: string;
   matchedCapabilities: readonly CapabilityDescriptor[];
   decision: SupervisorDecision;
+  cardSelection?: Readonly<{
+    cardSha256s: readonly string[];
+    selectionSha256: string;
+    discoveryReceiptSha256s: readonly AgentDiscoveryReceiptV1["receiptSha256"][];
+  }>;
   fallbackReasonCode?: SemanticIntentReceipt["fallbackReasonCode"];
 }): SemanticIntentReceipt {
   return {
@@ -425,6 +468,12 @@ function buildReceipt(input: {
     matchedCapabilityIds: input.matchedCapabilities.map((capability) =>
       capability.id
     ),
+    ...(input.cardSelection ? {
+      selectedAgentCardSha256s: input.cardSelection.cardSha256s,
+      agentSelectionSha256: input.cardSelection.selectionSha256,
+      agentDiscoveryReceiptSha256s:
+        input.cardSelection.discoveryReceiptSha256s,
+    } : {}),
     route: input.decision.route,
     requiresApproval: input.decision.requiresApproval,
     clarificationAdvisory: input.candidate.needsClarification,

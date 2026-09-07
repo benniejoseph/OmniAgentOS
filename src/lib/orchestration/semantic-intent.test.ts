@@ -6,6 +6,7 @@ import {
 } from "@/lib/orchestration/semantic-intent";
 import { routeAgentRequest } from "@/lib/orchestration/supervisor";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
+import { listInternalAgentCardsV1 } from "@/lib/agents/discovery-card";
 
 const readCapability: CapabilityDescriptor = {
   id: "github.issues.list",
@@ -95,6 +96,10 @@ describe("semantic intent policy", () => {
       baseline,
       mode: "orchestrate",
       capabilityCandidates: [readCapability],
+      agentCards: listInternalAgentCardsV1({
+        tenantId: "tenant-one",
+        controllerActorId: "actor-one",
+      }),
       candidate: candidate({
         intent: "research",
         executionShape: "background",
@@ -115,6 +120,8 @@ describe("semantic intent policy", () => {
     expect(resolution.receipt.matchedCapabilityIds).toEqual([
       readCapability.id,
     ]);
+    expect(resolution.receipt.selectedAgentCardSha256s).toHaveLength(3);
+    expect(resolution.receipt.agentSelectionSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it("never lets semantic output remove deterministic approval", () => {

@@ -102,6 +102,10 @@ describe("semantic intent resolver", () => {
       source: "model",
       intent: "create",
       matchedCapabilityIds: ["calendar.create"],
+      selectedAgentCardSha256s: expect.arrayContaining([
+        expect.stringMatching(/^[a-f0-9]{64}$/),
+      ]),
+      agentSelectionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       model: {
         provider: "openai",
         model: "router-model",
