@@ -165,6 +165,8 @@ export const tenantRootPolicyTables = [
   "omni_auth_memberships",
   "omni_auth_sessions",
   "omni_mobile_sessions",
+  "omni_mobile_push_registrations",
+  "omni_mobile_push_deliveries",
   "omni_oauth_grants",
   "omni_today_items",
   "omni_today_preferences",
@@ -1404,6 +1406,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[144],
       up: ensureMobileDeviceLifecycleV1,
+    },
+    {
+      ...databaseSchemaMigrations[145],
+      up: ensureMobilePushDeliveryV1,
     },
   ];
 }
@@ -17963,6 +17969,115 @@ async function ensureMobileDeviceLifecycleV1(sql: SqlClient) {
         tenant_id, user_id, COALESCE(last_seen_at, updated_at) DESC, id
       );
   `);
+}
+
+async function ensureMobilePushDeliveryV1(sql: SqlClient) {
+  await ensureMobileDeviceLifecycleV1(sql);
+  await sql.query(`
+    CREATE TABLE IF NOT EXISTS omni_mobile_push_registrations (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES omni_auth_users(id) ON DELETE RESTRICT,
+      mobile_session_id TEXT NOT NULL REFERENCES omni_mobile_sessions(id) ON DELETE RESTRICT,
+      device_id TEXT NOT NULL,
+      platform TEXT NOT NULL CHECK (platform IN ('android', 'ios')),
+      provider TEXT NOT NULL CHECK (provider IN ('apns', 'fcm')),
+      environment TEXT NOT NULL CHECK (environment IN ('sandbox', 'production')),
+      token_sha256 TEXT NOT NULL CHECK (token_sha256 ~ '^[a-f0-9]{64}$'),
+      credential_version SMALLINT NOT NULL DEFAULT 1,
+      token_bundle JSONB NOT NULL CHECK (jsonb_typeof(token_bundle) = 'object'),
+      preview_policy TEXT NOT NULL DEFAULT 'hidden'
+        CHECK (preview_policy IN ('hidden', 'generic', 'title')),
+      state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'revoked')),
+      lifecycle_revision BIGINT NOT NULL DEFAULT 1,
+      last_registered_at TIMESTAMPTZ NOT NULL,
+      last_delivered_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, owner_actor_id, device_id, provider),
+      UNIQUE (tenant_id, owner_actor_id, id),
+      CHECK (provider <> 'apns' OR platform = 'ios'),
+      CHECK ((state = 'revoked') = (revoked_at IS NOT NULL))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_mobile_push_active_token_idx
+      ON omni_mobile_push_registrations (provider, token_sha256)
+      WHERE state = 'active';
+    CREATE INDEX IF NOT EXISTS omni_mobile_push_registration_owner_idx
+      ON omni_mobile_push_registrations (
+        tenant_id, owner_actor_id, device_id, state, updated_at DESC
+      );
+    CREATE INDEX IF NOT EXISTS omni_mobile_push_registration_session_idx
+      ON omni_mobile_push_registrations (tenant_id, mobile_session_id, state);
+
+    CREATE TABLE IF NOT EXISTS omni_mobile_push_deliveries (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      registration_id TEXT NOT NULL,
+      notification_id TEXT,
+      cause_kind TEXT NOT NULL CHECK (
+        cause_kind IN ('approval', 'work_item', 'meeting', 'customer', 'run')
+      ),
+      cause_id TEXT NOT NULL,
+      parent_id TEXT,
+      deep_link TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL UNIQUE CHECK (dedupe_key ~ '^[a-f0-9]{64}$'),
+      payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (
+        status IN ('queued', 'running', 'delivered', 'acknowledged', 'failed')
+      ),
+      attempt SMALLINT NOT NULL DEFAULT 0,
+      max_attempts SMALLINT NOT NULL DEFAULT 5,
+      run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      lease_owner TEXT,
+      lease_expires_at TIMESTAMPTZ,
+      last_error TEXT,
+      provider_message_id_sha256 TEXT,
+      delivered_at TIMESTAMPTZ,
+      acknowledged_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      FOREIGN KEY (tenant_id, owner_actor_id, registration_id)
+        REFERENCES omni_mobile_push_registrations (tenant_id, owner_actor_id, id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CHECK ((lease_owner IS NULL) = (lease_expires_at IS NULL)),
+      CHECK ((status = 'running') = (lease_owner IS NOT NULL)),
+      CHECK (delivered_at IS NULL OR status IN ('delivered', 'acknowledged')),
+      CHECK ((acknowledged_at IS NOT NULL) = (status = 'acknowledged')),
+      CHECK (cause_kind <> 'work_item' OR parent_id IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS omni_mobile_push_delivery_queue_idx
+      ON omni_mobile_push_deliveries (tenant_id, status, run_at, created_at);
+    CREATE INDEX IF NOT EXISTS omni_mobile_push_delivery_owner_idx
+      ON omni_mobile_push_deliveries (
+        tenant_id, owner_actor_id, status, updated_at DESC
+      );
+    CREATE INDEX IF NOT EXISTS omni_mobile_push_delivery_registration_idx
+      ON omni_mobile_push_deliveries (
+        tenant_id, registration_id, status, created_at DESC
+      );
+  `);
+  for (const table of [
+    "omni_mobile_push_registrations",
+    "omni_mobile_push_deliveries",
+  ]) {
+    await sql.query(`
+      ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;
+      DROP POLICY IF EXISTS ${table}_actor ON ${table};
+      CREATE POLICY ${table}_actor ON ${table} AS PERMISSIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+    `);
+  }
 }
 
 async function ensureCanonicalActorScopeRepairV1(sql: SqlClient) {
