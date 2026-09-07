@@ -208,6 +208,9 @@ export function evaluateApprovalGrant(
   if (!approvalGrantMatchesRequest(parsed, request)) {
     return Object.freeze({ allowed: false, reason: "binding_changed" });
   }
+  if (now.getTime() < Date.parse(parsed.issuedAt)) {
+    return Object.freeze({ allowed: false, reason: "inactive" });
+  }
   if (parsed.state === "expired" || Date.parse(parsed.expiresAt) <= now.getTime()) {
     return Object.freeze({ allowed: false, reason: "expired" });
   }
