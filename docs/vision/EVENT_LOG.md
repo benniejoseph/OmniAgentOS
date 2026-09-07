@@ -1822,3 +1822,18 @@ application service and governed executor and produces that domain's ordinary
 typed event, approval, and effect receipt. The suggestion itself remains
 `authoritative: false`, carries uncertainty and exact cited revisions, and is
 never recorded as a completed decision or action.
+
+## Cohesive Today projections
+
+P11.1 emits no new domain event. `app.today.agenda.show` is a read-only
+composition of existing personal, Meeting, customer, approval, Agent-run,
+workflow, Project, and consumption authorities and returns the standard
+content-free application-service receipt. Its projection digest and freshness
+states prove what was read; they are not action authority, a completed decision,
+or a replacement event log.
+
+Changing visible sections remains an actor-owned Today-preference mutation.
+Migration 142 only adds the validated `visible_sections` column and marker; it
+does not synthesize historical events. A later action selected from Today must
+re-enter the relevant governed application service and emit that domain's
+existing typed event and effect receipt.
