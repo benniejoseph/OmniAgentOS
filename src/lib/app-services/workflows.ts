@@ -6,15 +6,18 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
+import { listCorrelatedEvents, listStreamEvents } from "@/lib/events/store";
 import { getOperationJobStats } from "@/lib/operations/job-queue";
 import { narrowRunBudgetLimits, runBudgetCountersV1Schema } from "@/lib/runs/budgets";
 import { redactSensitive } from "@/lib/security/context";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import { buildWorkflowTraceHierarchy } from "@/lib/trajectories/hierarchy";
 import { getWorkflowPlanNodeExecutionStats, listWorkflowPlanNodeExecutions } from "@/lib/workflows/executor";
 import { buildDynamicWorkflowPlan, getWorkflowPlanStats, listWorkflowPlans } from "@/lib/workflows/planner";
 import { publicWorkflowRun, publicWorkflowRunDetail, publicWorkflowStats } from "@/lib/workflows/public";
 import { cancelWorkflowRunTick, enqueueWorkflowRunTick, processWorkflowQueue, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
 import { signalWorkflowRun } from "@/lib/workflows/runner";
-import { createWorkflowRun, getWorkflowRunDetail, getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
+import { createWorkflowRun, getWorkflowRunDetail, getWorkflowRunExecutionAuthority, getWorkflowStats, listWorkflowRuns } from "@/lib/workflows/store";
 
 const modeSchema = z.enum(["orchestrate", "research", "execute", "learn"]);
 const listSchema = z.object({
@@ -59,6 +62,29 @@ export async function showWorkflowService(caller: AppServiceCaller, input: z.inp
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.workflows.show"));
   const detail = await getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId });
   return completeAppServiceCall(authorized, { workflow: detail ? publicWorkflowRunDetail(detail) : null }, { resourceCount: detail ? 1 : 0 });
+}
+
+export async function showWorkflowTrajectoryService(caller: AppServiceCaller, input: z.input<typeof idSchema>) {
+  const value = idSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.workflows.trajectory"));
+  const [detail, authority] = await Promise.all([
+    getWorkflowRunDetail(value.workflowId, { tenantId: caller.context.tenantId }),
+    getWorkflowRunExecutionAuthority(value.workflowId, { tenantId: caller.context.tenantId }),
+  ]);
+  if (!detail || !authority) return completeAppServiceCall(authorized, { traceHierarchy: null }, { resourceCount: 0 });
+  const ownerActorId = authority.executionScope.initiatingActorId;
+  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  if (ownerActorId !== caller.context.actorId && ownerActorId !== binding?.canonicalActorId) {
+    throw new Error("Workflow run not found.");
+  }
+  const correlationId = authority.executionScope.correlationId;
+  const [rootEvents, correlatedEvents] = await Promise.all([
+    listStreamEvents(`workflow:${value.workflowId}`, { tenantId: caller.context.tenantId, actorId: ownerActorId, limit: 2_000 }),
+    listCorrelatedEvents(correlationId, { tenantId: caller.context.tenantId, actorId: ownerActorId, limit: 2_000 }),
+  ]);
+  const events = [...new Map([...rootEvents, ...correlatedEvents].map((event) => [event.id, event])).values()];
+  const traceHierarchy = buildWorkflowTraceHierarchy(detail.run, ownerActorId, events, correlationId);
+  return completeAppServiceCall(authorized, { traceHierarchy }, { resourceCount: 1 });
 }
 
 export async function listWorkflowPlansService(caller: AppServiceCaller, input: z.input<typeof plansListSchema>) {

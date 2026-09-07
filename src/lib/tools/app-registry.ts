@@ -154,6 +154,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.agents.show", "Show agent", "Read one exact built-in or custom agent.", requiredObjectSchema({
     id: opaqueId("Exact agent ID."), includeBuiltIns: { type: "boolean", default: true },
   }, ["id"])),
+  readTool("app.agents.cards", "Discover agent cards", "List versioned internal Agent Cards and optionally rank compatible agents for a bounded task query.", objectSchema({
+    query: text(1, 4_000), taskKind: { type: "string", enum: ["general", "coordinate", "research", "build", "verify", "memory"] },
+  })),
+  readTool("app.agents.performance", "Show agent performance", "Read tenant-scoped performance projections for available agents.", objectSchema({})),
   mutationTool("app.agents.create", "Create custom agent", "Create one custom agent with bounded skills, tools, memory, model, and approval policy.", requiredObjectSchema(agentProperties(), ["name", "role", "description", "instructions"]), { reversible: true }),
   mutationTool("app.agents.update", "Update custom agent", "Update one exact custom agent.", requiredObjectSchema({
     id: opaqueId("Exact custom-agent ID."), change: objectSchema(agentProperties()),
@@ -214,6 +218,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     limit: integer(1, 100, 20), includeStats: { type: "boolean", default: true }, includeQueue: { type: "boolean", default: true },
   })),
   readTool("app.workflows.show", "Show workflow", "Read one exact tenant-scoped workflow with its step detail.", requiredObjectSchema({ workflowId: opaqueId("Exact workflow-run ID.") }, ["workflowId"])),
+  readTool("app.workflows.trajectory", "Show workflow trajectory", "Build the actor-readable event and causation trace hierarchy for one exact workflow run.", requiredObjectSchema({ workflowId: opaqueId("Exact workflow-run ID.") }, ["workflowId"])),
   readTool("app.workflows.plans.list", "List workflow plans", "List recent tenant-scoped workflow plans and planning statistics.", objectSchema({ limit: integer(1, 100, 20) })),
   mutationTool("app.workflows.plan", "Plan workflow", "Create a bounded workflow plan for an explicit goal without starting execution.", requiredObjectSchema({
     goal: text(1, 4_000), mode: workflowMode(), requireApproval: { type: "boolean", default: false }, reuseExisting: { type: "boolean", default: true },
