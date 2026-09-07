@@ -70,6 +70,12 @@ describe("unified mission kernel", () => {
     }, owner);
     expect(duplicateAttempt.id).toBe(attempt.id);
     expect(duplicateAttempt.fenceToken).toBe(attempt.fenceToken);
+    const competingAttempt = await startMissionAttempt(task.id, {
+      executorKey: "workflow:research:competing",
+      executorId: "competing-agent",
+    }, owner);
+    expect(competingAttempt.id).toBe(attempt.id);
+    expect(competingAttempt.executorId).toBe("research-agent");
 
     await expect(transitionMissionAttempt(attempt.id, "running", {
       fenceToken: "stale-token",

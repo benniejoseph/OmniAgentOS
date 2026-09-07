@@ -1031,7 +1031,7 @@ export async function startMissionAttempt(
     const transactionResult = await getSql().transaction(
       async (sql: ReturnType<typeof getSql>) => {
         const taskRows = await sql`
-          SELECT status FROM omni_mission_tasks
+          SELECT mission_id, status, dependency_ids FROM omni_mission_tasks
           WHERE id = ${task.id} AND tenant_id = ${owner.tenantId}
             AND actor_id = ${owner.actorId}
           FOR UPDATE
@@ -1045,6 +1045,45 @@ export async function startMissionAttempt(
         }
         if (TERMINAL_TASK_STATUSES.has(taskStatus)) {
           throw new MissionTransitionError("A terminal task cannot start a new attempt.");
+        }
+        const exact = await sql`
+          SELECT * FROM omni_mission_attempts
+          WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+            AND task_id = ${task.id} AND executor_key = ${executorKey}
+          LIMIT 1
+        `;
+        if (exact[0]) {
+          return { created: false, saved: attemptFromRow(exact[0]) };
+        }
+        const active = await sql`
+          SELECT * FROM omni_mission_attempts
+          WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+            AND task_id = ${task.id}
+            AND status IN ('queued', 'running', 'waiting')
+          ORDER BY created_at ASC
+          LIMIT 1
+        `;
+        if (active[0]) {
+          return { created: false, saved: attemptFromRow(active[0]) };
+        }
+        const dependencyIds = stringArray(taskRows[0].dependency_ids);
+        if (dependencyIds.length) {
+          const dependencyRows = await sql`
+            SELECT id, status FROM omni_mission_tasks
+            WHERE tenant_id = ${owner.tenantId} AND actor_id = ${owner.actorId}
+              AND mission_id = ${String(taskRows[0].mission_id)}
+          `;
+          const dependencyStatuses = new Map(
+            dependencyRows.map((row) => [String(row.id), String(row.status)]),
+          );
+          const unavailable = dependencyIds.filter(
+            (dependencyId) => dependencyStatuses.get(dependencyId) !== "succeeded",
+          );
+          if (unavailable.length) {
+            throw new MissionTransitionError(
+              `Task dependencies must succeed before execution: ${unavailable.join(", ")}.`,
+            );
+          }
         }
         const rows = await sql`
           INSERT INTO omni_mission_attempts (
@@ -1110,6 +1149,27 @@ export async function startMissionAttempt(
       if (TERMINAL_TASK_STATUSES.has(currentTask.status)) {
         throw new MissionTransitionError("A terminal task cannot start a new attempt.");
       }
+      const active = ledger.attempts.find((item) =>
+        item.taskId === task.id && owns(item, owner) &&
+        !TERMINAL_ATTEMPT_STATUSES.has(item.status)
+      );
+      if (active) {
+        saved = active;
+        return ledger;
+      }
+      const dependencyStatuses = new Map(
+        ledger.tasks
+          .filter((item) => item.missionId === currentTask.missionId && owns(item, owner))
+          .map((item) => [item.id, item.status]),
+      );
+      const unavailable = currentTask.dependencyIds.filter(
+        (dependencyId) => dependencyStatuses.get(dependencyId) !== "succeeded",
+      );
+      if (unavailable.length) {
+        throw new MissionTransitionError(
+          `Task dependencies must succeed before execution: ${unavailable.join(", ")}.`,
+        );
+      }
       created = true;
       return { ...ledger, attempts: [attempt, ...ledger.attempts] };
     });
@@ -1124,6 +1184,22 @@ export async function startMissionAttempt(
     });
   }
   return saved;
+}
+
+export async function assertMissionTaskReadyForExecution(
+  taskId: string,
+  options: MissionOwner,
+): Promise<MissionTask> {
+  const owner = normalizeOwner(options);
+  const task = await getMissionTask(taskId, owner);
+  if (!task) throw new MissionNotFoundError("Mission task not found.");
+  if (task.status !== "pending") {
+    throw new MissionTransitionError(
+      `Only a ready task can start execution; this task is ${task.status}.`,
+    );
+  }
+  await assertTaskDependenciesSucceeded(task, owner);
+  return task;
 }
 
 export async function getMissionAttempt(
