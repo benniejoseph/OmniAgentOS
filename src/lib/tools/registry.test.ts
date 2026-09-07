@@ -133,6 +133,24 @@ describe("governed native tool schemas", () => {
     }
   });
 
+  it("governs agent releases, grants, and adaptations", () => {
+    for (const id of [
+      "app.agents.release.transition",
+      "app.agents.release.retire",
+      "app.agents.grants.create",
+      "app.agents.grants.revoke",
+      "app.agents.adaptations.manage",
+    ]) {
+      expect(getGovernedTool(id)).toMatchObject({ riskLevel: 2, approvalRequired: true });
+    }
+    expect(getGovernedTool("app.agents.release.retire")?.inputSchema).toMatchObject({
+      required: ["agentId", "expectedTargetSha256"],
+    });
+    expect(getGovernedTool("app.agents.grants.revoke")?.inputSchema).toMatchObject({
+      required: ["agentId", "grantId", "expectedTargetSha256"],
+    });
+  });
+
   it("keeps connector trust changes and deletion approval-gated", () => {
     for (const id of [
       "app.connectors.register",

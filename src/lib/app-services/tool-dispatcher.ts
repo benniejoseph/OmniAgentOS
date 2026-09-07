@@ -101,6 +101,20 @@ import {
   startRecordingService,
   updateRecordingService,
 } from "@/lib/app-services/assets";
+import {
+  createAgentGrantService,
+  evaluateAgentReleaseService,
+  listAgentAdaptationsService,
+  listAgentGrantsService,
+  manageAgentAdaptationService,
+  previewAgentGrantRevokeService,
+  previewAgentRetirementService,
+  refreshAgentAdaptationsService,
+  retireAgentReleaseService,
+  revokeAgentGrantService,
+  showAgentReleaseService,
+  transitionAgentReleaseService,
+} from "@/lib/app-services/agent-governance";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -164,6 +178,18 @@ export async function executeFirstPartyAppTool(input: {
     "app.agents.update": () => updateAgentService(caller, input.toolInput as never),
     "app.agents.delete.preview": () => previewAgentDeleteService(caller, input.toolInput as never),
     "app.agents.delete": () => deleteAgentService(caller, input.toolInput as never),
+    "app.agents.release.show": () => showAgentReleaseService(caller, input.toolInput as never),
+    "app.agents.release.evaluate": () => evaluateAgentReleaseService(caller, input.toolInput as never),
+    "app.agents.release.transition": () => transitionAgentReleaseService(caller, input.toolInput as never),
+    "app.agents.release.retire.preview": () => previewAgentRetirementService(caller, input.toolInput as never),
+    "app.agents.release.retire": () => retireAgentReleaseService(caller, input.toolInput as never),
+    "app.agents.grants.list": () => listAgentGrantsService(caller, input.toolInput as never),
+    "app.agents.grants.create": () => createAgentGrantService(caller, input.toolInput as never),
+    "app.agents.grants.revoke.preview": () => previewAgentGrantRevokeService(caller, input.toolInput as never),
+    "app.agents.grants.revoke": () => revokeAgentGrantService(caller, input.toolInput as never),
+    "app.agents.adaptations.list": () => listAgentAdaptationsService(caller, input.toolInput as never),
+    "app.agents.adaptations.refresh": () => refreshAgentAdaptationsService(caller, input.toolInput as never),
+    "app.agents.adaptations.manage": () => manageAgentAdaptationService(caller, input.toolInput as never),
     "app.skills.list": () => listSkillsService(caller, input.toolInput as never),
     "app.skills.show": () => showSkillService(caller, input.toolInput as never),
     "app.skills.create": () => createSkillService(caller, input.toolInput as never),
