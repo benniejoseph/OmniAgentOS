@@ -1501,6 +1501,26 @@ digest-bound artifacts and remain untrusted evidence for the final proposed
 contribution. Content-free broker progress is observable without becoming
 authority.
 
+P8.3 makes that progress authoritative through an actor-private task
+projection. `p8.3-delegation-task:1` binds the immutable contract, parent
+execution/principal/delegation, delegated principal and Agent version, verifier
+version and threshold, ordered deadlines, proposal receipt, and parent
+evaluation. Its revision-fenced state machine distinguishes the delegate's
+initial `accepted` state from terminal `result_accepted`; a delegate may only
+advance successful work to `completed_proposed`. The parent verifier alone can
+accept or reject that proposal. Invalid execution is challenged and canceled,
+while approval or clarification remains waiting without being converted into a
+successful result.
+
+Council and workflow Agent paths create the same task before model or broker
+work. Governed tool effects retain their canonical execution receipts and the
+delegation task event links their IDs to the same parent/delegation/Agent
+causation chain. Run events, trajectory projections, workflow receipts, and the
+Council UI expose content-free task identity, revision, and disposition.
+Migration v116 installs the append-only forced-RLS projection, restrictive
+actor policy, transition/truncate guards, active-task index, and serving-role
+updates limited to lifecycle columns.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,
