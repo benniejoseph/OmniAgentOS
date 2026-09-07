@@ -35,6 +35,7 @@ import type {
   RequestCustomAgentDefinition,
 } from "@/lib/skills/types";
 import styles from "@/components/agent-arsenal-workspace.module.css";
+import type { TrashActionPreviewV1 } from "@/lib/trash/contracts";
 
 type ToolOption = {
   id: string;
@@ -151,31 +152,47 @@ export function AgentArsenalWorkspace() {
   async function removeSelectedAgent() {
     if (
       !selected.custom ||
-      selected.custom.manageable !== true ||
-      !window.confirm(
-        `Delete ${selected.name}? Existing run history will remain.`,
-      )
+      selected.custom.manageable !== true
     )
       return;
+    const prepared = await readJson<{
+      preview?: TrashActionPreviewV1;
+      compensation?: string | null;
+    }>(`/api/agents/${encodeURIComponent(selected.id)}?mode=trash-preview`);
+    if (!prepared.preview) throw new Error("Agent trash preview was not returned.");
+    if (!window.confirm(
+      `${prepared.preview.effectSummary}\n\nExisting run history remains. Recovery is available in Settings → Data & privacy → Trash.`,
+    )) return;
     await mutate(`/api/agents/${encodeURIComponent(selected.id)}`, {
       method: "DELETE",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({ preview: prepared.preview }),
     });
     setSelectedId("atlas");
-    setMessage(`${selected.name} deleted.`);
+    setMessage(`${selected.name} moved to Trash. Undo is available for 30 days.`);
     await load();
   }
   async function removeSkill(skill: AgentSkill) {
-    if (
-      !skill.manageable ||
-      !window.confirm(
-        `Delete ${skill.name}? It will be removed from custom agents.`,
-      )
-    )
-      return;
+    if (!skill.manageable) return;
+    const prepared = await readJson<{ preview?: TrashActionPreviewV1 }>(
+      `/api/skills/${encodeURIComponent(skill.id)}?mode=trash-preview`,
+    );
+    if (!prepared.preview) throw new Error("Skill trash preview was not returned.");
+    if (!window.confirm(
+      `${prepared.preview.effectSummary}\n\nRecovery is available in Settings → Data & privacy → Trash.`,
+    )) return;
     await mutate(`/api/skills/${encodeURIComponent(skill.id)}`, {
       method: "DELETE",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": crypto.randomUUID(),
+      },
+      body: JSON.stringify({ preview: prepared.preview }),
     });
-    setMessage(`${skill.name} deleted.`);
+    setMessage(`${skill.name} moved to Trash. Undo is available for 30 days.`);
     await load();
   }
 

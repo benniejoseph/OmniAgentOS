@@ -2,10 +2,14 @@ import { z } from "zod";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
-  deleteOpenApiConnector,
   getOpenApiConnector,
   updateOpenApiConnector,
 } from "@/lib/connectors/openapi-store";
+import {
+  deleteConnectorService,
+  previewConnectorDeleteService,
+} from "@/lib/app-services/connectors";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
@@ -14,6 +18,7 @@ import { assertPublicHttpUrl } from "@/lib/security/network";
 
 export const runtime = "nodejs";
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
+export const POST = withDatabaseRequestScope(POSTHandler);
 export const DELETE = withDatabaseRequestScope(DELETEHandler);
 
 const updateOpenApiConnectorSchema = z
@@ -227,42 +232,34 @@ async function DELETEHandler(
     return forbiddenResponse(error);
   }
 
+  let body: unknown;
   try {
-    const deleted = await deleteOpenApiConnector(id, {
-      executionScope: executionScopeFromSecurityContext(securityContext, {
-        correlationId: telemetry.correlationId,
+    body = await parseJsonBody(request, 16_000);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
+
+  try {
+    const result = await deleteConnectorService(
+      createRequestMutationAppServiceCaller(request, securityContext, {
+        purpose: "connector.openapi.move_to_trash",
         causationId: id,
-        purpose: "connector.openapi.delete",
       }),
-    });
-    if (!deleted) {
-      await recordConnectorEvent({
-        telemetry,
-        level: "warn",
-        action: "connector.openapi.delete_not_found",
-        request,
-        statusCode: 404,
-        durationMs: Date.now() - startedAt,
-        tenantId: securityContext.tenantId,
-        actorId: securityContext.actorId,
-        connectorId: id,
-        message: "OpenAPI connector delete failed because the connector was not found for this tenant.",
-      });
-      return Response.json({ error: "OpenAPI connector not found." }, { status: 404 });
-    }
+      { kind: "openapi", connectorId: id, ...(body && typeof body === "object" ? body : {}) } as never,
+    );
 
     await recordConnectorEvent({
       telemetry,
-      action: "connector.openapi.deleted",
+      action: "connector.openapi.moved_to_trash",
       request,
       statusCode: 200,
       durationMs: Date.now() - startedAt,
       tenantId: securityContext.tenantId,
       actorId: securityContext.actorId,
       connectorId: id,
-      message: "OpenAPI connector deleted.",
+      message: "OpenAPI connector moved to reversible trash.",
     });
-    return Response.json({ deleted: true, connector: redactOpenApiConnector(deleted) });
+    return Response.json({ ...result.data, serviceReceipt: result.receipt });
   } catch (error) {
     await recordConnectorEvent({
       telemetry,
@@ -274,10 +271,42 @@ async function DELETEHandler(
       tenantId: securityContext.tenantId,
       actorId: securityContext.actorId,
       connectorId: id,
-      message: error instanceof Error ? error.message : "OpenAPI connector delete failed.",
+      message: error instanceof Error ? error.message : "OpenAPI connector trash move failed.",
     });
-    throw error;
+    return Response.json(
+      { error: error instanceof Error ? error.message : "OpenAPI connector could not be moved to trash." },
+      { status: error instanceof Error && /not found/i.test(error.message) ? 404 : 409 },
+    );
   }
+}
+
+async function POSTHandler(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  const { id } = await context.params;
+  let securityContext;
+  try {
+    securityContext = await authorizeRequest({
+      request,
+      action: "manage.connector",
+      resourceType: "openapi_connector",
+      resourceId: id,
+      metadata: { operation: "trash_preview" },
+    });
+  } catch (error) {
+    return forbiddenResponse(error);
+  }
+  const result = await previewConnectorDeleteService(
+    createRequestMutationAppServiceCaller(request, securityContext, {
+      purpose: "connector.openapi.trash_preview",
+      causationId: id,
+    }),
+    { kind: "openapi", connectorId: id },
+  );
+  return result.data.target
+    ? Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: { "cache-control": "private, no-store" } })
+    : Response.json({ error: "OpenAPI connector not found." }, { status: 404, headers: { "cache-control": "private, no-store" } });
 }
 
 function redactOpenApiConnector<T extends { authTokenEnv?: string; lastError?: string }>(connector: T) {
