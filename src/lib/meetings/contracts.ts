@@ -68,6 +68,15 @@ export const meetingSourceLinkSchema = z.object({
   label: z.string().trim().min(1).max(240),
 }).strict();
 
+export const meetingSourceLinkRequestSchema = z.object({
+  linkId: opaqueIdSchema,
+  kind: z.enum(["calendar_event", "capture_recording", "capture_asset", "source_revision"]),
+  sourceId: opaqueIdSchema,
+  sourceRevisionId: opaqueIdSchema.optional(),
+  mediaRole: z.enum(["calendar", "recording", "transcript", "attachment", "reference"]),
+  label: z.string().trim().min(1).max(240),
+}).strict();
+
 export const meetingEntityLinkSchema = z.object({
   entityId: opaqueIdSchema,
   entityType: z.enum(["person", "organization", "account", "project"]),
@@ -123,6 +132,11 @@ const meetingDefinitionBaseSchema = z.object({
 export const meetingDefinitionInputSchema = meetingDefinitionBaseSchema
   .superRefine(validateMeetingDefinition);
 
+export const meetingDraftInputSchema = meetingDefinitionBaseSchema
+  .omit({ meetingId: true, sourceLinks: true })
+  .extend({ sourceLinks: z.array(meetingSourceLinkRequestSchema).max(100).default([]) })
+  .strict();
+
 const meetingRevisionBodySchema = meetingDefinitionBaseSchema.omit({ meetingId: true }).extend({
   schemaVersion: z.literal(MEETING_SCHEMA_VERSION),
   tenantId: opaqueIdSchema,
@@ -171,7 +185,9 @@ export const meetingRevisionSchema = meetingRevisionBodySchema.extend({
 export type MeetingAccessClass = z.infer<typeof meetingAccessClassSchema>;
 export type MeetingParticipant = Readonly<z.infer<typeof meetingParticipantSchema>>;
 export type MeetingSourceLink = Readonly<z.infer<typeof meetingSourceLinkSchema>>;
+export type MeetingSourceLinkRequest = Readonly<z.infer<typeof meetingSourceLinkRequestSchema>>;
 export type MeetingDefinitionInput = Readonly<z.infer<typeof meetingDefinitionInputSchema>>;
+export type MeetingDraftInput = Readonly<z.infer<typeof meetingDraftInputSchema>>;
 export type MeetingRevision = Readonly<z.infer<typeof meetingRevisionSchema>>;
 
 export function createMeetingId() {
