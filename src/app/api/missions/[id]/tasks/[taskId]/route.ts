@@ -4,6 +4,7 @@ import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { toMissionTaskView } from "@/lib/missions/public";
 import {
   getMissionTask,
+  getActiveMissionAttemptForTask,
   MissionConflictError,
   MissionTransitionError,
   transitionMissionTask,
@@ -118,6 +119,26 @@ async function PATCHHandler(
       !sameTimestamp(task.updatedAt, parsed.data.expectedUpdatedAt)
     ) {
       throw new MissionConflictError("Mission task changed after it was loaded.");
+    }
+    const assignedAgentId = typeof task.metadata.assigneeKey === "string"
+      ? task.metadata.assigneeKey.trim()
+      : "";
+    if (
+      assignedAgentId &&
+      parsed.data.status &&
+      ["running", "succeeded", "failed"].includes(parsed.data.status)
+    ) {
+      throw new MissionTransitionError(
+        "Assigned task progress is controlled by its governed execution.",
+      );
+    }
+    if (assignedAgentId && parsed.data.status) {
+      const activeAttempt = await getActiveMissionAttemptForTask(task.id, owner);
+      if (activeAttempt) {
+        throw new MissionTransitionError(
+          "This task has an active governed execution; control that run instead of changing task status directly.",
+        );
+      }
     }
     const reviewRequiredByPatch = parsed.data.reviewRequired === true ||
       parsed.data.metadata?.reviewRequired === true;

@@ -1221,6 +1221,32 @@ export async function getMissionAttempt(
   return ledger.attempts.find((attempt) => attempt.id === id && owns(attempt, owner));
 }
 
+export async function getActiveMissionAttemptForTask(
+  taskId: string,
+  options: MissionOwner,
+): Promise<MissionAttempt | undefined> {
+  const owner = normalizeOwner(options);
+  const id = requiredKey(taskId, "Task id");
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT * FROM omni_mission_attempts
+      WHERE task_id = ${id}
+        AND tenant_id = ${owner.tenantId}
+        AND actor_id = ${owner.actorId}
+        AND status IN ('queued', 'running', 'waiting')
+      ORDER BY created_at ASC
+      LIMIT 1
+    `;
+    return rows[0] ? attemptFromRow(rows[0]) : undefined;
+  }
+  const ledger = await readLedger();
+  return ledger.attempts.find((attempt) =>
+    attempt.taskId === id && owns(attempt, owner) &&
+    !TERMINAL_ATTEMPT_STATUSES.has(attempt.status)
+  );
+}
+
 export async function findMissionAttemptByExecutor(
   executorType: string,
   executorId: string,
