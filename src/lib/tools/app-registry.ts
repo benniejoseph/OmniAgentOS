@@ -169,6 +169,37 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
       }, ["suggestionKind", "statement", "citedEvidence", "confidenceBasisPoints", "origin"]),
     },
   }, ["accountId", "expectedAccountRevision", "expectedAccountSha256"]), { reversible: true }),
+  readTool("app.customer_accounts.workflows.list", "List customer-success workflows", "List the eight immutable CSM pack definitions and current governed workflow runs for one Account 360.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    limit: integer(1, 100, 50),
+  }, ["accountId"])),
+  mutationTool("app.customer_accounts.workflows.start", "Start customer-success workflow", "Create an exact Account 360-bound project and dependency-aware work items from one typed CSM pack definition. This creates no external communication or CRM effect.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    expectedAccountRevision: integer(1, Number.MAX_SAFE_INTEGER),
+    expectedAccountSha256: sha256("Exact current Account 360 revision digest."),
+    input: customerSuccessWorkflowInputToolSchema(),
+  }, ["accountId", "expectedAccountRevision", "expectedAccountSha256", "input"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.customer_accounts.workflows.outcome.record", "Record customer-success workflow outcome", "Append an immutable completed, blocked, or cancelled outcome receipt. Completed outcomes must cite required artifacts and evidence actually produced by the workflow project.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    runId: { type: "string", pattern: "^customer-success-run:[a-f0-9]{64}$", maxLength: 85 },
+    expectedRevision: integer(1, Number.MAX_SAFE_INTEGER),
+    status: { type: "string", enum: ["completed", "blocked", "cancelled"] },
+    summary: text(1, 4_000),
+    artifactReceipts: {
+      type: "array",
+      maxItems: 20,
+      items: requiredObjectSchema({
+        artifactKey: { type: "string", pattern: "^[a-z][a-z0-9_]{1,79}$", maxLength: 80 },
+        projectArtifactId: opaqueId("Exact artifact ID produced by this workflow project."),
+        evidenceKeys: { type: "array", maxItems: 20, items: { type: "string", pattern: "^[a-z][a-z0-9_]{1,79}$", maxLength: 80 } },
+        evidenceRefs: { type: "array", maxItems: 100, items: opaqueId("Exact evidence reference present on the project artifact.") },
+      }, ["artifactKey", "projectArtifactId", "evidenceKeys", "evidenceRefs"]),
+    },
+    nextAction: text(1, 500),
+  }, ["accountId", "runId", "expectedRevision", "status", "summary", "nextAction"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   mutationTool("app.customer_accounts.salesforce.writes.configure", "Configure Salesforce writes", "Activate or disable approval-bound Salesforce writes for one exact owner-controlled Account 360 revision. Activation requires a linked Salesforce Account and reviewed provider configuration.", requiredObjectSchema({
     workspaceId: opaqueId("Optional exact workspace ID."),
     accountId: customerAccountIdSchema(),
@@ -890,6 +921,86 @@ function meetingDraftProperties() {
 
 function customerAccountLifecycleValues() {
   return ["prospect", "onboarding", "active", "at_risk", "churned", "archived"];
+}
+
+function customerSuccessWorkflowInputToolSchema() {
+  const workflowId = (value: string) => ({ type: "string", enum: [value] });
+  const objective = text(1, 2_000);
+  const targetDate = { type: ["string", "null"], format: "date-time" };
+  const textList = (maxItems = 20) => ({
+    type: "array", minItems: 1, maxItems, items: text(1, 500),
+  });
+  const optionalTextList = (maxItems = 20, maxLength = 240) => ({
+    type: "array", maxItems, items: text(1, maxLength),
+  });
+  const requiredIds = (maxItems = 50) => ({
+    type: "array", minItems: 1, maxItems, uniqueItems: true,
+    items: opaqueId("Exact Account 360, meeting, case, or stakeholder identity."),
+  });
+  const optionalIds = (maxItems = 50) => ({
+    ...requiredIds(maxItems), minItems: 0,
+  });
+  const base = { objective, targetDate };
+  return {
+    anyOf: [
+      requiredObjectSchema({
+        workflowId: workflowId("onboarding"), ...base,
+        successCriteria: textList(),
+        productNames: optionalTextList(),
+        stakeholderIds: optionalIds(),
+      }, ["workflowId", "objective", "successCriteria"]),
+      requiredObjectSchema({
+        workflowId: workflowId("adoption_review"), ...base,
+        periodStartAt: { type: "string", format: "date-time" },
+        periodEndAt: { type: "string", format: "date-time" },
+        adoptionGoals: textList(),
+        productIds: optionalIds(20),
+      }, ["workflowId", "objective", "periodStartAt", "periodEndAt", "adoptionGoals"]),
+      requiredObjectSchema({
+        workflowId: workflowId("risk_escalation"), ...base,
+        riskTitle: text(1, 500),
+        severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
+        signals: textList(),
+        executiveSponsorId: { anyOf: [opaqueId("Optional executive sponsor identity."), { type: "null" }] },
+      }, ["workflowId", "objective", "riskTitle", "severity", "signals"]),
+      requiredObjectSchema({
+        workflowId: workflowId("renewal_planning"), ...base,
+        renewalAt: { type: "string", format: "date-time" },
+        renewalGoals: textList(),
+        amountMinor: { type: ["integer", "null"], minimum: 0 },
+        currency: { type: ["string", "null"], pattern: "^[A-Z]{3}$" },
+      }, ["workflowId", "objective", "renewalAt", "renewalGoals"]),
+      requiredObjectSchema({
+        workflowId: workflowId("qbr_ebr"), ...base,
+        reviewKind: { type: "string", enum: ["qbr", "ebr"] },
+        meetingAt: { type: "string", format: "date-time" },
+        periodStartAt: { type: "string", format: "date-time" },
+        periodEndAt: { type: "string", format: "date-time" },
+        audience: textList(),
+        agendaObjectives: textList(),
+      }, ["workflowId", "objective", "reviewKind", "meetingAt", "periodStartAt", "periodEndAt", "audience", "agendaObjectives"]),
+      requiredObjectSchema({
+        workflowId: workflowId("meeting_prep_follow_up"), ...base,
+        meetingId: opaqueId("Exact governed meeting identity."),
+        phase: { type: "string", enum: ["prep", "follow_up"] },
+        participantIds: requiredIds(),
+        meetingObjectives: textList(),
+      }, ["workflowId", "objective", "meetingId", "phase", "participantIds", "meetingObjectives"]),
+      requiredObjectSchema({
+        workflowId: workflowId("support_escalation"), ...base,
+        caseIds: requiredIds(),
+        severity: { type: "string", enum: ["medium", "high", "critical"] },
+        customerImpact: text(1, 2_000),
+        requestedOutcome: text(1, 1_000),
+      }, ["workflowId", "objective", "caseIds", "severity", "customerImpact", "requestedOutcome"]),
+      requiredObjectSchema({
+        workflowId: workflowId("expansion_discovery"), ...base,
+        hypotheses: textList(),
+        stakeholderIds: requiredIds(),
+        discoveryWindowEndAt: { type: "string", format: "date-time" },
+      }, ["workflowId", "objective", "hypotheses", "stakeholderIds", "discoveryWindowEndAt"]),
+    ],
+  };
 }
 
 function customerAccountIdSchema() {

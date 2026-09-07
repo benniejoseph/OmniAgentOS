@@ -47,7 +47,7 @@ const boundedIdListSchema = z.array(opaqueIdSchema).min(1).max(50);
 
 const commonInputShape = {
   objective: z.string().trim().min(1).max(2_000),
-  targetDate: nullableTimestampSchema,
+  targetDate: nullableTimestampSchema.default(null),
 };
 
 export const customerSuccessWorkflowInputSchema = z.discriminatedUnion("workflowId", [
