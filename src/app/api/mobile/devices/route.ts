@@ -1,28 +1,40 @@
-import { listMobileDeviceSessions } from "@/lib/auth/mobile";
-import { mobileNoStoreHeaders } from "@/lib/auth/mobile-http";
-import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  getMobileIdentityFromRequest,
+  listMobileDeviceSessions,
+} from "@/lib/auth/mobile";
+import {
+  mobileError,
+  mobileNoStoreHeaders,
+} from "@/lib/auth/mobile-http";
+import {
+  enterDatabaseTenantContext,
+  withDatabaseRequestScope,
+} from "@/lib/db/client";
 import { nativeDeviceListResponseSchema } from "@/lib/mobile/contracts";
-import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { recordSecurityAudit } from "@/lib/security/audit-store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 
 async function GETHandler(request: Request) {
-  try {
-    const context = await authorizeRequest({
-      request,
-      action: "read",
-      resourceType: "owned_mobile_devices",
-    });
-    const devices = await listMobileDeviceSessions(context);
-    return Response.json(nativeDeviceListResponseSchema.parse(devices), {
-      headers: mobileNoStoreHeaders,
-    });
-  } catch (error) {
-    const response = forbiddenResponse(error);
-    for (const [name, value] of Object.entries(mobileNoStoreHeaders)) {
-      response.headers.set(name, value);
-    }
-    return response;
+  const identity = await getMobileIdentityFromRequest(request);
+  if (!identity) {
+    return mobileError(
+      401,
+      "unauthorized",
+      "A valid bearer token is required.",
+    );
   }
+  enterDatabaseTenantContext(identity.context.tenantId);
+  const devices = await listMobileDeviceSessions(identity.context);
+  await recordSecurityAudit({
+    context: identity.context,
+    action: "security.mobile_devices_listed",
+    resourceType: "mobile_session",
+    decision: "allow",
+    metadata: { count: devices.devices.length },
+  });
+  return Response.json(nativeDeviceListResponseSchema.parse(devices), {
+    headers: mobileNoStoreHeaders,
+  });
 }

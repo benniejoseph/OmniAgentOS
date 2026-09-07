@@ -1,13 +1,18 @@
-import { changeMobileDeviceLifecycle } from "@/lib/auth/mobile";
+import {
+  changeMobileDeviceLifecycle,
+  getMobileIdentityFromRequest,
+} from "@/lib/auth/mobile";
 import { mobileError, mobileNoStoreHeaders } from "@/lib/auth/mobile-http";
-import { withDatabaseRequestScope } from "@/lib/db/client";
+import {
+  enterDatabaseTenantContext,
+  withDatabaseRequestScope,
+} from "@/lib/db/client";
 import { parseJsonBody } from "@/lib/http/body";
 import {
   nativeDeviceLifecycleRequestSchema,
   nativeDeviceSessionSchema,
 } from "@/lib/mobile/contracts";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
-import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
@@ -34,46 +39,40 @@ async function POSTHandler(
     );
   }
   const { id } = await route.params;
-  try {
-    const context = await authorizeRequest({
-      request,
-      action: "read",
-      resourceType: "owned_mobile_device",
-      resourceId: id,
-      metadata: { action: parsed.data.action },
-    });
-    const device = await changeMobileDeviceLifecycle(
-      context,
-      id,
-      parsed.data.action,
+  const identity = await getMobileIdentityFromRequest(request);
+  if (!identity) {
+    return mobileError(
+      401,
+      "unauthorized",
+      "A valid bearer token is required.",
     );
-    if (!device) {
-      return Response.json(
-        { error: { code: "not_found", message: "The device session was not found." } },
-        { status: 404, headers: mobileNoStoreHeaders },
-      );
-    }
-    await recordSecurityAudit({
-      context,
-      action: parsed.data.action === "remote_wipe"
-        ? "security.mobile_remote_wipe_requested"
-        : "security.mobile_session_revoked",
-      resourceType: "mobile_session",
-      resourceId: id,
-      decision: "allow",
-      metadata: {
-        current: device.current,
-        localErasure: device.wipe?.localErasure || "not_requested",
-      },
-    });
-    return Response.json(nativeDeviceSessionSchema.parse(device), {
-      headers: mobileNoStoreHeaders,
-    });
-  } catch (error) {
-    const response = forbiddenResponse(error);
-    for (const [name, value] of Object.entries(mobileNoStoreHeaders)) {
-      response.headers.set(name, value);
-    }
-    return response;
   }
+  enterDatabaseTenantContext(identity.context.tenantId);
+  const device = await changeMobileDeviceLifecycle(
+    identity.context,
+    id,
+    parsed.data.action,
+  );
+  if (!device) {
+    return Response.json(
+      { error: { code: "not_found", message: "The device session was not found." } },
+      { status: 404, headers: mobileNoStoreHeaders },
+    );
+  }
+  await recordSecurityAudit({
+    context: identity.context,
+    action: parsed.data.action === "remote_wipe"
+      ? "security.mobile_remote_wipe_requested"
+      : "security.mobile_session_revoked",
+    resourceType: "mobile_session",
+    resourceId: id,
+    decision: "allow",
+    metadata: {
+      current: device.current,
+      localErasure: device.wipe?.localErasure || "not_requested",
+    },
+  });
+  return Response.json(nativeDeviceSessionSchema.parse(device), {
+    headers: mobileNoStoreHeaders,
+  });
 }

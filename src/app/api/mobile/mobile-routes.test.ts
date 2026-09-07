@@ -62,4 +62,20 @@ describe("mobile auth route contract", () => {
       },
     });
   });
+
+  it("keeps device inventory bearer-only with the native error contract", async () => {
+    const { GET } = await import("@/app/api/mobile/devices/route");
+    const response = await GET(
+      new Request("https://example.test/api/mobile/devices"),
+    );
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("x-asael-native-contract-version")).toBe("2");
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "unauthorized",
+        message: "A valid bearer token is required.",
+      },
+    });
+  });
 });
