@@ -25,6 +25,7 @@ import {
   renderUntrustedObservation,
   type ModelConversationItem,
 } from "@/lib/models/conversation";
+import { renderModelBrowserObservation } from "@/lib/models/browser-observation";
 
 const PROVIDER = "aws_bedrock" as const;
 const AWS_SERVICE = "bedrock";
@@ -155,7 +156,8 @@ export function createBedrockModelAdapter(
         continuationConversation: request.continuation?.conversation,
         toolResults: request.toolResults,
       });
-      const messages = bedrockToolMessages(request, conversation);
+      const durableMessages = bedrockToolMessages(request, conversation, false);
+      const messages = bedrockToolMessages(request, conversation, true);
       const result = await callBedrockConverse({
         request,
         target,
@@ -193,7 +195,7 @@ export function createBedrockModelAdapter(
           toolCalls: output.toolCalls,
           continuation: {
             provider: PROVIDER,
-            state: [...messages, output.message],
+            state: [...durableMessages, output.message],
             conversation: appendModelTurnToConversation(conversation, {
               text: output.text,
               toolCalls: output.toolCalls,
@@ -742,6 +744,7 @@ function initialUserMessage(input: string): BedrockMessage {
 function bedrockToolMessages(
   request: ModelToolTurnRequest,
   conversation: readonly ModelConversationItem[],
+  includeBrowserObservation: boolean,
 ): BedrockMessage[] {
   if (request.continuation && request.continuation.provider !== PROVIDER) {
     throw new ModelProviderError(
@@ -788,7 +791,16 @@ function bedrockToolMessages(
     return {
       toolResult: {
         toolUseId: callId,
-        content: [{ text: result.output }],
+        content: [
+          { text: result.output },
+          ...(includeBrowserObservation && result.browserObservation
+            ? [{
+                text: renderModelBrowserObservation(
+                  result.browserObservation,
+                ),
+              }]
+            : []),
+        ],
         status: result.isError ? "error" as const : "success" as const,
       },
     };

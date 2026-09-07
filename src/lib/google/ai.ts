@@ -15,6 +15,7 @@ import {
   renderUntrustedObservation,
   type ModelConversationItem,
 } from "@/lib/models/conversation";
+import { renderModelBrowserObservation } from "@/lib/models/browser-observation";
 
 const INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const SPEECH_URL = "https://speech.googleapis.com/v1/speech:recognize";
@@ -150,18 +151,36 @@ export async function generateGeminiToolTurn(input: {
     continuationConversation: input.continuation?.conversation,
     toolResults: input.toolResults,
   });
-  const history: Record<string, unknown>[] = input.continuation?.state.length
+  const durableHistory: Record<string, unknown>[] = input.continuation?.state.length
     ? input.continuation.state.map((step) => ({ ...step }))
     : geminiStepsFromConversation(conversation);
   for (const result of input.continuation?.state.length
     ? input.toolResults || []
     : []) {
-    history.push({
+    durableHistory.push({
       type: "function_result",
       name: result.name,
       call_id: result.callId,
       result: [{ type: "text", text: result.output }],
       ...(result.isError ? { is_error: true } : {}),
+    });
+  }
+  const history = durableHistory.map((step) => ({ ...step }));
+  for (const result of input.toolResults || []) {
+    const observation = result.browserObservation;
+    if (!observation) continue;
+    history.push({
+      type: "user_input",
+      content: [
+        { type: "text", text: renderModelBrowserObservation(observation) },
+        ...(observation.screenshot
+          ? [{
+              type: "image",
+              mime_type: observation.screenshot.mimeType,
+              data: observation.screenshot.dataBase64,
+            }]
+          : []),
+      ],
     });
   }
 
@@ -234,7 +253,7 @@ export async function generateGeminiToolTurn(input: {
       provider: "google",
       // Preserve every model step exactly, including thought/tool signatures,
       // so the next store:false request remains a valid stateless continuation.
-      state: [...history, ...steps],
+      state: [...durableHistory, ...steps],
       conversation: appendModelTurnToConversation(conversation, {
         text,
         toolCalls,

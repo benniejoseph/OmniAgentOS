@@ -38,6 +38,8 @@ import {
   getModelProviderResponseReceipt,
   ModelProviderError,
 } from "@/lib/models/types";
+import type { ModelBrowserObservation } from "@/lib/models/browser-observation";
+import { loadRunBrowserModelObservation } from "@/lib/browser/frames";
 import {
   createMemoryAccessContext,
   usesDurableMemory,
@@ -164,6 +166,7 @@ import {
   executeGovernedTool,
   governedToolOperationClass,
   type GovernedToolCheckpointInput,
+  type GovernedToolExecutionResult,
 } from "@/lib/tools/executor";
 import { getToolExecutionScopeBinding } from "@/lib/tools/execution-scope";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
@@ -1619,13 +1622,23 @@ export async function* runAgent(
       // ZDR-safe multi-turn: build a full conversation array instead of
       // relying on previous_response_id (blocked when org has Zero Data Retention).
       let conversationItems: ConversationItem[] | null = null;
+      let pendingBrowserObservations: ModelBrowserObservation[] = [];
       let toolSteps = 0;
 
       // Tool loop: stream a turn; if the model called tools, execute them
       // through the governed executor and continue with the outputs.
       for (;;) {
-        const turnInput: ResponseTurnInput =
-          conversationItems ?? initialConversationItems;
+        const durableTurnInput = conversationItems ?? initialConversationItems;
+        const turnInput: ResponseTurnInput = pendingBrowserObservations.length
+          ? [
+              ...durableTurnInput,
+              ...pendingBrowserObservations.map((observation) => ({
+                type: "ephemeral_browser_observation" as const,
+                observation,
+              })),
+            ]
+          : durableTurnInput;
+        pendingBrowserObservations = [];
         const modelBudget = await checkpointBeforeModelTurn({
           attempt: toolSteps + 1,
           provider: "openai",
@@ -1862,6 +1875,9 @@ export async function* runAgent(
               note: execution.record.status === "executed" ? "Executed concurrently with other safe read-only tools." : execution.record.reason,
               result: execution.result,
             }));
+            if (execution.browserObservation) {
+              pendingBrowserObservations.push(execution.browserObservation);
+            }
           }
         } else for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
           const call = callsThisTurn[callIndex];
@@ -1995,6 +2011,9 @@ export async function* runAgent(
               result: execution.result,
             }),
           );
+          if (execution.browserObservation) {
+            pendingBrowserObservations.push(execution.browserObservation);
+          }
         }
 
         for (const call of turn.functionCalls.slice(MAX_TOOL_CALLS_PER_TURN)) {
@@ -2522,8 +2541,13 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           citationSourcesFromToolResult(item.entry.definition.id, execution.result),
         );
         yield toolEventForExecution(item.entry.definition, execution.record);
-        outputs.push(providerToolResult(item.call, executionPayload(execution),
-          execution.record.status !== "executed" && execution.record.status !== "dry_run"));
+        outputs.push(providerToolResult(
+          item.call,
+          executionPayload(execution),
+          execution.record.status !== "executed" &&
+            execution.record.status !== "dry_run",
+          execution.browserObservation,
+        ));
       }
     } else {
       for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
@@ -2624,7 +2648,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
                   }),
                 ),
               ],
-              toolResultsBeforeApproval: outputs,
+              toolResultsBeforeApproval: durableModelToolResults(outputs),
             },
           });
         }
@@ -2635,6 +2659,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           call,
           executionPayload(execution),
           isError,
+          execution.browserObservation,
         ));
       }
     }
@@ -2930,6 +2955,14 @@ async function resumeAgentRunAfterToolApprovalInScope({
     toolExecution.record,
     executionScope,
   );
+  const approvedBrowserObservation = await loadRunBrowserModelObservation(
+    run.id,
+    toolExecution.record.id,
+    {
+      tenantId: normalizeTenantId(tenantId),
+      actorId: continuation.context.actorId,
+    },
+  ).catch(() => undefined);
   assertCheckpointResumeFence(
     run,
     continuation,
@@ -2953,6 +2986,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       abortSignal,
       executionScope,
       resumeFence,
+      approvedBrowserObservation,
     });
   }
 
@@ -3178,6 +3212,8 @@ async function resumeAgentRunAfterToolApprovalInScope({
       result: toolExecution.result,
     }),
   ];
+  let pendingBrowserObservations: ModelBrowserObservation[] =
+    approvedBrowserObservation ? [approvedBrowserObservation] : [];
 
   // Buffer delta writes onto a background chain — a blocking DB write per
   // delta clamps streaming to one delta per write round-trip (see runAgent).
@@ -3346,10 +3382,23 @@ async function resumeAgentRunAfterToolApprovalInScope({
         note: execution.record.status === "executed" ? "Executed for real." : execution.record.reason,
         result: execution.result,
       }));
+      if (execution.browserObservation) {
+        pendingBrowserObservations.push(execution.browserObservation);
+      }
     }
     conversationItems = [...conversationItems, ...carriedOutputs];
 
     for (;;) {
+      const turnInput: ResponseTurnInput = pendingBrowserObservations.length
+        ? [
+            ...conversationItems,
+            ...pendingBrowserObservations.map((observation) => ({
+              type: "ephemeral_browser_observation" as const,
+              observation,
+            })),
+          ]
+        : conversationItems;
+      pendingBrowserObservations = [];
       await checkpointBeforeResumeModelTurn({
         attempt: toolSteps + 1,
         provider: "openai",
@@ -3365,7 +3414,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           "openai",
           (apiKey) => streamResponseTurn({
             instructions: continuation.instructions,
-            input: conversationItems,
+            input: turnInput,
             tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
             abortSignal: resumeAbortSignal,
             reasoningEffort: AGENT_REASONING_EFFORT,
@@ -3625,6 +3674,9 @@ async function resumeAgentRunAfterToolApprovalInScope({
           note: execution.record.status === "executed" ? "Executed for real." : execution.record.reason,
           result: execution.result,
         }));
+        if (execution.browserObservation) {
+          pendingBrowserObservations.push(execution.browserObservation);
+        }
       }
 
       for (const call of turn.functionCalls.slice(MAX_TOOL_CALLS_PER_TURN)) {
@@ -3746,6 +3798,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   abortSignal,
   executionScope,
   resumeFence,
+  approvedBrowserObservation,
 }: {
   run: AgentRunRecord;
   continuation: AgentRunContinuation;
@@ -3755,6 +3808,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   abortSignal?: AbortSignal;
   executionScope?: ExecutionScope;
   resumeFence?: AgentRunResumeFence;
+  approvedBrowserObservation?: ModelBrowserObservation;
 }) {
   const providerState = continuation.providerToolState;
   const runMutationOptions = {
@@ -4024,6 +4078,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       },
       toolExecution.record.status !== "executed" &&
         toolExecution.record.status !== "dry_run",
+      approvedBrowserObservation,
     ),
   ];
 
@@ -4207,7 +4262,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
             ...providerState,
             pendingCall: call,
             queuedCalls: providerState.queuedCalls.slice(queueIndex + 1),
-            toolResultsBeforeApproval: carriedResults,
+            toolResultsBeforeApproval: durableModelToolResults(carriedResults),
           },
         });
       }
@@ -4216,6 +4271,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         executionPayload(execution),
         execution.record.status !== "executed" &&
           execution.record.status !== "dry_run",
+        execution.browserObservation,
       ));
     }
 
@@ -4677,13 +4733,22 @@ function providerToolResult(
   call: ModelToolCall,
   payload: unknown,
   isError = false,
+  browserObservation?: GovernedToolExecutionResult["browserObservation"],
 ): ModelToolResult {
   return {
     callId: call.callId,
     name: call.name,
     output: serializeToolResult(payload),
     ...(isError ? { isError: true } : {}),
+    ...(browserObservation ? { browserObservation } : {}),
   };
+}
+
+function durableModelToolResults(results: readonly ModelToolResult[]) {
+  return results.map(({ browserObservation: _browserObservation, ...result }) => {
+    void _browserObservation;
+    return result;
+  });
 }
 
 function serializeToolResult(payload: unknown) {

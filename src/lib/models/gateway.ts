@@ -21,6 +21,7 @@ import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import {
   modelConversationSchema,
 } from "@/lib/models/conversation";
+import { sanitizeModelBrowserObservation } from "@/lib/models/browser-observation";
 
 const MAX_TARGET_ATTEMPTS = 4;
 const MAX_TOOL_DEFINITIONS = 32;
@@ -130,6 +131,10 @@ export async function generateModelToolTurn(
         allowedProviders: [adapter.id],
         allowCrossProviderFallback: false,
         tools: sanitizeToolDefinitions(gatewayRequest.tools, adapter.id),
+        toolResults: sanitizeToolResults(
+          gatewayRequest.toolResults,
+          target.features.includes("vision"),
+        ),
       };
       if (runtime) bindModelRuntime(candidateRequest, runtime);
       const result = await adapter.generateToolTurn(candidateRequest, target);
@@ -468,13 +473,23 @@ function sanitizeToolDefinitions(
   return sanitized;
 }
 
-function sanitizeToolResults(results: readonly ModelToolResult[] | undefined) {
-  return (results || []).slice(0, MAX_TOOL_RESULTS_PER_TURN).map((result) => ({
-    callId: String(result.callId).slice(0, 256),
-    name: String(result.name).slice(0, 64),
-    output: String(result.output).slice(0, MAX_TOOL_RESULT_CHARS),
-    ...(result.isError ? { isError: true } : {}),
-  }));
+function sanitizeToolResults(
+  results: readonly ModelToolResult[] | undefined,
+  includeImages = true,
+) {
+  return (results || []).slice(0, MAX_TOOL_RESULTS_PER_TURN).map((result) => {
+    const browserObservation = sanitizeModelBrowserObservation(
+      result.browserObservation,
+      { includeImage: includeImages },
+    );
+    return {
+      callId: String(result.callId).slice(0, 256),
+      name: String(result.name).slice(0, 64),
+      output: String(result.output).slice(0, MAX_TOOL_RESULT_CHARS),
+      ...(result.isError ? { isError: true } : {}),
+      ...(browserObservation ? { browserObservation } : {}),
+    };
+  });
 }
 
 function attachAttempts(

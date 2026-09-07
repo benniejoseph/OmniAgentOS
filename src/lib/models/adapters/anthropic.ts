@@ -24,6 +24,7 @@ import {
   renderUntrustedObservation,
   type ModelConversationItem,
 } from "@/lib/models/conversation";
+import { renderModelBrowserObservation } from "@/lib/models/browser-observation";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
@@ -102,7 +103,8 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
       continuationConversation: request.continuation?.conversation,
       toolResults: request.toolResults,
     });
-    const messages = anthropicToolMessages(request, conversation);
+    const durableMessages = anthropicToolMessages(request, conversation, false);
+    const messages = anthropicToolMessages(request, conversation, true);
     const result = await callAnthropic(request, target, {
       messages,
       cache_control: { type: "ephemeral" },
@@ -146,7 +148,7 @@ export const anthropicModelAdapter: ModelProviderAdapter = {
       continuation: {
         provider: "anthropic",
         state: [
-          ...messages,
+          ...durableMessages,
           {
             role: "assistant",
             content,
@@ -208,6 +210,7 @@ async function callAnthropic(
 function anthropicToolMessages(
   request: ModelToolTurnRequest,
   conversation: readonly ModelConversationItem[],
+  includeBrowserObservation: boolean,
 ) {
   if (request.continuation && request.continuation.provider !== "anthropic") {
     throw new ModelProviderError(
@@ -227,7 +230,30 @@ function anthropicToolMessages(
       content: request.toolResults.map((result) => ({
         type: "tool_result",
         tool_use_id: result.callId,
-        content: result.output,
+        content:
+          includeBrowserObservation && result.browserObservation
+            ? [
+                { type: "text", text: result.output },
+                {
+                  type: "text",
+                  text: renderModelBrowserObservation(
+                    result.browserObservation,
+                  ),
+                },
+                ...(result.browserObservation.screenshot
+                  ? [{
+                      type: "image",
+                      source: {
+                        type: "base64",
+                        media_type:
+                          result.browserObservation.screenshot.mimeType,
+                        data:
+                          result.browserObservation.screenshot.dataBase64,
+                      },
+                    }]
+                  : []),
+              ]
+            : result.output,
         ...(result.isError ? { is_error: true } : {}),
       })),
     });
