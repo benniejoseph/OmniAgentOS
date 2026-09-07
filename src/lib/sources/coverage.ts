@@ -372,11 +372,15 @@ function nativeCaptureDomain(input: SourceCoverageInput, generatedAt: string): S
   }
   const capture = input.ownedSources.value.capture;
   const observed = input.ownedSources.value.domains.find((item) => item.id === "capture");
-  const state = capture.total === 0
-    ? "none" as const
-    : capture.indexed === capture.total
-      ? "complete" as const
-      : "partial" as const;
+  const observedItems = observed?.currentItems ?? 0;
+  const inventoryConflict = capture.indexed !== observedItems;
+  const state = inventoryConflict
+    ? "unknown" as const
+    : capture.total === 0
+      ? "none" as const
+      : capture.indexed === capture.total
+        ? "complete" as const
+        : "partial" as const;
   return {
     id: "capture",
     label: "Capture",
@@ -384,17 +388,21 @@ function nativeCaptureDomain(input: SourceCoverageInput, generatedAt: string): S
     availability: "native",
     coverage: {
       state,
-      observedItems: observed?.currentItems ?? 0,
-      detail: capture.total === 0
-        ? "No Capture import is recorded. This says nothing about media that was never submitted."
+      observedItems,
+      detail: inventoryConflict
+        ? `Capture inventories disagree: ${capture.indexed} indexed submissions and ${observedItems} current canonical source heads. No complete or empty state is inferred.`
+        : capture.total === 0
+          ? "No actor-owned Capture submission is recorded. This says nothing about media that was never submitted."
         : `${capture.indexed}/${capture.total} submitted Capture items are indexed · ${capture.pending} pending · ${capture.failed} failed.`,
     },
     backfill: { state: "not_applicable", detail: "Capture indexes only items explicitly submitted by the actor." },
     freshness: freshnessFrom(observed?.lastObservedAt || null, NATIVE_STALE_AFTER_SECONDS, generatedAt, true),
-    blindSpot: capture.pending > 0 || capture.failed > 0,
+    blindSpot: inventoryConflict || capture.pending > 0 || capture.failed > 0,
     limitation: "Files, scans, images, and meetings that were not submitted remain outside Asael's knowledge.",
-    nextAction: capture.pending || capture.failed
-      ? { state: "action_required", label: "Review pending or failed Capture processing.", href: "/app/capture" }
+    nextAction: inventoryConflict
+      ? { state: "action_required", label: "Review Capture source inventory.", href: "/app/capture" }
+      : capture.pending || capture.failed
+        ? { state: "action_required", label: "Review pending or failed Capture processing.", href: "/app/capture" }
       : { state: "available", label: "Add a file, scan, image, or recording when needed.", href: "/app/capture" },
   };
 }
