@@ -14,6 +14,7 @@ const routeMocks = vi.hoisted(() => ({
   listThreadTurns: vi.fn(),
   resolveLoopV2ModelTextEnrollment: vi.fn(),
   resolveLoopV2ReadOnlyCanaryEnrollment: vi.fn(),
+  requestSharedMemoryAccessFromSecurityContext: vi.fn(),
   resolveSemanticIntent: vi.fn(),
   runAgent: vi.fn(),
   runLoopV2ModelText: vi.fn(),
@@ -82,6 +83,12 @@ vi.mock("@/lib/orchestration/semantic-intent-resolver", () => ({
   resolveSemanticIntent: routeMocks.resolveSemanticIntent,
 }));
 
+vi.mock("@/lib/memory/shared-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/shared-context")>()),
+  requestSharedMemoryAccessFromSecurityContext:
+    routeMocks.requestSharedMemoryAccessFromSecurityContext,
+}));
+
 import { POST } from "@/app/api/agent/route";
 
 const context = {
@@ -89,6 +96,12 @@ const context = {
   actorId: "actor-a",
   role: "admin" as const,
   source: "session" as const,
+  auth: {
+    userId: "a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+    email: "actor-a@example.test",
+    sessionId: "session-a",
+    tenantName: "Tenant A",
+  },
 };
 
 beforeEach(() => {
@@ -127,6 +140,27 @@ beforeEach(() => {
   routeMocks.listThreadTurns.mockReset().mockResolvedValue([]);
   routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment.mockReset()
     .mockResolvedValue(null);
+  routeMocks.requestSharedMemoryAccessFromSecurityContext.mockReset()
+    .mockResolvedValue({
+      actorBinding: {
+        version: 1,
+        kind: "auth_user",
+        authUserId: context.auth.userId,
+        canonicalActorId: `actor:${context.auth.userId}`,
+        legacyOwnerActorIds: [context.actorId],
+        readableOwnerActorIds: [
+          `actor:${context.auth.userId}`,
+          context.actorId,
+        ],
+      },
+      authority: {
+        scope: "project",
+        workspaceId: "workspace:team-a",
+        projectId: "project:launch",
+      },
+      executionScope: {},
+      databaseAccessScope: {},
+    });
   routeMocks.resolveLoopV2ModelTextEnrollment.mockReset()
     .mockResolvedValue(null);
   routeMocks.resolveSemanticIntent.mockReset()
@@ -331,8 +365,8 @@ describe("agent semantic intent routing", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        message: "Use my whole workspace.",
-        contextScope: "workspace",
+        message: "Use all personal context.",
+        contextScope: "personal",
       }),
     }));
 
@@ -343,6 +377,51 @@ describe("agent semantic intent routing", () => {
     });
     expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("binds project context authority to the direct agent execution scope", async () => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-project-context" };
+      yield { type: "done", response: "Project context used." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Use the selected project's launch knowledge.",
+        requestId: "project-context-a",
+        projectId: "project-a",
+        strategy: "direct",
+        contextScope: "project",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.requestSharedMemoryAccessFromSecurityContext)
+      .toHaveBeenCalledWith(context, {
+        scope: "project",
+        projectId: "project-a",
+        correlationId: "project-context-a",
+      });
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextScope: "project",
+        promptSharedMemoryAccess: expect.objectContaining({
+          authority: expect.objectContaining({
+            workspaceId: "workspace:team-a",
+            projectId: "project:launch",
+          }),
+        }),
+        executionScope: expect.objectContaining({
+          workspaceId: "workspace:team-a",
+          projectId: "project:launch",
+          correlationId: "project-context-a",
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
   });
 
   it("admits exact agent-private context without an explicit selection", async () => {

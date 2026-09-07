@@ -44,6 +44,11 @@ import {
 } from "@/lib/memory/evidence-formation";
 import { requestEntityAccessFromSecurityContext } from "@/lib/entities/request-access";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
+import {
+  requestSharedMemoryAccessFromSecurityContext,
+  SharedContextAuthorityError,
+  type RequestSharedMemoryAccessV1,
+} from "@/lib/memory/shared-context";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import {
   narrowRunBudgetLimits,
@@ -148,6 +153,14 @@ const requestSchema = z.object({
   .refine((value) => !value.voiceInput || Boolean(value.message) && !value.resumeRunId, {
     message: "A voice review applies only to a new direct command.",
     path: ["voiceInput"],
+  })
+  .refine((value) => value.contextScope !== "project" || Boolean(value.projectId), {
+    message: "A project is required for project context.",
+    path: ["projectId"],
+  })
+  .refine((value) => !["project", "workspace"].includes(value.contextScope || "") || !value.missionId, {
+    message: "Shared context cannot be combined with mission context.",
+    path: ["missionId"],
   });
 
 async function POSTHandler(request: Request) {
@@ -256,6 +269,33 @@ async function POSTHandler(request: Request) {
         { error: "Project not found." },
         { status: 404, headers: { "cache-control": "private, no-store" } },
       );
+    }
+  }
+  let promptSharedMemoryAccess: RequestSharedMemoryAccessV1 | undefined;
+  if (
+    parsed.data.contextScope === "project" ||
+    parsed.data.contextScope === "workspace"
+  ) {
+    try {
+      promptSharedMemoryAccess =
+        await requestSharedMemoryAccessFromSecurityContext(context, {
+          scope: parsed.data.contextScope,
+          projectId: parsed.data.projectId,
+          correlationId: requestId,
+        });
+    } catch (error) {
+      if (!(error instanceof SharedContextAuthorityError)) throw error;
+      return Response.json({
+        error: error.code === "scope_not_found"
+          ? "Shared context not found"
+          : "Shared context unavailable",
+        message: error.code === "scope_not_found"
+          ? "The selected shared context is unavailable to this account."
+          : "Shared context authority could not be verified.",
+      }, {
+        status: error.code === "scope_not_found" ? 404 : 503,
+        headers: { "cache-control": "private, no-store" },
+      });
     }
   }
   const promptMemoryAccess = contextSelection?.evidenceIds.length
@@ -968,7 +1008,9 @@ async function POSTHandler(request: Request) {
           context,
           {
             ...agentPrincipalExecution,
-            projectId: threadProjectId,
+            workspaceId: promptSharedMemoryAccess?.authority.workspaceId,
+            projectId:
+              promptSharedMemoryAccess?.authority.projectId || threadProjectId,
             missionId: mission?.id,
             correlationId: requestId,
             purpose: loopV2CanaryEnrollment
@@ -1024,6 +1066,7 @@ async function POSTHandler(request: Request) {
                 contextScope: parsed.data.contextScope,
                 contextSelection,
                 promptMemoryAccess,
+                promptSharedMemoryAccess,
                 promptEntityGraphAccess,
                 executionScope: directExecutionScope,
                 agentIdentity,
