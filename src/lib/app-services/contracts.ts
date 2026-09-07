@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { requirePermission } from "@/lib/security/context";
 import {
+  executionScopeFromSecurityContext,
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
@@ -104,6 +105,38 @@ export function createAppServiceCaller(input: {
     context: Object.freeze({ ...input.context, tenantId, actorId }),
     ...(executionScope ? { executionScope } : {}),
     ...(idempotencyKey ? { idempotencyKey } : {}),
+  });
+}
+
+export function createRequestMutationAppServiceCaller(
+  request: Request,
+  context: SecurityContext,
+  input: {
+    purpose: string;
+    workspaceId?: string;
+    projectId?: string;
+    missionId?: string;
+    causationId?: string;
+  },
+) {
+  const idempotencyKey =
+    request.headers.get("idempotency-key")?.trim() ||
+    request.headers.get("x-idempotency-key")?.trim() ||
+    request.headers.get("x-request-id")?.trim() ||
+    `app_${crypto.randomUUID()}`;
+  const correlationId =
+    request.headers.get("x-request-id")?.trim() || idempotencyKey;
+  return createAppServiceCaller({
+    context,
+    idempotencyKey,
+    executionScope: executionScopeFromSecurityContext(context, {
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      missionId: input.missionId,
+      causationId: input.causationId,
+      correlationId,
+      purpose: input.purpose,
+    }),
   });
 }
 

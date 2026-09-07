@@ -1,57 +1,24 @@
-import { randomUUID } from "node:crypto";
-import { z } from "zod";
-import { projectExplicitMemoryEntities } from "@/lib/entities/extraction";
+import {
+  createAppServiceCaller,
+  createRequestMutationAppServiceCaller,
+} from "@/lib/app-services/contracts";
+import {
+  listMemoryService,
+  memoryWriteServiceInputSchema,
+  searchMemoryService,
+  writeMemoryService,
+} from "@/lib/app-services/memory";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   jsonBodyErrorResponse,
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
-import {
-  indexMemoryGraphRecords,
-  indexUserPrivateMemoryGraphRecords,
-} from "@/lib/memory/graph";
-import {
-  buildUserPrivateMemoryAccessBindingV1,
-  MEMORY_PURPOSE_IDS,
-} from "@/lib/memory/access-binding";
-import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
-import { listMemories, listThreadMemories, saveMemory, searchMemories } from "@/lib/memory/store";
-import {
-  memoryFormationReasonLabel,
-  memoryTierPolicy,
-  resolveMemoryTier,
-} from "@/lib/memory/tier-policy";
-import type { MemoryRecord } from "@/lib/memory/types";
-import {
-  memoryLifecyclePolicyV1,
-  memoryRetrievalPriorityMultiplier,
-} from "@/lib/memory/lifecycle";
-import { embedTexts } from "@/lib/openai/client";
-import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
-import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
-import { redactSensitive } from "@/lib/security/context";
-import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { getOwnedThread } from "@/lib/threads/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
-
-const memorySchema = z.object({
-  title: z.string().trim().min(1).max(240),
-  content: z.string().min(1).max(200_000),
-  type: z.enum(["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"]).optional(),
-  tier: z.enum(["working", "episodic", "semantic", "procedural", "preference", "decision", "commitment", "summary"]).optional(),
-  tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
-  importance: z.number().min(0).max(1).optional(),
-  confidence: z.number().min(0).max(1).optional(),
-  evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(50).optional(),
-  validFrom: z.string().datetime().optional(),
-  validTo: z.string().datetime().optional(),
-}).strict();
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
@@ -66,7 +33,6 @@ async function GETHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-
   const url = new URL(request.url);
   const query = url.searchParams.get("q")?.trim().slice(0, 4_000);
   const requestedThreadId = url.searchParams.get("threadId");
@@ -74,176 +40,34 @@ async function GETHandler(request: Request) {
   const limit = parseBoundedInteger(url.searchParams.get("limit"), 20, {
     max: 100,
   });
-  const requestAccess = requestMemoryAccessFromSecurityContext(context, {
-    purposeId: query
-      ? MEMORY_PURPOSE_IDS.retrieve
-      : MEMORY_PURPOSE_IDS.read,
-    auditPurpose: query ? "api.memory.search" : "api.memory.read",
-    correlationId: `memory_read_${randomUUID()}`,
-  });
-
-  if (requestedThreadId !== null) {
-    if (!threadId) {
-      return Response.json(
-        { error: "A threadId is required." },
-        { status: 400, headers: privateNoStoreHeaders },
-      );
-    }
-    const thread = await getOwnedThread(threadId, {
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
-    });
-    if (!thread) {
-      return Response.json(
-        { error: "Thread not found." },
-        { status: 404, headers: privateNoStoreHeaders },
-      );
-    }
-    const legacyMemories = await listThreadMemories(thread.id, {
-      tenantId: context.tenantId,
-      limit: Math.min(Math.max(limit, 1), 100),
-    });
-    const privateMemories = requestAccess
-      ? await listThreadMemories(thread.id, {
-          tenantId: context.tenantId,
-          limit: Math.min(Math.max(limit, 1), 100),
-          accessScope: requestAccess.databaseAccessScope,
-        })
-      : [];
-    return Response.json({
-      memories: mergeMemoryRecords(legacyMemories, privateMemories, limit)
-        .map(publicMemoryRecord),
-    }, { headers: privateNoStoreHeaders });
-  }
-
-  if (query) {
-    const safeQuery = String(redactSensitive(query));
-    const embeddingResult = await embedRetrievalTexts([safeQuery], {
-      usageScope: {
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        sourceStreamId: "api:memory",
-        operation: "embedding",
-        purpose: "api.memory.search",
-        credentialSource: "deployment_environment",
-      },
-    });
-    const queryEmbedding = embeddingResult.vectors[0];
-    const searchLimit = Math.min(Math.max(limit, 1), 100);
-    const legacyResults = await searchMemories(safeQuery, {
-      limit: searchLimit,
-      queryEmbedding,
-      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
-      tenantId: context.tenantId,
-    });
-    const privateResults = requestAccess
-      ? await searchMemories(safeQuery, {
-          limit: searchLimit,
-          queryEmbedding,
-          queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
-          tenantId: context.tenantId,
-          accessScope: requestAccess.databaseAccessScope,
-        })
-      : [];
-    const mergedResults = mergeMemorySearchResults(
-        legacyResults,
-        privateResults,
-        searchLimit,
-      );
-    const reranked = rerankRetrievalCandidates(
-      safeQuery,
-      mergedResults.map((result) => ({
-        value: result,
-        text: `${result.record.title}\n${result.record.content}`,
-        baseScore: result.score,
-        freshnessScore: 0,
-      })),
+  if (requestedThreadId !== null && !threadId) {
+    return Response.json(
+      { error: "A threadId is required." },
+      { status: 400, headers: privateNoStoreHeaders },
     );
+  }
+  const caller = createAppServiceCaller({ context });
+  if (query) {
+    const result = await searchMemoryService(caller, { query, limit });
     return Response.json({
-      results: reranked.results.map(({ value: result, score }) => ({
-        ...result,
-        baseScore: result.score,
-        score,
-        record: publicMemoryRecord(result.record),
-      })),
-      retrieval: {
-        embedding: embeddingResult.receipt,
-        reranker: reranked.receipt,
-      },
+      ...result.data,
+      serviceReceipt: result.receipt,
     }, { headers: privateNoStoreHeaders });
   }
-
-  const listLimit = Math.min(Math.max(limit, 1), 100);
-  const legacyMemories = await listMemories({
-    tenantId: context.tenantId,
-    includeInactive: true,
-    limit: listLimit,
+  const result = await listMemoryService(caller, {
+    limit,
+    ...(threadId ? { threadId } : {}),
   });
-  const privateMemories = requestAccess
-    ? await listMemories({
-        tenantId: context.tenantId,
-        includeInactive: true,
-        limit: listLimit,
-        accessScope: requestAccess.databaseAccessScope,
-      })
-    : [];
+  if ("threadFound" in result.data && !result.data.threadFound) {
+    return Response.json(
+      { error: "Thread not found." },
+      { status: 404, headers: privateNoStoreHeaders },
+    );
+  }
   return Response.json({
-    memories: mergeMemoryRecords(legacyMemories, privateMemories, listLimit)
-      .map(publicMemoryRecord),
+    memories: result.data.memories,
+    serviceReceipt: result.receipt,
   }, { headers: privateNoStoreHeaders });
-}
-
-function publicMemoryRecord(record: MemoryRecord) {
-  const publicRecord = { ...record };
-  delete publicRecord.embedding;
-  const tier = resolveMemoryTier(record.tier, record.type || "fact");
-  const policy = memoryTierPolicy(tier);
-  const now = Date.now();
-  const retentionExpired = Boolean(
-    record.retentionExpiresAt && Date.parse(record.retentionExpiresAt) <= now,
-  );
-  const temporallyInvalid = Boolean(
-    (record.validFrom && Date.parse(record.validFrom) > now) ||
-      (record.validTo && Date.parse(record.validTo) <= now),
-  );
-  return {
-    ...publicRecord,
-    tier,
-    tierPolicyVersion: policy.version,
-    explainability: {
-      why: memoryFormationReasonLabel(
-        record.formationReason || "legacy_record",
-      ),
-      source: record.source,
-      scope: record.scope,
-      confidence: record.confidence ?? 0.7,
-      lastUsedAt: record.lastUsedAt || null,
-      useCount: record.useCount || 0,
-      validity: record.archivedAt
-        ? "archived"
-        : retentionExpired
-        ? "retention_expired"
-        : temporallyInvalid
-          ? "outside_validity_interval"
-          : record.claimStatus || "active",
-      validFrom: record.validFrom || null,
-      validTo: record.validTo || null,
-      retentionExpiresAt: record.retentionExpiresAt || null,
-      policy,
-      lifecycle: {
-        policyVersion: memoryLifecyclePolicyV1.version,
-        pinned: Boolean(record.pinnedAt),
-        pinnedAt: record.pinnedAt || null,
-        archived: Boolean(record.archivedAt),
-        archivedAt: record.archivedAt || null,
-        archiveReason: record.archiveReason || null,
-        duplicateOfMemoryId: record.duplicateOfMemoryId || null,
-        retrievalPriorityMultiplier: memoryRetrievalPriorityMultiplier(record),
-        historicalTruthChanged: false,
-      },
-    },
-  };
 }
 
 async function POSTHandler(request: Request) {
@@ -253,15 +77,13 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
-  const parsed = memorySchema.safeParse(body);
-
+  const parsed = memoryWriteServiceInputSchema.safeParse(body);
   if (!parsed.success) {
     return Response.json(
       { error: "Invalid memory", details: parsed.error.flatten() },
       { status: 400 },
     );
   }
-
   try {
     const context = await authorizeRequest({
       request,
@@ -275,110 +97,25 @@ async function POSTHandler(request: Request) {
         contentLength: parsed.data.content.length,
       },
     });
-    const safeMemory = redactSensitive(parsed.data) as typeof parsed.data;
-    const embedding = (await embedTexts([
-      `${safeMemory.title}\n\n${safeMemory.content}`,
-    ], undefined, {
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      sourceStreamId: "api:memory",
-      operation: "embedding",
-      purpose: "api.memory.write",
-      credentialSource: "deployment_environment",
-    }))?.[0];
-    const correlationId = request.headers.get("x-idempotency-key")?.trim().slice(0, 200) ||
-      request.headers.get("x-request-id")?.trim().slice(0, 200) ||
-      `memory_write_${randomUUID()}`;
-    const requestAccess = requestMemoryAccessFromSecurityContext(context, {
-      purposeId: MEMORY_PURPOSE_IDS.write,
-      auditPurpose: "api.memory.write",
-      correlationId,
-    });
-    const accessBinding = requestAccess
-      ? buildUserPrivateMemoryAccessBindingV1({
-          tenantId: context.tenantId,
-          ownerActorId: requestAccess.actorBinding.canonicalActorId,
-          originPurpose: "api.memory.write",
-        })
-      : undefined;
-    const record = await saveMemory({
-      ...safeMemory,
-      tenantId: context.tenantId,
-      source: "manual",
-      scope: accessBinding ? "user" : "workspace",
-      assertedBy: "user",
-      embedding,
-      accessBinding,
-      databaseAccessScope: requestAccess?.databaseAccessScope,
-      executionScope: requestAccess?.executionScope ||
-        executionScopeFromSecurityContext(context, {
-          correlationId,
-          purpose: "api.memory.write",
-        }),
-    });
-    let entityProjection:
-      | {
-          candidateCount: number;
-          createdCount: number;
-          linkedCount: number;
-          reviewRequiredCount: number;
-        }
-      | undefined;
-    if (record.accessBinding && requestAccess) {
-      await indexUserPrivateMemoryGraphRecords([record], "memory.manual", {
-        tenantId: context.tenantId,
-        accessScope: requestAccess.databaseAccessScope,
-      });
-      const projected = await projectExplicitMemoryEntities({
-        memory: record,
-        executionScope: requestAccess.executionScope,
-      });
-      entityProjection = {
-        candidateCount: projected.extraction.candidates.length,
-        createdCount: projected.createdEntityIds.length,
-        linkedCount: projected.linkedEntityIds.length,
-        reviewRequiredCount: projected.reviewResolutionIds.length,
-      };
-    } else if (!record.accessBinding) {
-      await indexMemoryGraphRecords([record], "memory.manual");
-    }
-
-    return Response.json(
-      { record: publicMemoryRecord(record), entityProjection },
-      { status: 201, headers: privateNoStoreHeaders },
+    const result = await writeMemoryService(
+      createRequestMutationAppServiceCaller(request, context, {
+        purpose: "api.memory.write",
+      }),
+      parsed.data,
+      { storageProfile: "user_private" },
     );
+    return Response.json({
+      ...result.data,
+      serviceReceipt: result.receipt,
+    }, { status: 201, headers: privateNoStoreHeaders });
   } catch (error) {
     try {
       return forbiddenResponse(error);
     } catch {
-      // fall through to ordinary error handling
-    }
-    return Response.json(
-      {
+      return Response.json({
         error: "Memory write failed",
         message: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 },
-    );
+      }, { status: 500 });
+    }
   }
-}
-
-function mergeMemoryRecords<
-  T extends { id: string; updatedAt: string },
->(legacy: T[], scoped: T[], limit: number) {
-  return [...new Map(
-    [...legacy, ...scoped].map((memory) => [memory.id, memory] as const),
-  ).values()]
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, limit);
-}
-
-function mergeMemorySearchResults<
-  T extends { record: { id: string }; score: number },
->(legacy: T[], scoped: T[], limit: number) {
-  return [...new Map(
-    [...legacy, ...scoped].map((result) => [result.record.id, result] as const),
-  ).values()]
-    .sort((left, right) => right.score - left.score)
-    .slice(0, limit);
 }
