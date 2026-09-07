@@ -9,6 +9,7 @@ import {
   reserveExternalA2ASafety,
   touchExternalA2ASafety,
 } from "@/lib/a2a/safety-store";
+import type { A2ASafetyReservationV1 } from "@/lib/a2a/safety";
 import type { A2ATaskMappingV1 } from "@/lib/a2a/task-mapping";
 import {
   assertA2APeerRolloutActive,
@@ -40,7 +41,7 @@ import {
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
-const OUTBOUND_BOUNDARY_VERSION = "p8.6-a2a-outbound-delegation:1" as const;
+const OUTBOUND_BOUNDARY_VERSION = "p8.7-a2a-outbound-delegation:1" as const;
 const localAgentIds = ["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const;
 type LocalAgentId = (typeof localAgentIds)[number];
 
@@ -76,7 +77,7 @@ export async function startExternalA2ATaskV1(input: {
       409,
     );
   }
-  await reserveExternalA2ASafety({
+  const safety = await reserveExternalA2ASafety({
     contract,
     internalTask: input.internalTask,
     rollout,
@@ -94,6 +95,7 @@ export async function startExternalA2ATaskV1(input: {
     rollout,
     negotiatedSkillId: input.negotiatedSkillId,
     token: issued,
+    safety: safety.reservation,
     callbackBaseUrl: input.callbackBaseUrl,
   });
   let remoteTask: A2ATaskV1;
@@ -227,6 +229,7 @@ export async function resumeExternalA2ATaskV1(input: {
     rollout: authority.rollout,
     negotiatedSkillId: input.mapping.negotiatedSkillId,
     token: issued,
+    safety: authority.safety.reservation,
     callbackBaseUrl: input.callbackBaseUrl,
     messageIdSuffix: `resume:${task.lifecycleRevision}`,
   });
@@ -274,7 +277,7 @@ export async function cancelExternalA2ATaskV1(input: {
     input.parentExecutionScope,
     input.abortSignal,
   );
-  if (isTerminalInternalState(task.state)) {
+  if (isTerminalInternalState(task.state) || task.state === "completed_proposed") {
     throw new A2AOutboundError("The external delegation is already terminal.", 409);
   }
   const client = await outboundClient(rollout);
@@ -457,6 +460,7 @@ function buildOutboundDelegationMessage(input: {
   rollout: A2APeerRolloutV1;
   negotiatedSkillId: string;
   token: ReturnType<typeof issueDelegatedA2ATokenV1>;
+  safety: A2ASafetyReservationV1;
   callbackBaseUrl?: string;
   messageIdSuffix?: string;
 }) {
@@ -471,6 +475,18 @@ function buildOutboundDelegationMessage(input: {
     messageId: `a2a-message:${canonicalJsonSha256({
       contractSha256: input.contract.contractSha256,
       rolloutSha256: input.rollout.rolloutSha256,
+      safetyBoundary: {
+        version: input.safety.version,
+        safetyId: input.safety.safetyId,
+        safetySha256: input.safety.safetySha256,
+        trustTier: input.safety.trustTier,
+        forceMutationApproval: input.safety.forceMutationApproval,
+        canRedelegate: input.safety.canRedelegate,
+        budgets: input.safety.budgets,
+        maxToolCalls: input.safety.maxToolCalls,
+        deadlineAt: input.safety.deadlineAt,
+        progressTimeoutMs: input.safety.progressTimeoutMs,
+      },
       negotiatedSkillId: input.negotiatedSkillId,
       suffix: input.messageIdSuffix || "start",
     })}`,
@@ -503,6 +519,18 @@ function buildOutboundDelegationMessage(input: {
       contractSha256: input.contract.contractSha256,
       rolloutId: input.rollout.rolloutId,
       rolloutSha256: input.rollout.rolloutSha256,
+      safetyBoundary: {
+        version: input.safety.version,
+        safetyId: input.safety.safetyId,
+        safetySha256: input.safety.safetySha256,
+        trustTier: input.safety.trustTier,
+        forceMutationApproval: input.safety.forceMutationApproval,
+        canRedelegate: input.safety.canRedelegate,
+        budgets: input.safety.budgets,
+        maxToolCalls: input.safety.maxToolCalls,
+        deadlineAt: input.safety.deadlineAt,
+        progressTimeoutMs: input.safety.progressTimeoutMs,
+      },
       upstreamCredentialMaterialIncluded: false,
       delegatedToolGateway: {
         url: callbackUrl.toString(),
