@@ -11,6 +11,8 @@ export const EMBEDDING_MODEL =
   process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-large";
 export const TRANSCRIPTION_MODEL =
   process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe";
+export const DIARIZATION_MODEL =
+  process.env.OPENAI_DIARIZATION_MODEL || "gpt-4o-transcribe-diarize";
 export const OCR_MODEL = process.env.OPENAI_OCR_MODEL || "gpt-4o-mini";
 export const GEMINI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || "gemini-3.5-flash-lite";
 export const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || "gemini-3.1-flash-image";

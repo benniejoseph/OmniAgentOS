@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   captureMediaOutputSchema,
   captureMediaProcessingRequestSchema,
+  captureSegmentMediaTranscriptSchema,
   mediaArtifactId,
   mediaCitationForTurn,
   mediaTurnId,
+  sha256Json,
   withCaptureMediaOutputDigest,
   type CaptureMediaTurn,
 } from "@/lib/capture/media-contracts";
@@ -121,5 +123,27 @@ describe("capture media processing contracts", () => {
         retainUntil: "2026-09-08T12:00:00.000Z",
       },
     })).toThrow(/retention deadline/i);
+  });
+
+  it("binds resumable segment checkpoints to audio, turns, and languages", () => {
+    const turns = [{
+      startMilliseconds: 0,
+      endMilliseconds: 1_500,
+      languageTag: "hi-IN",
+      speaker: { label: "B", identity: "diarized" as const },
+      text: "कल भेज देंगे।",
+    }];
+    expect(captureSegmentMediaTranscriptSchema.parse({
+      schemaVersion: 1,
+      recordingId: "capture_recording_a",
+      segmentId: "capture_segment_a",
+      segmentIndex: 2,
+      sourceAudioSha256,
+      transcriptSha256: sha256Json(turns.map((entry) => entry.text).join("\n")),
+      model: "gpt-4o-transcribe-diarize",
+      languageTags: ["hi-IN"],
+      turns,
+      transcribedAt: "2026-09-07T12:00:00.000Z",
+    })).toMatchObject({ languageTags: ["hi-IN"] });
   });
 });
