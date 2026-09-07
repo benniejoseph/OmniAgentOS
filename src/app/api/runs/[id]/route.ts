@@ -141,6 +141,7 @@ async function DELETEHandler(
       action: "run.agent",
       resourceType: "agent_run",
       resourceId: id,
+      nativeMutationCapability: "evidence.cancel",
       metadata: { signal: "cancel" },
     });
   } catch (error) {

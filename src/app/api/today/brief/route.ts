@@ -43,7 +43,12 @@ async function POSTHandler(request: Request) {
   if (parsed instanceof Response) return parsed;
   let context;
   try {
-    context = await authorizeRequest({ request, action: "run.agent", resourceType: "daily_brief" });
+    context = await authorizeRequest({
+      request,
+      action: "run.agent",
+      resourceType: "daily_brief",
+      nativeMutationCapability: "today.update",
+    });
   } catch (error) {
     return forbiddenResponse(error);
   }
@@ -59,7 +64,12 @@ async function PATCHHandler(request: Request) {
   if (parsed instanceof Response) return parsed;
   let context;
   try {
-    context = await authorizeRequest({ request, action: "run.agent", resourceType: "daily_brief_preferences" });
+    context = await authorizeRequest({
+      request,
+      action: "run.agent",
+      resourceType: "daily_brief_preferences",
+      nativeMutationCapability: "today.update",
+    });
   } catch (error) {
     return forbiddenResponse(error);
   }

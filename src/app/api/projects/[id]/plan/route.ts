@@ -18,7 +18,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   const parsed = schema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid planning request", details: parsed.error.flatten() }, { status: 400 });
   let context;
-  try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_plan", resourceId: id }); }
+  try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_plan", resourceId: id, nativeMutationCapability: "workspaces.update" }); }
   catch (error) { return forbiddenResponse(error); }
   try {
     const result = await planProjectService(

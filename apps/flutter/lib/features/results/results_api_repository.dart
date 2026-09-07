@@ -73,9 +73,7 @@ class ApiResultsRepository implements ResultsRepository {
   @override
   Future<ResultItem?> detail(String key) async {
     if (key.startsWith('agent:')) {
-      final j = await api.getJson(
-        NativePaths.evidenceRun(key.substring(6)),
-      );
+      final j = await api.getJson(NativePaths.evidenceRun(key.substring(6)));
       return j['run'] is Map
           ? ResultItem.agent(Map<String, dynamic>.from(j['run'] as Map))
           : null;
@@ -93,6 +91,12 @@ class ApiResultsRepository implements ResultsRepository {
 
   @override
   Future<void> cancel(String runId) async {
-    await api.deleteJson(NativePaths.evidenceRunCancel(runId));
+    await api.deleteJson(
+      NativePaths.evidenceRunCancel(runId),
+      headers: {
+        'idempotency-key':
+            'evidence-cancel-$runId-${DateTime.now().microsecondsSinceEpoch}',
+      },
+    );
   }
 }

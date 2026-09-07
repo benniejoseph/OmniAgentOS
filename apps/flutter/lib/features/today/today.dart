@@ -121,6 +121,8 @@ class TodayController extends ChangeNotifier {
   TodaySnapshot? snapshot;
   Object? error;
   bool loading = false;
+  bool acting = false;
+  final Set<String> updating = {};
   Future<void> refresh() async {
     loading = true;
     error = null;
@@ -135,17 +137,58 @@ class TodayController extends ChangeNotifier {
     }
   }
 
-  Future<void> add(
+  Future<bool> add(
     String title, {
     TodayPriority priority = TodayPriority.medium,
   }) async {
-    await repository.create(title: title, priority: priority);
-    await refresh();
+    if (acting) return false;
+    acting = true;
+    error = null;
+    notifyListeners();
+    try {
+      await repository.create(title: title, priority: priority);
+      await refresh();
+      return true;
+    } catch (value) {
+      error = value;
+      return false;
+    } finally {
+      acting = false;
+      notifyListeners();
+    }
   }
 
   Future<void> toggle(TodayItem item) async {
-    await repository.update(item.id, {'status': item.isDone ? 'open' : 'done'});
-    await refresh();
+    if (!updating.add(item.id)) return;
+    error = null;
+    notifyListeners();
+    try {
+      await repository.update(item.id, {
+        'status': item.isDone ? 'open' : 'done',
+      });
+      await refresh();
+    } catch (value) {
+      error = value;
+    } finally {
+      updating.remove(item.id);
+      notifyListeners();
+    }
+  }
+
+  Future<void> generateBrief() async {
+    if (acting) return;
+    acting = true;
+    error = null;
+    notifyListeners();
+    try {
+      await repository.generateBrief(force: true);
+      await refresh();
+    } catch (value) {
+      error = value;
+    } finally {
+      acting = false;
+      notifyListeners();
+    }
   }
 }
 
@@ -181,12 +224,50 @@ class TodayView extends StatelessWidget {
               title: const Text('Today'),
               actions: [
                 IconButton(
+                  onPressed: controller.acting
+                      ? null
+                      : controller.generateBrief,
+                  tooltip: 'Refresh daily brief',
+                  icon: const Icon(Icons.auto_awesome_rounded),
+                ),
+                IconButton(
+                  onPressed: controller.acting ? null : () => _addItem(context),
+                  tooltip: 'Add focus item',
+                  icon: const Icon(Icons.add_task_rounded),
+                ),
+                IconButton(
                   onPressed: controller.refresh,
                   tooltip: 'Refresh today',
                   icon: const Icon(Icons.refresh_rounded),
                 ),
               ],
             ),
+            if (controller.error != null)
+              SliverToBoxAdapter(
+                child: Container(
+                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.errorContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.cloud_off_outlined),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'Update failed · showing the last available Today view.',
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: controller.refresh,
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
@@ -261,6 +342,7 @@ class TodayView extends StatelessWidget {
                     final item = data.items[index];
                     return _TodayRow(
                       item: item,
+                      busy: controller.updating.contains(item.id),
                       onToggle: () => controller.toggle(item),
                     );
                   },
@@ -272,6 +354,35 @@ class TodayView extends StatelessWidget {
       );
     },
   );
+
+  Future<void> _addItem(BuildContext context) async {
+    final input = TextEditingController();
+    final submit = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Add focus item'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          maxLength: 280,
+          decoration: const InputDecoration(labelText: 'What needs attention?'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    final title = input.text.trim();
+    input.dispose();
+    if (submit == true && title.isNotEmpty) await controller.add(title);
+  }
 }
 
 class _MetricChip extends StatelessWidget {
@@ -288,8 +399,13 @@ class _MetricChip extends StatelessWidget {
 }
 
 class _TodayRow extends StatelessWidget {
-  const _TodayRow({required this.item, required this.onToggle});
+  const _TodayRow({
+    required this.item,
+    required this.busy,
+    required this.onToggle,
+  });
   final TodayItem item;
+  final bool busy;
   final VoidCallback onToggle;
   @override
   Widget build(BuildContext context) {
@@ -301,15 +417,22 @@ class _TodayRow extends StatelessWidget {
     };
     return AnimatedOpacity(
       duration: const Duration(milliseconds: 180),
-      opacity: item.isDone ? .58 : 1,
+      opacity: busy
+          ? .45
+          : item.isDone
+          ? .58
+          : 1,
       child: InkWell(
-        onTap: onToggle,
+        onTap: busy ? null : onToggle,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
           child: Row(
             children: [
-              Checkbox(value: item.isDone, onChanged: (_) => onToggle()),
+              Checkbox(
+                value: item.isDone,
+                onChanged: busy ? null : (_) => onToggle(),
+              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(

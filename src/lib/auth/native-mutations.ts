@@ -10,6 +10,10 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "notifications.update",
   "capture.submit",
   "capture.transcribe",
+  "approvals.decide",
+  "today.update",
+  "workspaces.update",
+  "evidence.cancel",
 ] as const;
 
 export type NativeMutationCapability =

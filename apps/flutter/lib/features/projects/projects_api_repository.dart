@@ -5,6 +5,10 @@ import 'projects.dart';
 class ApiProjectsRepository implements ProjectsRepository {
   const ApiProjectsRepository(this.api);
   final ApiClient api;
+  Map<String, String> _headers(String operation) => {
+    'idempotency-key':
+        'workspace-$operation-${DateTime.now().microsecondsSinceEpoch}',
+  };
   Project _project(Json json) =>
       Project.fromJson(Map<String, dynamic>.from(json['project'] as Map));
   @override
@@ -34,11 +38,17 @@ class ApiProjectsRepository implements ProjectsRepository {
         if (targetDate != null)
           'targetDate': targetDate.toUtc().toIso8601String(),
       },
+      headers: _headers('create'),
     ),
   );
   @override
-  Future<Project> update(String id, Json changes) async =>
-      _project(await api.patchJson(NativePaths.workspacesUpdate(id), data: changes));
+  Future<Project> update(String id, Json changes) async => _project(
+    await api.patchJson(
+      NativePaths.workspacesUpdate(id),
+      data: changes,
+      headers: _headers('update-$id'),
+    ),
+  );
   @override
   Future<ProjectPlan> plan(String id, {String? context}) async {
     final j = await api.postJson(
@@ -46,6 +56,7 @@ class ApiProjectsRepository implements ProjectsRepository {
       data: {
         if (context?.trim().isNotEmpty ?? false) 'context': context!.trim(),
       },
+      headers: _headers('plan-$id'),
     );
     final p = Map<String, dynamic>.from(j['plan'] as Map);
     return ProjectPlan(
@@ -73,6 +84,7 @@ class ApiProjectsRepository implements ProjectsRepository {
         'priority': priority,
         'agentId': agentId,
       },
+      headers: _headers('task-create-$id'),
     );
     return ProjectTask.fromJson(Map<String, dynamic>.from(j['task'] as Map));
   }
@@ -82,6 +94,7 @@ class ApiProjectsRepository implements ProjectsRepository {
     final j = await api.patchJson(
       NativePaths.workspacesTasksUpdate(id, taskId),
       data: changes,
+      headers: _headers('task-update-$taskId'),
     );
     return ProjectTask.fromJson(Map<String, dynamic>.from(j['task'] as Map));
   }
@@ -107,6 +120,7 @@ class ApiProjectsRepository implements ProjectsRepository {
     final j = await api.postJson(
       NativePaths.workspacesExecute(id),
       data: body,
+      headers: _headers('execute-$id-$action'),
     );
     if (j['tasks'] is! List || j['artifacts'] is! List) return detail(id);
     return Project.fromJson({
@@ -126,6 +140,7 @@ class ApiProjectsRepository implements ProjectsRepository {
     final j = await api.postJson(
       NativePaths.workspacesArtifactsFeedback(id, artifactId),
       data: {'verdict': verdict, 'lesson': lesson},
+      headers: _headers('artifact-$artifactId'),
     );
     return ProjectArtifact.fromJson(
       Map<String, dynamic>.from(j['artifact'] as Map),

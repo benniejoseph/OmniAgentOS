@@ -42,7 +42,12 @@ async function POSTHandler(request: Request) {
   }
   let context;
   try {
-    context = await authorizeRequest({ request, action: "run.agent", resourceType: "today_item" });
+    context = await authorizeRequest({
+      request,
+      action: "run.agent",
+      resourceType: "today_item",
+      nativeMutationCapability: "today.update",
+    });
   } catch (error) {
     return forbiddenResponse(error);
   }

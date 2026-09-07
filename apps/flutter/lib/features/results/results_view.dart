@@ -47,6 +47,32 @@ class ResultsView extends StatelessWidget {
                   slivers: [
                     SliverToBoxAdapter(child: _Header(snapshot: snapshot)),
                     SliverToBoxAdapter(child: _Filters(controller: controller)),
+                    if (controller.error != null && snapshot != null)
+                      SliverToBoxAdapter(
+                        child: Container(
+                          margin: const EdgeInsets.all(12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.errorContainer,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.cloud_off_outlined),
+                              const SizedBox(width: 10),
+                              const Expanded(
+                                child: Text(
+                                  'Offline · showing the last available evidence.',
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: controller.refresh,
+                                child: const Text('Retry'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     if (snapshot?.sourceErrors.isNotEmpty ?? false)
                       SliverToBoxAdapter(
                         child: Padding(
