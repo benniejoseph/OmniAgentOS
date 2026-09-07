@@ -5,6 +5,7 @@ import {
   Bot,
   Cable,
   CheckCircle2,
+  CreditCard,
   Database,
   FileText,
   FolderKanban,
@@ -89,6 +90,13 @@ export const appNav: AppNavItem[] = [
     shortLabel: "Inbox",
     description: "Review actions that need your attention.",
     icon: CheckCircle2,
+  },
+  {
+    href: "/app/payments",
+    label: "Payments",
+    shortLabel: "Payments",
+    description: "Review and cryptographically authorize exact purchase mandates.",
+    icon: CreditCard,
   },
   {
     href: "/app/results",
@@ -183,6 +191,7 @@ export const appNavGroups: AppNavGroup[] = [
     items: appNav.filter((item) =>
       [
         "/app/approvals",
+        "/app/payments",
         "/app/results",
         "/app/evaluations",
       ].includes(item.href),
