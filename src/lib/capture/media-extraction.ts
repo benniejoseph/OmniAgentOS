@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { AGENT_MODEL } from "@/lib/config";
 import {
   mediaArtifactId,
   mediaCitationForTurn,
@@ -8,8 +7,11 @@ import {
   type CaptureMediaDecision,
   type CaptureMediaTurn,
 } from "@/lib/capture/media-contracts";
+import { AGENT_MODEL } from "@/lib/config";
+import { generateModelStructured } from "@/lib/models/gateway";
 import { createStructuredResponse } from "@/lib/openai/client";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
+import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import type { AiUsageScope } from "@/lib/usage/types";
 
 const languageTag = z.string().trim().min(2).max(35).regex(
@@ -55,7 +57,7 @@ export async function extractCaptureMediaInsights(input: {
 }) : Promise<CaptureMediaExtraction> {
   if (!input.turns.length) throw new Error("Media extraction requires transcript turns.");
   const extractionTurns = boundedExtractionTurns(input.turns);
-  const response = await createStructuredResponse({
+  const request = {
     name: "capture_media_extraction_v1",
     schema: extractionJsonSchema,
     instructions: [
@@ -73,7 +75,26 @@ export async function extractCaptureMediaInsights(input: {
     reasoningEffort: "low",
     model: AGENT_MODEL,
     usageScope: input.usageScope,
-  });
+  };
+  let response: string;
+  let generatedModel = AGENT_MODEL;
+  if (input.usageScope) {
+    const runtimeModel = await resolveRuntimeModelAssignment({
+      tenantId: input.usageScope.tenantId,
+      actorId: input.usageScope.actorId,
+      scope: "planner",
+      tier: "reasoning",
+      requiredFeature: "json_schema",
+    });
+    if (!runtimeModel.configured) {
+      throw new Error("Media insight planning is not configured.");
+    }
+    const generated = await generateModelStructured(runtimeModel.bind(request));
+    response = generated.text;
+    generatedModel = generated.model;
+  } else {
+    response = await createStructuredResponse(request);
+  }
   const parsed = extractionResponseSchema.parse(JSON.parse(response));
   const turnById = new Map(input.turns.map((turn) => [turn.turnId, turn]));
   const allowedIds = new Set(extractionTurns.map((turn) => turn.turnId));
@@ -161,7 +182,7 @@ export async function extractCaptureMediaInsights(input: {
     decisions,
     languageTags: [...new Set(turns.map((turn) => turn.languageTag))]
       .sort((left, right) => left.localeCompare(right)),
-    model: AGENT_MODEL,
+    model: generatedModel,
     warnings: extractionTurns.length < input.turns.length
       ? ["insight_extraction_transcript_window_truncated"]
       : [],

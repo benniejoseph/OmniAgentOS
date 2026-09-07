@@ -144,7 +144,7 @@ export function createRetrievalQueryPlanner(
       runtimeModel = await dependencies.resolveRuntimeModelAssignment({
         tenantId: usageScope.tenantId,
         actorId: usageScope.actorId,
-        scope: "orchestrator",
+        scope: "memory",
         tier: "fast",
         requiredFeature: "json_schema",
       });
@@ -213,6 +213,7 @@ async function generateCandidate(input: {
         maxOutputTokens: 700,
         usageScope: {
           ...input.usageScope,
+          ...input.runtimeModel.usageReceipt,
           operation: "structured_generation",
           purpose: "context.query_plan.semantic",
         },

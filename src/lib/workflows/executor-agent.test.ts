@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   resolveRuntimeModelAssignment: vi.fn(),
   appendWorkflowEvent: vi.fn(),
   getWorkflowRunExecutionAuthority: vi.fn(),
+  listWorkflowRunSummaries: vi.fn(),
   shareDelegationMissionArtifact: vi.fn(),
   sendDelegationMessage: vi.fn(),
 }));
@@ -22,6 +23,7 @@ vi.mock("@/lib/settings/runtime-models", () => ({
 vi.mock("@/lib/workflows/store", () => ({
   appendWorkflowEvent: mocks.appendWorkflowEvent,
   getWorkflowRunExecutionAuthority: mocks.getWorkflowRunExecutionAuthority,
+  listWorkflowRunSummaries: mocks.listWorkflowRunSummaries,
 }));
 vi.mock("@/lib/delegation/channel-store", () => ({
   shareDelegationMissionArtifact: mocks.shareDelegationMissionArtifact,
@@ -291,7 +293,7 @@ describe("workflow agent node execution", () => {
       dependencyRecords: [],
       parentExecutionScope: executionScope,
       remainingWallTimeMs: 30_000,
-      createdAt: "2026-09-07T06:00:00.000Z",
+      createdAt: new Date().toISOString(),
     });
 
     const result = await executeAgentPlanNode({
@@ -332,7 +334,7 @@ function delegationContract(nodeInput: ReturnType<typeof buildWorkflowNodeInput>
     nodeInput,
     dependencyRecords: [],
     remainingWallTimeMs: 30_000,
-    createdAt: "2026-09-07T06:00:00.000Z",
+    createdAt: new Date().toISOString(),
   });
 }
 

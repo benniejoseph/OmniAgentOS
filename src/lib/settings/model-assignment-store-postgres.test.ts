@@ -49,6 +49,7 @@ import {
   ModelAssignmentReadConflictError,
   listModelAssignments,
   listModelAssignmentsForRequest,
+  saveModelAssignment,
 } from "@/lib/settings/store";
 
 const tenantId = "tenant-a";
@@ -76,6 +77,19 @@ beforeEach(() => {
 });
 
 describe("request-bound model assignments", () => {
+  it("rejects a specialized fallback before it can become an inactive control", async () => {
+    await expect(saveModelAssignment({
+      tenantId,
+      actorId,
+      scope: "audio",
+      provider: "openai",
+      modelId: "gpt-4o-mini-transcribe",
+      fallbackProvider: "openai",
+      fallbackModelId: "whisper-1",
+    })).rejects.toMatchObject({ status: 409 });
+    expect(dbMocks.sql).not.toHaveBeenCalled();
+  });
+
   it("projects the request actor and derives readiness and management from physical ownership", async () => {
     dbMocks.rows.push(
       {
@@ -115,7 +129,7 @@ describe("request-bound model assignments", () => {
       expect.objectContaining({
         actorId,
         scope: "orchestrator",
-        runtimeReadiness: "active",
+        runtimeReadiness: "configuration_only",
         manageable: true,
       }),
     ]);
@@ -326,7 +340,7 @@ describe("request-bound model assignments", () => {
         tenantId,
         actorId,
         scope: "main_agent",
-        runtimeReadiness: "active",
+        runtimeReadiness: "configuration_only",
         manageable: true,
       }),
     ]);
@@ -364,7 +378,13 @@ describe("request-bound model assignments", () => {
     await expect(listModelAssignmentsForRequest({
       tenantId,
       actorId,
-    })).rejects.toBeInstanceOf(ModelAssignmentReadConflictError);
+    })).resolves.toEqual([
+      expect.objectContaining({
+        scope: "main_agent",
+        runtimeReadiness: "configuration_only",
+        contractVersion: "legacy",
+      }),
+    ]);
   });
 
   it("leaves the legacy assignment reader exact-owner", async () => {

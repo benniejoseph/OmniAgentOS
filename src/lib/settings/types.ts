@@ -10,7 +10,8 @@ export type SettingsModelProvider = (typeof MODEL_PROVIDERS)[number];
 export const MODEL_ASSIGNMENT_SCOPES = [
   "main_agent",
   "orchestrator",
-  "workflow",
+  "planner",
+  "verifier",
   "council",
   "memory",
   "embeddings",
@@ -114,6 +115,10 @@ export type ModelAssignment = {
   allowCrossProviderFallback: boolean;
   runtimeReadiness: "active" | "configuration_only";
   runtimeNote: string;
+  contractVersion: "p11.8-model-assignment:1" | "legacy";
+  revision: number;
+  configurationSha256?: string;
+  validatedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -194,9 +199,24 @@ export type SettingsSnapshot = {
   apiKeys: RequestServiceApiKey[];
   mcp: RequestMcpExportConfiguration;
   runtime: {
+    contractVersion: "p11.8-functional-model-routing:1";
     tenantAssignmentsConsumed: boolean;
     activeScopes: ModelAssignmentScope[];
     configurationOnlyScopes: ModelAssignmentScope[];
+    receipts: ModelAssignmentRuntimeReceipt[];
     message: string;
   };
+};
+
+export type ModelAssignmentRuntimeReceipt = {
+  scope: ModelAssignmentScope;
+  assignmentId: string;
+  assignmentRevision: number;
+  assignmentConfigurationSha256: string;
+  state: "succeeded" | "failed";
+  provider: string;
+  model: string;
+  fallbackUsed: boolean;
+  credentialSource: "tenant_vault";
+  recordedAt: string;
 };

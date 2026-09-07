@@ -16,6 +16,13 @@ import {
   type SealedCredentialPayload,
 } from "@/lib/settings/credential-vault";
 import { modelAssignmentActorReadOrder } from "@/lib/settings/model-assignment-actor-scope";
+import {
+  MODEL_ASSIGNMENT_CONTRACT_VERSION,
+  modelAssignmentConfigurationSha256,
+  modelAssignmentRoleContracts,
+  modelAssignmentRoleSupportsFallback,
+  modelSupportsAssignmentRole,
+} from "@/lib/settings/model-assignment-contract";
 import { modelCatalogActorReadOrder } from "@/lib/settings/model-catalog-actor-scope";
 import { mcpExportConfigurationActorReadOrder } from "@/lib/settings/mcp-export-actor-scope";
 import { providerConnectionActorReadOrder } from "@/lib/settings/provider-connection-actor-scope";
@@ -689,11 +696,7 @@ export async function listModelAssignments(input: { tenantId: string; actorId: s
     const ledger = await readLedger();
     return ledger.assignments
       .filter((item) => item.tenantId === input.tenantId && item.actorId === input.actorId)
-      .map((item) => ({
-        ...item,
-        runtimeReadiness: assignmentRuntimeReadiness(item.scope),
-        runtimeNote: assignmentRuntimeNote(item.scope),
-      }));
+      .map(normalizeLedgerAssignment);
   });
 }
 
@@ -714,7 +717,7 @@ export async function listModelAssignmentsForRequest(input: {
           item.tenantId === input.tenantId && item.actorId === input.actorId
         )
         .map((record) => {
-          const row = modelAssignmentLedgerRow(record);
+          const row = modelAssignmentLedgerRow(normalizeLedgerAssignment(record));
           assertRequestModelAssignmentRow(
             row,
             input.tenantId,
@@ -743,7 +746,8 @@ export async function listModelAssignmentsForRequest(input: {
     const rows = await getSql()`
       SELECT id, tenant_id, actor_id, scope, provider, model_id,
         fallback_provider, fallback_model_id, allow_cross_provider_fallback,
-        runtime_readiness, created_at, updated_at
+        runtime_readiness, contract_version, assignment_revision,
+        configuration_sha256, validated_at, created_at, updated_at
       FROM omni_model_assignments
       WHERE tenant_id = ${input.tenantId}
         AND actor_id IN (${canonicalActorId}, ${exactActorId})
@@ -795,49 +799,94 @@ export async function saveModelAssignment(input: {
   if (Boolean(input.fallbackProvider) !== Boolean(input.fallbackModelId)) {
     throw new SettingsStoreError("Fallback provider and fallback model must be selected together.");
   }
+  if (
+    input.fallbackProvider &&
+    !modelAssignmentRoleSupportsFallback(input.scope)
+  ) {
+    throw new SettingsStoreError(
+      `${modelAssignmentRoleContracts[input.scope].title} does not expose fallback routing. Save one validated primary route for this specialized runtime.`,
+      409,
+    );
+  }
   return inTenant(input.tenantId, async () => {
-    const now = new Date().toISOString();
-    const existing = (await listModelAssignments(input)).find((item) => item.scope === input.scope);
-    const record: ModelAssignment = {
-      id: existing?.id || randomUUID(),
-      tenantId: input.tenantId,
-      actorId: input.actorId,
+    const [connections, catalog] = await Promise.all([
+      listProviderConnections({
+        tenantId: input.tenantId,
+        actorId: input.actorId,
+        includeDeploymentFallback: false,
+      }),
+      listModelCatalog({ tenantId: input.tenantId, actorId: input.actorId }),
+    ]);
+    validateAssignmentTarget({
       scope: input.scope,
       provider: input.provider,
-      modelId: input.modelId.trim().slice(0, 240),
-      fallbackProvider: input.fallbackProvider,
-      fallbackModelId: input.fallbackModelId?.trim().slice(0, 240),
-      allowCrossProviderFallback: crossProvider,
-      runtimeReadiness: assignmentRuntimeReadiness(input.scope),
-      runtimeNote: assignmentRuntimeNote(input.scope),
-      createdAt: existing?.createdAt || now,
-      updatedAt: now,
-    };
+      modelId: input.modelId,
+      connections,
+      catalog,
+      label: "Primary",
+    });
+    if (input.fallbackProvider && input.fallbackModelId) {
+      validateAssignmentTarget({
+        scope: input.scope,
+        provider: input.fallbackProvider,
+        modelId: input.fallbackModelId,
+        connections,
+        catalog,
+        label: "Fallback",
+      });
+    }
     if (hasDatabaseUrl()) {
-      const rows = await getSql()`
-        INSERT INTO omni_model_assignments (
-          id, tenant_id, actor_id, scope, provider, model_id,
-          fallback_provider, fallback_model_id, allow_cross_provider_fallback,
-          runtime_readiness, created_at, updated_at
-        ) VALUES (
-          ${record.id}, ${record.tenantId}, ${record.actorId}, ${record.scope},
-          ${record.provider}, ${record.modelId}, ${record.fallbackProvider || null},
-          ${record.fallbackModelId || null}, ${record.allowCrossProviderFallback},
-          ${"configuration_only"}, ${record.createdAt}, ${record.updatedAt}
-        ) ON CONFLICT (tenant_id, actor_id, scope) DO UPDATE SET
-          provider = EXCLUDED.provider,
-          model_id = EXCLUDED.model_id,
-          fallback_provider = EXCLUDED.fallback_provider,
-          fallback_model_id = EXCLUDED.fallback_model_id,
-          allow_cross_provider_fallback = EXCLUDED.allow_cross_provider_fallback,
-          runtime_readiness = EXCLUDED.runtime_readiness,
-          updated_at = EXCLUDED.updated_at
-        RETURNING *
-      `;
-      const saved = assignmentFromRow(rows[0]);
+      await ensureDatabaseSchema();
+      const saved = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+        const lockIdentity = [input.tenantId, input.actorId, input.scope].join(":");
+        await sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockIdentity}, 0))`;
+        const existingRows = await sql`
+          SELECT * FROM omni_model_assignments
+          WHERE tenant_id = ${input.tenantId}
+            AND actor_id = ${input.actorId}
+            AND scope = ${input.scope}
+          LIMIT 1
+        `;
+        const existing = existingRows[0]
+          ? assignmentFromRow(existingRows[0])
+          : undefined;
+        const record = validatedAssignmentRecord(input, existing, crossProvider);
+        const rows = await sql`
+          INSERT INTO omni_model_assignments (
+            id, tenant_id, actor_id, scope, provider, model_id,
+            fallback_provider, fallback_model_id, allow_cross_provider_fallback,
+            runtime_readiness, contract_version, assignment_revision,
+            configuration_sha256, validated_at, created_at, updated_at
+          ) VALUES (
+            ${record.id}, ${record.tenantId}, ${record.actorId}, ${record.scope},
+            ${record.provider}, ${record.modelId}, ${record.fallbackProvider || null},
+            ${record.fallbackModelId || null}, ${record.allowCrossProviderFallback},
+            ${"active"}, ${record.contractVersion}, ${record.revision},
+            ${record.configurationSha256}, ${record.validatedAt},
+            ${record.createdAt}, ${record.updatedAt}
+          ) ON CONFLICT (tenant_id, actor_id, scope) DO UPDATE SET
+            provider = EXCLUDED.provider,
+            model_id = EXCLUDED.model_id,
+            fallback_provider = EXCLUDED.fallback_provider,
+            fallback_model_id = EXCLUDED.fallback_model_id,
+            allow_cross_provider_fallback = EXCLUDED.allow_cross_provider_fallback,
+            runtime_readiness = EXCLUDED.runtime_readiness,
+            contract_version = EXCLUDED.contract_version,
+            assignment_revision = EXCLUDED.assignment_revision,
+            configuration_sha256 = EXCLUDED.configuration_sha256,
+            validated_at = EXCLUDED.validated_at,
+            updated_at = EXCLUDED.updated_at
+          RETURNING *
+        `;
+        return assignmentFromRow(rows[0]);
+      });
       await assignmentEvent(saved);
       return saved;
     }
+    const existing = (await listModelAssignments(input)).find((item) =>
+      item.scope === input.scope
+    );
+    const record = validatedAssignmentRecord(input, existing, crossProvider);
     await updateLedger((ledger) => ({
       ...ledger,
       assignments: [
@@ -850,6 +899,99 @@ export async function saveModelAssignment(input: {
     await assignmentEvent(record);
     return record;
   });
+}
+
+function validatedAssignmentRecord(
+  input: {
+    tenantId: string;
+    actorId: string;
+    scope: ModelAssignmentScope;
+    provider: SettingsModelProvider;
+    modelId: string;
+    fallbackProvider?: SettingsModelProvider;
+    fallbackModelId?: string;
+  },
+  existing: ModelAssignment | undefined,
+  crossProvider: boolean,
+): ModelAssignment {
+  const now = new Date().toISOString();
+  const revision = (existing?.revision || 0) + 1;
+  const modelId = input.modelId.trim().slice(0, 240);
+  const fallbackModelId = input.fallbackModelId?.trim().slice(0, 240);
+  const configurationSha256 = modelAssignmentConfigurationSha256({
+    scope: input.scope,
+    provider: input.provider,
+    modelId,
+    fallbackProvider: input.fallbackProvider,
+    fallbackModelId,
+    allowCrossProviderFallback: crossProvider,
+    revision,
+    validatedAt: now,
+  });
+  return {
+    id: existing?.id || randomUUID(),
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    scope: input.scope,
+    provider: input.provider,
+    modelId,
+    fallbackProvider: input.fallbackProvider,
+    fallbackModelId,
+    allowCrossProviderFallback: crossProvider,
+    runtimeReadiness: "active",
+    runtimeNote: activeAssignmentRuntimeNote(input.scope, revision),
+    contractVersion: MODEL_ASSIGNMENT_CONTRACT_VERSION,
+    revision,
+    configurationSha256,
+    validatedAt: now,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  };
+}
+
+function validateAssignmentTarget(input: {
+  scope: ModelAssignmentScope;
+  provider: SettingsModelProvider;
+  modelId: string;
+  connections: readonly RedactedProviderConnection[];
+  catalog: readonly ModelCatalogEntry[];
+  label: "Primary" | "Fallback";
+}) {
+  const modelId = input.modelId.trim();
+  const connection = input.connections.find((candidate) =>
+    candidate.source === "tenant_vault" &&
+    candidate.provider === input.provider &&
+    candidate.enabled &&
+    candidate.status === "connected"
+  );
+  if (!connection) {
+    throw new SettingsStoreError(
+      `${input.label} provider must have an enabled, validated workspace connection before this route can activate.`,
+      409,
+    );
+  }
+  const model = input.catalog.find((candidate) =>
+    candidate.provider === input.provider && candidate.modelId === modelId
+  );
+  if (!model) {
+    throw new SettingsStoreError(
+      `${input.label} model must be selected from the validated workspace catalog before activation.`,
+      409,
+    );
+  }
+  if (model.lifecycle === "deprecated" || model.lifecycle === "retiring") {
+    throw new SettingsStoreError(
+      `${input.label} model is ${model.lifecycle} and cannot activate a new route.`,
+      409,
+    );
+  }
+  if (!modelSupportsAssignmentRole(input.scope, input.provider, model)) {
+    const role = modelAssignmentRoleContracts[input.scope];
+    throw new SettingsStoreError(
+      `${input.label} model is not supported for ${role.title}. Choose a validated model with ${role.acceptedCapabilities.join(" or ")} capability from ${role.supportedProviders.join(" or ")}.`,
+      409,
+    );
+  }
 }
 
 export async function listServiceApiKeyRecords(input: { tenantId: string; actorId: string }) {
@@ -1221,7 +1363,7 @@ function redactProvider(record: InternalProviderConnection): RedactedProviderCon
     validationCode: record.validationCode,
     catalogRefreshedAt: record.catalogRefreshedAt,
     runtimeReadiness: "active_tenant_runtime",
-    runtimeNote: "Available to the tenant runtime when assigned to Main agent or Orchestrator. Other saved routing scopes remain configuration-only.",
+    runtimeNote: "Available to every compatible runtime role after a catalog-backed assignment is validated and activated.",
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     rotatedAt: record.rotatedAt,
@@ -1277,7 +1419,7 @@ function providerConnectionMetadataFromRow(
     catalogRefreshedAt: optionalDate(row.catalog_refreshed_at),
     runtimeReadiness: "active_tenant_runtime",
     runtimeNote:
-      "Available to the tenant runtime when assigned to Main agent or Orchestrator. Other saved routing scopes remain configuration-only.",
+      "Available to every compatible runtime role after a catalog-backed assignment is validated and activated.",
     createdAt: optionalDate(row.created_at),
     updatedAt: optionalDate(row.updated_at),
     rotatedAt: optionalDate(row.rotated_at),
@@ -1701,11 +1843,15 @@ function requestModelAssignment(
       : undefined,
     allowCrossProviderFallback: record.allowCrossProviderFallback,
     runtimeReadiness: manageable
-      ? assignmentRuntimeReadiness(record.scope)
+      ? record.runtimeReadiness
       : "configuration_only",
     runtimeNote: manageable
-      ? assignmentRuntimeNote(record.scope)
+      ? record.runtimeNote
       : "Compatibility history is visible for review only. This saved route is not active for the current request actor and cannot be managed.",
+    contractVersion: record.contractVersion,
+    revision: record.revision,
+    configurationSha256: record.configurationSha256,
+    validatedAt: record.validatedAt,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     manageable,
@@ -1717,12 +1863,13 @@ function assertRequestModelAssignmentRow(
   expectedTenantId: string,
   canonicalActorId: string,
   exactActorId: string,
-  storage: "postgres" | "ledger" = "postgres",
+  _storage: "postgres" | "ledger" = "postgres",
 ) {
   const id = typeof row.id === "string" ? row.id : "";
   const tenantId = typeof row.tenant_id === "string" ? row.tenant_id : "";
   const actorId = typeof row.actor_id === "string" ? row.actor_id : "";
   const scope = typeof row.scope === "string" ? row.scope : "";
+  const normalizedScope = scope === "workflow" ? "planner" : scope;
   const provider = typeof row.provider === "string" ? row.provider : "";
   const fallbackProvider = row.fallback_provider;
   const fallbackModelId = row.fallback_model_id;
@@ -1732,21 +1879,35 @@ function assertRequestModelAssignmentRow(
     isValidAssignmentModelId(fallbackModelId);
   const expectedCrossProviderConsent = hasValidFallback &&
     fallbackProvider !== provider;
-  const expectedStoredReadiness = storage === "ledger" &&
-      MODEL_ASSIGNMENT_SCOPES.includes(scope as ModelAssignmentScope)
-    ? assignmentRuntimeReadiness(scope as ModelAssignmentScope)
-    : "configuration_only";
+  const runtimeReadiness = row.runtime_readiness;
+  const contractVersion = row.contract_version ?? "legacy";
+  const revision = row.assignment_revision === undefined
+    ? 1
+    : Number(row.assignment_revision);
+  const configurationSha256 = row.configuration_sha256;
+  const validatedAt = row.validated_at;
+  const validLegacy = runtimeReadiness === "configuration_only" &&
+    contractVersion === "legacy" &&
+    Number.isInteger(revision) && revision > 0 &&
+    (configurationSha256 === null || configurationSha256 === undefined) &&
+    (validatedAt === null || validatedAt === undefined);
+  const validActive = runtimeReadiness === "active" &&
+    contractVersion === MODEL_ASSIGNMENT_CONTRACT_VERSION &&
+    Number.isInteger(revision) && revision > 0 &&
+    typeof configurationSha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(configurationSha256) &&
+    isValidAssignmentDate(validatedAt);
   if (
     !uuidPattern.test(id) ||
     tenantId !== expectedTenantId ||
     (actorId !== canonicalActorId && actorId !== exactActorId) ||
-    !MODEL_ASSIGNMENT_SCOPES.includes(scope as ModelAssignmentScope) ||
+    !MODEL_ASSIGNMENT_SCOPES.includes(normalizedScope as ModelAssignmentScope) ||
     !MODEL_PROVIDERS.includes(provider as SettingsModelProvider) ||
     !isValidAssignmentModelId(row.model_id) ||
     (!hasNoFallback && !hasValidFallback) ||
     typeof row.allow_cross_provider_fallback !== "boolean" ||
     row.allow_cross_provider_fallback !== expectedCrossProviderConsent ||
-    row.runtime_readiness !== expectedStoredReadiness ||
+    (!validLegacy && !validActive) ||
     !isValidAssignmentDate(row.created_at) ||
     !isValidAssignmentDate(row.updated_at) ||
     assignmentDateMillis(row.created_at) > assignmentDateMillis(row.updated_at)
@@ -1793,6 +1954,10 @@ function modelAssignmentLedgerRow(record: ModelAssignment) {
     fallback_model_id: record.fallbackModelId ?? null,
     allow_cross_provider_fallback: record.allowCrossProviderFallback,
     runtime_readiness: record.runtimeReadiness,
+    contract_version: record.contractVersion,
+    assignment_revision: record.revision,
+    configuration_sha256: record.configurationSha256 ?? null,
+    validated_at: record.validatedAt ?? null,
     created_at: record.createdAt,
     updated_at: record.updatedAt,
   };
@@ -1837,30 +2002,74 @@ function assignmentDateMillis(value: unknown) {
 }
 
 function assignmentFromRow(row: Record<string, unknown>): ModelAssignment {
+  const scope = normalizedAssignmentScope(row.scope);
+  const runtimeReadiness = row.runtime_readiness === "active"
+    ? "active" as const
+    : "configuration_only" as const;
+  const revision = Number.isInteger(Number(row.assignment_revision)) &&
+      Number(row.assignment_revision) > 0
+    ? Number(row.assignment_revision)
+    : 1;
+  const contractVersion = row.contract_version === MODEL_ASSIGNMENT_CONTRACT_VERSION
+    ? MODEL_ASSIGNMENT_CONTRACT_VERSION
+    : "legacy" as const;
   return {
     id: String(row.id), tenantId: String(row.tenant_id), actorId: String(row.actor_id),
-    scope: String(row.scope) as ModelAssignmentScope,
+    scope,
     provider: String(row.provider) as SettingsModelProvider, modelId: String(row.model_id),
     fallbackProvider: row.fallback_provider ? String(row.fallback_provider) as SettingsModelProvider : undefined,
     fallbackModelId: row.fallback_model_id ? String(row.fallback_model_id) : undefined,
     allowCrossProviderFallback: Boolean(row.allow_cross_provider_fallback),
-    runtimeReadiness: assignmentRuntimeReadiness(String(row.scope) as ModelAssignmentScope),
-    runtimeNote: assignmentRuntimeNote(String(row.scope) as ModelAssignmentScope),
+    runtimeReadiness,
+    runtimeNote: runtimeReadiness === "active"
+      ? activeAssignmentRuntimeNote(scope, revision)
+      : "This legacy route is not active. Validate and save it again before any runtime can consume it.",
+    contractVersion,
+    revision,
+    configurationSha256: typeof row.configuration_sha256 === "string"
+      ? row.configuration_sha256
+      : undefined,
+    validatedAt: optionalDate(row.validated_at),
     createdAt: optionalDate(row.created_at) || new Date().toISOString(),
     updatedAt: optionalDate(row.updated_at) || new Date().toISOString(),
   };
 }
 
-function assignmentRuntimeReadiness(scope: ModelAssignmentScope): ModelAssignment["runtimeReadiness"] {
-  return scope === "main_agent" || scope === "orchestrator"
-    ? "active"
-    : "configuration_only";
+function normalizedAssignmentScope(value: unknown): ModelAssignmentScope {
+  const scope = value === "workflow" ? "planner" : String(value);
+  if (!MODEL_ASSIGNMENT_SCOPES.includes(scope as ModelAssignmentScope)) {
+    throw new ModelAssignmentReadConflictError(
+      "Model assignment scope is not supported by the current runtime.",
+    );
+  }
+  return scope as ModelAssignmentScope;
 }
 
-function assignmentRuntimeNote(scope: ModelAssignmentScope) {
-  return assignmentRuntimeReadiness(scope) === "active"
-    ? "Tenant credentials and the saved model route are consumed server-side for this runtime path, with deployment routing retained as a safe fallback."
-    : "Policy is saved. This runtime path still uses deployment-environment routing until its tenant adapter is enabled.";
+function activeAssignmentRuntimeNote(scope: ModelAssignmentScope, revision: number) {
+  return `${modelAssignmentRoleContracts[scope].runtimePurpose} consumes validated revision ${revision}; deployment routing remains the fail-closed fallback.`;
+}
+
+function normalizeLedgerAssignment(record: ModelAssignment): ModelAssignment {
+  const scope = normalizedAssignmentScope(record.scope);
+  const active = record.runtimeReadiness === "active" &&
+    record.contractVersion === MODEL_ASSIGNMENT_CONTRACT_VERSION &&
+    typeof record.configurationSha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(record.configurationSha256) &&
+    Boolean(record.validatedAt);
+  return {
+    ...record,
+    scope,
+    runtimeReadiness: active ? "active" : "configuration_only",
+    runtimeNote: active
+      ? activeAssignmentRuntimeNote(scope, record.revision)
+      : "This legacy route is not active. Validate and save it again before any runtime can consume it.",
+    contractVersion: active ? MODEL_ASSIGNMENT_CONTRACT_VERSION : "legacy",
+    revision: Number.isInteger(record.revision) && record.revision > 0
+      ? record.revision
+      : 1,
+    configurationSha256: active ? record.configurationSha256 : undefined,
+    validatedAt: active ? record.validatedAt : undefined,
+  };
 }
 
 function serviceKeyFromRow(row: Record<string, unknown>): InternalServiceApiKey {
@@ -2145,7 +2354,19 @@ async function providerEvent(record: InternalProviderConnection, type: string) {
 async function assignmentEvent(record: ModelAssignment) {
   await appendDomainEventSafely({
     streamId: `settings:${record.actorId}`, type: "settings.model_assignment.saved", tenantId: record.tenantId, actorId: record.actorId,
-    payload: { scope: record.scope, provider: record.provider, modelId: record.modelId, fallbackProvider: record.fallbackProvider, allowCrossProviderFallback: record.allowCrossProviderFallback },
+    payload: {
+      scope: record.scope,
+      provider: record.provider,
+      modelId: record.modelId,
+      fallbackProvider: record.fallbackProvider,
+      fallbackModelId: record.fallbackModelId,
+      allowCrossProviderFallback: record.allowCrossProviderFallback,
+      runtimeReadiness: record.runtimeReadiness,
+      contractVersion: record.contractVersion,
+      assignmentRevision: record.revision,
+      configurationSha256: record.configurationSha256,
+      validatedAt: record.validatedAt,
+    },
   });
 }
 

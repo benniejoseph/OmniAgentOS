@@ -592,7 +592,7 @@ async function generatePlan({
   const runtimeModel = await resolveRuntimeModelAssignment({
     tenantId,
     actorId,
-    scope: "orchestrator",
+    scope: "planner",
     tier: "reasoning",
     requiredFeature: "json_schema",
   });

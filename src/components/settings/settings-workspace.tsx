@@ -40,6 +40,7 @@ import {
   SERVICE_API_SCOPES,
   type McpExportConfiguration,
   type ModelAssignmentScope,
+  type ModelAssignmentRuntimeReceipt,
   type ModelCatalogEntry,
   type RequestModelCatalogEntry,
   type RequestModelAssignment,
@@ -105,12 +106,13 @@ const providerDetails: Record<SettingsModelProvider, {
 const assignmentLabels: Record<ModelAssignmentScope, { title: string; description: string }> = {
   main_agent: { title: "Main agent", description: "Everyday conversation and direct tasks" },
   orchestrator: { title: "Orchestrator", description: "Planning, delegation, and task routing" },
-  workflow: { title: "Workflow steps", description: "Durable and repeatable procedures" },
+  planner: { title: "Planner", description: "Project and durable workflow planning" },
+  verifier: { title: "Verifier", description: "Evidence-bound workflow and Council review" },
   council: { title: "Agent council", description: "Specialist review and synthesis" },
   memory: { title: "Memory reasoning", description: "Consolidation and recall decisions" },
   embeddings: { title: "Embeddings", description: "Document and memory vector indexing" },
   vision: { title: "Vision", description: "Image and visual document understanding" },
-  audio: { title: "Voice & audio", description: "Transcription and speech work" },
+  audio: { title: "Audio transcription", description: "Uploaded recording and meeting transcription" },
 };
 
 export type McpConfigurationGate = {
@@ -675,10 +677,11 @@ function ModelsSection({ snapshot, busy, refreshBlocked, saveBlocked, onSave, on
     <div className={clsx("mt-6 divide-y divide-line border-y border-line", styles.routeList)}>
       {MODEL_ASSIGNMENT_SCOPES.map((scope) => {
         const current = snapshot.assignments.find((item) => item.scope === scope);
+        const receipt = snapshot.runtime.receipts.find((item) => item.scope === scope);
         const editorKey = `${scope}:${current?.id || "new"}:${current?.updatedAt || "empty"}`;
         return current && current.manageable !== true
           ? <RetainedAssignment key={editorKey} scope={scope} assignment={current} />
-          : <AssignmentEditor key={editorKey} scope={scope} models={snapshot.models} providers={snapshot.providers} current={current} busy={busy === `assignment:${scope}`} saveBlocked={saveBlocked} onSave={(value) => onSave(scope, value)} />;
+          : <AssignmentEditor key={editorKey} scope={scope} models={snapshot.models} providers={snapshot.providers} current={current} receipt={receipt} busy={busy === `assignment:${scope}`} saveBlocked={saveBlocked} onSave={(value) => onSave(scope, value)} />;
       })}
     </div>
     <ModelCatalog models={snapshot.models} />
@@ -693,18 +696,23 @@ type AssignmentDraft = {
   crossProviderFallbackConsent?: true;
 };
 
-function AssignmentEditor({ scope, models, providers, current, busy, saveBlocked, onSave }: { scope: ModelAssignmentScope; models: RequestModelCatalogEntry[]; providers: RequestProviderConnection[]; current?: RequestModelAssignment; busy: boolean; saveBlocked?: string; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
-  const selectableModels = models.filter((item) => item.selectable === true);
+function AssignmentEditor({ scope, models, providers, current, receipt, busy, saveBlocked, onSave }: { scope: ModelAssignmentScope; models: RequestModelCatalogEntry[]; providers: RequestProviderConnection[]; current?: RequestModelAssignment; receipt?: ModelAssignmentRuntimeReceipt; busy: boolean; saveBlocked?: string; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
+  const supportsFallback = !["embeddings", "vision", "audio"].includes(scope);
+  const selectableModels = models.filter((item) =>
+    item.selectable === true && modelSupportsUiRole(scope, item)
+  );
   const selectableProviders = providers.filter((item) =>
-    item.source === "deployment_environment" ||
-    (item.source === "tenant_vault" && item.manageable === true && item.status !== "revoked")
+    item.source === "tenant_vault" &&
+    item.manageable === true &&
+    item.status === "connected" &&
+    item.enabled
   );
   const defaultProvider = current?.provider || selectableModels[0]?.provider || selectableProviders[0]?.provider || "openai";
   const [provider, setProvider] = useState<SettingsModelProvider>(defaultProvider);
   const [modelId, setModelId] = useState(current?.modelId || "");
-  const [fallbackProvider, setFallbackProvider] = useState<SettingsModelProvider | "">(current?.fallbackProvider || "");
-  const [fallbackModelId, setFallbackModelId] = useState(current?.fallbackModelId || "");
-  const [consent, setConsent] = useState(Boolean(current?.allowCrossProviderFallback));
+  const [fallbackProvider, setFallbackProvider] = useState<SettingsModelProvider | "">(supportsFallback ? current?.fallbackProvider || "" : "");
+  const [fallbackModelId, setFallbackModelId] = useState(supportsFallback ? current?.fallbackModelId || "" : "");
+  const [consent, setConsent] = useState(supportsFallback && Boolean(current?.allowCrossProviderFallback));
   const providerOptions = [...new Set<SettingsModelProvider>([
     ...selectableProviders.map((item) => item.provider),
     ...selectableModels.map((item) => item.provider),
@@ -718,12 +726,12 @@ function AssignmentEditor({ scope, models, providers, current, busy, saveBlocked
   const details = assignmentLabels[scope];
   return <div className={clsx("py-5", styles.routeRow)}>
     <div className="grid gap-4 xl:grid-cols-[minmax(11rem,.55fr)_minmax(0,1fr)_auto] xl:items-start">
-      <div><h3 className="text-sm font-semibold">{details.title}</h3><p className="mt-1 text-xs leading-5 text-muted">{details.description}</p>{current ? <span className={`mt-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${current.runtimeReadiness === "active" ? "text-success" : "text-warning"}`}><CircleDashed size={11} />{current.runtimeReadiness === "active" ? "Runtime active" : "Configuration only"}</span> : null}</div>
+      <div><h3 className="text-sm font-semibold">{details.title}</h3><p className="mt-1 text-xs leading-5 text-muted">{details.description}</p>{current ? <><span className={`mt-2 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] ${current.runtimeReadiness === "active" ? "text-success" : "text-warning"}`}><CircleDashed size={11} />{current.runtimeReadiness === "active" ? `Runtime active · r${current.revision}` : "Validation required"}</span><span className="mt-1 block text-[10px] text-muted">{current.validatedAt ? `Validated ${formatDate(current.validatedAt)}` : "Legacy route is not active"}</span>{receipt ? <span className={`mt-2 block text-[10px] font-semibold ${receipt.state === "succeeded" ? "text-success" : "text-danger"}`}>Last receipt · {receipt.state} · {receipt.provider}/{receipt.model}{receipt.fallbackUsed ? " · fallback used" : ""} · {formatDate(receipt.recordedAt)}</span> : <span className="mt-2 block text-[10px] text-muted">No runtime receipt for this exact revision yet</span>}</> : <span className="mt-2 block text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">Deployment route · not assigned</span>}</div>
       <div className="grid gap-3 sm:grid-cols-2">
         <SettingsField label="Primary provider"><select value={provider} disabled={Boolean(saveBlocked)} onChange={(event) => { setProvider(event.target.value as SettingsModelProvider); setModelId(""); }}><option value="">Choose provider</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
-        <SettingsField label="Primary model"><input list={`${scope}-primary-models`} value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={Boolean(saveBlocked)} maxLength={240} placeholder={primaryModels.length ? "Choose or enter a model" : "Enter model ID"} /><datalist id={`${scope}-primary-models`}>{primaryModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
-        <SettingsField label="Fallback provider"><select value={fallbackProvider} disabled={Boolean(saveBlocked)} onChange={(event) => { setFallbackProvider(event.target.value as SettingsModelProvider | ""); setFallbackModelId(""); setConsent(false); }}><option value="">No fallback</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
-        <SettingsField label="Fallback model"><input list={`${scope}-fallback-models`} value={fallbackModelId} onChange={(event) => setFallbackModelId(event.target.value)} disabled={Boolean(saveBlocked) || !fallbackProvider} maxLength={240} placeholder={fallbackProvider ? "Choose or enter a model" : "Select provider first"} /><datalist id={`${scope}-fallback-models`}>{fallbackModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
+        <SettingsField label="Primary model"><input list={`${scope}-primary-models`} value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={Boolean(saveBlocked)} maxLength={240} placeholder={primaryModels.length ? "Choose a validated model" : "Refresh the provider catalog"} /><datalist id={`${scope}-primary-models`}>{primaryModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField>
+        {supportsFallback ? <><SettingsField label="Fallback provider"><select value={fallbackProvider} disabled={Boolean(saveBlocked)} onChange={(event) => { setFallbackProvider(event.target.value as SettingsModelProvider | ""); setFallbackModelId(""); setConsent(false); }}><option value="">No fallback</option>{providerOptions.map((item) => <option key={item} value={item}>{providerDetails[item].name}</option>)}</select></SettingsField>
+        <SettingsField label="Fallback model"><input list={`${scope}-fallback-models`} value={fallbackModelId} onChange={(event) => setFallbackModelId(event.target.value)} disabled={Boolean(saveBlocked) || !fallbackProvider} maxLength={240} placeholder={fallbackProvider ? "Choose a validated model" : "Select provider first"} /><datalist id={`${scope}-fallback-models`}>{fallbackModels.map((item) => <option key={item.id} value={item.modelId}>{item.displayName}</option>)}</datalist></SettingsField></> : <p className="text-xs leading-5 text-muted sm:col-span-2">This specialized runtime accepts one validated primary model. It does not advertise a fallback control that it cannot execute.</p>}
         {selectedLifecycle && (selectedLifecycle.lifecycle === "deprecated" || selectedLifecycle.lifecycle === "retiring") ? <div className="flex items-start gap-2 rounded-md bg-warning/5 p-3 text-xs leading-5 text-warning sm:col-span-2"><AlertCircle size={14} className="mt-0.5 shrink-0" /><span><strong className="block">Model update needed</strong>{selectedLifecycle.lifecycleReason || "This model is no longer current in the provider catalog."}</span></div> : null}
         {crossesBoundary ? <label className="flex items-start gap-2 rounded-md bg-warning/5 p-3 text-xs leading-5 text-muted sm:col-span-2"><input type="checkbox" checked={consent} disabled={Boolean(saveBlocked)} onChange={(event) => setConsent(event.target.checked)} className="mt-1 accent-primary" /><span><strong className="block text-foreground">Allow cross-provider disclosure</strong>On primary failure, this role may send the same task context to {providerDetails[fallbackProvider as SettingsModelProvider].name}.</span></label> : null}
       </div>
@@ -748,6 +756,27 @@ function RetainedAssignment({ scope, assignment }: { scope: ModelAssignmentScope
       <span className="self-end text-xs font-semibold text-muted">Read only</span>
     </div>
   </div>;
+}
+
+function modelSupportsUiRole(
+  scope: ModelAssignmentScope,
+  model: Pick<RequestModelCatalogEntry, "provider" | "capabilities">,
+) {
+  const genericProviders: SettingsModelProvider[] = ["openai", "google", "anthropic", "aws_bedrock"];
+  const structuredProviders: SettingsModelProvider[] = ["openai", "anthropic"];
+  const contract = scope === "main_agent"
+    ? { providers: genericProviders, capabilities: ["tools", "text"] }
+    : scope === "orchestrator"
+      ? { providers: genericProviders, capabilities: ["text"] }
+      : ["planner", "verifier", "council", "memory"].includes(scope)
+        ? { providers: structuredProviders, capabilities: ["text"] }
+        : scope === "embeddings"
+          ? { providers: ["openai"] as SettingsModelProvider[], capabilities: ["embeddings"] }
+          : scope === "vision"
+            ? { providers: ["openai"] as SettingsModelProvider[], capabilities: ["vision"] }
+            : { providers: ["openai"] as SettingsModelProvider[], capabilities: ["audio", "transcription"] };
+  return contract.providers.includes(model.provider) &&
+    contract.capabilities.some((capability) => model.capabilities.includes(capability));
 }
 
 function ModelCatalog({ models }: { models: RequestModelCatalogEntry[] }) {

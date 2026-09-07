@@ -1103,7 +1103,7 @@ export async function executeAgentPlanNode({
   const runtimeModel = await resolveRuntimeModelAssignment({
     tenantId: detail.run.tenantId || "",
     actorId,
-    scope: "orchestrator",
+    scope: "planner",
     tier: "reasoning",
     requiredFeature: "json_schema",
   });

@@ -120,7 +120,7 @@ describe("P4.3 retrieval query planner", () => {
     expect(deps.resolveRuntimeModelAssignment).toHaveBeenCalledWith({
       tenantId: "tenant-a",
       actorId: "actor-a",
-      scope: "orchestrator",
+      scope: "memory",
       tier: "fast",
       requiredFeature: "json_schema",
     });

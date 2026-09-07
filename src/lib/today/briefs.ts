@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
 import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
@@ -9,9 +8,10 @@ import {
   runWithDatabaseActorScope,
 } from "@/lib/db/client";
 import { listMemories } from "@/lib/memory/store";
-import { createStructuredResponse } from "@/lib/openai/client";
+import { generateModelStructured } from "@/lib/models/gateway";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 import { listAgentRunSummaries } from "@/lib/runs/store";
 import { listProjects, listProjectTasks } from "@/lib/projects/store";
 import { canonicalStatusForProjectTask } from "@/lib/status/canonical";
@@ -583,11 +583,19 @@ export async function generateDailyBrief(options: {
 
   let content = fallbackBrief(evidence);
   let generatedBy: DailyBrief["generatedBy"] = "system";
-  if (hasOpenAIKey()) {
+  let generatedModel: string | undefined;
+  const runtimeModel = await resolveRuntimeModelAssignment({
+    tenantId: normalizeTenantId(options.tenantId),
+    actorId: options.actorId,
+    scope: "main_agent",
+    tier: "fast",
+    requiredFeature: "json_schema",
+  });
+  if (runtimeModel.configured) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25_000);
     try {
-      const output = await createStructuredResponse({
+      const output = await generateModelStructured(runtimeModel.bind({
         name: "personal_daily_brief",
         schema: jsonSchema,
         reasoningEffort: "minimal",
@@ -608,9 +616,10 @@ export async function generateDailyBrief(options: {
           purpose: "today.daily_brief",
           credentialSource: "deployment_environment",
         },
-      });
-      content = briefSchema.parse(JSON.parse(output));
+      }));
+      content = briefSchema.parse(JSON.parse(output.text));
       generatedBy = "ai";
+      generatedModel = output.model;
     } catch {
       // The deterministic brief keeps Today useful during model or network outages.
     } finally {
@@ -629,7 +638,7 @@ export async function generateDailyBrief(options: {
     resurfaced: content.resurfaced.map((item) => ({ title: safeText(item.title, 180), context: safeText(item.context, 240) })),
     memoryIds: canonicalBriefMemoryIds(memories.map((memory) => memory.id)),
     generatedBy,
-    model: generatedBy === "ai" ? AGENT_MODEL : undefined,
+    model: generatedBy === "ai" ? generatedModel : undefined,
     sourceCounts: { items: openItems.length, memories: memories.length, threads: threads.length, activeWork: activeWork.length, projects: activeProjects.length },
     generatedAt: now.toISOString(),
   });

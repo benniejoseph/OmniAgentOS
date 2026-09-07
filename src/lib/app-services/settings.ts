@@ -5,6 +5,7 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
+import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { validateAndRefreshProvider } from "@/lib/settings/provider-catalog";
 import { listServiceApiKeysForRequest, revokeServiceApiKey } from "@/lib/settings/service-api-keys";
@@ -39,10 +40,20 @@ const providerUpdateSchema = z.object({
 export async function showSettingsService(caller: AppServiceCaller, input: z.input<typeof emptySchema>) {
   emptySchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.settings.show"));
-  const snapshot = await getSettingsSnapshot({
-    ...exactOwner(caller), requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context),
-    providerOwnerScope: "readable", modelAssignmentOwnerScope: "readable", mcpOwnerScope: "readable",
-  });
+  const requestActorBinding = canonicalRequestActorBindingFromSecurityContext(
+    caller.context,
+  );
+  const snapshot = await runWithDatabaseActorScope(
+    caller.context.tenantId,
+    requestActorBinding?.readableOwnerActorIds || [caller.context.actorId],
+    () => getSettingsSnapshot({
+      ...exactOwner(caller),
+      requestActorBinding,
+      providerOwnerScope: "readable",
+      modelAssignmentOwnerScope: "readable",
+      mcpOwnerScope: "readable",
+    }),
+  );
   return completeAppServiceCall(authorized, snapshot);
 }
 

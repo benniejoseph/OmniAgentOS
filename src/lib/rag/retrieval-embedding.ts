@@ -1,7 +1,6 @@
 import {
   EMBEDDING_DIMENSIONS,
   EMBEDDING_MODEL,
-  hasOpenAIKey,
 } from "@/lib/config";
 import { embedTexts } from "@/lib/openai/client";
 import type { AiUsageScope } from "@/lib/usage/types";
@@ -62,7 +61,7 @@ export async function embedRetrievalTexts(
   const normalizedInput = input.map((value) => String(value).slice(0, 20_000));
   const openAIAllowed = options.allowedExternalProviders?.includes("openai") ===
     true;
-  if (openAIAllowed && hasOpenAIKey()) {
+  if (openAIAllowed) {
     try {
       const vectors = await embedTexts(
         [...normalizedInput],

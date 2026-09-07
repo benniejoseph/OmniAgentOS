@@ -17,6 +17,7 @@ import {
   resolveRuntimeModelAssignment,
   type RuntimeModelResolution,
 } from "@/lib/settings/runtime-models";
+import type { ModelAssignmentScope } from "@/lib/settings/types";
 import { appendThreadTurn } from "@/lib/threads/store";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
 import { EffectReceiptFinalizationError } from "@/lib/tools/executor";
@@ -1046,7 +1047,7 @@ async function executeStep(
     ];
     const mechanicalPassed = Boolean(executeOutput?.response || executeOutput?.deliverable) &&
       (!planExecution || planExecution.failedNodes === 0);
-    const runtimeModel = await resolveWorkflowRuntimeModel(detail);
+    const runtimeModel = await resolveWorkflowRuntimeModel(detail, "verifier");
     const modelBudget = runtimeModel.configured
       ? await reserveWorkflowModelCall(
           runBudget,
@@ -1095,12 +1096,15 @@ function hasReplanned(detail: WorkflowRunDetail) {
   return detail.events.some((event) => event.type === "workflow.replan_triggered");
 }
 
-async function resolveWorkflowRuntimeModel(detail: WorkflowRunDetail) {
+async function resolveWorkflowRuntimeModel(
+  detail: WorkflowRunDetail,
+  scope: ModelAssignmentScope = "planner",
+) {
   const { actorId } = await workflowAttribution(detail);
   return resolveRuntimeModelAssignment({
     tenantId: detail.run.tenantId || "",
     actorId,
-    scope: "orchestrator",
+    scope,
     tier: "reasoning",
     requiredFeature: "json_schema",
   });

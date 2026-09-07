@@ -1,4 +1,3 @@
-import { hasOpenAIKey } from "@/lib/config";
 import {
   finalizeCaptureExtraction,
   renderCaptureExtractionUnits,
@@ -6,11 +5,10 @@ import {
   type CaptureStructuredExtraction,
 } from "@/lib/capture/extraction";
 import {
-  CAPTURE_AUDIO_TYPES,
   CAPTURE_VIDEO_TYPES,
   transcribeCaptureMedia,
 } from "@/lib/capture/transcription";
-import { extractTextFromImages } from "@/lib/openai/ocr";
+import { extractTextFromImages, imageOcrConfigured } from "@/lib/openai/ocr";
 import { chunkText } from "@/lib/rag/chunk";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { AiUsageScope } from "@/lib/usage/types";
@@ -195,7 +193,9 @@ async function extractPdf(bytes: Uint8Array, usageScope?: AiUsageScope) {
         units,
       });
     }
-    if (!hasOpenAIKey()) throw new CaptureFileError("This PDF appears to be scanned and OCR is not configured.", 503, "ocr_not_configured", "pdf");
+    if (!await imageOcrConfigured(usageScope)) {
+      throw new CaptureFileError("This PDF appears to be scanned and OCR is not configured.", 503, "ocr_not_configured", "pdf");
+    }
     const pages = await parser.getScreenshot({ first: 10, desiredWidth: 1600, imageDataUrl: true, imageBuffer: false });
     const warnings = new Set<string>(["pdf_scanned_ocr"]);
     if (result.total > pages.pages.length) warnings.add("pdf_ocr_page_limit");
@@ -203,7 +203,7 @@ async function extractPdf(bytes: Uint8Array, usageScope?: AiUsageScope) {
     for (const page of pages.pages) {
       if (!page.dataUrl) continue;
       const text = boundedUnitText(
-        await extractTextFromImages([page.dataUrl], usageScope),
+        await extractImageTextOrThrow([page.dataUrl], usageScope, "pdf"),
         warnings,
         "pdf_page_truncated",
       );
@@ -231,13 +231,16 @@ async function extractPdf(bytes: Uint8Array, usageScope?: AiUsageScope) {
 }
 
 async function extractImage(bytes: Uint8Array, extension: string, usageScope?: AiUsageScope) {
-  if (!hasOpenAIKey()) throw new CaptureFileError("Image OCR is not configured.", 503, "ocr_not_configured", extension);
+  if (!await imageOcrConfigured(usageScope)) {
+    throw new CaptureFileError("Image OCR is not configured.", 503, "ocr_not_configured", extension);
+  }
   const mediaType = extension === "jpg" || extension === "jpeg" ? "image/jpeg" : `image/${extension}`;
   const dimensions = imageDimensions(bytes, extension);
   const warnings = new Set<string>();
-  const content = boundedUnitText(await extractTextFromImages(
+  const content = boundedUnitText(await extractImageTextOrThrow(
     [`data:${mediaType};base64,${Buffer.from(bytes).toString("base64")}`],
     usageScope,
+    extension,
   ), warnings, "image_ocr_truncated");
   return finalizeCaptureExtraction({
     sourceKind: "image",
@@ -439,9 +442,6 @@ async function extractMedia(
   format: string,
   usageScope?: AiUsageScope,
 ) {
-  if (!hasOpenAIKey() && !CAPTURE_AUDIO_TYPES.has(file.type.split(";", 1)[0].toLowerCase())) {
-    throw new CaptureFileError("Video transcription is not configured.", 503, "transcription_not_configured", format);
-  }
   const result = await transcribeCaptureMedia(file, undefined, usageScope);
   const mediaKind = CAPTURE_VIDEO_TYPES.has(file.type.split(";", 1)[0].toLowerCase())
     ? "video" as const
@@ -475,6 +475,26 @@ async function extractMedia(
     warningCodes: [...warnings],
     units,
   });
+}
+
+async function extractImageTextOrThrow(
+  images: string[],
+  usageScope: AiUsageScope | undefined,
+  format: string,
+) {
+  try {
+    return await extractTextFromImages(images, usageScope);
+  } catch (error) {
+    if (error instanceof Error && error.message === "OCR is not configured.") {
+      throw new CaptureFileError(
+        "Image OCR is not configured.",
+        503,
+        "ocr_not_configured",
+        format,
+      );
+    }
+    throw error;
+  }
 }
 
 function textExtraction(

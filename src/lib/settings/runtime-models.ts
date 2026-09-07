@@ -32,6 +32,7 @@ import type {
   ModelCatalogEntry,
   SettingsModelProvider,
 } from "@/lib/settings/types";
+import type { AiUsageScope } from "@/lib/usage/types";
 
 type RuntimeProviderId = Exclude<ProviderId, "local">;
 
@@ -48,6 +49,8 @@ export type RuntimeModelResolution = Readonly<{
   source: "tenant_assignment" | "deployment_environment";
   configured: boolean;
   assignmentId?: string;
+  assignmentRevision?: number;
+  assignmentConfigurationSha256?: string;
   provider?: RuntimeProviderId;
   model?: string;
   fallbackProvider?: RuntimeProviderId;
@@ -55,6 +58,14 @@ export type RuntimeModelResolution = Readonly<{
   allowCrossProviderFallback: boolean;
   warnings: readonly string[];
   reason: string;
+  usageReceipt: Pick<
+    AiUsageScope,
+    | "assignmentScope"
+    | "assignmentId"
+    | "assignmentRevision"
+    | "assignmentConfigurationSha256"
+    | "credentialSource"
+  >;
   bind<TRequest extends ModelTextRequest>(request: TRequest): TRequest;
   withProviderApiKey<TResult>(
     provider: RuntimeProviderId,
@@ -63,7 +74,7 @@ export type RuntimeModelResolution = Readonly<{
 }>;
 
 /**
- * Resolves one of the eight stored model-assignment scopes into request-bound
+ * Resolves one of the nine stored model-assignment scopes into request-bound
  * server runtime state. Plaintext credentials remain captured by closures and
  * a WeakMap; callers receive no serializable secret fields.
  */
@@ -105,6 +116,16 @@ export async function resolveRuntimeModelAssignment(input: {
 
   const assignment = assignments.find((item) => item.scope === input.scope);
   if (!assignment) return environment;
+  if (
+    assignment.runtimeReadiness !== "active" ||
+    assignment.contractVersion !== "p11.8-model-assignment:1" ||
+    !assignment.configurationSha256 ||
+    !assignment.validatedAt
+  ) {
+    return withWarnings(environment, [
+      "The saved route is a legacy or unvalidated configuration, so deployment-environment routing remains in effect.",
+    ]);
+  }
   const provider = runtimeProvider(assignment.provider);
 
   const warnings: string[] = [];
@@ -201,12 +222,21 @@ export async function resolveRuntimeModelAssignment(input: {
     `Workspace ${input.scope.replaceAll("_", " ")} routing selected ${assignment.provider}/${assignment.modelId}.`,
     ...warnings,
   ].join(" ");
+  const usageReceipt: RuntimeModelResolution["usageReceipt"] = {
+    assignmentScope: input.scope,
+    assignmentId: assignment.id,
+    assignmentRevision: assignment.revision,
+    assignmentConfigurationSha256: assignment.configurationSha256,
+    credentialSource: "tenant_vault",
+  };
 
   return {
     scope: input.scope,
     source: "tenant_assignment",
     configured: capableTargets.length > 0,
     assignmentId: assignment.id,
+    assignmentRevision: assignment.revision,
+    assignmentConfigurationSha256: assignment.configurationSha256,
     provider,
     model: assignment.modelId,
     fallbackProvider,
@@ -214,6 +244,7 @@ export async function resolveRuntimeModelAssignment(input: {
     allowCrossProviderFallback: crossProviderFallback,
     warnings,
     reason,
+    usageReceipt,
     bind<TRequest extends ModelTextRequest>(request: TRequest): TRequest {
       const continuationProvider = (
         request as ModelTextRequest & {
@@ -226,6 +257,9 @@ export async function resolveRuntimeModelAssignment(input: {
         preferredProvider: activeProvider,
         allowedProviders: continuationProvider ? [activeProvider] : allowedProviders,
         allowCrossProviderFallback: continuationProvider ? false : crossProviderFallback,
+        ...(request.usageScope
+          ? { usageScope: { ...request.usageScope, ...usageReceipt } }
+          : {}),
       } as TRequest;
       return bindModelRuntime(routed, context);
     },
@@ -248,6 +282,9 @@ function deploymentResolution(input: {
   const first = input.deploymentFallback || deploymentTarget(input.tier, input.requiredFeature);
   const configured = input.deploymentFallback?.configured ??
     hasModelProviderFeature(input.requiredFeature, input.tier);
+  const usageReceipt: RuntimeModelResolution["usageReceipt"] = {
+    credentialSource: "deployment_environment",
+  };
   return {
     scope: input.scope,
     source: "deployment_environment",
@@ -259,8 +296,14 @@ function deploymentResolution(input: {
     allowCrossProviderFallback: false,
     warnings: [],
     reason: first?.reason || "Deployment-environment model routing remains in effect.",
+    usageReceipt,
     bind<TRequest extends ModelTextRequest>(request: TRequest) {
-      return request;
+      return {
+        ...request,
+        ...(request.usageScope
+          ? { usageScope: { ...request.usageScope, ...usageReceipt } }
+          : {}),
+      } as TRequest;
     },
     withProviderApiKey<TResult>(
       _provider: RuntimeProviderId,
