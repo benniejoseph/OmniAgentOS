@@ -598,5 +598,10 @@
     "version": 120,
     "name": "trash_lifecycle_v1",
     "checksum": "49c6af6f71d05afa4f10aa2d966381f2614fe8e9037347cd247d7b56a332049c"
+  },
+  {
+    "version": 121,
+    "name": "approval_grants_v1",
+    "checksum": "870ddeb8b46148b6c19c0d27703b0d7d49454f8daf4752bf155cb9d9f5b20338"
   }
 ]

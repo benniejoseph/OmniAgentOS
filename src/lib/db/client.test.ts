@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 121,
+      name: "approval_grants_v1",
+      checksum: "870ddeb8b46148b6c19c0d27703b0d7d49454f8daf4752bf155cb9d9f5b20338",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 120)).toEqual({
       version: 120,
       name: "trash_lifecycle_v1",
       checksum: "49c6af6f71d05afa4f10aa2d966381f2614fe8e9037347cd247d7b56a332049c",
