@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
-import type { OAuthProvider } from "@/lib/connectors/oauth-providers";
+import {
+  isOAuthProvider,
+  type OAuthProvider,
+} from "@/lib/connectors/oauth-providers";
 import { oauthGrantActorReadOrder } from "@/lib/connectors/oauth-actor-scope";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
@@ -106,9 +109,9 @@ export async function saveOAuthGrant(input: { tenantId: string; actorId: string;
 }
 
 export async function listOAuthGrants(tenantId: string, actorId: string) {
-  if (hasDatabaseUrl()) { await ensureDatabaseSchema(); const rows = await getSql()`SELECT * FROM omni_oauth_grants WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = 'google' AND status = 'active' ORDER BY updated_at DESC`; return rows.map(publicGrant); }
+  if (hasDatabaseUrl()) { await ensureDatabaseSchema(); const rows = await getSql()`SELECT * FROM omni_oauth_grants WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider IN ('google', 'salesforce') AND status = 'active' ORDER BY updated_at DESC`; return rows.map(publicGrant); }
   const ledger = await readJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] });
-  return ledger.grants.filter((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === "google" && grant.status === "active").map(stripTokens);
+  return ledger.grants.filter((grant) => grant.tenantId === tenantId && grant.actorId === actorId && isOAuthProvider(grant.provider) && grant.status === "active").map(stripTokens);
 }
 
 /**
@@ -130,7 +133,7 @@ export async function listOAuthGrantsForRequest(input: {
       .filter((grant) =>
         grant.tenantId === input.tenantId &&
         grant.actorId === input.actorId &&
-        grant.provider === "google" &&
+        isOAuthProvider(grant.provider) &&
         grant.status === "active"
       )
       .map((grant) => {
@@ -166,7 +169,7 @@ export async function listOAuthGrantsForRequest(input: {
     FROM omni_oauth_grants
     WHERE tenant_id = ${input.tenantId}
       AND actor_id IN (${canonicalActorId}, ${exactActorId})
-      AND provider = 'google'
+      AND provider IN ('google', 'salesforce')
       AND status = 'active'
       AND tenant_id COLLATE "C" = ${input.tenantId}::text COLLATE "C"
       AND (
@@ -467,7 +470,7 @@ function assertRequestOAuthGrantRow(
     !uuidPattern.test(id) ||
     tenantId !== expectedTenantId ||
     (actorId !== canonicalActorId && actorId !== exactActorId) ||
-    provider !== "google" ||
+    !isOAuthProvider(provider) ||
     status !== "active" ||
     !isSafeOAuthScopes(scopes) ||
     !oauthSyncStatuses.includes(syncStatus as (typeof oauthSyncStatuses)[number]) ||

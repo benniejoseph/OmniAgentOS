@@ -30,7 +30,7 @@ async function GETHandler(request: Request) {
         id,
         label: config.label,
         scopes: config.scopes,
-        configured: oauthConfigured(id as "google"),
+        configured: oauthConfigured(id as keyof typeof oauthProviders),
         authorizeUrl: `/api/oauth/${id}/authorize`,
       })),
       grants,
