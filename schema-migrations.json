@@ -653,5 +653,10 @@
     "version": 131,
     "name": "canonical_workspace_resolver_repair_v1",
     "checksum": "6975f3e4024004198a867620cb5fde2415e031c3b76b9d8e0c7bde24c29998af"
+  },
+  {
+    "version": 132,
+    "name": "workspace_templates_v1",
+    "checksum": "f750197534c0c4854c424130fe566c34c431481bbe561526361067baaaeb0643"
   }
 ]
