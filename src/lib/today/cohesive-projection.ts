@@ -1,5 +1,11 @@
 import type { CustomerSuccessPortfolio } from "@/lib/customer-success/intelligence-contracts";
 import type { MeetingRevision } from "@/lib/meetings/contracts";
+import {
+  DEFAULT_TODAY_SECTIONS,
+  normalizeTodaySections,
+  TODAY_SECTION_KEYS,
+  type TodaySectionKey,
+} from "@/lib/today/sections";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
 import type { UsageSummary } from "@/lib/usage/summary";
 import type { WorkspaceSummary, WorkspaceSummarySource } from "@/lib/workspace/summary";
@@ -7,20 +13,8 @@ import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export const COHESIVE_TODAY_POLICY_VERSION = "p11.1-cohesive-today:1" as const;
 
-export const TODAY_SECTION_KEYS = Object.freeze([
-  "focus",
-  "agenda",
-  "approvals",
-  "customers",
-  "active_agents",
-  "work",
-  "memory",
-  "conversations",
-  "consumption",
-] as const);
-
-export type TodaySectionKey = (typeof TODAY_SECTION_KEYS)[number];
-export const DEFAULT_TODAY_SECTIONS: readonly TodaySectionKey[] = TODAY_SECTION_KEYS;
+export { DEFAULT_TODAY_SECTIONS, normalizeTodaySections, TODAY_SECTION_KEYS };
+export type { TodaySectionKey };
 
 export type TodayProjectionSourceKey =
   | "personal_reminders"
@@ -153,15 +147,6 @@ export function buildCohesiveTodayProjection(input: {
     ...body,
     projectionSha256: canonicalJsonSha256(body),
   });
-}
-
-export function normalizeTodaySections(value: unknown): readonly TodaySectionKey[] {
-  if (!Array.isArray(value)) return DEFAULT_TODAY_SECTIONS;
-  const allowed = new Set<TodaySectionKey>(TODAY_SECTION_KEYS);
-  const result = [...new Set(value.filter(
-    (item): item is TodaySectionKey => typeof item === "string" && allowed.has(item as TodaySectionKey),
-  ))];
-  return Object.freeze(result.length ? result : [...DEFAULT_TODAY_SECTIONS]);
 }
 
 function buildAgenda(input: {

@@ -15,6 +15,7 @@ import {
 import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
 import { loadTodaySnapshot } from "@/lib/today/snapshot";
 import { createTodayItem, updateTodayItem } from "@/lib/today/store";
+import { TODAY_SECTION_KEYS } from "@/lib/today/sections";
 
 const emptySchema = z.object({}).strict();
 const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
@@ -44,6 +45,7 @@ export const todayPreferencesUpdateServiceInputSchema = z.object({
   reminderLeadMinutes: z.union([z.literal(5), z.literal(15), z.literal(30), z.literal(60), z.literal(120)]).optional(),
   notificationsEnabled: z.boolean().optional(), quietHoursEnabled: z.boolean().optional(),
   quietHoursStart: timeSchema.optional(), quietHoursEnd: timeSchema.optional(),
+  visibleSections: z.array(z.enum(TODAY_SECTION_KEYS)).min(1).max(TODAY_SECTION_KEYS.length).optional(),
 }).strict().refine((change) => Object.keys(change).length > 0, { message: "A preference change is required." });
 
 export async function showTodayService(caller: AppServiceCaller, input: z.input<typeof emptySchema>) {

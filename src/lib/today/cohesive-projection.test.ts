@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildCohesiveTodayProjection, DEFAULT_TODAY_SECTIONS } from "@/lib/today/cohesive-projection";
+import type { WorkspaceSummary } from "@/lib/workspace/summary";
 
 const NOW = "2026-09-07T10:00:00.000Z";
 
@@ -77,8 +78,9 @@ function summaryFixture() {
     tenantId: "tenant:test", generatedAt: NOW,
     sources: {
       runs: { status: "ready" as const, data: [{
-        id: "run:1", mode: "standard", status: "running", prompt: "Research",
-        startedAt: NOW, agentId: "scout", specialistIds: ["scout"],
+        id: "run:1", mode: "research", status: "running", prompt: "Research",
+        response: undefined, error: undefined, startedAt: NOW, completedAt: undefined,
+        waitingApproval: undefined, agentId: "scout", specialistIds: ["scout"],
       }] },
       workflows: { status: "ready" as const, data: [{
         id: "workflow:1", workflowType: "dynamic", status: "running",
@@ -91,7 +93,7 @@ function summaryFixture() {
         reason: "External effect", createdAt: NOW,
       }] },
     },
-  };
+  } as unknown as WorkspaceSummary;
 }
 
 function meetingFixture() {

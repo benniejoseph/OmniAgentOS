@@ -165,6 +165,7 @@ async function readLocalTodaySnapshot({
       quietHoursEnabled: briefBundle.preferences.quietHoursEnabled,
       quietHoursStart: briefBundle.preferences.quietHoursStart,
       quietHoursEnd: briefBundle.preferences.quietHoursEnd,
+      visibleSections: briefBundle.preferences.visibleSections,
     },
     briefLocalDate: briefBundle.localDate,
     briefGenerationDue: briefBundle.generationDue,
