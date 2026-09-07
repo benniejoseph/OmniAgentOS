@@ -43,6 +43,9 @@ import {
 import {
   createMeetingService,
   listMeetingsService,
+  listMeetingCommitmentsService,
+  proposeMeetingCommitmentService,
+  resolveMeetingCommitmentService,
   showMeetingService,
   updateMeetingService,
 } from "@/lib/app-services/meetings";
@@ -200,6 +203,9 @@ export async function executeFirstPartyAppTool(input: {
     "app.meetings.show": () => showMeetingService(caller, input.toolInput as never),
     "app.meetings.create": () => createMeetingService(caller, input.toolInput as never),
     "app.meetings.update": () => updateMeetingService(caller, input.toolInput as never),
+    "app.meetings.commitments.list": () => listMeetingCommitmentsService(caller, input.toolInput as never),
+    "app.meetings.commitments.propose": () => proposeMeetingCommitmentService(caller, input.toolInput as never),
+    "app.meetings.commitments.resolve": () => resolveMeetingCommitmentService(caller, input.toolInput as never),
     "app.projects.list": () => listProjectsService(caller, input.toolInput as never),
     "app.projects.show": () => showProjectService(caller, input.toolInput as never),
     "app.projects.create": () => createProjectService(caller, input.toolInput as never),

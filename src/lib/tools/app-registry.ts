@@ -63,6 +63,36 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     expectedRevision: integer(1, Number.MAX_SAFE_INTEGER),
     ...meetingDraftProperties(),
   }, ["meetingId", "expectedRevision", ...meetingDraftRequired()]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.meetings.commitments.list", "List meeting commitments", "List immutable evidence-bound commitment proposals and their confirmed or dismissed resolutions for one meeting.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    meetingId: { type: "string", pattern: "^meeting:[0-9a-f-]{36}$", maxLength: 44 },
+  }, ["meetingId"])),
+  mutationTool("app.meetings.commitments.propose", "Propose meeting commitment", "Create a proposed WorkItem conversion from one exact timestamp-cited media action item. This creates no task or outbound draft.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    meetingId: { type: "string", pattern: "^meeting:[0-9a-f-]{36}$", maxLength: 44 },
+    mediaRevisionId: opaqueId("Exact immutable processed-media revision ID."),
+    actionItemId: { type: "string", pattern: "^media-action:[a-f0-9]{64}$", maxLength: 77 },
+  }, ["meetingId", "mediaRevisionId", "actionItemId"]), { reversible: true }),
+  mutationTool("app.meetings.commitments.resolve", "Resolve meeting commitment", "Confirm or dismiss one exact proposal. Confirmation idempotently creates canonical work, optionally creates a governed unsent email draft, and attaches both to a new meeting revision.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    meetingId: { type: "string", pattern: "^meeting:[0-9a-f-]{36}$", maxLength: 44 },
+    proposalId: { type: "string", pattern: "^meeting-commitment-proposal:[a-f0-9]{64}$", maxLength: 92 },
+    expectedProposalSha256: sha256("Exact immutable proposal digest."),
+    decision: { type: "string", enum: ["confirmed", "dismissed"] },
+    ownerParticipantId: opaqueId("Explicit participant owner confirmation when transcript evidence is absent or changed."),
+    dueAt: { type: ["string", "null"], format: "date-time" },
+    communication: {
+      anyOf: [
+        { type: "null" },
+        requiredObjectSchema({
+          policyId: { type: "string", pattern: "^contact_policy:[0-9a-f-]{36}$", maxLength: 51 },
+          recipientParticipantId: opaqueId("Confirmed participant recipient whose email exactly matches the policy."),
+          subject: text(1, 998),
+          body: text(1, 50_000),
+        }, ["policyId", "recipientParticipantId", "subject", "body"]),
+      ],
+    },
+  }, ["meetingId", "proposalId", "expectedProposalSha256", "decision"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.projects.list", "List projects", "List the current actor's projects with their work items and artifacts.", objectSchema({
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
