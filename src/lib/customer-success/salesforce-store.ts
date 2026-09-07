@@ -577,6 +577,35 @@ export async function findSalesforceConnectionByOrganization(
   );
 }
 
+export async function listDueSalesforceConnectionsForTenant(
+  tenantId: string,
+  limit = 2,
+) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  return runWithDatabaseSystemScope(
+    "Select due read-only Salesforce connections for a tenant schedule.",
+    async () => {
+      const rows = await getSql()`
+        SELECT * FROM omni_salesforce_connections
+        WHERE tenant_id = ${tenantId}
+          AND connection_state = 'active'
+          AND (
+            last_successful_sync_at IS NULL
+            OR last_successful_sync_at <= clock_timestamp() - INTERVAL '5 minutes'
+          )
+          AND (
+            sync_lease_owner_id IS NULL
+            OR sync_lease_expires_at <= clock_timestamp()
+          )
+        ORDER BY last_successful_sync_at ASC NULLS FIRST, updated_at ASC
+        LIMIT ${Math.max(1, Math.min(10, limit))}
+      `;
+      return Object.freeze(rows.map(connectionFromRow));
+    },
+  );
+}
+
 export async function listPendingSalesforceHeads(
   authority: SalesforceReadAuthority,
   limit = 200,

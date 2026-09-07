@@ -6,14 +6,17 @@ import {
   Building2,
   CalendarClock,
   CheckCircle2,
+  CloudCog,
   Clock3,
   DatabaseZap,
   Fingerprint,
   History,
   Plus,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   UserRound,
+  Unplug,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -31,6 +34,7 @@ import {
   type CustomerFactKind,
   type CustomerFactView,
 } from "@/lib/customer-success/contracts";
+import type { SalesforceSyncHealth } from "@/lib/customer-success/salesforce-contracts";
 import styles from "./customer-accounts-workspace.module.css";
 
 const categoryLabels: Record<CustomerFactKind, string> = {
@@ -54,6 +58,18 @@ type WorkspaceContext = {
   canWrite: boolean;
 };
 
+type SalesforcePayload = {
+  health: SalesforceSyncHealth;
+  findings: Array<{
+    findingId: string;
+    objectType: string;
+    findingKind: string;
+    observedAt: string;
+  }>;
+  authorizeUrl: string;
+  webhook: { configured: boolean };
+};
+
 export function CustomerAccountsWorkspace({
   initialAccountId,
 }: {
@@ -71,11 +87,18 @@ export function CustomerAccountsWorkspace({
   const [editingLifecycle, setEditingLifecycle] = useState(false);
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Customer accounts are ready.");
+  const [salesforce, setSalesforce] = useState<SalesforcePayload>();
+  const [salesforceLoading, setSalesforceLoading] = useState(false);
+  const [salesforceAction, setSalesforceAction] = useState<"sync" | "reconcile" | "disconnect">();
+  const [salesforceMessage, setSalesforceMessage] = useState<string>();
   const controllerRef = useRef<AbortController | null>(null);
   const mutationKeyRef = useRef("");
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
   const canWrite = Boolean(
     workspaceContext?.canWrite && canPerform(role, "manage.workflow"),
+  );
+  const canManageSalesforce = Boolean(
+    workspaceContext?.canWrite && canPerform(role, "manage.connector"),
   );
 
   const activeCount = accounts.filter((account) =>
@@ -97,6 +120,7 @@ export function CustomerAccountsWorkspace({
       const nextAccounts = (payload.accounts || []) as CustomerAccountRevision[];
       setAccounts(nextAccounts);
       setWorkspaceContext(payload.context as WorkspaceContext);
+      await loadSalesforce(controller.signal);
       const targetId = initialAccountId || nextAccounts[0]?.accountId;
       if (targetId) await loadDetail(targetId, controller.signal);
       else setSelected(undefined);
@@ -105,6 +129,44 @@ export function CustomerAccountsWorkspace({
       if (!controller.signal.aborted) setError(message(loadError));
     } finally {
       if (!controller.signal.aborted) setLoading(false);
+    }
+  }
+
+  async function loadSalesforce(signal?: AbortSignal) {
+    setSalesforceLoading(true);
+    try {
+      const payload = await readJson("/api/customer-accounts/salesforce", { signal });
+      setSalesforce(payload as SalesforcePayload);
+    } catch (loadError) {
+      if (!signal?.aborted) setSalesforceMessage(message(loadError));
+    } finally {
+      if (!signal?.aborted) setSalesforceLoading(false);
+    }
+  }
+
+  async function runSalesforceAction(action: "sync" | "reconcile" | "disconnect") {
+    if (!canManageSalesforce || !workspaceContext) return;
+    setSalesforceAction(action);
+    setSalesforceMessage(undefined);
+    try {
+      const endpoint = action === "disconnect"
+        ? `/api/oauth/salesforce?workspaceId=${encodeURIComponent(workspaceContext.workspaceId)}`
+        : `/api/customer-accounts/salesforce/${action}?workspaceId=${encodeURIComponent(workspaceContext.workspaceId)}`;
+      const payload = await readJson(endpoint, {
+        method: action === "disconnect" ? "DELETE" : "POST",
+        headers: { accept: "application/json" },
+      });
+      setSalesforceMessage(action === "sync"
+        ? `Salesforce sync ${payload.status || "complete"} · ${payload.records || 0} records observed.`
+        : action === "reconcile"
+          ? `Read-only reconciliation checked ${payload.checked || 0} records and found ${payload.findings || 0} differences.`
+          : "Salesforce disconnected. Imported evidence remains in history.");
+      if (action === "sync") await load();
+      else await loadSalesforce();
+    } catch (actionError) {
+      setSalesforceMessage(message(actionError));
+    } finally {
+      setSalesforceAction(undefined);
     }
   }
 
@@ -244,6 +306,15 @@ export function CustomerAccountsWorkspace({
         <Metric value={selected?.conflictCount || 0} label="Conflicts" detail="visible on selected account" warning={Boolean(selected?.conflictCount)} />
       </section>
 
+      <SalesforcePanel
+        payload={salesforce}
+        loading={salesforceLoading}
+        action={salesforceAction}
+        canManage={canManageSalesforce}
+        message={salesforceMessage}
+        onAction={runSalesforceAction}
+      />
+
       {error ? (
         <div className={styles.error} role="alert">
           <AlertTriangle size={16} aria-hidden="true" />
@@ -368,6 +439,83 @@ export function CustomerAccountsWorkspace({
         </div>
       ) : null}
     </main>
+  );
+}
+
+function SalesforcePanel({
+  payload,
+  loading,
+  action,
+  canManage,
+  message: statusMessage,
+  onAction,
+}: {
+  payload?: SalesforcePayload;
+  loading: boolean;
+  action?: "sync" | "reconcile" | "disconnect";
+  canManage: boolean;
+  message?: string;
+  onAction: (action: "sync" | "reconcile" | "disconnect") => Promise<void>;
+}) {
+  const health = payload?.health;
+  const connected = health?.connected === true;
+  const cursorProgress = health?.cursor
+    ? Object.values(health.cursor.objects).filter((item) => item.phase === "current").length
+    : 0;
+  return (
+    <section className={styles.salesforcePanel} aria-label="Salesforce read synchronization" aria-busy={loading || Boolean(action)}>
+      <div className={styles.salesforceIdentity}>
+        <span><CloudCog size={18} aria-hidden="true" /></span>
+        <div>
+          <p className={styles.eyebrow}>CRM adapter · read only</p>
+          <h2>Salesforce sync</h2>
+          <p>
+            External records become sourced Account 360 facts. Salesforce never
+            becomes Asael&apos;s internal source of truth.
+          </p>
+        </div>
+      </div>
+      <div className={styles.salesforceHealth}>
+        <div><small>Status</small><strong>{formatLabel(health?.status || (loading ? "loading" : "unavailable"))}</strong></div>
+        <div><small>Cursor</small><strong>{health?.cursor ? `${cursorProgress}/8 current` : "Not started"}</strong></div>
+        <div><small>Lag</small><strong>{formatLag(health?.lagSeconds)}</strong></div>
+        <div><small>Scope</small><strong>{health?.objectScope.length || 8} objects · read only</strong></div>
+        <div><small>Webhook</small><strong>{payload?.webhook.configured ? "Verified HMAC" : "Not configured"}</strong></div>
+        <div><small>Reconciliation</small><strong>{payload?.findings.length || 0} findings</strong></div>
+      </div>
+      <div className={styles.salesforceActions}>
+        {!health?.configured ? (
+          <span>Salesforce OAuth credentials are required in the deployment environment.</span>
+        ) : !connected ? (
+          <a
+            className={styles.primaryButton}
+            href={canManage ? payload?.authorizeUrl : undefined}
+            aria-disabled={!canManage}
+          >
+            <CloudCog size={15} aria-hidden="true" /> Connect Salesforce
+          </a>
+        ) : (
+          <>
+            <button className={styles.primaryButton} type="button" disabled={!canManage || Boolean(action)} onClick={() => void onAction("sync")}>
+              <RefreshCw size={15} aria-hidden="true" /> {action === "sync" ? "Syncing…" : "Sync now"}
+            </button>
+            <button className={styles.secondaryButton} type="button" disabled={!canManage || Boolean(action)} onClick={() => void onAction("reconcile")}>
+              <RotateCcw size={15} aria-hidden="true" /> {action === "reconcile" ? "Checking…" : "Reconcile"}
+            </button>
+            <button className={styles.secondaryButton} type="button" disabled={!canManage || Boolean(action)} onClick={() => void onAction("disconnect")}>
+              <Unplug size={15} aria-hidden="true" /> {action === "disconnect" ? "Disconnecting…" : "Disconnect"}
+            </button>
+          </>
+        )}
+      </div>
+      {health?.actionableError ? (
+        <p className={styles.salesforceNotice} data-tone="error">
+          {health.actionableError.message} · {formatLabel(health.actionableError.action)}
+        </p>
+      ) : statusMessage ? (
+        <p className={styles.salesforceNotice} role="status">{statusMessage}</p>
+      ) : null}
+    </section>
   );
 }
 
@@ -587,6 +735,14 @@ function lifecycleOptions(): CustomerAccountRevision["lifecycle"][] {
 
 function formatLabel(value: string) {
   return value.replace(/^customer_success\./, "").replaceAll(/[._]/g, " ");
+}
+
+function formatLag(value: number | null | undefined) {
+  if (value === null || value === undefined) return "Unknown";
+  if (value < 60) return `${value}s`;
+  if (value < 3_600) return `${Math.floor(value / 60)}m`;
+  if (value < 86_400) return `${Math.floor(value / 3_600)}h`;
+  return `${Math.floor(value / 86_400)}d`;
 }
 
 function formatDate(value: string) {

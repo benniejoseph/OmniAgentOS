@@ -16,6 +16,7 @@ const routeMocks = vi.hoisted(() => ({
   processDueNotifications: vi.fn(),
   processActiveProjectExecutions: vi.fn(),
   syncDuePersonalProviders: vi.fn(),
+  syncDueSalesforceConnections: vi.fn(),
   recordSecurityAudit: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
@@ -114,6 +115,11 @@ vi.mock("@/lib/projects/execution", async (importOriginal) => ({
 vi.mock("@/lib/connectors/personal-sync", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/connectors/personal-sync")>()),
   syncDuePersonalProviders: routeMocks.syncDuePersonalProviders,
+}));
+
+vi.mock("@/lib/customer-success/salesforce-sync", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/customer-success/salesforce-sync")>()),
+  syncDueSalesforceConnections: routeMocks.syncDueSalesforceConnections,
 }));
 
 vi.mock("@/lib/subagents/worker", async (importOriginal) => ({
@@ -227,6 +233,7 @@ beforeEach(() => {
   routeMocks.processDueNotifications.mockReset().mockResolvedValue([]);
   routeMocks.processActiveProjectExecutions.mockReset().mockResolvedValue([]);
   routeMocks.syncDuePersonalProviders.mockReset().mockResolvedValue([]);
+  routeMocks.syncDueSalesforceConnections.mockReset().mockResolvedValue([]);
   routeMocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
   routeMocks.recordSecurityAudit.mockReset().mockResolvedValue(undefined);
   routeMocks.recordWorkerHeartbeat.mockReset().mockImplementation(async (input) => ({

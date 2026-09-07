@@ -49,6 +49,7 @@ import { processDueDailyBriefs } from "@/lib/today/briefs";
 import { processDueNotifications } from "@/lib/today/notifications";
 import { processActiveProjectExecutions } from "@/lib/projects/execution";
 import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
+import { syncDueSalesforceConnections } from "@/lib/customer-success/salesforce-sync";
 import {
   processAllTenantDurableSpecialistQueues,
   processDurableSpecialistQueue,
@@ -443,6 +444,10 @@ async function POSTHandler(request: Request) {
       limit: 10,
     });
     const connectedSourceSyncs = await syncDuePersonalProviders({ tenantId: context.tenantId, limit: 2 });
+    const salesforceSyncs = await syncDueSalesforceConnections({
+      tenantId: context.tenantId,
+      limit: 2,
+    });
     const slo = parsed.data.slo
       ? await runObservabilitySloMonitor({
           trigger: "operator.workflow_tick",
@@ -506,6 +511,7 @@ async function POSTHandler(request: Request) {
       personalNotifications,
       projectExecutions,
       connectedSourceSyncs,
+      salesforceSyncs,
       slo,
       alerts,
       stats,
@@ -715,6 +721,7 @@ async function runAllTenantScheduledWork({
     personalNotificationsProcessed: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
+    salesforceConnectionsSynced: number;
     externalDelegationsTerminated: number;
     memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
@@ -826,6 +833,7 @@ async function runTenantMaintenance({
     personalNotificationsProcessed: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
+    salesforceConnectionsSynced: number;
     externalDelegationsTerminated: number;
     memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
@@ -839,6 +847,7 @@ async function runTenantMaintenance({
     personalNotificationsProcessed: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
+    salesforceConnectionsSynced: 0,
     externalDelegationsTerminated: 0,
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
@@ -887,6 +896,11 @@ async function runTenantMaintenance({
   if (Date.now() < deadlineAt) {
     result.connectedSourcesSynced = (
       await syncDuePersonalProviders({ tenantId, limit: 2 })
+    ).filter((item) => item.status === "healthy").length;
+  }
+  if (Date.now() < deadlineAt) {
+    result.salesforceConnectionsSynced = (
+      await syncDueSalesforceConnections({ tenantId, limit: 2 })
     ).filter((item) => item.status === "healthy").length;
   }
   if (enableSlo && Date.now() < deadlineAt) {

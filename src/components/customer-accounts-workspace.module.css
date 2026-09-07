@@ -17,6 +17,21 @@
 .metrics span { align-self: end; font-size: .66rem; font-weight: 760; text-transform: uppercase; }
 .metrics small { color: var(--muted); font-size: .62rem; }
 .metrics [data-warning="true"] strong { color: var(--warning); }
+.salesforcePanel { display: grid; grid-template-columns: minmax(16rem, 1.1fr) minmax(24rem, 2fr) auto; align-items: center; gap: 1rem; margin-top: 1rem; border: 1px solid oklch(from var(--primary) l c h / .2); border-radius: 1.2rem; padding: 1rem; background: linear-gradient(125deg, oklch(from var(--primary) l c h / .07), transparent 45%), var(--surface); }
+.salesforceIdentity { display: flex; align-items: flex-start; gap: .75rem; }
+.salesforceIdentity > span { display: grid; width: 2.5rem; height: 2.5rem; flex: 0 0 auto; place-items: center; border-radius: .8rem; color: var(--primary); background: oklch(from var(--primary) l c h / .11); }
+.salesforceIdentity h2 { margin-top: .15rem; font-size: .88rem; }
+.salesforceIdentity p:last-child { max-width: 28rem; margin-top: .3rem; color: var(--muted); font-size: .56rem; line-height: 1.55; }
+.salesforceHealth { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .45rem; }
+.salesforceHealth > div { min-width: 0; border: 1px solid oklch(from var(--line) l c h / .75); border-radius: .65rem; padding: .5rem .6rem; background: oklch(from var(--background) l c h / .72); }
+.salesforceHealth small, .salesforceHealth strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.salesforceHealth small { color: var(--muted); font-size: .44rem; font-weight: 760; text-transform: uppercase; }
+.salesforceHealth strong { margin-top: .16rem; font-size: .56rem; }
+.salesforceActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .45rem; }
+.salesforceActions > span { max-width: 15rem; color: var(--warning); font-size: .58rem; line-height: 1.5; }
+.salesforceActions a[aria-disabled="true"] { pointer-events: none; opacity: .5; }
+.salesforceNotice { grid-column: 1 / -1; border-top: 1px dashed var(--line); padding-top: .7rem; color: var(--muted); font-size: .58rem; }
+.salesforceNotice[data-tone="error"] { color: var(--danger); }
 .error { display: flex; align-items: center; gap: .6rem; margin-top: 1rem; border: 1px solid oklch(from var(--danger) l c h / .32); border-radius: .8rem; padding: .8rem 1rem; color: var(--danger); background: oklch(from var(--danger) l c h / .06); font-size: .72rem; }
 .error span { flex: 1; }
 .error button { font-weight: 760; text-decoration: underline; }
@@ -100,6 +115,6 @@
 .permissionNotice strong { color: var(--foreground); font-size: .66rem; }
 .permissionNotice p { margin-top: .2rem; color: var(--muted); font-size: .57rem; line-height: 1.5; }
 .editorFooter { justify-content: flex-end; border-top: 1px solid var(--line); padding: 1rem 1.4rem; }
-@media (max-width: 1100px) { .workspace { grid-template-columns: 1fr; } .rail { max-height: 18rem; overflow: auto; } .domainGrid { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .salesforcePanel { grid-template-columns: 1fr; } .salesforceActions { justify-content: flex-start; } .workspace { grid-template-columns: 1fr; } .rail { max-height: 18rem; overflow: auto; } .domainGrid { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .shell { padding: .8rem; } .hero { align-items: flex-start; flex-direction: column; } .metrics, .metadataGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metrics > div:nth-child(2), .metadata:nth-child(2) { border-right: 0; } .metrics > div:nth-child(-n+2), .metadata:nth-child(-n+2) { border-bottom: 1px dashed var(--line); } .accountHeader { flex-direction: column; } .permissionBar { align-items: flex-start; flex-wrap: wrap; } .permissionBar > div { flex-basis: calc(100% - 3rem); } .factEvidence, .editorFields { grid-template-columns: 1fr; } .fullField, .permissionNotice { grid-column: auto; } }
 @media (prefers-reduced-motion: reduce) { .primaryButton, .secondaryButton { transition: none; } }
