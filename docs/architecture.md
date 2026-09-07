@@ -1816,6 +1816,34 @@ their exact IDs and whether ownership and due-date authority came from cited
 transcript evidence or explicit user confirmation. Proposal and resolution RLS
 inherits the Meeting's strict workspace/project/source access boundary.
 
+## Provider-neutral Customer Account 360
+
+P10.9 adds a customer-success projection over the existing versioned ontology,
+temporal graph coordinates, canonical Workspace membership, Projects, Meetings,
+and governed source revisions. It does not make Salesforce or any other CRM the
+internal source of truth. An immutable account revision binds the Account entity,
+optional Organization entity, lifecycle, semantic owner, and explicit customer-
+data purposes. A separate monotonic head points to the current revision without
+rewriting history.
+
+Account facts use the existing ontology categories for organization, contacts,
+stakeholders, products, opportunities, cases, usage, projects, interactions,
+health, risks, and renewal. Every immutable fact revision retains its exact
+source and source-revision digest, provider reference when external, permission
+basis, allowed customer-data purposes, observation and validity time, freshness
+deadline, confidence, and semantic owner. The Account 360 read model selects the
+latest revision of each source assertion, derives freshness at read time, and
+shows conflicting current values for the same fact key instead of silently
+choosing one. Retractions remain in history.
+
+Workspace members may read only records whose explicit purpose set includes
+`customer_success.account.read`. Mutations require the account owner to retain a
+contributor-or-manager Workspace membership and the explicit
+`customer_success.account.manage` purpose. Source purposes must be a subset of
+the Account boundary. External CRM effects remain structurally disabled until
+the separately governed P10.11 write slice; P10.9 creates no provider mutation
+tool or credential path.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
@@ -1853,4 +1881,5 @@ source controls behind the original exact-owner mutation routes.
 | Evaluations + signed reports | `src/lib/evaluations/`, `src/lib/release/` |
 | Private asset objects, migration + signed delivery | `src/lib/storage/object-plane.ts`, `src/lib/storage/object-migration.ts`, `src/app/api/assets/` |
 | Unified workspace library read model | `src/lib/library/`, `src/lib/app-services/library.ts`, `src/app/api/library/` |
+| Customer Account 360 | `src/lib/customer-success/`, `src/lib/app-services/customer-accounts.ts`, `src/app/api/customer-accounts/` |
 | UI shell + workspaces | `src/components/`, `src/app/app/` |
