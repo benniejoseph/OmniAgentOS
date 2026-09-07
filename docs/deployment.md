@@ -188,6 +188,13 @@ the reconnectable `/api/runs/:id/activity/stream` from the run ledger. A P9.5
 web release therefore requires no Fly rebuild while the pinned browser gateway
 remains compatible and healthy.
 
+P9.6 also reuses the same pinned browser process and retained internal evidence.
+The Vercel executor passes a bounded, one-turn observation to the selected model
+provider after a governed action. Image bytes are disclosed only when that
+provider target advertises vision, and the observation is removed before any
+continuation is persisted. This is a web-only release; no database migration,
+public browser endpoint, bearer-token change, or Fly image rebuild is required.
+
 Create the app and token once, save the token in the owner's password manager, and deploy the dedicated image. The token value never belongs in Vercel:
 
 ```bash
