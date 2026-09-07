@@ -4,6 +4,10 @@ import {
 } from "@/lib/customer-success/store";
 import { CustomerAccountWriteDeniedError } from "@/lib/app-services/customer-accounts";
 import { SharedContextAuthorityError } from "@/lib/memory/shared-context";
+import {
+  CustomerSuccessWorkflowConflictError,
+  CustomerSuccessWorkflowNotFoundError,
+} from "@/lib/customer-success/workflow-store";
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
@@ -18,6 +22,18 @@ export function customerAccountFailureResponse(
     );
   }
   if (error instanceof CustomerAccountConflictError) {
+    return Response.json(
+      { error: error.message },
+      { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
+  if (error instanceof CustomerSuccessWorkflowNotFoundError) {
+    return Response.json(
+      { error: error.message },
+      { status: 404, headers: privateNoStoreHeaders },
+    );
+  }
+  if (error instanceof CustomerSuccessWorkflowConflictError) {
     return Response.json(
       { error: error.message },
       { status: 409, headers: privateNoStoreHeaders },
