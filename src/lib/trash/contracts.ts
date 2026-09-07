@@ -105,7 +105,7 @@ export const trashActionPreviewV1Schema = trashPreviewBodySchema.extend({
 
 const trashEffectReceiptBodySchema = z.object({
   version: z.literal(TRASH_EFFECT_RECEIPT_VERSION),
-  action: z.enum(["trash", "restore", "purge", "compensate"]),
+  action: z.enum(["trash", "restore", "purge", "expire", "compensate"]),
   trashId: z.string().regex(/^trash:[0-9a-f-]{36}$/),
   resourceType: trashResourceTypeSchema,
   resourceId: opaqueIdSchema,

@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 120,
+      name: "trash_lifecycle_v1",
+      checksum: "fadd7e5f0dd81375f49a4d1ddf641efb586a9094884cbee426ec4aa6c22ca44e",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 119)).toEqual({
       version: 119,
       name: "a2a_delegation_safety_v1",
       checksum: "fd3a418e621c8763c1d1850e287c098e69fa805f79a0ab00e399d67f4b3d76bc",
