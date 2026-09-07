@@ -77,6 +77,9 @@ describe("governed native tool schemas", () => {
     expect(getGovernedTool("app.work_items.update")?.inputSchema).toMatchObject({
       required: ["projectId", "workItemId"],
     });
+    for (const id of ["app.projects.execution.control", "app.projects.artifacts.feedback"]) {
+      expect(getGovernedTool(id)).toMatchObject({ riskLevel: 2, approvalRequired: true });
+    }
   });
 
   it("keeps destructive app data controls behind exact previews and approval", () => {

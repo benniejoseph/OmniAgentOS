@@ -28,6 +28,17 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
     targetDate: { type: ["string", "null"], format: "date-time" },
   }, ["projectId"]), { reversible: true }),
+  mutationTool("app.projects.plan", "Plan project", "Generate and persist a bounded dependency-aware work plan for one exact active project.", requiredObjectSchema({
+    projectId: uuid("Exact project ID."), context: text(0, 4_000),
+  }, ["projectId"]), { reversible: true }),
+  mutationTool("app.projects.execution.control", "Control project execution", "Configure, start, pause, resume, synchronize, approve, or retry one exact project execution.", requiredObjectSchema({
+    projectId: uuid("Exact project ID."), action: { type: "string", enum: ["configure", "start", "pause", "resume", "sync", "approve", "retry"] },
+    autonomyMode: { type: "string", enum: ["manual", "supervised", "autonomous"] }, taskBudget: integer(1, 50),
+    maxParallelTasks: integer(1, 3), requireApproval: { type: "boolean" }, workItemId: uuid("Exact work-item ID for approve or retry."),
+  }, ["projectId", "action"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.projects.artifacts.feedback", "Rate project artifact", "Record an explicit verdict and lesson for one exact project artifact and its reflection memory.", requiredObjectSchema({
+    projectId: uuid("Exact project ID."), artifactId: uuid("Exact project-artifact ID."), verdict: { type: "string", enum: ["useful", "needs_work"] }, lesson: text(3, 1_200),
+  }, ["projectId", "artifactId", "verdict", "lesson"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   mutationTool("app.work_items.create", "Create project work item", "Create one work item in an exact active project.", requiredObjectSchema({
     projectId: uuid("Exact owning project ID."),
     title: text(1, 240),
