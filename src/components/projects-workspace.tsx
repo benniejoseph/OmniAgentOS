@@ -17,6 +17,7 @@ import {
   Gauge,
   GitBranch,
   History,
+  LayoutTemplate,
   Loader2,
   Pause,
   Play,
@@ -109,10 +110,41 @@ type Project = {
   tasks: ProjectTask[];
   artifacts: ProjectArtifact[];
 };
+type WorkspaceTemplate = {
+  schemaVersion: 1;
+  templateId: string;
+  templateVersionId: string;
+  templateSha256: string;
+  version: number;
+  active: boolean;
+  activeVersion: number;
+  name: string;
+  description: string;
+  project: {
+    title: string;
+    objective: string;
+    status: "draft" | "active";
+    tasks: Array<{
+      key: string;
+      title: string;
+      detail: string;
+      priority: "low" | "medium" | "high";
+      agentId: AgentId;
+      dependsOnKeys: string[];
+    }>;
+  };
+  playbook: null | {
+    aliases: string[];
+    mode: "orchestrate" | "research" | "execute" | "learn";
+    toolBindings: Array<{ toolId: string; input: Record<string, unknown> }>;
+    acceptanceCriteria: string[];
+  };
+};
 
 export function ProjectsWorkspace() {
   const { session, status: sessionStatus } = useWorkspaceSession();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -124,6 +156,10 @@ export function ProjectsWorkspace() {
   const [reflectionDraft, setReflectionDraft] = useState<{ artifactId: string; verdict?: ProjectArtifact["verdict"]; lesson: string }>();
   const [reflectionState, setReflectionState] = useState<{ artifactId: string; status: "idle" | "submitting" | "saved" | "error" }>();
   const [showCreate, setShowCreate] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [templateBusyId, setTemplateBusyId] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [templateDescription, setTemplateDescription] = useState("");
   const [title, setTitle] = useState("");
   const [objective, setObjective] = useState("");
   const [targetDate, setTargetDate] = useState("");
@@ -139,6 +175,7 @@ export function ProjectsWorkspace() {
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Projects are ready.");
   const controllerRef = useRef<AbortController | null>(null);
+  const templateMutationKeysRef = useRef(new Map<string, string>());
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
   const selected = projects.find((project) => project.id === selectedId) || projects[0];
   const hasExecutionDraft = Boolean(executionDraft && selected && executionDraft.projectId === selected.id);
@@ -157,10 +194,14 @@ export function ProjectsWorkspace() {
     controllerRef.current = controller;
     setLoading(true);
     try {
-      const payload = await readJson("/api/projects", { signal: controller.signal });
+      const [payload, templatePayload] = await Promise.all([
+        readJson("/api/projects", { signal: controller.signal }),
+        readJson("/api/workspace-templates", { signal: controller.signal }),
+      ]);
       if (controller.signal.aborted) return;
       const next = payload.projects as Project[];
       setProjects(next);
+      setTemplates(templatePayload.templates as WorkspaceTemplate[]);
       const requestedProjectId = new URL(window.location.href).searchParams.get("project") || "";
       const requestedArtifactId = new URL(window.location.href).searchParams.get("artifact") || "";
       setSelectedId((current) =>
@@ -216,6 +257,77 @@ export function ProjectsWorkspace() {
       setAnnouncement("Project created and activated.");
     } catch (createError) { setError(message(createError)); }
     finally { setCreating(false); }
+  }
+
+  async function publishSelectedProjectAsTemplate(
+    existing?: WorkspaceTemplate,
+  ) {
+    if (!selected) return;
+    const name = existing?.name || templateName.trim();
+    if (!name) return;
+    const actionId = existing?.templateId || "new-template";
+    setTemplateBusyId(actionId);
+    try {
+      const key = templateMutationKey(
+        templateMutationKeysRef.current,
+        `publish:${actionId}`,
+      );
+      const payload = await readJson("/api/workspace-templates", {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": key },
+        body: JSON.stringify({
+          templateId: existing?.templateId,
+          name,
+          description: existing?.description || templateDescription.trim(),
+          project: projectTemplateBlueprint(selected),
+          playbook: existing?.playbook || null,
+        }),
+      });
+      const template = payload.template as WorkspaceTemplate;
+      setTemplates((current) => [
+        template,
+        ...current.filter((item) => item.templateId !== template.templateId),
+      ].sort((left, right) => left.name.localeCompare(right.name)));
+      templateMutationKeysRef.current.delete(`publish:${actionId}`);
+      if (!existing) {
+        setTemplateName("");
+        setTemplateDescription("");
+      }
+      setAnnouncement(existing
+        ? `${template.name} version ${template.version} is active. Existing projects were not changed.`
+        : `${template.name} was published as a reusable workspace template.`);
+      setError(undefined);
+    } catch (templateError) {
+      setError(message(templateError));
+    } finally {
+      setTemplateBusyId("");
+    }
+  }
+
+  async function instantiateTemplate(template: WorkspaceTemplate) {
+    setTemplateBusyId(template.templateVersionId);
+    try {
+      const keyName = `instantiate:${template.templateVersionId}`;
+      const key = templateMutationKey(templateMutationKeysRef.current, keyName);
+      const payload = await readJson(
+        `/api/workspace-templates/${encodeURIComponent(template.templateId)}/instantiate`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", "idempotency-key": key },
+          body: JSON.stringify({ templateVersionId: template.templateVersionId }),
+        },
+      );
+      const project = payload.project as Project;
+      setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+      setSelectedId(project.id);
+      templateMutationKeysRef.current.delete(keyName);
+      setAnnouncement(`${project.title} was created from ${template.name} version ${template.version}.`);
+      setError(undefined);
+    } catch (templateError) {
+      setError(message(templateError));
+    } finally {
+      setTemplateBusyId("");
+    }
   }
 
   async function generatePlan() {
@@ -356,7 +468,10 @@ export function ProjectsWorkspace() {
           <h1>Projects</h1>
           <p>Turn outcomes into durable plans your agents can advance with you.</p>
         </div>
-        <button type="button" className="projects-create-button" onClick={() => setShowCreate((value) => !value)}><Plus size={15} aria-hidden="true" /> New project</button>
+        <div className="projects-header-actions">
+          <button type="button" className="projects-template-button" onClick={() => setShowTemplates((value) => !value)} aria-expanded={showTemplates}><LayoutTemplate size={15} aria-hidden="true" /> Templates{templates.length ? ` · ${templates.length}` : ""}</button>
+          <button type="button" className="projects-create-button" onClick={() => setShowCreate((value) => !value)}><Plus size={15} aria-hidden="true" /> New project</button>
+        </div>
       </header>
 
       <div className="projects-stats" aria-label="Project overview" data-daybook="metrics">
@@ -364,6 +479,31 @@ export function ProjectsWorkspace() {
         <div><strong>{allTasks.length}</strong><span>planned tasks</span></div>
         <div><strong>{allTasks.length ? `${Math.round(closedTasks / allTasks.length * 100)}%` : "—"}</strong><span>work closed</span></div>
       </div>
+
+      {showTemplates ? <section className="projects-template-deck" aria-label="Workspace templates">
+        <div className="projects-template-heading">
+          <div><p className="projects-kicker">Versioned workspace library</p><h2>Templates & deterministic playbooks</h2><p>Each published version is immutable. New projects receive a copy, so later template changes never rewrite active work.</p></div>
+          <span><ShieldCheck size={14} aria-hidden="true" /> {templates.filter((template) => template.playbook).length} typed playbook{templates.filter((template) => template.playbook).length === 1 ? "" : "s"}</span>
+        </div>
+        {selected ? <div className="projects-template-publish">
+          <div><strong>Save “{selected.title}” as a template</strong><small>Copies its outcome, work items, assignments, and dependency graph.</small></div>
+          <label><span>Template name</span><input value={templateName} onChange={(event) => setTemplateName(event.currentTarget.value)} maxLength={120} placeholder="e.g. Product release" /></label>
+          <label><span>Description</span><input value={templateDescription} onChange={(event) => setTemplateDescription(event.currentTarget.value)} maxLength={1000} placeholder="When should this be used?" /></label>
+          <button type="button" onClick={() => void publishSelectedProjectAsTemplate()} disabled={!templateName.trim() || Boolean(templateBusyId)}>{templateBusyId === "new-template" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} Publish</button>
+        </div> : null}
+        <div className="projects-template-grid">
+          {templates.length ? templates.map((template) => <article key={template.templateVersionId} className="projects-template-card">
+            <div className="projects-template-card-head"><span><LayoutTemplate size={14} aria-hidden="true" /> v{template.version}</span>{template.playbook ? <em><Zap size={12} aria-hidden="true" /> typed playbook</em> : <em>project blueprint</em>}</div>
+            <h3>{template.name}</h3>
+            <p>{template.description || template.project.objective}</p>
+            <dl><div><dt>Work items</dt><dd>{template.project.tasks.length}</dd></div><div><dt>Default state</dt><dd>{template.project.status}</dd></div><div><dt>Procedure</dt><dd>{template.playbook?.aliases[0] || "Open-ended"}</dd></div></dl>
+            <div className="projects-template-card-actions">
+              <button type="button" className="is-primary" onClick={() => void instantiateTemplate(template)} disabled={Boolean(templateBusyId)}>{templateBusyId === template.templateVersionId ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={13} aria-hidden="true" />} Use template</button>
+              {selected ? <button type="button" onClick={() => void publishSelectedProjectAsTemplate(template)} disabled={Boolean(templateBusyId)}>{templateBusyId === template.templateId ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <History size={13} aria-hidden="true" />} Update from project</button> : null}
+            </div>
+          </article>) : <div className="projects-template-empty"><LayoutTemplate size={22} aria-hidden="true" /><div><strong>No workspace templates yet</strong><p>Publish the selected project to create an immutable reusable version.</p></div></div>}
+        </div>
+      </section> : null}
 
       {showCreate ? <form className="projects-create-form" onSubmit={create}>
         <div><label htmlFor="project-title">Project name</label><input id="project-title" value={title} onChange={(event) => setTitle(event.currentTarget.value)} placeholder="Launch the personal research system" maxLength={180} autoFocus /></div>
@@ -492,6 +632,32 @@ export function ProjectsWorkspace() {
 }
 
 function agentFor(id: AgentId) { return arsenalAgents.find((agent) => agent.id === id) || arsenalAgents[0]; }
+function projectTemplateBlueprint(project: Project): WorkspaceTemplate["project"] {
+  const keyByTaskId = new Map(project.tasks.map((task, index) => [task.id, `step-${index + 1}`]));
+  return {
+    title: project.title,
+    objective: project.objective,
+    status: project.status === "active" ? "active" : "draft",
+    tasks: project.tasks.map((task, index) => ({
+      key: `step-${index + 1}`,
+      title: task.title,
+      detail: task.detail,
+      priority: task.priority,
+      agentId: task.agentId,
+      dependsOnKeys: task.dependsOn.flatMap((id) => {
+        const key = keyByTaskId.get(id);
+        return key ? [key] : [];
+      }),
+    })),
+  };
+}
+function templateMutationKey(keys: Map<string, string>, name: string) {
+  const existing = keys.get(name);
+  if (existing) return existing;
+  const key = `workspace-template:${crypto.randomUUID()}`;
+  keys.set(name, key);
+  return key;
+}
 function commandHref(project: Project, task: ProjectTask) { const prompt = `Project: ${project.title}\nObjective: ${project.objective}\nAssigned task: ${task.title}\n${task.detail}\nComplete this bounded task, verify the outcome, and report evidence plus the next recommended project state.`; return `/app/command?agent=${task.agentId}&project=${encodeURIComponent(project.id)}&context=project&prompt=${encodeURIComponent(prompt)}`; }
 function executionTitle(status: Project["executionStatus"]) {
   return ({ idle: "Ready for deployment", running: "Agents are advancing this project", paused: "Execution is safely paused", waiting_approval: "Your approval is needed", completed: "Execution plan completed", failed: "An agent needs intervention" })[status];

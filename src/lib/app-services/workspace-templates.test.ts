@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   getTemplate: vi.fn(),
   findInstantiation: vi.fn(),
   recordInstantiation: vi.fn(),
+  showProject: vi.fn(),
   createProject: vi.fn(),
   createTasks: vi.fn(),
   getProject: vi.fn(),
@@ -32,6 +33,10 @@ vi.mock("@/lib/projects/store", () => ({
   createProjectTasks: mocks.createTasks,
   getOwnedProject: mocks.getProject,
   listProjectTasks: mocks.listTasks,
+}));
+
+vi.mock("@/lib/app-services/projects", () => ({
+  showProjectService: mocks.showProject,
 }));
 
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
@@ -174,6 +179,19 @@ beforeEach(() => {
     requireApproval: true,
     createdAt: "2026-09-07T11:01:00.000Z",
     updatedAt: "2026-09-07T11:01:00.000Z",
+  });
+  mocks.showProject.mockResolvedValue({
+    data: {
+      project: {
+        id: "project-template",
+        title: template.project.title,
+        objective: template.project.objective,
+        status: "draft",
+        tasks: [],
+        artifacts: [],
+      },
+    },
+    receipt: {},
   });
   mocks.createTasks.mockImplementation(async (projectId, [task], options) => [{
     id: projectTaskIdForIdempotencyKey(context.tenantId, projectId, options.mutation.idempotencyKey),
