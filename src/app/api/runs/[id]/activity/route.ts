@@ -1,9 +1,7 @@
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { inspectRunActivityService } from "@/lib/app-services/runs";
 import { withDatabaseRequestScope } from "@/lib/db/client";
-import { listRunBrowserActivity } from "@/lib/runs/activity";
-import { getAgentRun } from "@/lib/runs/store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { getOwnedThread } from "@/lib/threads/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -27,36 +25,23 @@ async function GETHandler(
     return forbiddenResponse(error);
   }
 
-  const run = await getAgentRun(id, { tenantId: auth.tenantId });
-  if (!run) {
-    return Response.json(
-      { error: "Run not found." },
-      { status: 404, headers: privateNoStoreHeaders },
-    );
-  }
-  if (run.threadId) {
-    const thread = await getOwnedThread(run.threadId, {
-      tenantId: auth.tenantId,
-      actorId: auth.actorId,
-      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(auth),
-    });
-    if (!thread) {
+  try {
+    const result = await inspectRunActivityService(createAppServiceCaller({ context: auth }), { runId: id });
+    if (!result.data.status) {
       return Response.json(
         { error: "Run not found." },
         { status: 404, headers: privateNoStoreHeaders },
       );
     }
+    return Response.json(
+      { ...result.data, serviceReceipt: result.receipt },
+      { headers: privateNoStoreHeaders },
+    );
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "Run not found.") throw error;
+    return Response.json(
+      { error: "Run not found." },
+      { status: 404, headers: privateNoStoreHeaders },
+    );
   }
-
-  return Response.json(
-    {
-      runId: run.id,
-      status: run.status,
-      browserActivity: await listRunBrowserActivity(run.id, {
-        tenantId: auth.tenantId,
-        actorId: auth.actorId,
-      }),
-    },
-    { headers: privateNoStoreHeaders },
-  );
 }
