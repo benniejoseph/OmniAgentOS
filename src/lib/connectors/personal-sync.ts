@@ -8,6 +8,7 @@ import { extractCaptureFile } from "@/lib/capture/files";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { deleteKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { mapInboundCommunication } from "@/lib/communications/store";
 
 type SyncCursor = {
   calendar?: string;
@@ -34,6 +35,16 @@ type SyncItem = {
   sourceCreatedAt?: string;
   sourceUpdatedAt?: string;
   capturedAt?: string;
+  communication?: {
+    provider: "gmail";
+    providerMessageId: string;
+    externalThreadId: string;
+    fromAddress: string;
+    toAddress: string;
+    subject: string;
+    content: string;
+    receivedAt: string;
+  };
 };
 type PersonalSourceId = SyncItem["kind"];
 type GoogleSourceObservation = Readonly<{
@@ -189,6 +200,13 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
               capturedAt: item.capturedAt,
             },
           });
+          if (item.communication) {
+            await mapInboundCommunication(item.communication, {
+              tenantId: input.tenantId,
+              actorId: input.actorId,
+              executionScope: sourceExecutionScope,
+            });
+          }
           sourceImported += 1;
         }
         const candidateCursor = { ...nextCursor, ...observation.value.cursor };
@@ -639,15 +657,37 @@ function googleMessage(value: Record<string, unknown>): SyncItem {
     value.internalDate,
     "Gmail internalDate",
   );
+  const labelIds = array(value.labelIds).map(String);
+  const fromAddress = header("From") || "unknown";
+  const toAddress = header("To") || header("Delivered-To") || "unknown";
+  const subject = header("Subject");
+  const providerMessageId = String(value.id || "");
+  const externalThreadId = String(value.threadId || "");
   return {
-    id: String(value.id),
+    id: providerMessageId,
     kind: "mail",
     title: header("Subject") || "Email",
     providerRevisionId: String(value.historyId || value.internalDate || value.id),
     sourceCreatedAt: observedAt,
     sourceUpdatedAt: observedAt,
     capturedAt: observedAt,
-    content: [`Subject: ${header("Subject")}`, `From: ${header("From")}`, `To: ${header("To")}`, `Cc: ${header("Cc")}`, `Date: ${header("Date")}`, `Labels: ${array(value.labelIds).map(String).join(", ")}`, body ? `Body:\n${body}` : `Snippet: ${String(value.snippet || "")}`, attachments.length ? `Attachments:\n${attachments.join("\n")}` : ""].filter(Boolean).join("\n"),
+    content: [`Subject: ${subject}`, `From: ${fromAddress}`, `To: ${toAddress}`, `Cc: ${header("Cc")}`, `Date: ${header("Date")}`, `Labels: ${labelIds.join(", ")}`, body ? `Body:\n${body}` : `Snippet: ${String(value.snippet || "")}`, attachments.length ? `Attachments:\n${attachments.join("\n")}` : ""].filter(Boolean).join("\n"),
+    ...(
+      providerMessageId && externalThreadId && !labelIds.includes("SENT")
+        ? {
+            communication: {
+              provider: "gmail" as const,
+              providerMessageId,
+              externalThreadId,
+              fromAddress,
+              toAddress,
+              subject,
+              content: body || String(value.snippet || ""),
+              receivedAt: observedAt,
+            },
+          }
+        : {}
+    ),
   };
 }
 function googleEvent(value: Record<string, unknown>): SyncItem {

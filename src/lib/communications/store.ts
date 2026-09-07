@@ -621,8 +621,8 @@ export async function mapInboundCommunication(input: {
       providerMessageId: requiredText(input.providerMessageId, 500),
       externalThreadId: requiredText(input.externalThreadId, 500),
       linkId: link.id,
-      fromAddressSha256: sha256(firstEmailAddress(input.fromAddress)),
-      toAddressSha256: sha256(firstEmailAddress(input.toAddress)),
+      fromAddressSha256: sha256(canonicalAddressHeader(input.fromAddress)),
+      toAddressSha256: sha256(canonicalAddressHeader(input.toAddress)),
       subjectSha256: sha256(input.subject.trim()),
       contentSha256: sha256(input.content),
       receivedAt: new Date(input.receivedAt).toISOString(),
@@ -782,9 +782,8 @@ function normalizeAddress(channel: string, value: string) {
   return email;
 }
 
-function firstEmailAddress(value: string) {
-  const candidate = requiredText(value, 500).split(",", 1)[0];
-  return normalizeAddress("email", candidate);
+function canonicalAddressHeader(value: string) {
+  return requiredText(value, 500).toLowerCase().replace(/\s+/g, " ");
 }
 
 function zEmail(value: string) {
