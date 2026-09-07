@@ -2642,8 +2642,11 @@ and workflow Agent nodes publish a closed completion artifact plus a handoff
 before their exact parent evaluator may accept the result. Browser projection
 exposes only the deliberately shared record and omits execution principals.
 Seventeen focused checks across five test files, affected lint, TypeScript, and
-the 96-page Next 16 production build pass. No migration was required. P8.5
-internal Agent Cards and capability discovery is next; P12/P13 remain deferred.
+the 96-page Next 16 production build pass. No migration was required. Vercel
+rejected the complete-feature promotion at
+`62e238bee8725b56a407a9fafc6b8c4e5576df09` before upload because the team still
+has an overdue balance, so Fly was intentionally left unchanged. P8.5 internal
+Agent Cards and capability discovery is next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
