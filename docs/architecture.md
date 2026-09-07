@@ -152,6 +152,25 @@ and returns the final deletion receipt. PostgreSQL forces tenant/actor RLS on
 items and receipts, permits serving roles to update only lifecycle columns, and
 grants no delete or truncate privilege.
 
+P9.4 makes repeated workflow authority explicit and actor-private instead of
+deriving it from a tenant/tool success count. Only a persisted workflow approval
+with an identified approver can issue a short-lived, budgeted grant. The grant
+binds the owner, approver, executing principal, exact plan ID and digest,
+domain/action/tool and immutable tool-contract digest, reversibility and risk,
+and the digest of the complete reviewed static tool input. Each execution must
+atomically consume a digest-bound idempotent claim before entering the governed
+executor; an identical retry reuses its claim and does not consume another use.
+Replanning revokes every active grant for the old plan digest. Dynamic inputs,
+changed targets, expired or exhausted grants, risk-three tools, and irreversible
+actions remain approval-gated. Trust profiles are advisory evidence only.
+
+Migration v121 installs the approval-grant and append-only claim ledgers under
+forced actor RLS. Serving roles may mutate only the six grant lifecycle columns
+and cannot update claims, delete, or truncate. Typed issued, consumed, and
+revoked events contain only bounded grant coordinates and digests. The approval
+workspace displays exact reviewed targets and grant eligibility, while the
+trust endpoint returns only the authenticated actor's grants and authority mode.
+
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped
 agent principal, intent and outcome contracts, resolved context and harness
@@ -268,10 +287,11 @@ generic HTTP, MCP, and OpenAPI effects truthfully remain
 `unverifiable/read_unavailable` after a bounded provider acknowledgement.
 Uncertain intent-bound deliveries are never replayed automatically.
 
-The existing workflow approval timestamp is not a cryptographic approval of
-that exact plan digest. The canary proves which persisted plan executed after
-workflow approval, not that the digest itself was presented and signed; that
-pre-execution approval binding remains a later success gate.
+P9.4 materializes workflow approval into a persisted grant bound to the exact
+approved plan digest and reviewed static action input before execution. The
+source decision and effect receipt are still durable application records rather
+than cryptographic signatures, but neither a bare timestamp nor a trust score
+can authorize another plan, target, contract, or principal.
 
 P1.5 activates the pure `ClaimEvidenceMapV1` contract and structural verifier
 for every completed agent answer. It binds one exact answer to UTF-16 claim spans, canonical
@@ -1225,7 +1245,7 @@ inherits mutation authority. All three ledgers use forced tenant RLS.
 
 - First-party auth: scrypt password hashes, opaque session tokens stored as SHA-256 digests, HttpOnly/Secure/SameSite=Lax cookies. Enforcement cannot be disabled in production.
 - RBAC: `viewer` → read; `operator` → run agents/tools/workflows/evals; `admin` → connectors, security, identity; `system` → internal.
-- Tool risk levels 0–3: 0–1 auto-execute, 2 requires one human approval, 3 requires a quorum of two distinct admin approvals (requester excluded) and is never exposed to the agent's tool loop.
+- Tool risk levels 0–3: direct user actions retain their explicit request authority, while planned or system execution requires governed approval evidence. Reversible risk-one and risk-two workflow actions may reuse only a valid exact-plan P9.4 grant; risk-three requires a quorum of two distinct admin approvals (requester excluded), is never grant-eligible, and is never exposed to the agent's tool loop. Irreversible actions are also excluded from reusable grants.
 - Connectors: SSRF guard (private IP/hostname blocking, DNS resolution checks, no embedded credentials), app-managed tenant-shared MCP bearer credentials sealed with AES-256-GCM and exact-origin/version AAD, legacy secret env-name allowlisting, and recursive metadata redaction. Rotation invalidates discovered authority; ciphertext and credential actor audit fields remain private storage columns and never enter connector API records.
 - Inbound MCP: actor-owned export policy plus hash-only service-key scopes, strict tenant re-entry, host/origin validation, and the same governed executor used by first-party tool calls.
 - Every auth failure, policy block, and allow/deny decision is recorded to the security audit and observability ledgers with correlation IDs.

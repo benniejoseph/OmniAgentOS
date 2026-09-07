@@ -113,6 +113,15 @@ both the deployed email-form request identity and canonical `actor:<uuid>` form;
 do not add an auth-user foreign key until all execution scopes have completed a
 separately gated canonical-actor cutover.
 
+Migration 121 adds actor-private approval grants and append-only consumption
+claims. Both tables force exact-actor RLS. Runtime and maintenance roles may
+select and insert; only grant payload, state, used-use count, last-used time,
+lifecycle revision, and revoked time may be updated. Claims are immutable and
+neither table grants serving roles delete or truncate. Grant issuance and
+consumption remain web/database operations; P9.4 does not change the standalone
+worker or Playwright images, so a compatible healthy Fly release must not be
+rebuilt solely for this migration.
+
 ## Dedicated worker and monitoring
 
 Run web and worker separately:

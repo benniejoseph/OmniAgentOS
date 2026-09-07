@@ -79,6 +79,7 @@ canceling the canonical task before its deadline or expiring it at the deadline.
 - `/api/workflows/:id/tick` and `/api/workflows/:id/signal` for controlled progression.
 - `/api/triggers` and `/api/triggers/:id/dispatch`.
 - `/api/operations`, `/api/approvals`, `/api/approvals/:id`, and `/api/workflows/tick`.
+- Workflow approval review includes each static action's redacted exact input and bounded-grant eligibility. Approval may issue short-lived, budgeted grants only for reversible risk-one or risk-two actions whose full input, plan, principal, tool contract, and target remain unchanged. Dynamic bindings, replans, expiry, exhaustion, changed input, risk-three, and irreversible actions require fresh per-action approval.
 - `GET /api/trash` lists the caller's actor-private retained or terminal items; `GET /api/trash/:id` returns one item plus its immutable lifecycle receipts. `GET /api/trash/:id/restore` creates a fresh exact revision/digest preview and `POST` accepts only that preview to restore or run the declared bounded compensation. `GET /api/trash/:id/purge` creates a distinct irreversible preview and `DELETE` accepts only that preview, remains risk-three approval-gated through the governed tool path, destroys the internal snapshot, and returns `finalDeletionReceipt`. All responses are private/no-store; snapshots are never returned.
 - Tool decisions sent to `POST /api/approvals/:id` accept the same bounded `Idempotency-Key` format. Approved, quorum-pending, and rejected tool decisions persist a versioned metadata-only event atomically with the locked tool-execution row; private reasons and tool payloads are excluded. Tool rows and tool-event streams are owner-private. A pending risk-3 record is additionally reviewable by active tenant admins to satisfy the distinct-admin quorum; only admins who record a decision retain that access after it leaves the pending state.
 - `PATCH /api/notifications/:id` and the `read_all` action at `PATCH /api/notifications` accept the same bounded `Idempotency-Key` format. Read, dismiss, snooze, complete, and bulk-read actions bind the authenticated user and exact target to a versioned metadata-only event. In Postgres, affected notification rows, a completed source Today item when applicable, and the event commit in one transaction.
@@ -113,7 +114,7 @@ Connector API records never contain credential plaintext or sealed payloads. App
 - `/api/release/evidence`.
 - `/api/security/context`, `/api/security/audits`, and `/api/security/isolation-report`.
 - `GET|POST /api/security/retention`: inspect retention policy or run an admin tenant sweep; trusted system automation may sweep all tenants.
-- `/api/trust` and `/api/events`.
+- `GET /api/trust` returns `authorityMode: "bounded_grants"`, legacy trust configuration as non-authoritative policy metadata, and only the authenticated actor's bounded grant projection and statistics. It never returns grant claims, reviewed input, or cross-actor records. `/api/events` exposes its existing governed event projection.
 - `/api/observability`, `/api/observability/slo`, `/api/observability/slo/policies`, `/api/diagnostics`, `/api/incidents`, `/api/incidents/:id/actions`, and `/api/alerts`.
 
 ## Common status codes
