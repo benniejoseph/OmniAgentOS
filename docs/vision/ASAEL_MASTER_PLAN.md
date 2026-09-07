@@ -1118,8 +1118,7 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 | P12.4 | Add offline encrypted capture and resumable media outbox. | Reuse object/asset plane; create device outbox. | No consequential agent action is queued offline without fresh authorization on reconnect. | Text, scan, image, file, and meeting media survive disconnect and sync idempotently. |
 | P12.5 | Add APNs/FCM delivery with causal deep links and notification actions. | Reuse delivery outbox; create device registrations. | Sensitive content previews follow device/user policy. | Notification opens the exact approval, work item, meeting, customer, or run and acknowledges once. |
 
-**Current status:** P12.1 and P12.2 are implemented and server-deployed. P12.3
-product vertical slices are implemented as one pending server-release batch.
+**Current status:** P12.1 through P12.3 are implemented and server-deployed.
 The overall phase remains open; P12.4 encrypted offline capture/outbox is next,
 followed by P12.5 push delivery. P9.12/P9.13 and Phase 13 remain out of the
 current implementation sequence.
