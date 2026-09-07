@@ -127,6 +127,11 @@ describe("personal OAuth synchronization", () => {
           generation: 1,
         }),
         releaseLease: true,
+        sourceSettlements: expect.arrayContaining([
+          expect.objectContaining({ source: "mail", status: "healthy", backfillState: "complete" }),
+          expect.objectContaining({ source: "calendar", status: "healthy", backfillState: "complete" }),
+          expect.objectContaining({ source: "drive", status: "healthy", backfillState: "complete" }),
+        ]),
       }),
     );
   });

@@ -1397,6 +1397,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[142],
       up: ensureFunctionalModelAssignmentsV1,
     },
+    {
+      ...databaseSchemaMigrations[143],
+      up: ensureSourceCoverageProjectionV1,
+    },
   ];
 }
 
@@ -17813,6 +17817,88 @@ async function ensureFunctionalModelAssignmentsV1(sql: SqlClient) {
     )
     WHERE assignment_id IS NOT NULL
   `;
+}
+
+async function ensureSourceCoverageProjectionV1(sql: SqlClient) {
+  await ensureOAuthGrants(sql);
+  await sql`
+    ALTER TABLE omni_oauth_grants
+    ADD COLUMN IF NOT EXISTS source_sync_health JSONB NOT NULL DEFAULT '{}'::jsonb
+  `;
+  await sql.query(`
+    CREATE OR REPLACE FUNCTION omni_oauth_source_sync_health_v1_is_valid(
+      value JSONB
+    ) RETURNS BOOLEAN
+    LANGUAGE SQL
+    IMMUTABLE
+    STRICT
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT jsonb_typeof(value) = 'object'
+        AND value - ARRAY['mail', 'calendar', 'drive'] = '{}'::jsonb
+        AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_each(value) entry(source_id, checkpoint)
+          WHERE entry.source_id NOT IN ('mail', 'calendar', 'drive')
+            OR jsonb_typeof(entry.checkpoint) <> 'object'
+            OR entry.checkpoint - ARRAY[
+              'schemaVersion', 'status', 'backfillState', 'lastAttemptedAt',
+              'lastSuccessfulAt', 'failureCode'
+            ] <> '{}'::jsonb
+            OR entry.checkpoint ->> 'schemaVersion' <> '1'
+            OR entry.checkpoint ->> 'status' NOT IN ('syncing', 'healthy', 'error')
+            OR entry.checkpoint ->> 'backfillState' NOT IN (
+              'unknown', 'in_progress', 'complete'
+            )
+            OR COALESCE(entry.checkpoint ->> 'lastAttemptedAt', '')
+              !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+            OR (
+              entry.checkpoint ? 'lastSuccessfulAt'
+              AND entry.checkpoint ->> 'lastSuccessfulAt'
+                !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+            )
+            OR COALESCE(entry.checkpoint ->> 'failureCode', 'none') NOT IN (
+              'none', 'provider_unauthorized', 'provider_forbidden',
+              'provider_rate_limited', 'provider_unavailable',
+              'processing_failed'
+            )
+            OR (
+              entry.checkpoint ->> 'status' = 'healthy'
+              AND NOT (entry.checkpoint ? 'lastSuccessfulAt')
+            )
+            OR (
+              entry.checkpoint ->> 'status' = 'error'
+              AND COALESCE(entry.checkpoint ->> 'failureCode', 'none') = 'none'
+            )
+            OR (
+              entry.checkpoint ->> 'status' <> 'error'
+              AND COALESCE(entry.checkpoint ->> 'failureCode', 'none') <> 'none'
+            )
+        )
+    $function$;
+
+    ALTER TABLE omni_oauth_grants
+      DROP CONSTRAINT IF EXISTS omni_oauth_grants_source_sync_health_check;
+    ALTER TABLE omni_oauth_grants
+      ADD CONSTRAINT omni_oauth_grants_source_sync_health_check
+      CHECK (omni_oauth_source_sync_health_v1_is_valid(source_sync_health));
+
+    REVOKE ALL ON FUNCTION omni_oauth_source_sync_health_v1_is_valid(JSONB)
+      FROM PUBLIC;
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT EXECUTE ON FUNCTION omni_oauth_source_sync_health_v1_is_valid(JSONB)
+          TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT EXECUTE ON FUNCTION omni_oauth_source_sync_health_v1_is_valid(JSONB)
+          TO omni_maintenance;
+      END IF;
+    END
+    $migration$;
+  `);
 }
 
 async function ensureCanonicalActorScopeRepairV1(sql: SqlClient) {
