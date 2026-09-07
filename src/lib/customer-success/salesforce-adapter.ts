@@ -724,7 +724,9 @@ async function salesforceApi(
       }
     }
     const body = await response.json().catch(() => undefined);
-    if (!response.ok) throw salesforceResponseError(response.status, body);
+    if (!response.ok) {
+      throw salesforceResponseError(response.status, body, Boolean(init));
+    }
     if (body !== undefined && !isRecord(body) && !Array.isArray(body)) {
       throw providerError(
         "schema_changed",
@@ -799,7 +801,7 @@ function highestApiVersion(payload: unknown) {
   return available[0];
 }
 
-function salesforceResponseError(status: number, body: unknown) {
+function salesforceResponseError(status: number, body: unknown, mutation = false) {
   const errorCode = Array.isArray(body) && isRecord(body[0])
     ? String(body[0].errorCode || "")
     : "";
@@ -825,14 +827,19 @@ function salesforceResponseError(status: number, body: unknown) {
     "Salesforce API limits are temporarily exhausted. Retry after the provider window resets.",
     "retry",
   );
-  if (status === 404 || errorCode === "INVALID_QUERY_LOCATOR") return providerError(
+  if (mutation && status === 404) return providerError(
+    "record_conflict",
+    "The Salesforce write target is no longer available. Refresh before retrying.",
+    "review_conflict",
+  );
+  if (errorCode === "INVALID_QUERY_LOCATOR") return providerError(
     "cursor_expired",
     "Salesforce query cursor expired. Restart the bounded backfill page.",
     "restart_backfill",
   );
   return providerError(
     "provider_unavailable",
-    "Salesforce could not complete the read request. Retry later.",
+    "Salesforce could not complete the request. Retry later.",
     "retry",
   );
 }
