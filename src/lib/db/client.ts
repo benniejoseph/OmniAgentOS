@@ -1401,6 +1401,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[143],
       up: ensureSourceCoverageProjectionV1,
     },
+    {
+      ...databaseSchemaMigrations[144],
+      up: ensureMobileDeviceLifecycleV1,
+    },
   ];
 }
 
@@ -17898,6 +17902,66 @@ async function ensureSourceCoverageProjectionV1(sql: SqlClient) {
       END IF;
     END
     $migration$;
+  `);
+}
+
+async function ensureMobileDeviceLifecycleV1(sql: SqlClient) {
+  await ensureMobileSessions(sql);
+  await sql.query(`
+    LOCK TABLE omni_mobile_sessions IN SHARE ROW EXCLUSIVE MODE;
+
+    ALTER TABLE omni_mobile_sessions
+      ADD COLUMN IF NOT EXISTS revocation_reason TEXT,
+      ADD COLUMN IF NOT EXISTS wipe_requested_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS wipe_acknowledged_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS wipe_challenge_hash TEXT,
+      ADD COLUMN IF NOT EXISTS wipe_challenge_expires_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS replaced_by_session_id TEXT;
+
+    UPDATE omni_mobile_sessions
+    SET revocation_reason = 'legacy_revoked'
+    WHERE revoked_at IS NOT NULL
+      AND revocation_reason IS NULL;
+
+    ALTER TABLE omni_mobile_sessions
+      DROP CONSTRAINT IF EXISTS omni_mobile_sessions_lifecycle_check;
+    ALTER TABLE omni_mobile_sessions
+      ADD CONSTRAINT omni_mobile_sessions_lifecycle_check CHECK (
+        (revocation_reason IS NULL OR revocation_reason IN (
+            'logout', 'refresh_reuse', 'password_changed', 'membership_changed',
+            'user_revoked', 'remote_wipe', 'replaced', 'legacy_revoked'
+          ))
+        AND (
+          (revoked_at IS NULL AND revocation_reason IS NULL)
+          OR (revoked_at IS NOT NULL AND revocation_reason IS NOT NULL)
+        )
+        AND (
+          (revocation_reason = 'remote_wipe' AND wipe_requested_at IS NOT NULL)
+          OR (revocation_reason IS DISTINCT FROM 'remote_wipe' AND wipe_requested_at IS NULL)
+        )
+        AND (wipe_acknowledged_at IS NULL OR wipe_requested_at IS NOT NULL)
+        AND (
+          (wipe_challenge_hash IS NULL AND wipe_challenge_expires_at IS NULL)
+          OR (
+            wipe_challenge_hash ~ '^[a-f0-9]{64}$'
+            AND wipe_challenge_expires_at IS NOT NULL
+            AND wipe_requested_at IS NOT NULL
+            AND wipe_acknowledged_at IS NULL
+          )
+        )
+        AND (
+          (revocation_reason = 'replaced' AND replaced_by_session_id IS NOT NULL)
+          OR (revocation_reason IS DISTINCT FROM 'replaced' AND replaced_by_session_id IS NULL)
+        )
+      );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_mobile_sessions_wipe_challenge_idx
+      ON omni_mobile_sessions (wipe_challenge_hash)
+      WHERE wipe_challenge_hash IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS omni_mobile_sessions_actor_lifecycle_idx
+      ON omni_mobile_sessions (
+        tenant_id, user_id, COALESCE(last_seen_at, updated_at) DESC, id
+      );
   `);
 }
 

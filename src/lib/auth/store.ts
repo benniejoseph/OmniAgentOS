@@ -476,7 +476,9 @@ export async function rotateUserPassword({
         `;
         await sql`
           UPDATE omni_mobile_sessions
-          SET revoked_at = NOW(), updated_at = NOW()
+          SET revoked_at = NOW(),
+              revocation_reason = 'password_changed',
+              updated_at = NOW()
           WHERE user_id = ${String(users[0].id)}
             AND tenant_id = ${normalizedTenantId}
             AND revoked_at IS NULL

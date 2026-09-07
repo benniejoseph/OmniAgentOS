@@ -34,6 +34,10 @@ abstract final class NativePaths {
   static const bootstrapGet = '/api/mobile/bootstrap';
   static const adoptionGet = '/api/mobile/adoption';
   static const contractsGet = '/api/mobile/contracts';
+  static const devicesList = '/api/mobile/devices';
+  static String devicesChange(String id) => '/api/mobile/devices/${Uri.encodeComponent(id)}';
+  static const wipeChallenge = '/api/mobile/wipe';
+  static const wipeAcknowledge = '/api/mobile/wipe';
   static const todayGet = '/api/today';
   static const todayCreate = '/api/today';
   static String todayUpdate(String id) => '/api/today/${Uri.encodeComponent(id)}';
