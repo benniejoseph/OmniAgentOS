@@ -94,6 +94,47 @@ export const captureMediaTurnSchema = z.object({
   { message: "A transcript turn must have a positive duration." },
 );
 
+export const captureSegmentMediaTurnSchema = z.object({
+  startMilliseconds: z.number().int().min(0).max(600_000),
+  endMilliseconds: z.number().int().min(1).max(600_000),
+  languageTag: languageTagSchema,
+  speaker: captureMediaSpeakerSchema,
+  text: z.string().trim().min(1).max(24_000),
+}).strict().refine(
+  (value) => value.endMilliseconds > value.startMilliseconds,
+  { message: "A segment transcript turn must have a positive duration." },
+);
+
+export const captureSegmentMediaTranscriptSchema = z.object({
+  schemaVersion: z.literal(1),
+  recordingId: recordingIdSchema,
+  segmentId: z.string().trim().min(1).max(200),
+  segmentIndex: z.number().int().min(0).max(1_439),
+  sourceAudioSha256: sha256Schema,
+  transcriptSha256: sha256Schema,
+  model: z.string().trim().min(1).max(160),
+  languageTags: z.array(languageTagSchema).min(1).max(24),
+  turns: z.array(captureSegmentMediaTurnSchema).min(1).max(2_000),
+  transcribedAt: z.string().datetime({ offset: true }),
+}).strict().superRefine((value, context) => {
+  const languages = [...new Set(value.turns.map((turn) => turn.languageTag))]
+    .sort((left, right) => left.localeCompare(right));
+  if (JSON.stringify(languages) !== JSON.stringify(value.languageTags)) {
+    context.addIssue({
+      code: "custom",
+      message: "Segment languages must exactly summarize its timestamped turns.",
+      path: ["languageTags"],
+    });
+  }
+  if (sha256Json(value.turns.map((turn) => turn.text).join("\n")) !== value.transcriptSha256) {
+    context.addIssue({
+      code: "custom",
+      message: "Segment transcript digest does not match its turns.",
+      path: ["transcriptSha256"],
+    });
+  }
+});
+
 export const captureMediaCitationSchema = z.object({
   turnId: z.string().regex(/^media-turn:[a-f0-9]{64}$/),
   segmentIndex: z.number().int().min(0).max(1_439),
@@ -219,11 +260,15 @@ export type CaptureRawAudioRetention = z.infer<
   typeof captureRawAudioRetentionSchema
 >;
 export type CaptureMediaTurn = z.infer<typeof captureMediaTurnSchema>;
+export type CaptureSegmentMediaTranscript = z.infer<
+  typeof captureSegmentMediaTranscriptSchema
+>;
 export type CaptureMediaCitation = z.infer<typeof captureMediaCitationSchema>;
 export type CaptureMediaOutput = z.infer<typeof captureMediaOutputSchema>;
 
 export function mediaTurnId(input: Omit<CaptureMediaTurn, "turnId">) {
-  return `media-turn:${sha256Json(input)}`;
+  const { languageTag: _languageTag, ...stableIdentity } = input;
+  return `media-turn:${sha256Json(stableIdentity)}`;
 }
 
 export function mediaCitationForTurn(turn: CaptureMediaTurn): CaptureMediaCitation {
