@@ -35,6 +35,11 @@ import {
   listSharedMemoryService,
   writeSharedMemoryService,
 } from "@/lib/app-services/shared-memory";
+import {
+  instantiateWorkspaceTemplateService,
+  listWorkspaceTemplatesService,
+  publishWorkspaceTemplateService,
+} from "@/lib/app-services/workspace-templates";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -182,6 +187,9 @@ export async function executeFirstPartyAppTool(input: {
     "app.workspaces.readiness": () => getWorkspaceReadinessService(caller, input.toolInput as never),
     "app.memory.shared.list": () => listSharedMemoryService(caller, input.toolInput as never),
     "app.memory.shared.write": () => writeSharedMemoryService(caller, input.toolInput as never),
+    "app.workspace_templates.list": () => listWorkspaceTemplatesService(caller, input.toolInput as never),
+    "app.workspace_templates.publish": () => publishWorkspaceTemplateService(caller, input.toolInput as never),
+    "app.workspace_templates.instantiate": () => instantiateWorkspaceTemplateService(caller, input.toolInput as never),
     "app.projects.list": () => listProjectsService(caller, input.toolInput as never),
     "app.projects.show": () => showProjectService(caller, input.toolInput as never),
     "app.projects.create": () => createProjectService(caller, input.toolInput as never),

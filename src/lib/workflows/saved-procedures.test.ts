@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { routeAgentRequest } from "@/lib/orchestration/supervisor";
+import { buildWorkspaceTemplateVersion } from "@/lib/workspace-templates/contracts";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(
@@ -95,6 +96,46 @@ describe("saved procedure contracts", () => {
     expect(procedures.parseWorkflowProcedureSnapshot({
       ...snapshot,
       toolBindings: [{ toolId: "http.request", input: { method: "DELETE", url: "https://example.test/release" } }],
+    })).toBeUndefined();
+  });
+
+  it("binds a known procedure to one exact immutable workspace template version", async () => {
+    const procedures = await import("@/lib/workflows/saved-procedures");
+    const template = buildWorkspaceTemplateVersion({
+      tenantId: "tenant-a",
+      workspaceId: "workspace:personal:11111111-1111-4111-8111-111111111111",
+      templateId: "workspace-template:22222222-2222-4222-8222-222222222222",
+      version: 3,
+      ownerActorId: "actor:11111111-1111-4111-8111-111111111111",
+      publishedAt: "2026-09-07T10:00:00.000Z",
+      definition: {
+        name: "Release",
+        project: { title: "Release", objective: "Ship safely" },
+        playbook: {
+          aliases: ["Run release"],
+          mode: "execute",
+          toolBindings: [{ toolId: "http.request", input: { method: "POST", url: "https://example.test/release" } }],
+          acceptanceCriteria: ["The release endpoint confirms success."],
+        },
+      },
+    });
+    const [procedure] = procedures.savedProceduresFromWorkspaceTemplates([template]);
+    const snapshot = procedures.buildWorkflowProcedureSnapshot(procedure, "run release");
+
+    expect(snapshot).toMatchObject({
+      schemaVersion: 2,
+      mode: "execute",
+      source: {
+        kind: "workspace_template",
+        templateVersionId: template.templateVersionId,
+        templateSha256: template.templateSha256,
+      },
+      acceptanceCriteria: ["The release endpoint confirms success."],
+    });
+    expect(procedures.parseWorkflowProcedureSnapshot(snapshot)).toEqual(snapshot);
+    expect(procedures.parseWorkflowProcedureSnapshot({
+      ...snapshot,
+      source: { ...("source" in snapshot ? snapshot.source : {}), templateVersion: 4 },
     })).toBeUndefined();
   });
 });

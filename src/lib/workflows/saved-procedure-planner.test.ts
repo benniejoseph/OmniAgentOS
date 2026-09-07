@@ -61,6 +61,7 @@ describe("saved procedure planning", () => {
         toolId: requiredTool.id,
         input,
       }],
+      requiredAcceptanceCriteria: ["The exact release workflow reports success."],
     });
 
     expect(record).toMatchObject({
@@ -79,6 +80,11 @@ describe("saved procedure planning", () => {
     expect(boundNodes.every((node) => node.toolInputs?.some((binding) =>
       binding.toolId === requiredTool.id && binding.inputJson === JSON.stringify(input)
     ))).toBe(true);
+    expect(record.plan.acceptanceCriteria).toContain(
+      "The exact release workflow reports success.",
+    );
+    expect(record.plan.nodes.find((node) => node.kind === "verify")?.acceptanceCriteria)
+      .toEqual(["The exact release workflow reports success."]);
   });
 
   it("fails closed when a required connector is unavailable", async () => {

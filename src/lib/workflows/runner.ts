@@ -1341,6 +1341,9 @@ async function buildPlan(
       requireApproval: detail.run.approvalRequired,
       contextSelection,
       requiredToolBindings: savedProcedure?.toolBindings,
+      requiredAcceptanceCriteria: savedProcedure?.schemaVersion === 2
+        ? savedProcedure.acceptanceCriteria
+        : undefined,
       allowedToolIds: profile ? [...new Set([...profile.toolIds, ...profile.skills.flatMap((skill) => skill.toolIds)])] : undefined,
       readOnlyTools: profile ? profile.approvalPolicy === "read_only" || profile.autonomy === "assist" : undefined,
       agentInstructions: [

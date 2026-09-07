@@ -23,6 +23,27 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     importance: { type: "number", minimum: 0, maximum: 1 },
     confidence: { type: "number", minimum: 0, maximum: 1 },
   }, ["scope", "title", "content"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.workspace_templates.list", "List workspace templates", "List active immutable workspace template versions, or their complete version history.", objectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    includeHistory: { type: "boolean", default: false },
+    limit: integer(1, 200, 100),
+  })),
+  mutationTool("app.workspace_templates.publish", "Publish workspace template", "Publish a new immutable template version and make it the active version without changing projects created from earlier versions.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    templateId: { type: "string", pattern: "^workspace-template:[0-9a-f-]{36}$", maxLength: 55 },
+    name: text(1, 120),
+    description: text(0, 1_000),
+    project: workspaceTemplateProjectSchema(),
+    playbook: workspaceTemplatePlaybookSchema(),
+  }, ["name", "project"]), { approvalRequired: true, reversible: true }),
+  mutationTool("app.workspace_templates.instantiate", "Create project from template", "Create an independent project and exact work-item snapshot from one immutable template version.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    templateId: { type: "string", pattern: "^workspace-template:[0-9a-f-]{36}$", maxLength: 55 },
+    templateVersionId: opaqueId("Optional exact immutable template-version ID."),
+    title: text(1, 180),
+    objective: text(1, 2_000),
+    status: { type: "string", enum: ["draft", "active"] },
+  }, ["templateId"]), { approvalRequired: true, reversible: true }),
   readTool("app.projects.list", "List projects", "List the current actor's projects with their work items and artifacts.", objectSchema({
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
@@ -443,6 +464,48 @@ function integer(minimum: number, maximum: number, defaultValue?: number) {
 
 function opaqueId(description: string) {
   return { type: "string", minLength: 1, maxLength: 200, description };
+}
+
+function workspaceTemplateProjectSchema() {
+  return requiredObjectSchema({
+    title: text(1, 180),
+    objective: text(1, 2_000),
+    status: { type: "string", enum: ["draft", "active"], default: "draft" },
+    tasks: {
+      type: "array",
+      maxItems: 20,
+      items: requiredObjectSchema({
+        key: { type: "string", minLength: 1, maxLength: 80, pattern: "^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$" },
+        title: text(1, 240),
+        detail: text(0, 1_000),
+        priority: { type: "string", enum: ["low", "medium", "high"], default: "medium" },
+        agentId: { type: "string", enum: ["atlas", "scout", "forge", "sentinel", "mnemosyne"], default: "atlas" },
+        dependsOnKeys: { type: "array", maxItems: 20, uniqueItems: true, items: text(1, 80) },
+      }, ["key", "title"]),
+    },
+  }, ["title", "objective"]);
+}
+
+function workspaceTemplatePlaybookSchema() {
+  return {
+    anyOf: [
+      { type: "null" },
+      requiredObjectSchema({
+        aliases: { type: "array", minItems: 1, maxItems: 24, uniqueItems: true, items: text(1, 240) },
+        mode: { type: "string", enum: ["orchestrate", "research", "execute", "learn"], default: "orchestrate" },
+        toolBindings: {
+          type: "array",
+          minItems: 1,
+          maxItems: 12,
+          items: requiredObjectSchema({
+            toolId: opaqueId("Exact governed tool ID."),
+            input: { type: "object", maxProperties: 100 },
+          }, ["toolId", "input"]),
+        },
+        acceptanceCriteria: { type: "array", minItems: 1, maxItems: 20, items: text(1, 500) },
+      }, ["aliases", "toolBindings", "acceptanceCriteria"]),
+    ],
+  };
 }
 
 function sha256(description: string) {
