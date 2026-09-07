@@ -39,6 +39,7 @@ import {
 } from "@/lib/security/execution-scope";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import { projectCanonicalShadowWrite } from "@/lib/workspaces/canonical-store";
 
 export type ProjectMutationContext = Readonly<{
   executionScope: ExecutionScope;
@@ -659,6 +660,7 @@ export async function recordProjectArtifactFeedback(
       await appendProjectMutationEvent({
         mutation,
         project,
+        taskId: saved.taskId,
         operation: "project_artifact_reviewed",
         status: input.verdict,
         changedFieldIds: ["lesson", "reflection_memory_id", "verdict"],
@@ -764,6 +766,7 @@ export async function saveProjectArtifact(input: {
       await appendProjectMutationEvent({
         mutation,
         project,
+        taskId: saved.taskId,
         operation: "project_artifact_saved",
         status: saved.status,
         changedFieldIds: [
@@ -1031,6 +1034,7 @@ export async function replaceProjectTaskDependencies(
       await appendProjectMutationEvent({
         mutation,
         project,
+        taskIds: safe.map((item) => item.taskId),
         operation: "project_task_dependencies_replaced",
         status: project.status,
         changedFieldIds: ["dependency_ids"],
@@ -1605,6 +1609,7 @@ async function appendProjectMutationEvent(
     mutation: ReturnType<typeof exactProjectMutationContext>;
     project: PersonalProject;
     taskId?: string;
+    taskIds?: string[];
     operation: "project_created" | "project_updated" |
       "project_task_created" | "project_task_updated" |
       "project_execution_updated" |
@@ -1620,6 +1625,43 @@ async function appendProjectMutationEvent(
   },
   sql?: ProjectSqlClient,
 ) {
+  if (sql) {
+    const taskIds = [...new Set([
+      ...(input.taskId ? [input.taskId] : []),
+      ...(input.taskIds || []),
+    ])];
+    if (!taskIds.length) {
+      await projectCanonicalShadowWrite({
+        sql,
+        project: input.project,
+        attribution: {
+          executionScope: input.mutation.executionScope,
+          changedFieldIds: input.changedFieldIds,
+        },
+      });
+    } else {
+      for (const taskId of taskIds) {
+        const task = await getProjectTaskById(
+          sql,
+          taskId,
+          input.project.tenantId,
+          input.project.id,
+        );
+        if (!task) {
+          throw new Error("Canonical WorkItem source is unavailable.");
+        }
+        await projectCanonicalShadowWrite({
+          sql,
+          project: input.project,
+          task,
+          attribution: {
+            executionScope: input.mutation.executionScope,
+            changedFieldIds: input.changedFieldIds,
+          },
+        });
+      }
+    }
+  }
   const payload = projectMutationEventPayloadSchema.parse({
     schemaVersion: PROJECT_EVENT_SCHEMA_VERSION,
     projectId: input.project.id,
