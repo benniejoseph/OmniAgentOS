@@ -116,7 +116,7 @@ function fixturePolicy(): Ap2WebAuthnTrustPolicy {
     rpId: "asael.example",
     expectedOrigin: "https://asael.example",
     allowedAaguids: ["11111111-1111-4111-8111-111111111111"],
-    acceptedAttestationFormats: ["apple"] as const,
+    acceptedAttestationFormats: ["apple" as const],
     assurance: {
       hardwareBacked: true as const,
       privateKeyNonExportable: true as const,
