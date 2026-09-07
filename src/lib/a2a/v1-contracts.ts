@@ -138,6 +138,45 @@ const agentSkillSchema = z.object({
   securityRequirements: z.array(securityRequirementSchema).max(8).optional(),
 }).strict();
 
+const externalHttpSecuritySchemeSchema = z.object({
+  httpAuthSecurityScheme: z.object({
+    scheme: z.literal("Bearer"),
+    bearerFormat: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().min(1).max(300).optional(),
+  }).strict(),
+}).strict();
+
+export const externalA2AAgentCardV1Schema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().min(1).max(700),
+  supportedInterfaces: z.array(z.object({
+    url: urlSchema,
+    protocolBinding: z.literal("HTTP+JSON"),
+    protocolVersion: z.literal(A2A_PROTOCOL_VERSION),
+  }).strict()).min(1).max(4),
+  provider: z.object({
+    organization: z.string().trim().min(1).max(120),
+    url: urlSchema,
+  }).strict().optional(),
+  version: z.string().trim().min(1).max(80),
+  documentationUrl: urlSchema.optional(),
+  capabilities: z.object({
+    streaming: z.boolean().optional(),
+    pushNotifications: z.boolean().optional(),
+    extendedAgentCard: z.boolean().optional(),
+  }).strict(),
+  securitySchemes: z.record(
+    z.string().trim().min(1).max(120),
+    externalHttpSecuritySchemeSchema,
+  ).refine((value) => Object.keys(value).length > 0, {
+    message: "A compatible A2A peer must declare Bearer authentication.",
+  }),
+  securityRequirements: z.array(securityRequirementSchema).min(1).max(8),
+  defaultInputModes: z.array(mediaTypeSchema).min(1).max(8),
+  defaultOutputModes: z.array(mediaTypeSchema).min(1).max(8),
+  skills: z.array(agentSkillSchema).min(1).max(64),
+}).strict();
+
 export const a2aAgentCardV1Schema = z.object({
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().min(1).max(700),
@@ -184,6 +223,9 @@ export type A2AMessageV1 = Readonly<z.infer<typeof a2aMessageV1Schema>>;
 export type A2AArtifactV1 = Readonly<z.infer<typeof a2aArtifactV1Schema>>;
 export type A2ATaskV1 = Readonly<z.infer<typeof a2aTaskV1Schema>>;
 export type A2AAgentCardV1 = Readonly<z.infer<typeof a2aAgentCardV1Schema>>;
+export type ExternalA2AAgentCardV1 = Readonly<
+  z.infer<typeof externalA2AAgentCardV1Schema>
+>;
 
 export class A2AProtocolError extends Error {
   constructor(
@@ -307,6 +349,10 @@ export function parseA2ATaskV1(value: unknown) {
 
 export function parseA2AAgentCardV1(value: unknown) {
   return deepFreeze(a2aAgentCardV1Schema.parse(value));
+}
+
+export function parseExternalA2AAgentCardV1(value: unknown) {
+  return deepFreeze(externalA2AAgentCardV1Schema.parse(value));
 }
 
 function modalitiesToMediaTypes(values: readonly string[]) {
