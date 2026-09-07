@@ -48,6 +48,32 @@ class ProjectsView extends StatelessWidget {
                   SliverToBoxAdapter(
                     child: _PortfolioSummary(projects: controller.projects),
                   ),
+                  if (controller.error != null)
+                    SliverToBoxAdapter(
+                      child: Container(
+                        margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.errorContainer,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.cloud_off_outlined),
+                            const SizedBox(width: 10),
+                            const Expanded(
+                              child: Text(
+                                'Offline · showing the last available Workspaces.',
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: controller.refresh,
+                              child: const Text('Retry'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   if (controller.projects.isEmpty)
                     const SliverFillRemaining(
                       child: Center(

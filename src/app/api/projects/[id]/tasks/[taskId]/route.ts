@@ -18,7 +18,7 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   const parsed = schema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid task update", details: parsed.error.flatten() }, { status: 400 });
   let context;
-  try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_task", resourceId: taskId }); }
+  try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_task", resourceId: taskId, nativeMutationCapability: "workspaces.update" }); }
   catch (error) { return forbiddenResponse(error); }
   try {
     const result = await updateWorkItemService(

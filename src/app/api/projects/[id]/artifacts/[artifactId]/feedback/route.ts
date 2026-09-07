@@ -21,7 +21,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   if (!parsed.success) return Response.json({ error: "Invalid artifact reflection", details: parsed.error.flatten() }, { status: 400 });
   let context;
   try {
-    context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_artifact", resourceId: artifactId });
+    context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_artifact", resourceId: artifactId, nativeMutationCapability: "workspaces.update" });
   } catch (error) { return forbiddenResponse(error); }
   try {
     const result = await recordProjectArtifactFeedbackService(

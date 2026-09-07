@@ -48,7 +48,12 @@ async function POSTHandler(request: Request) {
   if (parsed instanceof Response) return parsed;
   let context;
   try {
-    context = await authorizeRequest({ request, action: "run.agent", resourceType: "project" });
+    context = await authorizeRequest({
+      request,
+      action: "run.agent",
+      resourceType: "project",
+      nativeMutationCapability: "workspaces.update",
+    });
   } catch (error) {
     return forbiddenResponse(error);
   }

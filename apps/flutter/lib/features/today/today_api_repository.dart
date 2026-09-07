@@ -23,6 +23,10 @@ class ApiTodayRepository implements TodayRepository {
         'priority': priority.name,
         if (dueAt != null) 'dueAt': dueAt.toUtc().toIso8601String(),
       },
+      headers: {
+        'idempotency-key':
+            'today-create-${DateTime.now().microsecondsSinceEpoch}',
+      },
     );
     return TodayItem.fromJson(json['item'] as Json);
   }
@@ -32,13 +36,24 @@ class ApiTodayRepository implements TodayRepository {
     final json = await api.patchJson(
       NativePaths.todayUpdate(id),
       data: changes,
+      headers: {
+        'idempotency-key':
+            'today-update-$id-${DateTime.now().microsecondsSinceEpoch}',
+      },
     );
     return TodayItem.fromJson(json['item'] as Json);
   }
 
   @override
   Future<DailyBrief?> generateBrief({bool force = false}) async {
-    final json = await api.postJson(NativePaths.todayBrief, data: {'force': force});
+    final json = await api.postJson(
+      NativePaths.todayBrief,
+      data: {'force': force},
+      headers: {
+        'idempotency-key':
+            'today-brief-${DateTime.now().microsecondsSinceEpoch}',
+      },
+    );
     return json['brief'] is Json
         ? DailyBrief.fromJson(json['brief'] as Json)
         : null;

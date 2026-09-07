@@ -160,7 +160,14 @@ class ApiClient {
   Future<Map<String, dynamic>> postJson(
     String path, {
     Map<String, dynamic>? data,
-  }) => _json(() => _dio.post<Object?>(path, data: data));
+    Map<String, dynamic>? headers,
+  }) => _json(
+    () => _dio.post<Object?>(
+      path,
+      data: data,
+      options: Options(headers: headers),
+    ),
+  );
 
   Future<Map<String, dynamic>> patchJson(
     String path, {
@@ -177,7 +184,14 @@ class ApiClient {
   Future<Map<String, dynamic>> deleteJson(
     String path, {
     Map<String, dynamic>? query,
-  }) => _json(() => _dio.delete<Object?>(path, queryParameters: query));
+    Map<String, dynamic>? headers,
+  }) => _json(
+    () => _dio.delete<Object?>(
+      path,
+      queryParameters: query,
+      options: Options(headers: headers),
+    ),
+  );
 
   Future<Map<String, dynamic>> postMultipart(
     String path, {

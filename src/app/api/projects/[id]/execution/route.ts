@@ -35,7 +35,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   if (!parsed.success) return Response.json({ error: "Invalid project execution command", details: parsed.error.flatten() }, { status: 400 });
   let context;
   try {
-    context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "project_execution", resourceId: id, metadata: { action: parsed.data.action } });
+    context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "project_execution", resourceId: id, nativeMutationCapability: "workspaces.update", metadata: { action: parsed.data.action } });
   } catch (error) { return forbiddenResponse(error); }
   try {
     const result = await controlProjectExecutionService(

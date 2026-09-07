@@ -31,6 +31,10 @@ class ApiInboxRepository implements InboxRepository {
         if (breakGlass) 'breakGlass': true,
         if (ticket?.trim().isNotEmpty ?? false) 'ticket': ticket!.trim(),
       },
+      headers: {
+        'idempotency-key':
+            'approval-${item.id}-${approve ? 'approve' : 'reject'}',
+      },
     );
   }
 

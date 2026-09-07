@@ -182,6 +182,7 @@ async function POSTHandler(
         action: "manage.workflow",
         resourceType: "workflow",
         resourceId: id,
+        nativeMutationCapability: "approvals.decide",
         metadata: {
           kind: parsed.data.kind,
           decision: parsed.data.decision,
@@ -248,6 +249,7 @@ async function POSTHandler(
         action: "manage.workflow",
         resourceType: "observability_slo_policy_change",
         resourceId: id,
+        nativeMutationCapability: "approvals.decide",
         metadata: { decision: parsed.data.decision },
       });
     } catch (error) {
@@ -315,6 +317,7 @@ async function POSTHandler(
       action: "execute.tool",
       resourceType: "tool_execution",
       resourceId: id,
+      nativeMutationCapability: "approvals.decide",
       metadata: { decision: parsed.data.decision },
     });
   } catch (error) {

@@ -54,7 +54,7 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   const parsed = updateSchema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid project update", details: parsed.error.flatten() }, { status: 400 });
   let context;
-  try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project", resourceId: id }); }
+  try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project", resourceId: id, nativeMutationCapability: "workspaces.update" }); }
   catch (error) { return forbiddenResponse(error); }
   try {
     const result = await updateProjectService(
