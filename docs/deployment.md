@@ -423,6 +423,23 @@ stale receipts and deployment-environment calls must not appear as assignment
 proof. The Fly worker needs a release only if its protocol or worker-owned
 model boundary changes.
 
+P11.9 source coverage is a Vercel web/runtime release plus additive migration
+`20260908090000_p11_9_source_coverage_projection.sql` (internal schema version
+144). Apply the migration before the application release. It adds only the
+validated safe per-source OAuth checkpoint projection; provider cursors and
+credentials remain in their existing sealed fields and never enter the new
+column or response.
+
+Deploy the complete feature once its focused source-sync, projection,
+application-service, route, registry, and client checks pass. Verify canonical
+health at the exact release revision, anonymous `/api/source-coverage`
+rejection, and an authenticated `p11.9-source-coverage:1` response. Today,
+Memory, and Integrations must render the same connected domains, backfill,
+freshness, last verification, index completeness, stale sources, and explicit
+blind spots. A missing dependency or disagreeing inventory must remain unknown
+and actionable rather than becoming an empty fact. No Fly release is required
+unless the worker protocol changes.
+
 ## Production smoke state
 
 The `Production Smoke` workflow supports schedule and manual dispatch. Configure:

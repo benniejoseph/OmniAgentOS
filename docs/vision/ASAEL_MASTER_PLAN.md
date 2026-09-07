@@ -3109,6 +3109,6 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 8 — delegation and A2A:** P8.1–P8.7 complete.
 - [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.19 complete.
 - [ ] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete.
-- [ ] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
+- [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [ ] **Phase 12 — mobile application:** P12.1–P12.5 complete.
 - [ ] **Phase 13 — macOS application:** P13.1–P13.4 complete.
