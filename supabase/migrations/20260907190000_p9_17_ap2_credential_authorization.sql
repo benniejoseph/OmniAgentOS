@@ -243,8 +243,7 @@ VALUES (
   'ap2_credential_authorization_v1',
   '58e206e5cf85d52958965d7ae06d89a1f61059ee41532970c3645b1dfff60708',
   clock_timestamp()
-)
-ON CONFLICT (version) DO NOTHING;
+);
 
 DO $migration$
 BEGIN
