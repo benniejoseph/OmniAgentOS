@@ -1756,6 +1756,7 @@ export function AgentRunsWorkspace({
 
   async function runAgent(options?: {
     submittedGoal?: string;
+    submittedThreadId?: string;
     prepareContextAutomatically?: boolean;
   }) {
     if (runPermission) {
@@ -1831,7 +1832,7 @@ export function AgentRunsWorkspace({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           mode,
-          threadId: threadId || undefined,
+          threadId: options?.submittedThreadId || threadId || undefined,
           resumeRunId,
           missionId: initialMissionId || undefined,
           message: submittedGoal,
@@ -2656,6 +2657,7 @@ export function AgentRunsWorkspace({
               workflowStarted={Boolean(activeWorkflowId)}
               workflowInProgress={conversationLocked}
               hasConversation={turns.length > 0 || Boolean(currentAssistantResponse)}
+              voiceConversationId={threadId || undefined}
               onGoalChange={changeGoal}
               onModeChange={changeMode}
               onApprovalChange={changeApprovalRequired}
@@ -2668,11 +2670,17 @@ export function AgentRunsWorkspace({
               }}
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent({ prepareContextAutomatically: true })}
-              onVoiceTranscript={(transcript) => {
+              onVoiceConversationBound={setThreadId}
+              onVoiceTranscript={(transcript, voiceConversationId) => {
                 const existingDraft = goal.trim();
                 const voiceGoal = existingDraft ? `${existingDraft}\n\n${transcript}` : transcript;
+                setThreadId(voiceConversationId);
                 changeGoal(voiceGoal);
-                void runAgent({ submittedGoal: voiceGoal, prepareContextAutomatically: true });
+                void runAgent({
+                  submittedGoal: voiceGoal,
+                  submittedThreadId: voiceConversationId,
+                  prepareContextAutomatically: true,
+                });
               }}
               onStop={stopAgent}
               onWorkflow={() => void startWorkflow()}
@@ -4776,6 +4784,7 @@ function GoalStage({
   workflowStarted,
   workflowInProgress,
   hasConversation,
+  voiceConversationId,
   onGoalChange,
   onModeChange,
   onApprovalChange,
@@ -4785,6 +4794,7 @@ function GoalStage({
   onReviewContext,
   onPlan,
   onAgent,
+  onVoiceConversationBound,
   onVoiceTranscript,
   onStop,
   onWorkflow,
@@ -4809,6 +4819,7 @@ function GoalStage({
   workflowStarted: boolean;
   workflowInProgress: boolean;
   hasConversation: boolean;
+  voiceConversationId?: string;
   onGoalChange: (value: string) => void;
   onModeChange: (value: AgentMode) => void;
   onApprovalChange: (value: boolean) => void;
@@ -4818,7 +4829,8 @@ function GoalStage({
   onReviewContext: () => void;
   onPlan: () => void;
   onAgent: () => void;
-  onVoiceTranscript: (transcript: string) => void;
+  onVoiceConversationBound: (conversationId: string) => void;
+  onVoiceTranscript: (transcript: string, conversationId: string) => void;
   onStop: () => void;
   onWorkflow: () => void;
 }) {
@@ -4975,6 +4987,9 @@ function GoalStage({
                   disabledReason={voiceDisabledReason}
                   agentName={preferredAgent?.name || "Asael"}
                   agentVoice={preferredAgent?.voice}
+                  conversationId={voiceConversationId}
+                  mode={mode}
+                  onConversationBound={onVoiceConversationBound}
                   onTranscript={onVoiceTranscript}
                 />
                 <button
