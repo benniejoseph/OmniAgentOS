@@ -31,6 +31,10 @@
 	<string>Use Face ID to unlock Asael and release this device session.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record a short voice draft that you can review before sending to Asael.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Scan a page into an encrypted Capture draft that you choose to sync.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose an image for an encrypted Capture draft that you choose to sync.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -122,4 +122,18 @@ describe("request-bound Capture asset collection route", () => {
     ).not.toHaveBeenCalled();
     expect(routeMocks.listCaptureAssets).not.toHaveBeenCalled();
   });
+
+  it("rejects an offline retry that is not bound to the current owner", async () => {
+    const response = await POST(new Request("http://localhost/api/capture", {
+      method: "POST",
+      headers: {
+        "idempotency-key": "capture-offline-abcdefghijklmnopqrstuvwx",
+      },
+      body: new FormData(),
+    }));
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(routeMocks.captureExecutionScopeFromSecurityContext).not.toHaveBeenCalled();
+  });
 });

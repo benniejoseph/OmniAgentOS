@@ -2,6 +2,8 @@ import '../../../generated/native_contract.g.dart';
 
 class AppSession {
   const AppSession({
+    required this.tenantId,
+    required this.actorId,
     required this.userId,
     required this.email,
     required this.displayName,
@@ -11,6 +13,9 @@ class AppSession {
 
   factory AppSession.fromJson(Map<String, dynamic> json) {
     NativeContract.verifyBootstrap(json);
+    final context = json['context'] is Map
+        ? Map<String, dynamic>.from(json['context'] as Map)
+        : const <String, dynamic>{};
     final user = json['user'] is Map
         ? Map<String, dynamic>.from(json['user'] as Map)
         : json;
@@ -21,7 +26,16 @@ class AppSession {
     final membership = json['membership'] is Map
         ? Map<String, dynamic>.from(json['membership'] as Map)
         : const <String, dynamic>{};
+    final tenantId = (context['tenantId'] ?? workspace['id'] ?? '').toString();
+    final actorId = (context['actorId'] ?? '').toString();
+    if (tenantId.isEmpty || actorId.isEmpty) {
+      throw const FormatException(
+        'The native session is missing its tenant or actor scope.',
+      );
+    }
     return AppSession(
+      tenantId: tenantId,
+      actorId: actorId,
       userId: (user['id'] ?? user['userId'] ?? '').toString(),
       email: (user['email'] ?? '').toString(),
       displayName: (user['name'] ?? user['displayName'] ?? 'Operator')
@@ -33,6 +47,8 @@ class AppSession {
     );
   }
 
+  final String tenantId;
+  final String actorId;
   final String userId;
   final String email;
   final String displayName;

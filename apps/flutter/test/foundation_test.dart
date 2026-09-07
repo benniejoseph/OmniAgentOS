@@ -9,11 +9,14 @@ import 'package:asael/features/auth/domain/app_session.dart';
 void main() {
   test('session supports nested mobile API payloads', () {
     final session = AppSession.fromJson({
+      'context': {'tenantId': 'tenant-1', 'actorId': 'actor:pilot'},
       'user': {'id': 'user-1', 'email': 'pilot@omni.test', 'name': 'Pilot'},
-      'workspace': {'name': 'Flight Deck'},
+      'workspace': {'id': 'tenant-1', 'name': 'Flight Deck'},
     });
 
     expect(session.userId, 'user-1');
+    expect(session.tenantId, 'tenant-1');
+    expect(session.actorId, 'actor:pilot');
     expect(session.displayName, 'Pilot');
     expect(session.workspaceName, 'Flight Deck');
   });
