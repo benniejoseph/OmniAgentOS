@@ -8,6 +8,7 @@ import {
 import {
   initialSalesforceSyncCursor,
   SALESFORCE_OBJECT_TYPES,
+  type SalesforceSyncHealth,
 } from "@/lib/customer-success/salesforce-contracts";
 import type { UsageSummary, UsageTotals } from "@/lib/usage/summary";
 
@@ -197,7 +198,7 @@ describe("truthful integrations overview", () => {
   });
 });
 
-function salesforceHealth(connected: boolean) {
+function salesforceHealth(connected: boolean): SalesforceSyncHealth {
   const cursor = initialSalesforceSyncCursor();
   for (const item of Object.values(cursor.objects)) {
     item.phase = "current";
@@ -213,7 +214,7 @@ function salesforceHealth(connected: boolean) {
     status: connected ? "healthy" as const : "configuration_required" as const,
     accessMode: "read_only" as const,
     objectScope: [...SALESFORCE_OBJECT_TYPES],
-    purposeScope: ["customer_success.account.read", "customer_success.crm_sync"] as const,
+    purposeScope: ["customer_success.account.read", "customer_success.crm_sync"],
     cursor: connected ? cursor : null,
     lagSeconds: connected ? 60 : null,
     lastSuccessfulSyncAt: connected ? "2026-09-07T11:59:00.000Z" : null,
