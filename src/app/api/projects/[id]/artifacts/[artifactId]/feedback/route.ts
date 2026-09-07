@@ -1,8 +1,8 @@
 import { z } from "zod";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { recordProjectArtifactFeedbackService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { reflectOnProjectArtifact } from "@/lib/projects/reflection";
-import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -24,17 +24,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_artifact", resourceId: artifactId });
   } catch (error) { return forbiddenResponse(error); }
   try {
-    const artifact = await reflectOnProjectArtifact({
-      projectId: id,
-      artifactId,
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      mutation: projectMutationFromRequest(request, context, {
-        projectId: id,
-        purpose: "project.artifact.review",
-      }),
-      ...parsed.data,
-    });
+    const result = await recordProjectArtifactFeedbackService(
+      createRequestMutationAppServiceCaller(request, context, { projectId: id, purpose: "project.artifact.review", causationId: artifactId }),
+      { projectId: id, artifactId, ...parsed.data },
+    );
+    const artifact = result.data.artifact;
     return artifact
       ? Response.json({ artifact })
       : Response.json({ error: "Project artifact not found." }, { status: 404 });
