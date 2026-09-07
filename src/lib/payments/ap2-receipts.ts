@@ -658,6 +658,17 @@ function validateObservationAmounts(
       (state.amountMinor > stored.amountMinor || state.currency !== stored.currency)
     ) discrepancies.add(`${name}_amount_or_currency_mismatch`);
   }
+  for (const [name, state, establishesExactTotal] of [
+    ["authorization", observation.authorization, observation.authorization.state === "authorized"],
+    ["capture", observation.capture, observation.capture.state === "captured"],
+    ["settlement", observation.settlement, observation.settlement.state === "settled"],
+    ["refund", observation.refund, observation.refund.state === "full"],
+  ] as const) {
+    if (
+      establishesExactTotal &&
+      (state.amountMinor !== stored.amountMinor || state.currency !== stored.currency)
+    ) discrepancies.add(`${name}_total_not_exact`);
+  }
 }
 
 function assertProjectionEvidenceOwnership(

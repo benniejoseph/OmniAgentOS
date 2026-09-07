@@ -131,6 +131,31 @@ describe("P9.18 signed AP2 receipts and payment reconciliation", () => {
     );
   });
 
+  it("requires exact provider authorization and capture totals before paid", () => {
+    const fixture = paidEvidenceFixture();
+    const partialCapture = signedObservation({
+      projection: fixture.projection,
+      authorityFixture: fixture.processor,
+      role: "merchant_payment_processor",
+      sequence: 2,
+      authorizationState: "authorized",
+      captureState: "captured",
+      paymentId: "payment-confirmed",
+      lifecycleAmountMinor: fixture.projection.amountMinor - 1,
+    });
+    const projection = reconcileAp2PaymentProjection({
+      stored: fixture.projection,
+      checkoutReceipt: fixture.checkoutReceipt,
+      paymentReceipt: fixture.paymentReceipt,
+      processorObservation: partialCapture,
+      now,
+    });
+
+    expect(projection.canonicalStatus).toBe("discrepancy");
+    expect(projection.discrepancyCodes).toContain("capture_total_not_exact");
+    expect(projection.paid).toBe(false);
+  });
+
   it("fails closed on receipt reference, signature, amount, and transaction mismatches", () => {
     const fixture = paymentFixture();
     const valid = receiptJwt({
@@ -359,11 +384,14 @@ function signedObservation(input: {
   orderId?: string;
   checkoutReceiptSha256?: string;
   paymentReceiptSha256?: string;
+  lifecycleAmountMinor?: number;
 }) {
   const observedAt = "2026-09-07T10:09:30.000Z";
   const amountState = (state: string, includeAmount: boolean) => ({
     state,
-    amountMinor: includeAmount ? input.projection.amountMinor : null,
+    amountMinor: includeAmount
+      ? input.lifecycleAmountMinor ?? input.projection.amountMinor
+      : null,
     currency: includeAmount ? input.projection.currency : null,
     providerEventId: `${state}-event-${input.sequence}`,
     effectiveAt: observedAt,
