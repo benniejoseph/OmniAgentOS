@@ -1758,3 +1758,20 @@ of safety ID, tool ID, and idempotency key. Canonical delegation task events
 remain the authority for cancellation/expiry and governed-tool events remain
 the authority for effects; safety events prove that those operations stayed
 inside recursion, fan-out, cost, trust, timeout, and invocation limits.
+
+## Application service receipts
+
+P9.1 adds one content-free `app_service_receipt` shape to overlapping UI and
+Agent operations. It binds the registered operation and RBAC action, resource
+type, read/mutation class, existing domain event contract, authority digest,
+optional idempotency-key digest, result digest, resource count, and timestamp.
+It contains no result content, tenant/actor identifier, execution scope, or raw
+idempotency key.
+
+The service receipt is an observable call receipt, not a second mutation log
+or a source of authority. Memory, knowledge, Mission, and run mutations still
+commit through their existing scoped atomic domain writers and typed events;
+their event contracts are named in the service receipt. Read-only service calls
+declare `read_only:no_domain_mutation`. The governed executor reaches those
+domains only through the service boundary, so UI and Agent paths cannot drift
+into separate event or idempotency semantics.

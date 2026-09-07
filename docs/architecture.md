@@ -111,6 +111,24 @@ Key properties:
 - Each run emits one `run.harness` receipt with the effective context decision, model route, tool/skill set, approval mode, execution budgets, and contract hashes.
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
+P9.1 inserts a transport-neutral application-service boundary between product
+callers and domain stores. Overlapping memory, knowledge, Mission, and run UI
+routes and all 15 current first-party Main Agent operations call
+`src/lib/app-services/*`; the governed executor no longer imports those stores
+or retrievers and never uses the product DOM. HTTP routes retain request
+authentication, origin/CSRF enforcement, and durable security audit, while the
+service independently revalidates tenant, initiating actor, and RBAC action.
+
+Every service mutation requires an exact execution scope and opaque
+idempotency key before it can reach the existing atomic evented domain writer.
+Every read or mutation returns the same metadata-only
+`p9.1-app-service-boundary:1` receipt shape, binding operation, action,
+resource, event contract, authority digest, optional idempotency digest,
+outcome digest, count, and time without copying application content or the raw
+key. Internal memory effect readback supports lost-acknowledgement
+reconciliation but is not registered as Agent authority. P9.2 extends this
+boundary to the complete `app.*` product tool catalog.
+
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped
 agent principal, intent and outcome contracts, resolved context and harness
