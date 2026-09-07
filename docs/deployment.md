@@ -180,6 +180,14 @@ The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](http
 
 Each scoped process has its own temporary profile and a private keeper connection so Asael's short MCP calls retain the same tabs and page state. Connector discovery retires immediately; execution scopes expire after 30 minutes without activity. The service deliberately allows at most two simultaneous browser scopes on the default machine. Page output remains untrusted tool data, and Playwright's arbitrary-code and file-transfer tools remain risk level 3.
 
+P9.5 reuses this existing scoped process; it adds no public Fly event endpoint and
+does not expose the Playwright bearer token to the browser. Vercel captures
+bounded frame and redacted accessibility evidence after a governed action in
+the same opaque scope, persists it as actor-private internal assets, and serves
+the reconnectable `/api/runs/:id/activity/stream` from the run ledger. A P9.5
+web release therefore requires no Fly rebuild while the pinned browser gateway
+remains compatible and healthy.
+
 Create the app and token once, save the token in the owner's password manager, and deploy the dedicated image. The token value never belongs in Vercel:
 
 ```bash
