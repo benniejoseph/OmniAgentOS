@@ -169,9 +169,14 @@ export async function generateGeminiToolTurn(input: {
   for (const result of input.toolResults || []) {
     const observation = result.browserObservation;
     if (!observation) continue;
-    history.push({
-      type: "user_input",
-      content: [
+    const functionResultIndex = history.findLastIndex((step) =>
+      step.type === "function_result" && step.call_id === result.callId
+    );
+    if (functionResultIndex < 0) continue;
+    history[functionResultIndex] = {
+      ...history[functionResultIndex],
+      result: [
+        { type: "text", text: result.output },
         { type: "text", text: renderModelBrowserObservation(observation) },
         ...(observation.screenshot
           ? [{
@@ -181,7 +186,7 @@ export async function generateGeminiToolTurn(input: {
             }]
           : []),
       ],
-    });
+    };
   }
 
   const startedAt = Date.now();
