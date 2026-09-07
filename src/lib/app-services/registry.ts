@@ -119,6 +119,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("missions.transition", "run.agent", "mission", "missions.atomic-events.v1"),
   mutation("mission.task.create", "manage.workflow", "mission_task", "missions.atomic-events.v1"),
   mutation("mission.task.comment", "manage.workflow", "mission_task_comment", "missions.atomic-events.v1"),
+  mutation("mission.task.start", "manage.workflow", "mission_task", "governed-workflow-events.v1"),
   read("runs.list", "read", "agent_run"),
   read("memory.list", "read", "memory"),
   read("memory.search", "read", "memory"),

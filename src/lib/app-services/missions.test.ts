@@ -2,15 +2,66 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   appendMissionTaskComment: vi.fn(),
+  assertMissionTaskReadyForExecution: vi.fn(),
+  attachMissionExecutor: vi.fn(),
   createMission: vi.fn(),
+  createWorkflowRun: vi.fn(),
+  enqueueWorkflowRunTick: vi.fn(),
   ensureMissionTask: vi.fn(),
   getMissionDetail: vi.fn(),
   getMissionTask: vi.fn(),
+  getWorkflowRunDetail: vi.fn(),
+  listAgentSkills: vi.fn(),
   listMissions: vi.fn(),
   listMissionSummariesForRequest: vi.fn(),
+  resolveAgentIdentityForExecution: vi.fn(),
+  scheduleWorkflowQueueDrain: vi.fn(),
 }));
 
-vi.mock("@/lib/missions/store", () => mocks);
+vi.mock("@/lib/missions/store", () => ({
+  ...mocks,
+  MissionConflictError: class MissionConflictError extends Error {},
+  MissionTransitionError: class MissionTransitionError extends Error {},
+}));
+vi.mock("@/lib/missions/runtime", () => ({
+  attachMissionExecutor: mocks.attachMissionExecutor,
+}));
+vi.mock("@/lib/agents/identity-store", () => ({
+  resolveAgentIdentityForExecution: mocks.resolveAgentIdentityForExecution,
+}));
+vi.mock("@/lib/skills/store", () => ({
+  listAgentSkills: mocks.listAgentSkills,
+}));
+vi.mock("@/lib/workflows/queue", () => ({
+  enqueueWorkflowRunTick: mocks.enqueueWorkflowRunTick,
+  scheduleWorkflowQueueDrain: mocks.scheduleWorkflowQueueDrain,
+}));
+vi.mock("@/lib/workflows/store", () => ({
+  createWorkflowRun: mocks.createWorkflowRun,
+  deterministicWorkflowRunId: vi.fn(() => "wf-task-start"),
+  getWorkflowRunDetail: mocks.getWorkflowRunDetail,
+}));
+vi.mock("@/lib/workspaces/read-model", () => ({
+  canonicalWorkItemStatuses: vi.fn(async (
+    _tenantId: string,
+    sourceAuthority: string,
+    fallbacks: Array<Record<string, unknown>>,
+  ) => new Map(fallbacks.map((fallback) => [fallback.sourceId, {
+    schemaVersion: 1,
+    authority: "canonical_work_item_v1",
+    persistence: "postgres",
+    workspaceId: "workspace-a",
+    projectId: fallback.projectId,
+    workItemId: fallback.workItemId,
+    kind: fallback.kind,
+    sourceAuthority,
+    sourceId: fallback.sourceId,
+    status: fallback.status,
+    sourceStatus: fallback.sourceStatus,
+    statusRevision: 1,
+    updatedAt: fallback.updatedAt,
+  }]))),
+}));
 
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
@@ -67,6 +118,7 @@ beforeEach(() => {
   mocks.listMissions.mockResolvedValue([mission]);
   mocks.ensureMissionTask.mockResolvedValue(task);
   mocks.getMissionTask.mockResolvedValue(task);
+  mocks.listAgentSkills.mockResolvedValue([]);
   mocks.appendMissionTaskComment.mockResolvedValue({
     id: "33333333-3333-4333-8333-333333333333",
     missionId: mission.id,
@@ -76,6 +128,44 @@ beforeEach(() => {
     createdAt: "2026-09-07T00:00:00.000Z",
     updatedAt: "2026-09-07T00:00:00.000Z",
   });
+  mocks.resolveAgentIdentityForExecution.mockResolvedValue({
+    definition: {
+      logicalAgentId: "atlas",
+      name: "Atlas",
+      role: "Orchestrator",
+      description: "Plans and executes governed work.",
+      instructions: "Complete the assigned work.",
+      persona: {},
+      modelPolicy: "auto",
+      declaredSkills: [],
+    },
+    principal: {
+      principalId: "agent:atlas:1",
+      autonomy: "governed",
+      approvalPolicy: "risk_based",
+      memoryScope: "project",
+      toolGrantIds: [],
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+    },
+  });
+  mocks.attachMissionExecutor.mockResolvedValue({
+    id: "attempt-a",
+    executorType: "workflow_run",
+    executorId: "wf-task-start",
+    status: "queued",
+  });
+  mocks.createWorkflowRun.mockResolvedValue({
+    run: {
+      id: "wf-task-start",
+      status: "queued",
+      input: { metadata: {
+        missionTaskId: task.id,
+        workItemId: task.id,
+      } },
+    },
+  });
+  mocks.enqueueWorkflowRunTick.mockResolvedValue({ id: "job-a" });
 });
 
 describe("P9.1 mission application service", () => {
@@ -133,5 +223,66 @@ describe("P9.1 mission application service", () => {
     );
     expect(result.data.comment).toBeNull();
     expect(mocks.appendMissionTaskComment).not.toHaveBeenCalled();
+  });
+
+  it("starts an assigned WorkItem through one governed workflow", async () => {
+    const assignedTask = {
+      ...task,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      instructions: "Prepare the release notes.",
+      definitionOfDone: "Every shipped change is covered.",
+      status: "pending" as const,
+      metadata: { assigneeKey: "atlas" },
+    };
+    mocks.assertMissionTaskReadyForExecution.mockResolvedValue(assignedTask);
+    const { startMissionTaskService } = await import("@/lib/app-services/missions");
+    const result = await startMissionTaskService(createAppServiceCaller({
+      context,
+      executionScope,
+      idempotencyKey: "start-task-1",
+    }), {
+      missionId: mission.id,
+      taskId: task.id,
+      expectedUpdatedAt: task.updatedAt,
+    });
+
+    expect(mocks.createWorkflowRun).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: `mission-task:${task.id}:start-task-1`,
+      mode: "execute",
+      metadata: expect.objectContaining({
+        source: "mission_work_item",
+        missionId: mission.id,
+        missionTaskId: task.id,
+        workItemId: task.id,
+        workspaceId: "workspace-a",
+        primaryAgentId: "atlas",
+      }),
+      executionAuthority: expect.objectContaining({
+        executionScope: expect.objectContaining({
+          executingPrincipalType: "agent",
+          executingPrincipalId: "agent:atlas:1",
+          workspaceId: "workspace-a",
+          projectId: `mission_project:${mission.id}`,
+          missionId: mission.id,
+          causationId: task.id,
+        }),
+      }),
+    }));
+    expect(mocks.attachMissionExecutor).toHaveBeenCalledBefore(
+      mocks.createWorkflowRun,
+    );
+    expect(mocks.enqueueWorkflowRunTick).toHaveBeenCalledWith(
+      "wf-task-start",
+      "mission_work_item_started",
+      undefined,
+      context.tenantId,
+    );
+    expect(result.data.execution).toMatchObject({
+      authority: "governed_workflow_v1",
+      workItemId: task.id,
+      executorId: "wf-task-start",
+    });
+    expect(result.receipt.operation).toBe("mission.task.start");
   });
 });

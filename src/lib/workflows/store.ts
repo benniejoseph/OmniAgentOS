@@ -92,7 +92,7 @@ export async function createWorkflowRun(
     assertExecutionScopeTenant(executionAuthority.executionScope, tenantId);
   }
   const runId = idempotencyKey
-    ? deterministicWorkflowId(tenantId, idempotencyKey)
+    ? deterministicWorkflowRunId(tenantId, idempotencyKey)
     : randomUUID();
   const run: WorkflowRunRecord = {
     id: runId,
@@ -2222,7 +2222,10 @@ function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
 }
 
-function deterministicWorkflowId(tenantId: string, idempotencyKey: string) {
+export function deterministicWorkflowRunId(
+  tenantId: string,
+  idempotencyKey: string,
+) {
   return `wf_${createHash("sha256")
     .update(`${tenantId}\0${idempotencyKey}`)
     .digest("hex")
