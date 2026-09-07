@@ -1,30 +1,14 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { getAgentIdentityCardForRun } from "@/lib/agents/card-store";
-import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { cancelRunService, recordRunFeedbackService, showRunService } from "@/lib/app-services/runs";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { foldRunProjection } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
-import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
-import { applyRunMemoryFeedback } from "@/lib/memory/store";
-import {
-  cancelOperationJobByDedupeKey,
-  getAgentExecuteJobDedupeKey,
-  getAgentResumeJobDedupeKey,
-} from "@/lib/operations/job-queue";
 import { publicAgentRun } from "@/lib/runs/public";
-import {
-  appendRunEvent,
-  cancelAgentRun,
-  getAgentRun,
-  getRunContextUseReceipt,
-  recordAgentRunFeedback,
-} from "@/lib/runs/store";
-import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
+import { getAgentRun } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { getGovernedTool } from "@/lib/tools/registry";
-import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -53,23 +37,20 @@ async function GETHandler(
     return forbiddenResponse(error);
   }
 
-  const run = await getAgentRun(id, { tenantId: auth.tenantId });
-  if (!run) {
-    return Response.json({ error: "Run not found." }, { status: 404 });
-  }
-
   const url = new URL(request.url);
-  const [contextReceipt, agentIdentity] = await Promise.all([
-    getRunContextUseReceipt(id, { tenantId: auth.tenantId }),
-    getAgentIdentityCardForRun(id, { tenantId: auth.tenantId }),
-  ]);
   if (url.searchParams.get("replay") !== "true") {
-    return Response.json({
-      run: publicAgentRun(run),
-      contextReceipt,
-      agentIdentity,
-    });
+    try {
+      const result = await showRunService(createAppServiceCaller({ context: auth }), { runId: id });
+      return result.data.run
+        ? Response.json({ ...result.data, serviceReceipt: result.receipt })
+        : Response.json({ error: "Run not found." }, { status: 404 });
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "Run not found.") throw error;
+      return Response.json({ error: "Run not found." }, { status: 404 });
+    }
   }
+  const run = await getAgentRun(id, { tenantId: auth.tenantId });
+  if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
 
   // Stage-2 (EVENT_LOG.md): rebuild run state by folding `run:<id>`'s events —
   // verifiable proof the stored run matches its event history.
@@ -94,8 +75,6 @@ async function GETHandler(
 
   return Response.json({
     run: publicAgentRun(run),
-    contextReceipt,
-    agentIdentity,
     eventCount: events.length,
     replayed,
     consistent,
@@ -133,69 +112,21 @@ async function PATCHHandler(
     return forbiddenResponse(error);
   }
 
-  const run = await getAgentRun(id, { tenantId: auth.tenantId });
-  if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
-  if (run.status !== "completed") {
-    return Response.json(
-      { error: "Feedback is available after a run completes." },
-      { status: 409 },
+  try {
+    const result = await recordRunFeedbackService(
+      createRequestMutationAppServiceCaller(request, auth, { purpose: "run.feedback", causationId: id }),
+      { runId: id, ...parsed.data },
     );
+    return result.data.run
+      ? Response.json({ ...result.data, serviceReceipt: result.receipt })
+      : Response.json({ error: "Run not found." }, { status: 404 });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Feedback is available only after a run completes.") {
+      return Response.json({ error: "Feedback is available after a run completes." }, { status: 409 });
+    }
+    if (error instanceof Error && error.message === "Run not found.") return Response.json({ error: error.message }, { status: 404 });
+    throw error;
   }
-  const feedbackExecutionScope = executionScopeFromSecurityContext(auth, {
-    executingPrincipalType: "user",
-    executingPrincipalId: auth.actorId,
-    correlationId:
-      request.headers.get("x-request-id")?.trim() || crypto.randomUUID(),
-    purpose: "run.feedback",
-  });
-  const updated = await recordAgentRunFeedback(id, parsed.data, {
-    tenantId: auth.tenantId,
-    executionScope: feedbackExecutionScope,
-  });
-  const affectedMemoryIds = await applyRunMemoryFeedback(id, parsed.data.verdict, {
-    tenantId: auth.tenantId,
-    executionScope: feedbackExecutionScope,
-  });
-  const enteredNeedsWork = parsed.data.verdict === "needs_work" &&
-    run.feedback?.verdict !== "needs_work";
-  const demotedCapabilities = enteredNeedsWork
-    ? await demoteRunCapabilities(id, auth.tenantId)
-    : [];
-  return Response.json({
-    run: publicAgentRun(updated || run),
-    feedbackEffects: {
-      disposition: parsed.data.verdict === "useful" ? "reinforced" : "quarantined",
-      affectedMemories: affectedMemoryIds.length,
-      demotedCapabilities,
-    },
-  });
-}
-
-async function demoteRunCapabilities(runId: string, tenantId: string) {
-  const events = await listStreamEvents(`run:${runId}`, { tenantId, limit: 2_000 });
-  const toolIds = [...new Set(events.flatMap((event) => {
-    if (event.type !== "run.tool" || event.payload.status !== "executed") return [];
-    const toolId = typeof event.payload.toolId === "string" ? event.payload.toolId : "";
-    return toolId ? [toolId] : [];
-  }))].slice(0, 20);
-  const demoted: string[] = [];
-  for (const toolId of toolIds) {
-    const tool = getGovernedTool(toolId) ||
-      await getMcpGovernedTool(toolId, { tenantId }) ||
-      await getOpenApiGovernedTool(toolId, { tenantId });
-    if (!tool || (!tool.approvalRequired && tool.riskLevel < 2)) continue;
-    await recordActionOutcome({
-      actionClass: actionClassFor(tool.id),
-      toolId: tool.id,
-      tenantId,
-      kind: "rejected",
-      reversible: tool.reversible === true,
-      riskLevel: tool.riskLevel,
-      humanApproved: false,
-    });
-    demoted.push(tool.id);
-  }
-  return demoted;
 }
 
 async function DELETEHandler(
@@ -216,140 +147,17 @@ async function DELETEHandler(
     return forbiddenResponse(error);
   }
 
-  const run = await getAgentRun(id, { tenantId: auth.tenantId });
-  if (!run) {
-    return Response.json({ error: "Run not found." }, { status: 404 });
-  }
   const reason = "Canceled by the operator.";
-  const requestId = request.headers.get("x-request-id")?.trim() || crypto.randomUUID();
-  const cancellationScope = executionScopeFromSecurityContext(auth, {
-    executingPrincipalType: "user",
-    executingPrincipalId: auth.actorId,
-    correlationId: requestId,
-    purpose: "run.cancel",
-  });
-  if (["completed", "failed", "canceled"].includes(run.status)) {
-    let canceledJobs = 0;
-    if (run.status === "canceled") {
-      canceledJobs = (await cancelOperationJobByDedupeKey(
-        getAgentExecuteJobDedupeKey(run.id),
-        run.error || "Canceled by the operator.",
-        { tenantId: auth.tenantId },
-      )).length;
-      await ensureRunCancellationEvent(
-        run.id,
-        run.error || "Canceled by the operator.",
-        auth.tenantId,
-        run.continuation,
-      );
-      await syncMissionExecutorSafely({
-        executorType: "agent_run",
-        executorId: run.id,
-        status: "canceled",
-      }, {
-        tenantId: auth.tenantId,
-        actorId: auth.actorId,
-        executionScope: cancellationScope,
-        idempotencyKey: requestId,
-      });
-    }
-    return Response.json({ run: publicAgentRun(run), canceledJobs });
+  try {
+    const result = await cancelRunService(
+      createRequestMutationAppServiceCaller(request, auth, { purpose: "run.cancel", causationId: id }),
+      { runId: id, reason },
+    );
+    return result.data.run
+      ? Response.json({ ...result.data, serviceReceipt: result.receipt })
+      : Response.json({ error: "Run not found." }, { status: 404 });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Run not found.") return Response.json({ error: error.message }, { status: 404 });
+    throw error;
   }
-
-  const executionId = run.continuation?.pendingToolCall.executionId;
-  const canceled = await cancelAgentRun(run.id, reason, {
-    tenantId: auth.tenantId,
-    executionScope: cancellationScope,
-    runContractEnvelope: run.continuation?.runContractEnvelope,
-  });
-  if (!canceled) {
-    const current = await getAgentRun(id, { tenantId: auth.tenantId });
-    if (current?.status === "canceled") {
-      const canceledJobs = executionId
-        ? await cancelOperationJobByDedupeKey(
-            getAgentResumeJobDedupeKey(executionId),
-            reason,
-            { tenantId: auth.tenantId },
-          )
-        : [];
-      canceledJobs.push(...await cancelOperationJobByDedupeKey(
-        getAgentExecuteJobDedupeKey(current.id),
-        reason,
-        { tenantId: auth.tenantId },
-      ));
-      await ensureRunCancellationEvent(
-        current.id,
-        current.error || reason,
-        auth.tenantId,
-        run.continuation,
-      );
-      await syncMissionExecutorSafely({
-        executorType: "agent_run",
-        executorId: current.id,
-        status: "canceled",
-      }, {
-        tenantId: auth.tenantId,
-        actorId: auth.actorId,
-        executionScope: cancellationScope,
-        idempotencyKey: requestId,
-      });
-      return Response.json({
-        run: publicAgentRun(current),
-        canceledJobs: canceledJobs.length,
-      });
-    }
-    return Response.json({
-      run: current ? publicAgentRun(current) : publicAgentRun(run),
-      canceledJobs: 0,
-    });
-  }
-
-  const canceledJobs = executionId
-    ? await cancelOperationJobByDedupeKey(
-        getAgentResumeJobDedupeKey(executionId),
-        reason,
-        { tenantId: auth.tenantId },
-    )
-    : [];
-  canceledJobs.push(...await cancelOperationJobByDedupeKey(
-    getAgentExecuteJobDedupeKey(run.id),
-    reason,
-    { tenantId: auth.tenantId },
-  ));
-  await ensureRunCancellationEvent(
-    run.id,
-    reason,
-    auth.tenantId,
-    run.continuation,
-  );
-  await syncMissionExecutorSafely({
-    executorType: "agent_run",
-    executorId: run.id,
-    status: "canceled",
-  }, {
-    tenantId: auth.tenantId,
-    actorId: auth.actorId,
-    executionScope: cancellationScope,
-    idempotencyKey: requestId,
-  });
-  const current = await getAgentRun(id, { tenantId: auth.tenantId });
-  return Response.json({
-    run: publicAgentRun(current || { ...run, status: "canceled", error: reason }),
-    canceledJobs: canceledJobs.length,
-  });
-}
-
-async function ensureRunCancellationEvent(
-  runId: string,
-  message: string,
-  tenantId: string,
-  continuation?: NonNullable<Awaited<ReturnType<typeof getAgentRun>>>["continuation"],
-) {
-  const events = await listStreamEvents(`run:${runId}`, { tenantId });
-  if (events.some((event) => event.type === "run.canceled")) return;
-  await appendRunEvent(runId, { type: "canceled", message }, {
-    tenantId,
-    executionScope: continuation?.executionScope,
-    runContractEnvelope: continuation?.runContractEnvelope,
-  });
 }
