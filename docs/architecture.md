@@ -1797,6 +1797,27 @@ uses the private object only after the receipt proves complete parity. Pausing
 the persisted rollout immediately returns reads to legacy bytes without
 removing verified objects, while deletion remains a permanent query barrier.
 
+## Unified workspace library read model
+
+The workspace library is an additive actor-scoped projection over existing
+asset authorities; it does not introduce another byte store or mutable source
+of truth. It converges Capture assets, recordings and separately citable
+transcripts, Project artifacts, Mission artifacts, and the current immutable
+revision of connected source items into one strict versioned contract. Source
+revisions remain authoritative for email, meeting, file, webpage, message, and
+record content, while canonical work compatibility mappings supply stable
+Workspace, Project, and WorkItem links without changing legacy identifiers.
+
+Every projected item carries its physical owner, explicit workspace/project/
+mission/work-item scope, permission basis, current version and digest, bounded
+citations, and internal open links. Reads use the request-bound canonical and
+legacy actor compatibility order but never widen an item's source permission;
+raw bytes, provider locators, credentials, actor coordinates, and unbounded
+metadata do not enter the public contract. Search and pagination execute inside
+one request-scoped PostgreSQL transaction with bounded limits. Capture,
+Results, and Projects reuse this same browser while retaining their specialized
+source controls behind the original exact-owner mutation routes.
+
 ## Where things live
 
 | Concern | Path |
@@ -1812,4 +1833,5 @@ removing verified objects, while deletion remains a permanent query barrier.
 | Observability / incidents / alerts | `src/lib/observability/`, `src/lib/diagnostics/` |
 | Evaluations + signed reports | `src/lib/evaluations/`, `src/lib/release/` |
 | Private asset objects, migration + signed delivery | `src/lib/storage/object-plane.ts`, `src/lib/storage/object-migration.ts`, `src/app/api/assets/` |
+| Unified workspace library read model | `src/lib/library/`, `src/lib/app-services/library.ts`, `src/app/api/library/` |
 | UI shell + workspaces | `src/components/`, `src/app/app/` |
