@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 125,
+      name: "ap2_human_present_mandates_v1",
+      checksum: "f8b75e5d61a3a347649d82909e8e18e6f174079d37a5609643df768c0c9031a5",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 124)).toEqual({
       version: 124,
       name: "governed_communications_v1",
       checksum: "b0199382bc9ed5a5fe99357b3deec7b0b3ed9de8921e89ed6705062b8e2b862f",
