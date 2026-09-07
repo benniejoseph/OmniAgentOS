@@ -693,13 +693,14 @@ aggregate Phase 2 gate remains open for that external proof only.
 
 **Phase gate:** unsupported active assistant-derived facts are zero; explicit-memory recall and correction propagation meet the declared benchmark; cross-scope exposure is zero.
 
-**Current status:** P3.2 through P3.7 are complete. P3.1's served
+**Current status:** P3.1 through P3.7 are complete. P3.1's served
 user-private, Agent-private, Project-shared, and Workspace-shared lanes use
 separate canonical actor, Agent principal/grant, and membership authority.
 Mission context resolves its legacy ID to the exact canonical Project instead
-of creating a competing Mission memory store. The aggregate phase remains
-unchecked until its focused cross-scope gate is rerun against this composed
-authority boundary.
+of creating a competing Mission memory store. The focused aggregate gate
+passes: unsupported assistant prose remains inactive, explicit corrections
+supersede their prior claim before recall, and private/shared reads reject
+sibling actor, Agent, Project, Workspace, tenant, and access-binding scopes.
 
 ### Phase 4 — Context Management
 
@@ -3126,7 +3127,7 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 0 — contracts and compatibility:** P0.1–P0.6 complete.
 - [x] **Phase 1 — truthful events and outcomes:** P1.1–P1.7 complete.
 - [ ] **Phase 2 — sources, assets, and privacy lifecycle:** P2.1–P2.8 complete.
-- [ ] **Phase 3 — persistent memory:** P3.1–P3.7 complete.
+- [x] **Phase 3 — persistent memory:** P3.1–P3.7 complete.
 - [ ] **Phase 4 — Context Management:** P4.1–P4.7 complete.
 - [ ] **Phase 5 — Graph Engineering:** P5.1–P5.6 complete.
 - [x] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
