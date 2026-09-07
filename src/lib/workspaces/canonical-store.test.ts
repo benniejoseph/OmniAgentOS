@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Mission } from "@/lib/missions/types";
 import type { PersonalProject, ProjectTask } from "@/lib/projects/types";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import {
   missionCanonicalShadowWrite,
   projectCanonicalShadowWrite,
@@ -106,5 +107,48 @@ describe("canonical work transactional shadow writer", () => {
       attribution: { changedFieldIds: ["title"] },
     });
     expect(statements.filter((statement) => statement.includes("INSERT INTO omni_events"))).toHaveLength(firstEventCount);
+  });
+
+  it("binds a newly instantiated Project to an explicit contributor workspace", async () => {
+    const sharedWorkspaceId = "workspace:team-release";
+    const statements: string[] = [];
+    const parameters: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...params: unknown[]) => {
+      const statement = strings.join("?").replace(/\s+/g, " ").trim();
+      statements.push(statement);
+      parameters.push(params);
+      if (statement.includes("omni_ensure_personal_workspace_v1")) {
+        return [{ workspace_id: workspaceId, owner_actor_id: canonicalActorId }];
+      }
+      if (statement.includes("FROM omni_tenant_workspaces workspace")) {
+        return [{ workspace_id: sharedWorkspaceId }];
+      }
+      if (statement.includes("INSERT INTO omni_events")) return [{ seq: 1 }];
+      return [];
+    });
+    await projectCanonicalShadowWrite({
+      sql,
+      project,
+      attribution: {
+        changedFieldIds: ["title"],
+        executionScope: createExecutionScope({
+          tenantId: project.tenantId,
+          initiatingActorId: actorId,
+          executingPrincipalType: "user",
+          executingPrincipalId: actorId,
+          workspaceId: sharedWorkspaceId,
+          correlationId: "instantiate-template",
+          purpose: "workspace.template.instantiate.project",
+        }),
+      },
+    });
+    const insertIndex = statements.findIndex((statement) =>
+      statement.includes("INSERT INTO omni_work_projects")
+    );
+    expect(insertIndex).toBeGreaterThan(-1);
+    expect(parameters[insertIndex]).toContain(sharedWorkspaceId);
+    expect(statements.some((statement) =>
+      statement.includes("membership.access_level IN ('contributor', 'manager')")
+    )).toBe(true);
   });
 });

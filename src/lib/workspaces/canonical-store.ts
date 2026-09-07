@@ -42,10 +42,10 @@ export async function projectCanonicalShadowWrite(input: {
   task?: ProjectTask;
   attribution: MutationAttribution;
 }) {
-  const authority = await ensurePersonalWorkspace(
+  const authority = await resolveProjectWorkspaceAuthority(
     input.sql,
-    input.project.tenantId,
-    input.project.actorId,
+    input.project,
+    input.attribution.executionScope?.workspaceId,
   );
   await upsertProject({
     sql: input.sql,
@@ -76,6 +76,67 @@ export async function projectCanonicalShadowWrite(input: {
     attribution: input.attribution,
   });
   return authority;
+}
+
+async function resolveProjectWorkspaceAuthority(
+  sql: WorkSqlClient,
+  project: PersonalProject,
+  requestedWorkspaceId: string | null | undefined,
+) {
+  const personal = await ensurePersonalWorkspace(
+    sql,
+    project.tenantId,
+    project.actorId,
+  );
+  const existingRows = await sql`
+    SELECT workspace_id, owner_actor_id
+    FROM omni_work_projects
+    WHERE tenant_id = ${project.tenantId}
+      AND source_authority = 'legacy_project'
+      AND source_id = ${project.id}
+    LIMIT 2
+  `;
+  if (existingRows.length > 1) {
+    throw new Error("Canonical Project workspace authority is ambiguous.");
+  }
+  if (existingRows[0]) {
+    const existing = {
+      workspaceId: String(existingRows[0].workspace_id),
+      canonicalOwnerActorId: String(existingRows[0].owner_actor_id),
+    };
+    if (
+      existing.canonicalOwnerActorId !== personal.canonicalOwnerActorId ||
+      (requestedWorkspaceId && requestedWorkspaceId !== existing.workspaceId)
+    ) {
+      throw new Error("Canonical Project workspace authority changed.");
+    }
+    return existing;
+  }
+  if (!requestedWorkspaceId || requestedWorkspaceId === personal.workspaceId) {
+    return personal;
+  }
+  const membershipRows = await sql`
+    SELECT workspace.workspace_id
+    FROM omni_tenant_workspaces workspace
+    JOIN omni_tenant_workspace_memberships membership
+      ON membership.tenant_id = workspace.tenant_id
+     AND membership.workspace_id = workspace.workspace_id
+     AND membership.subject_kind = 'user'
+     AND membership.subject_actor_id = ${personal.canonicalOwnerActorId}
+     AND membership.access_level IN ('contributor', 'manager')
+     AND membership.state = 'active'
+    WHERE workspace.tenant_id = ${project.tenantId}
+      AND workspace.workspace_id = ${requestedWorkspaceId}
+      AND workspace.state = 'active'
+    LIMIT 2
+  `;
+  if (membershipRows.length !== 1) {
+    throw new Error("Canonical Project workspace contributor authority is required.");
+  }
+  return {
+    workspaceId: String(membershipRows[0].workspace_id),
+    canonicalOwnerActorId: personal.canonicalOwnerActorId,
+  };
 }
 
 export async function missionCanonicalShadowWrite(input: {
