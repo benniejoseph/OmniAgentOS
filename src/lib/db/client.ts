@@ -6,6 +6,7 @@ import {
   recordDatabaseTiming,
   runWithRequestTiming,
 } from "@/lib/observability/request-timing";
+import { CUSTOMER_HEALTH_SCORING_SCHEMA_SQL } from "@/lib/db/customer-health-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -232,6 +233,9 @@ export const tenantRootPolicyTables = [
   "omni_salesforce_webhook_events",
   "omni_salesforce_reconciliation_findings",
   "omni_salesforce_write_operations",
+  "omni_customer_health_policies",
+  "omni_customer_health_score_revisions",
+  "omni_customer_health_scores",
 ] as const;
 
 export const tenantChildPolicyTables = [
@@ -1372,6 +1376,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[138],
       up: ensureSalesforceGuardedWritesV1,
+    },
+    {
+      ...databaseSchemaMigrations[139],
+      up: ensureCustomerHealthScoringV1,
     },
   ];
 }
@@ -17727,6 +17735,10 @@ async function ensureSalesforceGuardedWritesV1(sql: SqlClient) {
     END
     $migration$;
   `);
+}
+
+async function ensureCustomerHealthScoringV1(sql: SqlClient) {
+  await sql.query(CUSTOMER_HEALTH_SCORING_SCHEMA_SQL);
 }
 
 async function ensureCanonicalActorScopeRepairV1(sql: SqlClient) {
