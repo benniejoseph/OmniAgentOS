@@ -1244,6 +1244,10 @@ function schemaMigrations(): SchemaMigration[] {
         await ensureTenantIsolationPolicies(sql);
       },
     },
+    {
+      ...databaseSchemaMigrations[122],
+      up: ensureActorRlsPolicyRepairV1,
+    },
   ];
 }
 
@@ -11680,7 +11684,7 @@ async function ensureA2ATaskMappingsV1(sql: SqlClient) {
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', table_name);
         EXECUTE format('DROP POLICY IF EXISTS %I ON %I', table_name || '_actor', table_name);
         EXECUTE format(
-          'CREATE POLICY %I ON %I AS RESTRICTIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          'CREATE POLICY %I ON %I AS PERMISSIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
           table_name || '_actor', table_name
         );
       END LOOP;
@@ -11730,7 +11734,7 @@ async function ensureA2ATaskMappingsV1(sql: SqlClient) {
         WHERE polrelid IN (
           'omni_a2a_task_mappings'::regclass,
           'omni_a2a_exchanges'::regclass
-        ) AND NOT polpermissive AND polcmd = '*'
+        ) AND polpermissive AND polcmd = '*'
       ) <> 2 THEN
         RAISE EXCEPTION 'A2A task mapping boundary is invalid'
           USING ERRCODE = '55000';
@@ -11977,7 +11981,7 @@ async function ensureA2ADelegationSafetyV1(sql: SqlClient) {
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', table_name);
         EXECUTE format('DROP POLICY IF EXISTS %I ON %I', table_name || '_actor', table_name);
         EXECUTE format(
-          'CREATE POLICY %I ON %I AS RESTRICTIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          'CREATE POLICY %I ON %I AS PERMISSIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
           table_name || '_actor', table_name
         );
       END LOOP;
@@ -12042,7 +12046,7 @@ async function ensureA2ADelegationSafetyV1(sql: SqlClient) {
         WHERE polrelid IN (
           'omni_a2a_safety_reservations'::regclass,
           'omni_a2a_tool_call_claims'::regclass
-        ) AND NOT polpermissive AND polcmd = '*'
+        ) AND polpermissive AND polcmd = '*'
       ) <> 2 THEN
         RAISE EXCEPTION 'A2A delegation safety boundary is invalid'
           USING ERRCODE = '55000';
@@ -12260,7 +12264,7 @@ async function ensureTrashLifecycleV1(sql: SqlClient) {
           table_name || '_actor', table_name
         );
         EXECUTE format(
-          'CREATE POLICY %I ON %I AS RESTRICTIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          'CREATE POLICY %I ON %I AS PERMISSIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
           table_name || '_actor', table_name
         );
       END LOOP;
@@ -12324,7 +12328,7 @@ async function ensureTrashLifecycleV1(sql: SqlClient) {
         WHERE polrelid IN (
           'omni_trash_items'::regclass,
           'omni_trash_effect_receipts'::regclass
-        ) AND NOT polpermissive AND polcmd = '*'
+        ) AND polpermissive AND polcmd = '*'
       ) <> 2 THEN
         RAISE EXCEPTION 'Trash lifecycle boundary is invalid'
           USING ERRCODE = '55000';
@@ -12590,7 +12594,7 @@ async function ensureApprovalGrantsV1(sql: SqlClient) {
           table_name || '_actor', table_name
         );
         EXECUTE format(
-          'CREATE POLICY %I ON %I AS RESTRICTIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          'CREATE POLICY %I ON %I AS PERMISSIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
           table_name || '_actor', table_name
         );
       END LOOP;
@@ -12655,7 +12659,7 @@ async function ensureApprovalGrantsV1(sql: SqlClient) {
         WHERE polrelid IN (
           'omni_approval_grants'::regclass,
           'omni_approval_grant_claims'::regclass
-        ) AND NOT polpermissive AND polcmd = '*'
+        ) AND polpermissive AND polcmd = '*'
       ) <> 2 THEN
         RAISE EXCEPTION 'Approval grant boundary is invalid'
           USING ERRCODE = '55000';
@@ -12877,7 +12881,7 @@ async function ensureBrowserTakeoverProfilesV1(sql: SqlClient) {
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', table_name);
         EXECUTE format('DROP POLICY IF EXISTS %I ON %I', table_name || '_actor', table_name);
         EXECUTE format(
-          'CREATE POLICY %I ON %I AS RESTRICTIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          'CREATE POLICY %I ON %I AS PERMISSIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
           table_name || '_actor', table_name
         );
       END LOOP;
@@ -12933,9 +12937,73 @@ async function ensureBrowserTakeoverProfilesV1(sql: SqlClient) {
           'omni_browser_profiles'::regclass,
           'omni_browser_profile_bindings'::regclass,
           'omni_browser_takeovers'::regclass
-        ) AND NOT polpermissive AND polcmd = '*'
+        ) AND polpermissive AND polcmd = '*'
       ) <> 3 THEN
         RAISE EXCEPTION 'Browser profile boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$;
+  `);
+}
+
+async function ensureActorRlsPolicyRepairV1(sql: SqlClient) {
+  await sql.query(`
+    DO $migration$
+    DECLARE
+      table_name TEXT;
+      expected_tables CONSTANT TEXT[] := ARRAY[
+        'omni_a2a_peer_rollouts',
+        'omni_a2a_task_mappings',
+        'omni_a2a_exchanges',
+        'omni_a2a_safety_reservations',
+        'omni_a2a_tool_call_claims',
+        'omni_trash_items',
+        'omni_trash_effect_receipts',
+        'omni_approval_grants',
+        'omni_approval_grant_claims',
+        'omni_browser_profiles',
+        'omni_browser_profile_bindings',
+        'omni_browser_takeovers'
+      ];
+    BEGIN
+      FOREACH table_name IN ARRAY expected_tables LOOP
+        EXECUTE format(
+          'DROP POLICY IF EXISTS %I ON %I',
+          table_name || '_actor', table_name
+        );
+        EXECUTE format(
+          'CREATE POLICY %I ON %I AS PERMISSIVE FOR ALL USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)) WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id))',
+          table_name || '_actor', table_name
+        );
+      END LOOP;
+
+      IF EXISTS (
+        SELECT 1
+        FROM pg_class relation
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = current_schema()
+          AND relation.relname = ANY(expected_tables)
+          AND (NOT relation.relrowsecurity OR NOT relation.relforcerowsecurity)
+      ) OR (
+        SELECT count(*)
+        FROM pg_policy policy
+        JOIN pg_class relation ON relation.oid = policy.polrelid
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = current_schema()
+          AND relation.relname = ANY(expected_tables)
+          AND policy.polname = relation.relname || '_actor'
+          AND policy.polpermissive
+          AND policy.polcmd = '*'
+      ) <> cardinality(expected_tables) OR (
+        SELECT count(*)
+        FROM pg_policy policy
+        JOIN pg_class relation ON relation.oid = policy.polrelid
+        JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = current_schema()
+          AND relation.relname = ANY(expected_tables)
+      ) <> cardinality(expected_tables) THEN
+        RAISE EXCEPTION 'Actor-owned RLS policy boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

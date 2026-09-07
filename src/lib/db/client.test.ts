@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 123,
+      name: "actor_rls_policy_repair_v1",
+      checksum: "d5dfb0fb60b28c8d8c317ae8c13d9e9000cfa408ae2124dd7d62e7af538bebcd",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 122)).toEqual({
       version: 122,
       name: "browser_takeover_profiles_v1",
       checksum: "ee32a9191756e79b13799f8e5bbf0768a962f7501194c222bb481ef9fa2e47d4",
