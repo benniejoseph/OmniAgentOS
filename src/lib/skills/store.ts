@@ -157,6 +157,108 @@ export async function deleteAgentSkill(id: string, options: Scope) {
   return removed;
 }
 
+export async function restoreAgentSkill(
+  skill: AgentSkill,
+  affectedAgentIds: readonly string[],
+  options: Scope,
+) {
+  const tenantId = tenant(options.tenantId);
+  const actorId = safe(options.actorId, 200);
+  if (
+    skill.builtIn ||
+    skill.tenantId !== tenantId ||
+    skill.actorId !== actorId ||
+    builtInSkills.some((item) => item.id === skill.id)
+  ) {
+    throw new Error("Trash Skill snapshot does not belong to this actor.");
+  }
+  const agentIds = [...new Set(affectedAgentIds.map((id) => safe(id, 120)).filter(Boolean))]
+    .slice(0, 100);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const existingRows = await sql`
+        SELECT * FROM omni_custom_skills
+        WHERE id = ${skill.id} AND tenant_id = ${tenantId}
+        FOR UPDATE
+      `;
+      if (existingRows[0]) {
+        const existing = skillFromRow(existingRows[0]);
+        if (existing.actorId !== actorId || JSON.stringify(existing) !== JSON.stringify(skill)) {
+          throw new Error("The original Skill ID is already in use.");
+        }
+        return existing;
+      }
+      const slugRows = await sql`
+        SELECT id FROM omni_custom_skills
+        WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+          AND slug = ${skill.slug}
+        LIMIT 1 FOR UPDATE
+      `;
+      if (slugRows[0]) throw new Error("The original Skill name is already in use.");
+      const rows = await sql`
+        INSERT INTO omni_custom_skills (
+          id, tenant_id, actor_id, slug, name, description, instructions,
+          category, status, version, tool_ids, tags, knowledge_tags,
+          created_at, updated_at
+        ) VALUES (
+          ${skill.id}, ${tenantId}, ${actorId}, ${skill.slug}, ${skill.name},
+          ${skill.description}, ${skill.instructions}, ${skill.category},
+          ${skill.status}, ${skill.version}, ${skill.toolIds}, ${skill.tags},
+          ${skill.knowledgeTags}, ${skill.createdAt}, ${skill.updatedAt}
+        ) RETURNING *
+      `;
+      if (agentIds.length) {
+        await sql`
+          UPDATE omni_custom_agents
+          SET skill_ids = array_append(skill_ids, ${skill.id}),
+              updated_at = GREATEST(clock_timestamp(), updated_at + INTERVAL '1 millisecond')
+          WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+            AND id = ANY(${agentIds}::text[])
+            AND NOT (${skill.id} = ANY(skill_ids))
+        `;
+        await versionCustomAgentsForSkillChangeWithSql({
+          tenantId,
+          actorId,
+          skillId: skill.id,
+          removeSkill: false,
+          sql,
+        });
+      }
+      return skillFromRow(rows[0]);
+    }) as Promise<AgentSkill>;
+  }
+  let restored = skill;
+  await updateLedger((ledger) => {
+    const existing = ledger.skills.find((item) => item.id === skill.id);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(skill)) {
+        throw new Error("The original Skill ID is already in use.");
+      }
+      restored = existing;
+      return ledger;
+    }
+    if (ledger.skills.some((item) =>
+      item.tenantId === tenantId && item.actorId === actorId && item.slug === skill.slug
+    )) {
+      throw new Error("The original Skill name is already in use.");
+    }
+    const affected = new Set(agentIds);
+    return {
+      skills: [skill, ...ledger.skills],
+      agents: ledger.agents.map((agent) =>
+        agent.tenantId === tenantId &&
+        agent.actorId === actorId &&
+        affected.has(agent.id) &&
+        !agent.skillIds.includes(skill.id)
+          ? { ...agent, skillIds: [...agent.skillIds, skill.id] }
+          : agent
+      ),
+    };
+  });
+  return restored;
+}
+
 export async function listCustomAgents(options: Scope) {
   const tenantId = tenant(options.tenantId); const actorId = safe(options.actorId, 200);
   if (hasDatabaseUrl()) {

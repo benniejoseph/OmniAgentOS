@@ -260,6 +260,16 @@ export async function getTrashItem(
   ))?.item;
 }
 
+export async function getTrashLifecycleResultByPreview(
+  previewSha256: string,
+  options: TrashMutationScope,
+): Promise<TrashLifecycleResult | undefined> {
+  return getTrashResultByPreview(
+    previewSha256,
+    requireTrashScope(options.executionScope),
+  );
+}
+
 /** Internal-only snapshot read. Application transports must never return it. */
 export async function getTrashSnapshot(
   trashId: string,
@@ -314,7 +324,10 @@ export async function createTrashLifecyclePreview(
 
 export async function commitTrashLifecycle(
   previewInput: TrashActionPreviewV1,
-  options: TrashMutationScope & { now?: string },
+  options: TrashMutationScope & {
+    now?: string;
+    affectedResourceIds?: readonly string[];
+  },
 ): Promise<TrashLifecycleResult> {
   const scope = requireTrashScope(options.executionScope);
   const preview = trashActionPreviewV1Schema.parse(previewInput);
@@ -337,7 +350,13 @@ export async function commitTrashLifecycle(
     restoredAt: afterState === "restored" ? now : null,
     purgedAt: afterState === "purged" ? now : null,
   });
-  const receipt = lifecycleReceipt(currentRecord.item, nextItem, preview, now);
+  const receipt = lifecycleReceipt(
+    currentRecord.item,
+    nextItem,
+    preview,
+    now,
+    options.affectedResourceIds,
+  );
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -609,6 +628,7 @@ function lifecycleReceipt(
   next: TrashItemV1,
   preview: TrashActionPreviewV1,
   now: string,
+  affectedResourceIds?: readonly string[],
 ) {
   return buildTrashEffectReceiptV1({
     version: "p9.3-trash-effect-receipt:1",
@@ -623,7 +643,9 @@ function lifecycleReceipt(
     beforeRevision: current.lifecycleRevision,
     afterRevision: next.lifecycleRevision,
     outcome: "applied",
-    affectedResourceIds: [current.resourceId],
+    affectedResourceIds: affectedResourceIds?.length
+      ? [...new Set(affectedResourceIds)]
+      : [current.resourceId],
     occurredAt: now,
   });
 }

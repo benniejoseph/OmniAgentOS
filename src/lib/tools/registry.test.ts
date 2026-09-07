@@ -107,7 +107,10 @@ describe("governed native tool schemas", () => {
       expect(getGovernedTool(`app.${family}.delete`)).toMatchObject({
         riskLevel: 2,
         approvalRequired: true,
-        reversible: false,
+        reversible: true,
+      });
+      expect(getGovernedTool(`app.${family}.delete`)?.inputSchema).toMatchObject({
+        required: ["id", "preview"],
       });
     }
   });
@@ -169,8 +172,9 @@ describe("governed native tool schemas", () => {
       });
     }
     expect(getGovernedTool("app.connectors.delete")?.inputSchema).toMatchObject({
-      required: ["kind", "connectorId", "expectedTargetSha256"],
+      required: ["kind", "connectorId", "preview"],
     });
+    expect(getGovernedTool("app.connectors.delete")).toMatchObject({ reversible: true });
   });
 
   it("keeps settings secrets out of agent tools", () => {
