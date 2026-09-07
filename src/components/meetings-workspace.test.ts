@@ -86,4 +86,70 @@ describe("processed meeting media", () => {
     expect(html).toContain("continuing in the background");
     expect(html).toContain("waiting");
   });
+
+  it("offers cited action items for proposal only when a project is linked", () => {
+    const citation = {
+      turnId: `media-turn:${"b".repeat(64)}`,
+      segmentIndex: 0,
+      startMilliseconds: 10_000,
+      endMilliseconds: 12_000,
+      speakerLabel: "A",
+      speakerParticipantId: "participant:owner",
+    };
+    const media: ProcessedMeetingMediaView = {
+      processingStatus: "ready",
+      operationJobId: "media-job-3",
+      rawAudioDeletedAt: null,
+      updatedAt: "2026-09-08T10:05:00.000Z",
+      output: {
+        mediaRevisionId: "recording-1:media:v1",
+        processedAt: "2026-09-08T10:05:00.000Z",
+        languageTags: ["en-US"],
+        turns: [{
+          turnId: citation.turnId,
+          startMilliseconds: citation.startMilliseconds,
+          endMilliseconds: citation.endMilliseconds,
+          languageTag: "en-US",
+          speaker: {
+            label: "A",
+            identity: "known",
+            participantId: "participant:owner",
+            displayName: "Owner",
+          },
+          text: "I will send the plan.",
+        }],
+        chapters: [],
+        summary: { text: "A follow-up was assigned.", citations: [citation] },
+        actionItems: [{
+          actionItemId: `media-action:${"c".repeat(64)}`,
+          text: "Send the rollout plan.",
+          citations: [citation],
+          ownerParticipantId: "participant:owner",
+          ownershipEvidence: "explicit",
+          dueDateEvidence: "unconfirmed",
+        }],
+        decisions: [],
+        warnings: [],
+      },
+    };
+    const ready = renderToStaticMarkup(createElement(ProcessedMeetingMedia, {
+      label: "Customer call",
+      media,
+      canWrite: true,
+      meetingHasProject: true,
+      onProposeCommitment: () => undefined,
+    }));
+    const unscoped = renderToStaticMarkup(createElement(ProcessedMeetingMedia, {
+      label: "Customer call",
+      media,
+      canWrite: true,
+      meetingHasProject: false,
+      onProposeCommitment: () => undefined,
+    }));
+
+    expect(ready).toContain("Propose as work");
+    expect(ready).toContain("0:10 · Speaker A");
+    expect(unscoped).toContain("Link a project first");
+    expect(unscoped).toContain("disabled");
+  });
 });

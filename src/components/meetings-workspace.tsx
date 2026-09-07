@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   CalendarDays,
   Check,
+  CheckCircle2,
   ChevronRight,
   CircleUserRound,
   Clock3,
@@ -13,6 +14,7 @@ import {
   Link2,
   ListChecks,
   Loader2,
+  Mail,
   MapPin,
   MessageSquareText,
   Plus,
@@ -172,6 +174,45 @@ type LinkedSource = {
   segments: Array<{ segmentIndex: number; mimeType: string; durationMs: number }>;
 };
 type WorkspaceContext = { workspaceId: string; accessLevel: string; canWrite: boolean };
+type ContactPolicy = {
+  id: string;
+  displayName: string;
+  address: string;
+  channel: "email";
+};
+type MeetingCommitmentProposal = {
+  proposalId: string;
+  proposalSha256: string;
+  projectId: string;
+  mediaRevisionId: string;
+  actionItemId: string;
+  title: string;
+  citations: MediaCitation[];
+  ownership: {
+    participantId: string | null;
+    displayName: string | null;
+    authority: "explicit_transcript" | "confirmation_required";
+  };
+  dueDate: {
+    dueAt: string | null;
+    authority: "explicit_transcript" | "confirmation_required";
+  };
+};
+type MeetingCommitmentResolution = {
+  decision: "confirmed" | "dismissed";
+  ownerParticipantId: string | null;
+  ownerDisplayName: string | null;
+  ownershipAuthority: "explicit_transcript" | "user_confirmed" | null;
+  dueAt: string | null;
+  dueDateAuthority: "explicit_transcript" | "user_confirmed" | null;
+  workItemId: string | null;
+  draftId: string | null;
+  communicationPolicyId: string | null;
+};
+type MeetingCommitmentView = {
+  proposal: MeetingCommitmentProposal;
+  resolution: MeetingCommitmentResolution | null;
+};
 type ProjectOption = { id: string; title: string };
 type EntityOption = { entityId: string; entityTypeId: string; canonicalLabel: string; state: string };
 type LibraryItem = {
@@ -196,6 +237,8 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [selected, setSelected] = useState<Meeting>();
   const [linkedSources, setLinkedSources] = useState<LinkedSource[]>([]);
+  const [commitmentViews, setCommitmentViews] = useState<MeetingCommitmentView[]>([]);
+  const [eligiblePolicies, setEligiblePolicies] = useState<ContactPolicy[]>([]);
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>();
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   const [entities, setEntities] = useState<EntityOption[]>([]);
@@ -206,6 +249,7 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
   const [editingMeetingId, setEditingMeetingId] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [processingRecordingId, setProcessingRecordingId] = useState<string>();
+  const [commitmentBusyId, setCommitmentBusyId] = useState<string>();
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Meetings are ready.");
   const controllerRef = useRef<AbortController | null>(null);
@@ -250,6 +294,8 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
       else {
         setSelected(undefined);
         setLinkedSources([]);
+        setCommitmentViews([]);
+        setEligiblePolicies([]);
       }
       setError(undefined);
     } catch (loadError) {
@@ -266,10 +312,15 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
   ) {
     if (!silent) setDetailLoading(true);
     try {
-      const payload = await readJson(`/api/meetings/${encodeURIComponent(meetingId)}`, { signal });
+      const [payload, commitmentPayload] = await Promise.all([
+        readJson(`/api/meetings/${encodeURIComponent(meetingId)}`, { signal }),
+        readJson(`/api/meetings/${encodeURIComponent(meetingId)}/commitments`, { signal }),
+      ]);
       setSelected(payload.meeting as Meeting);
       setLinkedSources((payload.linkedSources || []) as LinkedSource[]);
       setWorkspaceContext(payload.context as WorkspaceContext);
+      setCommitmentViews((commitmentPayload.commitments || []) as MeetingCommitmentView[]);
+      setEligiblePolicies((commitmentPayload.eligiblePolicies || []) as ContactPolicy[]);
     } finally {
       if (!silent) setDetailLoading(false);
     }
@@ -400,6 +451,95 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
     }
   }
 
+  async function proposeCommitment(mediaRevisionId: string, actionItemId: string) {
+    if (!selected) return;
+    setCommitmentBusyId(actionItemId);
+    setError(undefined);
+    try {
+      const payload = await readJson(
+        `/api/meetings/${encodeURIComponent(selected.meetingId)}/commitments`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `meeting-proposal:${mediaRevisionId}:${actionItemId}`,
+          },
+          body: JSON.stringify({ mediaRevisionId, actionItemId }),
+        },
+      );
+      const commitment = payload.commitment as MeetingCommitmentView;
+      setCommitmentViews((current) => [
+        ...current.filter((item) =>
+          item.proposal.proposalId !== commitment.proposal.proposalId
+        ),
+        commitment,
+      ]);
+      setAnnouncement("Evidence-bound commitment proposal created. Review ownership and due date before confirming.");
+    } catch (proposalError) {
+      setError(message(proposalError));
+    } finally {
+      setCommitmentBusyId(undefined);
+    }
+  }
+
+  async function resolveCommitment(
+    proposal: MeetingCommitmentProposal,
+    decision: "confirmed" | "dismissed",
+    details: {
+      ownerParticipantId?: string;
+      dueAt?: string | null;
+      communication?: {
+        policyId: string;
+        recipientParticipantId: string;
+        subject: string;
+        body: string;
+      } | null;
+    } = {},
+  ) {
+    if (!selected) return;
+    setCommitmentBusyId(proposal.proposalId);
+    setError(undefined);
+    try {
+      const payload = await readJson(
+        `/api/meetings/${encodeURIComponent(selected.meetingId)}/commitments`,
+        {
+          method: "PATCH",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `meeting-resolution:${proposal.proposalSha256}`,
+          },
+          body: JSON.stringify({
+            proposalId: proposal.proposalId,
+            expectedProposalSha256: proposal.proposalSha256,
+            decision,
+            ...details,
+          }),
+        },
+      );
+      const commitment = payload.commitment as MeetingCommitmentView;
+      setCommitmentViews((current) => current.map((item) =>
+        item.proposal.proposalId === commitment.proposal.proposalId
+          ? commitment
+          : item
+      ));
+      if (payload.meeting) {
+        const saved = payload.meeting as Meeting;
+        setSelected(saved);
+        setMeetings((current) => current.map((item) =>
+          item.meetingId === saved.meetingId ? saved : item
+        ));
+        await loadDetail(saved.meetingId, undefined, true);
+      }
+      setAnnouncement(decision === "confirmed"
+        ? "Commitment confirmed as canonical work and meeting follow-up."
+        : "Commitment proposal dismissed.");
+    } catch (resolutionError) {
+      setError(message(resolutionError));
+    } finally {
+      setCommitmentBusyId(undefined);
+    }
+  }
+
   return (
     <main className={styles.shell} aria-busy={loading}>
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
@@ -473,11 +613,18 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
               <MeetingDetail
                 meeting={selected}
                 linkedSources={linkedSources}
+                commitmentViews={commitmentViews}
+                eligiblePolicies={eligiblePolicies}
                 project={projects.find((project) => project.id === selected.projectId)}
                 canWrite={workspaceContext?.canWrite ?? false}
                 processingRecordingId={processingRecordingId}
+                commitmentBusyId={commitmentBusyId}
                 onEdit={openEdit}
                 onProcessRecording={(source) => void processLinkedRecording(source)}
+                onProposeCommitment={(mediaRevisionId, actionItemId) =>
+                  void proposeCommitment(mediaRevisionId, actionItemId)}
+                onResolveCommitment={(proposal, decision, details) =>
+                  void resolveCommitment(proposal, decision, details)}
               />
             ) : (
               <div className={styles.emptyCanvas}>
@@ -497,19 +644,42 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
 function MeetingDetail({
   meeting,
   linkedSources,
+  commitmentViews,
+  eligiblePolicies,
   project,
   canWrite,
   processingRecordingId,
+  commitmentBusyId,
   onEdit,
   onProcessRecording,
+  onProposeCommitment,
+  onResolveCommitment,
 }: {
   meeting: Meeting;
   linkedSources: LinkedSource[];
+  commitmentViews: MeetingCommitmentView[];
+  eligiblePolicies: ContactPolicy[];
   project?: ProjectOption;
   canWrite: boolean;
   processingRecordingId?: string;
+  commitmentBusyId?: string;
   onEdit: () => void;
   onProcessRecording: (source: LinkedSource) => void;
+  onProposeCommitment: (mediaRevisionId: string, actionItemId: string) => void;
+  onResolveCommitment: (
+    proposal: MeetingCommitmentProposal,
+    decision: "confirmed" | "dismissed",
+    details?: {
+      ownerParticipantId?: string;
+      dueAt?: string | null;
+      communication?: {
+        policyId: string;
+        recipientParticipantId: string;
+        subject: string;
+        body: string;
+      } | null;
+    },
+  ) => void;
 }) {
   const transcriptSources = linkedSources.filter((source) =>
     source.transcript && !source.media?.output
@@ -578,6 +748,11 @@ function MeetingDetail({
             key={source.linkId}
             label={source.label}
             media={source.media!}
+            meetingHasProject={Boolean(meeting.projectId)}
+            canWrite={canWrite}
+            commitmentViews={commitmentViews}
+            commitmentBusyId={commitmentBusyId}
+            onProposeCommitment={onProposeCommitment}
           />
         )) : transcriptSources.length ? transcriptSources.map((source) => (
           <article key={source.linkId} className={styles.transcript}>
@@ -585,6 +760,34 @@ function MeetingDetail({
             <p>{source.transcript}</p>
           </article>
         )) : <EmptyLine>Timestamped processing continues after the browser closes. A diarized transcript, chapters, and cited outcomes will appear here when ready.</EmptyLine>}
+      </section>
+
+      <section className={styles.section}>
+        <SectionHeading
+          icon={<CheckCircle2 size={17} />}
+          eyebrow="Evidence → governed action"
+          title="Commitment conversion"
+          count={commitmentViews.length}
+        />
+        {commitmentViews.length ? (
+          <div className={styles.commitmentGrid}>
+            {commitmentViews.map((view) => (
+              <CommitmentProposalCard
+                key={view.proposal.proposalId}
+                view={view}
+                meeting={meeting}
+                policies={eligiblePolicies}
+                canWrite={canWrite}
+                busy={commitmentBusyId === view.proposal.proposalId}
+                onResolve={onResolveCommitment}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyLine>
+            Propose a cited action item above, then confirm its owner and due date before any WorkItem or draft is created.
+          </EmptyLine>
+        )}
       </section>
 
       <div className={styles.twoColumn}>
@@ -596,7 +799,7 @@ function MeetingDetail({
         <SectionHeading icon={<ListChecks size={17} />} eyebrow="Execution bridge" title="Follow-up" count={meeting.followUps.length} />
         {meeting.followUps.length ? <div className={styles.followUpList}>{meeting.followUps.map((followUp) => (
           <div key={followUp.followUpId}><span data-status={followUp.status} /><div><strong>{followUp.label}</strong><p>{followUp.workItemId ? `Work item ${followUp.workItemId}` : followUp.draftId ? `Draft ${followUp.draftId}` : "Not converted yet"}</p></div><em>{followUp.status}</em></div>
-        ))}</div> : <EmptyLine>Accepted commitments can become WorkItems or communication drafts in the next meeting workflow phase.</EmptyLine>}
+        ))}</div> : <EmptyLine>Confirmed cited commitments appear here with their canonical WorkItem and optional governed draft.</EmptyLine>}
       </section>
 
       {meeting.entityLinks.length ? <section className={styles.section}>
@@ -610,9 +813,19 @@ function MeetingDetail({
 export function ProcessedMeetingMedia({
   label,
   media,
+  meetingHasProject = false,
+  canWrite = false,
+  commitmentViews = [],
+  commitmentBusyId,
+  onProposeCommitment,
 }: {
   label: string;
   media: ProcessedMeetingMediaView;
+  meetingHasProject?: boolean;
+  canWrite?: boolean;
+  commitmentViews?: MeetingCommitmentView[];
+  commitmentBusyId?: string;
+  onProposeCommitment?: (mediaRevisionId: string, actionItemId: string) => void;
 }) {
   const output = media.output;
   if (!output) {
@@ -668,16 +881,39 @@ export function ProcessedMeetingMedia({
         <div className={styles.mediaInsights}>
           <div>
             <strong>Action items</strong>
-            {output.actionItems.length ? output.actionItems.map((item) => (
-              <section key={item.actionItemId}>
+            {output.actionItems.length ? output.actionItems.map((item) => {
+              const commitment = commitmentViews.find((view) =>
+                view.proposal.actionItemId === item.actionItemId &&
+                view.proposal.mediaRevisionId === output.mediaRevisionId
+              );
+              return (
+              <section key={item.actionItemId} className={styles.actionItem}>
                 <p>{item.text}</p>
                 <small>{[
                   item.ownerParticipantId ? "Explicit owner" : "Owner unconfirmed",
                   item.dueAt ? `Due ${formatCompactDate(item.dueAt)}` : "Due date unconfirmed",
                 ].join(" · ")}</small>
                 <MediaCitations citations={item.citations} />
+                {commitment ? (
+                  <span className={styles.proposalState} data-state={commitment.resolution?.decision || "proposed"}>
+                    {commitment.resolution?.decision || "proposal ready"}
+                  </span>
+                ) : canWrite ? (
+                  <button
+                    type="button"
+                    className={styles.proposeButton}
+                    disabled={!meetingHasProject || commitmentBusyId === item.actionItemId}
+                    onClick={() => onProposeCommitment?.(output.mediaRevisionId, item.actionItemId)}
+                  >
+                    {commitmentBusyId === item.actionItemId
+                      ? <Loader2 className="animate-spin" size={12} />
+                      : <Plus size={12} />}
+                    {meetingHasProject ? "Propose as work" : "Link a project first"}
+                  </button>
+                ) : null}
               </section>
-            )) : <p className={styles.mutedLine}>No explicit action items found.</p>}
+            );
+            }) : <p className={styles.mutedLine}>No explicit action items found.</p>}
           </div>
           <div>
             <strong>Decisions</strong>
@@ -708,6 +944,186 @@ export function ProcessedMeetingMedia({
         <p className={styles.mediaWarning}><AlertTriangle size={13} /> {output.warnings.join(" · ")}</p>
       ) : null}
     </article>
+  );
+}
+
+function CommitmentProposalCard({
+  view,
+  meeting,
+  policies,
+  canWrite,
+  busy,
+  onResolve,
+}: {
+  view: MeetingCommitmentView;
+  meeting: Meeting;
+  policies: ContactPolicy[];
+  canWrite: boolean;
+  busy: boolean;
+  onResolve: (
+    proposal: MeetingCommitmentProposal,
+    decision: "confirmed" | "dismissed",
+    details?: {
+      ownerParticipantId?: string;
+      dueAt?: string | null;
+      communication?: {
+        policyId: string;
+        recipientParticipantId: string;
+        subject: string;
+        body: string;
+      } | null;
+    },
+  ) => void;
+}) {
+  const { proposal, resolution } = view;
+  const [ownerParticipantId, setOwnerParticipantId] = useState(
+    proposal.ownership.participantId || "",
+  );
+  const [dueAt, setDueAt] = useState(localDateTimeInput(proposal.dueDate.dueAt));
+  const [includeDraft, setIncludeDraft] = useState(false);
+  const [policyId, setPolicyId] = useState(policies[0]?.id || "");
+  const [subject, setSubject] = useState(`Follow-up: ${meeting.title}`);
+  const [body, setBody] = useState(
+    `Following up on ${meeting.title}:\n\n${proposal.title}\n\nPlease reply with any corrections.`,
+  );
+  if (resolution) {
+    return (
+      <article className={styles.commitmentCard} data-state={resolution.decision}>
+        <div className={styles.commitmentCardHeader}>
+          <div>
+            <span>{resolution.decision === "confirmed" ? <CheckCircle2 size={14} /> : <X size={14} />}</span>
+            <strong>{resolution.decision === "confirmed" ? "Confirmed commitment" : "Dismissed proposal"}</strong>
+          </div>
+          <small>{resolution.decision}</small>
+        </div>
+        <p>{proposal.title}</p>
+        {resolution.decision === "confirmed" ? (
+          <div className={styles.resolutionFacts}>
+            <span><strong>Owner</strong>{resolution.ownerDisplayName} · {authorityLabel(resolution.ownershipAuthority)}</span>
+            <span><strong>Due</strong>{resolution.dueAt ? formatCompactDate(resolution.dueAt) : "No due date"}{resolution.dueDateAuthority ? ` · ${authorityLabel(resolution.dueDateAuthority)}` : ""}</span>
+            <span><strong>WorkItem</strong>{resolution.workItemId}</span>
+            {resolution.draftId ? <span><strong>Governed draft</strong>{resolution.draftId} · unsent</span> : null}
+          </div>
+        ) : null}
+        <MediaCitations citations={proposal.citations} />
+      </article>
+    );
+  }
+
+  const policy = policies.find((candidate) => candidate.id === policyId);
+  const recipient = policy
+    ? meeting.participants.find((participant) =>
+        participant.email?.trim().toLocaleLowerCase("en-US") ===
+          policy.address.trim().toLocaleLowerCase("en-US")
+      )
+    : undefined;
+  return (
+    <form
+      className={styles.commitmentCard}
+      data-state="proposed"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!ownerParticipantId) return;
+        onResolve(proposal, "confirmed", {
+          ownerParticipantId,
+          dueAt: dueAt ? new Date(dueAt).toISOString() : null,
+          communication: includeDraft && policy && recipient ? {
+            policyId: policy.id,
+            recipientParticipantId: recipient.participantId,
+            subject,
+            body,
+          } : null,
+        });
+      }}
+    >
+      <div className={styles.commitmentCardHeader}>
+        <div><span><Sparkles size={14} /></span><strong>Review proposed commitment</strong></div>
+        <small>no effects yet</small>
+      </div>
+      <p>{proposal.title}</p>
+      <MediaCitations citations={proposal.citations} />
+      <div className={styles.proposalEvidence}>
+        <span data-evidence={proposal.ownership.authority}>
+          Owner · {proposal.ownership.authority === "explicit_transcript" ? "cited in transcript" : "confirmation required"}
+        </span>
+        <span data-evidence={proposal.dueDate.authority}>
+          Due date · {proposal.dueDate.authority === "explicit_transcript" ? "cited in transcript" : "optional confirmation"}
+        </span>
+      </div>
+      <div className={styles.commitmentFormGrid}>
+        <label>
+          <span>Confirmed owner</span>
+          <select
+            value={ownerParticipantId}
+            onChange={(event) => setOwnerParticipantId(event.target.value)}
+            required
+            disabled={!canWrite || busy}
+          >
+            <option value="">Choose a participant</option>
+            {meeting.participants.map((participant) => (
+              <option key={participant.participantId} value={participant.participantId}>
+                {participant.displayName}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Confirmed due date · optional</span>
+          <input
+            type="datetime-local"
+            value={dueAt}
+            onChange={(event) => setDueAt(event.target.value)}
+            disabled={!canWrite || busy}
+          />
+        </label>
+      </div>
+      <label className={styles.draftToggle}>
+        <input
+          type="checkbox"
+          checked={includeDraft}
+          disabled={!policies.length || !canWrite || busy}
+          onChange={(event) => setIncludeDraft(event.target.checked)}
+        />
+        <span><Mail size={14} /> Also prepare an unsent, governed follow-up email</span>
+      </label>
+      {!policies.length ? (
+        <p className={styles.policyNotice}>No eligible participant contact policy exists. The WorkItem can still be confirmed without a draft.</p>
+      ) : includeDraft ? (
+        <div className={styles.draftFields}>
+          <label>
+            <span>Approved recipient policy</span>
+            <select value={policyId} onChange={(event) => setPolicyId(event.target.value)} required>
+              {policies.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.displayName} · {candidate.address}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label><span>Subject</span><input value={subject} onChange={(event) => setSubject(event.target.value)} required /></label>
+          <label><span>Message</span><textarea rows={5} value={body} onChange={(event) => setBody(event.target.value)} required /></label>
+          <p><ShieldCheck size={13} /> Draft only. Sending remains a separate governed approval.</p>
+        </div>
+      ) : null}
+      <div className={styles.commitmentActions}>
+        <button
+          type="button"
+          className={styles.secondaryButton}
+          disabled={!canWrite || busy}
+          onClick={() => onResolve(proposal, "dismissed")}
+        >
+          Dismiss
+        </button>
+        <button
+          type="submit"
+          className={styles.primaryButton}
+          disabled={!canWrite || busy || !ownerParticipantId || (includeDraft && (!policy || !recipient))}
+        >
+          {busy ? <Loader2 className="animate-spin" size={14} /> : <CheckCircle2 size={14} />}
+          Confirm WorkItem{includeDraft ? " + draft" : ""}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -845,6 +1261,8 @@ function formatCompactDate(value: string) { return new Date(value).toLocaleDateS
 function formatDuration(ms: number) { const minutes = Math.round(ms / 60_000); return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes} min`; }
 function formatMediaTimestamp(ms: number) { const seconds = Math.max(0, Math.floor(ms / 1_000)); const hours = Math.floor(seconds / 3_600); const minutes = Math.floor((seconds % 3_600) / 60); const remainder = seconds % 60; return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${minutes}:${String(remainder).padStart(2, "0")}`; }
 function formatBytes(bytes: number) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1024 ** 2).toFixed(1)} MB`; }
+function authorityLabel(value: MeetingCommitmentResolution["ownershipAuthority"] | MeetingCommitmentResolution["dueDateAuthority"]) { return value === "explicit_transcript" ? "transcript evidence" : value === "user_confirmed" ? "user confirmed" : "not set"; }
+function localDateTimeInput(value: string | null) { return value ? toLocalInput(value) : ""; }
 function toLocalInput(value: string) { const date = new Date(value); const offset = date.getTimezoneOffset() * 60_000; return new Date(date.getTime() - offset).toISOString().slice(0, 16); }
 function fromLocalInput(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString(); }
 async function readJson(path: string, init?: RequestInit) { const response = await fetch(path, { cache: "no-store", ...init }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(String(payload.error || payload.message || `${path} returned ${response.status}`)); return payload as Record<string, unknown>; }
