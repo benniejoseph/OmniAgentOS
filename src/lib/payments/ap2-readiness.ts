@@ -12,7 +12,7 @@ import {
 } from "@/lib/payments/ap2-contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
-export const AP2_READINESS_VERSION = "p9.15-ap2-readiness:1" as const;
+export const AP2_READINESS_VERSION = "p9.17-ap2-readiness:1" as const;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -89,16 +89,40 @@ const readinessBodySchema = z.object({
     authorizationConfersPaymentEffectAuthority: z.literal(false),
     materialChangesRequireFreshReview: z.literal(true),
   }).strict(),
+  credentialAuthorization: z.object({
+    implementationVersion: z.literal("p9.17-ap2-credential-authorization:1"),
+    schemaMigrationVersion: z.literal(126),
+    providerInterfaceVersion: z.literal("p9.17-ap2-credential-provider:1"),
+    rawCredentialOrSigningMaterialRepresentable: z.literal(false),
+    agentModelSubagentMcpBrowserAccess: z.literal("opaque_reference_only"),
+    scopedProviderTokenStorage: z.literal("encrypted_payment_boundary_only"),
+    scopedProviderTokenReturnedByApiOrTool: z.literal(false),
+    exactScopeChecks: z.tuple([
+      z.literal("merchant"),
+      z.literal("amount"),
+      z.literal("currency"),
+      z.literal("processor"),
+      z.literal("instrument"),
+      z.literal("checkout_hash"),
+      z.literal("mandate_authorization"),
+      z.literal("expiry"),
+      z.literal("nonce"),
+      z.literal("provider_signature"),
+    ]),
+    oneTimeClaimDestroysSealedToken: z.literal(true),
+    unknownProviderOutcomeRequiresReconciliation: z.literal(true),
+    authorizationConfersPaymentEffectAuthority: z.literal(false),
+  }).strict(),
   capability: z.object({
     state: z.literal("disabled_configuration_only"),
     transactionsPermitted: z.literal(false),
     registeredPaymentEffectToolCount: z.literal(0),
     acceptedAdapterReleaseCount: z.literal(0),
     humanPresentMandateFlowImplemented: z.literal(true),
+    credentialIsolationImplemented: z.literal(true),
     humanPresentFlowEnabled: z.literal(false),
     humanNotPresentFlowEnabled: z.literal(false),
     missingGates: z.tuple([
-      z.literal("p9.17_credential_isolation_and_authorization"),
       z.literal("p9.18_signed_receipts_and_reconciliation"),
     ]),
     activationBlockers: z.tuple([
@@ -216,16 +240,40 @@ export function loadAp2Readiness(): Ap2Readiness {
       authorizationConfersPaymentEffectAuthority: false,
       materialChangesRequireFreshReview: true,
     },
+    credentialAuthorization: {
+      implementationVersion: "p9.17-ap2-credential-authorization:1",
+      schemaMigrationVersion: 126,
+      providerInterfaceVersion: "p9.17-ap2-credential-provider:1",
+      rawCredentialOrSigningMaterialRepresentable: false,
+      agentModelSubagentMcpBrowserAccess: "opaque_reference_only",
+      scopedProviderTokenStorage: "encrypted_payment_boundary_only",
+      scopedProviderTokenReturnedByApiOrTool: false,
+      exactScopeChecks: [
+        "merchant",
+        "amount",
+        "currency",
+        "processor",
+        "instrument",
+        "checkout_hash",
+        "mandate_authorization",
+        "expiry",
+        "nonce",
+        "provider_signature",
+      ],
+      oneTimeClaimDestroysSealedToken: true,
+      unknownProviderOutcomeRequiresReconciliation: true,
+      authorizationConfersPaymentEffectAuthority: false,
+    },
     capability: {
       state: "disabled_configuration_only",
       transactionsPermitted: false,
       registeredPaymentEffectToolCount: 0,
       acceptedAdapterReleaseCount: 0,
       humanPresentMandateFlowImplemented: true,
+      credentialIsolationImplemented: true,
       humanPresentFlowEnabled: false,
       humanNotPresentFlowEnabled: false,
       missingGates: [
-        "p9.17_credential_isolation_and_authorization",
         "p9.18_signed_receipts_and_reconciliation",
       ],
       activationBlockers: [

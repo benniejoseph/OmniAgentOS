@@ -18,10 +18,10 @@ describe("AP2 payment readiness", () => {
       registeredPaymentEffectToolCount: 0,
       acceptedAdapterReleaseCount: 0,
       humanPresentMandateFlowImplemented: true,
+      credentialIsolationImplemented: true,
       humanPresentFlowEnabled: false,
       humanNotPresentFlowEnabled: false,
       missingGates: [
-        "p9.17_credential_isolation_and_authorization",
         "p9.18_signed_receipts_and_reconciliation",
       ],
       activationBlockers: [
@@ -36,6 +36,13 @@ describe("AP2 payment readiness", () => {
       schemaMigrationVersion: 125,
       trustedSurfacePath: "/app/payments",
       agentCanRegisterOrSign: false,
+      authorizationConfersPaymentEffectAuthority: false,
+    });
+    expect(readiness.credentialAuthorization).toMatchObject({
+      schemaMigrationVersion: 126,
+      rawCredentialOrSigningMaterialRepresentable: false,
+      scopedProviderTokenReturnedByApiOrTool: false,
+      oneTimeClaimDestroysSealedToken: true,
       authorizationConfersPaymentEffectAuthority: false,
     });
     expect(readiness.acceptedAdapterContracts).toEqual([]);
