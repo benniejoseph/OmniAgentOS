@@ -2,6 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
+  ingestKnowledgeService,
+  searchKnowledgeService,
+} from "@/lib/app-services/knowledge";
+import {
   AppServiceEffectReceiptFinalizationError,
   correctMemoryService,
   forgetMemoryService,
@@ -57,11 +61,6 @@ import {
 } from "@/lib/security/execution-scope";
 import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network";
 import { redactExactSecrets } from "@/lib/security/secret-redaction";
-import { ingestTextDocument } from "@/lib/rag/retriever";
-import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
-import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
-import { searchKnowledge } from "@/lib/rag/store";
-import { sourceContractSha256 } from "@/lib/sources/contracts";
 import {
   completeClaimedToolExecution,
   claimIdempotentToolExecution,
@@ -2713,44 +2712,17 @@ async function runTool(
 
   if (tool.id === "knowledge.search") {
     const { query, limit } = searchSchema.parse(parsed);
-    const safeQuery = String(redactSensitive(query));
-    const embeddingResult = await embedRetrievalTexts([safeQuery], {
-      abortSignal,
-      usageScope: aiUsageScope("embedding", "tool.knowledge.search"),
-    });
-    const queryEmbedding = embeddingResult.vectors[0];
-    const results = await searchKnowledge(safeQuery, {
-      limit: limit || 5,
-      queryEmbedding,
-      queryEmbeddingSpaceId: embeddingResult.receipt.spaceId,
-      tenantId: context?.tenantId,
-    });
-    const reranked = rerankRetrievalCandidates(
-      safeQuery,
-      results.map((result) => ({
-        value: result,
-        text: `${result.chunk.title}\n${result.chunk.content}`,
-        baseScore: result.score,
-        freshnessScore: result.recencyScore,
-      })),
+    const service = await searchKnowledgeService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { query, limit: limit || 5 },
+      {
+        abortSignal,
+        usageScope: aiUsageScope("embedding", "tool.knowledge.search"),
+      },
     );
     return {
-      results: reranked.results.map(({ value: result, score }) => ({
-        score,
-        baseScore: result.score,
-        vectorScore: result.vectorScore,
-        lexicalScore: result.lexicalScore,
-        reasons: result.reasons,
-        chunk: {
-          ...result.chunk,
-          embedding: undefined,
-        },
-        document: result.document,
-      })),
-      retrieval: {
-        embedding: embeddingResult.receipt,
-        reranker: reranked.receipt,
-      },
+      ...service.data,
+      serviceReceipt: service.receipt,
     };
   }
 
@@ -2859,41 +2831,19 @@ async function runTool(
 
   if (tool.id === "knowledge.ingest") {
     const value = knowledgeIngestSchema.parse(parsed);
-    const safeValue = redactSensitive(value) as typeof value;
-    const result = await ingestTextDocument({
-      tenantId: context?.tenantId,
-      title: safeValue.title,
-      content: safeValue.content,
-      source: safeValue.source || "tool-executor",
-      sourceType: "manual",
-      tags: safeValue.tags || ["tool-execution"],
-      usageScope: aiUsageScope("embedding", "tool.knowledge.ingest"),
-      executionScope,
-      ...(executionScope?.initiatingActorId && executionObservedAt
-        ? {
-            sourceLineage: {
-              executionScope,
-              connectionId: "first_party.knowledge_tool",
-              adapterId: "asael.knowledge_tool",
-              adapterVersionId: "1",
-              externalItemId:
-                idempotencyKey ||
-                effectTargetId ||
-                `knowledge_tool_${sourceContractSha256({
-                  title: safeValue.title,
-                  content: safeValue.content,
-                  source: safeValue.source || "tool-executor",
-                })}`,
-              sourceKind: "document" as const,
-              capturedAt: executionObservedAt,
-            },
-          }
-        : {}),
-    });
+    const service = await ingestKnowledgeService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      value,
+      {
+        abortSignal,
+        usageScope: aiUsageScope("embedding", "tool.knowledge.ingest"),
+        effectTargetId,
+        observedAt: executionObservedAt,
+      },
+    );
     return {
-      document: result.document,
-      chunks: result.chunks.length,
-      memories: result.memories.length,
+      ...service.data,
+      serviceReceipt: service.receipt,
     };
   }
 
