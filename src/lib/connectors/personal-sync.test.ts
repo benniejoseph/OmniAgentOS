@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(),
+  claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(),
 }));
 vi.mock("@/lib/connectors/oauth-store", () => ({
   claimOAuthSyncLease: mocks.claimLease,
@@ -21,6 +21,7 @@ vi.mock("@/lib/connectors/google-drive-canonical", () => ({
 }));
 vi.mock("@/lib/rag/retriever", () => ({ ingestTextDocument: mocks.ingest }));
 vi.mock("@/lib/rag/store", () => ({ deleteKnowledgeDocumentByIdempotencyKey: mocks.remove }));
+vi.mock("@/lib/communications/store", () => ({ mapInboundCommunication: mocks.mapInbound }));
 
 import { syncPersonalProvider } from "@/lib/connectors/personal-sync";
 
@@ -61,7 +62,7 @@ describe("personal OAuth synchronization", () => {
       const url = String(input);
       if (url.includes("/messages?")) return json({ messages: [{ id: "m1" }] });
       if (url.endsWith("/profile")) return json({ historyId: "h2" });
-      if (url.includes("/messages/m1")) return json({ id: "m1", historyId: "h1", internalDate: "1787695200000", snippet: "Decision made", payload: { headers: [{ name: "Subject", value: "Project decision" }, { name: "From", value: "a@example.com" }] } });
+      if (url.includes("/messages/m1")) return json({ id: "m1", threadId: "thread-1", historyId: "h1", internalDate: "1787695200000", snippet: "Decision made", payload: { headers: [{ name: "Subject", value: "Project decision" }, { name: "From", value: "a@example.com" }, { name: "To", value: "owner@example.com" }] } });
       if (url.includes("calendar")) return json({ nextSyncToken: "c2", items: [{ id: "e1", etag: "event-v1", created: "2026-08-25T10:00:00Z", updated: "2026-08-26T09:00:00Z", summary: "Planning", status: "confirmed", start: { dateTime: "2026-08-26T10:00:00Z" }, end: { dateTime: "2026-08-26T11:00:00Z" } }, { id: "e0", status: "cancelled" }] });
       if (url.includes("/drive/v3/files")) return json({ files: [{ id: "d1", name: "Project brief.pdf", mimeType: "application/pdf", createdTime: "2026-08-24T10:00:00Z", modifiedTime: "2026-08-25T10:00:00Z", version: "7", webViewLink: "https://drive.google.com/file/d1" }] });
       throw new Error(`Unexpected URL ${url}`);
@@ -71,6 +72,16 @@ describe("personal OAuth synchronization", () => {
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:mail:m1" }));
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:calendar:e1" }));
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:drive:d1" }));
+    expect(mocks.mapInbound).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerMessageId: "m1",
+        externalThreadId: "thread-1",
+        fromAddress: "a@example.com",
+        toAddress: "owner@example.com",
+        content: "Decision made",
+      }),
+      expect.objectContaining({ tenantId: "personal", actorId: "owner" }),
+    );
     expect(mocks.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
         idempotencyKey: "oauth:google:mail:m1",
