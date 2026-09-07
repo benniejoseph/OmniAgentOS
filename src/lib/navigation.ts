@@ -3,6 +3,7 @@ import {
   Inbox,
   Brain,
   Bot,
+  CalendarDays,
   Cable,
   CheckCircle2,
   CreditCard,
@@ -55,6 +56,13 @@ export const appNav: AppNavItem[] = [
     shortLabel: "Capture",
     description: "Save a note or file to your second brain.",
     icon: Inbox,
+  },
+  {
+    href: "/app/meetings",
+    label: "Meetings",
+    shortLabel: "Meetings",
+    description: "Calendar context, participants, consent, media, and follow-through.",
+    icon: CalendarDays,
   },
   {
     href: "/app/agents",
@@ -172,6 +180,7 @@ export const appNavGroups: AppNavGroup[] = [
     items: [
       ...primaryNavItems,
       appNav.find((item) => item.href === "/app/agents")!,
+      appNav.find((item) => item.href === "/app/meetings")!,
     ],
   },
   {
