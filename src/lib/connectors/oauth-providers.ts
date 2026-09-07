@@ -49,7 +49,12 @@ export function oauthConfigured(provider: OAuthProvider) { const config = oauthP
 
 export function createOAuthAuthorization(
   provider: OAuthProvider,
-  identity: { tenantId: string; actorId: string; returnTo?: string },
+  identity: {
+    tenantId: string;
+    actorId: string;
+    workspaceId?: string;
+    returnTo?: string;
+  },
 ) {
   const config = oauthProviders[provider];
   const clientId = process.env[config.clientIdEnv]?.trim();
@@ -60,6 +65,7 @@ export function createOAuthAuthorization(
     {
       tenantId: identity.tenantId,
       actorId: identity.actorId,
+      workspaceId: identity.workspaceId || null,
       provider,
       verifier,
       returnTo: normalizeOAuthReturnTo(identity.returnTo),
@@ -88,6 +94,7 @@ export function openOAuthState(provider: OAuthProvider, encoded: string) {
     const state = openJsonPayload(sealed, `oauth:${provider}`) as {
       tenantId: string;
       actorId: string;
+      workspaceId?: string | null;
       provider: string;
       verifier: string;
       returnTo?: string;
@@ -97,6 +104,9 @@ export function openOAuthState(provider: OAuthProvider, encoded: string) {
       state.provider !== provider ||
       typeof state.tenantId !== "string" ||
       typeof state.actorId !== "string" ||
+      !(state.workspaceId === null || state.workspaceId === undefined ||
+        (typeof state.workspaceId === "string" &&
+          /^workspace:[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(state.workspaceId))) ||
       typeof state.verifier !== "string" ||
       !state.verifier ||
       !Number.isFinite(state.expiresAt) ||
