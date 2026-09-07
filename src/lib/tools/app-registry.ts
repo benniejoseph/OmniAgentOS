@@ -145,6 +145,44 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.agents.delete", "Delete custom agent", "Permanently retire and delete one exact custom agent only when its preview digest still matches.", requiredObjectSchema({
     id: opaqueId("Exact custom-agent ID."), expectedTargetSha256: sha256("Digest returned by app.agents.delete.preview."),
   }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.agents.release.show", "Show agent release", "Read the active release channel, available definition versions, and evaluations for one custom agent.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."),
+  }, ["agentId"])),
+  mutationTool("app.agents.release.evaluate", "Evaluate agent release", "Evaluate one exact custom-agent definition version against its active release baseline.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."), definitionVersion: integer(1, Number.MAX_SAFE_INTEGER),
+  }, ["agentId", "definitionVersion"]), { reversible: true }),
+  mutationTool("app.agents.release.transition", "Transition agent release", "Promote or roll back an agent release using one exact persisted evaluation.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."), action: { type: "string", enum: ["promote", "rollback"] },
+    evaluationId: { type: "string", pattern: "^agent-release-evaluation:[a-f0-9]{64}$", maxLength: 240 },
+  }, ["agentId", "action", "evaluationId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.agents.release.retire.preview", "Preview agent retirement", "Preview the exact active release and definition identities that retirement will revoke.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."),
+  }, ["agentId"])),
+  mutationTool("app.agents.release.retire", "Retire agent release", "Retire one custom agent and revoke its execution identity only when the preview digest still matches.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."), expectedTargetSha256: sha256("Digest returned by app.agents.release.retire.preview."),
+  }, ["agentId", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.agents.grants.list", "List agent memory grants", "List the exact context and capability memory grants held by one custom agent.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."),
+  }, ["agentId"])),
+  mutationTool("app.agents.grants.create", "Create agent memory grant", "Create one bounded memory grant and rotate the custom agent's grant authority.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."), grant: agentGrantSchema(),
+  }, ["agentId", "grant"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.agents.grants.revoke.preview", "Preview agent grant revocation", "Preview the exact memory grant that will be revoked from one custom agent.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."), grantId: grantId(),
+  }, ["agentId", "grantId"])),
+  mutationTool("app.agents.grants.revoke", "Revoke agent memory grant", "Revoke one exact agent memory grant only when its preview digest still matches.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."), grantId: grantId(), expectedTargetSha256: sha256("Digest returned by app.agents.grants.revoke.preview."),
+  }, ["agentId", "grantId", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.agents.adaptations.list", "List agent adaptations", "List observed and active adaptations for one custom agent and its current definition version.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."),
+  }, ["agentId"])),
+  mutationTool("app.agents.adaptations.refresh", "Refresh agent adaptations", "Observe correction-backed evidence and refresh proposed adaptations for one custom agent.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."),
+  }, ["agentId"]), { reversible: true }),
+  mutationTool("app.agents.adaptations.manage", "Manage agent adaptation", "Evaluate, activate, or roll back one exact correction-backed agent adaptation.", requiredObjectSchema({
+    agentId: opaqueId("Exact custom-agent ID."), adaptationId: { type: "string", pattern: "^agent-adaptation:[a-f0-9]{64}$" },
+    action: { type: "string", enum: ["evaluate", "activate", "rollback"] },
+  }, ["agentId", "adaptationId", "action"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.skills.list", "List skills", "List built-in and custom skills readable by the current actor.", objectSchema({})),
   readTool("app.skills.show", "Show skill", "Read one exact built-in or custom skill.", requiredObjectSchema({ id: opaqueId("Exact skill ID.") }, ["id"])),
   mutationTool("app.skills.create", "Create skill", "Create one custom skill with bounded instructions and tool assignments.", requiredObjectSchema(skillProperties(), ["name", "description", "instructions", "category"]), { reversible: true }),
@@ -363,4 +401,23 @@ function recordingProperties(): Record<string, unknown> {
     title: text(0, 240), language: text(0, 35),
     tags: { type: "array", maxItems: 50, uniqueItems: true, items: text(1, 80) },
   };
+}
+
+function grantId() {
+  return { type: "string", pattern: "^(context|capability):[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$", maxLength: 240 };
+}
+
+function agentGrantSchema() {
+  const target = requiredObjectSchema({
+    visibility: { type: "string", enum: ["agent_private", "user_private", "mission_shared", "project_shared", "workspace_shared"] },
+    resourceIds: { type: "array", minItems: 1, maxItems: 128, uniqueItems: true, items: opaqueId("Exact resource ID.") },
+    workspaceId: { type: ["string", "null"] }, projectId: { type: ["string", "null"] }, missionId: { type: ["string", "null"] },
+  }, ["visibility", "resourceIds", "workspaceId", "projectId", "missionId"]);
+  return requiredObjectSchema({
+    schemaVersion: { type: "integer", enum: [1] }, grantKind: { type: "string", enum: ["context", "capability"] },
+    purposeId: { type: "string", enum: ["memory.read.v1", "memory.retrieve.v1", "memory.write.v1", "memory.correct.v1", "memory.forget.v1", "memory.formation.v1", "memory.maintenance.v1", "memory.export.v1"] },
+    target, expiresAt: { type: "string", format: "date-time" }, maxItems: integer(1, 1_000), maxBytes: integer(1, 10_000_000),
+    operationIds: { type: "array", minItems: 1, maxItems: 8, uniqueItems: true, items: { type: "string" } },
+    maxInvocations: integer(1, 10_000), maxCostMicrousd: integer(1, 100_000_000), maxDurationMs: integer(1, 3_600_000),
+  }, ["schemaVersion", "grantKind", "purposeId", "target", "expiresAt"]);
 }
