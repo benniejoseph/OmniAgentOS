@@ -1874,6 +1874,33 @@ and actionable errors. Manual sync/reconciliation require `manage.connector`;
 the existing secured workflow tick advances due connections under an explicit
 owner-and-Workspace-bound system execution scope.
 
+## Guarded Salesforce writes
+
+P10.11 adds a separate, default-off mutation plane without changing Salesforce
+into Asael's source of truth. Every Account 360 starts with external writes
+disabled. Its current owner must explicitly activate the approval-required state
+for an exact account revision after the deployment gate, actor-owned Salesforce
+connection, and exact Salesforce Account link are all present.
+
+The governed executor exposes allowlisted create/update contracts for Contact,
+Task, Case, and Opportunity, and allowlisted updates for Account and Note. Every
+provider effect requires a persisted human approval bound to the exact input,
+target identity, Account 360 revision, initiating actor, executing principal,
+and optional workflow plan. Creates use a deterministic provider key through a
+reviewed unique External ID field; updates require the exact provider revision
+and use a conditional request. Provider describe metadata must confirm that
+every requested, relationship, and idempotency field remains writable before a
+mutation can run.
+
+Each attempt is prepared in an immutable-identity, forced-RLS operation ledger
+before the provider call. Completion requires an exact provider re-read. The
+terminal commit and executor effect receipt retain hashes, verification state,
+and reason codes without raw Salesforce IDs or record content. A response-lost
+retry first reconciles the deterministic provider target; it never blindly
+repeats a create or overwrites a changed update target. Notes are update-only
+because the standard Note create surface has no deployment-independent unique
+idempotency identity.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
