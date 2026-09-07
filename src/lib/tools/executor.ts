@@ -33,6 +33,10 @@ import { listRunsService } from "@/lib/app-services/runs";
 import { executeFirstPartyAppTool } from "@/lib/app-services/tool-dispatcher";
 import { captureBrowserFrameAfterToolSafely } from "@/lib/browser/frames";
 import {
+  specializeBrowserActionTool,
+  type BrowserActionPolicyDecision,
+} from "@/lib/browser/action-policy";
+import {
   browserProfileTargetHostname,
   resolveBrowserProfileSession,
 } from "@/lib/browser/profiles";
@@ -448,7 +452,7 @@ export async function executeGovernedTool({
     existingRecord?.approvalRequired && !registeredTool.approvalRequired && registeredTool.riskLevel > 0,
   );
   const registeredApprovalFingerprint = toolApprovalFingerprint(registeredTool);
-  const tool = effectiveForceApproval
+  let tool = effectiveForceApproval
     ? {
         ...registeredTool,
         approvalRequired: true,
@@ -513,24 +517,6 @@ export async function executeGovernedTool({
       if (reconciled) {
         return { record: reconciled, result: reconciled.output };
       }
-    }
-  }
-  if (existingRecord && executionClaimToken) {
-    const reviewedFingerprint =
-      getToolExecutionApprovalFingerprint(existingRecord);
-    if (
-      !reviewedFingerprint ||
-      reviewedFingerprint !== toolApprovalFingerprint(tool)
-    ) {
-      return completeClaimedInputValidationFailure(
-        existingRecord,
-        executionClaimToken,
-        new ToolInputValidationError(
-          "The tool contract changed after approval. Submit the action again.",
-        ),
-        executionScope,
-        idempotencyKey,
-      );
     }
   }
   let preparedInput: Record<string, unknown>;
@@ -644,6 +630,43 @@ export async function executeGovernedTool({
     existingRecord,
     scopedRequest,
   );
+  const browserExecutionPolicy = await resolveBrowserExecutionPolicy({
+    tool,
+    toolInput: preparedInput,
+    sessionScope: mcpSessionScope,
+    executionScope: scopedRequest.executionScope || executionScope,
+    tenantId: context?.tenantId,
+    forceApproval: effectiveForceApproval,
+  });
+  tool = browserExecutionPolicy.tool;
+  const effectiveMcpSessionScope = browserExecutionPolicy.sessionScope;
+  if (existingRecord && executionClaimToken) {
+    const reviewedFingerprint =
+      getToolExecutionApprovalFingerprint(existingRecord);
+    if (
+      !reviewedFingerprint ||
+      reviewedFingerprint !== toolApprovalFingerprint(tool)
+    ) {
+      return completeClaimedInputValidationFailure(
+        existingRecord,
+        executionClaimToken,
+        new ToolInputValidationError(
+          "The tool contract changed after approval. Submit the action again.",
+        ),
+        executionScope,
+        idempotencyKey,
+      );
+    }
+  }
+  if (browserExecutionPolicy.decision) {
+    await recordBrowserActionClassificationSafely({
+      decision: browserExecutionPolicy.decision,
+      tool,
+      executionScope: scopedRequest.executionScope,
+      context,
+      profileBound: Boolean(effectiveMcpSessionScope?.browserProfile),
+    });
+  }
   const effectCanaryRequest = Boolean(
     !dryRun &&
     idempotencyKey &&
@@ -1390,12 +1413,6 @@ export async function executeGovernedTool({
       });
     }
     let result: unknown;
-    const effectiveMcpSessionScope = await resolveBrowserProfileMcpScope({
-      tool,
-      toolInput: preparedInput,
-      sessionScope: mcpSessionScope,
-      executionScope: scopedRequest.executionScope || executionScope,
-    });
     try {
       result = await runTool(
         tool,
@@ -1536,35 +1553,88 @@ export async function executeGovernedTool({
   }
 }
 
-async function resolveBrowserProfileMcpScope(input: {
+async function resolveBrowserExecutionPolicy(input: {
   tool: ToolDefinition;
   toolInput: Record<string, unknown>;
   sessionScope?: McpSessionScope;
   executionScope?: ExecutionScope;
+  tenantId?: string;
+  forceApproval?: boolean;
 }) {
-  if (input.tool.category !== "mcp" || !input.sessionScope) {
-    return input.sessionScope;
+  const unchanged = {
+    tool: input.tool,
+    sessionScope: input.sessionScope,
+    decision: undefined,
+  };
+  if (input.tool.category !== "mcp") {
+    return unchanged;
   }
   const mcpTool = await getMcpToolById(input.tool.id, {
-    tenantId: input.sessionScope.tenantId,
+    tenantId: input.sessionScope?.tenantId || input.tenantId,
   });
-  if (!mcpTool) return input.sessionScope;
+  if (!mcpTool) return unchanged;
   const connector = await getMcpConnector(mcpTool.connectorId, {
-    tenantId: input.sessionScope.tenantId,
+    tenantId: input.sessionScope?.tenantId || input.tenantId,
   });
   if (!connector || !isAsaelPlaywrightMcpEndpoint(connector.endpoint)) {
-    return input.sessionScope;
+    return unchanged;
   }
-  const profile = await resolveBrowserProfileSession({
-    tenantId: input.sessionScope.tenantId,
-    ownerActorId: input.sessionScope.actorId,
-    executionId: input.sessionScope.executionId,
-    targetHostname: browserProfileTargetHostname(mcpTool.name, input.toolInput),
-    executionScope: input.executionScope,
-  });
-  return profile
+  const profile = input.sessionScope
+    ? await resolveBrowserProfileSession({
+        tenantId: input.sessionScope.tenantId,
+        ownerActorId: input.sessionScope.actorId,
+        executionId: input.sessionScope.executionId,
+        targetHostname: browserProfileTargetHostname(
+          mcpTool.name,
+          input.toolInput,
+        ),
+        executionScope: input.executionScope,
+      })
+    : undefined;
+  const sessionScope = profile
     ? { ...input.sessionScope, browserProfile: profile }
     : input.sessionScope;
+  const specialized = specializeBrowserActionTool({
+    tool: input.tool,
+    toolName: mcpTool.name,
+    toolInput: input.toolInput,
+    forceApproval: input.forceApproval || connector.approvalRequired,
+  });
+  return {
+    tool: specialized.tool,
+    sessionScope,
+    decision: specialized.decision,
+  };
+}
+
+async function recordBrowserActionClassificationSafely(input: {
+  decision: BrowserActionPolicyDecision;
+  tool: ToolDefinition;
+  executionScope?: ExecutionScope;
+  context?: SecurityContext;
+  profileBound: boolean;
+}) {
+  await recordRuntimeEventSafely({
+    level: "info",
+    category: "workflow",
+    action: "browser.action.classified",
+    tenantId: input.executionScope?.tenantId || input.context?.tenantId,
+    actorId:
+      input.executionScope?.initiatingActorId || input.context?.actorId,
+    resourceType: "tool",
+    resourceId: input.tool.id,
+    message: "Browser action classified by the governed action policy.",
+    metadata: {
+      policyVersion: input.decision.version,
+      disposition: input.decision.disposition,
+      riskLevel: input.decision.riskLevel,
+      approvalRequired: input.decision.approvalRequired,
+      operationClass: input.decision.operationClass,
+      reversible: input.decision.reversible,
+      profileBound: input.profileBound,
+    },
+    correlationId: input.executionScope?.correlationId,
+  });
 }
 
 type ResolvedToolExecutionScope = Readonly<{

@@ -748,7 +748,9 @@ function inferAsaelPlaywrightToolRisk(
     name === "browser_navigate" ||
     name === "browser_navigate_back" ||
     name === "browser_hover" ||
-    name === "browser_resize"
+    name === "browser_resize" ||
+    name === "browser_tabs" ||
+    name === "browser_close"
   ) {
     return Math.max(defaultRisk, 1) as ToolRiskLevel;
   }
@@ -759,9 +761,7 @@ function inferAsaelPlaywrightToolRisk(
     name === "browser_select_option" ||
     name === "browser_press_key" ||
     name === "browser_drag" ||
-    name === "browser_handle_dialog" ||
-    name === "browser_tabs" ||
-    name === "browser_close"
+    name === "browser_handle_dialog"
   ) {
     return Math.max(defaultRisk, 2) as ToolRiskLevel;
   }
