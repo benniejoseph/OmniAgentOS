@@ -313,7 +313,7 @@ function browserWorkflowNode(
     connectorTargets: ["example.test"],
     riskLevel: 1,
     approvalRequired: false,
-    policy: "auto_allowed",
+    policy: "auto",
     acceptanceCriteria: ["Documentation is visible."],
     expectedOutputs: ["page"],
   };
