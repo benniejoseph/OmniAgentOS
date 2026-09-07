@@ -31,6 +31,10 @@ import {
   updateMemoryLifecycleService,
   writeMemoryService,
 } from "@/lib/app-services/memory";
+import {
+  listSharedMemoryService,
+  writeSharedMemoryService,
+} from "@/lib/app-services/shared-memory";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -176,6 +180,8 @@ export async function executeFirstPartyAppTool(input: {
   const handlers: Record<string, () => Promise<unknown>> = {
     "app.workspaces.summary": () => getWorkspaceSummaryService(caller, input.toolInput as never),
     "app.workspaces.readiness": () => getWorkspaceReadinessService(caller, input.toolInput as never),
+    "app.memory.shared.list": () => listSharedMemoryService(caller, input.toolInput as never),
+    "app.memory.shared.write": () => writeSharedMemoryService(caller, input.toolInput as never),
     "app.projects.list": () => listProjectsService(caller, input.toolInput as never),
     "app.projects.show": () => showProjectService(caller, input.toolInput as never),
     "app.projects.create": () => createProjectService(caller, input.toolInput as never),

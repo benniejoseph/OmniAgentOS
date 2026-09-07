@@ -6,6 +6,23 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     approvalLimit: integer(1, 25, 12),
   })),
   readTool("app.workspaces.readiness", "Workspace readiness", "Read the authenticated tenant workspace readiness checks.", objectSchema({})),
+  readTool("app.memory.shared.list", "List shared knowledge", "List durable knowledge from one explicitly selected project or workspace membership scope.", requiredObjectSchema({
+    scope: { type: "string", enum: ["project", "workspace"] },
+    projectId: opaqueId("Required when scope is project."),
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    limit: integer(1, 100, 50),
+  }, ["scope"])),
+  mutationTool("app.memory.shared.write", "Write shared knowledge", "Write durable knowledge to one explicitly selected project or workspace membership scope.", requiredObjectSchema({
+    scope: { type: "string", enum: ["project", "workspace"] },
+    projectId: opaqueId("Required when scope is project."),
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    title: text(1, 240), content: text(1, 200_000),
+    type: { type: "string", enum: ["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"] },
+    tier: { type: "string", enum: ["working", "episodic", "semantic", "procedural", "preference", "decision", "commitment", "summary"] },
+    tags: { type: "array", maxItems: 50, items: text(1, 80) },
+    importance: { type: "number", minimum: 0, maximum: 1 },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+  }, ["scope", "title", "content"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.projects.list", "List projects", "List the current actor's projects with their work items and artifacts.", objectSchema({
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
