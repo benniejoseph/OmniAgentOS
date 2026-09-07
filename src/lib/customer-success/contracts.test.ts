@@ -28,7 +28,7 @@ function account() {
     accountOwner: { ownerKind: "actor", ownerId: actorId, displayName: "Owner" },
     crmPermissions: {
       readScope: "workspace_members",
-      writeScope: "workspace_contributors",
+      writeScope: "account_owner",
       externalWriteState: "disabled",
       customerDataPurposeIds: ["customer_success.account.manage", "customer_success.account.read"],
     },

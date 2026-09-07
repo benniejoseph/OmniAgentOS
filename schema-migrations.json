@@ -678,5 +678,10 @@
     "version": 136,
     "name": "meeting_commitment_conversion_v1",
     "checksum": "ab838fcbc59a03d497e77b256e2d7f0e85bd5576ac4fa9980434b764fb9765be"
+  },
+  {
+    "version": 137,
+    "name": "customer_account_360_v1",
+    "checksum": "b9612ed4eb81a1a34496d22cead72ba782facc9594085eef551584ebb97a0c07"
   }
 ]
