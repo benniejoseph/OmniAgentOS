@@ -277,7 +277,9 @@ export type ConversationItem =
   | ResponseFunctionCallItem
   | { type: "function_call_output"; call_id: string; output: string }
   | {
-      type: "ephemeral_browser_observation";
+      type: "ephemeral_browser_function_output";
+      call_id: string;
+      output: string;
       observation: ModelBrowserObservation;
     };
 
@@ -680,11 +682,13 @@ export function openAIResponseInput(input: ResponseTurnInput) {
         content: renderUntrustedObservation(item),
       };
     }
-    if (item.type === "ephemeral_browser_observation") {
+    if (item.type === "ephemeral_browser_function_output") {
       const screenshot = item.observation.screenshot;
       return {
-        role: "user" as const,
-        content: [
+        type: "function_call_output" as const,
+        call_id: item.call_id,
+        output: [
+          { type: "input_text" as const, text: item.output },
           {
             type: "input_text" as const,
             text: renderModelBrowserObservation(item.observation),
@@ -709,9 +713,6 @@ export function canonicalConversationFromOpenAIItems(
   const callNames = new Map<string, string>();
   const conversation: ModelConversationItem[] = [];
   for (const item of items) {
-    if (item.type === "ephemeral_browser_observation") {
-      continue;
-    }
     if (item.type === "message" || item.type === "observation") {
       conversation.push(item);
     } else if (item.type === "function_call") {
@@ -721,6 +722,13 @@ export function canonicalConversationFromOpenAIItems(
         callId: item.call_id,
         name: item.name,
         argumentsJson: item.arguments,
+      });
+    } else if (item.type === "function_call_output") {
+      conversation.push({
+        type: "tool_result",
+        callId: item.call_id,
+        name: callNames.get(item.call_id) || "unknown_tool",
+        content: item.output.slice(0, 8_000),
       });
     } else {
       conversation.push({

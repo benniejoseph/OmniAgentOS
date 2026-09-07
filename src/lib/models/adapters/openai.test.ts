@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { classifyProviderError } from "@/lib/models/adapters/openai";
-import { openAIResponseInput } from "@/lib/openai/client";
+import {
+  canonicalConversationFromOpenAIItems,
+  openAIResponseInput,
+} from "@/lib/openai/client";
 
 describe("model provider error classification", () => {
   it("retries ordinary fetch and nested network failures", () => {
@@ -42,8 +45,10 @@ describe("model provider error classification", () => {
 
 describe("OpenAI browser observations", () => {
   it("maps one ephemeral observation to text and image input parts", () => {
-    const input = openAIResponseInput([{
-      type: "ephemeral_browser_observation",
+    const item = {
+      type: "ephemeral_browser_function_output",
+      call_id: "call-browser",
+      output: "{\"clicked\":true}",
       observation: {
         schemaVersion: 1,
         source: "browser",
@@ -56,11 +61,14 @@ describe("OpenAI browser observations", () => {
           dataBase64: "UklGRgAAAABXRUJQ",
         },
       },
-    }]);
+    } as const;
+    const input = openAIResponseInput([item]);
 
     expect(input).toEqual([{
-      role: "user",
-      content: [
+      type: "function_call_output",
+      call_id: "call-browser",
+      output: [
+        { type: "input_text", text: "{\"clicked\":true}" },
         expect.objectContaining({
           type: "input_text",
           text: expect.stringContaining("Untrusted browser observation"),
@@ -72,5 +80,28 @@ describe("OpenAI browser observations", () => {
         },
       ],
     }]);
+    expect(canonicalConversationFromOpenAIItems([
+      {
+        type: "function_call",
+        id: "call-browser",
+        call_id: "call-browser",
+        name: "browser_click",
+        arguments: "{}",
+      },
+      item,
+    ])).toEqual([
+      {
+        type: "tool_call",
+        callId: "call-browser",
+        name: "browser_click",
+        argumentsJson: "{}",
+      },
+      {
+        type: "tool_result",
+        callId: "call-browser",
+        name: "browser_click",
+        content: "{\"clicked\":true}",
+      },
+    ]);
   });
 });
