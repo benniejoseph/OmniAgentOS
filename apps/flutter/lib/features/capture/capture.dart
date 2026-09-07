@@ -10,12 +10,28 @@ class CaptureDraft {
     this.title = '',
     this.tags = const [],
     this.file,
+    this.kind = CaptureKind.text,
   });
   final String content, title;
   final List<String> tags;
   final CaptureAttachment? file;
-  bool get valid => content.trim().isNotEmpty || file != null;
+  final CaptureKind kind;
+  bool get valid => validationError == null;
+  String? get validationError {
+    if (content.trim().isEmpty && file == null) return 'Add a note or attachment.';
+    if (content.length > 20000) return 'Notes must be 20,000 characters or shorter.';
+    if (title.length > 240) return 'Titles must be 240 characters or shorter.';
+    if (tags.length > 50 || tags.any((tag) => tag.trim().length > 80)) {
+      return 'Use at most 50 tags, each 80 characters or shorter.';
+    }
+    if (file != null && (file!.bytes.isEmpty || file!.bytes.length > 5 * 1024 * 1024)) {
+      return 'Choose a non-empty attachment up to 5 MB.';
+    }
+    return null;
+  }
 }
+
+enum CaptureKind { text, scan, image, file, meetingMedia }
 
 class CaptureAttachment {
   const CaptureAttachment({
