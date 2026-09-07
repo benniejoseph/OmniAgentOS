@@ -180,6 +180,23 @@ export type AgentRunRequest = {
   budgetLimits?: RunBudgetCountersV1;
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */
   preclaimedRunId?: string;
+  /**
+   * Content-free metadata for a visibly reviewed realtime voice command.
+   * Its presence only narrows authority by forcing risk-bearing approvals.
+   */
+  voiceInput?: {
+    schemaVersion: 1;
+    source: "realtime_voice";
+    sessionId: string;
+    conversationId: string;
+    provider: "openai";
+    confidenceBand: "high" | "low" | "unavailable" | "edited";
+    confidenceMean?: number;
+    confidenceMinimum?: number;
+    confidenceSampleCount: number;
+    reviewMethod: "send_button" | "explicit_checkbox";
+    reviewAttested: true;
+  };
   threadId?: string;
   mode?: AgentMode;
   tenantId?: string;
