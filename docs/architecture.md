@@ -1144,7 +1144,12 @@ adds registration and acknowledgement without withdrawing the frozen v3 product
 surface. Flutter validates each untrusted envelope against a locally derived
 deep link, persists an actor/tenant-bound acknowledgement queue before opening
 the exact target, and converges repeated opens through the server's first
-acknowledgement. Session lifecycle changes revoke registrations in the same
+acknowledgement. Candidate lookup and the acknowledgement transition also join
+the delivery back to the registration's exact device and mobile session, so a
+sibling installation owned by the same actor cannot acknowledge it. Flutter
+cancels and discards an unfinished voice draft when application lifecycle
+interruption removes microphone authority; a late transcript cannot update or
+send the draft. Session lifecycle changes revoke registrations in the same
 database transaction. The workflow tick dispatches the outbox, reusing the
 existing Fly-to-Vercel worker topology without granting the worker a device or
 actor session.
