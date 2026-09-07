@@ -14,6 +14,7 @@ import {
   resolveSalesforceHead,
   salesforceActionableErrorSchema,
   salesforceConnectionId,
+  salesforceOrganizationIdSha256,
   salesforceRecordRevisionSchema,
   salesforceSyncCursorSchema,
   salesforceSyncHealthSchema,
@@ -447,7 +448,9 @@ export async function settleSalesforceSyncPage(input: {
         }
       }
       const status = input.healthy ? "healthy" :
-        cursor.objects.Account.phase === "pending" ? "backfilling" : "syncing";
+        Object.values(cursor.objects).some((item) =>
+          item.phase === "pending" || item.phase === "backfill"
+        ) ? "backfilling" : "syncing";
       const updatedRows = await sql`
         UPDATE omni_salesforce_connections
         SET sync_cursor = ${cursor}::JSONB,
@@ -602,6 +605,372 @@ export async function listPendingSalesforceHeads(
   );
 }
 
+export async function getSalesforceAccountLink(
+  authority: SalesforceReadAuthority,
+  connectionId: string,
+  salesforceAccountId: string,
+) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertReadAuthority(authority);
+  return runWithDatabaseActorScope(
+    authority.tenantId,
+    authority.readableActorIds,
+    async () => {
+      const rows = await getSql()`
+        SELECT customer_account_id, provider_object_id_sha256, linked_at
+        FROM omni_salesforce_account_links
+        WHERE tenant_id = ${authority.tenantId}
+          AND workspace_id = ${authority.workspaceId}
+          AND connection_id = ${connectionId}
+          AND salesforce_account_id = ${salesforceAccountId}
+        LIMIT 1
+      `;
+      return rows[0] ? Object.freeze({
+        customerAccountId: String(rows[0].customer_account_id),
+        providerObjectIdSha256: String(rows[0].provider_object_id_sha256),
+        linkedAt: timestamp(rows[0].linked_at),
+      }) : undefined;
+    },
+  );
+}
+
+export async function linkSalesforceAccount(input: {
+  authority: SalesforceMutationAuthority;
+  connection: SalesforceConnection;
+  salesforceAccountId: string;
+  customerAccountId: string;
+  providerObjectIdSha256: string;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertMutationAuthority(input.authority);
+  return runWithDatabaseActorScope(
+    input.authority.tenantId,
+    input.authority.readableActorIds,
+    () => getSql().transaction(async (sql: SalesforceSql) => {
+      await sql`
+        INSERT INTO omni_salesforce_account_links (
+          tenant_id, workspace_id, connection_id, owner_actor_id,
+          organization_id_sha256, salesforce_account_id, customer_account_id,
+          provider_object_id_sha256, linked_at
+        ) VALUES (
+          ${input.authority.tenantId}, ${input.authority.workspaceId},
+          ${input.connection.connectionId}, ${input.authority.canonicalActorId},
+          ${input.connection.organizationIdSha256},
+          ${input.salesforceAccountId}, ${input.customerAccountId},
+          ${input.providerObjectIdSha256}, clock_timestamp()
+        ) ON CONFLICT DO NOTHING
+      `;
+      const rows = await sql`
+        SELECT customer_account_id, provider_object_id_sha256, linked_at
+        FROM omni_salesforce_account_links
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND workspace_id = ${input.authority.workspaceId}
+          AND connection_id = ${input.connection.connectionId}
+          AND salesforce_account_id = ${input.salesforceAccountId}
+        LIMIT 1
+      `;
+      if (!rows[0] || rows[0].customer_account_id !== input.customerAccountId ||
+          rows[0].provider_object_id_sha256 !== input.providerObjectIdSha256) {
+        throw new SalesforceConnectionConflictError(
+          "Salesforce account is already linked to a different Account 360.",
+        );
+      }
+      return Object.freeze({
+        customerAccountId: String(rows[0].customer_account_id),
+        providerObjectIdSha256: String(rows[0].provider_object_id_sha256),
+        linkedAt: timestamp(rows[0].linked_at),
+      });
+    }) as Promise<Readonly<{
+      customerAccountId: string;
+      providerObjectIdSha256: string;
+      linkedAt: string;
+    }>>,
+  );
+}
+
+export async function settleSalesforceWebhookObservation(input: {
+  authority: SalesforceMutationAuthority;
+  connection: SalesforceConnection;
+  eventKeySha256: string;
+  eventSha256: string;
+  replayIdSha256: string;
+  observation: SalesforceRecordObservation;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertMutationAuthority(input.authority);
+  if (![input.eventKeySha256, input.eventSha256, input.replayIdSha256]
+    .every((value) => /^[a-f0-9]{64}$/.test(value))) {
+    throw new Error("Salesforce webhook digests are invalid.");
+  }
+  return runWithDatabaseActorScope(
+    input.authority.tenantId,
+    input.authority.readableActorIds,
+    () => getSql().transaction(async (sql: SalesforceSql) => {
+      const connectionRows = await sql`
+        SELECT * FROM omni_salesforce_connections
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND workspace_id = ${input.authority.workspaceId}
+          AND connection_id = ${input.connection.connectionId}
+          AND connection_state = 'active'
+        FOR UPDATE
+      `;
+      if (!connectionRows[0]) throw new SalesforceConnectionNotFoundError();
+      const clock = await sql`SELECT clock_timestamp() AS now`;
+      const receivedAt = timestamp(clock[0]?.now);
+      const eventRows = await sql`
+        INSERT INTO omni_salesforce_webhook_events (
+          tenant_id, workspace_id, connection_id, owner_actor_id,
+          organization_id_sha256, event_key_sha256, replay_id_sha256,
+          event_sha256, object_type, external_id, received_at
+        ) VALUES (
+          ${input.authority.tenantId}, ${input.authority.workspaceId},
+          ${input.connection.connectionId}, ${input.authority.canonicalActorId},
+          ${input.connection.organizationIdSha256}, ${input.eventKeySha256},
+          ${input.replayIdSha256}, ${input.eventSha256},
+          ${input.observation.objectType}, ${input.observation.externalId},
+          ${receivedAt}
+        ) ON CONFLICT DO NOTHING
+        RETURNING event_key_sha256
+      `;
+      if (!eventRows[0]) return { status: "duplicate" as const };
+      const revision = buildSalesforceRecordRevision({
+        tenantId: input.authority.tenantId,
+        workspaceId: input.authority.workspaceId,
+        connectionId: input.connection.connectionId,
+        organizationIdSha256: input.connection.organizationIdSha256,
+        observation: input.observation,
+        receivedAt,
+      });
+      await sql`
+        INSERT INTO omni_salesforce_record_revisions (
+          tenant_id, workspace_id, connection_id, owner_actor_id,
+          organization_id_sha256, object_type, external_id,
+          account_external_id, revision_id, provider_modified_at, deleted,
+          fields_sha256, record_sha256, record_snapshot, source_kind,
+          observed_at, received_at, replay_id_sha256
+        ) VALUES (
+          ${revision.tenantId}, ${revision.workspaceId},
+          ${revision.connectionId}, ${input.authority.canonicalActorId},
+          ${revision.organizationIdSha256}, ${revision.objectType},
+          ${revision.externalId}, ${revision.accountExternalId},
+          ${revision.revisionId}, ${revision.providerModifiedAt},
+          ${revision.deleted}, ${revision.fieldsSha256},
+          ${revision.recordSha256}, ${revision}::JSONB,
+          ${revision.sourceKind}, ${revision.observedAt},
+          ${revision.receivedAt}, ${revision.replayIdSha256}
+        ) ON CONFLICT DO NOTHING
+      `;
+      const headRows = await sql`
+        SELECT record_snapshot FROM omni_salesforce_record_heads
+        WHERE tenant_id = ${revision.tenantId}
+          AND workspace_id = ${revision.workspaceId}
+          AND connection_id = ${revision.connectionId}
+          AND object_type = ${revision.objectType}
+          AND external_id = ${revision.externalId}
+        FOR UPDATE
+      `;
+      const current = headRows[0]
+        ? salesforceRecordRevisionSchema.parse(headRows[0].record_snapshot)
+        : undefined;
+      const resolution = resolveSalesforceHead(current, revision);
+      const advances = resolution.head.revisionId === revision.revisionId &&
+        resolution.outcome !== "duplicate";
+      if (advances) {
+        await sql`
+          INSERT INTO omni_salesforce_record_heads (
+            tenant_id, workspace_id, connection_id, owner_actor_id,
+            organization_id_sha256, object_type, external_id,
+            account_external_id, current_revision_id, provider_modified_at,
+            deleted, record_sha256, record_snapshot, conflict_count,
+            projection_status, projection_error_code, projected_at, updated_at
+          ) VALUES (
+            ${revision.tenantId}, ${revision.workspaceId},
+            ${revision.connectionId}, ${input.authority.canonicalActorId},
+            ${revision.organizationIdSha256}, ${revision.objectType},
+            ${revision.externalId}, ${revision.accountExternalId},
+            ${revision.revisionId}, ${revision.providerModifiedAt},
+            ${revision.deleted}, ${revision.recordSha256}, ${revision}::JSONB,
+            ${resolution.conflict ? 1 : 0}, 'pending', NULL, NULL, ${receivedAt}
+          ) ON CONFLICT (
+            tenant_id, workspace_id, connection_id, object_type, external_id
+          ) DO UPDATE SET
+            account_external_id = EXCLUDED.account_external_id,
+            current_revision_id = EXCLUDED.current_revision_id,
+            provider_modified_at = EXCLUDED.provider_modified_at,
+            deleted = EXCLUDED.deleted,
+            record_sha256 = EXCLUDED.record_sha256,
+            record_snapshot = EXCLUDED.record_snapshot,
+            conflict_count = omni_salesforce_record_heads.conflict_count +
+              ${resolution.conflict ? 1 : 0},
+            projection_status = 'pending', projection_error_code = NULL,
+            projected_at = NULL, updated_at = EXCLUDED.updated_at
+        `;
+      }
+      if (resolution.conflict) {
+        await insertReconciliationFinding(sql, {
+          authority: input.authority,
+          connectionId: input.connection.connectionId,
+          objectType: revision.objectType,
+          externalId: revision.externalId,
+          localRevisionId: current?.revisionId || null,
+          remoteRevisionId: revision.revisionId,
+          findingKind: "concurrent_revision",
+          observedAt: receivedAt,
+        });
+      }
+      await sql`
+        UPDATE omni_salesforce_connections
+        SET last_webhook_at = ${receivedAt},
+            last_replay_id_sha256 = ${input.replayIdSha256},
+            updated_at = ${receivedAt}
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND workspace_id = ${input.authority.workspaceId}
+          AND connection_id = ${input.connection.connectionId}
+      `;
+      await appendScopedDomainEvent({
+        id: `salesforce-webhook-settled:${input.eventKeySha256}`,
+        streamId: input.connection.connectionId,
+        type: "customer.salesforce.webhook.settled",
+        executionScope: input.authority.executionScope,
+        payload: {
+          schemaVersion: 1,
+          connectionId: input.connection.connectionId,
+          eventKeySha256: input.eventKeySha256,
+          replayIdSha256: input.replayIdSha256,
+          objectType: revision.objectType,
+          revisionId: revision.revisionId,
+          outcome: resolution.outcome,
+        },
+      }, { sql });
+      return {
+        status: "settled" as const,
+        outcome: resolution.outcome,
+        advancedRecord: advances ? revision : undefined,
+      };
+    }) as Promise<
+      | { status: "duplicate" }
+      | {
+          status: "settled";
+          outcome: ReturnType<typeof resolveSalesforceHead>["outcome"];
+          advancedRecord?: SalesforceRecordRevision;
+        }
+    >,
+  );
+}
+
+export async function listCurrentSalesforceHeads(
+  authority: SalesforceReadAuthority,
+  limit = 200,
+) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertReadAuthority(authority);
+  return runWithDatabaseActorScope(
+    authority.tenantId,
+    authority.readableActorIds,
+    async () => {
+      const rows = await getSql()`
+        SELECT record_snapshot FROM omni_salesforce_record_heads
+        WHERE tenant_id = ${authority.tenantId}
+          AND workspace_id = ${authority.workspaceId}
+        ORDER BY provider_modified_at DESC, object_type, external_id
+        LIMIT ${Math.max(1, Math.min(500, limit))}
+      `;
+      return Object.freeze(rows.map((row) =>
+        salesforceRecordRevisionSchema.parse(row.record_snapshot)
+      ));
+    },
+  );
+}
+
+export async function recordSalesforceReconciliationFinding(input: {
+  authority: SalesforceMutationAuthority;
+  connectionId: string;
+  objectType: string;
+  externalId: string;
+  localRevisionId: string | null;
+  remoteRevisionId: string | null;
+  findingKind: "missing_local" | "missing_remote" | "revision_mismatch" | "concurrent_revision";
+  observedAt: string;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertMutationAuthority(input.authority);
+  return runWithDatabaseActorScope(
+    input.authority.tenantId,
+    input.authority.readableActorIds,
+    () => getSql().transaction(async (sql: SalesforceSql) => {
+      await insertReconciliationFinding(sql, input);
+      return true;
+    }) as Promise<boolean>,
+  );
+}
+
+export async function listSalesforceReconciliationFindings(
+  authority: SalesforceReadAuthority,
+  limit = 100,
+) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertReadAuthority(authority);
+  return runWithDatabaseActorScope(
+    authority.tenantId,
+    authority.readableActorIds,
+    async () => {
+      const rows = await getSql()`
+        SELECT finding_id, object_type, external_id_sha256,
+          local_revision_id, remote_revision_id, finding_kind,
+          finding_sha256, observed_at
+        FROM omni_salesforce_reconciliation_findings
+        WHERE tenant_id = ${authority.tenantId}
+          AND workspace_id = ${authority.workspaceId}
+        ORDER BY observed_at DESC, finding_id
+        LIMIT ${Math.max(1, Math.min(500, limit))}
+      `;
+      return Object.freeze(rows.map((row) => Object.freeze({
+        findingId: String(row.finding_id),
+        objectType: String(row.object_type),
+        externalIdSha256: String(row.external_id_sha256),
+        localRevisionId: row.local_revision_id ? String(row.local_revision_id) : null,
+        remoteRevisionId: row.remote_revision_id ? String(row.remote_revision_id) : null,
+        findingKind: String(row.finding_kind),
+        findingSha256: String(row.finding_sha256),
+        observedAt: timestamp(row.observed_at),
+      })));
+    },
+  );
+}
+
+export async function revokeSalesforceConnection(input: {
+  authority: SalesforceMutationAuthority;
+  oauthGrantId: string;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertMutationAuthority(input.authority);
+  return runWithDatabaseActorScope(
+    input.authority.tenantId,
+    input.authority.readableActorIds,
+    async () => {
+      const rows = await getSql()`
+        UPDATE omni_salesforce_connections
+        SET connection_state = 'revoked', sync_status = 'idle',
+            sync_error = NULL, sync_lease_owner_id = NULL,
+            sync_lease_expires_at = NULL, updated_at = clock_timestamp()
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND workspace_id = ${input.authority.workspaceId}
+          AND owner_actor_id = ${input.authority.canonicalActorId}
+          AND oauth_grant_id = ${input.oauthGrantId}
+        RETURNING connection_id
+      `;
+      return rows.length === 1;
+    },
+  );
+}
+
 export async function markSalesforceHeadProjection(input: {
   authority: SalesforceMutationAuthority;
   record: SalesforceRecordRevision;
@@ -731,10 +1100,7 @@ function salesforceTokenIdentity(tokens: Record<string, unknown>) {
     );
   }
   return {
-    organizationIdSha256: canonicalJsonSha256({
-      provider: "salesforce",
-      organizationId,
-    }),
+    organizationIdSha256: salesforceOrganizationIdSha256(organizationId),
     instanceOrigin: new URL(String(tokens.instance_url)).origin,
   };
 }
