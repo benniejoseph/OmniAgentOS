@@ -195,6 +195,16 @@ retention disclosure before every session, and only reviewed transcript text
 may enter the existing Command API. Keep `/v1/realtime/calls` absent from the
 Fly allowlist: browser audio goes directly to the provider after consent.
 
+P9.10 adds the separate exact `POST /v1/audio/speech` gateway route with a
+32 KiB JSON limit and a 120-second upstream deadline. Only the authenticated
+web tier can call it. `/api/media/speech` accepts at most 4,000 characters per
+request, requires the immutable `asael-voice:1` profile, verifies any supplied
+conversation and Agent ownership, and streams 24 kHz `pcm_s16le` with the
+profile version and digest in response headers. The browser must reject a
+mismatched contract and cancel both the upstream body and scheduled audio on
+interruption. Speech events and usage receipts contain metadata and byte counts,
+never response text or audio.
+
 ## Self-hosted Playwright browser service
 
 The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](https://github.com/microsoft/playwright-mcp), not a paid browser API. `Dockerfile.playwright-mcp` pins the official browser image by version and digest, while `fly.playwright-mcp.toml` keeps Chromium in a separate 1 GB Singapore machine. The gateway accepts only its bearer token, converts Asael's opaque tenant+actor+run scope into one private browser process, and removes the bearer secret before starting Playwright. A DNS-validating outbound proxy permits public web ports only and blocks loopback, private, link-local, metadata, and internal Fly destinations.
