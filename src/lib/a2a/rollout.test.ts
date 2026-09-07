@@ -93,7 +93,7 @@ describe("A2A peer rollout", () => {
     const rolloutSha256 = canonicalJsonSha256(changed);
     expect(() => parseA2APeerRolloutV1({
       ...changed,
-      rolloutId: `a2a-rollout:${rolloutSha256}`,
+      rolloutId: rollout.rolloutId,
       rolloutSha256,
     })).toThrow();
   });
