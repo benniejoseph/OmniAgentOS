@@ -1901,28 +1901,25 @@ export function missionDetailHasExpectedId(
       if (!isMissionIdentifier(candidate.id) || candidate.missionId !== expectedId) {
         return false;
       }
-      if (candidate.workItemStatus !== undefined) {
-        const workItemStatus = normalizeCanonicalWorkItemStatus(candidate.workItemStatus);
-        const workItem = parseCanonicalWorkItemSurface(candidate.workItem);
-        if (
-          !workItemStatus ||
-          !workItem ||
-          workItemStatus.sourceAuthority !== "legacy_mission_task" ||
-          workItem.status.sourceAuthority !== "legacy_mission_task" ||
-          workItem.status.sourceId !== candidate.id ||
-          workItem.status.workItemId !== candidate.id ||
-          workItem.status.projectId !== `mission_project:${expectedId}` ||
-          JSON.stringify(workItemStatus) !== JSON.stringify(workItem.status)
-        ) {
-          return false;
-        }
-      } else return false;
       if (ids.has(candidate.id)) return false;
       ids.add(candidate.id);
       return true;
     });
   };
-  return scopedItemsAreValid(detail.tasks) &&
+  const tasksAreValid = detail.tasks.every((item) => {
+    const candidate = record(item);
+    const workItemStatus = normalizeCanonicalWorkItemStatus(candidate.workItemStatus);
+    const workItem = parseCanonicalWorkItemSurface(candidate.workItem);
+    return workItemStatus !== undefined &&
+      workItem !== undefined &&
+      workItemStatus.sourceAuthority === "legacy_mission_task" &&
+      workItem.status.sourceAuthority === "legacy_mission_task" &&
+      workItem.status.sourceId === candidate.id &&
+      workItem.status.workItemId === candidate.id &&
+      workItem.status.projectId === `mission_project:${expectedId}` &&
+      JSON.stringify(workItemStatus) === JSON.stringify(workItem.status);
+  });
+  return scopedItemsAreValid(detail.tasks) && tasksAreValid &&
     scopedItemsAreValid(detail.attempts) &&
     scopedItemsAreValid(detail.artifacts);
 }
