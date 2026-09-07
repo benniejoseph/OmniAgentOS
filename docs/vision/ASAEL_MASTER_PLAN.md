@@ -774,8 +774,8 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 through P9.11 are complete; P9.12 and P9.13 are intentionally deferred,
-so P9.14 is the next actionable slice. Product phases 12 and 13 also remain
+P9.1 through P9.11 and P9.14 are complete; P9.12 and P9.13 are intentionally deferred,
+so P9.15 is the next actionable slice. Product phases 12 and 13 also remain
 deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -793,8 +793,8 @@ deferred.
 | P9.3 | Add reversible trash, undo, compensation, and two-step destructive action UX. | Modify domain deletes; create trash/compensation contracts. | Irreversible/high-impact deletes remain approval-gated and never graduate automatically. | Edit/archive/delete actions have clear preview, effect receipt, undo/compensation where possible, and final deletion receipt. |
 | P9.4 | Add plan/domain/action-class approval grants. | Modify trust policy. | Grants bind actor, agent, tool contract, target, plan digest, budget, and expiry; replanning invalidates them. | Repetitive safe operations avoid per-click approval without permitting new targets or action classes. |
 
-**Implementation status:** P9.1 through P9.11 are complete. The governed catalog
-now contains 109 active `app.*` operations, including actor-private Trash list,
+**Implementation status:** P9.1 through P9.11 and P9.14 are complete. The governed catalog
+now contains 114 active `app.*` operations, including actor-private Trash list,
 detail, receipt, restore-preview, restore, purge-preview, and purge tools. Custom
 Agent, custom Skill, MCP, and OpenAPI removal first requires an exact expiring
 preview and moves the resource into a 30-day reversible ledger. The ledger keeps
@@ -924,8 +924,22 @@ TypeScript, and the 100-page Next 16 production build. No migration or Fly
 rebuild was required. Vercel deployment
 `dpl_75rhP37F6nvVFtAGqCJvduCUkAvC` is Ready and the canonical alias serves
 exact revision `6182f05c590e238fd2936b83182cc79b6775397f`; both compatible Fly
-gateways remain healthy. P9.12 and P9.13 are intentionally deferred, so P9.14
-is next. Product phases 12 and 13 remain deferred.
+gateways remain healthy. P9.12 and P9.13 are intentionally deferred. P9.14
+adds actor-private contact policies and immutable message drafts with explicit
+relationship, purpose, disclosure, consent, approval, connected sender,
+frequency, quiet-hours, and opt-out controls. The five communication app tools
+share the application-service boundary; Gmail delivery is risk-two,
+irreversible, and can execute only when the exact visible recipient, subject,
+body, and stored draft digest still match. Provider responses are read back and
+verified, unknown outcomes remain reconciliation-only, and inbound Gmail
+messages link by provider thread to their causal conversation/project/mission/run
+as untrusted hash-bound envelopes. Migration 124 installs six forced-RLS tables
+with a single actor policy and lifecycle/append-only guards. Fifty-five focused
+checks, affected lint, TypeScript, and the 100-page production build pass.
+Vercel deployment `dpl_6Z5NVCaoWwK8oQjuR3KEgXxR2RN2` is Ready and the
+canonical alias serves exact revision
+`1f0ec50921a0e734ac01a78a9c93dddad8675b15`; Supabase and both compatible Fly
+gateways are healthy. P9.15 is next. Product phases 12 and 13 remain deferred.
 
 #### Browser and computer use
 
@@ -2866,7 +2880,7 @@ production build pass. Vercel rejected the complete-feature promotion at
 still reports an overdue balance; Fly was intentionally left unchanged. This
 closes Phase 8.
 
-P9.1 through P9.11 are complete. The shared registry and dispatcher expose 109
+P9.1 through P9.11 and P9.14 are complete. The shared registry and dispatcher expose 114
 active `app.*` tools across all thirteen required product families with
 tenant/actor/RBAC revalidation, exact mutation scope and idempotency,
 content-free service receipts, governed typed domain events, risk-based
@@ -2948,8 +2962,12 @@ evidence and accepts only button-based Approve/Reject decisions; spoken words
 cannot authorize execution. Vercel deployment
 `dpl_75rhP37F6nvVFtAGqCJvduCUkAvC` serves exact revision
 `6182f05c590e238fd2936b83182cc79b6775397f`; canonical web and both compatible
-Fly gateways are healthy. P9.12/P9.13 and product phases 12/13 remain deferred;
-P9.14 is next.
+Fly gateways are healthy. P9.14 then added immutable actor-private communication
+policies, drafts, exact visible approval binding, verified/reconciled Gmail
+delivery, and safe untrusted reply mapping. Migration 124 is installed and
+Vercel deployment `dpl_6Z5NVCaoWwK8oQjuR3KEgXxR2RN2` serves exact revision
+`1f0ec50921a0e734ac01a78a9c93dddad8675b15`; all deployed services are healthy.
+P9.12/P9.13 and product phases 12/13 remain deferred; P9.15 is next.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 

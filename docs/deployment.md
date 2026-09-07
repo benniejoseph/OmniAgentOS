@@ -214,6 +214,16 @@ governed approval path, whose client projection shows redacted exact input,
 risk, reversibility, and quorum. Spoken confirmation never approves an action;
 only the authenticated visible Approve/Reject decision route can do so.
 
+P9.14 adds governed Gmail delivery in the web tier and migration 124 in
+Supabase; it requires no Fly image change. Existing Google grants must reconnect
+once because the least-privilege authorization now also requests `gmail.send`.
+Every outbound effect starts as an immutable actor-private draft, requires the
+existing risk-two visible approval over its exact recipient, subject, body, and
+digest, and is verified from Gmail's raw target state before a receipt is
+committed. Unknown provider outcomes remain reconciliation-only to prevent a
+blind duplicate send. Inbound sync treats message content as untrusted and
+links replies only by an already recorded external Gmail thread.
+
 ## Self-hosted Playwright browser service
 
 The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](https://github.com/microsoft/playwright-mcp), not a paid browser API. `Dockerfile.playwright-mcp` pins the official browser image by version and digest, while `fly.playwright-mcp.toml` keeps Chromium in a separate 1 GB Singapore machine. The gateway accepts only its bearer token, converts Asael's opaque tenant+actor+run scope into one private browser process, and removes the bearer secret before starting Playwright. A DNS-validating outbound proxy permits public web ports only and blocks loopback, private, link-local, metadata, and internal Fly destinations.
