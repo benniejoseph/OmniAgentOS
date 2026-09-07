@@ -1082,6 +1082,26 @@ an explicit rollback fallback. Unknown event discriminants fail closed before
 feature state consumes untrusted stream data. Publishing this boundary adds no
 mobile authority, database state, credential, or external effect.
 
+P12.2 completes the device-session lifecycle without creating a second identity
+system. Migration v145 adds constrained revocation reasons, replacement links,
+wipe request/acknowledgement timestamps, and one hashed short-lived challenge
+to the existing tenant/user/device-bound session family. Refresh and bearer
+resolution revalidate active user and tenant membership; reinstall or repeated
+login replaces the prior family for the stable installation ID. Native-only
+device routes expose bounded public projections to the exact bearer actor and
+record explicit security audits for inventory, revocation, and wipe requests.
+Remote wipe revokes first, lets only possession of the last revoked access token
+obtain a single-use acknowledgement challenge, and never grants application
+authority.
+
+Flutter keeps credentials and the installation identifier in secure storage.
+An enabled biometric gate controls local credential release and relocks on app
+backgrounding; it does not replace server authentication. On a pending wipe the
+client erases tokens, expiry, installation ID, legacy credential, and biometric
+preference before attempting acknowledgement, so a network failure cannot undo
+local erasure. The self-service Devices & security surface cannot wipe its own
+current session and uses the generated v2 paths for all lifecycle calls.
+
 The thirteenth request-bound slice extends only the public Capture asset byte
 GET. PostgreSQL selects the globally unique, non-internal asset and its bytes
 from the validated canonical/current-email pair in one statement, retains the
