@@ -49,6 +49,13 @@ import {
   showMeetingService,
   updateMeetingService,
 } from "@/lib/app-services/meetings";
+import {
+  createCustomerAccountService,
+  listCustomerAccountsService,
+  recordCustomerFactService,
+  reviseCustomerAccountService,
+  showCustomerAccountService,
+} from "@/lib/app-services/customer-accounts";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -206,6 +213,11 @@ export async function executeFirstPartyAppTool(input: {
     "app.meetings.commitments.list": () => listMeetingCommitmentsService(caller, input.toolInput as never),
     "app.meetings.commitments.propose": () => proposeMeetingCommitmentService(caller, input.toolInput as never),
     "app.meetings.commitments.resolve": () => resolveMeetingCommitmentService(caller, input.toolInput as never),
+    "app.customer_accounts.list": () => listCustomerAccountsService(caller, input.toolInput as never),
+    "app.customer_accounts.show": () => showCustomerAccountService(caller, input.toolInput as never),
+    "app.customer_accounts.create": () => createCustomerAccountService(caller, input.toolInput as never),
+    "app.customer_accounts.revise": () => reviseCustomerAccountService(caller, input.toolInput as never),
+    "app.customer_accounts.facts.record": () => recordCustomerFactService(caller, input.toolInput as never),
     "app.projects.list": () => listProjectsService(caller, input.toolInput as never),
     "app.projects.show": () => showProjectService(caller, input.toolInput as never),
     "app.projects.create": () => createProjectService(caller, input.toolInput as never),

@@ -93,6 +93,48 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
       ],
     },
   }, ["meetingId", "proposalId", "expectedProposalSha256", "decision"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.customer_accounts.list", "List customer accounts", "List provider-neutral Account 360 records readable through the selected workspace membership and customer-data purpose boundary.", objectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    lifecycle: { type: "string", enum: customerAccountLifecycleValues() },
+    limit: integer(1, 200, 100),
+  })),
+  readTool("app.customer_accounts.show", "Show customer Account 360", "Read one Account 360 projection with current organization, people, products, opportunities, cases, usage, projects, interactions, health, risks, renewal, conflicts, freshness, and history counts.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+  }, ["accountId"])),
+  mutationTool("app.customer_accounts.create", "Create customer account", "Create one provider-neutral Account 360 record with explicit owner and customer-data purposes. External CRM writes remain disabled.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    name: text(1, 240),
+    lifecycle: { type: "string", enum: customerAccountLifecycleValues(), default: "prospect" },
+    organizationEntityId: { type: ["string", "null"], maxLength: 240 },
+    accountOwner: customerFactOwnerToolSchema(),
+    customerDataPurposeIds: customerDataPurposesToolSchema(),
+  }, ["name", "accountOwner"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.customer_accounts.revise", "Revise customer account", "Publish a new immutable Account 360 revision after exact optimistic-concurrency review. External CRM writes remain disabled.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    expectedRevision: integer(1, Number.MAX_SAFE_INTEGER),
+    name: text(1, 240),
+    lifecycle: { type: "string", enum: customerAccountLifecycleValues() },
+    organizationEntityId: { type: ["string", "null"], maxLength: 240 },
+    accountOwner: customerFactOwnerToolSchema(),
+    customerDataPurposeIds: customerDataPurposesToolSchema(),
+  }, ["accountId", "expectedRevision"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.customer_accounts.facts.record", "Record customer account fact", "Append one exact, sourced Account 360 fact revision. The source revision, customer-data purposes, owner, confidence, validity, and freshness deadline remain visible; conflicting current facts are preserved.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    factId: customerFactIdSchema(),
+    expectedRevision: integer(1, Number.MAX_SAFE_INTEGER),
+    factKey: { type: "string", minLength: 1, maxLength: 160, pattern: "^[a-z0-9][a-z0-9._:-]*$" },
+    state: { type: "string", enum: ["active", "retracted"], default: "active" },
+    value: customerFactValueToolSchema(),
+    source: customerFactSourceToolSchema(),
+    owner: customerFactOwnerToolSchema(),
+    confidenceBasisPoints: integer(0, 10_000),
+    validFrom: { type: "string", format: "date-time" },
+    validTo: { type: ["string", "null"], format: "date-time" },
+    staleAfter: { type: ["string", "null"], format: "date-time" },
+  }, ["accountId", "factKey", "value", "source", "owner", "confidenceBasisPoints", "validFrom"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.projects.list", "List projects", "List the current actor's projects with their work items and artifacts.", objectSchema({
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
@@ -638,6 +680,96 @@ function meetingDraftProperties() {
         commitmentId: { type: ["string", "null"], maxLength: 240 },
       }, ["followUpId", "label", "status"]),
     },
+  };
+}
+
+function customerAccountLifecycleValues() {
+  return ["prospect", "onboarding", "active", "at_risk", "churned", "archived"];
+}
+
+function customerAccountIdSchema() {
+  return { type: "string", pattern: "^customer-account:[a-f0-9]{64}$", maxLength: 81 };
+}
+
+function customerFactIdSchema() {
+  return { type: "string", pattern: "^customer-fact:[a-f0-9]{64}$", maxLength: 78 };
+}
+
+function customerDataPurposesToolSchema() {
+  return {
+    type: "array",
+    minItems: 2,
+    maxItems: 5,
+    uniqueItems: true,
+    items: {
+      type: "string",
+      enum: [
+        "customer_success.account.read",
+        "customer_success.account.manage",
+        "customer_success.meeting_follow_up",
+        "customer_success.analytics",
+        "customer_success.crm_sync",
+      ],
+    },
+  };
+}
+
+function customerFactOwnerToolSchema() {
+  return requiredObjectSchema({
+    ownerKind: { type: "string", enum: ["actor", "person", "organization", "team", "system"] },
+    ownerId: opaqueId("Exact semantic owner identity."),
+    displayName: text(1, 180),
+  }, ["ownerKind", "ownerId", "displayName"]);
+}
+
+function customerFactSourceToolSchema() {
+  return requiredObjectSchema({
+    sourceKind: { type: "string", enum: ["manual", "meeting", "project", "work_item", "connected_source", "crm", "computed"] },
+    sourceId: opaqueId("Exact source identity."),
+    sourceRevisionId: opaqueId("Exact immutable source revision identity."),
+    sourceRevisionSha256: sha256("Exact immutable source revision digest."),
+    sourceLabel: text(1, 240),
+    providerId: { type: ["string", "null"], maxLength: 240 },
+    providerObjectType: { type: ["string", "null"], maxLength: 120 },
+    providerObjectIdSha256: { anyOf: [sha256("Hashed external provider object identity."), { type: "null" }] },
+    permissionBasis: { type: "string", enum: ["operator_assertion", "workspace_membership", "project_membership", "connector_grant", "derived_from_cited_evidence"] },
+    allowedPurposeIds: {
+      ...customerDataPurposesToolSchema(),
+      minItems: 1,
+    },
+    observedAt: { type: "string", format: "date-time" },
+    ingestedAt: { type: "string", format: "date-time" },
+  }, [
+    "sourceKind", "sourceId", "sourceRevisionId", "sourceRevisionSha256",
+    "sourceLabel", "providerId", "providerObjectType", "providerObjectIdSha256",
+    "permissionBasis", "allowedPurposeIds", "observedAt", "ingestedAt",
+  ]);
+}
+
+function customerFactValueToolSchema() {
+  const entity = {
+    entityId: opaqueId("Exact ontology entity identity."),
+    name: text(1, 240),
+  };
+  const money = {
+    amountMinor: { type: ["integer", "null"], minimum: 0 },
+    currency: { type: ["string", "null"], pattern: "^[A-Z]{3}$" },
+  };
+  return {
+    anyOf: [
+      requiredObjectSchema({ kind: { type: "string", enum: ["organization"] }, ...entity, industry: { type: ["string", "null"], maxLength: 160 }, website: { type: ["string", "null"], format: "uri", maxLength: 2_000 } }, ["kind", "entityId", "name", "industry", "website"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["contact"] }, ...entity, email: { type: ["string", "null"], format: "email", maxLength: 320 }, title: { type: ["string", "null"], maxLength: 180 } }, ["kind", "entityId", "name", "email", "title"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["stakeholder"] }, ...entity, role: text(1, 180), influence: { type: "string", enum: ["low", "medium", "high", "unknown"] }, stance: { type: "string", enum: ["champion", "supportive", "neutral", "detractor", "unknown"] } }, ["kind", "entityId", "name", "role", "influence", "stance"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["product"] }, ...entity, status: { type: "string", enum: ["trial", "active", "paused", "ended", "unknown"] }, quantity: { type: ["number", "null"], minimum: 0 } }, ["kind", "entityId", "name", "status", "quantity"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["opportunity"] }, ...entity, stage: text(1, 120), ...money, expectedCloseAt: { type: ["string", "null"], format: "date-time" } }, ["kind", "entityId", "name", "stage", "amountMinor", "currency", "expectedCloseAt"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["case"] }, entityId: entity.entityId, title: text(1, 500), status: text(1, 120), severity: { type: "string", enum: ["low", "medium", "high", "critical", "unknown"] } }, ["kind", "entityId", "title", "status", "severity"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["usage"] }, metricId: opaqueId("Stable usage metric identity."), label: text(1, 240), value: { type: "number" }, unit: text(1, 80), periodStartAt: { type: "string", format: "date-time" }, periodEndAt: { type: "string", format: "date-time" } }, ["kind", "metricId", "label", "value", "unit", "periodStartAt", "periodEndAt"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["project"] }, projectId: opaqueId("Canonical or compatible project identity."), name: text(1, 240), status: text(1, 120) }, ["kind", "projectId", "name", "status"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["interaction"] }, interactionId: opaqueId("Stable interaction identity."), channel: { type: "string", enum: ["meeting", "email", "call", "message", "support", "other"] }, summary: text(1, 4_000), occurredAt: { type: "string", format: "date-time" } }, ["kind", "interactionId", "channel", "summary", "occurredAt"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["health"] }, dimension: text(1, 120), status: { type: "string", enum: ["healthy", "watch", "at_risk", "unknown"] }, scoreBasisPoints: { type: ["integer", "null"], minimum: 0, maximum: 10_000 }, summary: text(1, 2_000) }, ["kind", "dimension", "status", "scoreBasisPoints", "summary"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["risk"] }, entityId: entity.entityId, title: text(1, 500), severity: { type: "string", enum: ["low", "medium", "high", "critical"] }, status: { type: "string", enum: ["open", "mitigating", "resolved"] } }, ["kind", "entityId", "title", "severity", "status"]),
+      requiredObjectSchema({ kind: { type: "string", enum: ["renewal"] }, renewalId: opaqueId("Stable renewal identity."), status: { type: "string", enum: ["unplanned", "planning", "proposed", "committed", "renewed", "lost"] }, renewalAt: { type: "string", format: "date-time" }, ...money }, ["kind", "renewalId", "status", "renewalAt", "amountMinor", "currency"]),
+    ],
   };
 }
 
