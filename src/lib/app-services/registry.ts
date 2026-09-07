@@ -10,6 +10,8 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.workspaces.summary", "read", "workspace"),
   read("app.workspaces.readiness", "read", "workspace"),
   read("app.library.list", "read", "workspace_library"),
+  read("app.memory.shared.list", "read", "shared_memory"),
+  mutation("app.memory.shared.write", "write.memory", "shared_memory", "memory.atomic-events.v1"),
   read("app.projects.list", "read", "projects"),
   read("app.projects.show", "read", "project"),
   mutation("app.projects.create", "run.agent", "project", "projects.atomic-events.v1"),
@@ -143,6 +145,8 @@ export type AppServiceOperation =
 export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   { toolId: "app.workspaces.summary", operation: "app.workspaces.summary" },
   { toolId: "app.workspaces.readiness", operation: "app.workspaces.readiness" },
+  { toolId: "app.memory.shared.list", operation: "app.memory.shared.list" },
+  { toolId: "app.memory.shared.write", operation: "app.memory.shared.write" },
   { toolId: "app.projects.list", operation: "app.projects.list" },
   { toolId: "app.projects.show", operation: "app.projects.show" },
   { toolId: "app.projects.create", operation: "app.projects.create" },
