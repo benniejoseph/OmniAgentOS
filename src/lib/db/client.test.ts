@@ -731,9 +731,9 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 138,
-      name: "salesforce_read_sync_v1",
-      checksum: "3a17a929b9db8ab125f74b34cc3937298944959836a7e893f0c35c83fabea103",
+      version: 139,
+      name: "salesforce_guarded_writes_v1",
+      checksum: "0685f82f1c7cd09120b6cff93923d3f6bf821326e029dc92932b4775778dd196",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 137)).toEqual({
       version: 137,
