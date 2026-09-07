@@ -1,9 +1,9 @@
 import { z } from "zod";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { updateNotificationService } from "@/lib/app-services/notifications";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { updatePersonalNotification } from "@/lib/today/notifications";
-import { notificationMutationFromRequest } from "@/lib/today/notification-events";
 
 export const runtime = "nodejs";
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
@@ -42,20 +42,12 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
     return forbiddenResponse(error);
   }
   try {
-    const notification = await updatePersonalNotification(
-      id,
-      parsed.data.action,
-      {
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        snoozeMinutes: parsed.data.action === "snooze"
-          ? parsed.data.minutes
-          : undefined,
-        mutation: notificationMutationFromRequest(request, context, id),
-      },
+    const result = await updateNotificationService(
+      createRequestMutationAppServiceCaller(request, context, { purpose: "notification.update", causationId: id }),
+      { notificationId: id, action: parsed.data.action, minutes: parsed.data.action === "snooze" ? parsed.data.minutes : undefined },
     );
-    return notification
-      ? Response.json({ notification })
+    return result.data.notification
+      ? Response.json({ ...result.data, serviceReceipt: result.receipt })
       : Response.json({ error: "Notification not found." }, { status: 404 });
   } catch (error) {
     const message = error instanceof Error

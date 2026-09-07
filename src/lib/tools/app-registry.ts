@@ -96,6 +96,35 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     source: { type: "string", enum: ["google:", "google:mail:", "google:calendar:", "google:drive:"] },
     expectedTargetsSha256: { type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" },
   }, ["source", "expectedTargetsSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.today.show", "Show Today", "Read the current actor's Today snapshot.", objectSchema({})),
+  mutationTool("app.today.item.create", "Create Today item", "Create one task or reminder in Today.", requiredObjectSchema({
+    title: text(1, 280), kind: { type: "string", enum: ["task", "reminder"], default: "task" },
+    priority: { type: "string", enum: ["low", "medium", "high"], default: "medium" }, dueAt: { type: "string", format: "date-time" },
+  }, ["title"]), { reversible: true }),
+  mutationTool("app.today.item.update", "Update Today item", "Update one exact Today task or reminder.", requiredObjectSchema({
+    itemId: opaqueId("Exact Today-item ID."), title: text(1, 280), status: { type: "string", enum: ["open", "done"] },
+    priority: { type: "string", enum: ["low", "medium", "high"] }, dueAt: { type: ["string", "null"], format: "date-time" },
+  }, ["itemId"]), { reversible: true }),
+  readTool("app.today.brief.show", "Show daily brief", "Read the current actor's daily brief and preferences.", objectSchema({})),
+  mutationTool("app.today.brief.generate", "Generate daily brief", "Generate or refresh the current actor's daily brief.", objectSchema({ force: { type: "boolean", default: false } }), { reversible: true }),
+  mutationTool("app.today.preferences.update", "Update Today preferences", "Update daily brief, reminder, notification, timezone, or quiet-hours preferences.", objectSchema({
+    briefEnabled: { type: "boolean" }, briefTime: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+    timezone: text(1, 120), reminderLeadMinutes: { type: "integer", enum: [5, 15, 30, 60, 120] },
+    notificationsEnabled: { type: "boolean" }, quietHoursEnabled: { type: "boolean" },
+    quietHoursStart: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" }, quietHoursEnd: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+  }), { reversible: true }),
+  readTool("app.notifications.list", "List notifications", "Read the current actor's notification center without generating new reminders.", objectSchema({})),
+  mutationTool("app.notifications.update", "Update notification", "Read, dismiss, snooze, or complete one exact personal notification.", requiredObjectSchema({
+    notificationId: opaqueId("Exact personal-notification ID."), action: { type: "string", enum: ["read", "dismiss", "snooze", "complete"] },
+    minutes: { type: "integer", enum: [5, 15, 30, 60, 120, 1440] },
+  }, ["notificationId", "action"]), { reversible: false }),
+  mutationTool("app.notifications.read_all", "Read all notifications", "Mark all of the current actor's unread notifications as read.", objectSchema({}), { reversible: false }),
+  readTool("app.runs.list", "List agent runs", "List recent tenant-scoped agent runs and optional aggregate statistics.", objectSchema({
+    limit: integer(1, 100, 20), includeStats: { type: "boolean", default: false },
+  })),
+  readTool("app.runs.show", "Show agent run", "Read one exact tenant-scoped agent run and its context-use receipt.", requiredObjectSchema({
+    runId: opaqueId("Exact agent-run ID."),
+  }, ["runId"])),
 ] satisfies readonly ToolDefinition[]);
 
 function readTool(id: string, name: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
@@ -137,4 +166,8 @@ function integer(minimum: number, maximum: number, defaultValue?: number) {
 
 function uuid(description: string) {
   return { type: "string", format: "uuid", description };
+}
+
+function opaqueId(description: string) {
+  return { type: "string", minLength: 1, maxLength: 200, description };
 }
