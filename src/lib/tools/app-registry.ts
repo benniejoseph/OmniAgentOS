@@ -125,6 +125,12 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.runs.show", "Show agent run", "Read one exact tenant-scoped agent run and its context-use receipt.", requiredObjectSchema({
     runId: opaqueId("Exact agent-run ID."),
   }, ["runId"])),
+  mutationTool("app.runs.feedback", "Rate agent run", "Record explicit useful or needs-work feedback for one completed run and apply its governed trust and memory consequences.", requiredObjectSchema({
+    runId: opaqueId("Exact completed agent-run ID."), verdict: { type: "string", enum: ["useful", "needs_work"] }, correction: text(0, 2_000),
+  }, ["runId", "verdict"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  mutationTool("app.runs.cancel", "Cancel agent run", "Cancel one exact active run and its queued execution or resume deliveries.", requiredObjectSchema({
+    runId: opaqueId("Exact agent-run ID."), reason: text(1, 500),
+  }, ["runId"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   readTool("app.agents.list", "List agents", "List built-in agents and custom agents readable by the current actor.", objectSchema({
     ownerScope: { type: "string", enum: ["exact", "readable"], default: "readable" },
   })),

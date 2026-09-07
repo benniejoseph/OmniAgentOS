@@ -73,6 +73,8 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("app.assets.recordings.complete", "write.memory", "capture_recording", "capture-events.v1"),
   read("app.assets.delete.preview", "write.memory", "capture_asset"),
   mutation("app.assets.delete", "write.memory", "capture_asset", "capture-events.v1"),
+  mutation("app.runs.feedback", "run.agent", "agent_run_feedback", "run-events.v1"),
+  mutation("app.runs.cancel", "run.agent", "agent_run", "run-events.v1"),
   read("missions.list", "read", "missions"),
   read("missions.show", "read", "mission"),
   mutation("missions.create", "run.agent", "mission", "missions.atomic-events.v1"),
@@ -178,6 +180,8 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   { toolId: "app.assets.recordings.complete", operation: "app.assets.recordings.complete" },
   { toolId: "app.assets.delete.preview", operation: "app.assets.delete.preview" },
   { toolId: "app.assets.delete", operation: "app.assets.delete" },
+  { toolId: "app.runs.feedback", operation: "app.runs.feedback" },
+  { toolId: "app.runs.cancel", operation: "app.runs.cancel" },
   { toolId: "memory.search", operation: "memory.search" },
   { toolId: "memory.inspect", operation: "memory.inspect" },
   { toolId: "memory.forget.preview", operation: "memory.forget.preview" },
@@ -205,6 +209,7 @@ export const MAIN_AGENT_EXCLUDED_APP_OPERATIONS = Object.freeze([
   { operation: "app.settings.api_keys.create", reason: "One-time bearer tokens must never enter an agent transcript or tool ledger." },
   { operation: "app.assets.upload", reason: "Raw binary uploads must use the direct user-to-storage capture surface." },
   { operation: "app.assets.recordings.segment.write", reason: "Raw recording audio must use the direct user-to-storage capture surface." },
+  { operation: "app.runs.fork", reason: "Checkpoint correction forks launch a new Main Agent execution and remain an explicit user action to prevent recursive self-forking." },
 ] as const);
 
 const byOperation = new Map(
