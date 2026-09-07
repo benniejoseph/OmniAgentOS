@@ -31,6 +31,7 @@ const TOKEN_PREFIX = "asael_dpt1.";
 const TOKEN_BINDING =
   `asael:a2a:delegated-token:v1:${A2A_ADAPTER_ARTIFACT_SHA256}`;
 const MAX_TOKEN_BYTES = 96_000;
+const MAX_TRANSPORT_TOKEN_CHARS = 8_192;
 const idSchema = z.string().trim().min(1).max(240).regex(
   /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
 );
@@ -141,8 +142,12 @@ export function issueDelegatedA2ATokenV1(input: {
     { envelope: JSON.stringify(envelope) },
     TOKEN_BINDING,
   );
+  const token = `${TOKEN_PREFIX}${Buffer.from(JSON.stringify(sealed), "utf8").toString("base64url")}`;
+  if (token.length > MAX_TRANSPORT_TOKEN_CHARS) {
+    throw new Error("The delegated A2A authority exceeds its transport boundary.");
+  }
   return Object.freeze({
-    token: `${TOKEN_PREFIX}${Buffer.from(JSON.stringify(sealed), "utf8").toString("base64url")}`,
+    token,
     envelope,
   });
 }

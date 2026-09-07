@@ -29,6 +29,23 @@ export type DiscoveredA2APeerV1 = Readonly<{
   selectedInterface: ExternalA2AAgentCardV1["supportedInterfaces"][number];
 }>;
 
+export type A2AClientStreamEventV1 = Readonly<
+  | { type: "task"; task: A2ATaskV1 }
+  | { type: "status"; statusUpdate: Readonly<{
+      taskId: string;
+      contextId?: string;
+      status: A2ATaskV1["status"];
+    }> }
+  | { type: "artifact"; artifactUpdate: Readonly<{
+      taskId: string;
+      contextId: string;
+      artifact: NonNullable<A2ATaskV1["artifacts"]>[number];
+      append: boolean;
+      lastChunk: boolean;
+    }> }
+  | { type: "message"; message: A2AMessageV1 }
+>;
+
 export async function discoverExternalA2APeerV1(input: {
   baseUrl: string;
   abortSignal?: AbortSignal;
@@ -183,12 +200,7 @@ async function parseTaskResponse(response: Response, maxBytes: number) {
   return parseA2ATaskV1(record.task || body);
 }
 
-function parseStreamResponse(value: unknown): Readonly<
-  | { type: "task"; task: A2ATaskV1 }
-  | { type: "status"; statusUpdate: Record<string, unknown> }
-  | { type: "artifact"; artifactUpdate: Record<string, unknown> }
-  | { type: "message"; message: A2AMessageV1 }
-> {
+function parseStreamResponse(value: unknown): A2AClientStreamEventV1 {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The A2A stream response is invalid.");
   }

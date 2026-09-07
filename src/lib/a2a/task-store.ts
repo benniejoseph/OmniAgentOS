@@ -48,8 +48,12 @@ export async function createA2ATaskMapping(input: {
   if (
     input.internalTask.tenantId !== input.rollout.tenantId ||
     input.internalTask.ownerActorId !== input.rollout.ownerActorId ||
-    input.internalTask.delegateAgentId !== input.localAgentId ||
-    input.internalTask.delegateDefinitionVersion !== input.localAgentDefinitionVersion
+    (input.direction === "inbound" && (
+      input.internalTask.delegateAgentId !== input.localAgentId ||
+      input.internalTask.delegateDefinitionVersion !== input.localAgentDefinitionVersion
+    )) ||
+    (input.direction === "outbound" &&
+      !input.rollout.allowedSkillIds.includes(input.negotiatedSkillId))
   ) {
     throw new A2ATaskStoreError("The A2A mapping does not match its canonical delegation task.", 409);
   }
