@@ -18,10 +18,13 @@ import {
   deriveExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
+import { redactSensitive } from "@/lib/security/context";
 import type { SecurityContext } from "@/lib/security/types";
 
-const INTERNAL_KIND = "browserFrame";
+const FRAME_INTERNAL_KIND = "browserFrame";
+const SNAPSHOT_INTERNAL_KIND = "browserAccessibilitySnapshot";
 const MAX_FRAME_BYTES = 1_500_000;
+const MAX_SNAPSHOT_BYTES = 160_000;
 const MAX_FRAMES_PER_RUN = 24;
 const FRAME_CAPTURE_TIMEOUT_MS = 8_000;
 const CAPTURED_OPERATIONS = new Set([
@@ -56,6 +59,16 @@ export type BrowserFrameSummary = {
   operation: string;
   pageOrigin?: string;
   pageTitle?: string;
+};
+
+export type BrowserAccessibilitySnapshotSummary = {
+  id: string;
+  at: string;
+  mimeType: "text/plain";
+  byteCount: number;
+  contentSha256: string;
+  executionId: string;
+  operation: string;
 };
 
 export async function captureBrowserFrameAfterToolSafely(input: {
@@ -108,11 +121,22 @@ export async function captureBrowserFrameAfterToolSafely(input: {
       return undefined;
     }
     if (sensitiveEntry) {
-      await appendFrameEvent({
+      await appendObservationEvent({
         runId,
         scope,
         executionScope,
         type: "browser.frame.suppressed",
+        payload: {
+          executionId: input.executionId,
+          operation,
+          reason: "sensitive_entry",
+        },
+      });
+      await appendObservationEvent({
+        runId,
+        scope,
+        executionScope,
+        type: "browser.snapshot.suppressed",
         payload: {
           executionId: input.executionId,
           operation,
@@ -124,63 +148,58 @@ export async function captureBrowserFrameAfterToolSafely(input: {
 
     // This is bounded observability attached to an already-governed browser
     // action, not a model-requested action or an alternate execution path.
-    const result = await callMcpTool({
+    const frame = await captureFrame({
       connector,
-      toolName: "browser_take_screenshot",
-      args: { type: "webp", scale: "css" },
-      idempotencyKey: `browser-frame:${input.executionId}`,
-      actorRole: input.context?.role,
-      abortSignal: frameCaptureSignal(input.abortSignal),
-      sessionScope: scope,
-      includeImages: true,
-    });
-    const image = browserImage(result);
-    const bytes = decodeFrame(image.data, image.mimeType);
-    const actionPage = browserPage(input.toolResult);
-    const screenshotPage = browserPage(result);
-    const fallbackUrl = operation === "browser_navigate"
-      ? safePageUrl(input.toolInput.url)
-      : undefined;
-    const pageUrl = actionPage.url || screenshotPage.url || fallbackUrl;
-    const pageTitle = actionPage.title || screenshotPage.title;
-    const pageOrigin = pageUrl ? safeOrigin(pageUrl) : undefined;
-    const asset = await saveCaptureAsset({
-      tenantId: scope.tenantId,
-      actorId: scope.actorId,
-      executionScope,
-      filename: `browser-${runId}-${Date.now()}.${extensionForMime(image.mimeType)}`,
-      mediaType: image.mimeType,
-      bytes,
-      tags: ["browser", "run-evidence"],
-      metadata: {
-        internalKind: INTERNAL_KIND,
-        runId,
-        executionId: input.executionId,
-        operation,
-        pageOrigin,
-        pageTitle,
-        pageUrl,
-      },
-    });
-    const frame = browserFrameFromAsset(asset);
-    await appendFrameEvent({
       runId,
-      scope,
+      operation,
+      toolInput: input.toolInput,
+      toolResult: input.toolResult,
+      executionId: input.executionId,
       executionScope,
-      type: "browser.frame.captured",
-      payload: {
-        assetId: asset.id,
-        executionId: input.executionId,
-        operation,
-        mimeType: asset.mediaType,
-        byteCount: asset.byteCount,
-        pageOrigin,
-      },
+      context: input.context,
+      sessionScope: scope,
+      abortSignal: input.abortSignal,
+    }).catch(async (error) => {
+      await appendObservationEvent({
+        runId,
+        scope,
+        executionScope,
+        type: "browser.frame.failed",
+        payload: {
+          executionId: input.executionId,
+          operation,
+          category: frameFailureCategory(error),
+        },
+      });
+      return undefined;
     });
-    await pruneRunFrames(runId, scope, executionScope).catch(() => undefined);
+    await captureAccessibilitySnapshot({
+      connector,
+      runId,
+      operation,
+      toolResult: input.toolResult,
+      executionId: input.executionId,
+      executionScope,
+      context: input.context,
+      sessionScope: scope,
+      abortSignal: input.abortSignal,
+    }).catch(async (error) => {
+      await appendObservationEvent({
+        runId,
+        scope,
+        executionScope,
+        type: "browser.snapshot.failed",
+        payload: {
+          executionId: input.executionId,
+          operation,
+          category: snapshotFailureCategory(error),
+        },
+      });
+    });
+    await pruneRunObservations(runId, scope, executionScope).catch(() => undefined);
     return frame;
   } catch (error) {
-    await appendFrameEvent({
+    await appendObservationEvent({
       runId,
       scope,
       executionScope,
@@ -200,7 +219,7 @@ export async function listRunBrowserFrames(
   owner: { tenantId: string; actorId: string },
 ): Promise<BrowserFrameSummary[]> {
   const assets = await listInternalCaptureAssets(owner, {
-    kind: INTERNAL_KIND,
+    kind: FRAME_INTERNAL_KIND,
     scopeField: "runId",
     scopeValue: runId,
     limit: MAX_FRAMES_PER_RUN,
@@ -208,6 +227,24 @@ export async function listRunBrowserFrames(
   return assets
     .map(browserFrameFromAsset)
     .filter((frame): frame is BrowserFrameSummary => frame !== undefined)
+    .sort((left, right) => left.at.localeCompare(right.at));
+}
+
+export async function listRunBrowserAccessibilitySnapshots(
+  runId: string,
+  owner: { tenantId: string; actorId: string },
+): Promise<BrowserAccessibilitySnapshotSummary[]> {
+  const assets = await listInternalCaptureAssets(owner, {
+    kind: SNAPSHOT_INTERNAL_KIND,
+    scopeField: "runId",
+    scopeValue: runId,
+    limit: MAX_FRAMES_PER_RUN,
+  });
+  return assets
+    .map(browserSnapshotFromAsset)
+    .filter((snapshot): snapshot is BrowserAccessibilitySnapshotSummary =>
+      snapshot !== undefined
+    )
     .sort((left, right) => left.at.localeCompare(right.at));
 }
 
@@ -224,8 +261,30 @@ export async function getRunBrowserFrameContent(
     throw error;
   }
   if (
-    stringMetadata(content.asset.metadata, "internalKind") !== INTERNAL_KIND ||
+    stringMetadata(content.asset.metadata, "internalKind") !== FRAME_INTERNAL_KIND ||
     stringMetadata(content.asset.metadata, "runId") !== runId
+  ) {
+    return undefined;
+  }
+  return content;
+}
+
+export async function getRunBrowserAccessibilitySnapshotContent(
+  runId: string,
+  snapshotId: string,
+  owner: { tenantId: string; actorId: string },
+) {
+  let content: Awaited<ReturnType<typeof getCaptureAssetContent>>;
+  try {
+    content = await getCaptureAssetContent(snapshotId, owner);
+  } catch (error) {
+    if (error instanceof CaptureAssetError) return undefined;
+    throw error;
+  }
+  if (
+    stringMetadata(content.asset.metadata, "internalKind") !== SNAPSHOT_INTERNAL_KIND ||
+    stringMetadata(content.asset.metadata, "runId") !== runId ||
+    content.asset.mediaType !== "text/plain"
   ) {
     return undefined;
   }
@@ -250,39 +309,203 @@ function browserFrameFromAsset(
   };
 }
 
-async function pruneRunFrames(
+function browserSnapshotFromAsset(
+  asset: Awaited<ReturnType<typeof saveCaptureAsset>>,
+): BrowserAccessibilitySnapshotSummary | undefined {
+  const executionId = stringMetadata(asset.metadata, "executionId");
+  const operation = stringMetadata(asset.metadata, "operation");
+  if (!executionId || !operation || asset.mediaType !== "text/plain") {
+    return undefined;
+  }
+  return {
+    id: asset.id,
+    at: asset.createdAt,
+    mimeType: "text/plain",
+    byteCount: asset.byteCount,
+    contentSha256: asset.contentSha256,
+    executionId,
+    operation,
+  };
+}
+
+async function captureFrame(input: {
+  connector: NonNullable<Awaited<ReturnType<typeof getMcpConnector>>>;
+  runId: string;
+  operation: string;
+  toolInput: Record<string, unknown>;
+  toolResult?: unknown;
+  executionId: string;
+  executionScope: ExecutionScope;
+  context?: SecurityContext;
+  sessionScope: McpSessionScope;
+  abortSignal?: AbortSignal;
+}) {
+  const result = await callMcpTool({
+    connector: input.connector,
+    toolName: "browser_take_screenshot",
+    args: { type: "webp", scale: "css" },
+    idempotencyKey: `browser-frame:${input.executionId}`,
+    actorRole: input.context?.role,
+    abortSignal: frameCaptureSignal(input.abortSignal),
+    sessionScope: input.sessionScope,
+    includeImages: true,
+  });
+  const image = browserImage(result);
+  const bytes = decodeFrame(image.data, image.mimeType);
+  const actionPage = browserPage(input.toolResult);
+  const screenshotPage = browserPage(result);
+  const fallbackUrl = input.operation === "browser_navigate"
+    ? safePageUrl(input.toolInput.url)
+    : undefined;
+  const pageUrl = actionPage.url || screenshotPage.url || fallbackUrl;
+  const pageTitle = actionPage.title || screenshotPage.title;
+  const pageOrigin = pageUrl ? safeOrigin(pageUrl) : undefined;
+  const asset = await saveCaptureAsset({
+    tenantId: input.sessionScope.tenantId,
+    actorId: input.sessionScope.actorId,
+    executionScope: input.executionScope,
+    filename: `browser-${input.runId}-${Date.now()}.${extensionForMime(image.mimeType)}`,
+    mediaType: image.mimeType,
+    bytes,
+    tags: ["browser", "run-evidence"],
+    metadata: {
+      internalKind: FRAME_INTERNAL_KIND,
+      runId: input.runId,
+      executionId: input.executionId,
+      operation: input.operation,
+      pageOrigin,
+      pageTitle,
+      pageUrl,
+    },
+  });
+  const frame = browserFrameFromAsset(asset);
+  await appendObservationEvent({
+    runId: input.runId,
+    scope: input.sessionScope,
+    executionScope: input.executionScope,
+    type: "browser.frame.captured",
+    payload: {
+      assetId: asset.id,
+      executionId: input.executionId,
+      operation: input.operation,
+      mimeType: asset.mediaType,
+      byteCount: asset.byteCount,
+      pageOrigin,
+    },
+  });
+  return frame;
+}
+
+async function captureAccessibilitySnapshot(input: {
+  connector: NonNullable<Awaited<ReturnType<typeof getMcpConnector>>>;
+  runId: string;
+  operation: string;
+  toolResult?: unknown;
+  executionId: string;
+  executionScope: ExecutionScope;
+  context?: SecurityContext;
+  sessionScope: McpSessionScope;
+  abortSignal?: AbortSignal;
+}) {
+  let snapshot = extractRedactedAccessibilitySnapshot(input.toolResult);
+  if (!snapshot) {
+    const result = await callMcpTool({
+      connector: input.connector,
+      toolName: "browser_snapshot",
+      args: {},
+      idempotencyKey: `browser-snapshot:${input.executionId}`,
+      actorRole: input.context?.role,
+      abortSignal: frameCaptureSignal(input.abortSignal),
+      sessionScope: input.sessionScope,
+    });
+    snapshot = extractRedactedAccessibilitySnapshot(result);
+  }
+  if (!snapshot) {
+    throw new Error("Browser accessibility snapshot was unavailable.");
+  }
+  const bytes = Buffer.from(snapshot, "utf8");
+  if (!bytes.byteLength || bytes.byteLength > MAX_SNAPSHOT_BYTES) {
+    throw new Error("Browser accessibility snapshot exceeded the evidence size limit.");
+  }
+  const asset = await saveCaptureAsset({
+    tenantId: input.sessionScope.tenantId,
+    actorId: input.sessionScope.actorId,
+    executionScope: input.executionScope,
+    filename: `browser-${input.runId}-${Date.now()}-accessibility.txt`,
+    mediaType: "text/plain",
+    bytes,
+    tags: ["browser", "run-evidence", "accessibility-snapshot"],
+    metadata: {
+      internalKind: SNAPSHOT_INTERNAL_KIND,
+      runId: input.runId,
+      executionId: input.executionId,
+      operation: input.operation,
+      redactionVersion: "p9.5-browser-snapshot-redaction:1",
+    },
+  });
+  await appendObservationEvent({
+    runId: input.runId,
+    scope: input.sessionScope,
+    executionScope: input.executionScope,
+    type: "browser.snapshot.captured",
+    payload: {
+      assetId: asset.id,
+      executionId: input.executionId,
+      operation: input.operation,
+      byteCount: asset.byteCount,
+      contentSha256: asset.contentSha256,
+      redactionVersion: "p9.5-browser-snapshot-redaction:1",
+    },
+  });
+  return browserSnapshotFromAsset(asset);
+}
+
+async function pruneRunObservations(
   runId: string,
   scope: McpSessionScope,
   executionScope: ExecutionScope,
 ) {
-  const frames = await listInternalCaptureAssets(
-    { tenantId: scope.tenantId, actorId: scope.actorId },
-    {
-      kind: INTERNAL_KIND,
+  const owner = { tenantId: scope.tenantId, actorId: scope.actorId };
+  const [frames, snapshots] = await Promise.all([
+    listInternalCaptureAssets(owner, {
+      kind: FRAME_INTERNAL_KIND,
       scopeField: "runId",
       scopeValue: runId,
       limit: MAX_FRAMES_PER_RUN + 24,
-    },
-  );
+    }),
+    listInternalCaptureAssets(owner, {
+      kind: SNAPSHOT_INTERNAL_KIND,
+      scopeField: "runId",
+      scopeValue: runId,
+      limit: MAX_FRAMES_PER_RUN + 24,
+    }),
+  ]);
   await Promise.all(
-    frames.slice(MAX_FRAMES_PER_RUN).map((frame) =>
-      deleteCaptureAsset(frame.id, {
-        tenantId: scope.tenantId,
-        actorId: scope.actorId,
-        executionScope: deriveExecutionScope(executionScope, {
-          causationId: frame.id,
-          purpose: "browser.frame.retention_prune",
+    [...frames.slice(MAX_FRAMES_PER_RUN), ...snapshots.slice(MAX_FRAMES_PER_RUN)]
+      .map((observation) =>
+        deleteCaptureAsset(observation.id, {
+          tenantId: scope.tenantId,
+          actorId: scope.actorId,
+          executionScope: deriveExecutionScope(executionScope, {
+            causationId: observation.id,
+            purpose: "browser.observation.retention_prune",
+          }),
         }),
-      }),
     ),
   );
 }
 
-async function appendFrameEvent(input: {
+async function appendObservationEvent(input: {
   runId: string;
   scope: McpSessionScope;
   executionScope: ExecutionScope;
-  type: "browser.frame.captured" | "browser.frame.failed" | "browser.frame.suppressed";
+  type:
+    | "browser.frame.captured"
+    | "browser.frame.failed"
+    | "browser.frame.suppressed"
+    | "browser.snapshot.captured"
+    | "browser.snapshot.failed"
+    | "browser.snapshot.suppressed";
   payload: Record<string, unknown>;
 }) {
   await appendDomainEventSafely({
@@ -295,6 +518,60 @@ async function appendFrameEvent(input: {
     payload: input.payload,
     executionScope: input.executionScope,
   });
+}
+
+export function extractRedactedAccessibilitySnapshot(value: unknown) {
+  const root = record(value);
+  const result = Array.isArray(root.content) ? root : record(root.result);
+  const text = Array.isArray(result.content)
+    ? result.content
+        .map((item) => record(item))
+        .filter((item) => item.type === "text" && typeof item.text === "string")
+        .map((item) => String(item.text))
+        .join("\n")
+    : "";
+  const snapshot = extractSnapshotSection(text);
+  if (!snapshot) return undefined;
+  const redacted = redactSensitive(
+    snapshot
+      .replaceAll("\r\n", "\n")
+      .split("\n")
+      .map(redactAccessibilityLine)
+      .join("\n"),
+  );
+  if (typeof redacted !== "string") return undefined;
+  const normalized = redacted.trim();
+  if (!normalized) return undefined;
+  return truncateUtf8(normalized, MAX_SNAPSHOT_BYTES);
+}
+
+function extractSnapshotSection(text: string) {
+  const fenced = /- Page Snapshot:\s*```(?:yaml)?\s*\n([\s\S]*?)```/i.exec(text)?.[1];
+  if (fenced?.trim()) return fenced.trim();
+  const pageSnapshot = /- Page Snapshot:\s*\n([\s\S]*)/i.exec(text)?.[1];
+  if (pageSnapshot?.trim()) return pageSnapshot.trim();
+  const headingSnapshot = /### (?:Accessibility |Page )?Snapshot\s*\n([\s\S]*)/i.exec(text)?.[1];
+  return headingSnapshot?.trim() || undefined;
+}
+
+function redactAccessibilityLine(line: string) {
+  const sensitiveControl = /\b(password|passcode|one[- ]?time|otp|verification code|security code|cvv|cvc|card number|api key|access token|secret|social security|ssn)\b/i;
+  if (sensitiveControl.test(line)) {
+    const indent = /^\s*/.exec(line)?.[0] || "";
+    const marker = line.trimStart().startsWith("-") ? "- " : "";
+    return `${indent}${marker}[redacted sensitive control]`;
+  }
+  return line
+    .replace(/(\bvalue\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s\]]+)/gi, "$1[redacted]")
+    .replace(/(\b(?:typed|input)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s\]]+)/gi, "$1[redacted]");
+}
+
+function truncateUtf8(value: string, limit: number) {
+  if (Buffer.byteLength(value, "utf8") <= limit) return value;
+  const suffix = "\n[truncated accessibility snapshot]";
+  const bytes = Buffer.from(value, "utf8");
+  const bounded = bytes.subarray(0, Math.max(0, limit - Buffer.byteLength(suffix)));
+  return `${bounded.toString("utf8").replace(/\uFFFD+$/g, "")}${suffix}`;
 }
 
 function browserImage(value: unknown) {
@@ -447,4 +724,13 @@ function frameFailureCategory(error: unknown) {
   if (/scope|tenant/.test(message)) return "scope_mismatch";
   if (/image|screenshot/.test(message)) return "image_unavailable";
   return "capture_unavailable";
+}
+
+function snapshotFailureCategory(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (/abort|cancel/.test(message)) return "cancelled";
+  if (/timeout|timed out/.test(message)) return "timeout";
+  if (/size limit|too large|exceeded/.test(message)) return "too_large";
+  if (/scope|tenant/.test(message)) return "scope_mismatch";
+  return "snapshot_unavailable";
 }
