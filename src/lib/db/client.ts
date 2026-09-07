@@ -10779,6 +10779,7 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
       delegate_definition_version BIGINT NOT NULL,
       verifier_agent_id TEXT NOT NULL,
       verifier_definition_version BIGINT NOT NULL,
+      verifier_acceptance_threshold DOUBLE PRECISION NOT NULL,
       state TEXT NOT NULL DEFAULT 'proposed',
       lifecycle_revision SMALLINT NOT NULL DEFAULT 0,
       task JSONB NOT NULL,
@@ -10804,6 +10805,7 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
       CHECK (delegate_definition_version BETWEEN 1 AND 9007199254740991),
       CHECK (char_length(verifier_agent_id) BETWEEN 1 AND 240),
       CHECK (verifier_definition_version BETWEEN 1 AND 9007199254740991),
+      CHECK (verifier_acceptance_threshold BETWEEN 0.5 AND 1),
       CHECK (state IN (
         'proposed', 'accepted', 'working', 'waiting', 'challenged',
         'completed_proposed', 'result_accepted', 'rejected', 'canceled',
@@ -10831,6 +10833,7 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
       CHECK ((task->>'delegateDefinitionVersion')::BIGINT = delegate_definition_version),
       CHECK (task->>'verifierAgentId' = verifier_agent_id),
       CHECK ((task->>'verifierDefinitionVersion')::BIGINT = verifier_definition_version),
+      CHECK ((task->>'verifierAcceptanceThreshold')::DOUBLE PRECISION = verifier_acceptance_threshold),
       CHECK (task->>'state' = state),
       CHECK ((task->>'lifecycleRevision')::SMALLINT = lifecycle_revision),
       CHECK ((task->>'createdAt')::TIMESTAMPTZ = created_at),
@@ -10908,6 +10911,7 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
         NEW.contract_sha256, NEW.delegate_principal_id,
         NEW.delegate_agent_id, NEW.delegate_definition_version,
         NEW.verifier_agent_id, NEW.verifier_definition_version,
+        NEW.verifier_acceptance_threshold,
         NEW.created_at, NEW.accept_by, NEW.complete_by
       ) IS DISTINCT FROM ROW(
         OLD.schema_version, OLD.tenant_id, OLD.task_id, OLD.owner_actor_id,
@@ -10916,6 +10920,7 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
         OLD.contract_sha256, OLD.delegate_principal_id,
         OLD.delegate_agent_id, OLD.delegate_definition_version,
         OLD.verifier_agent_id, OLD.verifier_definition_version,
+        OLD.verifier_acceptance_threshold,
         OLD.created_at, OLD.accept_by, OLD.complete_by
       ) OR NEW.lifecycle_revision IS DISTINCT FROM OLD.lifecycle_revision + 1
         OR NEW.updated_at < OLD.updated_at

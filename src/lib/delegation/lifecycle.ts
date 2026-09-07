@@ -83,6 +83,7 @@ export const delegationTaskV1Schema = z.object({
   delegateDefinitionVersion: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
   verifierAgentId: idSchema,
   verifierDefinitionVersion: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  verifierAcceptanceThreshold: z.number().min(0.5).max(1),
   state: delegationTaskStateSchema,
   lifecycleRevision: z.number().int().min(0).max(32),
   proposal: completionProposalSchema.nullable(),
@@ -227,6 +228,7 @@ export function buildDelegationTaskV1(
     delegateDefinitionVersion: contract.delegate.definitionVersion,
     verifierAgentId: contract.verifier.agentId,
     verifierDefinitionVersion: contract.verifier.definitionVersion,
+    verifierAcceptanceThreshold: contract.verifier.acceptanceThreshold,
     state: "proposed",
     lifecycleRevision: 0,
     proposal: null,
@@ -287,7 +289,10 @@ export function transitionDelegationTaskV1(input: {
     ) {
       throw new Error("Delegation evaluation is not bound to its parent verifier.");
     }
-    if (to === "result_accepted" && input.transition.score < 0.5) {
+    if (
+      to === "result_accepted" &&
+      input.transition.score < current.verifierAcceptanceThreshold
+    ) {
       throw new Error("An accepted delegation evaluation must meet its threshold.");
     }
     const body = {
