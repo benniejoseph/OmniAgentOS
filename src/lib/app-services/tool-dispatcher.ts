@@ -64,6 +64,11 @@ import {
   evaluateCustomerHealthService,
   showCustomerHealthService,
 } from "@/lib/app-services/customer-health";
+import {
+  listCustomerSuccessWorkflowsService,
+  recordCustomerSuccessWorkflowOutcomeService,
+  startCustomerSuccessWorkflowService,
+} from "@/lib/app-services/customer-success-workflows";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -228,6 +233,9 @@ export async function executeFirstPartyAppTool(input: {
     "app.customer_accounts.facts.record": () => recordCustomerFactService(caller, input.toolInput as never),
     "app.customer_accounts.health.show": () => showCustomerHealthService(caller, input.toolInput as never),
     "app.customer_accounts.health.evaluate": () => evaluateCustomerHealthService(caller, input.toolInput as never),
+    "app.customer_accounts.workflows.list": () => listCustomerSuccessWorkflowsService(caller, input.toolInput as never),
+    "app.customer_accounts.workflows.start": () => startCustomerSuccessWorkflowService(caller, input.toolInput as never),
+    "app.customer_accounts.workflows.outcome.record": () => recordCustomerSuccessWorkflowOutcomeService(caller, input.toolInput as never),
     "app.customer_accounts.salesforce.writes.configure": () => configureSalesforceWritesService(caller, input.toolInput as never),
     "app.customer_accounts.salesforce.contact.create": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.contact.create", input.toolInput),
     "app.customer_accounts.salesforce.contact.update": () => executeSalesforceRecordWriteService(caller, "app.customer_accounts.salesforce.contact.update", input.toolInput),
