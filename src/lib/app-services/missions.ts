@@ -335,6 +335,14 @@ export async function startMissionTaskService(
   ) {
     throw new Error("Canonical WorkItem authority could not be verified.");
   }
+  if (
+    agentIdentity.definition.status === "paused" ||
+    agentIdentity.principal.state !== "active"
+  ) {
+    throw new MissionTransitionError(
+      "The assigned Agent is paused or its execution authority is inactive.",
+    );
+  }
 
   const workflowIdempotencyKey = `mission-task:${task.id}:${caller.idempotencyKey!}`;
   const workflowRunId = deterministicWorkflowRunId(

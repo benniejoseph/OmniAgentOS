@@ -138,9 +138,11 @@ beforeEach(() => {
       persona: {},
       modelPolicy: "auto",
       declaredSkills: [],
+      status: "ready",
     },
     principal: {
       principalId: "agent:atlas:1",
+      state: "active",
       autonomy: "governed",
       approvalPolicy: "risk_based",
       memoryScope: "project",
