@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
+import { buildAgentCouncilMap } from "@/lib/agents/council-map";
+import { loadAgentCouncilMapSource } from "@/lib/agents/council-map-store";
 import { listInternalAgentCardsV1 } from "@/lib/agents/discovery-card";
 import { discoverInternalAgentsV1 } from "@/lib/agents/discovery";
 import { getAgentPerformance } from "@/lib/agents/performance";
@@ -9,6 +11,7 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
+import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
 import { customAgentInputSchema, customAgentPatchSchema, skillInputSchema, skillPatchSchema } from "@/lib/skills/schema";
@@ -45,6 +48,17 @@ const cardDiscoverySchema = z.object({
   query: z.string().trim().min(1).max(4_000).optional(),
   taskKind: z.enum(["general", "coordinate", "research", "build", "verify", "memory"]).optional(),
 }).strict();
+export const agentCouncilMapServiceInputSchema = z.object({
+  limit: z.number().int().min(1).max(100).default(60),
+}).strict();
+
+type AgentCouncilMapDependencies = Readonly<{
+  loadSource: typeof loadAgentCouncilMapSource;
+}>;
+
+const defaultAgentCouncilMapDependencies: AgentCouncilMapDependencies = Object.freeze({
+  loadSource: loadAgentCouncilMapSource,
+});
 
 export const agentCreateServiceInputSchema = customAgentInputSchema;
 export const agentUpdateServiceInputSchema = z.object({ id: z.string().trim().min(1).max(200), change: customAgentPatchSchema }).strict();
@@ -90,6 +104,35 @@ export async function showAgentPerformanceService(caller: AppServiceCaller, inpu
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.performance"));
   const agents = await getAgentPerformance(caller.context.tenantId);
   return completeAppServiceCall(authorized, { agents }, { resourceCount: agents.length });
+}
+
+export async function showAgentCouncilMapService(
+  caller: AppServiceCaller,
+  input: z.input<typeof agentCouncilMapServiceInputSchema>,
+  dependencies: AgentCouncilMapDependencies = defaultAgentCouncilMapDependencies,
+) {
+  const value = agentCouncilMapServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.agents.council.show"),
+  );
+  const requestActorBinding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  const ownerActorIds = requestActorBinding?.readableOwnerActorIds || [caller.context.actorId];
+  return runWithDatabaseActorScope(
+    caller.context.tenantId,
+    ownerActorIds,
+    async () => {
+      const source = await dependencies.loadSource({
+        tenantId: caller.context.tenantId,
+        ownerActorIds,
+        limit: value.limit,
+      });
+      const map = buildAgentCouncilMap({ source });
+      return completeAppServiceCall(authorized, { map }, {
+        resourceCount: map.summary.memberCount,
+      });
+    },
+  );
 }
 
 export async function createAgentService(caller: AppServiceCaller, input: z.input<typeof agentCreateServiceInputSchema>) {
