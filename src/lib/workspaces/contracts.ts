@@ -56,14 +56,17 @@ export const canonicalProjectV1Schema = z.object({
   workspaceId: workspaceIdSchema,
   projectId: opaqueIdSchema,
   ownerActorId: canonicalActorIdSchema,
+  title: z.string().trim().min(1).max(180),
+  objective: z.string().trim().max(2_000),
   lifecycleStatus: z.enum(["draft", "active", "completed", "archived"]),
-  sourceAuthority: z.literal("legacy_project"),
+  sourceAuthority: z.enum(["legacy_project", "legacy_mission"]),
   lifecycleRevision: positiveRevisionSchema,
+  targetDate: canonicalTimestampSchema.nullable(),
   createdAt: canonicalTimestampSchema,
   updatedAt: canonicalTimestampSchema,
   completedAt: canonicalTimestampSchema.nullable(),
 }).strict().superRefine((project, context) => {
-  if ((project.lifecycleStatus === "completed") !== (project.completedAt !== null)) {
+  if (project.lifecycleStatus === "completed" && project.completedAt === null) {
     context.addIssue({ code: "custom", message: "Project completion is inconsistent." });
   }
   addChronologyIssue(project.createdAt, project.updatedAt, project.completedAt, context);
@@ -134,9 +137,17 @@ export const canonicalWorkItemV1Schema = z.object({
   workItemId: opaqueIdSchema,
   parentWorkItemId: opaqueIdSchema.nullable(),
   kind: z.enum(["task", "milestone"]),
+  title: z.string().trim().min(1).max(240),
+  detail: z.string().trim().max(4_000),
+  priority: z.enum(["low", "normal", "medium", "high", "urgent"]),
   canonicalStatus: z.enum(CANONICAL_STATUSES),
+  sourceStatus: z.string().trim().min(1).max(160),
   statusRevision: positiveRevisionSchema,
-  sourceAuthority: z.literal("legacy_project_task"),
+  sourceAuthority: z.enum([
+    "legacy_project_task",
+    "legacy_mission",
+    "legacy_mission_task",
+  ]),
   dependencyWorkItemIds: uniqueIdsSchema,
   ownerActorIds: uniqueActorIdsSchema,
   assignedAgents: z.array(assignedAgentSchema).max(32).refine(
@@ -164,7 +175,9 @@ export const canonicalWorkItemV1Schema = z.object({
   if (workItem.dependencyWorkItemIds.includes(workItem.workItemId)) {
     context.addIssue({ code: "custom", message: "A WorkItem cannot depend on itself." });
   }
-  const terminal = ["failed", "canceled", "succeeded"].includes(workItem.canonicalStatus);
+  const terminal = ["unverified", "failed", "canceled", "succeeded"].includes(
+    workItem.canonicalStatus,
+  );
   if (terminal !== (workItem.terminalAt !== null)) {
     context.addIssue({ code: "custom", message: "WorkItem terminal state is inconsistent." });
   }
@@ -210,7 +223,7 @@ export const canonicalWorkCompatibilityV1Schema = z.object({
   if (mapping.state === "quarantined" && mapping.quarantineCode === null) {
     context.addIssue({ code: "custom", message: "Quarantined mapping lacks a reason." });
   }
-  const itemSource = mapping.sourceKind.endsWith("_task");
+  const itemSource = mapping.sourceKind !== "legacy_project";
   if (mapping.state === "active" && itemSource !== (mapping.workItemId !== null)) {
     context.addIssue({ code: "custom", message: "Compatibility target kind is inconsistent." });
   }
