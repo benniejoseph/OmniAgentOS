@@ -17,11 +17,9 @@ describe("context scope policy", () => {
     expect(new Set(CONTEXT_SCOPE_IDS).size).toBe(CONTEXT_SCOPE_IDS.length);
   });
 
-  it("keeps automatic personal and shared scopes authority-held", () => {
+  it("keeps automatic personal and mission scopes authority-held", () => {
     for (const scopeId of [
       "mission",
-      "project",
-      "workspace",
       "personal",
     ] as const) {
       expect(getContextScopePolicy(scopeId).state).toBe("authority_held");
@@ -34,12 +32,32 @@ describe("context scope policy", () => {
     expect(contextScopeMemoryMode("current_turn")).toBe("session");
     expect(contextScopeMemoryMode("session")).toBe("session");
     expect(contextScopeMemoryMode("agent_private")).toBe("all");
+    expect(contextScopeMemoryMode("project")).toBe("all");
+    expect(contextScopeMemoryMode("workspace")).toBe("all");
     expect(contextScopeMemoryMode("explicit_selection")).toBe("all");
     expect(contextScopeUsesThreadHistory("none")).toBe(false);
     expect(contextScopeUsesThreadHistory("current_turn")).toBe(false);
     expect(contextScopeUsesThreadHistory("session")).toBe(true);
     expect(contextScopeUsesThreadHistory("agent_private")).toBe(true);
+    expect(contextScopeUsesThreadHistory("project")).toBe(true);
+    expect(contextScopeUsesThreadHistory("workspace")).toBe(true);
     expect(contextScopeUsesThreadHistory("explicit_selection")).toBe(true);
+  });
+
+  it("activates only explicitly selected canonical shared scopes", () => {
+    expect(assertContextScopeRequest("project", false)).toMatchObject({
+      state: "active",
+      durableContext: "project",
+      requiresSelection: false,
+    });
+    expect(assertContextScopeRequest("workspace", false)).toMatchObject({
+      state: "active",
+      durableContext: "workspace",
+      requiresSelection: false,
+    });
+    expect(() => assertContextScopeRequest("project", true)).toThrow(
+      /requires the explicit-selection scope/i,
+    );
   });
 
   it("activates exact agent-private durable context without a selection", () => {

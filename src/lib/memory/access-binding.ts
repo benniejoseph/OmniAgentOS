@@ -288,9 +288,10 @@ function sharedMemoryPrincipalHasGrant(scope: DatabaseMemoryAccessScope) {
   if (scope.executingPrincipalType === "user") {
     return scope.executingPrincipalId === scope.initiatingActorId;
   }
-  if ([MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve].includes(
-    scope.purposeId as (typeof MEMORY_PURPOSE_IDS)[keyof typeof MEMORY_PURPOSE_IDS],
-  )) {
+  if (
+    scope.purposeId === MEMORY_PURPOSE_IDS.read ||
+    scope.purposeId === MEMORY_PURPOSE_IDS.retrieve
+  ) {
     return scope.contextGrantIds.length > 0;
   }
   return scope.capabilityGrantIds.length > 0;

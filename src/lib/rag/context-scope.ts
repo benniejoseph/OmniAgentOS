@@ -21,6 +21,8 @@ export type ContextScopePolicy = Readonly<{
   durableContext:
     | "none"
     | "agent_private"
+    | "project"
+    | "workspace"
     | "explicit_selection"
     | "authority_held";
   requiresSelection: boolean;
@@ -70,19 +72,19 @@ export const CONTEXT_SCOPE_POLICIES: readonly ContextScopePolicy[] = Object.free
   },
   {
     id: "project",
-    state: "authority_held",
+    state: "active",
     conversationHistory: "session",
-    durableContext: "authority_held",
+    durableContext: "project",
     requiresSelection: false,
-    reason: "Project membership, consent, and context grants are not active.",
+    reason: "Only shared memory from the explicitly selected canonical project is eligible.",
   },
   {
     id: "workspace",
-    state: "authority_held",
+    state: "active",
     conversationHistory: "session",
-    durableContext: "authority_held",
+    durableContext: "workspace",
     requiresSelection: false,
-    reason: "Workspace membership, consent, and context grants are not active.",
+    reason: "Only shared memory from the explicitly selected canonical workspace is eligible.",
   },
   {
     id: "personal",
@@ -126,7 +128,9 @@ export function contextScopeMemoryMode(
   const policy = getContextScopePolicy(scopeId);
   requireActiveContextScope(policy);
   return policy.durableContext === "explicit_selection" ||
-      policy.durableContext === "agent_private"
+      policy.durableContext === "agent_private" ||
+      policy.durableContext === "project" ||
+      policy.durableContext === "workspace"
     ? "all"
     : "session";
 }
