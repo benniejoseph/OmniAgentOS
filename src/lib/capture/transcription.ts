@@ -1,3 +1,4 @@
+import type { TranscriptionDiarized } from "openai/resources/audio/transcriptions";
 import {
   DIARIZATION_MODEL,
   TRANSCRIPTION_MODEL,
@@ -88,7 +89,7 @@ export async function transcribeCaptureMediaDiarized(
       ...(languageHints.length === 1
         ? { language: languageTag.split("-", 1)[0].toLowerCase() }
         : {}),
-    }, { signal: abortSignal });
+    }, { signal: abortSignal }) as TranscriptionDiarized;
     const durationMs = Math.max(
       1,
       Math.round(Number(result.duration || 0) * 1_000),

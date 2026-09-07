@@ -297,7 +297,7 @@ export async function commitCaptureMediaOutput(
       `;
       if (!headRows[0]) throw new Error("Media processing head is stale or missing.");
       const head = captureMediaHeadFromRow(headRows[0]);
-      if (head.output?.sourceAudioManifestSha256 === draft.sourceAudioManifestSha256) {
+      if (head.output && captureMediaOutputMatchesDraft(head.output, draft)) {
         return head.output;
       }
       const mediaRevision = (head.output?.mediaRevision || 0) + 1;
@@ -368,7 +368,7 @@ export async function commitCaptureMediaOutput(
         candidate.operationJobId === operationJobId
       );
       if (!head) throw new Error("Media processing head is stale or missing.");
-      if (head.output?.sourceAudioManifestSha256 === draft.sourceAudioManifestSha256) {
+      if (head.output && captureMediaOutputMatchesDraft(head.output, draft)) {
         output = head.output;
         savedHead = head;
         return ledger;
@@ -408,6 +408,23 @@ export async function commitCaptureMediaOutput(
     },
   );
   return output!;
+}
+
+function captureMediaOutputMatchesDraft(
+  output: CaptureMediaOutput,
+  draft: Omit<
+    CaptureMediaOutput,
+    "mediaRevision" | "mediaRevisionId" | "outputSha256" | "processedAt"
+  >,
+) {
+  const {
+    mediaRevision: _mediaRevision,
+    mediaRevisionId: _mediaRevisionId,
+    outputSha256: _outputSha256,
+    processedAt: _processedAt,
+    ...existingDraft
+  } = output;
+  return sha256Json(existingDraft) === sha256Json(draft);
 }
 
 export async function markCaptureMediaRawAudioDeleted(
