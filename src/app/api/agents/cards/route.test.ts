@@ -19,7 +19,7 @@ describe("internal Agent Card discovery route", () => {
     mocks.authorizeRequest.mockReset().mockResolvedValue({
       tenantId: "tenant-one",
       actorId: "actor-one",
-      role: "member",
+      role: "operator",
     });
   });
 

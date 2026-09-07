@@ -1,4 +1,5 @@
-import { getAgentPerformance } from "@/lib/agents/performance";
+import { showAgentPerformanceService } from "@/lib/app-services/agents";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -17,8 +18,9 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
+  const result = await showAgentPerformanceService(createAppServiceCaller({ context }), {});
   return Response.json(
-    { agents: await getAgentPerformance(context.tenantId) },
+    { ...result.data, serviceReceipt: result.receipt },
     { headers: { "cache-control": "private, no-store" } },
   );
 }

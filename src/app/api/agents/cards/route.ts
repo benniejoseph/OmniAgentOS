@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-import { listInternalAgentCardsV1 } from "@/lib/agents/discovery-card";
-import { discoverInternalAgentsV1 } from "@/lib/agents/discovery";
+import { discoverAgentCardsService } from "@/lib/app-services/agents";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -45,35 +45,9 @@ async function GETHandler(request: Request) {
       { status: 400, headers: privateNoStoreHeaders },
     );
   }
-  const cards = listInternalAgentCardsV1({
-    tenantId: context.tenantId,
-    controllerActorId: context.actorId,
-  });
-  const discovery = parsed.data.query
-    ? discoverInternalAgentsV1({
-        cards,
-        request: {
-          query: parsed.data.query,
-          taskKinds: [parsed.data.taskKind || "general"],
-          inputModalities: ["text", "artifact_reference"],
-          outputModalities: ["application/json", "artifact_reference"],
-          limits: {
-            maxInputArtifacts: 32,
-            maxOutputArtifacts: 8,
-            maxOutputBytes: 64_000,
-            maxWallClockMs: 900_000,
-            maxFanOut: 0,
-          },
-          authenticationScheme: "delegated_principal",
-        },
-      })
-    : undefined;
+  const result = await discoverAgentCardsService(createAppServiceCaller({ context }), parsed.data);
   return Response.json(
-    {
-      version: "p8.5-agent-card-collection:1",
-      cards,
-      ...(discovery ? { discovery } : {}),
-    },
+    { ...result.data, serviceReceipt: result.receipt },
     { headers: privateNoStoreHeaders },
   );
 }
