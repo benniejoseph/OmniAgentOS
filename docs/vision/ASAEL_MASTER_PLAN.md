@@ -773,8 +773,8 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.6 | Build external A2A client/server adapters. | Reuse inbound auth/MCP patterns; create A2A boundary. | External agents receive scoped references and delegated tokens; all actions re-enter governed execution. | Compatible external agents can discover, negotiate, stream progress, exchange artifacts, cancel, and resume without a second security path. |
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
-**Implementation status:** P8.1 through P8.6 are complete. P8.7 is the next
-actionable slice; P12 and P13 remain deferred.
+**Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
+P9.1 is the next actionable slice; P12 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
 
@@ -2696,8 +2696,37 @@ Readback confirms forced RLS, three restrictive actor policies, lifecycle and
 append-only/no-truncate triggers, no broad runtime update/delete/truncate
 grants, and empty initial A2A ledgers. Sixty-four focused A2A/database checks,
 affected lint, TypeScript, and the 97-page Next 16 production build pass.
-Application promotion is pending. P8.7 bounded deadlock, timeout, fan-out,
-recursion, cost, and trust controls is next; P12/P13 remain deferred.
+Vercel rejected the complete-feature promotion at
+`7698648d72f06cb323f071df2b4e424e159097b4` before upload because the team
+still reports an overdue balance; Fly was intentionally left unchanged.
+
+P8.7 repository and database implementation is complete. Every outbound task
+first reserves a digest-bound `p8.7-a2a-safety-reservation:1` under an
+actor-private database-derived lineage. The fixed external policy is strictly
+lower than local orchestration: at most two model turns, 12,000 tokens,
+500,000 micro-USD, 180 seconds of active wall time, four governed tools, no
+browser action, one Agent, no delegated fan-out, one retry, and no replan.
+External peers remain `external_untrusted`, cannot redelegate, and must route
+mutations through forced approval.
+
+An advisory root lock makes fan-out, active-root task count, and reserved-cost
+checks atomic. Exact ancestor traversal limits external recursion to two,
+rejects repeated peers as cycles, and caps one parent at two active children
+and one root at six active tasks or 1,000,000 reserved micro-USD. Delegated
+tool callbacks consume an append-only idempotent claim before governed
+execution, while remote operations renew a 90-second-or-lower progress lease.
+The existing bounded worker maintenance lane cancels stalled tasks before the
+hard deadline and expires them at the deadline, immediately revoking local
+task and callback authority.
+
+Production migration 119 is installed with checksum
+`fd3a418e621c8763c1d1850e287c098e69fa805f79a0ab00e399d67f4b3d76bc`.
+Readback confirms forced RLS on both safety ledgers, two restrictive actor
+policies, all four lifecycle/no-truncate triggers, no broad runtime mutation
+grants, and zero initial records. Ninety-three focused A2A, database, queue,
+and maintenance checks, affected lint, TypeScript, and the 97-page Next 16
+production build pass. Application promotion is pending. This closes Phase 8;
+P9.1 is next and P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
@@ -2730,7 +2759,7 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [ ] **Phase 5 — Graph Engineering:** P5.1–P5.6 complete.
 - [x] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
 - [x] **Phase 7 — agent identity and lifecycle:** P7.1–P7.6 complete.
-- [ ] **Phase 8 — delegation and A2A:** P8.1–P8.7 complete.
+- [x] **Phase 8 — delegation and A2A:** P8.1–P8.7 complete.
 - [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.19 complete.
 - [ ] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete.
 - [ ] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.

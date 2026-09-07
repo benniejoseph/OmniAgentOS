@@ -1742,3 +1742,19 @@ and idempotency binding. Token issuance and raw token values are not events.
 Remote completion produces only the existing `delegation.task.completed_proposed`
 observation receipt; an independent exact parent evaluation remains required
 before `delegation.task.result_accepted`.
+
+P8.7 adds `a2a.safety.reserved`, `.progressed`, `.tool_claimed`, `.completed`,
+`.challenged`, `.canceled`, and `.expired`. These events contain only the exact
+safety/task/delegation/root/peer references, reservation and event digests,
+trust and approval declarations, lifecycle revision, tool-call count, progress
+time, and an optional reason digest. They never contain the task objective,
+remote content, raw idempotency key, tool input/output, token, credential, or
+private reasoning.
+
+The actor-private safety projection is lifecycle-authoritative; its immutable
+reservation binds the database-derived ancestry, lower budget vector, hard
+deadline, and progress timeout. The append-only tool claim stores only a digest
+of safety ID, tool ID, and idempotency key. Canonical delegation task events
+remain the authority for cancellation/expiry and governed-tool events remain
+the authority for effects; safety events prove that those operations stayed
+inside recursion, fan-out, cost, trust, timeout, and invocation limits.

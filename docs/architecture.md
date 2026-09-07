@@ -1590,6 +1590,23 @@ context/capability/tool grants and idempotency binding, forces approval for
 mutations, and returns only a bounded redacted execution projection. Inbound
 peers currently receive no ambient tool grants.
 
+P8.7 places a durable safety lease around that adapter. Before outbound
+dispatch, the database traverses the canonical parent-delegation chain and
+serializes reservations at the root. A repeated peer is a cycle; more than two
+external ancestors, two active siblings, six active root tasks, or one million
+reserved root micro-USD fails closed. The immutable reservation binds the
+exact task, contract, rollout, lineage, lower ten-counter budget, hard deadline,
+untrusted tier, no-redelegation declaration, and forced mutation approval.
+
+Delegated callbacks atomically append an idempotent tool-call claim and advance
+the reservation counter before entering the existing executor. Peer task,
+message, artifact, and status observations renew the bounded progress lease but
+never increase authority. The maintenance worker cancels an abandoned task
+before its deadline or records canonical `expired` at the deadline, then closes
+the safety reservation. This local terminal transition revokes the delegated
+token even if a remote peer continues processing. Inbound peers use the same
+lower budget vector with tools and retries reduced to zero.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,

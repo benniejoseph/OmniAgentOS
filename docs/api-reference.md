@@ -35,9 +35,15 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `GET /.well-known/agent-card.json` returns the minimal public Asael A2A Agent Card. `GET /api/a2a/extendedAgentCard` requires an active peer-bound service API key with `a2a:discover` and reveals only the local Agents allowed by that exact rollout.
 - `GET|POST /api/a2a/peers` and `GET|PATCH /api/a2a/peers/:id` are authenticated owner-control APIs for reviewing, registering, listing, activating, pausing, and revoking exact peer generations. Registration performs SSRF-safe live discovery and pins HTTP+JSON `1.0`, the HTTPS interface, card and adapter digests, direction, credentials, allowlists, and hard limits. Outbound bearer material is sealed and never returned.
 - `POST /api/a2a/message:send`, `POST /api/a2a/message:stream`, `GET /api/a2a/tasks`, and `GET|POST /api/a2a/tasks/:operation` implement the A2A 1.0 send, stream, list/get, subscribe, and cancel boundary. Requests require `A2A-Version: 1.0`, the A2A media type or JSON, a peer-bound service key with the exact discover/read/write scopes, trusted network/origin checks, and shared rate limits. Missing/older versions, redirects, URL/raw parts, mixed task coordinates, oversized content, inactive peers, and cross-owner references fail closed.
-- `POST /api/a2a/delegated-tools/execute` accepts only the opaque task-scoped delegated Bearer token transported to an outbound peer. It requires the exact active rollout generation, unexpired token, working canonical task, and allowlisted tool, then invokes the normal governed executor with forced mutation approval and idempotency. Responses are bounded redacted execution projections; raw delegated/provider credentials are never persisted or returned.
+- `POST /api/a2a/delegated-tools/execute` accepts only the opaque task-scoped delegated Bearer token transported to an outbound peer. It requires the exact active rollout generation, unexpired token, working canonical task, live P8.7 safety lease, and allowlisted tool. Each distinct idempotency key atomically consumes one bounded append-only tool claim before invoking the normal governed executor with forced mutation approval; retries of that exact key are not charged twice. Responses are bounded redacted execution projections; raw delegated/provider credentials are never persisted or returned.
 
 External messages, artifacts, and status remain untrusted observations. A remote `TASK_STATE_COMPLETED` maps only to canonical `completed_proposed`; only the existing exact parent verifier can record `result_accepted`.
+
+Outbound dispatch rejects budgets above the fixed lower external authority,
+repeated peers in canonical ancestry, exhausted depth/fan-out/root-task/root-cost
+limits, and expired deadlines. The non-secret boundary is sent in message
+metadata. Scheduled workflow maintenance closes stalled safety leases by
+canceling the canonical task before its deadline or expiring it at the deadline.
 
 ## Agent, memory, and retrieval
 

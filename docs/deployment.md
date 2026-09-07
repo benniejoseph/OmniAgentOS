@@ -89,11 +89,20 @@ P8.6 A2A deployments also require `NEXT_PUBLIC_APP_URL` to be the canonical
 credential-free HTTPS origin used in Agent Cards and delegated callback URLs,
 plus `OMNIAGENT_CREDENTIAL_KEYRING` for endpoint-bound peer credentials and
 delegated-token sealing. The runtime database role needs only the narrow grants
-installed by migrations 117–118; never substitute the migration-owner URL.
+installed by migrations 117–119; never substitute the migration-owner URL.
 Rollouts are actor-private and default inactive. Register and review a new peer
 generation before activation; pause or revoke it to invalidate all exact-digest
 delegated callbacks. Do not reuse service API keys or outbound bearer tokens
 across peers.
+
+Migration 119 adds the actor-private safety reservation and append-only
+tool-call claim ledgers. The maintenance worker must keep its maintenance lane
+enabled: it pages the same tenant inventory and closes active reservations when
+their progress lease or hard task deadline expires. A stalled remote peer is
+terminated locally without waiting for remote acknowledgement, so its token can
+no longer reach the governed executor. Monitor non-zero reconciliation failures;
+do not raise depth, fan-out, root-task, cost, or progress-timeout constants as an
+availability workaround.
 
 ## Dedicated worker and monitoring
 
