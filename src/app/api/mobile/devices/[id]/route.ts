@@ -1,7 +1,7 @@
 import { changeMobileDeviceLifecycle } from "@/lib/auth/mobile";
-import { mobileNoStoreHeaders } from "@/lib/auth/mobile-http";
+import { mobileError, mobileNoStoreHeaders } from "@/lib/auth/mobile-http";
 import { withDatabaseRequestScope } from "@/lib/db/client";
-import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { parseJsonBody } from "@/lib/http/body";
 import {
   nativeDeviceLifecycleRequestSchema,
   nativeDeviceSessionSchema,
@@ -19,8 +19,12 @@ async function POSTHandler(
   let body: unknown;
   try {
     body = await parseJsonBody(request, 2_048);
-  } catch (error) {
-    return jsonBodyErrorResponse(error);
+  } catch {
+    return mobileError(
+      400,
+      "invalid_request",
+      "The device lifecycle request is invalid.",
+    );
   }
   const parsed = nativeDeviceLifecycleRequestSchema.safeParse(body);
   if (!parsed.success) {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -152,5 +152,63 @@ describe("native mobile authentication", () => {
       ...signedIn!.identity.context,
       tenantId: "different-tenant",
     }, signedIn!.identity.session.id, "remote_wipe")).resolves.toBeUndefined();
+  });
+
+  it("invalidates access and refresh credentials when tenant membership changes", async () => {
+    const auth = await import("@/lib/auth/store");
+    const mobile = await import("@/lib/auth/mobile");
+    await auth.createUserWithMembership({
+      email: "membership-change@example.com",
+      password: "a secure membership password",
+      role: "operator",
+      tenantId: "membership-change-tenant",
+      tenantName: "Membership Change Tenant",
+    });
+    const signedIn = await mobile.authenticateMobilePassword({
+      email: "membership-change@example.com",
+      password: "a secure membership password",
+      device: {
+        id: "membership-device-1",
+        name: "Membership phone",
+        platform: "android",
+      },
+    });
+    expect(signedIn).not.toBeNull();
+
+    const authFile = path.join(process.env.OMNIAGENT_DATA_DIR!, "auth.json");
+    const ledger = JSON.parse(await readFile(authFile, "utf8")) as {
+      memberships: Array<{
+        userId: string;
+        tenantId: string;
+        status: "active" | "disabled";
+        updatedAt: string;
+      }>;
+    };
+    ledger.memberships = ledger.memberships.map((membership) =>
+      membership.userId === signedIn!.identity.user.id &&
+      membership.tenantId === signedIn!.identity.tenant.id
+        ? {
+            ...membership,
+            status: "disabled" as const,
+            updatedAt: new Date().toISOString(),
+          }
+        : membership);
+    await writeFile(authFile, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
+
+    await expect(mobile.getMobileIdentityFromRequest(new Request("https://example.test", {
+      headers: { authorization: `Bearer ${signedIn!.tokens.accessToken}` },
+    }))).resolves.toBeNull();
+    await expect(mobile.rotateMobileRefreshToken(
+      signedIn!.tokens.refreshToken,
+      "membership-device-1",
+    )).rejects.toMatchObject({ code: "invalid_refresh_token" });
+    const devices = await mobile.listMobileDeviceSessions(
+      signedIn!.identity.context,
+    );
+    expect(devices.devices.find((device) =>
+      device.id === signedIn!.identity.session.id)).toMatchObject({
+      state: "revoked",
+      revocationReason: "membership_changed",
+    });
   });
 });

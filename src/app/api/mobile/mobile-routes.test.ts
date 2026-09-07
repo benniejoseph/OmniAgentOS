@@ -41,4 +41,25 @@ describe("mobile auth route contract", () => {
       error: { code: "unauthorized", message: "A valid bearer token is required." },
     });
   });
+
+  it("keeps malformed device lifecycle errors private and versioned", async () => {
+    const { POST } = await import("@/app/api/mobile/devices/[id]/route");
+    const response = await POST(
+      new Request("https://example.test/api/mobile/devices/session-1", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{",
+      }),
+      { params: Promise.resolve({ id: "session-1" }) },
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("x-asael-native-contract-version")).toBe("2");
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "invalid_request",
+        message: "The device lifecycle request is invalid.",
+      },
+    });
+  });
 });
