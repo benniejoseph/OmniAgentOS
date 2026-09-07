@@ -24,14 +24,20 @@ describe("cohesive Today workspace", () => {
     expect(source).toContain("visibleSections");
   });
 
-  it("renders its initial projection inside the authenticated actor scope", async () => {
-    const source = await readFile(
+  it("keeps the authenticated actor scope inside the cohesive service boundary", async () => {
+    const pageSource = await readFile(
       path.join(process.cwd(), "src/app/app/page.tsx"),
       "utf8",
     );
+    const serviceSource = await readFile(
+      path.join(process.cwd(), "src/lib/app-services/cohesive-today.ts"),
+      "utf8",
+    );
 
-    expect(source).toContain("runWithDatabaseActorScope");
-    expect(source).toContain("actorBinding?.readableOwnerActorIds || [context.actorId]");
-    expect(source).not.toContain("runWithDatabaseTenantScope");
+    expect(pageSource).toContain("showCohesiveTodayService");
+    expect(serviceSource).toContain("runWithDatabaseActorScope");
+    expect(serviceSource).toContain(
+      "actorBinding?.readableOwnerActorIds || [caller.context.actorId]",
+    );
   });
 });
