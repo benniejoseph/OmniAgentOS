@@ -3,10 +3,21 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   ProcessedMeetingMedia,
+  meetingRecordingCanProcess,
   type ProcessedMeetingMediaView,
 } from "@/components/meetings-workspace";
 
 describe("processed meeting media", () => {
+  it("requires write access and explicit recording consent before processing", () => {
+    const source = { kind: "capture_recording" as const, media: null };
+    expect(meetingRecordingCanProcess(true, [{ recordingConsent: "granted" }], source))
+      .toBe(true);
+    expect(meetingRecordingCanProcess(true, [{ recordingConsent: "pending" }], source))
+      .toBe(false);
+    expect(meetingRecordingCanProcess(false, [{ recordingConsent: "granted" }], source))
+      .toBe(false);
+  });
+
   it("renders timestamped speakers and direct citations", () => {
     const media: ProcessedMeetingMediaView = {
       processingStatus: "ready",
