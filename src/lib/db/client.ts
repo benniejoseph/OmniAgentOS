@@ -12108,10 +12108,7 @@ async function ensureTrashLifecycleV1(sql: SqlClient) {
         OR (state IN ('purged', 'expired')
           AND item->'restoredAt' = 'null'::JSONB
           AND (item->>'purgedAt')::TIMESTAMPTZ = terminal_at)
-      ),
-      FOREIGN KEY (owner_actor_id)
-        REFERENCES omni_auth_users (actor_id)
-        ON UPDATE RESTRICT ON DELETE RESTRICT
+      )
     )
   `;
   await sql`
