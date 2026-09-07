@@ -180,7 +180,7 @@ export async function canonicalWorkItemSurfaces(
         persistence: "local_projection",
         projectionSha256: null,
         sourceRevisionSha256: null,
-        runtime: localRuntime(fallback, true),
+        runtime: runtimeBySourceId.get(fallback.sourceId) || localRuntime(fallback, true),
       })];
     }
     return [fallback.sourceId, buildSurface({
