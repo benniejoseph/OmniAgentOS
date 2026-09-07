@@ -16,6 +16,7 @@ vi.mock("@/lib/connectors/oauth-providers", async (importOriginal) => ({
 }));
 
 import {
+  executeSalesforceWrite,
   fetchSalesforcePage,
   fetchSalesforceRecord,
   SalesforceProviderError,
@@ -25,6 +26,7 @@ import {
   salesforceConnectionId,
 } from "@/lib/customer-success/salesforce-contracts";
 import type { SalesforceConnection } from "@/lib/customer-success/salesforce-store";
+import { salesforceWriteExternalKey } from "@/lib/customer-success/salesforce-write-contracts";
 
 const connection = {
   connectionId: salesforceConnectionId({
@@ -55,7 +57,14 @@ afterEach(() => {
   mocks.getOAuthGrantSecrets.mockReset();
   mocks.saveOAuthGrant.mockReset();
   mocks.refreshOAuthAccess.mockReset();
+  delete process.env.SALESFORCE_WRITE_ENABLED;
+  delete process.env.SALESFORCE_WRITE_EXTERNAL_ID_FIELD;
 });
+
+function enableWrites() {
+  process.env.SALESFORCE_WRITE_ENABLED = "true";
+  process.env.SALESFORCE_WRITE_EXTERNAL_ID_FIELD = "Asael_Idempotency_Key__c";
+}
 
 function authorize() {
   mocks.getOAuthGrantSecrets.mockResolvedValue({
@@ -161,5 +170,126 @@ describe("Salesforce REST read adapter", () => {
         action: "review_permissions",
       },
     });
+  });
+});
+
+describe("Salesforce guarded-write adapter", () => {
+  it("creates through a unique external-ID upsert and verifies the exact linked state", async () => {
+    authorize();
+    enableWrites();
+    let created = false;
+    const executionId = "idem_contact_create";
+    const externalKey = salesforceWriteExternalKey(executionId);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      const url = String(request);
+      if (url.endsWith("/services/data/")) return Response.json([{ version: "67.0" }]);
+      if (url.endsWith("/sobjects/Contact/describe")) return Response.json({ fields: [
+        { name: "LastName", createable: true, updateable: true },
+        { name: "AccountId", createable: true, updateable: true },
+        { name: "Asael_Idempotency_Key__c", createable: true, updateable: true, externalId: true, unique: true },
+      ] });
+      if (init?.method === "PATCH") {
+        created = true;
+        return Response.json({ id: "003000000000001AAA", success: true }, { status: 201 });
+      }
+      if (url.includes("/query?q=")) return Response.json({ done: true, records: created ? [{
+        Id: "003000000000001AAA",
+        LastName: "Lovelace",
+        AccountId: "001000000000001AAA",
+        Asael_Idempotency_Key__c: externalKey,
+        SystemModstamp: "2026-09-07T12:00:01.000Z",
+        LastModifiedDate: "2026-09-07T12:00:01.000Z",
+      }] : [] });
+      throw new Error(`Unexpected Salesforce request ${url}`);
+    });
+
+    await expect(executeSalesforceWrite({
+      connection,
+      toolId: "app.customer_accounts.salesforce.contact.create",
+      value: {
+        accountId: `customer-account:${"c".repeat(64)}`,
+        expectedAccountRevision: 2,
+        fields: { LastName: "Lovelace" },
+      },
+      executionId,
+      salesforceAccountId: "001000000000001AAA",
+    })).resolves.toMatchObject({
+      status: "commit",
+      commit: {
+        verificationState: "verified",
+        verificationReasonCode: "state_matched",
+        providerAcknowledgement: "provider_response",
+      },
+    });
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH"))
+      .toHaveLength(1);
+  });
+
+  it("refuses to overwrite an update target that changed after approval", async () => {
+    authorize();
+    enableWrites();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (request) => {
+      const url = String(request);
+      if (url.endsWith("/services/data/")) return Response.json([{ version: "67.0" }]);
+      if (url.endsWith("/sobjects/Account/describe")) return Response.json({
+        fields: [{ name: "Name", updateable: true }],
+      });
+      return Response.json({ done: true, records: [{
+        Id: "001000000000001AAA",
+        Name: "Changed elsewhere",
+        SystemModstamp: "2026-09-07T12:01:00.000Z",
+        LastModifiedDate: "2026-09-07T12:01:00.000Z",
+      }] });
+    });
+
+    await expect(executeSalesforceWrite({
+      connection,
+      toolId: "app.customer_accounts.salesforce.account.update",
+      value: {
+        accountId: `customer-account:${"c".repeat(64)}`,
+        expectedAccountRevision: 2,
+        recordId: "001000000000001AAA",
+        expectedProviderModifiedAt: "2026-09-07T12:00:00.000Z",
+        fields: { Name: "Approved name" },
+      },
+      executionId: "idem_account_update",
+      salesforceAccountId: "001000000000001AAA",
+    })).resolves.toMatchObject({
+      status: "commit",
+      commit: {
+        verificationState: "failed",
+        verificationReasonCode: "state_mismatch",
+      },
+    });
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
+  it("allows a missing deterministic create target to resume safely", async () => {
+    authorize();
+    enableWrites();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request) => {
+      const url = String(request);
+      if (url.endsWith("/services/data/")) return Response.json([{ version: "67.0" }]);
+      if (url.endsWith("/sobjects/Task/describe")) return Response.json({ fields: [
+        { name: "Subject", createable: true },
+        { name: "Status", createable: true },
+        { name: "Priority", createable: true },
+        { name: "WhatId", createable: true },
+        { name: "Asael_Idempotency_Key__c", createable: true, updateable: true, externalId: true, unique: true },
+      ] });
+      return Response.json({ done: true, records: [] });
+    });
+    await expect(executeSalesforceWrite({
+      connection,
+      toolId: "app.customer_accounts.salesforce.task.create",
+      value: {
+        accountId: `customer-account:${"c".repeat(64)}`,
+        expectedAccountRevision: 2,
+        fields: { Subject: "Follow up", Status: "Not Started", Priority: "Normal" },
+      },
+      executionId: "idem_task_create",
+      salesforceAccountId: "001000000000001AAA",
+      reconcileOnly: true,
+    })).resolves.toEqual({ status: "retryable" });
   });
 });
