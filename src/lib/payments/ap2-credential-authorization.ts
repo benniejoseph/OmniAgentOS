@@ -214,6 +214,7 @@ const credentialGrantBodySchema = z.object({
   createdAt: timestampSchema,
   consumedAt: timestampSchema.nullable(),
   revokedAt: timestampSchema.nullable(),
+  expiredAt: timestampSchema.nullable(),
 }).strict();
 
 export const ap2CredentialGrantSchema = credentialGrantBodySchema.extend({
@@ -228,6 +229,28 @@ export const ap2CredentialGrantSchema = credentialGrantBodySchema.extend({
   }
 });
 
+const credentialClaimBodySchema = z.object({
+  version: z.literal("p9.17-ap2-credential-claim:1"),
+  claimId: uuidId("ap2_credential_claim"),
+  tenantId: opaqueIdSchema,
+  ownerActorId: opaqueIdSchema,
+  grantId: uuidId("ap2_credential_grant"),
+  merchantPaymentProcessorId: opaqueIdSchema,
+  scopeSha256: sha256Schema,
+  idempotencyKeySha256: sha256Schema,
+  disposition: z.literal("claimed_once_for_processor"),
+  claimedAt: timestampSchema,
+}).strict();
+
+export const ap2CredentialClaimSchema = credentialClaimBodySchema.extend({
+  claimSha256: sha256Schema,
+}).strict().superRefine((claim, context) => {
+  const { claimSha256, ...body } = claim;
+  if (claimSha256 !== canonicalJsonSha256(body)) {
+    issue(context, ["claimSha256"], "Credential claim digest does not match.");
+  }
+});
+
 export type Ap2CredentialProviderConfiguration = z.infer<
   typeof ap2CredentialProviderConfigurationSchema
 >;
@@ -237,7 +260,9 @@ export type Ap2CredentialAuthorizationRequest = z.infer<
 export type Ap2CredentialProviderAuthorization = z.infer<
   typeof ap2CredentialProviderAuthorizationSchema
 >;
+export type Ap2CredentialScope = z.infer<typeof ap2CredentialScopeSchema>;
 export type Ap2CredentialGrant = z.infer<typeof ap2CredentialGrantSchema>;
+export type Ap2CredentialClaim = z.infer<typeof ap2CredentialClaimSchema>;
 
 export type Ap2CredentialProvider = Readonly<{
   interfaceVersion: typeof AP2_CREDENTIAL_PROVIDER_INTERFACE_VERSION;
@@ -297,9 +322,11 @@ export function buildAp2CredentialAuthorizationRequest(input: {
     mandateExpiry,
     now.getTime() + configuration.maximumScopeTtlSeconds * 1_000,
   )).toISOString();
-  const requestId = `ap2_credential_request:${deterministicUuid(
-    `${review.reviewId}\0${authorization.authorizationSha256}\0${configuration.configurationSha256}`,
-  )}`;
+  const requestId = ap2CredentialAuthorizationRequestId({
+    reviewId: review.reviewId,
+    authorizationSha256: authorization.authorizationSha256,
+    providerConfigurationSha256: configuration.configurationSha256,
+  });
   const scope = ap2CredentialScopeSchema.parse({
     purpose: "single_ap2_transaction",
     credentialProviderId: configuration.providerId,
@@ -432,11 +459,117 @@ export function buildAp2CredentialGrant(input: {
     createdAt: authorization.issuedAt,
     consumedAt: null,
     revokedAt: null,
+    expiredAt: null,
   });
   return ap2CredentialGrantSchema.parse({
     ...body,
     grantSha256: canonicalJsonSha256(body),
   });
+}
+
+export function buildAp2CredentialClaim(input: {
+  grant: Ap2CredentialGrant;
+  merchantPaymentProcessorId: string;
+  idempotencyKey: string;
+  claimedAt?: string;
+}) {
+  const grant = ap2CredentialGrantSchema.parse(input.grant);
+  const processorId = required(input.merchantPaymentProcessorId, "processor");
+  if (processorId !== grant.scope.merchantPaymentProcessorId) {
+    throw new Error("Credential claim targets a different payment processor.");
+  }
+  const idempotencyKey = required(input.idempotencyKey, "claim idempotency key");
+  const body = credentialClaimBodySchema.parse({
+    version: "p9.17-ap2-credential-claim:1",
+    claimId: `ap2_credential_claim:${deterministicUuid(`${grant.grantId}\0${idempotencyKey}`)}`,
+    tenantId: grant.tenantId,
+    ownerActorId: grant.ownerActorId,
+    grantId: grant.grantId,
+    merchantPaymentProcessorId: processorId,
+    scopeSha256: grant.scopeSha256,
+    idempotencyKeySha256: sha256Text(idempotencyKey),
+    disposition: "claimed_once_for_processor",
+    claimedAt: input.claimedAt || new Date().toISOString(),
+  });
+  return ap2CredentialClaimSchema.parse({
+    ...body,
+    claimSha256: canonicalJsonSha256(body),
+  });
+}
+
+export function transitionAp2CredentialGrant(
+  input: Ap2CredentialGrant,
+  state: "consumed" | "revoked" | "expired",
+  occurredAt = new Date().toISOString(),
+) {
+  const grant = ap2CredentialGrantSchema.parse(input);
+  if (grant.state !== "active") {
+    throw new Error("Only an active AP2 credential grant can transition.");
+  }
+  const { grantSha256: _priorDigest, ...current } = grant;
+  const body = credentialGrantBodySchema.parse({
+    ...current,
+    state,
+    lifecycleRevision: grant.lifecycleRevision + 1,
+    consumedAt: state === "consumed" ? occurredAt : null,
+    revokedAt: state === "revoked" ? occurredAt : null,
+    expiredAt: state === "expired" ? occurredAt : null,
+  });
+  return ap2CredentialGrantSchema.parse({
+    ...body,
+    grantSha256: canonicalJsonSha256(body),
+  });
+}
+
+export async function obtainAp2CredentialProviderAuthorization(input: {
+  provider: Ap2CredentialProvider;
+  request: Ap2CredentialAuthorizationRequest;
+  checkoutMandateContent: Ap2HumanPresentReview["checkoutMandateContent"];
+  paymentMandateContent: Ap2HumanPresentReview["paymentMandateContent"];
+  mandateAuthorization: Ap2MandateAuthorization;
+  now?: Date;
+}) {
+  const configuration = ap2CredentialProviderConfigurationSchema.parse(
+    input.provider.configuration,
+  );
+  if (input.provider.interfaceVersion !== AP2_CREDENTIAL_PROVIDER_INTERFACE_VERSION) {
+    throw new Error("Credential provider implements an unsupported interface.");
+  }
+  let authorization: Ap2CredentialProviderAuthorization | undefined;
+  try {
+    authorization = await input.provider.authorize({
+      request: input.request,
+      checkoutMandateContent: input.checkoutMandateContent,
+      paymentMandateContent: input.paymentMandateContent,
+      mandateAuthorization: input.mandateAuthorization,
+    });
+  } catch {
+    authorization = await input.provider.reconcile({
+      requestId: input.request.requestId,
+      requestSha256: input.request.requestSha256,
+    });
+    if (!authorization) {
+      throw new Error(
+        "Credential-provider authorization outcome is unknown; blind retry is forbidden.",
+      );
+    }
+  }
+  return verifyAp2CredentialProviderAuthorization({
+    request: input.request,
+    authorization,
+    configuration,
+    now: input.now,
+  });
+}
+
+export function ap2CredentialAuthorizationRequestId(input: {
+  reviewId: string;
+  authorizationSha256: string;
+  providerConfigurationSha256: string;
+}) {
+  return `ap2_credential_request:${deterministicUuid(
+    `${required(input.reviewId, "review")}\0${sha256Schema.parse(input.authorizationSha256)}\0${sha256Schema.parse(input.providerConfigurationSha256)}`,
+  )}`;
 }
 
 export function providerAuthorizationPublicProof(

@@ -126,6 +126,16 @@ export async function listAp2PaymentSigningCredentials(owner: Owner) {
   return rows.map((row) => ap2PaymentSigningCredentialSchema.parse(row.credential));
 }
 
+export async function getAp2PaymentSigningCredential(
+  credentialId: string,
+  owner: Owner,
+) {
+  const scope = exactOwner(owner);
+  requireDatabase();
+  await ensureDatabaseSchema();
+  return readCredentialDb(credentialId, scope, getSql());
+}
+
 export async function revokeAp2PaymentSigningCredential(
   credentialId: string,
   owner: MutationOwner,
