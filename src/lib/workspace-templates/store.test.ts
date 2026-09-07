@@ -90,6 +90,7 @@ describe("workspace template store", () => {
     mocks.responses.push(
       [],
       [],
+      [],
       [{ published_at: new Date("2026-09-07T10:00:00.000Z") }],
       [],
       [],
@@ -102,6 +103,7 @@ describe("workspace template store", () => {
     expect(first.templateVersionId).toBe(`${first.templateId}:v1`);
 
     mocks.responses.push(
+      [],
       [],
       [{ active_template_version: 1, owner_actor_id: canonicalActorId }],
       [{ published_at: new Date("2026-09-07T10:01:00.000Z") }],
@@ -126,7 +128,7 @@ describe("workspace template store", () => {
   it("rejects a reused publication idempotency key with changed content", async () => {
     const { publishWorkspaceTemplate, WorkspaceTemplateConflictError } = await import("@/lib/workspace-templates/store");
     mocks.responses.push(
-      [], [], [{ published_at: new Date("2026-09-07T10:00:00.000Z") }], [], [],
+      [], [], [], [{ published_at: new Date("2026-09-07T10:00:00.000Z") }], [], [],
     );
     const first = await publishWorkspaceTemplate({
       authority: mutationAuthority("workspace.template.publish", "same-key"),
@@ -135,7 +137,7 @@ describe("workspace template store", () => {
     const insert = mocks.calls.find((call) => call.text.includes("INSERT INTO omni_workspace_template_versions"));
     expect(insert).toBeDefined();
     const requestDigest = insert!.values[11];
-    mocks.responses.push([{
+    mocks.responses.push([], [{
       template_snapshot: first,
       active_template_version: 1,
       publish_request_sha256: requestDigest,

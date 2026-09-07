@@ -158,6 +158,12 @@ export async function publishWorkspaceTemplate(input: {
   );
 
   return getSql().transaction(async (sql: TemplateSql) => {
+    await sql`
+      SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`${authority.tenantId}:${authority.workspaceId}:${authority.canonicalActorId}:${idempotencySha256}`},
+        0
+      ))
+    `;
     const replayRows = await sql`
       SELECT version.template_snapshot, channel.active_template_version,
              version.publish_request_sha256
@@ -335,6 +341,12 @@ export async function recordWorkspaceTemplateInstantiation(input: {
   );
 
   return getSql().transaction(async (sql: TemplateSql) => {
+    await sql`
+      SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`${authority.tenantId}:${authority.workspaceId}:${authority.canonicalActorId}:${idempotencySha256}`},
+        0
+      ))
+    `;
     const replayRows = await sql`
       SELECT * FROM omni_workspace_template_instantiations
       WHERE tenant_id = ${authority.tenantId}
