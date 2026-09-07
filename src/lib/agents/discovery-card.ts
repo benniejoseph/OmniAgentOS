@@ -155,7 +155,25 @@ const taskInputSchema = Object.freeze({
     acceptanceCriteria: {
       type: "array",
       maxItems: 32,
-      items: { type: "string", minLength: 3, maxLength: 1_000 },
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "criterionId",
+          "statement",
+          "verificationMethod",
+          "required",
+        ],
+        properties: {
+          criterionId: { type: "string", minLength: 1, maxLength: 240 },
+          statement: { type: "string", minLength: 3, maxLength: 1_000 },
+          verificationMethod: {
+            type: "string",
+            enum: ["schema", "evidence", "governed_receipt", "parent_verifier"],
+          },
+          required: { const: true },
+        },
+      },
     },
     inputArtifacts: {
       type: "array",
@@ -163,10 +181,32 @@ const taskInputSchema = Object.freeze({
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["artifactId", "contentSha256"],
+        required: [
+          "artifactId",
+          "sourceExecutionId",
+          "name",
+          "kind",
+          "mediaType",
+          "contentSha256",
+          "byteCount",
+          "evidenceIds",
+        ],
         properties: {
           artifactId: { type: "string", minLength: 1, maxLength: 240 },
+          sourceExecutionId: { type: "string", minLength: 1, maxLength: 240 },
+          name: { type: "string", minLength: 1, maxLength: 160 },
+          kind: {
+            type: "string",
+            enum: ["analysis", "result", "verification", "report", "memory", "control"],
+          },
+          mediaType: { type: "string", minLength: 3, maxLength: 120 },
           contentSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          byteCount: { type: "integer", minimum: 1, maximum: 25_000_000 },
+          evidenceIds: {
+            type: "array",
+            maxItems: 64,
+            items: { type: "string", minLength: 1, maxLength: 240 },
+          },
         },
       },
     },
@@ -185,8 +225,44 @@ const taskOutputSchema = Object.freeze({
   properties: {
     status: { type: "string", enum: ["completed", "blocked", "failed"] },
     summary: { type: "string", minLength: 1, maxLength: 4_000 },
-    artifacts: { type: "array", maxItems: 8 },
-    acceptanceChecks: { type: "array", maxItems: 32 },
+    artifacts: {
+      type: "array",
+      maxItems: 8,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "kind", "content", "evidenceIds"],
+        properties: {
+          name: { type: "string", minLength: 1, maxLength: 160 },
+          kind: { type: "string", minLength: 1, maxLength: 80 },
+          content: { type: "string", minLength: 1, maxLength: 32_000 },
+          evidenceIds: {
+            type: "array",
+            maxItems: 64,
+            items: { type: "string", minLength: 1, maxLength: 240 },
+          },
+        },
+      },
+    },
+    acceptanceChecks: {
+      type: "array",
+      maxItems: 32,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["criterion", "passed", "evidenceIds", "note"],
+        properties: {
+          criterion: { type: "string", minLength: 3, maxLength: 1_000 },
+          passed: { type: "boolean" },
+          evidenceIds: {
+            type: "array",
+            maxItems: 64,
+            items: { type: "string", minLength: 1, maxLength: 240 },
+          },
+          note: { type: "string", maxLength: 2_000 },
+        },
+      },
+    },
   },
 });
 
@@ -367,9 +443,40 @@ function assertClosedSchema(
     context.addIssue({ code: "custom", path, message: "Agent capability schema must be an object." });
     return;
   }
-  const record = value as Record<string, JsonValue>;
-  if (record.type !== "object" || record.additionalProperties !== false) {
+  const root = value as Record<string, JsonValue>;
+  if (root.type !== "object") {
     context.addIssue({ code: "custom", path, message: "Agent capability schemas must be closed objects." });
+    return;
+  }
+  assertClosedSchemaNode(root, context, path);
+}
+
+function assertClosedSchemaNode(
+  schema: Record<string, JsonValue>,
+  context: z.RefinementCtx,
+  path: PropertyKey[],
+) {
+  if (schema.type === "object" && schema.additionalProperties !== false) {
+    context.addIssue({ code: "custom", path, message: "Agent capability object schemas must be closed." });
+  }
+  const properties = schema.properties;
+  if (properties && !Array.isArray(properties) && typeof properties === "object") {
+    for (const [key, child] of Object.entries(properties)) {
+      if (child && !Array.isArray(child) && typeof child === "object") {
+        assertClosedSchemaNode(child as Record<string, JsonValue>, context, [
+          ...path,
+          "properties",
+          key,
+        ]);
+      }
+    }
+  }
+  const items = schema.items;
+  if (items && !Array.isArray(items) && typeof items === "object") {
+    assertClosedSchemaNode(items as Record<string, JsonValue>, context, [
+      ...path,
+      "items",
+    ]);
   }
 }
 
