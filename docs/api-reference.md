@@ -112,6 +112,16 @@ canceling the canonical task before its deadline or expiring it at the deadline.
 - `POST|DELETE /api/connectors/:id/credential` rotates or removes an app-managed MCP bearer token as a risk-2 admin operation. Rotation disables the connector and invalidates its discovered contracts until rediscovery and review. Removal scrubs the ciphertext and disables the connector, but does not revoke the external provider token.
 - `/api/openapi-connectors`, `/api/openapi-connectors/:id`, and `/api/openapi-connectors/:id/import`. `POST /api/openapi-connectors/:id` returns an exact Trash preview; DELETE accepts only that preview.
 - `/api/connection-catalog` and `/api/capabilities`.
+- `GET /api/integrations/overview` returns the authenticated caller's private,
+  no-store `p11.7-truthful-integrations:1` projection. Optional `workspaceId`
+  selects the exact readable Salesforce Workspace. The response separates
+  installed integrations from catalog suggestions and reports per-source
+  inventory availability, actual connection/manageability, declared operation
+  permissions, sync coverage, safe cursor/freshness state, recovery, and
+  receipt-attributable 30-day cost. A source failure remains unavailable;
+  unknown cost never means free. Raw cursors, credentials, provider content,
+  and private owner coordinates are excluded. The same governed read is
+  exposed as `app.integrations.overview.show`.
 - `GET|POST /api/capabilities/rollouts` exposes the tenant-bound capability rollout control plane. Authorized security readers may inspect a current generation by capability ID; trusted system automation may register or compare-and-swap a generation transition as a risk-3 operation. Responses expose opaque identifiers and hashes, never private capability payloads.
 
 Connector API records never contain credential plaintext or sealed payloads. App-managed bearer credentials are decrypted only immediately before the exact-origin MCP request; deployer-managed connector records reference environment-variable names instead of values. Registration does not make an endpoint safe by itself; discovery/import and execution remain subject to network, role, risk, and approval policy.

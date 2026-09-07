@@ -523,6 +523,9 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.connectors.list", "List connectors", "List tenant-scoped MCP and OpenAPI connectors with reviewed contract summaries.", objectSchema({
     kind: connectorKind(), limit: integer(1, 100, 20),
   })),
+  readTool("app.integrations.overview.show", "Show integration access", "Show what the current actor can access and do through installed OAuth, MCP, OpenAPI, and Salesforce integrations, including permission, sync, cursor, freshness, failure, and attributable cost states. Catalog suggestions remain separate.", objectSchema({
+    workspaceId: opaqueId("Optional canonical Workspace ID for Salesforce health."),
+  })),
   readTool("app.connectors.show", "Show connector", "Read one exact connector and its discovered tools or imported operations.", requiredObjectSchema({
     kind: connectorKind(), connectorId: opaqueId("Exact connector ID."),
   }, ["kind", "connectorId"])),

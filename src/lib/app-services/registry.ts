@@ -9,6 +9,7 @@ const readOnlyEventContract = "read_only:no_domain_mutation";
 export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.workspaces.summary", "read", "workspace"),
   read("app.workspaces.readiness", "read", "workspace"),
+  read("app.integrations.overview.show", "read", "integrations_overview"),
   read("app.library.list", "read", "workspace_library"),
   read("app.memory.readable.show", "read", "memory_overview"),
   read("app.memory.shared.list", "read", "shared_memory"),
@@ -182,6 +183,7 @@ export type AppServiceOperation =
 export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   { toolId: "app.workspaces.summary", operation: "app.workspaces.summary" },
   { toolId: "app.workspaces.readiness", operation: "app.workspaces.readiness" },
+  { toolId: "app.integrations.overview.show", operation: "app.integrations.overview.show" },
   { toolId: "app.memory.shared.list", operation: "app.memory.shared.list" },
   { toolId: "app.memory.shared.write", operation: "app.memory.shared.write" },
   { toolId: "app.workspace_templates.list", operation: "app.workspace_templates.list" },

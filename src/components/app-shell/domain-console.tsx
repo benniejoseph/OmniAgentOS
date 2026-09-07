@@ -617,9 +617,13 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
             )
             .map((item) => ({
               title: stringValue(item.name, "Connector"),
-              status: stringValue(item.status, "planned"),
-              meta: stringValue(item.adapter, "adapter"),
-              tone: stringValue(item.status) === "planned" ? "neutral" : "success",
+              status: stringValue(item.status) === "planned"
+                ? "planned"
+                : stringValue(item.status) === "requires_credentials"
+                  ? "credentials required"
+                  : "setup available",
+              meta: `${stringValue(item.adapter, "adapter")} · not installed`,
+              tone: "neutral",
             })),
       },
     ],

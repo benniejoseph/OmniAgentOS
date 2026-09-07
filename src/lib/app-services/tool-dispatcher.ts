@@ -13,6 +13,7 @@ import {
   getWorkspaceReadinessService,
   getWorkspaceSummaryService,
 } from "@/lib/app-services/workspaces";
+import { showTruthfulIntegrationsService } from "@/lib/app-services/integrations";
 import {
   deleteGovernedKnowledgeSourceService,
   ingestKnowledgeService,
@@ -221,6 +222,7 @@ export async function executeFirstPartyAppTool(input: {
   const handlers: Record<string, () => Promise<unknown>> = {
     "app.workspaces.summary": () => getWorkspaceSummaryService(caller, input.toolInput as never),
     "app.workspaces.readiness": () => getWorkspaceReadinessService(caller, input.toolInput as never),
+    "app.integrations.overview.show": () => showTruthfulIntegrationsService(caller, input.toolInput as never),
     "app.memory.shared.list": () => listSharedMemoryService(caller, input.toolInput as never),
     "app.memory.shared.write": () => writeSharedMemoryService(caller, input.toolInput as never),
     "app.workspace_templates.list": () => listWorkspaceTemplatesService(caller, input.toolInput as never),

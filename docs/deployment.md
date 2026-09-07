@@ -394,6 +394,17 @@ contains no claim bodies or receipt/query identifiers, and selecting one claim
 still opens the existing provenance, lifecycle, correction, and reviewed
 deletion controls.
 
+P11.7 truthful Integrations is a web-only projection and UI release with no
+migration, backfill, environment change, or Fly release. It reads the current
+OAuth grants, MCP/OpenAPI contracts, Salesforce sync health, and usage receipts;
+Salesforce still requires its existing external OAuth and relay configuration
+before it can report working. Deploy it as one complete Vercel feature. Verify
+anonymous access returns 401, an authenticated response validates as
+`p11.7-truthful-integrations:1`, failed inventories remain unavailable, catalog
+suggestions remain visibly not installed, and no raw cursor or credential value
+is serialized. Confirm the browser shows the same installed, permission, sync,
+freshness, failure, and cost states returned by the endpoint.
+
 ## Production smoke state
 
 The `Production Smoke` workflow supports schedule and manual dispatch. Configure:

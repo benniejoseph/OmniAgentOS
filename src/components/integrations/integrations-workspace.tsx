@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Cable, ShieldCheck, Wrench } from "lucide-react";
 import { DomainConsole } from "@/components/app-shell/domain-console";
+import { IntegrationTruthPanel } from "@/components/integrations/integration-truth-panel";
 import styles from "./integrations-workspace.module.css";
 
 export function IntegrationsWorkspace() {
@@ -20,6 +21,7 @@ export function IntegrationsWorkspace() {
           <Link href="/app/approvals"><ShieldCheck size={14} aria-hidden="true" />Approvals</Link>
         </div>
       </nav>
+      <IntegrationTruthPanel />
       <DomainConsole domain="integrations" />
     </div>
   );
