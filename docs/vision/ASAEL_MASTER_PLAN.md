@@ -802,7 +802,12 @@ paths are explicitly excluded from model authority. Overlapping project,
 capture, Agent, run, workflow, Today, notification, Skill, memory, knowledge,
 and Mission routes share the same services. No migration is required. P9.3 is
 next. Sixty-six focused checks, affected lint, TypeScript, and the 97-page
-Next 16 production build pass; P12 and P13 remain deferred.
+Next 16 production build pass. Vercel deployment
+`dpl_6ocLeJMww9Dw8MfGTYvcprYL9DF7` is Ready at the canonical alias on exact
+revision `bd18ab835d0a6a902fd96ed50f5c12535fb57777`. This is a web-only slice,
+so the compatible Fly worker/OpenAI gateway and Playwright gateway were not
+restarted; all three production health endpoints return HTTP 200. P12 and P13
+remain deferred.
 
 #### Browser and computer use
 
@@ -2751,7 +2756,10 @@ approval, and digest-bound previews for every permanent effect. Eight unsafe
 secret, binary/frame, and recursive-fork paths remain explicitly outside model
 authority. Overlapping UI routes use the same services; the governed executor
 has no direct domain-store or product-DOM path. No migration is required. P9.3
-is next; P12/P13 remain deferred.
+is next. Vercel deployment `dpl_6ocLeJMww9Dw8MfGTYvcprYL9DF7` is Ready on
+exact revision `bd18ab835d0a6a902fd96ed50f5c12535fb57777`; the unchanged compatible
+Fly worker/OpenAI gateway and Playwright gateway are healthy. P12/P13 remain
+deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
