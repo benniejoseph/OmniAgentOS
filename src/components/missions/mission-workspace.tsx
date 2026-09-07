@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleAlert,
+  CircleDollarSign,
   CircleDot,
   Columns3,
   FileText,
@@ -44,6 +45,11 @@ import type { CapabilityDescriptor } from "@/lib/capabilities/types";
 import type { MissionDetailView, MissionSummaryView } from "@/lib/missions/public";
 import type { MissionStatus } from "@/lib/missions/types";
 import { canonicalStatusForMission } from "@/lib/status/canonical";
+import {
+  canonicalWorkItemCostLabel,
+  canonicalWorkItemStatusLabel,
+  parseCanonicalWorkItemSurface,
+} from "@/lib/workspaces/surface";
 import styles from "@/components/missions/mission-workspace.module.css";
 
 type ViewMode = "board" | "canvas" | "list";
@@ -1408,7 +1414,7 @@ export function MissionWorkspace({
             {detailLoading && !selectedDetail ? <CanvasSkeleton /> : <div className={styles.viewFrame} key={view}>
               {view === "board" ? <TaskBoard columns={BOARD_COLUMNS} groupedTasks={groupedTasks} allTasks={tasks} detail={selectedDetail} agents={agentNameMap} asOf={asOf} mobileColumn={mobileColumn} onMobileColumnChange={setMobileColumn} onSelectTask={(task) => setSelectedTaskId(task.id)} onCreateTask={() => setShowTaskCreate(true)} createDisabledReason={taskActionBlocked} />
                 : view === "canvas" ? <TaskCanvas tasks={filteredTasks} allTasks={tasks} agents={agentNameMap} onSelectTask={(task) => setSelectedTaskId(task.id)} />
-                  : <TaskList tasks={filteredTasks} allTasks={tasks} detail={selectedDetail} agents={agentNameMap} asOf={asOf} onSelectTask={(task) => setSelectedTaskId(task.id)} />}
+                  : <TaskList tasks={filteredTasks} allTasks={tasks} agents={agentNameMap} asOf={asOf} onSelectTask={(task) => setSelectedTaskId(task.id)} />}
             </div>}
           </> : selectedMission ? <MissionSummaryOnly mission={selectedMission} mode={summarySelectionMode} asOf={asOf} /> : workspaceLoading ? (showLoading ? <CanvasSkeleton /> : <div className={styles.loadingReserve} aria-hidden="true" />) : <div className={styles.emptyCanvas}><Workflow size={28} aria-hidden="true" /><h2>Create a mission to organize durable work</h2><p>Each mission keeps tasks, agent attempts, approvals, and evidence connected.</p><button type="button" onClick={() => setShowCreate(true)} disabled={Boolean(createActionBlocked)} title={createActionBlocked}><Plus size={14} aria-hidden="true" /> New mission</button></div>}
         </main>
@@ -1473,7 +1479,6 @@ function TaskCard({ task, allTasks, detail, agents, asOf, onSelect }: { task: Bo
   const dependency = dependencyProgress(task, allTasks);
   const attempts = attemptsForTask(detail, task.id);
   const comments = commentsForTask(detail, task);
-  const evidence = artifactsForTask(detail, task.id).filter((artifact) => !isCommentArtifact(artifact));
   const assignee = taskAssigneeLabel(task, agents);
   const column = boardColumnForTask(task, allTasks);
   const retries = taskRetryCount(task, attempts.length);
@@ -1482,7 +1487,7 @@ function TaskCard({ task, allTasks, detail, agents, asOf, onSelect }: { task: Bo
     <strong className={styles.cardTitle}>{task.title}</strong>
     {taskCue(task, column) ? <span className={clsx(styles.taskCue, cueClass(column))}>{taskCue(task, column)}</span> : null}
     <span className={styles.assignee}><span aria-hidden="true">{initials(assignee)}</span><b>{assignee}</b></span>
-    <span className={styles.cardFooter}>{dependency.total ? <span title="Completed dependencies"><GitBranch size={12} aria-hidden="true" /> {dependency.done}/{dependency.total}</span> : null}{attempts.length ? <span title={`${attempts.length} attempts, ${retries} retries`}><RefreshCw size={12} aria-hidden="true" /> {attempts.length}a · {retries}r</span> : null}{comments.length ? <span title="Comments"><MessageSquare size={12} aria-hidden="true" /> {comments.length}</span> : null}{evidence.length ? <span title="Evidence"><Paperclip size={12} aria-hidden="true" /> {evidence.length}</span> : null}</span>
+    <span className={styles.cardFooter}>{dependency.total ? <span title="Completed dependencies"><GitBranch size={12} aria-hidden="true" /> {dependency.done}/{dependency.total}</span> : null}{attempts.length ? <span title={`${attempts.length} attempts, ${retries} retries`}><RefreshCw size={12} aria-hidden="true" /> {attempts.length}a · {retries}r</span> : null}{comments.length ? <span title="Comments"><MessageSquare size={12} aria-hidden="true" /> {comments.length}</span> : null}{task.workItem.artifacts.count ? <span title="Canonical artifacts"><Paperclip size={12} aria-hidden="true" /> {task.workItem.artifacts.count}</span> : null}<span title={canonicalWorkItemCostLabel(task.workItem.cost)}><CircleDollarSign size={12} aria-hidden="true" /> {compactWorkItemCost(task)}</span></span>
   </button>;
 }
 
@@ -1498,11 +1503,11 @@ function TaskCanvas({ tasks, allTasks, agents, onSelectTask }: { tasks: BoardTas
   </section>;
 }
 
-function TaskList({ tasks, allTasks, detail, agents, asOf, onSelectTask }: { tasks: BoardTask[]; allTasks: BoardTask[]; detail?: BoardMissionDetail; agents: Map<string, string>; asOf: number; onSelectTask: (task: BoardTask) => void }) {
+function TaskList({ tasks, allTasks, agents, asOf, onSelectTask }: { tasks: BoardTask[]; allTasks: BoardTask[]; agents: Map<string, string>; asOf: number; onSelectTask: (task: BoardTask) => void }) {
   if (!tasks.length) return <FilteredEmpty icon={<LayoutList size={22} />} title="No matching tasks" body="Change the filters or add a task to this mission." />;
-  return <div className={styles.listViewport}><table className={styles.taskTable}><thead><tr><th>Task</th><th>State</th><th>Assignee</th><th>Dependencies</th><th>Attempts</th><th>Updated</th></tr></thead><tbody>{tasks.map((task) => {
-    const dependency = dependencyProgress(task, allTasks); const attempts = attemptsForTask(detail, task.id); const column = boardColumnForTask(task, allTasks);
-    return <tr key={task.id}><td><button type="button" onClick={() => onSelectTask(task)}><strong>{task.title}</strong><small>{task.definitionOfDone || task.instructions || "Outcome not defined"}</small></button></td><td><span className={styles.tableState}><i className={columnToneClass(column)} aria-hidden="true" />{boardColumnLabel(column)}</span></td><td>{taskAssigneeLabel(task, agents)}</td><td>{dependency.total ? `${dependency.done} / ${dependency.total}` : "—"}</td><td>{attempts.length}</td><td>{relativeTime(task.updatedAt, asOf)}</td></tr>;
+  return <div className={styles.listViewport}><table className={styles.taskTable}><thead><tr><th>Task</th><th>State</th><th>Assignee</th><th>Progress</th><th>Artifacts</th><th>AI cost</th><th>Updated</th></tr></thead><tbody>{tasks.map((task) => {
+    const dependency = dependencyProgress(task, allTasks); const column = boardColumnForTask(task, allTasks);
+    return <tr key={task.id}><td><button type="button" onClick={() => onSelectTask(task)}><strong>{task.title}</strong><small>{task.definitionOfDone || task.instructions || "Outcome not defined"}</small></button></td><td><span className={styles.tableState}><i className={columnToneClass(column)} aria-hidden="true" />{canonicalWorkItemStatusLabel(task.workItem.status.status)}</span></td><td>{taskAssigneeLabel(task, agents)}</td><td title={dependency.total ? `${dependency.done} of ${dependency.total} dependencies complete` : undefined}>{workItemProgressLabel(task)}</td><td>{task.workItem.artifacts.count}</td><td title={canonicalWorkItemCostLabel(task.workItem.cost)}>{compactWorkItemCost(task)}</td><td>{relativeTime(task.updatedAt, asOf)}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -1555,11 +1560,10 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
   const originalAssigneeId = taskAssigneeId(task);
   const [assigneeId, setAssigneeId] = useState(originalAssigneeId === "unassigned" ? "" : originalAssigneeId); const [reviewRequired, setReviewRequired] = useState(taskReviewRequired(task)); const [blockerReason, setBlockerReason] = useState(taskBlockerReason(task)); const [dependencyIds, setDependencyIds] = useState(task.dependencyIds); const [comment, setComment] = useState(""); const [reviewNote, setReviewNote] = useState("");
   const column = boardColumnForTask(task, allTasks); const attempts = attemptsForTask(detail, task.id); const comments = commentsForTask(detail, task); const artifacts = artifactsForTask(detail, task.id).filter((artifact) => !isCommentArtifact(artifact));
-  const activeGovernedAttempt = task.execution
-    ? ["queued", "running", "waiting"].includes(task.execution.sourceStatus)
-    : attempts.some((attempt) =>
-        ["queued", "running", "waiting"].includes(attempt.status)
-      );
+  const activeGovernedAttempt = task.workItem.execution.availability === "current" &&
+    ["queued", "running", "waiting_approval"].includes(
+      task.workItem.execution.sourceStatus || "",
+    );
   const availableTaskActions = taskActionsFor(column, task, activeGovernedAttempt);
   const assignmentOptions = agents.filter(
     (agent) => agent.selectable || agent.id === assigneeId,
@@ -1589,7 +1593,7 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
   function toggleDependency(id: string) { setDependencyIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]); }
   return <div className={styles.drawerBackdrop} onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className={styles.drawer} role="dialog" aria-modal="true" aria-labelledby="task-drawer-title">
     <header className={styles.drawerHeader}><div><p>Task details</p><h2 id="task-drawer-title">{task.title}</h2></div><button ref={closeRef} type="button" onClick={onClose} aria-label="Close task details"><X size={17} /></button></header>
-    <div className={styles.drawerStatus}><span><i className={columnToneClass(column)} aria-hidden="true" />{boardColumnLabel(column)}</span><span>{taskAssigneeLabel(task, agentNames)}</span><span>Updated {relativeTime(task.updatedAt, asOf)}</span></div>
+    <div className={styles.drawerStatus}><span><i className={columnToneClass(column)} aria-hidden="true" />{canonicalWorkItemStatusLabel(task.workItem.status.status)}</span><span>{taskAssigneeLabel(task, agentNames)}</span><span>{workItemProgressLabel(task)}</span><span title={canonicalWorkItemCostLabel(task.workItem.cost)}>{compactWorkItemCost(task)}</span><span>Updated {relativeTime(task.updatedAt, asOf)}</span></div>
     {disabledReason ? <div className={styles.drawerError} role="status"><ShieldCheck size={14} aria-hidden="true" /><span>{disabledReason}</span></div> : null}
     {error ? <div className={styles.drawerError} role="alert"><CircleAlert size={14} aria-hidden="true" /><span>{error}</span></div> : null}
     <form className={styles.taskForm} onSubmit={save}>
@@ -1689,11 +1693,10 @@ function CanvasSkeleton() { return <div className={styles.canvasSkeleton} aria-h
 function missionIdFromPath(pathname: string) { const match = pathname.match(/^\/app\/missions\/([^/]+)\/?$/); if (!match) return ""; try { return decodeURIComponent(match[1]); } catch { return ""; } }
 function pushMissionHistory(id: string) { const nextPath = `/app/missions/${encodeURIComponent(id)}`; if (window.location.pathname !== nextPath) window.history.pushState(null, "", nextPath); }
 function replaceMissionHistory(path: string) { if (window.location.pathname !== path) window.history.replaceState(null, "", path); }
-function missionWorkItemStatus(mission: MissionSummaryView) { return mission.workItemStatus?.status || mission.canonicalStatus.status; }
+function missionWorkItemStatus(mission: MissionSummaryView) { return mission.workItem?.status.status || mission.workItemStatus?.status || mission.canonicalStatus.status; }
 function missionWorkItemStatusLabel(mission: MissionSummaryView) {
   return canonicalWorkItemStatusLabel(missionWorkItemStatus(mission));
 }
-function canonicalWorkItemStatusLabel(status: string) { return ({ preview: "Draft", waiting: "Waiting", running: "Running", blocked: "Blocked", partial: "Partial", unverified: "Closed · unverified", failed: "Failed", canceled: "Canceled", succeeded: "Verified success" } as Record<string, string>)[status] || "Unknown"; }
 function statusToneClass(status: string) { if (["running", "succeeded", "completed", "approved"].includes(status)) return styles.toneGood; if (["waiting", "blocked", "queued", "review"].includes(status)) return styles.toneAttention; if (["failed", "canceled"].includes(status)) return styles.toneDanger; return styles.toneNeutral; }
 function columnToneClass(column: BoardColumnId) { if (["working", "done"].includes(column)) return styles.toneGood; if (["waiting", "needs-you", "review"].includes(column)) return styles.toneAttention; if (column === "ready") return styles.toneReady; return styles.toneNeutral; }
 function priorityClass(priority: string) { if (priority === "urgent") return styles.priorityUrgent; if (priority === "high") return styles.priorityHigh; if (priority === "low") return styles.priorityLow; return styles.priorityNormal; }
@@ -1702,6 +1705,13 @@ function boardColumnLabel(column: BoardColumnId) { return BOARD_COLUMNS.find((it
 
 function boardColumnForTask(task: BoardTask, allTasks: BoardTask[]): BoardColumnId {
   const meta = taskMeta(task);
+  const canonicalStatus = task.workItem?.status.status || task.workItemStatus?.status || task.canonicalStatus.status;
+  const canonicalSourceStatus = task.workItem?.status.sourceStatus || task.workItemStatus?.sourceStatus || task.status;
+  if (["succeeded", "failed", "canceled", "unverified"].includes(canonicalStatus)) return "done";
+  if (canonicalStatus === "blocked") return "needs-you";
+  if (canonicalStatus === "running") return "working";
+  if (canonicalSourceStatus === "review") return "review";
+  if (canonicalStatus === "preview") return "inbox";
   const explicit = stringValue(meta.boardStage, meta.column, meta.stage)?.toLowerCase().replaceAll("_", "-");
   if (explicit && BOARD_COLUMNS.some((column) => column.id === explicit)) return explicit as BoardColumnId;
   if (["review", "in-review", "review-requested"].includes(explicit || "")) return "review";
@@ -1717,18 +1727,34 @@ function boardColumnForTask(task: BoardTask, allTasks: BoardTask[]): BoardColumn
   return "ready";
 }
 
-function taskCue(task: BoardTask, column: BoardColumnId) { const changesRequested = stringValue(taskMeta(task).changesRequestedReason); if (column === "needs-you") return taskBlockerReason(task) || "Input required"; if (column === "review") return "Review requested"; if (changesRequested && !["review", "done"].includes(column)) return "Changes requested"; if (column === "waiting" && isFutureTask(task)) return "Scheduled"; if (column === "waiting") return "Waiting on dependencies"; if (column === "done") return canonicalWorkItemStatusLabel(task.workItemStatus?.status || task.canonicalStatus.status); return ""; }
+function taskCue(task: BoardTask, column: BoardColumnId) { const changesRequested = stringValue(taskMeta(task).changesRequestedReason); if (column === "needs-you") return taskBlockerReason(task) || "Input required"; if (column === "review") return "Review requested"; if (changesRequested && !["review", "done"].includes(column)) return "Changes requested"; if (column === "waiting" && isFutureTask(task)) return "Scheduled"; if (column === "waiting") return "Waiting on dependencies"; if (column === "done") return canonicalWorkItemStatusLabel(task.workItem?.status.status || task.workItemStatus?.status || task.canonicalStatus.status); return ""; }
 function taskMeta(task: BoardTask) { const direct = record(task.metadata); const input = record((task as unknown as Record<string, unknown>).input); const board = record(direct.board); return { ...input, ...direct, ...board }; }
-function taskAssigneeId(task: BoardTask) { const meta = taskMeta(task); const direct = task as unknown as Record<string, unknown>; const assignee = record(meta.assignee); return stringValue(task.assigneeId, direct.assigneeId, meta.assigneeId, meta.assigneeKey, meta.agentId, assignee.id) || "unassigned"; }
+function taskAssigneeId(task: BoardTask) { const meta = taskMeta(task); const direct = task as unknown as Record<string, unknown>; const assignee = record(meta.assignee); return task.workItem?.assignment.agents[0]?.agentId || stringValue(task.assigneeId, direct.assigneeId, meta.assigneeId, meta.assigneeKey, meta.agentId, assignee.id) || "unassigned"; }
 function taskAssigneeLabel(task: BoardTask, agents: Map<string, string>) { const meta = taskMeta(task); const assignee = record(meta.assignee); const id = taskAssigneeId(task); return agents.get(id) || task.assigneeName || stringValue(meta.assigneeName, meta.agentName, assignee.name) || "Unassigned"; }
+function workItemProgressLabel(task: BoardTask) {
+  const execution = task.workItem.execution;
+  if (execution.availability === "not_started") return "Not started";
+  if (execution.availability === "unavailable") return "Progress unavailable";
+  if (execution.progressPercent !== null) {
+    return `${execution.progressPercent}% · ${execution.completedSteps}/${execution.totalSteps} steps`;
+  }
+  return execution.sourceStatus?.replaceAll("_", " ") || "Progress unavailable";
+}
+function compactWorkItemCost(task: BoardTask) {
+  const cost = task.workItem.cost;
+  if (cost.state === "not_recorded") return "—";
+  if (cost.state === "unknown") return "Unknown";
+  const amount = `$${(cost.knownEstimatedCostMicrousd / 1_000_000).toFixed(4)}`;
+  return cost.state === "partial" ? `${amount}+` : amount;
+}
 function taskReviewRequired(task: BoardTask) { const meta = taskMeta(task); return boolValue(task.reviewRequired, meta.reviewRequired, meta.requiresReview) ?? false; }
 function taskBlockerReason(task: BoardTask) { const meta = taskMeta(task); const blocker = record(meta.blocker); return task.blockerReason || stringValue(meta.blockerReason, meta.blockReason, meta.requestedInput, blocker.reason) || ""; }
 function taskRetryCount(task: BoardTask, attemptCount: number) { const meta = taskMeta(task); return numberValue(task.retryCount, meta.retryCount, meta.retries) ?? Math.max(0, attemptCount - 1); }
 function taskScheduledFor(task: BoardTask) { const meta = taskMeta(task); return task.scheduledFor || stringValue(meta.scheduledFor, meta.scheduledAt, meta.runAt, meta.scheduleAt); }
 function isFutureTask(task: BoardTask) { const scheduledFor = taskScheduledFor(task); if (!scheduledFor) return false; const timestamp = Date.parse(scheduledFor); return Number.isFinite(timestamp) && timestamp > Date.now(); }
-function dependencyProgress(task: BoardTask, tasks: BoardTask[]) { const dependencies = task.dependencyIds || []; const done = dependencies.filter((id) => { const candidate = tasks.find((item) => item.id === id); return candidate ? ["unverified", "succeeded"].includes(candidate.workItemStatus?.status || candidate.canonicalStatus.status) : false; }).length; return { done, total: dependencies.length }; }
+function dependencyProgress(task: BoardTask, tasks: BoardTask[]) { const dependencies = task.dependencyIds || []; const done = dependencies.filter((id) => { const candidate = tasks.find((item) => item.id === id); return candidate ? ["unverified", "succeeded"].includes(candidate.workItem?.status.status || candidate.workItemStatus?.status || candidate.canonicalStatus.status) : false; }).length; return { done, total: dependencies.length }; }
 function attemptsForTask(detail: BoardMissionDetail | undefined, taskId: string) { return (detail?.attempts || []).filter((attempt) => attempt.taskId === taskId).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)); }
-function artifactsForTask(detail: BoardMissionDetail | undefined, taskId: string) { return (detail?.artifacts || []).filter((artifact) => artifact.taskId === taskId).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)); }
+function artifactsForTask(detail: BoardMissionDetail | undefined, taskId: string) { const task = detail?.tasks.find((item) => item.id === taskId); const canonicalIds = new Set(task?.workItem?.artifacts.items.map((artifact) => artifact.artifactId) || []); return (detail?.artifacts || []).filter((artifact) => artifact.taskId === taskId && canonicalIds.has(artifact.id)).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)); }
 
 function commentsForTask(detail: BoardMissionDetail | undefined, task: BoardTask): BoardComment[] {
   const taskComments = Array.isArray(task.comments) ? task.comments : [];
@@ -1757,6 +1783,7 @@ export function normalizeMissionSummary(value: unknown): MissionSummaryView | un
   const mission = value as Record<string, unknown>;
   const canonicalStatus = record(mission.canonicalStatus);
   const workItemStatus = normalizeCanonicalWorkItemStatus(mission.workItemStatus);
+  const workItem = parseCanonicalWorkItemSurface(mission.workItem);
   if (
     !isMissionIdentifier(mission.id) ||
     !isBoundedMissionLine(mission.title, 240) ||
@@ -1771,8 +1798,14 @@ export function normalizeMissionSummary(value: unknown): MissionSummaryView | un
     typeof mission.detailAvailable !== "boolean" ||
     typeof mission.manageable !== "boolean" ||
     typeof mission.runnable !== "boolean" ||
-    (mission.workItemStatus !== undefined && !workItemStatus) ||
-    (workItemStatus && workItemStatus.sourceAuthority !== "legacy_mission") ||
+    !workItemStatus ||
+    !workItem ||
+    workItemStatus.sourceAuthority !== "legacy_mission" ||
+    workItem.status.sourceAuthority !== "legacy_mission" ||
+    workItem.status.sourceId !== mission.id ||
+    workItem.status.workItemId !== `mission_root:${String(mission.id)}` ||
+    workItem.status.projectId !== `mission_project:${String(mission.id)}` ||
+    JSON.stringify(workItemStatus) !== JSON.stringify(workItem.status) ||
     (mission.detailAvailable !== true &&
       (mission.manageable === true || mission.runnable === true))
   ) return undefined;
@@ -1824,7 +1857,8 @@ export function normalizeMissionSummary(value: unknown): MissionSummaryView | un
     detailAvailable: mission.detailAvailable as boolean,
     manageable: mission.manageable as boolean,
     runnable: mission.runnable as boolean,
-    ...(workItemStatus ? { workItemStatus } : {}),
+    workItemStatus,
+    workItem,
   };
 }
 
@@ -1869,10 +1903,20 @@ export function missionDetailHasExpectedId(
       }
       if (candidate.workItemStatus !== undefined) {
         const workItemStatus = normalizeCanonicalWorkItemStatus(candidate.workItemStatus);
-        if (!workItemStatus || workItemStatus.sourceAuthority !== "legacy_mission_task") {
+        const workItem = parseCanonicalWorkItemSurface(candidate.workItem);
+        if (
+          !workItemStatus ||
+          !workItem ||
+          workItemStatus.sourceAuthority !== "legacy_mission_task" ||
+          workItem.status.sourceAuthority !== "legacy_mission_task" ||
+          workItem.status.sourceId !== candidate.id ||
+          workItem.status.workItemId !== candidate.id ||
+          workItem.status.projectId !== `mission_project:${expectedId}` ||
+          JSON.stringify(workItemStatus) !== JSON.stringify(workItem.status)
+        ) {
           return false;
         }
-      }
+      } else return false;
       if (ids.has(candidate.id)) return false;
       ids.add(candidate.id);
       return true;

@@ -162,8 +162,22 @@ describe("Mission collection route", () => {
       actorId: context.actorId,
       requestActorBinding,
     });
-    await expect(response.json()).resolves.toEqual({
-      missions: [readableSummary],
+    await expect(response.json()).resolves.toMatchObject({
+      missions: [{
+        ...readableSummary,
+        workItemStatus: {
+          authority: "canonical_work_item_v1",
+          sourceAuthority: "legacy_mission",
+          sourceId: readableSummary.id,
+        },
+        workItem: {
+          version: "p11.4-work-item-surface:1",
+          assignment: { authority: "canonical_work_item_v1", agents: [] },
+          artifacts: { authority: "canonical_work_item_v1", count: 0 },
+          execution: { authority: "governed_workflow_v1", availability: "not_started" },
+          cost: { authority: "ai_usage_ledger_v1", state: "not_recorded" },
+        },
+      }],
       requestReadContracts: { missions: "readable_v1" },
       serviceReceipt: expect.objectContaining({
         boundaryVersion: "p9.1-app-service-boundary:1",

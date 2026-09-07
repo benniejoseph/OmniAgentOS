@@ -37,8 +37,8 @@ export function toMissionSummaryView(mission: Mission): RequestMissionSummary {
 }
 
 export type MissionSummaryView = RequestMissionSummary & {
-  workItemStatus?: CanonicalWorkItemStatusView;
-  workItem?: CanonicalWorkItemSurface;
+  workItemStatus: CanonicalWorkItemStatusView;
+  workItem: CanonicalWorkItemSurface;
 };
 
 export function toMissionTaskView(task: MissionTask) {
@@ -63,8 +63,8 @@ export function toMissionTaskView(task: MissionTask) {
 }
 
 export type MissionTaskView = ReturnType<typeof toMissionTaskView> & {
-  workItemStatus?: CanonicalWorkItemStatusView;
-  workItem?: CanonicalWorkItemSurface;
+  workItemStatus: CanonicalWorkItemStatusView;
+  workItem: CanonicalWorkItemSurface;
   execution?: MissionTaskExecutionView;
 };
 
