@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { resolveAgentIdentityForExecution } from "@/lib/agents/identity-store";
 import {
   authorizeAppServiceCall,
   completeAppServiceCall,
@@ -14,6 +15,7 @@ import {
 } from "@/lib/missions/public";
 import {
   appendMissionTaskComment,
+  assertMissionTaskReadyForExecution,
   createMission,
   ensureMissionTask,
   getMissionDetail,
@@ -21,10 +23,21 @@ import {
   getMissionTask,
   listMissions,
   listMissionSummariesForRequest,
+  MissionConflictError,
+  MissionTransitionError,
 } from "@/lib/missions/store";
+import { attachMissionExecutor } from "@/lib/missions/runtime";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
+import { listAgentSkills } from "@/lib/skills/store";
 import type { CanonicalStatus } from "@/lib/status/canonical";
+import { enqueueWorkflowRunTick, scheduleWorkflowQueueDrain } from "@/lib/workflows/queue";
+import {
+  createWorkflowRun,
+  deterministicWorkflowRunId,
+  getWorkflowRunDetail,
+} from "@/lib/workflows/store";
 import {
   missionProjectId,
   missionRootWorkItemId,
@@ -94,6 +107,12 @@ export const missionTaskCommentServiceInputSchema = z.object({
   taskId: z.string().uuid(),
   body: z.string().trim().min(1).max(8_000),
   sourceKey: z.string().trim().min(1).max(240).optional(),
+}).strict();
+
+export const missionTaskStartServiceInputSchema = z.object({
+  missionId: z.string().uuid(),
+  taskId: z.string().uuid(),
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
 export async function listMissionsService(
@@ -269,6 +288,161 @@ export async function commentOnMissionTaskService(
   });
 }
 
+export async function startMissionTaskService(
+  caller: AppServiceCaller,
+  input: z.input<typeof missionTaskStartServiceInputSchema>,
+) {
+  const value = missionTaskStartServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("mission.task.start"),
+  );
+  const owner = mutationOwner(caller);
+  const task = await assertMissionTaskReadyForExecution(value.taskId, owner);
+  if (task.missionId !== value.missionId) {
+    return completeAppServiceCall(authorized, { execution: null }, {
+      resourceCount: 0,
+    });
+  }
+  if (value.expectedUpdatedAt && task.updatedAt !== value.expectedUpdatedAt) {
+    throw new MissionConflictError("Mission task changed after it was loaded.");
+  }
+  const assigneeId = typeof task.metadata.assigneeKey === "string"
+    ? task.metadata.assigneeKey.trim()
+    : "";
+  if (!assigneeId) {
+    throw new MissionTransitionError(
+      "Assign an Agent before starting governed execution.",
+    );
+  }
+
+  const taskView = toMissionTaskView(task);
+  const [workItemStatus, agentIdentity, skills] = await Promise.all([
+    withCanonicalMissionTasks(caller.context.tenantId, [taskView])
+      .then((items) => items[0].workItemStatus),
+    resolveAgentIdentityForExecution({
+      tenantId: caller.context.tenantId,
+      actorId: caller.context.actorId,
+      agentId: assigneeId,
+    }),
+    listAgentSkills(exactOwner(caller)),
+  ]);
+  if (
+    workItemStatus.sourceAuthority !== "legacy_mission_task" ||
+    workItemStatus.sourceId !== task.id ||
+    workItemStatus.workItemId !== task.id ||
+    workItemStatus.projectId !== missionProjectId(task.missionId)
+  ) {
+    throw new Error("Canonical WorkItem authority could not be verified.");
+  }
+
+  const workflowIdempotencyKey = `mission-task:${task.id}:${caller.idempotencyKey!}`;
+  const workflowRunId = deterministicWorkflowRunId(
+    caller.context.tenantId,
+    workflowIdempotencyKey,
+  );
+  const attempt = await attachMissionExecutor({
+    taskId: task.id,
+    executorType: "workflow_run",
+    executorId: workflowRunId,
+    status: "queued",
+    payload: {
+      source: "canonical_work_item",
+      workItemId: workItemStatus.workItemId,
+      projectId: workItemStatus.projectId,
+    },
+  }, owner);
+  if (attempt.executorId !== workflowRunId) {
+    const activeRun = await getWorkflowRunDetail(attempt.executorId, {
+      tenantId: caller.context.tenantId,
+    });
+    if (!activeRun) {
+      throw new MissionConflictError(
+        "Another governed execution is being initialized for this task.",
+      );
+    }
+    return completeAppServiceCall(authorized, {
+      execution: missionTaskExecutionView(task, attempt, activeRun.run.status),
+    });
+  }
+
+  const selectedSkills = skills.filter((skill) =>
+    agentIdentity.definition.declaredSkills.some((pin) => pin.skillId === skill.id)
+  );
+  const agentProfile = {
+    name: agentIdentity.definition.name,
+    role: agentIdentity.definition.role,
+    description: agentIdentity.definition.description,
+    instructions: agentIdentity.definition.instructions,
+    persona: agentIdentity.definition.persona,
+    modelPolicy: agentIdentity.definition.modelPolicy,
+    autonomy: agentIdentity.principal.autonomy,
+    approvalPolicy: agentIdentity.principal.approvalPolicy,
+    memoryScope: agentIdentity.principal.memoryScope,
+    toolIds: agentIdentity.principal.toolGrantIds,
+    skills: selectedSkills.map(({ id, name, description, instructions, toolIds }) => ({
+      id,
+      name,
+      description,
+      instructions,
+      toolIds,
+    })),
+  };
+  const executionAuthority = {
+    executionScope: executionScopeFromSecurityContext(caller.context, {
+      executingPrincipalType: "agent",
+      executingPrincipalId: agentIdentity.principal.principalId,
+      workspaceId: workItemStatus.workspaceId,
+      projectId: workItemStatus.projectId,
+      missionId: task.missionId,
+      causationId: task.id,
+      correlationId: caller.executionScope!.correlationId,
+      contextGrantIds: agentIdentity.principal.contextGrantIds,
+      capabilityGrantIds: agentIdentity.principal.capabilityGrantIds,
+      purpose: "mission.work_item.execute.v1",
+    }),
+    requesterRole: caller.context.role,
+  } as const;
+  const detail = await createWorkflowRun({
+    tenantId: caller.context.tenantId,
+    idempotencyKey: workflowIdempotencyKey,
+    executionAuthority,
+    goal: missionTaskExecutionGoal(task),
+    mode: "execute",
+    requireApproval: agentIdentity.principal.approvalPolicy === "always",
+    metadata: {
+      source: "mission_work_item",
+      actorId: caller.context.actorId,
+      missionId: task.missionId,
+      missionTaskId: task.id,
+      workItemId: workItemStatus.workItemId,
+      workspaceId: workItemStatus.workspaceId,
+      projectId: workItemStatus.projectId,
+      primaryAgentId: assigneeId,
+      agentProfile,
+      agentIdentity,
+      skillIds: selectedSkills.map((skill) => skill.id),
+    },
+  });
+  if (
+    detail.run.id !== workflowRunId ||
+    detail.run.input.metadata?.missionTaskId !== task.id ||
+    detail.run.input.metadata?.workItemId !== workItemStatus.workItemId
+  ) {
+    throw new Error("Governed workflow idempotency binding does not match this WorkItem.");
+  }
+  await enqueueWorkflowRunTick(
+    detail.run.id,
+    "mission_work_item_started",
+    undefined,
+    caller.context.tenantId,
+  );
+  scheduleWorkflowQueueDrain(undefined, caller.context.tenantId);
+  return completeAppServiceCall(authorized, {
+    execution: missionTaskExecutionView(task, attempt, detail.run.status),
+  });
+}
+
 function exactOwner(caller: AppServiceCaller) {
   return {
     tenantId: caller.context.tenantId,
@@ -356,4 +530,36 @@ function serviceSourceKey(
   return `app-service:${kind}:${createHash("sha256")
     .update(`${kind}\u0000${scopeId}\u0000${identity}`, "utf8")
     .digest("hex")}`;
+}
+
+function missionTaskExecutionGoal(task: {
+  title: string;
+  instructions: string;
+  definitionOfDone: string;
+}) {
+  return [
+    task.title,
+    task.instructions ? `Instructions:\n${task.instructions}` : "",
+    task.definitionOfDone
+      ? `Definition of done:\n${task.definitionOfDone}`
+      : "",
+  ].filter(Boolean).join("\n\n").slice(0, 4_000);
+}
+
+function missionTaskExecutionView(
+  task: { id: string; missionId: string },
+  attempt: { id: string; executorType: string; executorId: string; status: string },
+  workflowStatus: string,
+) {
+  return Object.freeze({
+    schemaVersion: 1 as const,
+    authority: "governed_workflow_v1" as const,
+    missionId: task.missionId,
+    workItemId: task.id,
+    attemptId: attempt.id,
+    executorType: attempt.executorType,
+    executorId: attempt.executorId,
+    attemptStatus: attempt.status,
+    executorStatus: workflowStatus,
+  });
 }
