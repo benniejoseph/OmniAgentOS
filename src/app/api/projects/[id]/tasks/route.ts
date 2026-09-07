@@ -1,8 +1,8 @@
 import { z } from "zod";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { createWorkItemService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { createProjectTasks, getProject } from "@/lib/projects/store";
-import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -19,22 +19,12 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   let context;
   try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_task" }); }
   catch (error) { return forbiddenResponse(error); }
-  const project = await getProject(id, { tenantId: context.tenantId, actorId: context.actorId });
-  if (!project) return Response.json({ error: "Project not found." }, { status: 404 });
-  if (project.status !== "active") return Response.json({ error: "Tasks can only be added to an active project." }, { status: 409 });
   try {
-    const [task] = await createProjectTasks(
-      id,
-      [{ ...parsed.data, origin: "manual" }],
-      {
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        mutation: projectMutationFromRequest(request, context, {
-          projectId: id,
-          purpose: "project.task.create",
-        }),
-      },
+    const result = await createWorkItemService(
+      createRequestMutationAppServiceCaller(request, context, { projectId: id, purpose: "project.task.create" }),
+      { projectId: id, ...parsed.data },
     );
+    const task = result.data.workItem;
     return task
       ? Response.json({ task }, { status: 201 })
       : Response.json(
