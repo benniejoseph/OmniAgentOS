@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
-import { AGENT_MODEL, hasOpenAIKey } from "@/lib/config";
-import { createStructuredResponse } from "@/lib/openai/client";
+import { generateModelStructured } from "@/lib/models/gateway";
 import {
   createProjectTasks,
   getProject,
@@ -10,6 +9,7 @@ import {
 } from "@/lib/projects/store";
 import { projectMutationSha256 } from "@/lib/projects/events";
 import { deriveExecutionScope } from "@/lib/security/execution-scope";
+import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 
 const agentIds = ["atlas", "scout", "forge", "sentinel", "mnemosyne"] as const;
 const planSchema = z.object({
@@ -74,12 +74,22 @@ export async function decomposeProject(input: {
   };
   let plan: z.infer<typeof planSchema> = fallbackPlan(project.title);
   let generatedBy: "ai" | "system" = "system";
-  if (hasOpenAIKey()) {
+  let generatedModel: string | undefined;
+  const usageTenantId = project.tenantId?.trim() || input.tenantId?.trim();
+  const runtimeModel = usageTenantId
+    ? await resolveRuntimeModelAssignment({
+        tenantId: usageTenantId,
+        actorId: input.actorId,
+        scope: "planner",
+        tier: "reasoning",
+        requiredFeature: "json_schema",
+      })
+    : undefined;
+  if (runtimeModel?.configured) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
-    const usageTenantId = project.tenantId?.trim() || input.tenantId?.trim();
     try {
-      const output = await createStructuredResponse({
+      const output = await generateModelStructured(runtimeModel.bind({
         name: "personal_project_plan",
         schema: jsonSchema,
         reasoningEffort: "low",
@@ -103,9 +113,10 @@ export async function decomposeProject(input: {
             credentialSource: "deployment_environment" as const,
           },
         } : {}),
-      });
-      plan = planSchema.parse(JSON.parse(output));
+      }));
+      plan = planSchema.parse(JSON.parse(output.text));
       generatedBy = "ai";
+      generatedModel = output.model;
     } catch {
       // A deterministic plan keeps project setup available without a model connection.
     } finally {
@@ -147,7 +158,7 @@ export async function decomposeProject(input: {
     project,
     rationale: plan.rationale,
     generatedBy,
-    model: generatedBy === "ai" ? AGENT_MODEL : undefined,
+    model: generatedBy === "ai" ? generatedModel : undefined,
     tasks: plannedTasks.filter((task) => tasks.some((created) => created.id === task.id)),
   };
 }

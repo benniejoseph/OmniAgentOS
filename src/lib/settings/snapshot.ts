@@ -1,6 +1,7 @@
 import { isAuthEnforced, isBootstrapConfigured } from "@/lib/auth/store";
 import { getStorageBackend, hasDatabaseUrl } from "@/lib/db/client";
 import { credentialVaultStatus } from "@/lib/settings/credential-vault";
+import { listModelAssignmentRuntimeReceipts } from "@/lib/settings/runtime-receipts";
 import { listServiceApiKeysForRequest } from "@/lib/settings/service-api-keys";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import {
@@ -53,6 +54,22 @@ export async function getSettingsSnapshot(input: {
           manageable: true,
         })),
   ]);
+  const receipts = await listModelAssignmentRuntimeReceipts({
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    requestActorBinding: input.requestActorBinding,
+    assignments,
+  });
+  const activeScopes = assignments
+    .filter((assignment) =>
+      assignment.manageable && assignment.runtimeReadiness === "active"
+    )
+    .map((assignment) => assignment.scope);
+  const configurationOnlyScopes = assignments
+    .filter((assignment) =>
+      assignment.manageable && assignment.runtimeReadiness !== "active"
+    )
+    .map((assignment) => assignment.scope);
   return {
     requestReadContracts: {
       providerConnections: input.providerOwnerScope === "readable"
@@ -83,11 +100,14 @@ export async function getSettingsSnapshot(input: {
     apiKeys,
     mcp,
     runtime: {
+      contractVersion: "p11.8-functional-model-routing:1",
       tenantAssignmentsConsumed: true,
-      activeScopes: ["main_agent", "orchestrator"],
-      configurationOnlyScopes: ["workflow", "council", "memory", "embeddings", "vision", "audio"],
-      message:
-        "Main agent and Orchestrator use validated workspace routes. Workflow, Council, Memory, Embeddings, Vision, and Audio remain configuration-only and continue using deployment routing.",
+      activeScopes,
+      configurationOnlyScopes,
+      receipts,
+      message: activeScopes.length
+        ? `${activeScopes.length} validated workspace route${activeScopes.length === 1 ? " is" : "s are"} active. Each actual call records the exact assignment revision and fallback attempts.`
+        : "No validated workspace route is active. Model work continues through deployment-managed routing until a catalog-backed route is activated.",
     },
   };
 }

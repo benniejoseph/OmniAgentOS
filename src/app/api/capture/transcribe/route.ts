@@ -24,7 +24,10 @@ async function POSTHandler(request: Request) {
     request,
     "capture.voice.transcribe",
   );
-  if (!captureTranscriptionConfigured()) return Response.json({ error: "Voice transcription is not configured." }, { status: 503 });
+  if (!await captureTranscriptionConfigured({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+  })) return Response.json({ error: "Voice transcription is not configured." }, { status: 503 });
   if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("multipart/form-data")) {
     return Response.json({ error: "Audio transcription requires multipart form data." }, { status: 415 });
   }

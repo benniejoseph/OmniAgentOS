@@ -1,12 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  generate: vi.fn(),
+  resolve: vi.fn(),
   structured: vi.fn(),
 }));
 
 vi.mock("@/lib/config", () => ({ AGENT_MODEL: "gpt-5" }));
 vi.mock("@/lib/openai/client", () => ({
   createStructuredResponse: mocks.structured,
+}));
+vi.mock("@/lib/models/gateway", () => ({
+  generateModelStructured: mocks.generate,
+}));
+vi.mock("@/lib/settings/runtime-models", () => ({
+  resolveRuntimeModelAssignment: mocks.resolve,
 }));
 
 import {
@@ -33,7 +41,14 @@ function turn(
   return { ...input, turnId: mediaTurnId(input) };
 }
 
-beforeEach(() => mocks.structured.mockReset());
+beforeEach(() => {
+  mocks.generate.mockReset();
+  mocks.resolve.mockReset().mockResolvedValue({
+    configured: true,
+    bind: <T>(request: T) => request,
+  });
+  mocks.structured.mockReset();
+});
 
 describe("cited media extraction", () => {
   it("turns only exact transcript references into timestamped insights", async () => {
@@ -47,7 +62,9 @@ describe("cited media extraction", () => {
       label: "B",
       identity: "diarized",
     });
-    mocks.structured.mockResolvedValue(JSON.stringify({
+    mocks.generate.mockResolvedValue({
+      model: "assigned-planner",
+      text: JSON.stringify({
       turnLanguages: [
         { turnId: ownerTurn.turnId, languageTag: "en-US" },
         { turnId: decisionTurn.turnId, languageTag: "en-US" },
@@ -73,10 +90,18 @@ describe("cited media extraction", () => {
         text: "Renew for one year.",
         citationTurnIds: [decisionTurn.turnId],
       }],
-    }));
+      }),
+    });
 
     const extracted = await extractCaptureMediaInsights({
       turns: [ownerTurn, decisionTurn],
+      usageScope: {
+        tenantId: "tenant-a",
+        actorId: "actor-a",
+        sourceStreamId: "capture-a",
+        operation: "structured_generation",
+        purpose: "capture.media.insights.extract",
+      },
     });
 
     expect(extracted.summary.citations).toEqual([
@@ -99,6 +124,10 @@ describe("cited media extraction", () => {
       startMilliseconds: 0,
       endMilliseconds: 4_000,
     });
+    expect(extracted.model).toBe("assigned-planner");
+    expect(mocks.resolve).toHaveBeenCalledWith(expect.objectContaining({
+      scope: "planner",
+    }));
   });
 
   it("rejects fabricated citations outside the bounded transcript", async () => {

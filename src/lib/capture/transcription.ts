@@ -7,6 +7,7 @@ import {
 } from "@/lib/config";
 import { transcribeGoogleAudio } from "@/lib/google/ai";
 import { getOpenAIClient } from "@/lib/openai/client";
+import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
 
@@ -43,8 +44,20 @@ export type CaptureDiarizedTranscriptionSegment = Readonly<{
   languageTag: string;
 }>;
 
-export function captureTranscriptionConfigured() {
-  return hasGoogleMediaKey() || hasOpenAIKey();
+export async function captureTranscriptionConfigured(input?: {
+  tenantId?: string;
+  actorId?: string;
+}) {
+  if (hasGoogleMediaKey() || hasOpenAIKey()) return true;
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: input?.tenantId,
+    actorId: input?.actorId,
+    scope: "audio",
+    requiredCapability: "transcription",
+    deploymentModel: TRANSCRIPTION_MODEL,
+    deploymentConfigured: false,
+  });
+  return runtimeModel.configured;
 }
 
 export async function transcribeCaptureMediaDiarized(
@@ -53,15 +66,20 @@ export async function transcribeCaptureMediaDiarized(
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
 ) {
-  if (!captureTranscriptionConfigured()) {
-    throw new Error("Voice transcription is not configured.");
-  }
   const mimeType = media.type.split(";", 1)[0].toLowerCase();
   if (!CAPTURE_MEDIA_TYPES.has(mimeType)) {
     throw new Error("Unsupported audio or video format.");
   }
   const languageTag = normalizedLanguageTag(languageHints[0]) || "en-US";
-  if (!hasOpenAIKey()) {
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: usageScope?.tenantId,
+    actorId: usageScope?.actorId,
+    scope: "audio",
+    requiredCapability: "transcription",
+    deploymentModel: DIARIZATION_MODEL,
+    deploymentConfigured: hasOpenAIKey(),
+  });
+  if (!runtimeModel.configured) {
     const fallback = await transcribeCaptureMedia(
       media,
       abortSignal,
@@ -79,17 +97,22 @@ export async function transcribeCaptureMediaDiarized(
   }
 
   abortSignal?.throwIfAborted();
+  const meteredUsageScope = usageScope
+    ? { ...usageScope, ...runtimeModel.usageReceipt }
+    : undefined;
   const startedAt = Date.now();
   try {
-    const result = await getOpenAIClient().audio.transcriptions.create({
-      file: media,
-      model: DIARIZATION_MODEL,
-      response_format: "diarized_json",
-      chunking_strategy: "auto",
-      ...(languageHints.length === 1
-        ? { language: languageTag.split("-", 1)[0].toLowerCase() }
-        : {}),
-    }, { signal: abortSignal }) as TranscriptionDiarized;
+    const result = await runtimeModel.withApiKey((apiKey) =>
+      getOpenAIClient(apiKey ? { apiKey } : undefined).audio.transcriptions.create({
+        file: media,
+        model: runtimeModel.model,
+        response_format: "diarized_json",
+        chunking_strategy: "auto",
+        ...(languageHints.length === 1
+          ? { language: languageTag.split("-", 1)[0].toLowerCase() }
+          : {}),
+      }, { signal: abortSignal })
+    ) as TranscriptionDiarized;
     const durationMs = Math.max(
       1,
       Math.round(Number(result.duration || 0) * 1_000),
@@ -130,12 +153,12 @@ export async function transcribeCaptureMediaDiarized(
     if (!text || !segments.length) {
       throw new Error("No speech could be recognized in this recording.");
     }
-    if (usageScope) {
+    if (meteredUsageScope) {
       await recordAiUsageSafely({
-        ...usageScope,
+        ...meteredUsageScope,
         status: "completed",
         provider: "openai",
-        model: DIARIZATION_MODEL,
+        model: runtimeModel.model,
         usage: { inputBytes: media.size },
         providerCallCount: 1,
         attemptCount: 1,
@@ -145,18 +168,18 @@ export async function transcribeCaptureMediaDiarized(
     }
     return {
       text,
-      model: DIARIZATION_MODEL,
+      model: runtimeModel.model,
       fallbackUsed: false,
       durationMs,
       segments,
     };
   } catch (error) {
-    if (usageScope) {
+    if (meteredUsageScope) {
       await recordAiUsageSafely({
-        ...usageScope,
+        ...meteredUsageScope,
         status: "failed",
         provider: "openai",
-        model: DIARIZATION_MODEL,
+        model: runtimeModel.model,
         usage: { inputBytes: media.size },
         providerCallCount: 1,
         attemptCount: 1,
@@ -166,7 +189,21 @@ export async function transcribeCaptureMediaDiarized(
         retryable: !abortSignal?.aborted,
       });
     }
-    throw error;
+    if (abortSignal?.aborted) throw error;
+    const fallback = await transcribeCaptureMedia(
+      media,
+      abortSignal,
+      usageScope,
+    );
+    return {
+      ...fallback,
+      fallbackUsed: true,
+      segments: fallback.segments.map((segment) => ({
+        ...segment,
+        speakerLabel: "Unknown",
+        languageTag,
+      })),
+    };
   }
 }
 
@@ -185,39 +222,60 @@ export async function transcribeCaptureMedia(
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
 ) {
-  if (!captureTranscriptionConfigured()) throw new Error("Voice transcription is not configured.");
   const mimeType = media.type.split(";", 1)[0].toLowerCase();
   if (!CAPTURE_MEDIA_TYPES.has(mimeType)) throw new Error("Unsupported audio or video format.");
+
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: usageScope?.tenantId,
+    actorId: usageScope?.actorId,
+    scope: "audio",
+    requiredCapability: "transcription",
+    deploymentModel: TRANSCRIPTION_MODEL,
+    deploymentConfigured: hasOpenAIKey(),
+  });
+  const meteredUsageScope = usageScope
+    ? { ...usageScope, ...runtimeModel.usageReceipt }
+    : undefined;
 
   let text = "";
   let model = "";
   let fallbackUsed = false;
   let segments: CaptureTranscriptionSegment[] = [];
   let durationMs = 0;
-  if (hasGoogleMediaKey() && CAPTURE_AUDIO_TYPES.has(mimeType)) {
+  if (
+    runtimeModel.source !== "tenant_assignment" &&
+    hasGoogleMediaKey() &&
+    CAPTURE_AUDIO_TYPES.has(mimeType)
+  ) {
     try {
-      const result = await transcribeGoogleAudio(media, abortSignal, usageScope);
+      const result = await transcribeGoogleAudio(
+        media,
+        abortSignal,
+        meteredUsageScope,
+      );
       text = result.text;
       model = result.model;
       segments = result.segments;
       durationMs = result.durationMs;
     } catch (error) {
-      if (!hasOpenAIKey()) throw error;
+      if (!runtimeModel.configured) throw error;
       fallbackUsed = true;
     }
   }
-  if (!text && hasOpenAIKey()) {
+  if (!text && runtimeModel.configured) {
     abortSignal?.throwIfAborted();
     const startedAt = Date.now();
     try {
-      const result = await getOpenAIClient().audio.transcriptions.create({
-        file: media,
-        model: TRANSCRIPTION_MODEL,
-        response_format: "verbose_json",
-        timestamp_granularities: ["segment"],
-      });
+      const result = await runtimeModel.withApiKey((apiKey) =>
+        getOpenAIClient(apiKey ? { apiKey } : undefined).audio.transcriptions.create({
+          file: media,
+          model: runtimeModel.model,
+          response_format: "verbose_json",
+          timestamp_granularities: ["segment"],
+        })
+      );
       text = result.text;
-      model = TRANSCRIPTION_MODEL;
+      model = runtimeModel.model;
       durationMs = Math.max(1, Math.round(Number(result.duration || 0) * 1_000));
       segments = (result.segments || []).flatMap((segment) => {
         const content = segment.text.trim();
@@ -236,12 +294,12 @@ export async function transcribeCaptureMedia(
           endMilliseconds: durationMs,
         }];
       }
-      if (usageScope) {
+      if (meteredUsageScope) {
         await recordAiUsageSafely({
-          ...usageScope,
+          ...meteredUsageScope,
           status: "completed",
           provider: "openai",
-          model: TRANSCRIPTION_MODEL,
+          model: runtimeModel.model,
           usage: { inputBytes: media.size },
           providerCallCount: 1,
           attemptCount: 1,
@@ -250,12 +308,12 @@ export async function transcribeCaptureMedia(
         });
       }
     } catch (error) {
-      if (usageScope) {
+      if (meteredUsageScope) {
         await recordAiUsageSafely({
-          ...usageScope,
+          ...meteredUsageScope,
           status: "failed",
           provider: "openai",
-          model: TRANSCRIPTION_MODEL,
+          model: runtimeModel.model,
           usage: { inputBytes: media.size },
           providerCallCount: 1,
           attemptCount: 1,
@@ -267,6 +325,9 @@ export async function transcribeCaptureMedia(
       }
       throw error;
     }
+  }
+  if (!text && !runtimeModel.configured) {
+    throw new Error("Audio transcription is not configured.");
   }
   text = text.trim().slice(0, 100_000);
   if (!text) throw new Error("No speech could be recognized in this recording.");

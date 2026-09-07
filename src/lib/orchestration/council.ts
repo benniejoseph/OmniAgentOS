@@ -32,10 +32,12 @@ import {
   shareDelegationMissionArtifact,
 } from "@/lib/delegation/channel-store";
 import { generateModelStructured } from "@/lib/models/gateway";
-import type { ModelGenerationResult } from "@/lib/models/types";
+import type { ModelGenerationResult, ModelStructuredRequest } from "@/lib/models/types";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { deriveExecutionScope } from "@/lib/security/execution-scope";
+import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
+import type { ModelAssignmentScope } from "@/lib/settings/types";
 import type { AiUsageScope } from "@/lib/usage/types";
 import type { ToolDefinition } from "@/lib/tools/types";
 
@@ -290,7 +292,7 @@ export async function runCouncilRound(input: {
       modelBoundaryOpened = true;
       let generated: ModelGenerationResult;
       try {
-        generated = await generateModelStructured({
+        generated = await generateCouncilStructured("council", {
           instructions: [
             `You are ${agent.name}, the ${agent.role} in a private multi-agent council.`,
             agent.description,
@@ -535,7 +537,7 @@ export async function reviewCouncilResponse(input: {
   let modelBoundaryClosed = false;
   try {
     const sentinel = councilAgent("sentinel");
-    const generated = await generateModelStructured({
+    const generated = await generateCouncilStructured("verifier", {
     instructions: [
       `You are ${sentinel.name}, the ${sentinel.role} and final critic in a private agent council.`,
       sentinel.description,
@@ -625,7 +627,7 @@ export async function reviseCouncilResponse(input: {
   let modelBoundaryClosed = false;
   try {
     const atlas = councilAgent("atlas");
-    const generated = await generateModelStructured({
+    const generated = await generateCouncilStructured("council", {
     instructions: [
       `You are ${atlas.name}, the ${atlas.role}.`,
       atlas.description,
@@ -693,6 +695,27 @@ export function formatCouncilContributions(contributions: CouncilContribution[])
   ].filter(Boolean).join("\n")).join("\n\n");
 }
 
+async function generateCouncilStructured(
+  scope: Extract<ModelAssignmentScope, "council" | "verifier">,
+  request: ModelStructuredRequest,
+) {
+  const usage = request.usageScope;
+  if (!usage?.tenantId.trim() || !usage.actorId.trim()) {
+    return generateModelStructured(request);
+  }
+  const runtimeModel = await resolveRuntimeModelAssignment({
+    tenantId: usage.tenantId,
+    actorId: usage.actorId,
+    scope,
+    tier: request.tier || "reasoning",
+    requiredFeature: "json_schema",
+  });
+  if (!runtimeModel.configured) {
+    return generateModelStructured(request);
+  }
+  return generateModelStructured(runtimeModel.bind(request));
+}
+
 function councilAgent(agentId: CouncilAgentId) {
   const agent = arsenalAgents.find((item) => item.id === agentId);
   if (!agent) throw new Error(`Unknown council agent ${agentId}.`);
@@ -717,7 +740,7 @@ async function generateCouncilToolPlan(input: {
     attempt,
   });
   try {
-    const generated = await generateModelStructured({
+    const generated = await generateCouncilStructured("council", {
       instructions: [
         `You are ${input.agent.name}, the ${input.agent.role}, planning governed tools for one bounded delegation.`,
         "Choose only tools explicitly listed in the DelegationContract and supplied metadata.",

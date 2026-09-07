@@ -1,4 +1,5 @@
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import type { ModelAssignmentScope } from "@/lib/settings/types";
 
 export const AI_USAGE_OPERATIONS = [
   "text_generation",
@@ -40,6 +41,9 @@ export type AiUsageScope = {
   causationId?: string;
   executionScope?: ExecutionScope;
   assignmentId?: string;
+  assignmentScope?: ModelAssignmentScope;
+  assignmentRevision?: number;
+  assignmentConfigurationSha256?: string;
   credentialSource?: "tenant_vault" | "deployment_environment";
 };
 

@@ -1393,6 +1393,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[141],
       up: ensureCohesiveTodayPreferencesV1,
     },
+    {
+      ...databaseSchemaMigrations[142],
+      up: ensureFunctionalModelAssignmentsV1,
+    },
   ];
 }
 
@@ -17761,6 +17765,56 @@ async function ensureCohesiveTodayPreferencesV1(sql: SqlClient) {
   await sql.query(COHESIVE_TODAY_PREFERENCES_SCHEMA_SQL);
 }
 
+async function ensureFunctionalModelAssignmentsV1(sql: SqlClient) {
+  await ensureSettingsControlPlane(sql);
+  await ensureUnifiedAiUsageLedgerCompatibility(sql);
+  await sql`ALTER TABLE omni_model_assignments DROP CONSTRAINT IF EXISTS omni_model_assignments_contract_check`;
+  await sql`
+    ALTER TABLE omni_model_assignments
+    ADD CONSTRAINT omni_model_assignments_contract_check CHECK (
+      (
+        runtime_readiness = 'configuration_only'
+        AND contract_version = 'legacy'
+        AND configuration_sha256 IS NULL
+        AND validated_at IS NULL
+      ) OR (
+        runtime_readiness = 'active'
+        AND contract_version = 'p11.8-model-assignment:1'
+        AND configuration_sha256 ~ '^[a-f0-9]{64}$'
+        AND validated_at IS NOT NULL
+      )
+    )
+  `;
+  await sql`ALTER TABLE omni_ai_usage DROP CONSTRAINT IF EXISTS omni_ai_usage_assignment_receipt_check`;
+  await sql`
+    ALTER TABLE omni_ai_usage
+    ADD CONSTRAINT omni_ai_usage_assignment_receipt_check CHECK (
+      (
+        assignment_scope IS NULL
+        AND assignment_revision IS NULL
+        AND assignment_configuration_sha256 IS NULL
+      ) OR (
+        assignment_id IS NOT NULL
+        AND assignment_scope IN (
+          'main_agent', 'orchestrator', 'planner', 'verifier', 'council',
+          'memory', 'embeddings', 'vision', 'audio'
+        )
+        AND assignment_revision > 0
+        AND assignment_configuration_sha256 ~ '^[a-f0-9]{64}$'
+        AND credential_source = 'tenant_vault'
+      )
+    )
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS omni_ai_usage_assignment_receipt_idx
+    ON omni_ai_usage (
+      tenant_id, actor_id, assignment_id, assignment_revision,
+      recorded_at DESC
+    )
+    WHERE assignment_id IS NOT NULL
+  `;
+}
+
 async function ensureCanonicalActorScopeRepairV1(sql: SqlClient) {
   await sql.query(`
     CREATE OR REPLACE FUNCTION omni_actor_scope_v1_allows_canonical(
@@ -20687,7 +20741,7 @@ async function ensureSettingsControlPlane(sql: SqlClient) {
       tenant_id TEXT NOT NULL,
       actor_id TEXT NOT NULL,
       scope TEXT NOT NULL
-        CHECK (scope IN ('main_agent', 'orchestrator', 'workflow', 'council', 'memory', 'embeddings', 'vision', 'audio')),
+        CHECK (scope IN ('main_agent', 'orchestrator', 'planner', 'verifier', 'council', 'memory', 'embeddings', 'vision', 'audio')),
       provider TEXT NOT NULL
         CHECK (provider IN ('openai', 'google', 'anthropic', 'aws_bedrock')),
       model_id TEXT NOT NULL,
@@ -20696,7 +20750,13 @@ async function ensureSettingsControlPlane(sql: SqlClient) {
       fallback_model_id TEXT,
       allow_cross_provider_fallback BOOLEAN NOT NULL DEFAULT FALSE,
       runtime_readiness TEXT NOT NULL DEFAULT 'configuration_only'
-        CHECK (runtime_readiness = 'configuration_only'),
+        CHECK (runtime_readiness IN ('active', 'configuration_only')),
+      contract_version TEXT NOT NULL DEFAULT 'legacy'
+        CHECK (contract_version IN ('legacy', 'p11.8-model-assignment:1')),
+      assignment_revision INTEGER NOT NULL DEFAULT 1
+        CHECK (assignment_revision > 0),
+      configuration_sha256 TEXT,
+      validated_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (tenant_id, actor_id, scope),
@@ -20708,6 +20768,15 @@ async function ensureSettingsControlPlane(sql: SqlClient) {
       )
     )
   `;
+  await sql`ALTER TABLE omni_model_assignments ADD COLUMN IF NOT EXISTS contract_version TEXT NOT NULL DEFAULT 'legacy'`;
+  await sql`ALTER TABLE omni_model_assignments ADD COLUMN IF NOT EXISTS assignment_revision INTEGER NOT NULL DEFAULT 1`;
+  await sql`ALTER TABLE omni_model_assignments ADD COLUMN IF NOT EXISTS configuration_sha256 TEXT`;
+  await sql`ALTER TABLE omni_model_assignments ADD COLUMN IF NOT EXISTS validated_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE omni_model_assignments DROP CONSTRAINT IF EXISTS omni_model_assignments_scope_check`;
+  await sql`UPDATE omni_model_assignments SET scope = 'planner' WHERE scope = 'workflow'`;
+  await sql`ALTER TABLE omni_model_assignments ADD CONSTRAINT omni_model_assignments_scope_check CHECK (scope IN ('main_agent', 'orchestrator', 'planner', 'verifier', 'council', 'memory', 'embeddings', 'vision', 'audio'))`;
+  await sql`ALTER TABLE omni_model_assignments DROP CONSTRAINT IF EXISTS omni_model_assignments_runtime_readiness_check`;
+  await sql`ALTER TABLE omni_model_assignments ADD CONSTRAINT omni_model_assignments_runtime_readiness_check CHECK (runtime_readiness IN ('active', 'configuration_only'))`;
   await sql`CREATE INDEX IF NOT EXISTS omni_model_assignments_tenant_actor_idx ON omni_model_assignments (tenant_id, actor_id, scope)`;
 
   await sql`
@@ -25215,6 +25284,14 @@ async function ensureUnifiedAiUsageLedger(sql: SqlClient) {
       pricing_version TEXT,
       provider_request_id TEXT,
       assignment_id TEXT,
+      assignment_scope TEXT,
+      assignment_revision INTEGER CHECK (
+        assignment_revision IS NULL OR assignment_revision > 0
+      ),
+      assignment_configuration_sha256 TEXT CHECK (
+        assignment_configuration_sha256 IS NULL
+        OR assignment_configuration_sha256 ~ '^[a-f0-9]{64}$'
+      ),
       credential_source TEXT CHECK (
         credential_source IS NULL
         OR credential_source IN ('tenant_vault', 'deployment_environment')
@@ -25263,6 +25340,9 @@ async function ensureUnifiedAiUsageLedgerCompatibility(sql: SqlClient) {
   await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS call_receipts JSONB NOT NULL DEFAULT '[]'::jsonb`;
   await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS provider_request_id TEXT`;
   await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS assignment_id TEXT`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS assignment_scope TEXT`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS assignment_revision INTEGER`;
+  await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS assignment_configuration_sha256 TEXT`;
   await sql`ALTER TABLE omni_ai_usage ADD COLUMN IF NOT EXISTS credential_source TEXT`;
   await sql`ALTER TABLE omni_ai_usage DROP CONSTRAINT IF EXISTS omni_ai_usage_operation_check`;
   await sql`

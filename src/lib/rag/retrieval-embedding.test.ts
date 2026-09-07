@@ -2,13 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   embedTexts: vi.fn(),
-  hasOpenAIKey: vi.fn(),
 }));
-
-vi.mock("@/lib/config", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/lib/config")>();
-  return { ...actual, hasOpenAIKey: mocks.hasOpenAIKey };
-});
 vi.mock("@/lib/openai/client", () => ({ embedTexts: mocks.embedTexts }));
 
 import {
@@ -23,7 +17,6 @@ import {
 describe("P4.4 retrieval embedding adapters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.hasOpenAIKey.mockReturnValue(true);
     mocks.embedTexts.mockResolvedValue([[0.1, 0.2]]);
   });
 
@@ -51,7 +44,7 @@ describe("P4.4 retrieval embedding adapters", () => {
   });
 
   it("falls back locally when an allowed provider is absent or fails", async () => {
-    mocks.hasOpenAIKey.mockReturnValue(false);
+    mocks.embedTexts.mockResolvedValueOnce(null);
     const unavailable = await embedRetrievalTexts(["consulta"], {
       allowedExternalProviders: ["openai"],
     });
@@ -60,7 +53,6 @@ describe("P4.4 retrieval embedding adapters", () => {
       fallbackReason: "external_provider_unavailable",
     });
 
-    mocks.hasOpenAIKey.mockReturnValue(true);
     mocks.embedTexts.mockRejectedValue(new Error("provider failed"));
     const failed = await embedRetrievalTexts(["consulta"], {
       allowedExternalProviders: ["openai"],

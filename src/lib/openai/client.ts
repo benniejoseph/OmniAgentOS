@@ -160,29 +160,47 @@ export async function embedTexts(
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
 ) {
-  if (!hasOpenAIKey() || input.length === 0) {
+  if (input.length === 0) {
     return null;
   }
 
+  const { resolveSpecializedRuntime } = await import(
+    "@/lib/settings/specialized-runtime"
+  );
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: usageScope?.tenantId,
+    actorId: usageScope?.actorId,
+    scope: "embeddings",
+    requiredCapability: "embeddings",
+    deploymentModel: EMBEDDING_MODEL,
+    deploymentConfigured: hasOpenAIKey(),
+  });
+  if (!runtimeModel.configured) return null;
+  const meteredUsageScope = usageScope
+    ? { ...usageScope, ...runtimeModel.usageReceipt }
+    : undefined;
+
   const startedAt = Date.now();
   try {
-    const response = await getOpenAIClient().embeddings.create(
-      {
-        model: EMBEDDING_MODEL,
-        input,
-        ...(EMBEDDING_MODEL.startsWith("text-embedding-3")
-          ? { dimensions: EMBEDDING_DIMENSIONS }
-          : {}),
-      },
-      { signal: abortSignal },
+    const response = await runtimeModel.withApiKey((apiKey) =>
+      getOpenAIClient(apiKey ? { apiKey } : undefined).embeddings.create(
+        {
+          model: runtimeModel.model,
+          input,
+          ...(runtimeModel.model.startsWith("text-embedding-3")
+            ? { dimensions: EMBEDDING_DIMENSIONS }
+            : {}),
+        },
+        { signal: abortSignal },
+      )
     );
-    if (usageScope) {
+    if (meteredUsageScope) {
       const inputTokens = finiteToken(response.usage?.prompt_tokens);
       await recordAiUsageSafely({
-        ...usageScope,
+        ...meteredUsageScope,
         status: "completed",
         provider: "openai",
-        model: EMBEDDING_MODEL,
+        model: runtimeModel.model,
         usage: {
           inputTokens,
           totalTokens: finiteToken(response.usage?.total_tokens) || inputTokens,
@@ -191,7 +209,7 @@ export async function embedTexts(
         attemptCount: 1,
         failedAttemptCount: 0,
         latencyMs: Date.now() - startedAt,
-        estimatedCostUsd: estimateModelCostUsd(EMBEDDING_MODEL, {
+        estimatedCostUsd: estimateModelCostUsd(runtimeModel.model, {
           inputTokens,
           outputTokens: 0,
           cachedInputTokens: 0,
@@ -201,12 +219,12 @@ export async function embedTexts(
     }
     return response.data.map((item) => item.embedding);
   } catch (error) {
-    if (usageScope) {
+    if (meteredUsageScope) {
       await recordAiUsageSafely({
-        ...usageScope,
+        ...meteredUsageScope,
         status: "failed",
         provider: "openai",
-        model: EMBEDDING_MODEL,
+        model: runtimeModel.model,
         usage: {},
         providerCallCount: 1,
         attemptCount: 1,

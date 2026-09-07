@@ -118,6 +118,7 @@ async function persistPostgresUsage(
       status, provider, model, usage, call_receipts, provider_call_count, attempt_count,
       failed_attempt_count, latency_ms, estimated_cost_microusd,
       pricing_source, pricing_version, provider_request_id, assignment_id,
+      assignment_scope, assignment_revision, assignment_configuration_sha256,
       credential_source, failure_kind, retryable, recorded_at
     ) VALUES (
       ${record.id}, ${record.tenantId}, ${record.actorId},
@@ -129,7 +130,10 @@ async function persistPostgresUsage(
       ${record.attemptCount}, ${record.failedAttemptCount}, ${record.latencyMs},
       ${record.estimatedCostMicrousd ?? null}, ${record.pricingSource || null},
       ${record.pricingVersion || null}, ${record.providerRequestId || null},
-      ${record.assignmentId || null}, ${record.credentialSource || null},
+      ${record.assignmentId || null}, ${record.assignmentScope || null},
+      ${record.assignmentRevision || null},
+      ${record.assignmentConfigurationSha256 || null},
+      ${record.credentialSource || null},
       ${record.failureKind || null}, ${record.retryable ?? null},
       ${record.recordedAt}
     )
@@ -305,6 +309,9 @@ function usageDomainEvent(record: AiUsageRecord, id?: string) {
       pricingVersion: record.pricingVersion,
       providerRequestId: record.providerRequestId,
       assignmentId: record.assignmentId,
+      assignmentScope: record.assignmentScope,
+      assignmentRevision: record.assignmentRevision,
+      assignmentConfigurationSha256: record.assignmentConfigurationSha256,
       credentialSource: record.credentialSource,
       failureKind: record.failureKind,
       retryable: record.retryable,
@@ -315,6 +322,7 @@ function usageDomainEvent(record: AiUsageRecord, id?: string) {
 function normalizeUsageRecord(input: RecordAiUsageInput): AiUsageRecord {
   const tenantId = requiredText(input.tenantId, "tenantId", 120);
   const actorId = requiredText(input.actorId, "actorId", 256);
+  assertAssignmentReceiptShape(input);
   if (input.executionScope) {
     assertExecutionScopeTenant(input.executionScope, tenantId);
     if (
@@ -382,6 +390,18 @@ function normalizeUsageRecord(input: RecordAiUsageInput): AiUsageRecord {
     ...(input.assignmentId
       ? { assignmentId: requiredText(input.assignmentId, "assignmentId", 200) }
       : {}),
+    ...(input.assignmentScope ? { assignmentScope: input.assignmentScope } : {}),
+    ...(input.assignmentRevision === undefined
+      ? {}
+      : { assignmentRevision: positiveInteger(input.assignmentRevision, "assignmentRevision") }),
+    ...(input.assignmentConfigurationSha256
+      ? {
+          assignmentConfigurationSha256: sha256Text(
+            input.assignmentConfigurationSha256,
+            "assignmentConfigurationSha256",
+          ),
+        }
+      : {}),
     ...(input.credentialSource ? { credentialSource: input.credentialSource } : {}),
     ...(input.correlationId
       ? { correlationId: requiredText(input.correlationId, "correlationId", 240) }
@@ -396,6 +416,24 @@ function normalizeUsageRecord(input: RecordAiUsageInput): AiUsageRecord {
     ...(input.retryable === undefined ? {} : { retryable: input.retryable }),
     recordedAt: new Date().toISOString(),
   };
+}
+
+function assertAssignmentReceiptShape(input: RecordAiUsageInput) {
+  const hasVersionedReceipt = input.assignmentScope !== undefined ||
+    input.assignmentRevision !== undefined ||
+    input.assignmentConfigurationSha256 !== undefined;
+  if (!hasVersionedReceipt) return;
+  if (
+    !input.assignmentId ||
+    !input.assignmentScope ||
+    input.assignmentRevision === undefined ||
+    !input.assignmentConfigurationSha256 ||
+    input.credentialSource !== "tenant_vault"
+  ) {
+    throw new Error(
+      "AI usage assignment receipts require an id, scope, revision, configuration digest, and tenant-vault credential source.",
+    );
+  }
 }
 
 function normalizeUsageUnits(input: AiUsageUnits | undefined): AiUsageUnits {
@@ -550,6 +588,15 @@ function usageRecordFromRow(row: Record<string, unknown>): AiUsageRecord {
     ...(row.pricing_version ? { pricingVersion: String(row.pricing_version) } : {}),
     ...(row.provider_request_id ? { providerRequestId: String(row.provider_request_id) } : {}),
     ...(row.assignment_id ? { assignmentId: String(row.assignment_id) } : {}),
+    ...(row.assignment_scope
+      ? { assignmentScope: String(row.assignment_scope) as AiUsageRecord["assignmentScope"] }
+      : {}),
+    ...(row.assignment_revision
+      ? { assignmentRevision: Number(row.assignment_revision) }
+      : {}),
+    ...(row.assignment_configuration_sha256
+      ? { assignmentConfigurationSha256: String(row.assignment_configuration_sha256) }
+      : {}),
     ...(row.credential_source
       ? { credentialSource: String(row.credential_source) as AiUsageRecord["credentialSource"] }
       : {}),
@@ -605,6 +652,22 @@ function requiredText(value: string, field: string, maxLength: number) {
 function nonNegativeInteger(value: unknown, fallback: number) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.round(number) : fallback;
+}
+
+function positiveInteger(value: unknown, field: string) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) {
+    throw new Error(`AI usage ${field} must be a positive integer.`);
+  }
+  return number;
+}
+
+function sha256Text(value: string, field: string) {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) {
+    throw new Error(`AI usage ${field} must be a SHA-256 digest.`);
+  }
+  return normalized;
 }
 
 function optionalNonNegativeNumber(value: unknown) {
