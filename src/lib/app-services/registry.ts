@@ -9,6 +9,7 @@ const readOnlyEventContract = "read_only:no_domain_mutation";
 export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.workspaces.summary", "read", "workspace"),
   read("app.workspaces.readiness", "read", "workspace"),
+  read("app.library.list", "read", "workspace_library"),
   read("app.projects.list", "read", "projects"),
   read("app.projects.show", "read", "project"),
   mutation("app.projects.create", "run.agent", "project", "projects.atomic-events.v1"),
