@@ -4,7 +4,10 @@ import {
   type RequestSharedMemoryAccessV1,
 } from "@/lib/memory/shared-context";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
-import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  createExecutionScope,
+  type ExecutionScope,
+} from "@/lib/security/execution-scope";
 import type {
   SalesforceMutationAuthority,
   SalesforceReadAuthority,
@@ -16,6 +19,8 @@ export async function resolveSalesforceRequestAccess(
     workspaceId?: string;
     mode: "read" | "write";
     correlationId: string;
+    executionScope?: ExecutionScope;
+    purpose?: string;
   },
 ) {
   const access = await requestSharedMemoryAccessFromSecurityContext(context, {
@@ -35,7 +40,13 @@ export async function resolveSalesforceRequestAccess(
     access,
     readAuthority: salesforceReadAuthority(context, access),
     mutationAuthority: input.mode === "write"
-      ? salesforceMutationAuthority(context, access, input.correlationId)
+      ? salesforceMutationAuthority(
+          context,
+          access,
+          input.correlationId,
+          input.executionScope,
+          input.purpose,
+        )
       : undefined,
   });
 }
@@ -56,6 +67,8 @@ function salesforceMutationAuthority(
   context: SecurityContext,
   access: RequestSharedMemoryAccessV1,
   correlationId: string,
+  source?: ExecutionScope,
+  purpose?: string,
 ): SalesforceMutationAuthority {
   const canonicalActorId = access.actorBinding.canonicalActorId;
   return {
@@ -63,11 +76,17 @@ function salesforceMutationAuthority(
     executionScope: createExecutionScope({
       tenantId: context.tenantId,
       initiatingActorId: canonicalActorId,
-      executingPrincipalType: "user",
-      executingPrincipalId: canonicalActorId,
+      executingPrincipalType: source?.executingPrincipalType || "user",
+      executingPrincipalId: source && source.executingPrincipalType !== "user"
+        ? source.executingPrincipalId
+        : canonicalActorId,
       workspaceId: access.authority.workspaceId,
       correlationId,
-      purpose: "customer.salesforce.read_sync",
+      causationId: source?.causationId,
+      delegationId: source?.delegationId,
+      contextGrantIds: source?.contextGrantIds,
+      capabilityGrantIds: source?.capabilityGrantIds,
+      purpose: purpose || "customer.salesforce.read_sync",
     }),
   };
 }

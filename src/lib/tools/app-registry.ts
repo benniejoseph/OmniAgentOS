@@ -135,6 +135,76 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     validTo: { type: ["string", "null"], format: "date-time" },
     staleAfter: { type: ["string", "null"], format: "date-time" },
   }, ["accountId", "factKey", "value", "source", "owner", "confidenceBasisPoints", "validFrom"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.customer_accounts.salesforce.writes.configure", "Configure Salesforce writes", "Activate or disable approval-bound Salesforce writes for one exact owner-controlled Account 360 revision. Activation requires a linked Salesforce Account and reviewed provider configuration.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    expectedAccountRevision: integer(1, Number.MAX_SAFE_INTEGER),
+    enabled: { type: "boolean" },
+  }, ["accountId", "expectedAccountRevision", "enabled"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  salesforceCreateWriteTool(
+    "app.customer_accounts.salesforce.contact.create",
+    "Create Salesforce contact",
+    "Create one Contact under the linked Salesforce Account through a deterministic unique External ID upsert, then verify the exact provider state.",
+    salesforceContactFields(),
+    ["LastName"],
+  ),
+  salesforceUpdateWriteTool(
+    "app.customer_accounts.salesforce.contact.update",
+    "Update Salesforce contact",
+    "Update reviewed Contact fields only when the linked record and exact provider revision still match, then verify the resulting state.",
+    salesforceContactFields(),
+  ),
+  salesforceCreateWriteTool(
+    "app.customer_accounts.salesforce.task.create",
+    "Create Salesforce task",
+    "Create one Task under the linked Salesforce Account through a deterministic unique External ID upsert, then verify the exact provider state.",
+    salesforceTaskFields(),
+    ["Subject", "Status", "Priority"],
+  ),
+  salesforceUpdateWriteTool(
+    "app.customer_accounts.salesforce.task.update",
+    "Update Salesforce task",
+    "Update reviewed Task fields only when the linked record and exact provider revision still match, then verify the resulting state.",
+    salesforceTaskFields(),
+  ),
+  salesforceUpdateWriteTool(
+    "app.customer_accounts.salesforce.note.update",
+    "Update Salesforce note",
+    "Update reviewed Note fields only when the linked record and exact provider revision still match, then verify the resulting state.",
+    { Title: text(1, 80), Body: nullableTextTool(32_000) },
+  ),
+  salesforceCreateWriteTool(
+    "app.customer_accounts.salesforce.case.create",
+    "Create Salesforce case",
+    "Create one Case under the linked Salesforce Account through a deterministic unique External ID upsert, then verify the exact provider state.",
+    salesforceCaseFields(),
+    ["Subject", "Status", "Priority", "Origin"],
+  ),
+  salesforceUpdateWriteTool(
+    "app.customer_accounts.salesforce.case.update",
+    "Update Salesforce case",
+    "Update reviewed Case fields only when the linked record and exact provider revision still match, then verify the resulting state.",
+    salesforceCaseFields(),
+  ),
+  salesforceCreateWriteTool(
+    "app.customer_accounts.salesforce.opportunity.create",
+    "Create Salesforce opportunity",
+    "Create one Opportunity under the linked Salesforce Account through a deterministic unique External ID upsert, then verify the exact provider state.",
+    salesforceOpportunityFields(),
+    ["Name", "StageName", "CloseDate"],
+  ),
+  salesforceUpdateWriteTool(
+    "app.customer_accounts.salesforce.opportunity.update",
+    "Update Salesforce opportunity",
+    "Update reviewed Opportunity fields only when the linked record and exact provider revision still match, then verify the resulting state.",
+    salesforceOpportunityFields(),
+  ),
+  salesforceUpdateWriteTool(
+    "app.customer_accounts.salesforce.account.update",
+    "Update Salesforce account",
+    "Update reviewed fields on the exact linked Salesforce Account only when its provider revision still matches, then verify the resulting state.",
+    salesforceAccountFields(),
+  ),
   readTool("app.projects.list", "List projects", "List the current actor's projects with their work items and artifacts.", objectSchema({
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
@@ -551,6 +621,107 @@ function text(minLength: number, maxLength: number) {
 
 function integer(minimum: number, maximum: number, defaultValue?: number) {
   return { type: "integer", minimum, maximum, ...(defaultValue === undefined ? {} : { default: defaultValue }) };
+}
+
+function salesforceCreateWriteTool(
+  id: string,
+  name: string,
+  description: string,
+  fields: Record<string, unknown>,
+  requiredFields: string[],
+) {
+  return mutationTool(id, name, description, requiredObjectSchema({
+    ...salesforceWriteBaseProperties(),
+    fields: requiredObjectSchema(fields, requiredFields),
+  }, ["accountId", "expectedAccountRevision", "fields"]), {
+    riskLevel: 2,
+    approvalRequired: true,
+    reversible: false,
+  });
+}
+
+function salesforceUpdateWriteTool(
+  id: string,
+  name: string,
+  description: string,
+  fields: Record<string, unknown>,
+) {
+  return mutationTool(id, name, description, requiredObjectSchema({
+    ...salesforceWriteBaseProperties(),
+    recordId: salesforceRecordIdToolSchema(),
+    expectedProviderModifiedAt: { type: "string", format: "date-time" },
+    fields: { ...objectSchema(fields), minProperties: 1 },
+  }, [
+    "accountId", "expectedAccountRevision", "recordId",
+    "expectedProviderModifiedAt", "fields",
+  ]), { riskLevel: 2, approvalRequired: true, reversible: false });
+}
+
+function salesforceWriteBaseProperties() {
+  return {
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    expectedAccountRevision: integer(1, Number.MAX_SAFE_INTEGER),
+  };
+}
+
+function salesforceRecordIdToolSchema() {
+  return { type: "string", pattern: "^[A-Za-z0-9]{15,18}$" };
+}
+
+function nullableTextTool(maxLength: number) {
+  return { anyOf: [text(1, maxLength), { type: "null" }] };
+}
+
+function salesforceDateTool() {
+  return { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" };
+}
+
+function salesforceAccountFields() {
+  return {
+    Name: text(1, 255), Phone: nullableTextTool(40),
+    Website: nullableTextTool(255), Industry: nullableTextTool(80),
+    Type: nullableTextTool(80), Description: nullableTextTool(32_000),
+    BillingStreet: nullableTextTool(255), BillingCity: nullableTextTool(40),
+    BillingState: nullableTextTool(80), BillingPostalCode: nullableTextTool(20),
+    BillingCountry: nullableTextTool(80),
+  };
+}
+
+function salesforceContactFields() {
+  return {
+    FirstName: nullableTextTool(40), LastName: text(1, 80),
+    Email: { anyOf: [{ type: "string", format: "email", maxLength: 254 }, { type: "null" }] },
+    Phone: nullableTextTool(40), MobilePhone: nullableTextTool(40),
+    Title: nullableTextTool(128), Department: nullableTextTool(80),
+    Description: nullableTextTool(32_000),
+  };
+}
+
+function salesforceTaskFields() {
+  return {
+    Subject: text(1, 255), Description: nullableTextTool(32_000),
+    ActivityDate: { anyOf: [salesforceDateTool(), { type: "null" }] },
+    Status: text(1, 80), Priority: text(1, 80),
+  };
+}
+
+function salesforceCaseFields() {
+  return {
+    Subject: text(1, 255), Description: nullableTextTool(32_000),
+    Status: text(1, 80), Priority: text(1, 80), Origin: text(1, 80),
+    Type: nullableTextTool(80), Reason: nullableTextTool(80),
+  };
+}
+
+function salesforceOpportunityFields() {
+  return {
+    Name: text(1, 120), StageName: text(1, 120), CloseDate: salesforceDateTool(),
+    Amount: { anyOf: [{ type: "number", minimum: 0, maximum: 1_000_000_000_000 }, { type: "null" }] },
+    Probability: { anyOf: [{ type: "number", minimum: 0, maximum: 100 }, { type: "null" }] },
+    Type: nullableTextTool(80), NextStep: nullableTextTool(255),
+    Description: nullableTextTool(32_000),
+  };
 }
 
 function opaqueId(description: string) {
