@@ -32,7 +32,23 @@ import {
 import { clsx } from "clsx";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
+import { WorkspaceLibrary } from "@/components/workspace-library";
 import styles from "./daybook-workspaces.module.css";
+
+const PROJECT_LIBRARY_KINDS = [
+  "generated_artifact",
+  "document",
+  "spreadsheet",
+  "presentation",
+  "file",
+  "image",
+  "audio",
+  "video",
+  "recording",
+  "transcript",
+  "email",
+  "meeting",
+] as const;
 
 type AgentId = "atlas" | "scout" | "forge" | "sentinel" | "mnemosyne";
 type ProjectStatus = "draft" | "active" | "completed" | "archived";
@@ -144,7 +160,18 @@ export function ProjectsWorkspace() {
       if (controller.signal.aborted) return;
       const next = payload.projects as Project[];
       setProjects(next);
-      setSelectedId((current) => current && next.some((item) => item.id === current) ? current : next[0]?.id || "");
+      const requestedProjectId = new URL(window.location.href).searchParams.get("project") || "";
+      const requestedArtifactId = new URL(window.location.href).searchParams.get("artifact") || "";
+      setSelectedId((current) =>
+        requestedProjectId && next.some((item) => item.id === requestedProjectId)
+          ? requestedProjectId
+          : current && next.some((item) => item.id === current)
+            ? current
+            : next[0]?.id || "",
+      );
+      if (requestedArtifactId && next.some((item) =>
+        item.artifacts.some((artifact) => artifact.id === requestedArtifactId)
+      )) setSelectedArtifactId(requestedArtifactId);
       setError(undefined);
     } catch (loadError) {
       if (!controller.signal.aborted) setError(message(loadError));
@@ -441,6 +468,17 @@ export function ProjectsWorkspace() {
                 </article> : null}
               </div> : <div className="project-artifact-empty"><FileCheck2 size={20} aria-hidden="true" /><div><strong>No verified outputs yet</strong><p>Completed agent workflows will appear here with their report, provenance, and linked project memory.</p></div></div>}
             </section>
+
+            <WorkspaceLibrary
+              title={`${selected.title} library`}
+              description="Assets linked to this project keep their source scope, version, and citation beside the work that produced or uses them."
+              kinds={PROJECT_LIBRARY_KINDS}
+              projectId={selected.id}
+              compact
+              limit={12}
+              refreshKey={`${selected.updatedAt}:${selected.artifacts?.length || 0}`}
+              className="project-artifact-ledger"
+            />
           </> : <div className="project-canvas-empty"><FolderKanban size={30} aria-hidden="true" /><h2>Create your first project</h2><p>Give an outcome a durable home, then let your agent team turn it into executable work.</p><button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> New project</button></div>}
         </section>
       </div>

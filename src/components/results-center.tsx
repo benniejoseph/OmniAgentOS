@@ -26,7 +26,14 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import { useLiveRefresh } from "@/components/use-live-refresh";
+import { WorkspaceLibrary } from "@/components/workspace-library";
 import styles from "./daybook-workspaces.module.css";
+
+const RESULT_LIBRARY_KINDS = [
+  "generated_artifact",
+  "image",
+  "transcript",
+] as const;
 
 type JsonRecord = Record<string, unknown>;
 type LoadState = "loading" | "ready" | "error";
@@ -533,6 +540,15 @@ export function ResultsCenter() {
           </div>
         </ResultPanel>
       </section>
+
+      <WorkspaceLibrary
+        title="Reusable outputs"
+        description="Generated artifacts, images, and transcripts remain attached to their source, stable citation, and relevant work."
+        kinds={RESULT_LIBRARY_KINDS}
+        compact
+        limit={12}
+        className="mt-4"
+      />
         </>
       ) : null}
     </div>
