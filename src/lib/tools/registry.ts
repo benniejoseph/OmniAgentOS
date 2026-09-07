@@ -1,6 +1,8 @@
 import type { ToolDefinition } from "@/lib/tools/types";
+import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 
 export const governedTools: ToolDefinition[] = [
+  ...FIRST_PARTY_APP_TOOLS,
   {
     id: "calendar.create",
     name: "Create Google Calendar Event",

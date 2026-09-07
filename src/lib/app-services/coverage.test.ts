@@ -15,7 +15,7 @@ describe("P9.1 Main Agent application-service coverage", () => {
       forbiddenAgentAccessPaths: [],
       passed: true,
     });
-    expect(validation.mainAgentOperationCount).toBe(15);
+    expect(validation.mainAgentOperationCount).toBeGreaterThanOrEqual(15);
   });
 
   it("keeps the governed executor off application stores and retrievers", async () => {

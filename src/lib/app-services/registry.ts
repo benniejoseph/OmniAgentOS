@@ -7,6 +7,14 @@ export const APP_SERVICE_REGISTRY_VERSION =
 const readOnlyEventContract = "read_only:no_domain_mutation";
 
 export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
+  read("app.workspaces.summary", "read", "workspace"),
+  read("app.workspaces.readiness", "read", "workspace"),
+  read("app.projects.list", "read", "projects"),
+  read("app.projects.show", "read", "project"),
+  mutation("app.projects.create", "run.agent", "project", "projects.atomic-events.v1"),
+  mutation("app.projects.update", "run.agent", "project", "projects.atomic-events.v1"),
+  mutation("app.work_items.create", "run.agent", "project_task", "projects.atomic-events.v1"),
+  mutation("app.work_items.update", "run.agent", "project_task", "projects.atomic-events.v1"),
   read("missions.list", "read", "missions"),
   read("missions.show", "read", "mission"),
   mutation("missions.create", "run.agent", "mission", "missions.atomic-events.v1"),
@@ -33,6 +41,14 @@ export type AppServiceOperation =
   (typeof APP_SERVICE_OPERATION_CONTRACTS)[number]["operation"];
 
 export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
+  { toolId: "app.workspaces.summary", operation: "app.workspaces.summary" },
+  { toolId: "app.workspaces.readiness", operation: "app.workspaces.readiness" },
+  { toolId: "app.projects.list", operation: "app.projects.list" },
+  { toolId: "app.projects.show", operation: "app.projects.show" },
+  { toolId: "app.projects.create", operation: "app.projects.create" },
+  { toolId: "app.projects.update", operation: "app.projects.update" },
+  { toolId: "app.work_items.create", operation: "app.work_items.create" },
+  { toolId: "app.work_items.update", operation: "app.work_items.update" },
   { toolId: "memory.search", operation: "memory.search" },
   { toolId: "memory.inspect", operation: "memory.inspect" },
   { toolId: "memory.forget.preview", operation: "memory.forget.preview" },
@@ -99,11 +115,11 @@ export function validateAppServiceRegistry() {
   };
 }
 
-function read(
-  operation: string,
+function read<const TOperation extends string>(
+  operation: TOperation,
   action: string,
   resourceType: string,
-): AppServiceOperationContract {
+): AppServiceOperationContract & { operation: TOperation } {
   return Object.freeze({
     operation,
     action,
@@ -113,12 +129,12 @@ function read(
   });
 }
 
-function mutation(
-  operation: string,
+function mutation<const TOperation extends string>(
+  operation: TOperation,
   action: string,
   resourceType: string,
   eventContract: string,
-): AppServiceOperationContract {
+): AppServiceOperationContract & { operation: TOperation } {
   return Object.freeze({
     operation,
     action,
