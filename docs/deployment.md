@@ -448,22 +448,32 @@ direct network operations remain risk three.
 
 ## AP2 payment boundary
 
-The deployed `p9.15-ap2-boundary:1` contract is configuration-only. It pins
-the official AP2 `v0.2.0` release and reviewed commit, requires exact mandate
-`vct` values, keeps the Trusted Surface deterministic and non-agentic, and
-requires separately authenticated and digest-reviewed external adapters.
-`GET /api/payments/ap2/readiness` is authenticated and private/no-store; the
-same projection is available to the Main Agent only through the governed
+The deployed `p9.15-ap2-boundary:1` contract pins the official AP2 `v0.2.0`
+release and reviewed commit, requires exact mandate `vct` values, keeps the
+Trusted Surface deterministic and non-agentic, and requires separately
+authenticated and digest-reviewed external adapters. P9.16 adds exact Checkout
+and Payment Mandates under migration 125 plus user-only WebAuthn registration,
+review, authorization, and proof-reverification routes. `GET
+/api/payments/ap2/readiness` is authenticated and private/no-store; the same
+projection is available to the Main Agent only through the governed
 `app.payments.ap2.readiness` read tool.
 
-The readiness projection must report zero payment-effect tools, zero accepted
-adapter releases, and `transactionsPermitted: false` until the P9.16 direct
-mandate, P9.17 credential isolation, and P9.18 receipt/reconciliation gates are
-implemented and separately reviewed. Never place raw payment credentials or
-private signing keys in Vercel environment variables, model context, general
-application storage, events, logs, browser state, MCP output, or memory. A
-future provider rollout requires isolated credential/key infrastructure and a
-new deployment procedure; P9.15 alone authorizes no purchase or payment.
+Signer activation requires `OMNIAGENT_AP2_WEBAUTHN_TRUST_POLICY` containing an
+operator-reviewed public policy for accepted hardware AAGUIDs and attestation
+formats. The application verifies that policy's own digest and fails closed
+when it is absent or malformed. Do not configure a permissive placeholder.
+Never place raw payment credentials, WebAuthn private keys, credential-provider
+secrets, or payment signing keys in Vercel environment variables, model
+context, general application storage, events, logs, browser state, MCP output,
+or memory.
+
+The readiness projection reports the direct human-present mandate gate as
+implemented while retaining zero payment-effect tools and
+`transactionsPermitted: false`. Payment remains disabled until P9.17 credential
+isolation, P9.18 signed receipt/reconciliation, a reviewed credential provider,
+merchant payment processor, and WebAuthn trust policy are independently
+configured and verified. This web-and-database slice does not require either
+Fly image to be rebuilt.
 
 ## Required checks and branch protection
 
