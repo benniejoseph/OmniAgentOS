@@ -123,6 +123,15 @@ consumption remain web/database operations; P9.4 does not change the standalone
 worker or Playwright images, so a compatible healthy Fly release must not be
 rebuilt solely for this migration.
 
+Migration 122 adds actor-private browser profiles, immutable execution bindings,
+and bounded takeover leases. Migration 123 corrects the policy kind on the 12
+actor-owned A2A, Trash, approval, and browser tables created by migrations
+117–122: each table has one permissive policy whose predicate remains the exact
+tenant+actor or audited system scope, with forced RLS still enabled. A
+restrictive policy without any permissive policy rejects every row; do not
+reintroduce that standalone configuration. The migration asserts exactly one
+policy on every repaired table.
+
 ## Dedicated worker and monitoring
 
 Run web and worker separately:
