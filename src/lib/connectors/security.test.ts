@@ -164,7 +164,7 @@ describe("connector security", () => {
     expect(risk("browser_navigate")).toBe(1);
     expect(risk("browser_click")).toBe(2);
     expect(risk("browser_fill_form")).toBe(2);
-    expect(risk("browser_tabs")).toBe(2);
+    expect(risk("browser_tabs")).toBe(1);
     expect(risk("browser_evaluate")).toBe(3);
     expect(risk("browser_file_upload")).toBe(3);
     expect(risk("browser_run_code_unsafe")).toBe(3);

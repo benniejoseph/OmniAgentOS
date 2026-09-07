@@ -685,7 +685,7 @@ export function McpConnections({
                   {endpoint.trim() === GITHUB_MCP_ENDPOINT
                     ? "GitHub read tools run directly; write and Actions operations pause for approval."
                     : endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT
-                      ? "Playwright can navigate and inspect directly; clicks, typing, and form actions pause for approval. Arbitrary code and file transfer stay high risk."
+                      ? "Playwright can inspect, navigate, and manage tabs directly. Clicks, typing, forms, selections, dialogs, and key actions stay approval-controlled because they can commit external changes; arbitrary code and file transfer stay high risk."
                     : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
                       ? "Browser profiles and task status can be read directly; browser actions pause for approval, and cookie access is high risk."
                     : "New tools use risk level 2 and require approval by default."}
