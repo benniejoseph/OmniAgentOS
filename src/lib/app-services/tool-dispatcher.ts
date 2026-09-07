@@ -45,6 +45,20 @@ import {
   updateNotificationService,
 } from "@/lib/app-services/notifications";
 import { listRunsService, showRunService } from "@/lib/app-services/runs";
+import {
+  createAgentService,
+  createSkillService,
+  deleteAgentService,
+  deleteSkillService,
+  listAgentsService,
+  listSkillsService,
+  previewAgentDeleteService,
+  previewSkillDeleteService,
+  showAgentService,
+  showSkillService,
+  updateAgentService,
+  updateSkillService,
+} from "@/lib/app-services/agents";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -100,6 +114,18 @@ export async function executeFirstPartyAppTool(input: {
     "app.notifications.read_all": () => readAllNotificationsService(caller, input.toolInput as never),
     "app.runs.list": () => listRunsService(caller, input.toolInput as never),
     "app.runs.show": () => showRunService(caller, input.toolInput as never),
+    "app.agents.list": () => listAgentsService(caller, input.toolInput as never),
+    "app.agents.show": () => showAgentService(caller, input.toolInput as never),
+    "app.agents.create": () => createAgentService(caller, input.toolInput as never),
+    "app.agents.update": () => updateAgentService(caller, input.toolInput as never),
+    "app.agents.delete.preview": () => previewAgentDeleteService(caller, input.toolInput as never),
+    "app.agents.delete": () => deleteAgentService(caller, input.toolInput as never),
+    "app.skills.list": () => listSkillsService(caller, input.toolInput as never),
+    "app.skills.show": () => showSkillService(caller, input.toolInput as never),
+    "app.skills.create": () => createSkillService(caller, input.toolInput as never),
+    "app.skills.update": () => updateSkillService(caller, input.toolInput as never),
+    "app.skills.delete.preview": () => previewSkillDeleteService(caller, input.toolInput as never),
+    "app.skills.delete": () => deleteSkillService(caller, input.toolInput as never),
   };
   const handler = handlers[input.toolId];
   if (!handler) throw new Error(`No first-party application handler is registered for ${input.toolId}.`);

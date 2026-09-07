@@ -95,5 +95,16 @@ describe("governed native tool schemas", () => {
     expect(getGovernedTool("app.knowledge.delete")?.inputSchema).toMatchObject({
       required: ["source", "expectedTargetsSha256"],
     });
+    for (const family of ["agents", "skills"]) {
+      expect(getGovernedTool(`app.${family}.delete.preview`)).toMatchObject({
+        riskLevel: 0,
+        operationClass: "read_only",
+      });
+      expect(getGovernedTool(`app.${family}.delete`)).toMatchObject({
+        riskLevel: 2,
+        approvalRequired: true,
+        reversible: false,
+      });
+    }
   });
 });

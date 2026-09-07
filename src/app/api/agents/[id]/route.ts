@@ -1,14 +1,13 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { showAgentService, updateAgentService } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentPatchSchema } from "@/lib/skills/schema";
 import {
   AgentSkillAssignmentError,
   CustomAgentReadConflictError,
   deleteCustomAgent,
-  getCustomAgentForRequest,
-  updateCustomAgent,
 } from "@/lib/skills/store";
 
 export const runtime = "nodejs";
@@ -24,13 +23,9 @@ async function GETHandler(request: Request, context: RouteContext<"/api/agents/[
   catch (error) { return forbiddenResponse(error); }
   const { id } = await context.params;
   try {
-    const agent = await getCustomAgentForRequest(id, {
-      tenantId: auth.tenantId,
-      actorId: auth.actorId,
-      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(auth),
-    });
-    return agent
-      ? Response.json({ agent }, { headers: privateNoStoreHeaders })
+    const result = await showAgentService(createAppServiceCaller({ context: auth }), { id, includeBuiltIns: false });
+    return result.data.agent
+      ? Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders })
       : Response.json(
           { error: "Agent not found." },
           { status: 404, headers: privateNoStoreHeaders },
@@ -56,8 +51,11 @@ async function PATCHHandler(request: Request, context: RouteContext<"/api/agents
   if (!parsed.success) return Response.json({ error: "Invalid agent update", details: parsed.error.flatten() }, { status: 400 });
   const { id } = await context.params;
   try {
-    const agent = await updateCustomAgent(id, parsed.data, { tenantId: auth.tenantId, actorId: auth.actorId });
-    return agent ? Response.json({ agent }) : Response.json({ error: "Custom agent not found." }, { status: 404 });
+    const result = await updateAgentService(
+      createRequestMutationAppServiceCaller(request, auth, { purpose: "agent.update", causationId: id }),
+      { id, change: parsed.data },
+    );
+    return result.data.agent ? Response.json({ ...result.data, serviceReceipt: result.receipt }) : Response.json({ error: "Custom agent not found." }, { status: 404 });
   } catch (error) {
     if (error instanceof AgentSkillAssignmentError) {
       return Response.json(

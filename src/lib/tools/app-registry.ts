@@ -125,6 +125,30 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.runs.show", "Show agent run", "Read one exact tenant-scoped agent run and its context-use receipt.", requiredObjectSchema({
     runId: opaqueId("Exact agent-run ID."),
   }, ["runId"])),
+  readTool("app.agents.list", "List agents", "List built-in agents and custom agents readable by the current actor.", objectSchema({
+    ownerScope: { type: "string", enum: ["exact", "readable"], default: "readable" },
+  })),
+  readTool("app.agents.show", "Show agent", "Read one exact built-in or custom agent.", requiredObjectSchema({
+    id: opaqueId("Exact agent ID."), includeBuiltIns: { type: "boolean", default: true },
+  }, ["id"])),
+  mutationTool("app.agents.create", "Create custom agent", "Create one custom agent with bounded skills, tools, memory, model, and approval policy.", requiredObjectSchema(agentProperties(), ["name", "role", "description", "instructions"]), { reversible: true }),
+  mutationTool("app.agents.update", "Update custom agent", "Update one exact custom agent.", requiredObjectSchema({
+    id: opaqueId("Exact custom-agent ID."), change: objectSchema(agentProperties()),
+  }, ["id", "change"]), { reversible: true }),
+  readTool("app.agents.delete.preview", "Preview custom-agent deletion", "Preview the exact custom agent, skill assignments, and tool assignments that permanent deletion will retire.", requiredObjectSchema({ id: opaqueId("Exact custom-agent ID.") }, ["id"])),
+  mutationTool("app.agents.delete", "Delete custom agent", "Permanently retire and delete one exact custom agent only when its preview digest still matches.", requiredObjectSchema({
+    id: opaqueId("Exact custom-agent ID."), expectedTargetSha256: sha256("Digest returned by app.agents.delete.preview."),
+  }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.skills.list", "List skills", "List built-in and custom skills readable by the current actor.", objectSchema({})),
+  readTool("app.skills.show", "Show skill", "Read one exact built-in or custom skill.", requiredObjectSchema({ id: opaqueId("Exact skill ID.") }, ["id"])),
+  mutationTool("app.skills.create", "Create skill", "Create one custom skill with bounded instructions and tool assignments.", requiredObjectSchema(skillProperties(), ["name", "description", "instructions", "category"]), { reversible: true }),
+  mutationTool("app.skills.update", "Update skill", "Update one exact custom skill.", requiredObjectSchema({
+    id: opaqueId("Exact custom-skill ID."), change: objectSchema(skillProperties()),
+  }, ["id", "change"]), { reversible: true }),
+  readTool("app.skills.delete.preview", "Preview skill deletion", "Preview the exact custom skill and affected custom agents before permanent deletion.", requiredObjectSchema({ id: opaqueId("Exact custom-skill ID.") }, ["id"])),
+  mutationTool("app.skills.delete", "Delete skill", "Permanently delete one exact custom skill only when its target preview still matches.", requiredObjectSchema({
+    id: opaqueId("Exact custom-skill ID."), expectedTargetSha256: sha256("Digest returned by app.skills.delete.preview."),
+  }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
 ] satisfies readonly ToolDefinition[]);
 
 function readTool(id: string, name: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
@@ -170,4 +194,35 @@ function uuid(description: string) {
 
 function opaqueId(description: string) {
   return { type: "string", minLength: 1, maxLength: 200, description };
+}
+
+function sha256(description: string) {
+  return { type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$", description };
+}
+
+function idList(maxItems = 50) {
+  return { type: "array", maxItems, uniqueItems: true, items: text(1, 120) };
+}
+
+function skillProperties(): Record<string, unknown> {
+  return {
+    name: text(2, 120), description: text(2, 500), instructions: text(10, 12_000),
+    category: { type: "string", enum: ["research", "creation", "analysis", "memory", "automation", "personal"] },
+    status: { type: "string", enum: ["active", "disabled"], default: "active" },
+    toolIds: idList(), tags: { type: "array", maxItems: 30, uniqueItems: true, items: text(1, 100) },
+    knowledgeTags: { type: "array", maxItems: 30, uniqueItems: true, items: text(1, 100) },
+  };
+}
+
+function agentProperties(): Record<string, unknown> {
+  return {
+    name: text(2, 120), role: text(2, 120), description: text(2, 700), instructions: text(10, 12_000),
+    status: { type: "string", enum: ["ready", "learning", "paused"], default: "ready" },
+    accent: { type: "string", enum: ["emerald", "blue", "amber", "violet", "rose"], default: "emerald" },
+    modelPolicy: { type: "string", enum: ["auto", "openai_fast", "openai_reasoning", "gemini_fast", "anthropic_fast", "anthropic_reasoning"], default: "auto" },
+    autonomy: { type: "string", enum: ["assist", "governed", "execute"], default: "governed" },
+    approvalPolicy: { type: "string", enum: ["always", "risk_based", "read_only"], default: "risk_based" },
+    memoryScope: { type: "string", enum: ["session", "project", "all"], default: "all" },
+    skillIds: idList(), toolIds: idList(),
+  };
 }

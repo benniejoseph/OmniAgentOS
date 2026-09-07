@@ -1,14 +1,12 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { createAgentService, listAgentsService } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { arsenalAgents } from "@/lib/agents/arsenal";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { customAgentInputSchema } from "@/lib/skills/schema";
 import {
   AgentSkillAssignmentError,
   CustomAgentReadConflictError,
-  createCustomAgent,
-  listCustomAgentsForRequest,
 } from "@/lib/skills/store";
 
 export const runtime = "nodejs";
@@ -16,29 +14,16 @@ export const GET = withDatabaseRequestScope(GETHandler);
 export const POST = withDatabaseRequestScope(POSTHandler);
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
-const requestBuiltInAgents = arsenalAgents.map((agent) => ({
-  ...agent,
-  builtIn: true,
-  selectable: true,
-  manageable: false,
-}));
-
 async function GETHandler(request: Request) {
   let context;
   try { context = await authorizeRequest({ request, action: "read", resourceType: "custom_agent" }); }
   catch (error) { return forbiddenResponse(error); }
   try {
-    const readableOwnerScope =
-      new URL(request.url).searchParams.get("ownerScope") === "readable";
-    const scope = { tenantId: context.tenantId, actorId: context.actorId };
-    const agents = await listCustomAgentsForRequest({
-      ...scope,
-      requestActorBinding: readableOwnerScope
-        ? canonicalRequestActorBindingFromSecurityContext(context)
-        : undefined,
+    const result = await listAgentsService(createAppServiceCaller({ context }), {
+      ownerScope: new URL(request.url).searchParams.get("ownerScope") === "readable" ? "readable" : "exact",
     });
     return Response.json(
-      { builtIns: requestBuiltInAgents, agents },
+      { ...result.data, serviceReceipt: result.receipt },
       { headers: privateNoStoreHeaders },
     );
   } catch (error) {
@@ -61,8 +46,11 @@ async function POSTHandler(request: Request) {
   const parsed = customAgentInputSchema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid agent", details: parsed.error.flatten() }, { status: 400 });
   try {
-    const agent = await createCustomAgent(parsed.data, { tenantId: context.tenantId, actorId: context.actorId });
-    return Response.json({ agent }, { status: 201 });
+    const result = await createAgentService(
+      createRequestMutationAppServiceCaller(request, context, { purpose: "agent.create" }),
+      parsed.data,
+    );
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { status: 201 });
   } catch (error) {
     if (error instanceof AgentSkillAssignmentError) {
       return Response.json(
