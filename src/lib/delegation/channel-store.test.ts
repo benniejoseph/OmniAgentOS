@@ -1,11 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { DelegationTaskV1 } from "@/lib/delegation/lifecycle";
+import type { MissionArtifact } from "@/lib/missions/types";
+
+type MockArtifactInput = {
+  kind: string;
+  data: Record<string, unknown>;
+};
+type MockEventInput = {
+  type: string;
+  payload: Record<string, unknown>;
+};
 
 const mocks = vi.hoisted(() => ({
-  recordMissionArtifact: vi.fn(),
-  listMissionArtifacts: vi.fn(async () => []),
-  appendScopedDomainEvent: vi.fn(async () => ({ id: "event" })),
-  persistenceAvailable: vi.fn(() => true),
-  listTasks: vi.fn(async () => []),
+  recordMissionArtifact: vi.fn<
+    (input: MockArtifactInput) => Promise<{
+      id: string;
+      kind: string;
+      data: Record<string, unknown>;
+    }>
+  >(),
+  listMissionArtifacts: vi.fn<() => Promise<MissionArtifact[]>>(async () => []),
+  appendScopedDomainEvent: vi.fn<
+    (input: MockEventInput) => Promise<{ id: string }>
+  >(async () => ({ id: "event" })),
+  persistenceAvailable: vi.fn<() => boolean>(() => true),
+  listTasks: vi.fn<() => Promise<DelegationTaskV1[]>>(async () => []),
 }));
 
 vi.mock("@/lib/missions/store", () => ({

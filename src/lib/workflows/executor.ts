@@ -1216,7 +1216,7 @@ export async function executeAgentPlanNode({
     const sharedArtifact = missionId
       ? await shareDelegationMissionArtifact({
           task: lifecycleTask,
-          parentExecutionScope: authorityScope,
+          parentExecutionScope: requiredDelegationParentScope(authorityScope),
           missionId,
           recipients: { parent: true, delegationTaskIds: [] },
           kind: "result",
@@ -1233,10 +1233,10 @@ export async function executeAgentPlanNode({
           toolExecutionIds: [],
         })
       : undefined;
-    if (sharedArtifact) {
+    if (missionId && sharedArtifact) {
       await sendDelegationMessage({
         task: lifecycleTask,
-        parentExecutionScope: authorityScope,
+        parentExecutionScope: requiredDelegationParentScope(authorityScope),
         missionId,
         recipients: { parent: true, delegationTaskIds: [] },
         kind: "handoff",

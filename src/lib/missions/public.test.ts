@@ -97,7 +97,10 @@ describe("browser-safe mission projections", () => {
 });
 
 function workingDelegationTask() {
-  let task = buildDelegationTaskV1(buildContract({ missionId: "mission-1" }));
+  const baseContract = buildContract();
+  let task = buildDelegationTaskV1(buildContract({
+    scope: { ...baseContract.scope, missionId: "mission-1" },
+  }));
   task = transitionDelegationTaskV1({
     task,
     transition: { to: "accepted" },
