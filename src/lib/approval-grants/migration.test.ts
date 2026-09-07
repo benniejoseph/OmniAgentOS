@@ -25,8 +25,10 @@ describe("P9.4 approval grant migration", () => {
       expect(source).toContain("Approval grant claims are append-only");
       expect(source).toContain("Approval grant audit records cannot be removed");
       expect(source).toContain(
-        "state, used_uses, lifecycle_revision, grant, last_used_at, revoked_at",
+        "state, used_uses, lifecycle_revision, grant_payload, last_used_at, revoked_at",
       );
+      expect(source).toContain("grant_payload JSONB NOT NULL");
+      expect(source).not.toContain("grant JSONB NOT NULL");
       expect(source).not.toMatch(
         /FOREIGN KEY \(owner_actor_id\)\s+REFERENCES omni_auth_users \(actor_id\)/,
       );

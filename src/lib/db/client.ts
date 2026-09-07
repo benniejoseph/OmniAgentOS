@@ -12362,7 +12362,7 @@ async function ensureApprovalGrantsV1(sql: SqlClient) {
       used_uses SMALLINT NOT NULL DEFAULT 0,
       max_uses SMALLINT NOT NULL,
       lifecycle_revision BIGINT NOT NULL DEFAULT 1,
-      grant JSONB NOT NULL,
+      grant_payload JSONB NOT NULL,
       issued_at TIMESTAMPTZ NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL,
       last_used_at TIMESTAMPTZ,
@@ -12393,35 +12393,35 @@ async function ensureApprovalGrantsV1(sql: SqlClient) {
       CHECK (issued_at < expires_at),
       CHECK (expires_at <= issued_at + INTERVAL '24 hours'),
       CHECK ((state = 'revoked') = (revoked_at IS NOT NULL)),
-      CHECK (jsonb_typeof(grant) = 'object'),
-      CHECK (grant->>'version' = 'p9.4-approval-grant:1'),
-      CHECK (grant->>'grantId' = grant_id),
-      CHECK (grant->>'tenantId' = tenant_id),
-      CHECK (grant->>'ownerActorId' = owner_actor_id),
-      CHECK (grant->>'sourceApprovalId' = source_approval_id),
-      CHECK (grant->>'bindingSha256' = binding_sha256),
-      CHECK (grant->>'planId' = plan_id),
-      CHECK (grant->>'planSha256' = plan_sha256),
-      CHECK (grant->>'domain' = domain),
-      CHECK (grant->>'actionClass' = action_class),
-      CHECK (grant->>'toolId' = tool_id),
-      CHECK (grant->>'toolContractSha256' = tool_contract_sha256),
-      CHECK (grant->>'targetSha256' = target_sha256),
-      CHECK (grant->>'executingPrincipalType' = executing_principal_type),
-      CHECK (grant->>'executingPrincipalId' = executing_principal_id),
-      CHECK (grant->>'state' = state),
-      CHECK ((grant->>'usedUses')::SMALLINT = used_uses),
-      CHECK ((grant->>'maxUses')::SMALLINT = max_uses),
-      CHECK ((grant->>'lifecycleRevision')::BIGINT = lifecycle_revision),
-      CHECK ((grant->>'issuedAt')::TIMESTAMPTZ = issued_at),
-      CHECK ((grant->>'expiresAt')::TIMESTAMPTZ = expires_at),
+      CHECK (jsonb_typeof(grant_payload) = 'object'),
+      CHECK (grant_payload->>'version' = 'p9.4-approval-grant:1'),
+      CHECK (grant_payload->>'grantId' = grant_id),
+      CHECK (grant_payload->>'tenantId' = tenant_id),
+      CHECK (grant_payload->>'ownerActorId' = owner_actor_id),
+      CHECK (grant_payload->>'sourceApprovalId' = source_approval_id),
+      CHECK (grant_payload->>'bindingSha256' = binding_sha256),
+      CHECK (grant_payload->>'planId' = plan_id),
+      CHECK (grant_payload->>'planSha256' = plan_sha256),
+      CHECK (grant_payload->>'domain' = domain),
+      CHECK (grant_payload->>'actionClass' = action_class),
+      CHECK (grant_payload->>'toolId' = tool_id),
+      CHECK (grant_payload->>'toolContractSha256' = tool_contract_sha256),
+      CHECK (grant_payload->>'targetSha256' = target_sha256),
+      CHECK (grant_payload->>'executingPrincipalType' = executing_principal_type),
+      CHECK (grant_payload->>'executingPrincipalId' = executing_principal_id),
+      CHECK (grant_payload->>'state' = state),
+      CHECK ((grant_payload->>'usedUses')::SMALLINT = used_uses),
+      CHECK ((grant_payload->>'maxUses')::SMALLINT = max_uses),
+      CHECK ((grant_payload->>'lifecycleRevision')::BIGINT = lifecycle_revision),
+      CHECK ((grant_payload->>'issuedAt')::TIMESTAMPTZ = issued_at),
+      CHECK ((grant_payload->>'expiresAt')::TIMESTAMPTZ = expires_at),
       CHECK (
-        (last_used_at IS NULL AND grant->'lastUsedAt' = 'null'::JSONB)
-        OR (grant->>'lastUsedAt')::TIMESTAMPTZ = last_used_at
+        (last_used_at IS NULL AND grant_payload->'lastUsedAt' = 'null'::JSONB)
+        OR (grant_payload->>'lastUsedAt')::TIMESTAMPTZ = last_used_at
       ),
       CHECK (
-        (revoked_at IS NULL AND grant->'revokedAt' = 'null'::JSONB)
-        OR (grant->>'revokedAt')::TIMESTAMPTZ = revoked_at
+        (revoked_at IS NULL AND grant_payload->'revokedAt' = 'null'::JSONB)
+        OR (grant_payload->>'revokedAt')::TIMESTAMPTZ = revoked_at
       )
     )
   `;
@@ -12598,7 +12598,7 @@ async function ensureApprovalGrantsV1(sql: SqlClient) {
         EXECUTE 'REVOKE ALL ON TABLE omni_approval_grant_claims FROM omni_runtime';
         GRANT SELECT, INSERT ON omni_approval_grants TO omni_runtime;
         GRANT UPDATE (
-          state, used_uses, lifecycle_revision, grant, last_used_at, revoked_at
+          state, used_uses, lifecycle_revision, grant_payload, last_used_at, revoked_at
         ) ON omni_approval_grants TO omni_runtime;
         GRANT SELECT, INSERT ON omni_approval_grant_claims TO omni_runtime;
       END IF;
@@ -12607,7 +12607,7 @@ async function ensureApprovalGrantsV1(sql: SqlClient) {
         EXECUTE 'REVOKE ALL ON TABLE omni_approval_grant_claims FROM omni_maintenance';
         GRANT SELECT, INSERT ON omni_approval_grants TO omni_maintenance;
         GRANT UPDATE (
-          state, used_uses, lifecycle_revision, grant, last_used_at, revoked_at
+          state, used_uses, lifecycle_revision, grant_payload, last_used_at, revoked_at
         ) ON omni_approval_grants TO omni_maintenance;
         GRANT SELECT, INSERT ON omni_approval_grant_claims TO omni_maintenance;
       END IF;
@@ -12632,7 +12632,7 @@ async function ensureApprovalGrantsV1(sql: SqlClient) {
           AND grantee IN ('omni_runtime', 'omni_maintenance')
           AND privilege_type = 'UPDATE'
           AND column_name NOT IN (
-            'state', 'used_uses', 'lifecycle_revision', 'grant',
+            'state', 'used_uses', 'lifecycle_revision', 'grant_payload',
             'last_used_at', 'revoked_at'
           )
       ) OR EXISTS (
