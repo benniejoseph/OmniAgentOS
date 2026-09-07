@@ -181,6 +181,52 @@ export const nativeErrorResponseSchema = z.object({
   }).strict(),
 }).strict();
 
+export const nativeDeviceSessionSchema = z.object({
+  id: opaqueId,
+  current: z.boolean(),
+  state: z.enum(["active", "expired", "revoked", "wipe_pending", "wiped"]),
+  device: nativeDeviceSchema,
+  createdAt: isoDateTime,
+  lastSeenAt: isoDateTime,
+  refreshExpiresAt: isoDateTime,
+  revokedAt: isoDateTime.nullable(),
+  revocationReason: z.enum([
+    "logout", "refresh_reuse", "password_changed", "membership_changed",
+    "user_revoked", "remote_wipe", "replaced", "legacy_revoked",
+  ]).nullable(),
+  wipe: z.object({
+    requestedAt: isoDateTime,
+    acknowledgedAt: isoDateTime.nullable(),
+    localErasure: z.enum(["pending_device_acknowledgement", "acknowledged"]),
+  }).strict().nullable(),
+}).strict();
+
+export const nativeDeviceListResponseSchema = z.object({
+  schemaVersion: z.literal(1),
+  devices: z.array(nativeDeviceSessionSchema).max(50),
+}).strict();
+
+export const nativeDeviceLifecycleRequestSchema = z.object({
+  action: z.enum(["revoke", "remote_wipe"]),
+}).strict();
+
+export const nativeWipeChallengeResponseSchema = z.object({
+  schemaVersion: z.literal(1),
+  wipeRequired: z.literal(true),
+  deviceId: z.string().min(8).max(200),
+  requestedAt: isoDateTime,
+  acknowledgementToken: z.string().min(32).max(256),
+}).strict();
+
+export const nativeWipeAcknowledgementRequestSchema = z.object({
+  acknowledgementToken: z.string().min(32).max(256),
+  deviceId: z.string().min(8).max(200),
+}).strict();
+
+export const nativeWipeAcknowledgementResponseSchema = z.object({
+  acknowledged: z.literal(true),
+}).strict();
+
 export const nativeConversationRequestSchema = z.object({
   message: z.string().min(1).max(120_000),
   threadId: z.string().uuid().optional(),
@@ -235,6 +281,10 @@ const v1Operations = [
 const v2Operations = [
   ...v1Operations,
   operation("contracts.get", "GET", "/api/mobile/contracts", "Discover immutable native contract documents.", "public", undefined, "NativeContractDiscovery"),
+  operation("devices.list", "GET", "/api/mobile/devices", "List the authenticated user's tenant-bound device sessions.", "bearer", undefined, "NativeDeviceListResponse"),
+  operation("devices.change", "POST", "/api/mobile/devices/{id}", "Revoke or request remote wipe for one owned device session.", "bearer", "NativeDeviceLifecycleRequest", "NativeDeviceSession"),
+  operation("wipe.challenge", "GET", "/api/mobile/wipe", "Resolve a remote-wipe request using the revoked device access credential.", "bearer", undefined, "NativeWipeChallengeResponse"),
+  operation("wipe.acknowledge", "POST", "/api/mobile/wipe", "Acknowledge local erasure with a single-use wipe challenge.", "public", "NativeWipeAcknowledgementRequest", "NativeWipeAcknowledgementResponse"),
   operation("today.get", "GET", "/api/today", "Read the authoritative Today projection.", "bearer", undefined, "JsonObject"),
   operation("today.create", "POST", "/api/today", "Create a governed Today item.", "bearer", "JsonObject", "JsonObject"),
   operation("today.update", "PATCH", "/api/today/{id}", "Update one authoritative Today item.", "bearer", "JsonObject", "JsonObject"),
@@ -323,6 +373,12 @@ export const nativeContractSchemas = Object.freeze({
   NativeLogoutResponse: nativeLogoutResponseSchema,
   NativeBootstrapResponse: nativeBootstrapResponseSchema,
   NativeErrorResponse: nativeErrorResponseSchema,
+  NativeDeviceSession: nativeDeviceSessionSchema,
+  NativeDeviceListResponse: nativeDeviceListResponseSchema,
+  NativeDeviceLifecycleRequest: nativeDeviceLifecycleRequestSchema,
+  NativeWipeChallengeResponse: nativeWipeChallengeResponseSchema,
+  NativeWipeAcknowledgementRequest: nativeWipeAcknowledgementRequestSchema,
+  NativeWipeAcknowledgementResponse: nativeWipeAcknowledgementResponseSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
   NativeContractDiscovery: z.object({

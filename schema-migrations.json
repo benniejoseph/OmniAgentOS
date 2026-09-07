@@ -718,5 +718,10 @@
     "version": 144,
     "name": "source_coverage_projection_v1",
     "checksum": "a40a9c1c20b2732a44219a9cb3eacf1291d6f7b9e12e8dce3d70e49a70d299db"
+  },
+  {
+    "version": 145,
+    "name": "mobile_device_lifecycle_v1",
+    "checksum": "18fbfb5fdf45b3e83f49c07d5d2d7c698ebb62be16d3eb160bf7fd806871fb8f"
   }
 ]

@@ -83,4 +83,74 @@ describe("native mobile authentication", () => {
     const malformed = new Request("https://example.test/api/projects", { headers: { authorization: "Bearer malformed" } });
     await expect(security.resolveSecurityContext(malformed)).rejects.toMatchObject({ status: 401 });
   });
+
+  it("replaces a reinstalled session and completes a truthful remote-wipe handshake", async () => {
+    const mobile = await import("@/lib/auth/mobile");
+    const first = await mobile.authenticateMobilePassword({
+      email: "mobile@example.com",
+      password: "a secure mobile password",
+      device: { id: "ios-reinstall-1", name: "Work iPhone", platform: "ios" },
+    });
+    const replacement = await mobile.authenticateMobilePassword({
+      email: "mobile@example.com",
+      password: "a secure mobile password",
+      device: { id: "ios-reinstall-1", name: "Work iPhone", platform: "ios" },
+    });
+    expect(first).not.toBeNull();
+    expect(replacement).not.toBeNull();
+    await expect(mobile.getMobileIdentityFromRequest(new Request("https://example.test", {
+      headers: { authorization: `Bearer ${first!.tokens.accessToken}` },
+    }))).resolves.toBeNull();
+
+    const beforeWipe = await mobile.listMobileDeviceSessions(replacement!.identity.context);
+    expect(beforeWipe.devices.find((item) => item.id === first!.identity.session.id)).toMatchObject({
+      state: "revoked",
+      revocationReason: "replaced",
+    });
+    expect(beforeWipe.devices.find((item) => item.id === replacement!.identity.session.id)).toMatchObject({
+      current: true,
+      state: "active",
+    });
+
+    const wiped = await mobile.changeMobileDeviceLifecycle(
+      replacement!.identity.context,
+      replacement!.identity.session.id,
+      "remote_wipe",
+    );
+    expect(wiped).toMatchObject({
+      current: true,
+      state: "wipe_pending",
+      wipe: { localErasure: "pending_device_acknowledgement" },
+    });
+    const challenge = await mobile.getMobileWipeChallengeFromRequest(
+      new Request("https://example.test/api/mobile/wipe", {
+        headers: { authorization: `Bearer ${replacement!.tokens.accessToken}` },
+      }),
+    );
+    expect(challenge).toMatchObject({
+      wipeRequired: true,
+      deviceId: "ios-reinstall-1",
+    });
+    await expect(mobile.acknowledgeMobileWipe(
+      challenge!.acknowledgementToken,
+      challenge!.deviceId,
+    )).resolves.toBe(true);
+    await expect(mobile.acknowledgeMobileWipe(
+      challenge!.acknowledgementToken,
+      challenge!.deviceId,
+    )).resolves.toBe(false);
+  });
+
+  it("never lets another tenant revoke or wipe a device session", async () => {
+    const mobile = await import("@/lib/auth/mobile");
+    const signedIn = await mobile.authenticateMobilePassword({
+      email: "mobile@example.com",
+      password: "a secure mobile password",
+      device: { id: "android-isolation-1", name: "Work Pixel", platform: "android" },
+    });
+    await expect(mobile.changeMobileDeviceLifecycle({
+      ...signedIn!.identity.context,
+      tenantId: "different-tenant",
+    }, signedIn!.identity.session.id, "remote_wipe")).resolves.toBeUndefined();
+  });
 });

@@ -10,6 +10,16 @@ export type MobileDevice = {
   clientContractVersion?: number;
 };
 
+export type MobileRevocationReason =
+  | "logout"
+  | "refresh_reuse"
+  | "password_changed"
+  | "membership_changed"
+  | "user_revoked"
+  | "remote_wipe"
+  | "replaced"
+  | "legacy_revoked";
+
 export type MobileSessionRecord = {
   id: string;
   familyId: string;
@@ -26,6 +36,12 @@ export type MobileSessionRecord = {
   lastSeenAt?: string;
   clientAttestedAt?: string;
   revokedAt?: string;
+  revocationReason?: MobileRevocationReason;
+  wipeRequestedAt?: string;
+  wipeAcknowledgedAt?: string;
+  wipeChallengeHash?: string;
+  wipeChallengeExpiresAt?: string;
+  replacedBySessionId?: string;
 };
 
 export type MobileIdentity = {
