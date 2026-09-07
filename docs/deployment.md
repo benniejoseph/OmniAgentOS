@@ -16,6 +16,7 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_OPENAI_UPSTREAM_HOST`: Fly-only OpenAI API origin. It accepts exactly `api.openai.com` or `us.api.openai.com`; production uses `us.api.openai.com` for the regional API key. Arbitrary origins, URLs, paths, and ports fail before the gateway binds.
 - `OMNIAGENT_PLAYWRIGHT_MCP_TOKEN`: independent URL-safe 32-256 character secret stored on the dedicated browser Fly app and, for each authorized workspace, in Asael's encrypted Playwright connector credential. It is not a Vercel environment variable.
 - `OMNIAGENT_PLAYWRIGHT_MCP_PREVIOUS_TOKEN`: optional Fly-only overlap secret during browser-service token rotation.
+- `OMNIAGENT_PLAYWRIGHT_PROFILE_KEY`: independent Fly-only 32-byte base64url AES-256-GCM key for consented persistent browser profile archives. Back it up before enabling profiles; losing or changing it makes existing archives unreadable. Key rotation requires an explicit archive re-encryption procedure.
 - `CRON_SECRET`: authenticates the scheduled `/api/workflows/tick` backstop.
 - `OMNIAGENT_INTERNAL_AUTH_SECRET`: shared by the worker and production smoke runner. Generate an independent high-entropy value.
 - `BLOB_READ_WRITE_TOKEN`: private Vercel Blob store credential for immutable Capture asset candidates. Link only a private store; never expose this token or a direct Blob URL to clients.
@@ -180,6 +181,16 @@ The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](http
 
 Each scoped process has its own temporary profile and a private keeper connection so Asael's short MCP calls retain the same tabs and page state. Connector discovery retires immediately; execution scopes expire after 30 minutes without activity. The service deliberately allows at most two simultaneous browser scopes on the default machine. Page output remains untrusted tool data, and Playwright's arbitrary-code and file-transfer tools remain risk level 3.
 
+P9.7 adds actor-owned, opt-in persistent profiles and user takeover. Profile
+authority is short-lived, signed, bound to the exact actor/run/profile revision,
+and restricted to the consented HTTPS domains. The gateway stores only an
+opaque profile locator and an AES-256-GCM encrypted archive on the dedicated
+`playwright_profiles` Fly volume; credentials and page contents remain excluded
+from agent memory and domain events. Revoking a profile invalidates future
+authority immediately. Because Fly volumes cannot use blue/green replacement,
+the browser service uses a rolling deploy and its health response must report
+`persistentProfiles: true` before the web release is promoted.
+
 P9.5 reuses this existing scoped process; it adds no public Fly event endpoint and
 does not expose the Playwright bearer token to the browser. Vercel captures
 bounded frame and redacted accessibility evidence after a governed action in
@@ -201,9 +212,13 @@ Create the app and token once, save the token in the owner's password manager, a
 playwright_token="$(openssl rand -hex 32)"
 printf 'OMNIAGENT_PLAYWRIGHT_MCP_TOKEN=%s\n' "$playwright_token" |
   fly secrets import --app omniagent-os-browser --stage
+profile_key="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
+printf 'OMNIAGENT_PLAYWRIGHT_PROFILE_KEY=%s\n' "$profile_key" |
+  fly secrets import --app omniagent-os-browser --stage
+fly volumes create playwright_profiles --app omniagent-os-browser --region sin --size 1 --yes
 fly deploy --config fly.playwright-mcp.toml --remote-only
-# Save playwright_token in the owner's password manager before this line.
-unset playwright_token
+# Save both values in the owner's password manager before this line.
+unset playwright_token profile_key
 ```
 
 In Asael, open Settings → Tools & integrations → MCP connections, apply the Playwright preset, and store that same token in the encrypted app vault. Clients use the canonical endpoint `https://asael.bennierichard.com/api/integrations/playwright/mcp`; Asael proxies that bounded MCP stream to the pinned browser service without exposing the internal host as the product domain. Existing connectors that still hold the former direct endpoint remain supported during rotation. If Fly requires another globally unique app name, update the internal Fly host, proxy upstream, connector trust rule, and deployment configuration together. The software has no provider subscription, but the separate Fly compute resource can still incur hosting charges.
