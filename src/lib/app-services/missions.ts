@@ -140,7 +140,7 @@ export async function listMissionsService(
     caller.context.tenantId,
     filtered,
     [],
-    value.ownerScope === "readable",
+    true,
   );
   return completeAppServiceCall(authorized, {
     missions: canonicalMissions,
@@ -320,7 +320,7 @@ export async function startMissionTaskService(
 
   const taskView = toMissionTaskView(task);
   const [workItemStatus, agentIdentity, skills] = await Promise.all([
-    withCanonicalMissionTasks(caller.context.tenantId, [taskView])
+    withCanonicalMissionTasks(caller.context.tenantId, [taskView], [], true)
       .then((items) => items[0].workItemStatus),
     resolveAgentIdentityForExecution({
       tenantId: caller.context.tenantId,
@@ -505,6 +505,7 @@ async function withCanonicalMissionTasks<T extends {
   tenantId: string,
   tasks: readonly T[],
   artifacts: readonly { id: string; taskId?: string; kind: string }[] = [],
+  allowCompatibilityFallback = false,
 ) {
   const surfaces = await canonicalWorkItemSurfaces(
     tenantId,
@@ -517,6 +518,7 @@ async function withCanonicalMissionTasks<T extends {
       status: task.canonicalStatus.status,
       sourceStatus: task.canonicalStatus.sourceStatus,
       updatedAt: task.updatedAt,
+      allowCompatibilityFallback,
       assignedAgents: typeof task.metadata?.assigneeKey === "string" &&
           task.metadata.assigneeKey.trim()
         ? [{ agentId: task.metadata.assigneeKey.trim() }]
@@ -547,8 +549,8 @@ async function withCanonicalMissionDetail(
   detail: ReturnType<typeof toMissionDetailView>,
 ) {
   const [missions, tasks] = await Promise.all([
-    withCanonicalMissionSummaries(tenantId, [detail.mission], detail.artifacts),
-    withCanonicalMissionTasks(tenantId, detail.tasks, detail.artifacts),
+    withCanonicalMissionSummaries(tenantId, [detail.mission], detail.artifacts, true),
+    withCanonicalMissionTasks(tenantId, detail.tasks, detail.artifacts, true),
   ]);
   return { ...detail, mission: missions[0], tasks };
 }
