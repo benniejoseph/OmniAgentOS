@@ -9,7 +9,7 @@ export const POST = withDatabaseRequestScope(POSTHandler);
 
 async function POSTHandler(request: Request, context: { params: Promise<{ provider: string }> }) {
   const { provider } = await context.params;
-  if (!isOAuthProvider(provider)) return Response.json({ error: "Unsupported OAuth provider." }, { status: 404 });
+  if (!isOAuthProvider(provider) || provider !== "google") return Response.json({ error: "Unsupported personal-source provider." }, { status: 404 });
   let security;
   try { security = await authorizeRequest({ request, action: "write.memory", resourceType: "oauth_sync", metadata: { provider } }); }
   catch (error) { return forbiddenResponse(error); }
