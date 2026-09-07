@@ -2981,7 +2981,12 @@ function resolveDatabaseMemoryWriteScope(
       !executionScope ||
       !inputExecutionScope ||
       !executionScopesEqual(executionScope, inputExecutionScope) ||
-      !["user_private", "agent_private"].includes(binding.visibility) ||
+      ![
+        "user_private",
+        "agent_private",
+        "project_shared",
+        "workspace_shared",
+      ].includes(binding.visibility) ||
       (
         binding.visibility === "agent_private" &&
         !["working", "episodic", "semantic", "procedural"].includes(
@@ -3023,9 +3028,7 @@ async function appendBoundMemoryCreatedEvents(
     await appendScopedDomainEvent({
       id: `memory_access_bound_${record.id}`,
       streamId: `memory:${record.id}`,
-      type: record.accessBinding.visibility === "agent_private"
-        ? "memory.agent_private.created"
-        : "memory.user_private.created",
+      type: boundMemoryCreatedEventType(record.accessBinding.visibility),
       executionScope,
       payload: {
         schemaVersion: record.accessBinding.version,
@@ -3040,6 +3043,17 @@ async function appendBoundMemoryCreatedEvents(
       },
     }, { sql });
   }
+}
+
+function boundMemoryCreatedEventType(
+  visibility: MemoryAccessBindingV1["visibility"],
+) {
+  if (visibility === "agent_private") return "memory.agent_private.created";
+  if (visibility === "project_shared") return "memory.project_shared.created";
+  if (visibility === "workspace_shared") {
+    return "memory.workspace_shared.created";
+  }
+  return "memory.user_private.created";
 }
 
 async function appendMemoryMutationEvents(

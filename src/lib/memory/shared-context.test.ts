@@ -95,6 +95,37 @@ describe("shared context authority", () => {
     });
   });
 
+  it("issues exact read and write scopes without changing membership authority", async () => {
+    const read = await requestSharedMemoryAccessFromSecurityContext(context, {
+      scope: "project",
+      projectId: "legacy-project-a",
+      correlationId: "shared-read-a",
+      purposeId: "memory.read.v1",
+      auditPurpose: "List project knowledge.",
+    });
+    const write = await requestSharedMemoryAccessFromSecurityContext(context, {
+      scope: "project",
+      projectId: "legacy-project-a",
+      correlationId: "shared-write-a",
+      purposeId: "memory.write.v1",
+      auditPurpose: "Write project knowledge.",
+    });
+
+    expect(read.executionScope.purpose).toBe("app.memory.shared.read");
+    expect(read.databaseAccessScope).toMatchObject({
+      purposeId: "memory.read.v1",
+      purpose: "List project knowledge.",
+    });
+    expect(write.executionScope.purpose).toBe("app.memory.shared.write");
+    expect(write.databaseAccessScope).toMatchObject({
+      purposeId: "memory.write.v1",
+      purpose: "Write project knowledge.",
+    });
+    expect(write.authority.authoritySha256).toBe(
+      read.authority.authoritySha256,
+    );
+  });
+
   it("hands only the matching shared user scope to the direct agent compiler", async () => {
     const access = await requestSharedMemoryAccessFromSecurityContext(context, {
       scope: "project",

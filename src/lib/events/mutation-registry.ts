@@ -262,12 +262,16 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
     writerModules: Object.freeze(["src/lib/memory/store.ts"]),
     mutationSurfaces: Object.freeze([
       "memory formation",
+      "private and shared memory bindings",
       "memory feedback and correction",
       "memory deletion barriers",
     ]),
     eventTypes: Object.freeze([
       "memory.created",
       "memory.user_private.created",
+      "memory.agent_private.created",
+      "memory.project_shared.created",
+      "memory.workspace_shared.created",
       "memory.feedback_applied",
       "memory.corrected",
       "memory.deletion_barrier.recorded",

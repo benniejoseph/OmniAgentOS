@@ -75,7 +75,9 @@ vi.mock("@/lib/events/store", () => ({
 
 import {
   buildAgentPrivateMemoryAccessBindingV1,
+  buildProjectSharedMemoryAccessBindingV1,
   buildUserPrivateMemoryAccessBindingV1,
+  buildWorkspaceSharedMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
 import {
@@ -139,6 +141,33 @@ function agentExecutionScope(purposeId: string, agentId = "agent:atlas") {
     executingPrincipalType: "agent",
     executingPrincipalId: agentId,
     correlationId: "agent_memory_test",
+    purpose: `test.${purposeId}`,
+  });
+}
+
+function sharedAccessScope(
+  purposeId: string,
+  scope: "project" | "workspace",
+) {
+  return {
+    ...accessScope(purposeId),
+    workspaceId: "workspace:team-a",
+    projectId: scope === "project" ? "project:launch" : null,
+  };
+}
+
+function sharedExecutionScope(
+  purposeId: string,
+  scope: "project" | "workspace",
+) {
+  return createExecutionScope({
+    tenantId: "tenant-a",
+    initiatingActorId: ownerActorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: ownerActorId,
+    workspaceId: "workspace:team-a",
+    projectId: scope === "project" ? "project:launch" : undefined,
+    correlationId: `shared_${scope}_memory_test`,
     purpose: `test.${purposeId}`,
   });
 }
@@ -247,6 +276,53 @@ describe("Postgres memory recall", () => {
         "agent:sibling",
       ),
     })).rejects.toThrow("does not authorize this write");
+  });
+
+  it.each([
+    ["project", "memory.project_shared.created"],
+    ["workspace", "memory.workspace_shared.created"],
+  ] as const)("persists %s-shared memory with its typed event", async (
+    scope,
+    eventType,
+  ) => {
+    const binding = scope === "project"
+      ? buildProjectSharedMemoryAccessBindingV1({
+          tenantId: "tenant-a",
+          ownerActorId,
+          workspaceId: "workspace:team-a",
+          projectId: "project:launch",
+          originPurpose: "app.memory.shared.write",
+        })
+      : buildWorkspaceSharedMemoryAccessBindingV1({
+          tenantId: "tenant-a",
+          ownerActorId,
+          workspaceId: "workspace:team-a",
+          originPurpose: "app.memory.shared.write",
+        });
+
+    const record = await saveMemory({
+      id: `${scope}-shared-memory-a`,
+      tenantId: "tenant-a",
+      type: "knowledge",
+      tier: "semantic",
+      title: `${scope} knowledge`,
+      content: "Durable shared context.",
+      scope,
+      accessBinding: binding,
+      databaseAccessScope: sharedAccessScope(
+        MEMORY_PURPOSE_IDS.write,
+        scope,
+      ),
+      executionScope: sharedExecutionScope(MEMORY_PURPOSE_IDS.write, scope),
+    });
+
+    expect(record.accessBinding).toEqual(binding);
+    expect(vi.mocked(appendScopedDomainEvent)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: eventType }),
+      expect.objectContaining({
+        sql: expect.objectContaining({ transactionScoped: true }),
+      }),
+    );
   });
 
   it("shares through a target-owned copy and immutable provenance artifact", async () => {
