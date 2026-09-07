@@ -171,6 +171,23 @@ revoked events contain only bounded grant coordinates and digests. The approval
 workspace displays exact reviewed targets and grant eligibility, while the
 trust endpoint returns only the authenticated actor's grants and authority mode.
 
+P9.5 projects browser activity as a versioned reconnectable server-sent stream
+from the durable run, tool, event, and internal Capture ledgers. It does not
+open a browser-to-client control path. The server derives `live` or `replay`
+from the persisted run status and pushes a new digest revision only when that
+bounded projection changes. The viewer reconnects after each bounded serverless
+stream window and follows the newest frame while live; terminal runs permit
+historical frame selection.
+
+Observation capture reuses the exact opaque tenant/actor/run Playwright scope
+and its existing keeper session. Safe browser actions retain one bounded image
+and one separately redacted accessibility snapshot as internal actor-owned
+Capture assets. Text entry, form fill, and file upload write suppression events
+and retain neither representation. Password/security controls, entered values,
+and recognizable credentials are removed before structured text is stored. Raw
+image and snapshot bytes require a separately authorized owner/run request,
+use private/no-store delivery, and are excluded from Agent tool transcripts.
+
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped
 agent principal, intent and outcome contracts, resolved context and harness
