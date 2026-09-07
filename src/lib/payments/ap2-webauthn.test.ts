@@ -10,6 +10,7 @@ import {
   ap2MandateAuthorizationSchema,
   beginAp2MandateAuthorization,
   verifyAp2MandateAuthorization,
+  verifyPersistedAp2Mandates,
   type Ap2PaymentSigningCredential,
   type Ap2WebAuthnTrustPolicy,
 } from "@/lib/payments/ap2-webauthn";
@@ -106,6 +107,68 @@ describe("P9.16 payment WebAuthn authorization", () => {
       verify,
     })).rejects.toThrow(/expired/i);
     expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("independently re-verifies persisted signed mandates", async () => {
+    const pending = fixtureReview();
+    const credential = fixtureCredential();
+    const verificationResult = {
+      verified: true,
+      authenticationInfo: {
+        credentialID: "credential_1",
+        newCounter: 8,
+        userVerified: true,
+        credentialDeviceType: "singleDevice" as const,
+        credentialBackedUp: false,
+        origin: "https://asael.example",
+        rpID: "asael.example",
+      },
+    };
+    const authorization = await verifyAp2MandateAuthorization({
+      authorizationId: "ap2_authorization:22222222-2222-4222-8222-222222222222",
+      review: pending,
+      credential,
+      policy: fixturePolicy(),
+      response: fixtureAssertion(),
+      now,
+      verify: vi.fn().mockResolvedValue(verificationResult),
+    });
+    const { reviewSha256: _oldDigest, ...reviewBody } = pending;
+    const authorizedBody = {
+      ...reviewBody,
+      state: "authorized" as const,
+      lifecycleRevision: 2,
+      authorizedAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+    const authorizedReview = {
+      ...authorizedBody,
+      reviewSha256: canonicalJsonSha256(authorizedBody),
+    };
+    const { credentialSha256: _oldCredentialDigest, ...credentialBody } = credential;
+    const usedCredentialBody = {
+      ...credentialBody,
+      counter: 8,
+      lifecycleRevision: 2,
+      lastUsedAt: now.toISOString(),
+    };
+    const receipt = await verifyPersistedAp2Mandates({
+      review: authorizedReview,
+      authorization,
+      credential: {
+        ...usedCredentialBody,
+        credentialSha256: canonicalJsonSha256(usedCredentialBody),
+      },
+      policy: fixturePolicy(),
+      now: new Date("2026-09-07T10:01:00.000Z"),
+      verify: vi.fn().mockResolvedValue(verificationResult),
+    });
+
+    expect(receipt).toMatchObject({
+      accepted: true,
+      authorizationSha256: authorization.authorizationSha256,
+      checks: expect.arrayContaining(["webauthn_signature", "exact_payment_mandate_content"]),
+    });
   });
 });
 
