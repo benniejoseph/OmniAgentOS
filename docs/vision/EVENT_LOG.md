@@ -1669,9 +1669,20 @@ records and checkpoint/event payloads are evidence and attribution, not
 authority: actual execution uses the derived child scope and the governed model
 or tool boundary.
 
-P8.2 broker progress is currently content-free runtime telemetry, not the
-authoritative delegation lifecycle; P8.3 adds that ledger and its typed state
-events. Each delegated governed call still creates the existing canonical tool
+P8.2 broker progress remains content-free runtime telemetry. P8.3 now projects
+it into the authoritative `omni_delegation_tasks` ledger through
+`delegation.task.proposed`, `.accepted`, `.working`, `.waiting`, `.challenged`,
+`.completed_proposed`, `.result_accepted`, `.rejected`, `.canceled`, and
+`.expired` events. Each event is digest-bound and carries only task, contract,
+parent execution/delegation, delegated principal/Agent version, transition,
+revision, detail digest, and governed tool execution IDs. It contains no task
+objective, model output, artifact content, credential, tenant/actor identity,
+or private reasoning.
+
+The first `accepted` state acknowledges the bounded task. A successful
+delegate can only emit `completed_proposed`; the exact parent verifier and
+threshold are required for terminal `result_accepted` or `rejected`. Each
+delegated governed call still creates the existing canonical tool
 execution/checkpoint/effect records with the exact delegated principal,
 delegation ID, parent correlation, call causation, and idempotency binding.
 Returned broker artifacts carry only the bounded redacted output, digest, byte

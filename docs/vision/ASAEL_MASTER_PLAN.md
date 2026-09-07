@@ -773,7 +773,7 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.6 | Build external A2A client/server adapters. | Reuse inbound auth/MCP patterns; create A2A boundary. | External agents receive scoped references and delegated tokens; all actions re-enter governed execution. | Compatible external agents can discover, negotiate, stream progress, exchange artifacts, cancel, and resume without a second security path. |
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
-**Implementation status:** P8.1 and P8.2 are complete. P8.3 is the next
+**Implementation status:** P8.1 through P8.3 are complete. P8.4 is the next
 actionable slice; P12 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -2602,6 +2602,26 @@ focused checks across nine affected files, affected lint, TypeScript, and the
 rejected the complete-feature promotion before upload because the team still
 has an overdue balance, so Fly was intentionally left unchanged. P8.3 is next;
 P12/P13 remain deferred.
+
+P8.3 repository implementation is complete. The strict
+`p8.3-delegation-task:1` projection separates initial task acceptance from the
+terminal parent decision with `proposed`, `accepted`, `working`, `waiting`,
+`challenged`, `completed_proposed`, `result_accepted`, `rejected`, `canceled`,
+and `expired`. Every transition is revision-fenced, deadline-bound, digest
+verified, and emitted as a content-free `p8.3-delegation-task-event:1` carrying
+the exact parent execution, parent delegation, delegated principal, Agent
+version, and governed tool execution IDs.
+
+Council specialists and workflow Agent nodes create the task before work,
+advance it at broker/model boundaries, and cannot translate their own success
+into a terminal acceptance. Their closed output and receipts first create a
+`completed_proposed` record; the exact parent verifier then deterministically
+accepts or rejects it against the contract threshold. Runtime events,
+trajectory receipts, workflow receipts, and the Council UI expose the task ID,
+lifecycle revision, and parent disposition. Migration 116 is installed in
+production with its exact marker; readback confirms forced RLS, the restrictive
+actor policy, both lifecycle guards, and an empty initial ledger. P8.4 bounded
+messages and shared mission artifacts is next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
