@@ -121,4 +121,23 @@ describe("governed native tool schemas", () => {
       required: ["workflowId"],
     });
   });
+
+  it("keeps connector trust changes and deletion approval-gated", () => {
+    for (const id of [
+      "app.connectors.register",
+      "app.connectors.update",
+      "app.connectors.refresh",
+      "app.connectors.review",
+      "app.connectors.delete",
+    ]) {
+      expect(getGovernedTool(id)).toMatchObject({
+        category: "app",
+        riskLevel: 2,
+        approvalRequired: true,
+      });
+    }
+    expect(getGovernedTool("app.connectors.delete")?.inputSchema).toMatchObject({
+      required: ["kind", "connectorId", "expectedTargetSha256"],
+    });
+  });
 });

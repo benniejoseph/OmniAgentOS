@@ -69,6 +69,16 @@ import {
   startWorkflowService,
   tickWorkflowService,
 } from "@/lib/app-services/workflows";
+import {
+  deleteConnectorService,
+  listConnectorsService,
+  previewConnectorDeleteService,
+  refreshConnectorService,
+  registerConnectorService,
+  reviewConnectorService,
+  showConnectorService,
+  updateConnectorService,
+} from "@/lib/app-services/connectors";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -144,6 +154,14 @@ export async function executeFirstPartyAppTool(input: {
     "app.workflows.start": () => startWorkflowService(caller, input.toolInput as never),
     "app.workflows.signal": () => signalWorkflowService(caller, input.toolInput as never),
     "app.workflows.tick": () => tickWorkflowService(caller, input.toolInput as never),
+    "app.connectors.list": () => listConnectorsService(caller, input.toolInput as never),
+    "app.connectors.show": () => showConnectorService(caller, input.toolInput as never),
+    "app.connectors.register": () => registerConnectorService(caller, input.toolInput as never),
+    "app.connectors.update": () => updateConnectorService(caller, input.toolInput as never),
+    "app.connectors.refresh": () => refreshConnectorService(caller, input.toolInput as never),
+    "app.connectors.review": () => reviewConnectorService(caller, input.toolInput as never),
+    "app.connectors.delete.preview": () => previewConnectorDeleteService(caller, input.toolInput as never),
+    "app.connectors.delete": () => deleteConnectorService(caller, input.toolInput as never),
   };
   const handler = handlers[input.toolId];
   if (!handler) throw new Error(`No first-party application handler is registered for ${input.toolId}.`);
