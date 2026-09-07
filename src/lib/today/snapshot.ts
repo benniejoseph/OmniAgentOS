@@ -11,6 +11,7 @@ import { getTodayBriefBundle } from "@/lib/today/briefs";
 import { loadPostgresTodaySnapshot } from "@/lib/today/postgres-snapshot";
 import { loadCachedTodaySnapshot } from "@/lib/today/snapshot-cache";
 import { listTodayItems } from "@/lib/today/store";
+import { canonicalStatusForProjectTask } from "@/lib/status/canonical";
 
 export type TodaySnapshot = Awaited<ReturnType<typeof readLocalTodaySnapshot>>;
 
@@ -167,14 +168,27 @@ async function readLocalTodaySnapshot({
     },
     briefLocalDate: briefBundle.localDate,
     briefGenerationDue: briefBundle.generationDue,
-    projects: activeProjects.map((project, index) => ({
-      id: project.id,
-      title: project.title,
-      objective: project.objective,
-      targetDate: project.targetDate,
-      completedTasks: projectTasks[index].filter((task) => task.status === "done").length,
-      totalTasks: projectTasks[index].length,
-      nextTask: projectTasks[index].find((task) => task.status !== "done")?.title,
-    })),
+    projects: activeProjects.map((project, index) => {
+      const tasks = projectTasks[index].map((task) => ({
+        task,
+        status: canonicalStatusForProjectTask(task).status,
+      }));
+      const next = tasks.find(({ status }) => !canonicalWorkItemStatusIsClosed(status));
+      return {
+        id: project.id,
+        title: project.title,
+        objective: project.objective,
+        targetDate: project.targetDate,
+        closedTasks: tasks.filter(({ status }) => canonicalWorkItemStatusIsClosed(status)).length,
+        unverifiedTasks: tasks.filter(({ status }) => status === "unverified").length,
+        totalTasks: tasks.length,
+        nextTask: next?.task.title,
+        nextTaskStatus: next?.status,
+      };
+    }),
   };
+}
+
+function canonicalWorkItemStatusIsClosed(status: string) {
+  return ["unverified", "failed", "canceled", "succeeded"].includes(status);
 }

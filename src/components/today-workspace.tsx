@@ -678,7 +678,7 @@ export function TodayWorkspace({
 
         <TodayContextSection icon={FolderKanban} title="Projects" description="Progress and the next task in each active project." href="/app/projects">
           {today.projects?.length ? today.projects.map((project) => (
-            <Link key={project.id} href="/app/projects" className="today-project-row"><div><strong>{project.title}</strong><p>{project.nextTask || project.objective}</p><span><i style={{ width: `${project.totalTasks ? project.completedTasks / project.totalTasks * 100 : 0}%` }} /></span></div><small>{project.completedTasks}/{project.totalTasks}</small></Link>
+            <Link key={project.id} href="/app/projects" className="today-project-row"><div><strong>{project.title}</strong><p>{project.nextTask || project.objective}{project.nextTaskStatus ? ` · ${project.nextTaskStatus}` : ""}</p><span><i style={{ width: `${project.totalTasks ? project.closedTasks / project.totalTasks * 100 : 0}%` }} /></span></div><small>{project.closedTasks}/{project.totalTasks} closed{project.unverifiedTasks ? ` · ${project.unverifiedTasks} unverified` : ""}</small></Link>
           )) : <ContextEmpty>Your active projects and next milestones will appear here.</ContextEmpty>}
         </TodayContextSection>
 

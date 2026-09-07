@@ -148,9 +148,11 @@ describe("Postgres Today snapshot", () => {
         title: "Asael rollout",
         objective: "Ship a fast owner workspace.",
         target_date: "2026-09-01T00:00:00.000Z",
-        completed_tasks: 2,
+        closed_tasks: 2,
+        unverified_tasks: 1,
         total_tasks: 4,
         next_task: "Run the dashboard benchmark",
+        next_task_status: "waiting",
         updated_at: "2026-08-25T23:30:00.000Z",
       }],
     });
@@ -243,6 +245,9 @@ describe("Postgres Today snapshot", () => {
       /FROM omni_project_tasks tasks[\s\S]*?WHERE tasks\.tenant_id = \$\d+[\s\S]*?owner_project\.tenant_id = \$\d+[\s\S]*?AND owner_project\.actor_id = projects\.actor_id/,
     );
     expect(statement.text).toMatch(
+      /JOIN omni_work_items canonical_item[\s\S]*?canonical_item\.source_authority = 'legacy_project_task'/,
+    );
+    expect(statement.text).toMatch(
       /jsonb_agg\([\s\S]*?to_jsonb\(thread_rows\)[\s\S]*?ORDER BY updated_at DESC, id ASC[\s\S]*?\)[\s\S]*?FROM thread_rows/,
     );
     expect(statement.text).toMatch(
@@ -276,9 +281,11 @@ describe("Postgres Today snapshot", () => {
       title: "Asael rollout",
       objective: "Ship a fast owner workspace.",
       targetDate: "2026-09-01T00:00:00.000Z",
-      completedTasks: 2,
+      closedTasks: 2,
+      unverifiedTasks: 1,
       totalTasks: 4,
       nextTask: "Run the dashboard benchmark",
+      nextTaskStatus: "waiting",
     }]);
   });
 

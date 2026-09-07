@@ -420,21 +420,43 @@ export async function loadPostgresTodaySnapshot({
           projects.objective,
           projects.target_date,
           projects.updated_at,
-          COALESCE(task_stats.completed_tasks, 0)::int AS completed_tasks,
+          COALESCE(task_stats.closed_tasks, 0)::int AS closed_tasks,
+          COALESCE(task_stats.unverified_tasks, 0)::int AS unverified_tasks,
           COALESCE(task_stats.total_tasks, 0)::int AS total_tasks,
-          task_stats.next_task
+          task_stats.next_task,
+          task_stats.next_task_status
         FROM active_projects projects
         LEFT JOIN LATERAL (
           SELECT
-            COUNT(*) FILTER (WHERE task_window.status = 'done')::int AS completed_tasks,
+            COUNT(*) FILTER (
+              WHERE task_window.status IN ('unverified', 'failed', 'canceled', 'succeeded')
+            )::int AS closed_tasks,
+            COUNT(*) FILTER (WHERE task_window.status = 'unverified')::int AS unverified_tasks,
             COUNT(*)::int AS total_tasks,
             (ARRAY_AGG(
               task_window.title
               ORDER BY task_window.position ASC, task_window.created_at ASC
-            ) FILTER (WHERE task_window.status <> 'done'))[1] AS next_task
+            ) FILTER (
+              WHERE task_window.status NOT IN ('unverified', 'failed', 'canceled', 'succeeded')
+            ))[1] AS next_task,
+            (ARRAY_AGG(
+              task_window.status
+              ORDER BY task_window.position ASC, task_window.created_at ASC
+            ) FILTER (
+              WHERE task_window.status NOT IN ('unverified', 'failed', 'canceled', 'succeeded')
+            ))[1] AS next_task_status
           FROM (
-            SELECT tasks.title, tasks.status, tasks.position, tasks.created_at
+            SELECT
+              tasks.title,
+              canonical_item.canonical_status AS status,
+              tasks.position,
+              tasks.created_at
             FROM omni_project_tasks tasks
+            JOIN omni_work_items canonical_item
+              ON canonical_item.tenant_id = tasks.tenant_id
+             AND canonical_item.source_authority = 'legacy_project_task'
+             AND canonical_item.source_id = tasks.id
+             AND canonical_item.project_id = tasks.project_id
             WHERE tasks.tenant_id = ${safeTenantId}
               AND tasks.project_id = projects.id
               AND EXISTS (
@@ -612,11 +634,20 @@ function projectSnapshot(
       title: safeText(project.title, 180),
       objective: safeText(project.objective, 2_000),
       targetDate: optionalDate(project.target_date),
-      completedTasks: boundedCount(project.completed_tasks, 500),
+      closedTasks: boundedCount(project.closed_tasks, 500),
+      unverifiedTasks: boundedCount(project.unverified_tasks, 500),
       totalTasks: boundedCount(project.total_tasks, 500),
       nextTask: optionalSafeText(project.next_task, 240),
+      nextTaskStatus: optionalCanonicalWorkItemStatus(project.next_task_status),
     })),
   };
+}
+
+function optionalCanonicalWorkItemStatus(value: unknown) {
+  const status = typeof value === "string" ? value : "";
+  return ["preview", "running", "waiting", "blocked", "partial", "unverified", "failed", "canceled", "succeeded"].includes(status)
+    ? status as "preview" | "running" | "waiting" | "blocked" | "partial" | "unverified" | "failed" | "canceled" | "succeeded"
+    : undefined;
 }
 
 function projectPreferences(
