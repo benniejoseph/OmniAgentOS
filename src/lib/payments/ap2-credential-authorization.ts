@@ -404,6 +404,7 @@ export function buildAp2CredentialGrant(input: {
   request: Ap2CredentialAuthorizationRequest;
   authorization: Ap2CredentialProviderAuthorization;
   configuration: Ap2CredentialProviderConfiguration;
+  now?: Date;
 }) {
   const authorization = verifyAp2CredentialProviderAuthorization(input);
   const request = ap2CredentialAuthorizationRequestSchema.parse(input.request);
