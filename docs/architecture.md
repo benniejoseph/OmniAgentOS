@@ -1797,6 +1797,25 @@ uses the private object only after the receipt proves complete parity. Pausing
 the persisted rollout immediately returns reads to legacy bytes without
 removing verified objects, while deletion remains a permanent query barrier.
 
+## Evidence-bound meeting commitments
+
+P10.8 treats extracted meeting action items as untrusted proposals, not tasks.
+An immutable proposal binds one exact meeting revision, processed-media revision,
+action-item digest, and its timestamp/speaker citations. Transcript-derived
+owners and due dates are accepted only when P10.7 marked them explicit;
+otherwise the confirmation must name a current participant or due date.
+
+Confirmation composes the existing idempotent Project WorkItem and governed
+communication-draft application services. The email path additionally requires
+an active actor-owned contact policy whose address matches a current meeting
+participant and permits relationship-context follow-up. It creates an unsent
+draft only; delivery remains a separate reviewed governed action. Deterministic
+child idempotency keys make interruption and retry converge on the same
+WorkItem, draft, and meeting follow-up. The final immutable resolution records
+their exact IDs and whether ownership and due-date authority came from cited
+transcript evidence or explicit user confirmation. Proposal and resolution RLS
+inherits the Meeting's strict workspace/project/source access boundary.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
