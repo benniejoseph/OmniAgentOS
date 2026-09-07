@@ -60,6 +60,14 @@ const appDestinations = <AppDestination>[
     description: 'Plan, execute, and verify long-running outcomes.',
   ),
   AppDestination(
+    label: 'Meetings',
+    path: '/meetings',
+    icon: Icons.groups_2_outlined,
+    selectedIcon: Icons.groups_2_rounded,
+    eyebrow: 'DECISION MEMORY',
+    description: 'Schedule, consent, decisions, commitments, and evidence.',
+  ),
+  AppDestination(
     label: 'Results',
     path: '/results',
     icon: Icons.fact_check_outlined,

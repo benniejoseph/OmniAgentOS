@@ -7,7 +7,7 @@ class AdaptiveShell extends StatelessWidget {
   const AdaptiveShell({super.key, required this.navigationShell});
   final StatefulNavigationShell navigationShell;
 
-  static const _phoneBranches = [0, 1, 2, 3, 6];
+  static const _phoneBranches = [0, 1, 2, 3, 7];
 
   void _select(int index) => navigationShell.goBranch(
     index,
@@ -16,7 +16,7 @@ class AdaptiveShell extends StatelessWidget {
 
   int get _phoneIndex {
     final current = navigationShell.currentIndex;
-    if (current >= 3 && current <= 5) return 3;
+    if (current >= 3 && current <= 6) return 3;
     final index = _phoneBranches.indexOf(current);
     return index < 0 ? 4 : index;
   }

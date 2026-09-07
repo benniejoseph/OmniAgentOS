@@ -12,6 +12,8 @@ import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
 import '../../features/knowledge/knowledge.dart';
 import '../../features/knowledge/knowledge_providers.dart';
+import '../../features/meetings/meetings_providers.dart';
+import '../../features/meetings/meetings_view.dart';
 import '../../features/missions/missions.dart';
 import '../../features/missions/missions_providers.dart';
 import '../../features/projects/projects_providers.dart';
@@ -80,6 +82,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       onOpen: (project) =>
                           context.push('/projects/${project.id}'),
                     ),
+                    '/meetings' => MeetingsView(
+                      controller: ref.watch(meetingsControllerProvider),
+                      onOpen: (meeting) =>
+                          context.push('/meetings/${meeting.id}'),
+                    ),
                     '/results' => ResultsView(
                       controller: ref.watch(resultsControllerProvider),
                       onOpen: (result) => context.push(
@@ -128,6 +135,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                                 state.pathParameters['key']!,
                               ),
                               repository: ref.watch(resultsRepositoryProvider),
+                            ),
+                          ),
+                        ]
+                      : destination.path == '/meetings'
+                      ? [
+                          GoRoute(
+                            path: ':id',
+                            builder: (_, state) => MeetingDetailView(
+                              id: state.pathParameters['id']!,
+                              repository: ref.watch(meetingsRepositoryProvider),
                             ),
                           ),
                         ]
