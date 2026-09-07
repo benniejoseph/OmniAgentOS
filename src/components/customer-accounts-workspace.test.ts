@@ -31,5 +31,12 @@ describe("Account 360 workspace", () => {
     expect(source).toContain("This missing factor contributes zero confidence");
     expect(source).toContain("Re-evaluate before relying on it");
     expect(source).toContain("expectedAccountSha256");
+    expect(source).toContain("Customer-success workflows");
+    expect(source).toContain("8 versioned playbooks");
+    expect(source).toContain("Typed inputs become owned project work");
+    expect(source).toContain("No direct external effects");
+    expect(source).toContain("Create workflow project");
+    expect(source).toContain("expectedAccountRevision");
+    expect(source).toContain("Open project");
   });
 });

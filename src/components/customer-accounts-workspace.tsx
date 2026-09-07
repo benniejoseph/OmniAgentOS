@@ -13,7 +13,9 @@ import {
   Gauge,
   History,
   Lightbulb,
+  ListChecks,
   Plus,
+  Play,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
@@ -41,6 +43,12 @@ import type {
   CustomerHealthScore,
 } from "@/lib/customer-success/health-contracts";
 import type { SalesforceSyncHealth } from "@/lib/customer-success/salesforce-contracts";
+import type {
+  CustomerSuccessWorkflowDefinition,
+  CustomerSuccessWorkflowId,
+  CustomerSuccessWorkflowInput,
+  CustomerSuccessWorkflowRunRevision,
+} from "@/lib/customer-success/workflow-contracts";
 import styles from "./customer-accounts-workspace.module.css";
 
 const categoryLabels: Record<CustomerFactKind, string> = {
@@ -95,6 +103,11 @@ type CustomerHealthPayload = {
   history: CustomerHealthScore[];
 };
 
+type CustomerSuccessWorkflowPayload = {
+  pack: CustomerSuccessWorkflowDefinition[];
+  runs: CustomerSuccessWorkflowRunRevision[];
+};
+
 export function CustomerAccountsWorkspace({
   initialAccountId,
 }: {
@@ -105,12 +118,15 @@ export function CustomerAccountsWorkspace({
   const [accounts, setAccounts] = useState<CustomerAccountRevision[]>([]);
   const [selected, setSelected] = useState<CustomerAccount360>();
   const [customerHealth, setCustomerHealth] = useState<CustomerHealthPayload>();
+  const [customerWorkflows, setCustomerWorkflows] = useState<CustomerSuccessWorkflowPayload>();
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>();
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [healthEvaluating, setHealthEvaluating] = useState(false);
+  const [workflowLaunching, setWorkflowLaunching] = useState(false);
+  const [workflowEditor, setWorkflowEditor] = useState<CustomerSuccessWorkflowDefinition>();
   const [editingLifecycle, setEditingLifecycle] = useState(false);
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Customer accounts are ready.");
@@ -126,6 +142,9 @@ export function CustomerAccountsWorkspace({
   );
   const canManageSalesforce = Boolean(
     workspaceContext?.canWrite && canPerform(role, "manage.connector"),
+  );
+  const canRunWorkflow = Boolean(
+    workspaceContext?.canWrite && canPerform(role, "run.agent"),
   );
 
   const activeCount = accounts.filter((account) =>
@@ -153,6 +172,7 @@ export function CustomerAccountsWorkspace({
       else {
         setSelected(undefined);
         setCustomerHealth(undefined);
+        setCustomerWorkflows(undefined);
       }
       setError(undefined);
     } catch (loadError) {
@@ -204,12 +224,14 @@ export function CustomerAccountsWorkspace({
     setDetailLoading(true);
     try {
       const encodedAccountId = encodeURIComponent(accountId);
-      const [accountPayload, healthPayload] = await Promise.all([
+      const [accountPayload, healthPayload, workflowPayload] = await Promise.all([
         readJson(`/api/customer-accounts/${encodedAccountId}`, { signal }),
         readJson(`/api/customer-accounts/${encodedAccountId}/health?historyLimit=20`, { signal }),
+        readJson(`/api/customer-accounts/${encodedAccountId}/workflows?limit=50`, { signal }),
       ]);
       setSelected(accountPayload.account as CustomerAccount360);
       setCustomerHealth(healthPayload as CustomerHealthPayload);
+      setCustomerWorkflows(workflowPayload as CustomerSuccessWorkflowPayload);
       setWorkspaceContext(accountPayload.context as WorkspaceContext);
     } finally {
       setDetailLoading(false);
@@ -250,6 +272,42 @@ export function CustomerAccountsWorkspace({
       setError(message(evaluationError));
     } finally {
       setHealthEvaluating(false);
+    }
+  }
+
+  async function startCustomerSuccessWorkflow(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected || !workflowEditor || !canRunWorkflow) return;
+    setWorkflowLaunching(true);
+    try {
+      const input = workflowInputFromForm(workflowEditor.workflowId, new FormData(event.currentTarget));
+      const payload = await readJson(
+        `/api/customer-accounts/${encodeURIComponent(selected.account.accountId)}/workflows`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `customer-success:${selected.account.accountId}:${workflowEditor.workflowId}:${crypto.randomUUID()}`,
+          },
+          body: JSON.stringify({
+            expectedAccountRevision: selected.account.revision,
+            expectedAccountSha256: selected.account.accountSha256,
+            input,
+          }),
+        },
+      );
+      const run = payload.run as CustomerSuccessWorkflowRunRevision;
+      setCustomerWorkflows((current) => current ? {
+        ...current,
+        runs: [run, ...current.runs.filter((item) => item.runId !== run.runId)],
+      } : current);
+      setWorkflowEditor(undefined);
+      setAnnouncement(`${workflowEditor.name} started for ${selected.account.name}.`);
+      setError(undefined);
+    } catch (workflowError) {
+      setError(message(workflowError));
+    } finally {
+      setWorkflowLaunching(false);
     }
   }
 
@@ -430,7 +488,9 @@ export function CustomerAccountsWorkspace({
             <AccountDetail
               value={selected}
               health={customerHealth}
+              workflows={customerWorkflows}
               canWrite={canWrite}
+              canRunWorkflow={canRunWorkflow}
               healthEvaluating={healthEvaluating}
               editingLifecycle={editingLifecycle}
               saving={saving}
@@ -438,6 +498,7 @@ export function CustomerAccountsWorkspace({
               onCancelLifecycle={() => setEditingLifecycle(false)}
               onReviseLifecycle={(value) => void reviseLifecycle(value)}
               onEvaluateHealth={() => void evaluateHealth()}
+              onStartWorkflow={setWorkflowEditor}
             />
           ) : (
             <div className={styles.emptyCanvas}>
@@ -509,6 +570,16 @@ export function CustomerAccountsWorkspace({
             </footer>
           </form>
         </div>
+      ) : null}
+
+      {workflowEditor && selected ? (
+        <WorkflowEditor
+          definition={workflowEditor}
+          accountName={selected.account.name}
+          saving={workflowLaunching}
+          onCancel={() => setWorkflowEditor(undefined)}
+          onSubmit={startCustomerSuccessWorkflow}
+        />
       ) : null}
     </main>
   );
@@ -596,7 +667,9 @@ function SalesforcePanel({
 function AccountDetail({
   value,
   health,
+  workflows,
   canWrite,
+  canRunWorkflow,
   healthEvaluating,
   editingLifecycle,
   saving,
@@ -604,10 +677,13 @@ function AccountDetail({
   onCancelLifecycle,
   onReviseLifecycle,
   onEvaluateHealth,
+  onStartWorkflow,
 }: {
   value: CustomerAccount360;
   health?: CustomerHealthPayload;
+  workflows?: CustomerSuccessWorkflowPayload;
   canWrite: boolean;
+  canRunWorkflow: boolean;
   healthEvaluating: boolean;
   editingLifecycle: boolean;
   saving: boolean;
@@ -615,6 +691,7 @@ function AccountDetail({
   onCancelLifecycle: () => void;
   onReviseLifecycle: (value: CustomerAccountRevision["lifecycle"]) => void;
   onEvaluateHealth: () => void;
+  onStartWorkflow: (definition: CustomerSuccessWorkflowDefinition) => void;
 }) {
   const account = value.account;
   return (
@@ -686,6 +763,13 @@ function AccountDetail({
         canEvaluate={canWrite}
         evaluating={healthEvaluating}
         onEvaluate={onEvaluateHealth}
+      />
+
+      <CustomerSuccessWorkflowPanel
+        value={workflows}
+        currentAccountRevisionId={account.revisionId}
+        canStart={canRunWorkflow}
+        onStart={onStartWorkflow}
       />
 
       <div className={styles.domainGrid}>
@@ -796,6 +880,224 @@ function CustomerHealthPanel({
       )}
     </section>
   );
+}
+
+function CustomerSuccessWorkflowPanel({
+  value,
+  currentAccountRevisionId,
+  canStart,
+  onStart,
+}: {
+  value?: CustomerSuccessWorkflowPayload;
+  currentAccountRevisionId: string;
+  canStart: boolean;
+  onStart: (definition: CustomerSuccessWorkflowDefinition) => void;
+}) {
+  return (
+    <section className={styles.workflowPanel} aria-label="Governed customer-success workflows">
+      <header className={styles.workflowHeader}>
+        <div className={styles.healthIdentity}>
+          <span><ListChecks size={19} aria-hidden="true" /></span>
+          <div>
+            <p className={styles.eyebrow}>Asael CSM pack · governed execution</p>
+            <h3>Customer-success workflows</h3>
+            <p>Typed inputs become owned project work. Customer messages remain drafts and CRM commitments require governed writes.</p>
+          </div>
+        </div>
+        <span className={styles.packBadge}>8 versioned playbooks</span>
+      </header>
+      <div className={styles.workflowPackGrid}>
+        {(value?.pack || []).map((definition) => (
+          <article className={styles.workflowCard} key={definition.workflowId}>
+            <div>
+              <small>{definition.artifacts.length} artifacts · {definition.evidenceRequirements.length} evidence gates</small>
+              <h4>{definition.name}</h4>
+              <p>{definition.description}</p>
+            </div>
+            <button
+              className={styles.secondaryButton}
+              type="button"
+              disabled={!canStart}
+              onClick={() => onStart(definition)}
+            >
+              <Play size={12} aria-hidden="true" /> Start
+            </button>
+          </article>
+        ))}
+      </div>
+      <div className={styles.workflowRuns}>
+        <div className={styles.workflowRunsHeading}>
+          <strong>Account runs</strong>
+          <span>{value?.runs.length || 0}</span>
+        </div>
+        {value?.runs.length ? value.runs.map((run) => (
+          <article className={styles.workflowRun} key={run.runId} data-status={run.outcome.status}>
+            <span className={styles.statusDot} data-status={run.outcome.status === "completed" ? "active" : run.outcome.status === "blocked" ? "at_risk" : run.outcome.status} />
+            <div>
+              <strong>{value.pack.find((item) => item.workflowId === run.workflowId)?.name || formatLabel(run.workflowId)}</strong>
+              <p>{run.outcome.nextAction}</p>
+              {run.accountRevisionId !== currentAccountRevisionId ? (
+                <small data-warning="true">Started from {shortId(run.accountRevisionId)}; the account is now {shortId(currentAccountRevisionId)}.</small>
+              ) : (
+                <small>rev {run.revision} · {formatLabel(run.outcome.status)} · receipt {run.outcome.receiptSha256.slice(0, 10)}</small>
+              )}
+            </div>
+            <Link href={`/app/projects?project=${encodeURIComponent(run.projectId)}`} className={styles.secondaryButton}>
+              Open project
+            </Link>
+          </article>
+        )) : (
+          <p className={styles.workflowEmpty}>No CSM workflow has started for this account.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function WorkflowEditor({
+  definition,
+  accountName,
+  saving,
+  onCancel,
+  onSubmit,
+}: {
+  definition: CustomerSuccessWorkflowDefinition;
+  accountName: string;
+  saving: boolean;
+  onCancel: () => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <div className={styles.backdrop} role="presentation" onMouseDown={(event) => {
+      if (event.currentTarget === event.target && !saving) onCancel();
+    }}>
+      <form className={styles.editor} onSubmit={onSubmit}>
+        <header className={styles.editorHeader}>
+          <div>
+            <p className={styles.eyebrow}>Asael CSM pack · {accountName}</p>
+            <h2>{definition.name}</h2>
+          </div>
+          <button type="button" onClick={onCancel} aria-label="Close workflow editor" disabled={saving}>
+            <X size={18} aria-hidden="true" />
+          </button>
+        </header>
+        <div className={styles.editorFields}>
+          <label className={styles.fullField}>
+            <span>Objective</span>
+            <textarea name="objective" required maxLength={2_000} autoFocus />
+          </label>
+          <label>
+            <span>Target date · optional</span>
+            <input name="targetDate" type="datetime-local" />
+          </label>
+          {workflowSpecificFields(definition.workflowId)}
+          <div className={styles.workflowRequirements}>
+            <div>
+              <strong>Acceptance criteria</strong>
+              <ul>{definition.acceptanceCriteria.map((item) => <li key={item}>{item}</li>)}</ul>
+            </div>
+            <div>
+              <strong>Required outcome receipts</strong>
+              <p>{definition.artifacts.filter((item) => item.required).map((item) => item.title).join(" · ")}</p>
+              <p>{definition.evidenceRequirements.filter((item) => item.required).map((item) => item.title).join(" · ")}</p>
+            </div>
+          </div>
+          <div className={styles.permissionNotice}>
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <strong>No direct external effects</strong>
+              <p>Starting creates an internal project and work items only. Communication stays unsent until governed delivery; CRM changes require an approval-bound Salesforce tool.</p>
+            </div>
+          </div>
+        </div>
+        <footer className={styles.editorFooter}>
+          <button className={styles.secondaryButton} type="button" onClick={onCancel} disabled={saving}>Cancel</button>
+          <button className={styles.primaryButton} type="submit" disabled={saving}>
+            <Play size={14} aria-hidden="true" /> {saving ? "Starting…" : "Create workflow project"}
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
+}
+
+function workflowSpecificFields(workflowId: CustomerSuccessWorkflowId) {
+  switch (workflowId) {
+    case "onboarding": return <>
+      <LinesField name="successCriteria" label="Success criteria · one per line" required />
+      <LinesField name="productNames" label="Products · one per line" />
+      <LinesField name="stakeholderIds" label="Stakeholder IDs · one per line" />
+    </>;
+    case "adoption_review": return <>
+      <DateField name="periodStartAt" label="Review period start" />
+      <DateField name="periodEndAt" label="Review period end" />
+      <LinesField name="adoptionGoals" label="Adoption goals · one per line" required />
+      <LinesField name="productIds" label="Product IDs · one per line" />
+    </>;
+    case "risk_escalation": return <>
+      <TextField name="riskTitle" label="Risk title" />
+      <SelectField name="severity" label="Severity" values={["low", "medium", "high", "critical"]} defaultValue="high" />
+      <LinesField name="signals" label="Observed signals · one per line" required />
+      <TextField name="executiveSponsorId" label="Executive sponsor ID · optional" required={false} />
+    </>;
+    case "renewal_planning": return <>
+      <DateField name="renewalAt" label="Renewal date" />
+      <LinesField name="renewalGoals" label="Renewal goals · one per line" required />
+      <TextField name="amount" label="Renewal amount · optional" type="number" required={false} />
+      <TextField name="currency" label="Currency · with amount" required={false} />
+    </>;
+    case "qbr_ebr": return <>
+      <SelectField name="reviewKind" label="Review kind" values={["qbr", "ebr"]} defaultValue="qbr" />
+      <DateField name="meetingAt" label="Meeting time" />
+      <DateField name="periodStartAt" label="Review period start" />
+      <DateField name="periodEndAt" label="Review period end" />
+      <LinesField name="audience" label="Audience · one per line" required />
+      <LinesField name="agendaObjectives" label="Agenda objectives · one per line" required />
+    </>;
+    case "meeting_prep_follow_up": return <>
+      <TextField name="meetingId" label="Meeting ID" />
+      <SelectField name="phase" label="Phase" values={["prep", "follow_up"]} defaultValue="prep" />
+      <LinesField name="participantIds" label="Participant IDs · one per line" required />
+      <LinesField name="meetingObjectives" label="Meeting objectives · one per line" required />
+    </>;
+    case "support_escalation": return <>
+      <LinesField name="caseIds" label="Case IDs · one per line" required />
+      <SelectField name="severity" label="Severity" values={["medium", "high", "critical"]} defaultValue="high" />
+      <LinesField name="customerImpact" label="Customer impact" required />
+      <LinesField name="requestedOutcome" label="Requested outcome" required />
+    </>;
+    case "expansion_discovery": return <>
+      <LinesField name="hypotheses" label="Expansion hypotheses · one per line" required />
+      <LinesField name="stakeholderIds" label="Stakeholder IDs · one per line" required />
+      <DateField name="discoveryWindowEndAt" label="Discovery window end" />
+    </>;
+  }
+}
+
+function TextField({ name, label, required = true, type = "text" }: {
+  name: string;
+  label: string;
+  required?: boolean;
+  type?: "text" | "number";
+}) {
+  return <label><span>{label}</span><input name={name} type={type} required={required} /></label>;
+}
+
+function DateField({ name, label }: { name: string; label: string }) {
+  return <label><span>{label}</span><input name={name} type="datetime-local" required /></label>;
+}
+
+function SelectField({ name, label, values, defaultValue }: {
+  name: string;
+  label: string;
+  values: string[];
+  defaultValue: string;
+}) {
+  return <label><span>{label}</span><select name={name} defaultValue={defaultValue}>{values.map((value) => <option value={value} key={value}>{formatLabel(value)}</option>)}</select></label>;
+}
+
+function LinesField({ name, label, required = false }: { name: string; label: string; required?: boolean }) {
+  return <label className={styles.fullField}><span>{label}</span><textarea name={name} required={required} /></label>;
 }
 
 function FactSection({ kind, facts }: { kind: CustomerFactKind; facts: CustomerFactView[] }) {
@@ -921,6 +1223,109 @@ function money(amountMinor: number | null, currency: string | null) {
 
 function lifecycleOptions(): CustomerAccountRevision["lifecycle"][] {
   return ["prospect", "onboarding", "active", "at_risk", "churned", "archived"];
+}
+
+function workflowInputFromForm(
+  workflowId: CustomerSuccessWorkflowId,
+  form: FormData,
+): CustomerSuccessWorkflowInput {
+  const objective = formText(form, "objective");
+  const targetDate = optionalIso(form, "targetDate");
+  switch (workflowId) {
+    case "onboarding": return {
+      workflowId,
+      objective,
+      targetDate,
+      successCriteria: formLines(form, "successCriteria"),
+      productNames: formLines(form, "productNames"),
+      stakeholderIds: formLines(form, "stakeholderIds"),
+    };
+    case "adoption_review": return {
+      workflowId,
+      objective,
+      targetDate,
+      periodStartAt: requiredIso(form, "periodStartAt"),
+      periodEndAt: requiredIso(form, "periodEndAt"),
+      adoptionGoals: formLines(form, "adoptionGoals"),
+      productIds: formLines(form, "productIds"),
+    };
+    case "risk_escalation": return {
+      workflowId,
+      objective,
+      targetDate,
+      riskTitle: formText(form, "riskTitle"),
+      severity: formText(form, "severity") as "low" | "medium" | "high" | "critical",
+      signals: formLines(form, "signals"),
+      executiveSponsorId: formText(form, "executiveSponsorId") || null,
+    };
+    case "renewal_planning": {
+      const amount = formText(form, "amount");
+      const amountMinor = amount ? Math.round(Number(amount) * 100) : null;
+      return {
+        workflowId,
+        objective,
+        targetDate,
+        renewalAt: requiredIso(form, "renewalAt"),
+        renewalGoals: formLines(form, "renewalGoals"),
+        amountMinor,
+        currency: amountMinor === null ? null : formText(form, "currency").toUpperCase(),
+      };
+    }
+    case "qbr_ebr": return {
+      workflowId,
+      objective,
+      targetDate,
+      reviewKind: formText(form, "reviewKind") as "qbr" | "ebr",
+      meetingAt: requiredIso(form, "meetingAt"),
+      periodStartAt: requiredIso(form, "periodStartAt"),
+      periodEndAt: requiredIso(form, "periodEndAt"),
+      audience: formLines(form, "audience"),
+      agendaObjectives: formLines(form, "agendaObjectives"),
+    };
+    case "meeting_prep_follow_up": return {
+      workflowId,
+      objective,
+      targetDate,
+      meetingId: formText(form, "meetingId"),
+      phase: formText(form, "phase") as "prep" | "follow_up",
+      participantIds: formLines(form, "participantIds"),
+      meetingObjectives: formLines(form, "meetingObjectives"),
+    };
+    case "support_escalation": return {
+      workflowId,
+      objective,
+      targetDate,
+      caseIds: formLines(form, "caseIds"),
+      severity: formText(form, "severity") as "medium" | "high" | "critical",
+      customerImpact: formText(form, "customerImpact"),
+      requestedOutcome: formText(form, "requestedOutcome"),
+    };
+    case "expansion_discovery": return {
+      workflowId,
+      objective,
+      targetDate,
+      hypotheses: formLines(form, "hypotheses"),
+      stakeholderIds: formLines(form, "stakeholderIds"),
+      discoveryWindowEndAt: requiredIso(form, "discoveryWindowEndAt"),
+    };
+  }
+}
+
+function formText(form: FormData, name: string) {
+  return String(form.get(name) || "").trim();
+}
+
+function formLines(form: FormData, name: string) {
+  return formText(form, name).split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+}
+
+function optionalIso(form: FormData, name: string) {
+  const value = formText(form, name);
+  return value ? new Date(value).toISOString() : null;
+}
+
+function requiredIso(form: FormData, name: string) {
+  return new Date(formText(form, name)).toISOString();
 }
 
 function formatLabel(value: string) {

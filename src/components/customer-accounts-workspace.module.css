@@ -120,6 +120,31 @@
 .healthEmpty > svg { flex: 0 0 auto; color: var(--primary); }
 .healthEmpty strong { color: var(--foreground); font-size: .65rem; }
 .healthEmpty p { margin-top: .18rem; font-size: .54rem; line-height: 1.55; }
+.workflowPanel { overflow: hidden; margin-top: 1rem; border: 1px solid oklch(from var(--primary) l c h / .2); border-radius: 1rem; background: var(--background); }
+.workflowHeader { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: .9rem 1rem; background: linear-gradient(120deg, oklch(from var(--primary) l c h / .06), transparent 52%); }
+.packBadge { flex: 0 0 auto; border: 1px solid oklch(from var(--primary) l c h / .25); border-radius: 999px; padding: .28rem .55rem; color: var(--primary); font-size: .5rem; font-weight: 760; }
+.workflowPackGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; padding: .8rem; }
+.workflowCard { display: flex; min-width: 0; align-items: flex-end; justify-content: space-between; gap: .8rem; border: 1px solid var(--line); border-radius: .8rem; padding: .75rem; background: oklch(from var(--surface) l c h / .84); }
+.workflowCard > div { min-width: 0; }
+.workflowCard small { color: var(--muted); font-size: .44rem; font-weight: 750; text-transform: uppercase; }
+.workflowCard h4 { margin-top: .2rem; font-size: .68rem; }
+.workflowCard p { margin-top: .22rem; color: var(--muted); font-size: .5rem; line-height: 1.5; }
+.workflowCard button { min-height: 2rem; flex: 0 0 auto; padding: 0 .7rem; font-size: .54rem; }
+.workflowRuns { border-top: 1px solid var(--line); }
+.workflowRunsHeading { display: flex; align-items: center; justify-content: space-between; padding: .65rem .9rem; color: var(--muted); font-size: .54rem; text-transform: uppercase; }
+.workflowRunsHeading span { display: grid; min-width: 1.45rem; height: 1.45rem; place-items: center; border-radius: 999px; background: var(--surface-raised); }
+.workflowRun { display: grid; grid-template-columns: .5rem minmax(0, 1fr) auto; align-items: center; gap: .7rem; border-top: 1px dashed var(--line); padding: .75rem .9rem; }
+.workflowRun > div { min-width: 0; }
+.workflowRun strong { font-size: .62rem; }
+.workflowRun p { overflow: hidden; margin-top: .14rem; color: var(--muted); font-size: .52rem; text-overflow: ellipsis; white-space: nowrap; }
+.workflowRun small { display: block; margin-top: .18rem; color: var(--muted); font-size: .45rem; }
+.workflowRun small[data-warning="true"] { color: var(--warning); }
+.workflowRun a { min-height: 2.1rem; padding: 0 .7rem; font-size: .53rem; }
+.workflowEmpty { border-top: 1px dashed var(--line); padding: .8rem .9rem; color: var(--muted); font-size: .56rem; }
+.workflowRequirements { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; border: 1px solid var(--line); border-radius: .8rem; padding: .8rem; background: var(--background); }
+.workflowRequirements strong { font-size: .62rem; }
+.workflowRequirements ul { display: grid; gap: .25rem; margin-top: .35rem; padding-left: .9rem; color: var(--muted); font-size: .52rem; line-height: 1.45; list-style: disc; }
+.workflowRequirements p { margin-top: .35rem; color: var(--muted); font-size: .52rem; line-height: 1.45; }
 .domainGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; margin-top: 1rem; }
 .domainSection { overflow: hidden; border: 1px solid var(--line); border-radius: 1rem; background: oklch(from var(--background) l c h / .74); }
 .domainSection > header { display: flex; min-height: 3rem; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 0 .9rem; }
@@ -143,18 +168,19 @@
 .conflictNote { margin-top: .6rem; border-left: 2px solid var(--warning); padding-left: .55rem; color: var(--muted); font-size: .54rem; line-height: 1.5; }
 .emptyDomain { padding: 1rem; color: var(--muted); font-size: .6rem; }
 .backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; overflow: auto; padding: 1rem; background: oklch(0.16 0.025 240 / .62); backdrop-filter: blur(8px); }
-.editor { width: min(42rem, 100%); overflow: hidden; border-radius: 1.4rem; }
+.editor { width: min(42rem, 100%); max-height: calc(100vh - 2rem); overflow: auto; border-radius: 1.4rem; }
 .editorHeader { display: flex; align-items: flex-start; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 1.2rem 1.4rem; }
 .editorHeader h2 { margin-top: .2rem; font-size: 1.8rem; }
 .editorHeader button { display: grid; width: 2.2rem; height: 2.2rem; place-items: center; border-radius: 50%; color: var(--muted); background: var(--surface-raised); }
 .editorFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .9rem; padding: 1.4rem; }
 .editorFields label span { display: block; margin-bottom: .35rem; color: var(--muted); font-size: .56rem; font-weight: 760; text-transform: uppercase; }
-.editorFields input, .editorFields select { width: 100%; min-height: 2.7rem; border: 1px solid var(--line); border-radius: .75rem; padding: 0 .8rem; background: var(--background); font-size: .72rem; }
+.editorFields input, .editorFields select, .editorFields textarea { width: 100%; min-height: 2.7rem; border: 1px solid var(--line); border-radius: .75rem; padding: 0 .8rem; background: var(--background); font-size: .72rem; }
+.editorFields textarea { min-height: 5rem; resize: vertical; padding-top: .7rem; line-height: 1.5; }
 .fullField, .permissionNotice { grid-column: 1 / -1; }
 .permissionNotice { display: flex; gap: .65rem; border: 1px solid oklch(from var(--primary) l c h / .2); border-radius: .8rem; padding: .8rem; color: var(--primary); background: oklch(from var(--primary) l c h / .05); }
 .permissionNotice strong { color: var(--foreground); font-size: .66rem; }
 .permissionNotice p { margin-top: .2rem; color: var(--muted); font-size: .57rem; line-height: 1.5; }
 .editorFooter { justify-content: flex-end; border-top: 1px solid var(--line); padding: 1rem 1.4rem; }
 @media (max-width: 1100px) { .salesforcePanel { grid-template-columns: 1fr; } .salesforceActions { justify-content: flex-start; } .workspace { grid-template-columns: 1fr; } .rail { max-height: 18rem; overflow: auto; } .domainGrid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .shell { padding: .8rem; } .hero { align-items: flex-start; flex-direction: column; } .metrics, .metadataGrid, .healthSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metrics > div:nth-child(2), .metadata:nth-child(2), .healthSummary > div:nth-child(2) { border-right: 0; } .metrics > div:nth-child(-n+2), .metadata:nth-child(-n+2), .healthSummary > div:nth-child(-n+2) { border-bottom: 1px dashed var(--line); } .accountHeader, .healthHeader { align-items: flex-start; flex-direction: column; } .permissionBar { align-items: flex-start; flex-wrap: wrap; } .permissionBar > div { flex-basis: calc(100% - 3rem); } .factorGrid, .factEvidence, .editorFields { grid-template-columns: 1fr; } .fullField, .permissionNotice { grid-column: auto; } }
+@media (max-width: 760px) { .shell { padding: .8rem; } .hero { align-items: flex-start; flex-direction: column; } .metrics, .metadataGrid, .healthSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metrics > div:nth-child(2), .metadata:nth-child(2), .healthSummary > div:nth-child(2) { border-right: 0; } .metrics > div:nth-child(-n+2), .metadata:nth-child(-n+2), .healthSummary > div:nth-child(-n+2) { border-bottom: 1px dashed var(--line); } .accountHeader, .healthHeader, .workflowHeader { align-items: flex-start; flex-direction: column; } .permissionBar { align-items: flex-start; flex-wrap: wrap; } .permissionBar > div { flex-basis: calc(100% - 3rem); } .factorGrid, .factEvidence, .editorFields, .workflowPackGrid, .workflowRequirements { grid-template-columns: 1fr; } .fullField, .permissionNotice, .workflowRequirements { grid-column: auto; } .workflowCard { align-items: flex-start; flex-direction: column; } .workflowRun { grid-template-columns: .5rem minmax(0, 1fr); } .workflowRun a { grid-column: 2; justify-self: start; } }
 @media (prefers-reduced-motion: reduce) { .primaryButton, .secondaryButton { transition: none; } }
