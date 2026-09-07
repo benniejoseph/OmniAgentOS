@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => {
     status: "active" as const,
     defaultRiskLevel: 1 as const,
     approvalRequired: false,
-    toolCount: 2,
+    toolCount: 3,
     createdAt: now,
     updatedAt: now,
   };
@@ -45,6 +45,19 @@ const mocks = vi.hoisted(() => {
       connectorId: connector.id,
       connectorName: connector.name,
       name: "browser_click",
+      inputSchema: { type: "object", additionalProperties: true },
+      riskLevel: 2 as const,
+      approvalRequired: true,
+      status: "active" as const,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: "mcp:browser:browser_tabs",
+      tenantId: "tenant-browser",
+      connectorId: connector.id,
+      connectorName: connector.name,
+      name: "browser_tabs",
       inputSchema: { type: "object", additionalProperties: true },
       riskLevel: 2 as const,
       approvalRequired: true,
@@ -194,6 +207,27 @@ describe("governed browser action policy", () => {
         verificationReasonCode: "read_unavailable",
       },
     });
+    expect(mocks.callMcpTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("narrows the legacy broad tab risk only for a known routine action", async () => {
+    const executor = await import("@/lib/tools/executor");
+    const executed = await executor.executeGovernedTool({
+      toolId: "mcp:browser:browser_tabs",
+      input: { action: "list" },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("tabs"),
+      mcpSessionScope: sessionScope(),
+      idempotencyKey: "browser-policy:tabs",
+    });
+
+    expect(executed.record).toMatchObject({
+      status: "executed",
+      riskLevel: 0,
+      approvalRequired: false,
+    });
+    expect(executed.record.effectReceipt).toBeUndefined();
     expect(mocks.callMcpTool).toHaveBeenCalledTimes(1);
   });
 
