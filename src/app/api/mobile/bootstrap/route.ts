@@ -71,7 +71,9 @@ async function GETHandler(request: Request) {
     client: nativeClientCompatibility(observedIdentity.session.device, {
       clientAttestedAt: observedIdentity.session.clientAttestedAt,
     }),
-    nativeMutationCapabilities: nativeMutationCapabilityPolicy(observedIdentity.context),
-    nativeClientPolicy: nativeClientPolicy(),
+    nativeClientPolicy: {
+      ...nativeClientPolicy(),
+      mutationCapabilities: nativeMutationCapabilityPolicy(observedIdentity.context),
+    },
   }, { headers: mobileNoStoreHeaders });
 }

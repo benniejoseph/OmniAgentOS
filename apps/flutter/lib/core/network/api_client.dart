@@ -165,7 +165,14 @@ class ApiClient {
   Future<Map<String, dynamic>> patchJson(
     String path, {
     Map<String, dynamic>? data,
-  }) => _json(() => _dio.patch<Object?>(path, data: data));
+    Map<String, dynamic>? headers,
+  }) => _json(
+    () => _dio.patch<Object?>(
+      path,
+      data: data,
+      options: Options(headers: headers),
+    ),
+  );
 
   Future<Map<String, dynamic>> deleteJson(
     String path, {

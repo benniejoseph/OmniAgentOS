@@ -1823,6 +1823,80 @@
             }
           }
         }
+      },
+      "patch": {
+        "operationId": "notifications.readAll",
+        "summary": "Mark all actor-visible notifications read.",
+        "tags": [
+          "notifications"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonObject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/notifications/{id}": {
