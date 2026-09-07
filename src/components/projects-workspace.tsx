@@ -12,6 +12,7 @@ import {
   Check,
   ChevronRight,
   Circle,
+  CircleDollarSign,
   FileCheck2,
   FolderKanban,
   Gauge,
@@ -35,6 +36,12 @@ import { arsenalAgents } from "@/lib/agents/arsenal";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import { ProjectSharedMemory } from "@/components/project-shared-memory";
+import {
+  canonicalWorkItemCostLabel,
+  canonicalWorkItemStatusLabel,
+  parseCanonicalWorkItemSurface,
+  type CanonicalWorkItemSurface,
+} from "@/lib/workspaces/surface";
 import styles from "./daybook-workspaces.module.css";
 
 const PROJECT_LIBRARY_KINDS = [
@@ -76,6 +83,7 @@ type ProjectTask = {
     sourceStatus: string;
     statusRevision: number;
   };
+  workItem: CanonicalWorkItemSurface;
 };
 type ProjectArtifact = {
   id: string;
@@ -199,7 +207,8 @@ export function ProjectsWorkspace() {
         readJson("/api/workspace-templates", { signal: controller.signal }),
       ]);
       if (controller.signal.aborted) return;
-      const next = payload.projects as Project[];
+      const next = normalizeProjects(payload.projects);
+      if (!next) throw new Error("Projects returned an invalid canonical WorkItem projection.");
       setProjects(next);
       setTemplates(templatePayload.templates as WorkspaceTemplate[]);
       const requestedProjectId = new URL(window.location.href).searchParams.get("project") || "";
@@ -337,7 +346,12 @@ export function ProjectsWorkspace() {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/plan`, {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}),
       });
-      const plan = payload.plan as { rationale: string; tasks: ProjectTask[]; generatedBy: string };
+      const rawPlan = payload.plan as { rationale?: unknown; tasks?: unknown; generatedBy?: unknown };
+      const planTasks = normalizeProjectTasks(rawPlan.tasks, selected.id);
+      if (!planTasks || typeof rawPlan.rationale !== "string") {
+        throw new Error("The project plan returned invalid WorkItems.");
+      }
+      const plan = { ...rawPlan, rationale: rawPlan.rationale, tasks: planTasks };
       setProjects((current) => current.map((project) => project.id === selected.id
         ? { ...project, tasks: [...project.tasks, ...plan.tasks] }
         : project));
@@ -356,7 +370,8 @@ export function ProjectsWorkspace() {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ title: taskTitle.trim(), agentId: "atlas" }),
       });
-      const task = payload.task as ProjectTask;
+      const task = normalizeProjectTask(payload.task, selected.id);
+      if (!task) throw new Error("The project task returned an invalid canonical WorkItem.");
       setProjects((current) => current.map((project) => project.id === selected.id ? { ...project, tasks: [...project.tasks, task] } : project));
       setTaskTitle(""); setAnnouncement("Task added to the project.");
     } catch (taskError) { setError(message(taskError)); }
@@ -371,7 +386,8 @@ export function ProjectsWorkspace() {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/tasks/${encodeURIComponent(task.id)}`, {
         method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status }),
       });
-      const updated = payload.task as ProjectTask;
+      const updated = normalizeProjectTask(payload.task, selected.id);
+      if (!updated) throw new Error("The project task returned an invalid canonical WorkItem.");
       setProjects((current) => current.map((project) => project.id === selected.id
         ? { ...project, tasks: project.tasks.map((item) => item.id === task.id ? updated : item) }
         : project));
@@ -412,8 +428,13 @@ export function ProjectsWorkspace() {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
       });
       const project = payload.project as Project | undefined;
-      const tasks = payload.tasks as ProjectTask[] | undefined;
+      const tasks = payload.tasks === undefined
+        ? undefined
+        : normalizeProjectTasks(payload.tasks, selected.id);
       const artifacts = payload.artifacts as ProjectArtifact[] | undefined;
+      if (payload.tasks !== undefined && !tasks) {
+        throw new Error("Execution returned invalid canonical WorkItems.");
+      }
       if (project) {
         setProjects((current) => current.map((item) => item.id === selected.id ? { ...item, ...project, tasks: tasks || item.tasks, artifacts: artifacts || item.artifacts } : item));
       }
@@ -453,7 +474,18 @@ export function ProjectsWorkspace() {
 
   const selectedClosed = selected?.tasks.filter(taskIsClosed).length || 0;
   const selectedProgress = selected?.tasks.length ? selectedClosed / selected.tasks.length : 0;
-  const selectedArtifact = selected?.artifacts?.find((artifact) => artifact.id === selectedArtifactId) || selected?.artifacts?.[0];
+  const canonicalArtifactIds = new Set(
+    selected?.tasks.flatMap((task) => task.workItem.artifacts.items.map((item) => item.artifactId)) || [],
+  );
+  const canonicalArtifacts = selected?.artifacts?.filter((artifact) =>
+    canonicalArtifactIds.has(artifact.id)
+  ) || [];
+  const canonicalArtifactCount = selected?.tasks.reduce(
+    (total, task) => total + task.workItem.artifacts.count,
+    0,
+  ) || 0;
+  const selectedCost = summarizeWorkItemCost(selected?.tasks || []);
+  const selectedArtifact = canonicalArtifacts.find((artifact) => artifact.id === selectedArtifactId) || canonicalArtifacts[0];
   const selectedReflectionDraft = reflectionDraft?.artifactId === selectedArtifact?.id ? reflectionDraft : undefined;
   const selectedVerdict = selectedReflectionDraft?.verdict || selectedArtifact?.verdict;
   const selectedLesson = selectedReflectionDraft?.lesson ?? selectedArtifact?.lesson ?? "";
@@ -553,6 +585,7 @@ export function ProjectsWorkspace() {
               <div className="project-execution-metrics">
                 <div><span><Gauge size={13} aria-hidden="true" /> Budget</span><strong>{selected.tasksDispatched || 0}<small> / {taskBudget}</small></strong><i><b style={{ width: `${Math.min(100, ((selected.tasksDispatched || 0) / taskBudget) * 100)}%` }} /></i></div>
                 <div><span><GitBranch size={13} aria-hidden="true" /> Parallel</span><strong>{maxParallelTasks}</strong><small>agent lane{maxParallelTasks > 1 ? "s" : ""}</small></div>
+                <div><span><CircleDollarSign size={13} aria-hidden="true" /> AI cost</span><strong>{canonicalWorkItemCostLabel(selectedCost)}</strong><small>{selectedCost.totalTokens.toLocaleString()} recorded tokens</small></div>
                 <div><span><ShieldCheck size={13} aria-hidden="true" /> Guardrail</span><strong>{autonomyMode === "supervised" || requireApproval ? "Approval" : "Policy"}</strong><small>{autonomyMode === "autonomous" && !requireApproval ? "risky tools still gated" : "before each workflow"}</small></div>
               </div>
               <div className="project-execution-controls">
@@ -572,16 +605,18 @@ export function ProjectsWorkspace() {
             <div className="project-task-heading"><div><p className="projects-kicker">Execution plan</p><h3>Next moves</h3></div><span>{selected.tasks.filter((task) => !taskIsClosed(task)).length} open</span></div>
             <div className="project-task-list">
               {selected.tasks.length ? selected.tasks.map((task, index) => {
-                const agent = agentFor(task.agentId);
+                const agent = agentFor(workItemAssignedAgent(task));
+                const canonicalState = task.workItem.status.status;
+                const workflowStatus = workItemWorkflowStatus(task);
                 const dependencyNames = (task.dependsOn || []).map((id) => selected.tasks.find((item) => item.id === id)?.title).filter(Boolean);
-                return <article key={task.id} className={clsx("project-task", `is-${task.status}`)} style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}>
-                  <button type="button" className="project-task-state" onClick={() => void moveTask(task)} disabled={actingId === task.id || selected.status !== "active" || ["running", "waiting_approval"].includes(selected.executionStatus)} aria-label={`${task.status === "done" ? "Reopen" : task.status === "doing" ? "Complete" : "Start"} ${task.title}`}>
-                    {task.status === "done" ? <Check size={14} aria-hidden="true" /> : task.status === "doing" ? <Pause size={13} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}
+                return <article key={task.id} className={clsx("project-task", `is-${canonicalState}`)} style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}>
+                  <button type="button" className="project-task-state" onClick={() => void moveTask(task)} disabled={actingId === task.id || selected.status !== "active" || ["running", "waiting_approval"].includes(selected.executionStatus)} aria-label={`${canonicalTaskAction(canonicalState)} ${task.title}`}>
+                    {taskIsClosed(task) ? <Check size={14} aria-hidden="true" /> : canonicalState === "running" ? <Pause size={13} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}
                   </button>
                   <span className="project-task-index">{String(index + 1).padStart(2, "0")}</span>
-                  <div className="project-task-copy"><div><strong>{task.title}</strong><span className={clsx("project-task-priority", `is-${task.priority}`)}>{task.priority}</span>{task.workflowStatus ? <span className={clsx("project-workflow-badge", `is-${task.workflowStatus}`)}>{workflowLabel(task.workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{workItemStatusLabel(task, dependencyNames)}{task.dueAt ? ` · due ${formatDate(task.dueAt)}` : ""}</small>{task.executionError ? <em className="project-task-error"><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
+                  <div className="project-task-copy"><div><strong>{task.title}</strong><span className={clsx("project-task-priority", `is-${task.priority}`)}>{task.priority}</span>{workflowStatus ? <span className={clsx("project-workflow-badge", `is-${workflowStatus}`)}>{workflowLabel(workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{workItemStatusLabel(task, dependencyNames)} · {task.workItem.artifacts.count} artifact{task.workItem.artifacts.count === 1 ? "" : "s"} · {canonicalWorkItemCostLabel(task.workItem.cost)}{task.dueAt ? ` · due ${formatDate(task.dueAt)}` : ""}</small>{task.executionError ? <em className="project-task-error"><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
                   <div className={clsx("project-agent", `agent-${agent.accent}`)}><span>{agent.name.slice(0, 1)}</span><div><strong>{agent.name}</strong><small>{agent.role}</small></div></div>
-                  {task.workflowStatus === "waiting_approval" ? <button type="button" className="project-task-action" onClick={() => void executeProject("approve", task.id)} disabled={Boolean(executionBusy)}>Approve</button> : task.workflowStatus === "failed" ? <button type="button" className="project-task-action is-danger" onClick={() => void executeProject("retry", task.id)} disabled={Boolean(executionBusy)}>Retry</button> : task.workflowRunId ? <span className="project-task-live"><i /> {workflowLabel(task.workflowStatus || "queued")}</span> : <Link href={commandHref(selected, task)} aria-label={`Assign ${task.title} to ${agent.name}`}>Run <ArrowRight size={13} aria-hidden="true" /></Link>}
+                  {workflowStatus === "waiting_approval" ? <button type="button" className="project-task-action" onClick={() => void executeProject("approve", task.id)} disabled={Boolean(executionBusy)}>Approve</button> : workflowStatus === "failed" ? <button type="button" className="project-task-action is-danger" onClick={() => void executeProject("retry", task.id)} disabled={Boolean(executionBusy)}>Retry</button> : task.workItem.execution.workflowRunId ? <span className="project-task-live"><i /> {workflowLabel(workflowStatus || "queued")}</span> : <Link href={commandHref(selected, task)} aria-label={`Assign ${task.title} to ${agent.name}`}>Run <ArrowRight size={13} aria-hidden="true" /></Link>}
                 </article>;
               }) : <div className="project-task-empty"><Target size={22} aria-hidden="true" /><h3>No plan yet</h3><p>Let Atlas decompose the outcome or add the first task yourself.</p></div>}
             </div>
@@ -589,9 +624,9 @@ export function ProjectsWorkspace() {
             {selected.status === "active" ? <form className="project-add-task" onSubmit={addTask}><Plus size={15} aria-hidden="true" /><label className="sr-only" htmlFor="project-task-title">Add project task</label><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Add a task to this plan…" maxLength={240} /><button type="submit" disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : "Add task"}</button></form> : null}
 
             <section className="project-artifact-ledger" aria-label="Project outputs and reviewed outcomes">
-              <div className="project-artifact-heading"><div><p className="projects-kicker">Output ledger</p><h3>Verified work becomes memory</h3></div><span><History size={13} aria-hidden="true" /> {selected.artifacts?.length || 0} artifact{selected.artifacts?.length === 1 ? "" : "s"}</span></div>
-              {selected.artifacts?.length ? <div className="project-artifact-layout">
-                <div className="project-artifact-timeline" role="list" aria-label="Artifact timeline">{selected.artifacts.map((artifact, index) => {
+              <div className="project-artifact-heading"><div><p className="projects-kicker">Output ledger</p><h3>Verified work becomes memory</h3></div><span><History size={13} aria-hidden="true" /> {canonicalArtifactCount} canonical artifact{canonicalArtifactCount === 1 ? "" : "s"}</span></div>
+              {canonicalArtifacts.length ? <div className="project-artifact-layout">
+                <div className="project-artifact-timeline" role="list" aria-label="Artifact timeline">{canonicalArtifacts.map((artifact, index) => {
                   const artifactAgent = agentFor(artifact.agentId);
                   return <button key={artifact.id} type="button" role="listitem" className={clsx(selectedArtifact?.id === artifact.id && "is-selected", `is-${artifact.status}`)} onClick={() => setSelectedArtifactId(artifact.id)} style={{ animationDelay: `${Math.min(index, 8) * 40}ms` }}><i /><span><strong>{artifact.title}</strong><small>{artifactAgent.name} · {formatTimestamp(artifact.createdAt)}</small></span><em>{artifact.status}</em></button>;
                 })}</div>
@@ -631,7 +666,14 @@ export function ProjectsWorkspace() {
   );
 }
 
-function agentFor(id: AgentId) { return arsenalAgents.find((agent) => agent.id === id) || arsenalAgents[0]; }
+function agentFor(id: string) {
+  return arsenalAgents.find((agent) => agent.id === id) || {
+    ...arsenalAgents[0],
+    id,
+    name: id || "Unassigned",
+    role: id ? "Assigned Agent" : "No Agent assigned",
+  };
+}
 function projectTemplateBlueprint(project: Project): WorkspaceTemplate["project"] {
   const keyByTaskId = new Map(project.tasks.map((task, index) => [task.id, `step-${index + 1}`]));
   return {
@@ -658,7 +700,7 @@ function templateMutationKey(keys: Map<string, string>, name: string) {
   keys.set(name, key);
   return key;
 }
-function commandHref(project: Project, task: ProjectTask) { const prompt = `Project: ${project.title}\nObjective: ${project.objective}\nAssigned task: ${task.title}\n${task.detail}\nComplete this bounded task, verify the outcome, and report evidence plus the next recommended project state.`; return `/app/command?agent=${task.agentId}&project=${encodeURIComponent(project.id)}&context=project&prompt=${encodeURIComponent(prompt)}`; }
+function commandHref(project: Project, task: ProjectTask) { const prompt = `Project: ${project.title}\nObjective: ${project.objective}\nAssigned task: ${task.title}\n${task.detail}\nComplete this bounded task, verify the outcome, and report evidence plus the next recommended project state.`; return `/app/command?agent=${encodeURIComponent(workItemAssignedAgent(task))}&project=${encodeURIComponent(project.id)}&context=project&prompt=${encodeURIComponent(prompt)}`; }
 function executionTitle(status: Project["executionStatus"]) {
   return ({ idle: "Ready for deployment", running: "Agents are advancing this project", paused: "Execution is safely paused", waiting_approval: "Your approval is needed", completed: "Execution plan completed", failed: "An agent needs intervention" })[status];
 }
@@ -671,19 +713,91 @@ function executionDescription(status: Project["executionStatus"], mode: Project[
 }
 function workflowLabel(status: NonNullable<ProjectTask["workflowStatus"]>) { return status.replace("_", " "); }
 function taskIsClosed(task: ProjectTask) {
-  return ["unverified", "failed", "canceled", "succeeded"].includes(task.workItemStatus.status);
+  return ["unverified", "failed", "canceled", "succeeded"].includes(task.workItem.status.status);
 }
 function workItemStatusLabel(task: ProjectTask, dependencyNames: (string | undefined)[]) {
-  const status = task.workItemStatus.status;
-  if (status === "succeeded") return "Verified success";
-  if (status === "unverified") return "Closed · outcome unverified";
-  if (status === "failed") return "Failed";
-  if (status === "canceled") return "Canceled";
-  if (status === "running") return "In progress";
-  if (status === "blocked") return "Blocked";
-  if (status === "partial") return "Partially complete";
-  if (status === "preview") return "Draft";
-  return dependencyNames.length ? `After ${dependencyNames.join(", ")}` : "Ready";
+  const status = task.workItem.status.status;
+  if (status === "waiting") {
+    return dependencyNames.length ? `After ${dependencyNames.join(", ")}` : "Ready";
+  }
+  return canonicalWorkItemStatusLabel(status);
+}
+function workItemAssignedAgent(task: ProjectTask) {
+  return task.workItem.assignment.agents[0]?.agentId || "";
+}
+function workItemWorkflowStatus(task: ProjectTask) {
+  return task.workItem.execution.availability === "current"
+    ? task.workItem.execution.sourceStatus || undefined
+    : undefined;
+}
+function canonicalTaskAction(status: CanonicalWorkItemSurface["status"]["status"]) {
+  if (["unverified", "failed", "canceled", "succeeded"].includes(status)) return "Reopen";
+  return status === "running" || status === "partial" ? "Complete" : "Start";
+}
+function summarizeWorkItemCost(tasks: readonly ProjectTask[]): CanonicalWorkItemSurface["cost"] {
+  const costs = [...new Map(tasks.map((task) => [
+    task.workItem.execution.workflowRunId || task.workItem.status.workItemId,
+    task.workItem.cost,
+  ])).values()];
+  const usageReceiptCount = costs.reduce((total, cost) => total + cost.usageReceiptCount, 0);
+  const unknownCostReceiptCount = costs.reduce((total, cost) => total + cost.unknownCostReceiptCount, 0);
+  const state = usageReceiptCount === 0
+    ? "not_recorded"
+    : unknownCostReceiptCount === usageReceiptCount
+      ? "unknown"
+      : unknownCostReceiptCount > 0
+        ? "partial"
+        : "known";
+  return {
+    authority: "ai_usage_ledger_v1",
+    state,
+    usageReceiptCount,
+    unknownCostReceiptCount,
+    totalTokens: costs.reduce((total, cost) => total + cost.totalTokens, 0),
+    knownEstimatedCostMicrousd: costs.reduce(
+      (total, cost) => total + cost.knownEstimatedCostMicrousd,
+      0,
+    ),
+  };
+}
+export function normalizeProjects(value: unknown): Project[] | undefined {
+  if (!Array.isArray(value) || value.length > 100) return undefined;
+  const projects: Project[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
+    const project = item as Record<string, unknown>;
+    if (typeof project.id !== "string" || !Array.isArray(project.tasks) || !Array.isArray(project.artifacts)) {
+      return undefined;
+    }
+    const tasks = normalizeProjectTasks(project.tasks, project.id);
+    if (!tasks) return undefined;
+    projects.push({ ...project, tasks } as Project);
+  }
+  return projects;
+}
+function normalizeProjectTasks(value: unknown, projectId: string) {
+  if (!Array.isArray(value) || value.length > 500) return undefined;
+  const tasks = value.map((task) => normalizeProjectTask(task, projectId));
+  if (tasks.some((task) => !task)) return undefined;
+  const normalized = tasks as ProjectTask[];
+  return new Set(normalized.map((task) => task.id)).size === normalized.length
+    ? normalized
+    : undefined;
+}
+function normalizeProjectTask(value: unknown, projectId: string): ProjectTask | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const task = value as Record<string, unknown>;
+  const workItem = parseCanonicalWorkItemSurface(task.workItem);
+  if (
+    typeof task.id !== "string" ||
+    !workItem ||
+    workItem.status.sourceAuthority !== "legacy_project_task" ||
+    workItem.status.sourceId !== task.id ||
+    workItem.status.workItemId !== task.id ||
+    workItem.status.projectId !== projectId ||
+    JSON.stringify(task.workItemStatus) !== JSON.stringify(workItem.status)
+  ) return undefined;
+  return { ...task, workItemStatus: workItem.status, workItem } as unknown as ProjectTask;
 }
 function executionAnnouncement(action: string, dispatched?: string[]) {
   if (action === "start") return dispatched?.length ? `${dispatched.length} agent task${dispatched.length === 1 ? "" : "s"} dispatched.` : "Project execution started.";

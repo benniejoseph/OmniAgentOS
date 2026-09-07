@@ -1,17 +1,15 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { MissionWorkspace } from "@/components/missions/mission-workspace";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import {
+  listMissionsService,
+  showMissionService,
+} from "@/lib/app-services/missions";
 import { getServerWorkspaceSession } from "@/lib/auth/server-workspace-session";
 import { searchCapabilities } from "@/lib/capabilities/catalog";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 import { listStreamEvents } from "@/lib/events/store";
-import { toMissionDetailView, toMissionSummaryView } from "@/lib/missions/public";
-import {
-  getMissionDetail,
-  getMissionSummaryForRequest,
-  listMissionSummariesForRequest,
-} from "@/lib/missions/store";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export const metadata: Metadata = { title: "Mission" };
 
@@ -27,41 +25,46 @@ export default async function MissionPage({
   if (!tenantId || !actorId) {
     return <MissionWorkspace initialMissionId={id} initialMissions={[]} initialCapabilities={[]} />;
   }
-  const requestActorBinding = session.context
-    ? canonicalRequestActorBindingFromSecurityContext(session.context)
-    : undefined;
   const initial = await runWithDatabaseTenantScope(tenantId, async () => {
     // These reads share a deliberately single-slot serverless database pool.
     // Keep them sequential so queued work does not burn its own acquisition
     // deadline while an earlier reservation is still active.
-    let missions = await listMissionSummariesForRequest(50, {
-      tenantId,
-      actorId,
-      requestActorBinding,
+    const caller = createAppServiceCaller({ context: session.context! });
+    const missionResult = await listMissionsService(caller, {
+      limit: 50,
+      ownerScope: "readable",
     });
+    let missions = missionResult.data.missions;
     const capabilityResult = await searchCapabilities({ tenantId, limit: 50 });
     let selected = missions.find((mission) => mission.id === id);
-    let detail: Awaited<ReturnType<typeof getMissionDetail>> | undefined;
+    let detail;
     if (!selected) {
       // The bounded catalog is not proof that an absent deep link is missing.
       // Re-resolve only its public summary across the request-readable owner
       // pair before deciding whether an exact full-detail read is permitted.
-      selected = await getMissionSummaryForRequest(id, {
-        tenantId,
-        actorId,
-        requestActorBinding,
+      const summaryResult = await showMissionService(caller, {
+        missionId: id,
+        view: "readable_summary",
       });
+      selected = summaryResult.data && "mission" in summaryResult.data
+        ? summaryResult.data.mission || undefined
+        : undefined;
       if (!selected) return undefined;
       missions = [selected, ...missions.filter((mission) => mission.id !== id)];
     }
     if (selected.detailAvailable === true) {
-      detail = await getMissionDetail(id, { tenantId, actorId }, {
+      const detailResult = await showMissionService(caller, {
+        missionId: id,
+        view: "detail",
         tasks: 100,
         attempts: 250,
         artifacts: 150,
       });
+      detail = detailResult.data && "tasks" in detailResult.data
+        ? detailResult.data
+        : undefined;
       if (!detail) return undefined;
-      selected = toMissionSummaryView(detail.mission);
+      selected = detail.mission;
       missions = [selected, ...missions.filter((mission) => mission.id !== id)];
     }
     const latestEvents = selected?.detailAvailable === true && detail
@@ -75,7 +78,7 @@ export default async function MissionPage({
     return {
       initialMissions: missions,
       initialCapabilities: capabilityResult.capabilities,
-      initialDetail: detail ? toMissionDetailView(detail) : undefined,
+      initialDetail: detail,
       initialMissionReadContract: "readable_v1" as const,
       initialEventCursor: latestEvents[0]?.seq || 0,
     };

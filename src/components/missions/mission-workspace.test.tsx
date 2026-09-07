@@ -22,6 +22,57 @@ import {
   normalizeMissionSummaries,
 } from "@/components/missions/mission-workspace";
 import type { MissionSummaryView } from "@/lib/missions/public";
+import type { CanonicalWorkItemSurface } from "@/lib/workspaces/surface";
+
+function missionWorkItem(id: string): CanonicalWorkItemSurface {
+  const status = {
+    schemaVersion: 1 as const,
+    authority: "canonical_work_item_v1" as const,
+    persistence: "postgres" as const,
+    workspaceId: "workspace:personal:test",
+    projectId: `mission_project:${id}`,
+    workItemId: `mission_root:${id}`,
+    kind: "milestone" as const,
+    sourceAuthority: "legacy_mission" as const,
+    sourceId: id,
+    status: "preview" as const,
+    sourceStatus: "draft",
+    statusRevision: 1,
+    updatedAt: "2026-09-05T01:00:00.000Z",
+  };
+  return {
+    version: "p11.4-work-item-surface:1",
+    projection: {
+      authority: "canonical_work_item_v1",
+      sha256: "a".repeat(64),
+      sourceRevisionSha256: "b".repeat(64),
+    },
+    status,
+    assignment: { authority: "canonical_work_item_v1", agents: [] },
+    artifacts: { authority: "canonical_work_item_v1", count: 0, items: [] },
+    execution: {
+      authority: "governed_workflow_v1",
+      availability: "not_started",
+      workflowRunId: null,
+      sourceStatus: null,
+      currentStep: null,
+      completedSteps: 0,
+      totalSteps: 0,
+      progressPercent: null,
+      updatedAt: null,
+    },
+    cost: {
+      authority: "ai_usage_ledger_v1",
+      state: "not_recorded",
+      usageReceiptCount: 0,
+      unknownCostReceiptCount: 0,
+      totalTokens: 0,
+      knownEstimatedCostMicrousd: 0,
+    },
+  };
+}
+
+const exactWorkItem = missionWorkItem("mission-exact");
 
 const exactMission: MissionSummaryView = {
   id: "mission-exact",
@@ -44,8 +95,11 @@ const exactMission: MissionSummaryView = {
   detailAvailable: true,
   manageable: true,
   runnable: true,
+  workItemStatus: exactWorkItem.status,
+  workItem: exactWorkItem,
 };
 
+const retainedWorkItem = missionWorkItem("mission-retained");
 const retainedMission: MissionSummaryView = {
   ...exactMission,
   id: "mission-retained",
@@ -53,6 +107,8 @@ const retainedMission: MissionSummaryView = {
   detailAvailable: false,
   manageable: false,
   runnable: false,
+  workItemStatus: retainedWorkItem.status,
+  workItem: retainedWorkItem,
 };
 
 describe("Mission request-readable UI", () => {
