@@ -35,6 +35,7 @@ import {
   type EntityRegistryPayload,
 } from "@/components/entity-registry-dialog";
 import { RelationshipPathDialog } from "@/components/relationship-path-dialog";
+import { SourceCoveragePanel } from "@/components/source-coverage/source-coverage-panel";
 import {
   memoryFormationReasonLabel,
   memoryTierPoliciesV1,
@@ -560,6 +561,8 @@ export function MemoryWorkspace() {
       </header>
 
       {error ? <div className={clsx("memory-studio-error", styles.error)} role="alert"><span>{error}</span><button type="button" onClick={() => { setError(undefined); void load(); }}>Retry</button></div> : null}
+
+      <SourceCoveragePanel surface="memory" />
 
       <div className={clsx("memory-studio-layout", styles.layout, indexCollapsed && styles.layoutCollapsed)}>
         <aside className={clsx("memory-index", styles.index, indexCollapsed && styles.indexCollapsed)} aria-label="Memory library">
