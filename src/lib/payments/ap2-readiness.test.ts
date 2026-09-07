@@ -19,17 +19,15 @@ describe("AP2 payment readiness", () => {
       acceptedAdapterReleaseCount: 0,
       humanPresentMandateFlowImplemented: true,
       credentialIsolationImplemented: true,
+      receiptReconciliationImplemented: true,
       humanPresentFlowEnabled: false,
       humanNotPresentFlowEnabled: false,
-      missingGates: [
-        "p9.18_signed_receipts_and_reconciliation",
-      ],
+      missingGates: [],
       activationBlockers: [
         "reviewed_merchant_adapter",
         "reviewed_webauthn_attestation_policy",
         "isolated_credential_provider",
         "reviewed_merchant_payment_processor",
-        "signed_receipt_reconciliation",
       ],
     });
     expect(readiness.humanPresentMandates).toMatchObject({
@@ -44,6 +42,14 @@ describe("AP2 payment readiness", () => {
       scopedProviderTokenReturnedByApiOrTool: false,
       oneTimeClaimDestroysSealedToken: true,
       authorizationConfersPaymentEffectAuthority: false,
+    });
+    expect(readiness.receiptReconciliation).toMatchObject({
+      schemaMigrationVersion: 127,
+      rawSignedReceiptsReturnedByApiOrTool: false,
+      providerObservationsIndependentlySigned: true,
+      modelOrBrowserAssertionCanEstablishPaymentState: false,
+      idempotentTransactionBoundReconciliationJobs: true,
+      recoverableDiscrepanciesExposed: true,
     });
     expect(readiness.acceptedAdapterContracts).toEqual([]);
     expect(readiness.configuredKeyAuthorities).toEqual([]);
