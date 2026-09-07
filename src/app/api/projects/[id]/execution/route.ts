@@ -1,18 +1,8 @@
 import { z } from "zod";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { controlProjectExecutionService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import {
-  signalProjectTask,
-  signalProjectWorkflows,
-  syncProjectExecution,
-} from "@/lib/projects/execution";
-import {
-  getProject,
-  listProjectArtifacts,
-  listProjectTasks,
-  updateProjectExecution,
-} from "@/lib/projects/store";
-import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -47,82 +37,21 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   try {
     context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "project_execution", resourceId: id, metadata: { action: parsed.data.action } });
   } catch (error) { return forbiddenResponse(error); }
-  const mutation = projectMutationFromRequest(request, context, {
-    purpose: `project.execution.${parsed.data.action}`,
-    projectId: id,
-  });
-  const scope = {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    ...mutation,
-  };
-  const mutationScope = {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    mutation,
-  };
-  const current = await getProject(id, scope);
-  if (!current) return Response.json({ error: "Project not found." }, { status: 404 });
-  if (current.status !== "active") return Response.json({ error: "Only active projects can execute." }, { status: 409 });
-
   try {
-    if (parsed.data.action === "configure") {
-      const project = await updateProjectExecution(id, {
-        autonomyMode: parsed.data.autonomyMode,
-        taskBudget: parsed.data.taskBudget,
-        maxParallelTasks: parsed.data.maxParallelTasks,
-        requireApproval: parsed.data.autonomyMode === "supervised" ? true : parsed.data.requireApproval,
-      }, mutationScope);
-      return Response.json({ project, tasks: await listProjectTasks(id, scope), artifacts: await listProjectArtifacts(id, scope) });
+    const result = await controlProjectExecutionService(
+      createRequestMutationAppServiceCaller(request, context, { projectId: id, purpose: `project.execution.${parsed.data.action}` }),
+      { projectId: id, ...parsed.data, ...("taskId" in parsed.data ? { workItemId: parsed.data.taskId } : {}) } as never,
+    );
+    if (!result.data.snapshot) {
+      return Response.json(
+        { error: "workItemFound" in result.data ? "Project task workflow not found." : "Project not found." },
+        { status: 404 },
+      );
     }
-    if (parsed.data.action === "pause") {
-      await updateProjectExecution(id, { executionStatus: "paused" }, mutationScope);
-      await signalProjectWorkflows({
-        projectId: id,
-        signal: "pause",
-        ...scope,
-      });
-      return Response.json(await currentSnapshot(id, scope));
-    }
-    if (parsed.data.action === "resume") {
-      await signalProjectWorkflows({
-        projectId: id,
-        signal: "resume",
-        ...scope,
-      });
-      await updateProjectExecution(id, { executionStatus: "running" }, mutationScope);
-      return Response.json(await syncProjectExecution({ projectId: id, ...scope, drain: true }));
-    }
-    if (parsed.data.action === "approve" || parsed.data.action === "retry") {
-      const workflow = await signalProjectTask({ projectId: id, taskId: parsed.data.taskId, signal: parsed.data.action, ...scope });
-      if (!workflow) return Response.json({ error: "Project task workflow not found." }, { status: 404 });
-      return Response.json(await syncProjectExecution({ projectId: id, ...scope, drain: true }));
-    }
-    if (parsed.data.action === "start") {
-      const tasks = await listProjectTasks(id, scope);
-      if (!tasks.length) return Response.json({ error: "Create or generate a project plan before starting execution." }, { status: 409 });
-      await updateProjectExecution(id, {
-        autonomyMode: parsed.data.autonomyMode,
-        executionStatus: "running",
-        taskBudget: parsed.data.taskBudget,
-        maxParallelTasks: parsed.data.maxParallelTasks,
-        requireApproval: parsed.data.autonomyMode === "supervised" ? true : parsed.data.requireApproval,
-      }, mutationScope);
-      return Response.json(await syncProjectExecution({ projectId: id, ...scope, drain: true }));
-    }
-    return Response.json(await syncProjectExecution({ projectId: id, ...scope, drain: true }));
+    return Response.json(result.data.snapshot);
   } catch (error) {
     return Response.json({
       error: error instanceof Error ? error.message : "Project execution command failed.",
     }, { status: 409 });
   }
-}
-
-async function currentSnapshot(projectId: string, scope: { tenantId: string; actorId: string }) {
-  return {
-    project: await getProject(projectId, scope),
-    tasks: await listProjectTasks(projectId, scope),
-    artifacts: await listProjectArtifacts(projectId, scope),
-    dispatchedTaskIds: [],
-  };
 }

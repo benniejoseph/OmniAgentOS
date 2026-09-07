@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { planProjectService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { decomposeProject, ProjectPlanningError } from "@/lib/projects/planner";
-import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
+import { ProjectPlanningError } from "@/lib/projects/planner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -20,16 +21,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project_plan", resourceId: id }); }
   catch (error) { return forbiddenResponse(error); }
   try {
-    const plan = await decomposeProject({
-      projectId: id,
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      context: parsed.data.context,
-      mutation: projectMutationFromRequest(request, context, {
-        projectId: id,
-        purpose: "project.plan.create",
-      }),
-    });
+    const result = await planProjectService(
+      createRequestMutationAppServiceCaller(request, context, { projectId: id, purpose: "project.plan.create" }),
+      { projectId: id, context: parsed.data.context },
+    );
+    const plan = result.data.plan;
     return plan ? Response.json({ plan }) : Response.json({ error: "Project not found." }, { status: 404 });
   } catch (error) {
     return error instanceof ProjectPlanningError
