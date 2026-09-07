@@ -185,12 +185,28 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "opaque" },
       },
-      schemas: Object.fromEntries(Object.keys(nativeContractSchemas).map((name) => [
+      schemas: Object.fromEntries(schemaNamesForVersion(version).map((name) => [
         name,
         schemaDocument(name),
       ])),
     },
   };
+}
+
+function schemaNamesForVersion(version: number) {
+  const names = Object.keys(nativeContractSchemas);
+  if (version !== NATIVE_API_PREVIOUS_VERSION) return names;
+  // The previous contract is a frozen rollout artifact. New current-version
+  // schemas must not silently alter its document or integrity manifest.
+  const currentOnly = new Set([
+    "NativeDeviceSession",
+    "NativeDeviceListResponse",
+    "NativeDeviceLifecycleRequest",
+    "NativeWipeChallengeResponse",
+    "NativeWipeAcknowledgementRequest",
+    "NativeWipeAcknowledgementResponse",
+  ]);
+  return names.filter((name) => !currentOnly.has(name));
 }
 
 function schemaDocument(name: string) {
