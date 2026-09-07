@@ -10,7 +10,9 @@ import {
   Clock3,
   DatabaseZap,
   Fingerprint,
+  Gauge,
   History,
+  Lightbulb,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -34,6 +36,10 @@ import {
   type CustomerFactKind,
   type CustomerFactView,
 } from "@/lib/customer-success/contracts";
+import type {
+  CustomerHealthPolicy,
+  CustomerHealthScore,
+} from "@/lib/customer-success/health-contracts";
 import type { SalesforceSyncHealth } from "@/lib/customer-success/salesforce-contracts";
 import styles from "./customer-accounts-workspace.module.css";
 
@@ -83,6 +89,12 @@ type SalesforcePayload = {
   };
 };
 
+type CustomerHealthPayload = {
+  policy: CustomerHealthPolicy;
+  score: CustomerHealthScore | null;
+  history: CustomerHealthScore[];
+};
+
 export function CustomerAccountsWorkspace({
   initialAccountId,
 }: {
@@ -92,11 +104,13 @@ export function CustomerAccountsWorkspace({
   const { session, status: sessionStatus, role } = useWorkspaceSession();
   const [accounts, setAccounts] = useState<CustomerAccountRevision[]>([]);
   const [selected, setSelected] = useState<CustomerAccount360>();
+  const [customerHealth, setCustomerHealth] = useState<CustomerHealthPayload>();
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>();
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [healthEvaluating, setHealthEvaluating] = useState(false);
   const [editingLifecycle, setEditingLifecycle] = useState(false);
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Customer accounts are ready.");
@@ -136,7 +150,10 @@ export function CustomerAccountsWorkspace({
       await loadSalesforce(controller.signal);
       const targetId = initialAccountId || nextAccounts[0]?.accountId;
       if (targetId) await loadDetail(targetId, controller.signal);
-      else setSelected(undefined);
+      else {
+        setSelected(undefined);
+        setCustomerHealth(undefined);
+      }
       setError(undefined);
     } catch (loadError) {
       if (!controller.signal.aborted) setError(message(loadError));
@@ -186,14 +203,53 @@ export function CustomerAccountsWorkspace({
   async function loadDetail(accountId: string, signal?: AbortSignal) {
     setDetailLoading(true);
     try {
-      const payload = await readJson(
-        `/api/customer-accounts/${encodeURIComponent(accountId)}`,
-        { signal },
-      );
-      setSelected(payload.account as CustomerAccount360);
-      setWorkspaceContext(payload.context as WorkspaceContext);
+      const encodedAccountId = encodeURIComponent(accountId);
+      const [accountPayload, healthPayload] = await Promise.all([
+        readJson(`/api/customer-accounts/${encodedAccountId}`, { signal }),
+        readJson(`/api/customer-accounts/${encodedAccountId}/health?historyLimit=20`, { signal }),
+      ]);
+      setSelected(accountPayload.account as CustomerAccount360);
+      setCustomerHealth(healthPayload as CustomerHealthPayload);
+      setWorkspaceContext(accountPayload.context as WorkspaceContext);
     } finally {
       setDetailLoading(false);
+    }
+  }
+
+  async function evaluateHealth() {
+    if (!selected || !canWrite) return;
+    setHealthEvaluating(true);
+    try {
+      const payload = await readJson(
+        `/api/customer-accounts/${encodeURIComponent(selected.account.accountId)}/health`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `customer-health:${selected.account.accountId}:${selected.account.revision}:${crypto.randomUUID()}`,
+          },
+          body: JSON.stringify({
+            expectedAccountRevision: selected.account.revision,
+            expectedAccountSha256: selected.account.accountSha256,
+          }),
+        },
+      );
+      const score = payload.score as CustomerHealthScore;
+      setCustomerHealth((current) => current ? {
+        ...current,
+        score,
+        history: [score, ...current.history.filter((item) =>
+          item.scoreRevisionId !== score.scoreRevisionId
+        )].slice(0, 20),
+      } : current);
+      setAnnouncement(
+        `${selected.account.name} health evaluated as ${formatLabel(score.status)} with ${percent(score.confidenceBasisPoints)} confidence.`,
+      );
+      setError(undefined);
+    } catch (evaluationError) {
+      setError(message(evaluationError));
+    } finally {
+      setHealthEvaluating(false);
     }
   }
 
@@ -373,12 +429,15 @@ export function CustomerAccountsWorkspace({
           {selected ? (
             <AccountDetail
               value={selected}
+              health={customerHealth}
               canWrite={canWrite}
+              healthEvaluating={healthEvaluating}
               editingLifecycle={editingLifecycle}
               saving={saving}
               onEditLifecycle={() => setEditingLifecycle(true)}
               onCancelLifecycle={() => setEditingLifecycle(false)}
               onReviseLifecycle={(value) => void reviseLifecycle(value)}
+              onEvaluateHealth={() => void evaluateHealth()}
             />
           ) : (
             <div className={styles.emptyCanvas}>
@@ -536,20 +595,26 @@ function SalesforcePanel({
 
 function AccountDetail({
   value,
+  health,
   canWrite,
+  healthEvaluating,
   editingLifecycle,
   saving,
   onEditLifecycle,
   onCancelLifecycle,
   onReviseLifecycle,
+  onEvaluateHealth,
 }: {
   value: CustomerAccount360;
+  health?: CustomerHealthPayload;
   canWrite: boolean;
+  healthEvaluating: boolean;
   editingLifecycle: boolean;
   saving: boolean;
   onEditLifecycle: () => void;
   onCancelLifecycle: () => void;
   onReviseLifecycle: (value: CustomerAccountRevision["lifecycle"]) => void;
+  onEvaluateHealth: () => void;
 }) {
   const account = value.account;
   return (
@@ -561,7 +626,7 @@ function AccountDetail({
         <div className={styles.badges}>
           <span data-tone={account.lifecycle}>{formatLabel(account.lifecycle)}</span>
           <span><Fingerprint size={11} aria-hidden="true" /> rev {account.revision}</span>
-          <span><ShieldCheck size={11} aria-hidden="true" /> CRM writes disabled</span>
+          <span><ShieldCheck size={11} aria-hidden="true" /> {formatLabel(account.crmPermissions.externalWriteState)} CRM writes</span>
         </div>
       </div>
 
@@ -615,12 +680,112 @@ function AccountDetail({
         <span>{formatLabel(account.crmPermissions.externalWriteState)} CRM writes</span>
       </section>
 
+      <CustomerHealthPanel
+        value={health}
+        canEvaluate={canWrite}
+        evaluating={healthEvaluating}
+        onEvaluate={onEvaluateHealth}
+      />
+
       <div className={styles.domainGrid}>
         {CUSTOMER_FACT_KINDS.map((kind) => (
           <FactSection kind={kind} facts={value.factsByKind[kind]} key={kind} />
         ))}
       </div>
     </div>
+  );
+}
+
+function CustomerHealthPanel({
+  value,
+  canEvaluate,
+  evaluating,
+  onEvaluate,
+}: {
+  value?: CustomerHealthPayload;
+  canEvaluate: boolean;
+  evaluating: boolean;
+  onEvaluate: () => void;
+}) {
+  const score = value?.score;
+  return (
+    <section className={styles.healthPanel} aria-label="Explainable customer health" aria-busy={evaluating}>
+      <header className={styles.healthHeader}>
+        <div className={styles.healthIdentity}>
+          <span><Gauge size={19} aria-hidden="true" /></span>
+          <div>
+            <p className={styles.eyebrow}>Deterministic policy · evidence first</p>
+            <h3>Explainable customer health</h3>
+            <p>Missing, stale, and conflicting inputs lower confidence. Model advice is never authoritative.</p>
+          </div>
+        </div>
+        <button
+          className={styles.secondaryButton}
+          type="button"
+          disabled={!canEvaluate || evaluating}
+          onClick={onEvaluate}
+        >
+          <RefreshCw size={14} aria-hidden="true" /> {evaluating ? "Evaluating…" : score ? "Re-evaluate" : "Evaluate health"}
+        </button>
+      </header>
+      {score ? (
+        <>
+          <div className={styles.healthSummary}>
+            <div data-status={score.status}>
+              <small>Authoritative score</small>
+              <strong>{score.scoreBasisPoints === null ? "Unknown" : percent(score.scoreBasisPoints)}</strong>
+              <span>{formatLabel(score.status)}</span>
+            </div>
+            <div><small>Confidence</small><strong>{percent(score.confidenceBasisPoints)}</strong><span>freshness and conflict adjusted</span></div>
+            <div><small>Coverage</small><strong>{percent(score.coverageBasisPoints)}</strong><span>weighted factors with evidence</span></div>
+            <div><small>Policy</small><strong>{score.policy.policyVersion}</strong><span>rev {score.revision} · {value?.history.length || 1} retained</span></div>
+          </div>
+          <div className={styles.factorGrid}>
+            {score.factors.map((factor) => (
+              <article className={styles.factorCard} key={factor.factorKey} data-state={factor.evidenceState}>
+                <header>
+                  <div>
+                    <small>{factor.weightBasisPoints / 100}% weight</small>
+                    <h4>{factor.label}</h4>
+                  </div>
+                  <strong>{factor.scoreBasisPoints === null ? "—" : percent(factor.scoreBasisPoints)}</strong>
+                </header>
+                <p>{formatLabel(factor.evidenceState)} · {percent(factor.confidenceBasisPoints)} confidence</p>
+                <ul>
+                  {factor.evidence.length ? factor.evidence.map((evidence) => (
+                    <li key={evidence.factRevisionId}>
+                      <span>{shortId(evidence.factRevisionId)}</span>
+                      <small>
+                        {formatLabel(evidence.freshnessStatus)} · raw {evidence.rawScoreBasisPoints === null ? "unscorable" : percent(evidence.rawScoreBasisPoints)} · effective {percent(evidence.effectiveConfidenceBasisPoints)} confidence
+                      </small>
+                    </li>
+                  )) : <li><span>No current evidence</span><small>This missing factor contributes zero confidence.</small></li>}
+                </ul>
+              </article>
+            ))}
+          </div>
+          {score.suggestions.length ? (
+            <div className={styles.healthSuggestions}>
+              <div><Lightbulb size={16} aria-hidden="true" /><strong>Model suggestions · non-authoritative</strong></div>
+              {score.suggestions.map((suggestion) => (
+                <article key={suggestion.suggestionId}>
+                  <p>{suggestion.statement}</p>
+                  <small>{formatLabel(suggestion.suggestionKind)} · {percent(suggestion.confidenceBasisPoints)} model confidence · {suggestion.citedFactRevisionIds.length} cited fact{suggestion.citedFactRevisionIds.length === 1 ? "" : "s"}</small>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className={styles.healthEmpty}>
+          <Gauge size={22} aria-hidden="true" />
+          <div>
+            <strong>No health score yet</strong>
+            <p>Evaluate the current Account 360 revision to create a versioned score. Unknown or missing evidence will stay explicit.</p>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -763,6 +928,10 @@ function formatLag(value: number | null | undefined) {
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
+}
+
+function percent(basisPoints: number) {
+  return `${(basisPoints / 100).toFixed(basisPoints % 100 === 0 ? 0 : 1)}%`;
 }
 
 function shortId(value: string) {

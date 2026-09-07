@@ -23,5 +23,12 @@ describe("Account 360 workspace", () => {
     expect(source).toContain("Write receipts");
     expect(source).toContain("Approval-bound");
     expect(source).toContain("Salesforce OAuth credentials are required");
+    expect(source).toContain("Explainable customer health");
+    expect(source).toContain("Deterministic policy · evidence first");
+    expect(source).toContain("Model suggestions · non-authoritative");
+    expect(source).toContain("freshness and conflict adjusted");
+    expect(source).toContain("weighted factors with evidence");
+    expect(source).toContain("This missing factor contributes zero confidence");
+    expect(source).toContain("expectedAccountSha256");
   });
 });
