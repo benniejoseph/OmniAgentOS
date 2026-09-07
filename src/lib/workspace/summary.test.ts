@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentRunRecord } from "@/lib/runs/types";
 import { loadWorkspaceSummary } from "@/lib/workspace/summary";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("workspace summary", () => {
   it("loads tenant-scoped sources independently and projects private fields", async () => {
@@ -113,5 +118,29 @@ describe("workspace summary", () => {
       status: "ready",
       data: [{ id: "workflow-1", report: "Final workflow report" }],
     });
+  });
+
+  it("serializes source reads when the runtime has one database connection", async () => {
+    vi.stubEnv("VERCEL", "1");
+    let releaseRuns!: (value: AgentRunRecord[]) => void;
+    const listRuns = vi.fn(() => new Promise<AgentRunRecord[]>((resolve) => {
+      releaseRuns = resolve;
+    }));
+    const listWorkflows = vi.fn().mockResolvedValue([]);
+    const getApprovals = vi.fn().mockResolvedValue({ items: [] });
+
+    const pending = loadWorkspaceSummary(
+      { tenantId: "tenant-a", role: "admin" },
+      { listRuns, listWorkflows, getApprovals },
+    );
+    await vi.waitFor(() => expect(listRuns).toHaveBeenCalledOnce());
+    expect(listWorkflows).not.toHaveBeenCalled();
+    expect(getApprovals).not.toHaveBeenCalled();
+
+    releaseRuns([]);
+    await pending;
+
+    expect(listWorkflows).toHaveBeenCalledOnce();
+    expect(getApprovals).toHaveBeenCalledOnce();
   });
 });

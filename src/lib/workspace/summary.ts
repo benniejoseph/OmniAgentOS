@@ -1,4 +1,5 @@
 import { unstable_cache } from "next/cache";
+import { getDatabasePoolMax } from "@/lib/db/client";
 import { getApprovalQueue, type ApprovalQueueItem } from "@/lib/operations/queue";
 import { listAgentRunSummaries } from "@/lib/runs/store";
 import type { AgentRunRecord } from "@/lib/runs/types";
@@ -111,13 +112,28 @@ async function loadWorkspaceSummarySources({
   dependencies: WorkspaceSummaryDependencies;
 }): Promise<WorkspaceSummary> {
   const canReadApprovals = canPerform(role, "manage.workflow");
-  const [runs, workflows, approvals] = await Promise.allSettled([
-    dependencies.listRuns(boundedLimit, { tenantId }),
-    dependencies.listWorkflows(boundedLimit, { tenantId }),
-    canReadApprovals
-      ? dependencies.getApprovals(boundedApprovalLimit, { tenantId })
-      : Promise.resolve(undefined),
-  ]);
+  let runs: PromiseSettledResult<AgentRunRecord[]>;
+  let workflows: PromiseSettledResult<WorkflowRunRecord[]>;
+  let approvals: PromiseSettledResult<{ items: ApprovalQueueItem[] } | undefined>;
+  if (getDatabasePoolMax() === 1) {
+    runs = await settle(() => dependencies.listRuns(boundedLimit, { tenantId }));
+    workflows = await settle(() =>
+      dependencies.listWorkflows(boundedLimit, { tenantId })
+    );
+    approvals = canReadApprovals
+      ? await settle(() =>
+          dependencies.getApprovals(boundedApprovalLimit, { tenantId })
+        )
+      : { status: "fulfilled", value: undefined };
+  } else {
+    [runs, workflows, approvals] = await Promise.allSettled([
+      dependencies.listRuns(boundedLimit, { tenantId }),
+      dependencies.listWorkflows(boundedLimit, { tenantId }),
+      canReadApprovals
+        ? dependencies.getApprovals(boundedApprovalLimit, { tenantId })
+        : Promise.resolve(undefined),
+    ]);
+  }
 
   return {
     tenantId,
@@ -137,6 +153,14 @@ async function loadWorkspaceSummarySources({
           },
     },
   };
+}
+
+async function settle<T>(read: () => Promise<T>): Promise<PromiseSettledResult<T>> {
+  try {
+    return { status: "fulfilled", value: await read() };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
 }
 
 function settledSource<T, U>(
