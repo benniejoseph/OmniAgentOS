@@ -17571,6 +17571,7 @@ async function ensureSalesforceGuardedWritesV1(sql: SqlClient) {
       provider_acknowledgement_sha256 TEXT,
       observed_target_state_sha256 TEXT,
       verification_reason_code TEXT,
+      commit_snapshot JSONB,
       attempt_count INTEGER NOT NULL DEFAULT 0,
       last_attempt_at TIMESTAMPTZ,
       completed_at TIMESTAMPTZ,
@@ -17619,11 +17620,13 @@ async function ensureSalesforceGuardedWritesV1(sql: SqlClient) {
           AND provider_acknowledgement_sha256 IS NULL
           AND observed_target_state_sha256 IS NULL
           AND verification_reason_code IS NULL
+          AND commit_snapshot IS NULL
           AND completed_at IS NULL)
         OR
         (operation_state IN ('verified', 'failed')
           AND provider_acknowledgement_sha256 IS NOT NULL
           AND verification_reason_code IS NOT NULL
+          AND commit_snapshot IS NOT NULL
           AND completed_at IS NOT NULL)
       ),
       CHECK ((operation_state = 'verified') = (

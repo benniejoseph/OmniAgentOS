@@ -71,6 +71,7 @@ CREATE TABLE omni_salesforce_write_operations (
   provider_acknowledgement_sha256 TEXT,
   observed_target_state_sha256 TEXT,
   verification_reason_code TEXT,
+  commit_snapshot JSONB,
   attempt_count INTEGER NOT NULL DEFAULT 0,
   last_attempt_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
@@ -109,11 +110,13 @@ CREATE TABLE omni_salesforce_write_operations (
       AND provider_acknowledgement_sha256 IS NULL
       AND observed_target_state_sha256 IS NULL
       AND verification_reason_code IS NULL
+      AND commit_snapshot IS NULL
       AND completed_at IS NULL)
     OR
     (operation_state IN ('verified', 'failed')
       AND provider_acknowledgement_sha256 IS NOT NULL
       AND verification_reason_code IS NOT NULL
+      AND commit_snapshot IS NOT NULL
       AND completed_at IS NOT NULL)
   ),
   CHECK ((operation_state = 'verified') = (
@@ -242,7 +245,7 @@ INSERT INTO omni_schema_version (version, name, checksum, applied_at)
 VALUES (
   139,
   'salesforce_guarded_writes_v1',
-  '0685f82f1c7cd09120b6cff93923d3f6bf821326e029dc92932b4775778dd196',
+  '1abb9529ce56ff31484da98bc52de725d7c6402792dbff1b0b1706abc7c9f1e1',
   clock_timestamp()
 );
 
