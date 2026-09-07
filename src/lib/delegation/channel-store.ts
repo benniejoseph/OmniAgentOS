@@ -204,6 +204,21 @@ export async function listDelegationChannelForParent(input: {
   );
 }
 
+export async function listDelegationChannelForOwner(input: {
+  tenantId: string;
+  ownerActorId: string;
+  missionId: string;
+}) {
+  if (!input.tenantId.trim() || !input.ownerActorId.trim() || !input.missionId.trim()) {
+    throw new Error("Delegation channel owner scope is incomplete.");
+  }
+  return readMissionChannel(
+    input.missionId,
+    input.tenantId,
+    input.ownerActorId,
+  );
+}
+
 async function readMissionChannel(
   missionId: string,
   tenantId: string,

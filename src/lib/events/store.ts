@@ -380,25 +380,35 @@ export async function listCorrelatedEvents(
 }
 
 export async function listRecentEvents(
-  options: { tenantId: string; limit?: number; type?: string } = { tenantId: "default" },
+  options: {
+    tenantId: string;
+    actorId?: string;
+    limit?: number;
+    type?: string;
+  } = { tenantId: "default" },
 ): Promise<DomainEvent[]> {
   const limit = Math.min(Math.max(options.limit || 50, 1), 500);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    const rows = options.type
-      ? await getSql()`
-          SELECT * FROM omni_events
-          WHERE tenant_id = ${options.tenantId} AND type = ${options.type}
-          ORDER BY seq DESC
-          LIMIT ${limit}
-        `
-      : await getSql()`
-          SELECT * FROM omni_events
-          WHERE tenant_id = ${options.tenantId}
-          ORDER BY seq DESC
-          LIMIT ${limit}
-        `;
+    const parameters: unknown[] = [normalizeTenantId(options.tenantId)];
+    const predicates = ["tenant_id = $1"];
+    if (options.actorId) {
+      parameters.push(options.actorId);
+      predicates.push(`actor_id = $${parameters.length}`);
+    }
+    if (options.type) {
+      parameters.push(options.type);
+      predicates.push(`type = $${parameters.length}`);
+    }
+    parameters.push(limit);
+    const rows = await getSql().query(
+      `SELECT * FROM omni_events
+       WHERE ${predicates.join(" AND ")}
+       ORDER BY seq DESC
+       LIMIT $${parameters.length}`,
+      parameters,
+    );
     return rows.map(eventFromRow);
   }
 
@@ -407,6 +417,7 @@ export async function listRecentEvents(
     .filter(
       (event) =>
         event.tenantId === normalizeTenantId(options.tenantId) &&
+        (!options.actorId || event.actorId === options.actorId) &&
         (!options.type || event.type === options.type),
     )
     .sort((left, right) => right.seq - left.seq)

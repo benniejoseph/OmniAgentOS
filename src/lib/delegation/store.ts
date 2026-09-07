@@ -1,5 +1,9 @@
 import type { DelegationContractV1 } from "@/lib/delegation/contracts";
 import {
+  buildDelegationAuthorityReceiptV1,
+  type DelegationAuthorityReceiptV1,
+} from "@/lib/delegation/authority-receipt";
+import {
   buildDelegationTaskV1,
   initialDelegationTaskEventV1,
   parseDelegationTaskV1,
@@ -44,6 +48,7 @@ export async function createDelegationTask(input: {
   assertParentScope(input.contract, input.parentExecutionScope);
   const task = buildDelegationTaskV1(input.contract);
   const event = initialDelegationTaskEventV1(task);
+  const authority = buildDelegationAuthorityReceiptV1(input.contract, task);
   return getSql().transaction(async (sql: DelegationSql) => {
     const rows = await sql`
       INSERT INTO omni_delegation_tasks (
@@ -71,7 +76,12 @@ export async function createDelegationTask(input: {
       RETURNING task
     `;
     if (rows[0]) {
-      await appendDelegationEvent(sql, event, input.parentExecutionScope);
+      await appendDelegationEvent(
+        sql,
+        event,
+        input.parentExecutionScope,
+        authority,
+      );
       return parseDelegationTaskV1(rows[0].task);
     }
     const existing = await readDelegationTask(sql, task.taskId, task.tenantId);
@@ -163,6 +173,25 @@ export async function listDelegationTasksForExecution(input: {
   return rows.map((row) => parseDelegationTaskV1(row.task));
 }
 
+export async function listDelegationTasksForOwner(input: {
+  tenantId: string;
+  ownerActorId: string;
+  limit?: number;
+}) {
+  if (!delegationTaskPersistenceAvailable()) return [];
+  await ensureDatabaseSchema();
+  const limit = Math.min(Math.max(input.limit || 60, 1), 100);
+  const rows = await getSql()`
+    SELECT task
+    FROM omni_delegation_tasks
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.ownerActorId}
+    ORDER BY updated_at DESC, task_id ASC
+    LIMIT ${limit}
+  `;
+  return rows.map((row) => parseDelegationTaskV1(row.task));
+}
+
 export function delegationTaskPersistenceAvailable() {
   return hasDatabaseUrl();
 }
@@ -192,12 +221,19 @@ function appendDelegationEvent(
   sql: DelegationSql,
   event: DelegationTaskEventV1,
   parentExecutionScope: ExecutionScope,
+  authority?: DelegationAuthorityReceiptV1,
 ) {
   const executionScope = deriveExecutionScope(parentExecutionScope, {
     executingPrincipalType: "agent",
     executingPrincipalId: event.delegatePrincipalId,
     delegationId: event.delegationId,
     causationId: event.eventId,
+    ...(authority
+      ? {
+          contextGrantIds: authority.grants.contextGrantIds,
+          capabilityGrantIds: authority.grants.capabilityGrantIds,
+        }
+      : {}),
     purpose: `delegation.task.${event.to}.v1`,
   });
   return appendScopedDomainEvent({
@@ -221,6 +257,7 @@ function appendDelegationEvent(
       detailSha256: event.detailSha256,
       toolExecutionIds: event.toolExecutionIds,
       at: event.at,
+      ...(authority ? { authority } : {}),
     },
     executionScope,
   }, { sql });

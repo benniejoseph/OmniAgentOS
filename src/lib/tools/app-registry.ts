@@ -438,6 +438,9 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     query: text(1, 4_000), taskKind: { type: "string", enum: ["general", "coordinate", "research", "build", "verify", "memory"] },
   })),
   readTool("app.agents.performance", "Show agent performance", "Read tenant-scoped performance projections for available agents.", objectSchema({})),
+  readTool("app.agents.council.show", "Show Agent Council", "Read the current actor's grant-derived delegation map, messages, outputs, cost, confidence, and verifier state.", objectSchema({
+    limit: integer(1, 100, 60),
+  })),
   mutationTool("app.agents.create", "Create custom agent", "Create one custom agent with bounded skills, tools, memory, model, and approval policy.", requiredObjectSchema(agentProperties(), ["name", "role", "description", "instructions"]), { reversible: true }),
   mutationTool("app.agents.update", "Update custom agent", "Update one exact custom agent.", requiredObjectSchema({
     id: opaqueId("Exact custom-agent ID."), change: objectSchema(agentProperties()),
