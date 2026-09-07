@@ -56,6 +56,7 @@ export async function projectCanonicalShadowWrite(input: {
     ),
     sourceKind: "legacy_project",
     sourceId: input.project.id,
+    sourceTenantId: input.project.tenantId,
     sourceOwnerActorId: input.project.actorId,
     attribution: input.attribution,
   });
@@ -160,6 +161,7 @@ export async function missionCanonicalShadowWrite(input: {
     ),
     sourceKind: "legacy_mission",
     sourceId: input.mission.id,
+    sourceTenantId: input.mission.tenantId,
     sourceOwnerActorId: input.mission.actorId,
     attribution: input.attribution,
   });
@@ -220,13 +222,23 @@ async function upsertProject(input: {
   }>;
   sourceKind: "legacy_project" | "legacy_mission";
   sourceId: string;
+  sourceTenantId: string;
   sourceOwnerActorId: string;
   attribution: MutationAttribution;
 }) {
+  await input.sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(
+        ${`${input.sourceTenantId}:${input.sourceKind}:${input.sourceId}`},
+        0
+      )
+    )
+  `;
   const existingRows = await input.sql`
     SELECT lifecycle_revision, source_revision_sha256
     FROM omni_work_projects
-    WHERE source_authority = ${input.sourceKind}
+    WHERE tenant_id = ${input.sourceTenantId}
+      AND source_authority = ${input.sourceKind}
       AND source_id = ${input.sourceId}
     FOR UPDATE
   `;
@@ -236,36 +248,43 @@ async function upsertProject(input: {
   const project = candidate.projection;
   const changed = existing?.source_revision_sha256 !== candidate.sourceRevisionSha256;
   if (changed) {
-    await input.sql`
-      INSERT INTO omni_work_projects (
-        schema_version, tenant_id, workspace_id, project_id, owner_actor_id,
-        title, objective, lifecycle_status, source_authority, source_id,
-        source_owner_actor_id, target_date, lifecycle_revision,
-        source_revision_sha256, projection_sha256, projection,
-        created_at, updated_at, completed_at
-      ) VALUES (
-        ${project.schemaVersion}, ${project.tenantId}, ${project.workspaceId},
-        ${project.projectId}, ${project.ownerActorId}, ${project.title},
-        ${project.objective}, ${project.lifecycleStatus}, ${project.sourceAuthority},
-        ${input.sourceId}, ${input.sourceOwnerActorId}, ${project.targetDate},
-        ${project.lifecycleRevision}, ${candidate.sourceRevisionSha256},
-        ${candidate.projectionSha256}, ${project}::JSONB, ${project.createdAt},
-        clock_timestamp(), ${project.completedAt}
-      )
-      ON CONFLICT (tenant_id, source_authority, source_id) DO UPDATE SET
-        title = EXCLUDED.title,
-        objective = EXCLUDED.objective,
-        lifecycle_status = EXCLUDED.lifecycle_status,
-        target_date = EXCLUDED.target_date,
-        lifecycle_revision = EXCLUDED.lifecycle_revision,
-        source_revision_sha256 = EXCLUDED.source_revision_sha256,
-        projection_sha256 = EXCLUDED.projection_sha256,
-        projection = EXCLUDED.projection,
-        updated_at = clock_timestamp(),
-        completed_at = EXCLUDED.completed_at
-      WHERE omni_work_projects.source_revision_sha256
-        IS DISTINCT FROM EXCLUDED.source_revision_sha256
-    `;
+    if (!existing) {
+      await input.sql`
+        INSERT INTO omni_work_projects (
+          schema_version, tenant_id, workspace_id, project_id, owner_actor_id,
+          title, objective, lifecycle_status, source_authority, source_id,
+          source_owner_actor_id, target_date, lifecycle_revision,
+          source_revision_sha256, projection_sha256, projection,
+          created_at, updated_at, completed_at
+        ) VALUES (
+          ${project.schemaVersion}, ${project.tenantId}, ${project.workspaceId},
+          ${project.projectId}, ${project.ownerActorId}, ${project.title},
+          ${project.objective}, ${project.lifecycleStatus}, ${project.sourceAuthority},
+          ${input.sourceId}, ${input.sourceOwnerActorId}, ${project.targetDate},
+          ${project.lifecycleRevision}, ${candidate.sourceRevisionSha256},
+          ${candidate.projectionSha256}, ${project}::JSONB, ${project.createdAt},
+          clock_timestamp(), ${project.completedAt}
+        )
+      `;
+    } else {
+      await input.sql`
+        UPDATE omni_work_projects SET
+          title = ${project.title},
+          objective = ${project.objective},
+          lifecycle_status = ${project.lifecycleStatus},
+          target_date = ${project.targetDate},
+          lifecycle_revision = ${project.lifecycleRevision},
+          source_revision_sha256 = ${candidate.sourceRevisionSha256},
+          projection_sha256 = ${candidate.projectionSha256},
+          projection = ${project}::JSONB,
+          updated_at = clock_timestamp(),
+          completed_at = ${project.completedAt}
+        WHERE tenant_id = ${project.tenantId}
+          AND workspace_id = ${project.workspaceId}
+          AND project_id = ${project.projectId}
+          AND source_revision_sha256 IS DISTINCT FROM ${candidate.sourceRevisionSha256}
+      `;
+    }
   }
   await input.sql`
     INSERT INTO omni_work_project_memberships (
