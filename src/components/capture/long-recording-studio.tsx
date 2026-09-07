@@ -489,13 +489,13 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
         };
         error?: string;
       };
-      if (!response.ok) throw new Error(payload.error || "The conversation could not be prepared for indexing.");
+      if (!response.ok) throw new Error(payload.error || "The conversation could not be queued for processing.");
       if (payload.job?.id) onJob?.({ ...payload.job, status: payload.job.status || "queued" });
       setPhase("complete");
       await loadRecordings();
       await onIndexed?.();
     } catch (completeError) {
-      setError(completeError instanceof Error ? completeError.message : "The conversation could not be indexed.");
+      setError(completeError instanceof Error ? completeError.message : "The conversation could not be queued for processing.");
       setPhase("error");
     }
   }
@@ -720,9 +720,9 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
             </p>
             <p className="mt-1 max-w-xl text-sm leading-6 text-muted">
               {phase === "idle" || phase === "error"
-                ? "Record for up to 24 hours. Audio is saved in private one-minute segments, transcribed as you speak, then indexed as searchable context."
+                ? "Record for up to 24 hours. Private one-minute audio checkpoints upload continuously, then diarization and cited extraction resume safely in the background."
                 : phase === "complete"
-                  ? "The transcript is queued for RAG indexing and linked memory."
+                  ? "Audio is safely stored. Timestamping, speaker diarization, chapters, cited extraction, and indexing will continue if you close this page."
                   : `${formatDuration(elapsedMs)} · ${uploadedSegments} stored${pendingSegments ? ` · ${pendingSegments} uploading` : ""}`}
             </p>
             {phase === "recording" || phase === "paused" ? (
@@ -748,7 +748,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
               <button type="button" onClick={resumeRecording} className="action-button"><CirclePlay size={16} aria-hidden="true" />Resume</button>
             ) : null}
             {phase === "recording" || phase === "paused" ? (
-              <button type="button" onClick={() => void finishRecording()} className="primary-button"><Square size={14} aria-hidden="true" />Finish and index</button>
+              <button type="button" onClick={() => void finishRecording()} className="primary-button"><Square size={14} aria-hidden="true" />Finish and process</button>
             ) : null}
             {active && phase !== "indexing" ? (
               <button type="button" onClick={() => void discardRecording()} className="action-button text-danger"><Trash2 size={15} aria-hidden="true" />Discard</button>
@@ -837,7 +837,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
                 <p className="mt-1 text-xs leading-5 text-muted">Each segment is private and playable from your database-backed recording.</p>
                 <div className="mt-4 space-y-3">
                   {viewingRecording.segments.slice(0, visibleSegments).map((segment) => (
-                    <div key={segment.id} className="rounded-lg border border-line bg-background p-3"><div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold">Segment {segment.segmentIndex + 1}</span><span className="text-xs text-muted">{formatDuration(segment.durationMs)}</span></div><audio controls preload="none" className="mt-2 h-9 w-full" src={`/api/capture/recordings/${encodeURIComponent(viewingRecording.id)}/segments?audio=${segment.segmentIndex}`} /><p className={clsx("mt-2 text-xs", segment.transcriptionStatus === "failed" ? "text-danger" : "text-muted")}>{segment.transcriptionStatus === "completed" ? "Transcribed" : segment.transcriptionStatus === "failed" ? "Audio stored · transcription failed" : "Transcription pending"}</p></div>
+                    <div key={segment.id} className="rounded-lg border border-line bg-background p-3"><div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold">Segment {segment.segmentIndex + 1}</span><span className="text-xs text-muted">{formatDuration(segment.durationMs)}</span></div><audio controls preload="none" className="mt-2 h-9 w-full" src={`/api/capture/recordings/${encodeURIComponent(viewingRecording.id)}/segments?audio=${segment.segmentIndex}`} /><p className={clsx("mt-2 text-xs", segment.transcriptionStatus === "failed" ? "text-danger" : "text-muted")}>{segment.transcriptionStatus === "completed" ? "Timestamped transcript ready" : segment.transcriptionStatus === "failed" ? "Audio stored · processing will retry" : "Diarization queued"}</p></div>
                   ))}
                 </div>
                 {visibleSegments < viewingRecording.segments.length ? <button type="button" onClick={() => setVisibleSegments((current) => current + 8)} className="mt-4 action-button w-full justify-center">Show more segments</button> : null}
@@ -1189,8 +1189,8 @@ function recordingPhaseTitle(phase: RecordingPhase) {
   if (phase === "recording") return "Recording conversation";
   if (phase === "paused") return "Recording paused";
   if (phase === "stopping") return "Saving the final segment…";
-  if (phase === "indexing") return "Preparing searchable context…";
-  if (phase === "complete") return "Conversation saved";
+  if (phase === "indexing") return "Queueing resumable processing…";
+  if (phase === "complete") return "Conversation processing queued";
   if (phase === "error") return "Recording needs attention";
   return "Record a long conversation";
 }
