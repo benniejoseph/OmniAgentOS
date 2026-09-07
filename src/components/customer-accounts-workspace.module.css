@@ -80,6 +80,37 @@
 .permissionBar strong { font-size: .66rem; }
 .permissionBar p { margin-top: .15rem; overflow: hidden; color: var(--muted); font-size: .54rem; text-overflow: ellipsis; white-space: nowrap; }
 .permissionBar > span { border-radius: 999px; padding: .25rem .5rem; color: var(--primary); background: oklch(from var(--primary) l c h / .08); font-size: .5rem; font-weight: 720; white-space: nowrap; }
+.intelligencePanel { overflow: hidden; margin-top: 1rem; border: 1px solid oklch(from var(--warning) l c h / .25); border-radius: 1rem; background: linear-gradient(135deg, oklch(from var(--warning) l c h / .055), transparent 42%), var(--background); }
+.intelligenceLoading { padding: 1rem; color: var(--muted); font-size: .6rem; }
+.intelligenceHeader { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: .9rem 1rem; }
+.attentionBadge, .suggestionBadge { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: .28rem .58rem; color: var(--muted); background: var(--surface); font-size: .48rem; font-weight: 780; text-transform: uppercase; }
+.attentionBadge[data-attention="urgent"] { border-color: oklch(from var(--danger) l c h / .34); color: var(--danger); background: oklch(from var(--danger) l c h / .07); }
+.attentionBadge[data-attention="attention"], .attentionBadge[data-attention="watch"] { border-color: oklch(from var(--warning) l c h / .34); color: var(--warning); background: oklch(from var(--warning) l c h / .07); }
+.attentionBadge[data-attention="stable"] { border-color: oklch(from var(--success) l c h / .34); color: var(--success); background: oklch(from var(--success) l c h / .07); }
+.recommendation { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 1rem; border-bottom: 1px solid var(--line); padding: 1rem; }
+.suggestionBadge { border-color: oklch(from var(--primary) l c h / .25); color: var(--primary); background: oklch(from var(--primary) l c h / .06); }
+.recommendation h4 { margin-top: .5rem; font-family: Iowan Old Style, Georgia, serif; font-size: 1.25rem; font-weight: 560; }
+.recommendation p { max-width: 56rem; margin-top: .25rem; color: var(--muted); font-size: .6rem; line-height: 1.6; }
+.recommendationMeta { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .55rem; }
+.recommendationMeta span { border-radius: 999px; padding: .22rem .45rem; color: var(--muted); background: var(--surface-raised); font-size: .45rem; font-weight: 700; }
+.uncertaintyList { display: grid; gap: .18rem; margin-top: .5rem; padding-left: .9rem; color: var(--warning); font-size: .48rem; line-height: 1.45; list-style: disc; }
+.recommendationAction { display: flex; min-width: 10rem; flex-direction: column; align-items: flex-end; gap: .35rem; }
+.recommendationAction small { max-width: 12rem; color: var(--muted); font-size: .43rem; line-height: 1.4; text-align: right; }
+.intelligenceGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; padding: .8rem; }
+.intelligenceList { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: .8rem; background: oklch(from var(--surface) l c h / .86); }
+.intelligenceList > header { display: flex; align-items: center; justify-content: space-between; min-height: 2.6rem; border-bottom: 1px solid var(--line); padding: 0 .75rem; }
+.intelligenceList > header strong { font-size: .6rem; text-transform: uppercase; letter-spacing: .05em; }
+.intelligenceList > header span { display: grid; min-width: 1.35rem; height: 1.35rem; place-items: center; border-radius: 999px; color: var(--muted); background: var(--surface-raised); font-size: .5rem; }
+.intelligenceList li { padding: .65rem .75rem; }
+.intelligenceList li + li { border-top: 1px dashed var(--line); }
+.intelligenceList li[data-tone="critical"] { border-left: 2px solid var(--danger); }
+.intelligenceList li[data-tone="high"] { border-left: 2px solid var(--warning); }
+.intelligenceList li > strong, .intelligenceList li > small { display: block; }
+.intelligenceList li > strong { font-size: .58rem; line-height: 1.4; }
+.intelligenceList li > small { margin-top: .16rem; overflow: hidden; color: var(--muted); font-size: .46rem; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.intelligenceList > p { padding: .8rem .75rem; color: var(--muted); font-size: .52rem; }
+.intelligenceList > footer { border-top: 1px solid var(--line); padding: .55rem .75rem; font-size: .5rem; font-weight: 740; }
+.intelligenceList > footer a { color: var(--primary); }
 .healthPanel { overflow: hidden; margin-top: 1rem; border: 1px solid oklch(from var(--primary) l c h / .24); border-radius: 1rem; background: linear-gradient(135deg, oklch(from var(--primary) l c h / .06), transparent 42%), var(--background); }
 .healthHeader { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: .9rem 1rem; }
 .healthIdentity { display: flex; min-width: 0; align-items: flex-start; gap: .7rem; }
@@ -182,5 +213,5 @@
 .permissionNotice p { margin-top: .2rem; color: var(--muted); font-size: .57rem; line-height: 1.5; }
 .editorFooter { justify-content: flex-end; border-top: 1px solid var(--line); padding: 1rem 1.4rem; }
 @media (max-width: 1100px) { .salesforcePanel { grid-template-columns: 1fr; } .salesforceActions { justify-content: flex-start; } .workspace { grid-template-columns: 1fr; } .rail { max-height: 18rem; overflow: auto; } .domainGrid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .shell { padding: .8rem; } .hero { align-items: flex-start; flex-direction: column; } .metrics, .metadataGrid, .healthSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metrics > div:nth-child(2), .metadata:nth-child(2), .healthSummary > div:nth-child(2) { border-right: 0; } .metrics > div:nth-child(-n+2), .metadata:nth-child(-n+2), .healthSummary > div:nth-child(-n+2) { border-bottom: 1px dashed var(--line); } .accountHeader, .healthHeader, .workflowHeader { align-items: flex-start; flex-direction: column; } .permissionBar { align-items: flex-start; flex-wrap: wrap; } .permissionBar > div { flex-basis: calc(100% - 3rem); } .factorGrid, .factEvidence, .editorFields, .workflowPackGrid, .workflowRequirements { grid-template-columns: 1fr; } .fullField, .permissionNotice, .workflowRequirements { grid-column: auto; } .workflowCard { align-items: flex-start; flex-direction: column; } .workflowRun { grid-template-columns: .5rem minmax(0, 1fr); } .workflowRun a { grid-column: 2; justify-self: start; } }
+@media (max-width: 760px) { .shell { padding: .8rem; } .hero { align-items: flex-start; flex-direction: column; } .metrics, .metadataGrid, .healthSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metrics > div:nth-child(2), .metadata:nth-child(2), .healthSummary > div:nth-child(2) { border-right: 0; } .metrics > div:nth-child(-n+2), .metadata:nth-child(-n+2), .healthSummary > div:nth-child(-n+2) { border-bottom: 1px dashed var(--line); } .accountHeader, .healthHeader, .workflowHeader, .intelligenceHeader { align-items: flex-start; flex-direction: column; } .permissionBar { align-items: flex-start; flex-wrap: wrap; } .permissionBar > div { flex-basis: calc(100% - 3rem); } .recommendation { grid-template-columns: 1fr; } .recommendationAction { align-items: flex-start; } .recommendationAction small { text-align: left; } .factorGrid, .factEvidence, .editorFields, .workflowPackGrid, .workflowRequirements, .intelligenceGrid { grid-template-columns: 1fr; } .fullField, .permissionNotice, .workflowRequirements { grid-column: auto; } .workflowCard { align-items: flex-start; flex-direction: column; } .workflowRun { grid-template-columns: .5rem minmax(0, 1fr); } .workflowRun a { grid-column: 2; justify-self: start; } }
 @media (prefers-reduced-motion: reduce) { .primaryButton, .secondaryButton { transition: none; } }
