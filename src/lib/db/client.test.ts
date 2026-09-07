@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 130,
+      name: "workspace_shared_memory_v1",
+      checksum: "ef0d0f512b05dc2ca01585b1f939137dd626d9d20cdc9242b46f07110875e63e",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 129)).toEqual({
       version: 129,
       name: "canonical_work_projection_repair_v1",
       checksum: "2caff999167ba65438fbef957b194e64b9556c203028995fbb316ed7ba310bfc",

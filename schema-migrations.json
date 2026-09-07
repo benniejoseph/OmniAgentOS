@@ -643,5 +643,10 @@
     "version": 129,
     "name": "canonical_work_projection_repair_v1",
     "checksum": "2caff999167ba65438fbef957b194e64b9556c203028995fbb316ed7ba310bfc"
+  },
+  {
+    "version": 130,
+    "name": "workspace_shared_memory_v1",
+    "checksum": "ef0d0f512b05dc2ca01585b1f939137dd626d9d20cdc9242b46f07110875e63e"
   }
 ]
