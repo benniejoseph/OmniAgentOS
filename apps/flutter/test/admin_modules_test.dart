@@ -27,12 +27,16 @@ void main() {
 
   test('only privileged workspace roles can manage the control plane', () {
     const base = AppSession(
+      tenantId: 'tenant-1',
+      actorId: 'actor:one',
       userId: 'u1',
       email: 'user@test.dev',
       displayName: 'User',
       workspaceName: 'Workspace',
     );
     const owner = AppSession(
+      tenantId: 'tenant-1',
+      actorId: 'actor:owner',
       userId: 'u2',
       email: 'owner@test.dev',
       displayName: 'Owner',

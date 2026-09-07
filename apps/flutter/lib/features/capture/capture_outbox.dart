@@ -24,6 +24,15 @@ class CaptureOwnerBinding {
 
   bool owns(CaptureOutboxEntry entry) =>
       entry.tenantId == tenantId && entry.actorId == actorId;
+
+  Future<String> sha256() async {
+    final digest = await Sha256().hash(
+      utf8.encode('asael.capture-outbox-owner:1\x00$tenantId\x00$actorId'),
+    );
+    return digest.bytes
+        .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+        .join();
+  }
 }
 
 class CaptureOutboxEntry {
@@ -97,7 +106,10 @@ class EncryptedCaptureOutbox implements CaptureOutbox {
     if (validationError != null) throw FormatException(validationError);
     final context = await _context();
     final files = await _entryFiles(context.directory);
-    final totalBytes = files.fold<int>(0, (total, file) => total + file.lengthSync());
+    final totalBytes = files.fold<int>(
+      0,
+      (total, file) => total + file.lengthSync(),
+    );
     if (files.length >= _maxOutboxEntries || totalBytes >= _maxOutboxBytes) {
       throw const CaptureOutboxCapacityException(
         'The encrypted capture outbox is full. Sync or discard an item first.',
@@ -126,18 +138,19 @@ class EncryptedCaptureOutbox implements CaptureOutbox {
   });
 
   @override
-  Future<List<CaptureOutboxEntry>> list(CaptureOwnerBinding owner) =>
-      _serial(() async {
-        _validateOwner(owner);
-        final context = await _context();
-        final entries = <CaptureOutboxEntry>[];
-        for (final file in await _entryFiles(context.directory)) {
-          final entry = await _decrypt(file, context.secret);
-          if (owner.owns(entry)) entries.add(entry);
-        }
-        entries.sort((left, right) => left.createdAt.compareTo(right.createdAt));
-        return List.unmodifiable(entries);
-      });
+  Future<List<CaptureOutboxEntry>> list(CaptureOwnerBinding owner) => _serial(
+    () async {
+      _validateOwner(owner);
+      final context = await _context();
+      final entries = <CaptureOutboxEntry>[];
+      for (final file in await _entryFiles(context.directory)) {
+        final entry = await _decrypt(file, context.secret);
+        if (owner.owns(entry)) entries.add(entry);
+      }
+      entries.sort((left, right) => left.createdAt.compareTo(right.createdAt));
+      return List.unmodifiable(entries);
+    },
+  );
 
   @override
   Future<void> remove(CaptureOwnerBinding owner, String entryId) =>
@@ -300,11 +313,13 @@ CaptureOutboxEntry _entryFromJson(Object? value) {
   final createdAt = DateTime.tryParse(value['createdAt'] as String)?.toUtc();
   final idempotencyKey = value['idempotencyKey'] as String;
   final draftValue = value['draft'] as Map;
-  final kind = CaptureKind.values.where(
-    (candidate) => candidate.name == draftValue['kind'],
-  ).firstOrNull;
+  final kind = CaptureKind.values
+      .where((candidate) => candidate.name == draftValue['kind'])
+      .firstOrNull;
   final tagsValue = draftValue['tags'];
-  final tags = tagsValue is List ? tagsValue.whereType<String>().toList() : null;
+  final tags = tagsValue is List
+      ? tagsValue.whereType<String>().toList()
+      : null;
   CaptureAttachment? attachment;
   final attachmentValue = draftValue['attachment'];
   if (attachmentValue != null) {

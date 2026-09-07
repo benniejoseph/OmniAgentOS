@@ -1,6 +1,7 @@
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'capture.dart';
+import 'capture_outbox.dart';
 
 class ApiCaptureRepository implements CaptureRepository {
   const ApiCaptureRepository(this.api);
@@ -9,6 +10,7 @@ class ApiCaptureRepository implements CaptureRepository {
   Future<CaptureReceipt> submit(
     CaptureDraft draft, {
     required String idempotencyKey,
+    required CaptureOwnerBinding owner,
   }) async {
     final json = await api.postMultipart(
       NativePaths.captureCreate,
@@ -20,7 +22,11 @@ class ApiCaptureRepository implements CaptureRepository {
       bytes: draft.file?.bytes,
       filename: draft.file?.name,
       contentType: draft.file?.contentType,
-      headers: {'idempotency-key': idempotencyKey},
+      headers: {
+        'idempotency-key': idempotencyKey,
+        'x-request-id': idempotencyKey,
+        'x-asael-capture-owner-sha256': await owner.sha256(),
+      },
     );
     final job = json['job'] as Map<String, dynamic>? ?? const {};
     final capture = json['capture'] as Map<String, dynamic>? ?? const {};

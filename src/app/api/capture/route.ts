@@ -13,6 +13,10 @@ import {
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
+import {
+  assertOfflineCaptureOwnerBinding,
+  OfflineCaptureOwnerBindingError,
+} from "@/lib/capture/offline-outbox";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
 import { BackgroundJobIdempotencyConflictError, enqueueKnowledgeIngestJob } from "@/lib/operations/background-jobs";
@@ -62,6 +66,23 @@ async function POSTHandler(request: Request) {
     });
   } catch (error) {
     return forbiddenResponse(error);
+  }
+  try {
+    assertOfflineCaptureOwnerBinding({
+      idempotencyKey: request.headers.get("idempotency-key") || undefined,
+      ownerSha256:
+        request.headers.get("x-asael-capture-owner-sha256") || undefined,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+  } catch (error) {
+    if (error instanceof OfflineCaptureOwnerBindingError) {
+      return Response.json(
+        { error: error.message },
+        { status: 409, headers: { "cache-control": "private, no-store" } },
+      );
+    }
+    throw error;
   }
   const executionScope = captureExecutionScopeFromSecurityContext(
     context,
