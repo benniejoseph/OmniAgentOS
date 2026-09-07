@@ -84,6 +84,7 @@ import {
   updateTodayItemService,
   updateTodayPreferencesService,
 } from "@/lib/app-services/today";
+import { showCohesiveTodayService } from "@/lib/app-services/cohesive-today";
 import {
   listNotificationsService,
   readAllNotificationsService,
@@ -277,6 +278,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.knowledge.delete.preview": () => previewGovernedKnowledgeSourceDeleteService(caller, input.toolInput as never),
     "app.knowledge.delete": () => deleteGovernedKnowledgeSourceService(caller, input.toolInput as never),
     "app.today.show": () => showTodayService(caller, input.toolInput as never),
+    "app.today.agenda.show": () => showCohesiveTodayService(caller, input.toolInput as never),
     "app.today.item.create": () => createTodayItemService(caller, input.toolInput as never),
     "app.today.item.update": () => updateTodayItemService(caller, input.toolInput as never),
     "app.today.brief.show": () => showTodayBriefService(caller, input.toolInput as never),
