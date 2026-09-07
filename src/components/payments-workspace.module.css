@@ -1,0 +1,333 @@
+.workspace {
+  min-height: calc(100svh - 4rem);
+  padding: clamp(1rem, 3vw, 3rem);
+  color: var(--foreground);
+  background: var(--background);
+}
+
+.hero {
+  max-width: 72rem;
+  padding: clamp(1.5rem, 4vw, 3.5rem) 0 2rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.eyebrow,
+.gate,
+.notice,
+.error,
+.toolbar,
+.sectionHeading,
+.signer,
+.empty {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.eyebrow,
+.sectionHeading span {
+  color: var(--primary);
+  font-size: 0.76rem;
+  font-weight: 760;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  margin: 0.55rem 0;
+  font-family: Iowan Old Style, Baskerville, Georgia, serif;
+  font-size: clamp(2.8rem, 7vw, 6.5rem);
+  font-weight: 560;
+  letter-spacing: -0.06em;
+  line-height: 0.95;
+}
+
+.hero > p {
+  max-width: 50rem;
+  color: var(--muted);
+  font-size: 1.08rem;
+  line-height: 1.65;
+}
+
+.gate {
+  width: fit-content;
+  margin-top: 1.2rem;
+  border: 1px solid color-mix(in oklab, var(--warning), transparent 55%);
+  border-radius: 999px;
+  padding: 0.65rem 0.9rem;
+  color: var(--warning);
+  background: color-mix(in oklab, var(--warning), transparent 92%);
+  font-size: 0.86rem;
+}
+
+.toolbar {
+  margin: 1.25rem 0;
+  flex-wrap: wrap;
+}
+
+.toolbar button,
+.consent button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+}
+
+.notice,
+.error,
+.blocked {
+  max-width: 72rem;
+  margin-block: 0.85rem;
+  border-radius: 1rem;
+  padding: 0.85rem 1rem;
+}
+
+.notice {
+  color: var(--success);
+  background: color-mix(in oklab, var(--success), transparent 92%);
+}
+
+.error {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger), transparent 92%);
+}
+
+.blocked {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid color-mix(in oklab, var(--warning), transparent 60%);
+  color: var(--warning);
+}
+
+.blocked span {
+  color: var(--muted);
+}
+
+.section {
+  max-width: 72rem;
+  margin-top: 2.5rem;
+}
+
+.sectionHeading {
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.sectionHeading h2 {
+  margin: 0.15rem 0 0;
+  font-family: Iowan Old Style, Baskerville, Georgia, serif;
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  letter-spacing: -0.04em;
+}
+
+.sectionHeading > strong {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.signerGrid,
+.reviewList {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.signer {
+  border: 1px solid var(--line);
+  border-radius: 1.2rem;
+  padding: 1rem;
+  background: var(--surface);
+}
+
+.signer > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.18rem;
+  flex: 1;
+}
+
+.signer span,
+.signer code {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+}
+
+.signer button {
+  border: 0;
+  color: var(--danger);
+  background: transparent;
+  cursor: pointer;
+}
+
+.empty {
+  min-height: 5rem;
+  justify-content: center;
+  border: 1px dashed var(--line);
+  border-radius: 1.2rem;
+  color: var(--muted);
+}
+
+.review {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 1.5rem;
+  background: var(--surface);
+}
+
+.reviewHeader,
+.detailGrid,
+.bindings,
+.consent {
+  padding: clamp(1rem, 2.5vw, 1.5rem);
+}
+
+.reviewHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.reviewHeader h3 {
+  margin: 0.4rem 0 0.15rem;
+  font-size: 1.35rem;
+}
+
+.reviewHeader a {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.status {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 0.24rem 0.55rem;
+  color: var(--warning);
+  background: color-mix(in oklab, var(--warning), transparent 90%);
+  font-size: 0.7rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status[data-state="authorized"] {
+  color: var(--success);
+  background: color-mix(in oklab, var(--success), transparent 90%);
+}
+
+.status[data-state="expired"],
+.status[data-state="superseded"] {
+  color: var(--muted);
+  background: var(--surface-overlay);
+}
+
+.total {
+  text-align: right;
+}
+
+.total span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.total strong {
+  font-family: Iowan Old Style, Baskerville, Georgia, serif;
+  font-size: clamp(1.6rem, 4vw, 2.4rem);
+}
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.detailGrid > div {
+  border-radius: 1rem;
+  padding: 0.9rem;
+  background: var(--surface-raised);
+}
+
+.detailGrid h4 {
+  margin: 0 0 0.6rem;
+}
+
+.detailGrid p {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0.35rem 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.bindings {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.bindings div {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.bindings dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.bindings dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.consent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.consent label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  max-width: 48rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.consent input {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.12rem;
+  accent-color: var(--primary);
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 760px) {
+  .gate { align-items: flex-start; border-radius: 1rem; }
+  .detailGrid { grid-template-columns: 1fr; }
+  .reviewHeader, .consent { align-items: stretch; flex-direction: column; }
+  .total { text-align: left; }
+  .bindings div { grid-template-columns: 1fr; gap: 0.15rem; }
+}

@@ -342,6 +342,22 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     reviewedRecipient: text(3, 500), reviewedSubject: text(1, 998), reviewedBody: text(1, 50_000),
   }, ["draftId", "expectedDraftSha256", "reviewedRecipient", "reviewedSubject", "reviewedBody"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   readTool("app.payments.ap2.readiness", "Show AP2 readiness", "Inspect the pinned AP2 protocol, all five role and verification boundaries, accepted adapters and key authorities, credential isolation policy, and disabled payment-capability gates. This cannot initiate a purchase or payment.", objectSchema({})),
+  readTool("app.payments.ap2.mandates.list", "List AP2 mandate reviews", "List metadata and digests for the current actor's human-present AP2 reviews without returning shipping details, credential material, or signing assertions.", objectSchema({})),
+  mutationTool("app.payments.ap2.mandates.prepare", "Prepare AP2 mandate review", "Create an exact human-present Checkout and Payment Mandate review only after the configured deterministic merchant adapter verifies the signed checkout. This cannot sign, approve, request a payment credential, or initiate payment.", requiredObjectSchema({
+    shoppingAgentPrincipalId: opaqueId("Exact governed Shopping Agent principal ID."),
+    intentSha256: sha256("Digest of the exact purchase intent."),
+    merchantCheckoutJwt: text(1, 200_000),
+    terms: requiredObjectSchema({
+      merchant: requiredObjectSchema({ id: opaqueId("Merchant ID."), name: text(1, 240), website: { type: "string", format: "uri", pattern: "^https://" } }, ["id", "name", "website"]),
+      merchantOrderId: opaqueId("Merchant order ID."),
+      items: { type: "array", minItems: 1, maxItems: 500, items: requiredObjectSchema({ id: opaqueId("Merchant item ID."), title: text(1, 500), quantity: integer(1, 10_000), unitAmountMinor: integer(0, Number.MAX_SAFE_INTEGER), totalAmountMinor: integer(0, Number.MAX_SAFE_INTEGER) }, ["id", "title", "quantity", "unitAmountMinor", "totalAmountMinor"]) },
+      totals: requiredObjectSchema({ currency: { type: "string", pattern: "^[A-Z]{3}$" }, subtotalAmountMinor: integer(0, Number.MAX_SAFE_INTEGER), taxAmountMinor: integer(0, Number.MAX_SAFE_INTEGER), shippingAmountMinor: integer(0, Number.MAX_SAFE_INTEGER), discountAmountMinor: integer(0, Number.MAX_SAFE_INTEGER), totalAmountMinor: integer(0, Number.MAX_SAFE_INTEGER) }, ["currency", "subtotalAmountMinor", "taxAmountMinor", "shippingAmountMinor", "discountAmountMinor", "totalAmountMinor"]),
+      shipping: requiredObjectSchema({ recipientName: text(1, 240), addressLines: { type: "array", minItems: 1, maxItems: 4, items: text(1, 240) }, city: text(1, 160), region: text(1, 160), postalCode: text(1, 40), country: { type: "string", pattern: "^[A-Z]{2}$" }, serviceLevel: text(1, 160) }, ["recipientName", "addressLines", "city", "region", "postalCode", "country", "serviceLevel"]),
+      paymentInstrument: requiredObjectSchema({ id: opaqueId("Opaque payment-instrument reference."), type: text(1, 80), description: text(1, 240) }, ["id", "type", "description"]),
+      paymentConstraints: requiredObjectSchema({ credentialProviderId: opaqueId("Credential Provider participant ID."), merchantPaymentProcessorId: opaqueId("Merchant Payment Processor participant ID."), allowedInstrumentTypes: { type: "array", minItems: 1, maxItems: 20, items: text(1, 80) }, maximumAmountMinor: integer(0, Number.MAX_SAFE_INTEGER), currency: { type: "string", pattern: "^[A-Z]{3}$" }, immediateExecutionOnly: { type: "boolean", enum: [true] } }, ["credentialProviderId", "merchantPaymentProcessorId", "allowedInstrumentTypes", "maximumAmountMinor", "currency", "immediateExecutionOnly"]),
+      expiresAt: { type: "string", format: "date-time" },
+    }, ["merchant", "merchantOrderId", "items", "totals", "shipping", "paymentInstrument", "paymentConstraints", "expiresAt"]),
+  }, ["shoppingAgentPrincipalId", "intentSha256", "merchantCheckoutJwt", "terms"]), { reversible: true }),
   readTool("app.assets.list", "List captured assets", "List actor-readable uploaded assets and recording metadata without copying stored binary content into the transcript.", objectSchema({
     kind: assetKind(), limit: integer(1, 100, 50),
   })),

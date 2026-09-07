@@ -17,13 +17,26 @@ describe("AP2 payment readiness", () => {
       transactionsPermitted: false,
       registeredPaymentEffectToolCount: 0,
       acceptedAdapterReleaseCount: 0,
+      humanPresentMandateFlowImplemented: true,
       humanPresentFlowEnabled: false,
       humanNotPresentFlowEnabled: false,
       missingGates: [
-        "p9.16_human_present_signed_mandates",
         "p9.17_credential_isolation_and_authorization",
         "p9.18_signed_receipts_and_reconciliation",
       ],
+      activationBlockers: [
+        "reviewed_merchant_adapter",
+        "reviewed_webauthn_attestation_policy",
+        "isolated_credential_provider",
+        "reviewed_merchant_payment_processor",
+        "signed_receipt_reconciliation",
+      ],
+    });
+    expect(readiness.humanPresentMandates).toMatchObject({
+      schemaMigrationVersion: 125,
+      trustedSurfacePath: "/app/payments",
+      agentCanRegisterOrSign: false,
+      authorizationConfersPaymentEffectAuthority: false,
     });
     expect(readiness.acceptedAdapterContracts).toEqual([]);
     expect(readiness.configuredKeyAuthorities).toEqual([]);

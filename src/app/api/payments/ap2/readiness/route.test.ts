@@ -38,6 +38,7 @@ describe("AP2 readiness route", () => {
       state: "disabled_configuration_only",
       transactionsPermitted: false,
       registeredPaymentEffectToolCount: 0,
+      humanPresentMandateFlowImplemented: true,
     });
     expect(body.readiness.roleContracts).toHaveLength(5);
     expect(body.serviceReceipt).toMatchObject({
