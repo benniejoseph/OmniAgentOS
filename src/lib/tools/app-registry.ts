@@ -168,6 +168,38 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.workflows.tick", "Tick workflow", "Process at most one queued step for one exact workflow; consequential tools retain their own approval gates.", requiredObjectSchema({
     workflowId: opaqueId("Exact workflow-run ID."),
   }, ["workflowId"]), { reversible: false }),
+  readTool("app.connectors.list", "List connectors", "List tenant-scoped MCP and OpenAPI connectors with reviewed contract summaries.", objectSchema({
+    kind: connectorKind(), limit: integer(1, 100, 20),
+  })),
+  readTool("app.connectors.show", "Show connector", "Read one exact connector and its discovered tools or imported operations.", requiredObjectSchema({
+    kind: connectorKind(), connectorId: opaqueId("Exact connector ID."),
+  }, ["kind", "connectorId"])),
+  mutationTool("app.connectors.register", "Register connector", "Register one MCP or OpenAPI connector using no auth or a deployer-managed environment binding; raw credentials are never accepted.", requiredObjectSchema({
+    kind: connectorKind(), name: text(1, 120), endpoint: { type: "string", format: "uri", maxLength: 2_048 },
+    specUrl: { type: "string", format: "uri", maxLength: 2_048 }, baseUrl: { type: "string", format: "uri", maxLength: 2_048 },
+    authType: { type: "string", enum: ["none", "bearer_env", "api_key_header_env"], default: "none" },
+    authTokenEnv: { type: "string", pattern: "^[A-Z0-9_]+$", maxLength: 120 }, authHeaderName: text(1, 80),
+    defaultRiskLevel: { type: "integer", enum: [0, 1, 2, 3], default: 2 }, approvalRequired: { type: "boolean", default: true },
+  }, ["kind", "name"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.connectors.update", "Update connector", "Update one exact connector; contract-changing updates disable it until refresh and review.", requiredObjectSchema({
+    kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), name: text(1, 120),
+    endpoint: { type: "string", format: "uri", maxLength: 2_048 }, specUrl: { type: ["string", "null"], format: "uri", maxLength: 2_048 },
+    baseUrl: { type: "string", format: "uri", maxLength: 2_048 }, status: { type: "string", enum: ["active", "error", "disabled"] },
+    defaultRiskLevel: { type: "integer", enum: [0, 1, 2, 3] }, approvalRequired: { type: "boolean" },
+  }, ["kind", "connectorId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.connectors.refresh", "Refresh connector contracts", "Discover MCP tools or import an OpenAPI spec from a public URL, leaving changed contracts pending review.", requiredObjectSchema({
+    kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), specUrl: { type: "string", format: "uri", maxLength: 2_048 },
+    baseUrl: { type: "string", format: "uri", maxLength: 2_048 },
+  }, ["kind", "connectorId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.connectors.review", "Approve connector contracts", "Promote the exact discovered contract set only when its review fingerprint still matches.", requiredObjectSchema({
+    kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), expectedFingerprint: text(20, 200),
+  }, ["kind", "connectorId", "expectedFingerprint"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.connectors.delete.preview", "Preview connector deletion", "Preview the exact connector and operation IDs removed by permanent deletion.", requiredObjectSchema({
+    kind: connectorKind(), connectorId: opaqueId("Exact connector ID."),
+  }, ["kind", "connectorId"])),
+  mutationTool("app.connectors.delete", "Delete connector", "Permanently delete one connector and its exact operation set only when the preview digest still matches.", requiredObjectSchema({
+    kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), expectedTargetSha256: sha256("Digest returned by app.connectors.delete.preview."),
+  }, ["kind", "connectorId", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
 ] satisfies readonly ToolDefinition[]);
 
 function readTool(id: string, name: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
@@ -255,4 +287,8 @@ function workflowBudgetsSchema() {
     toolCalls: integer(0, 1_000), modelCalls: integer(0, 1_000),
     costUnits: integer(0, 1_000_000), elapsedMs: integer(0, 86_400_000),
   });
+}
+
+function connectorKind() {
+  return { type: "string", enum: ["mcp", "openapi"] };
 }
