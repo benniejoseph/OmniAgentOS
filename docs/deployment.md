@@ -104,6 +104,15 @@ no longer reach the governed executor. Monitor non-zero reconciliation failures;
 do not raise depth, fan-out, root-task, cost, or progress-timeout constants as an
 availability workaround.
 
+Migration 120 adds the actor-private Trash item and append-only effect-receipt
+ledgers. Both tables force RLS through the exact request actor scope. Runtime and
+maintenance roles may select and insert; only item state, revision, public item,
+internal snapshot, and terminal time may be updated. Neither role may delete or
+truncate, and receipts cannot be updated. The owner actor deliberately accepts
+both the deployed email-form request identity and canonical `actor:<uuid>` form;
+do not add an auth-user foreign key until all execution scopes have completed a
+separately gated canonical-actor cutover.
+
 ## Dedicated worker and monitoring
 
 Run web and worker separately:
