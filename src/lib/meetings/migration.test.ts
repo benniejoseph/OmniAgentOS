@@ -24,6 +24,9 @@ describe("P10.6 meeting domain migration", () => {
     expect(migration).toContain("FROM omni_meetings meeting");
     expect(migration).toContain("meeting.effective_access_class");
     expect(migration).toContain("omni_actor_scope_v1_allows_canonical");
+    expect(migration).not.toMatch(
+      /FROM public\.omni_work_project_memberships membership[\s\S]{0,300}membership\.subject_kind/,
+    );
   });
 
   it("limits runtime writes to revisions and the current projection", () => {
