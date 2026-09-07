@@ -145,6 +145,7 @@ import {
   listCommunicationPoliciesService,
   upsertCommunicationPolicyService,
 } from "@/lib/app-services/communications";
+import { showAp2ReadinessService } from "@/lib/app-services/payments";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -273,6 +274,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.communications.drafts.list": () => listCommunicationDraftsService(caller, input.toolInput as never),
     "app.communications.drafts.create": () => createCommunicationDraftService(caller, input.toolInput as never),
     "app.communications.deliver": () => deliverCommunicationDraftService(caller, input.toolInput as never),
+    "app.payments.ap2.readiness": () => showAp2ReadinessService(caller, input.toolInput as never),
     "app.assets.list": () => listAssetsService(caller, input.toolInput as never),
     "app.assets.show": () => showAssetService(caller, input.toolInput as never),
     "app.assets.index": () => indexStoredAssetService(caller, input.toolInput as never),
