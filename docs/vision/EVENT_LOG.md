@@ -1837,3 +1837,17 @@ Migration 142 only adds the validated `visible_sections` column and marker; it
 does not synthesize historical events. A later action selected from Today must
 re-enter the relevant governed application service and emit that domain's
 existing typed event and effect receipt.
+
+## Unified Conversation progress projections
+
+P11.2 emits no new domain event. `p11.2-conversation-progress:1` is a read-only
+projection over already persisted owner-scoped run events, exact thread voice
+events, and checkpoint receipts. Its event references are SHA-256 hashes, and
+its technical disclosure excludes prompts, responses, retrieved content, tool
+arguments and output, credentials, browser frame bytes, and private reasoning.
+
+The projection's result and recovery states do not grant authority. Approval,
+clarification, cancellation, retry, and checkpoint correction must re-enter
+their existing governed routes and produce the existing typed events,
+checkpoints, and effect receipts. A completed projection merely points back to
+the authoritative conversation result and its retained evidence.
