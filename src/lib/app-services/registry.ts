@@ -265,7 +265,7 @@ export const MAIN_AGENT_EXCLUDED_APP_OPERATIONS = Object.freeze([
   { operation: "app.settings.api_keys.create", reason: "One-time bearer tokens must never enter an agent transcript or tool ledger." },
   { operation: "app.assets.upload", reason: "Raw binary uploads must use the direct user-to-storage capture surface." },
   { operation: "app.assets.recordings.segment.write", reason: "Raw recording audio must use the direct user-to-storage capture surface." },
-  { operation: "app.runs.activity.frame.read", reason: "Raw browser frame image bytes use the authenticated frame-delivery surface and must not be copied into tool transcripts." },
+  { operation: "app.runs.activity.frame.read", reason: "Raw browser frame and accessibility-snapshot bytes use authenticated owner-scoped delivery surfaces and must not be copied into tool transcripts." },
   { operation: "app.runs.fork", reason: "Checkpoint correction forks launch a new Main Agent execution and remain an explicit user action to prevent recursive self-forking." },
 ] as const);
 

@@ -32,6 +32,45 @@ beforeEach(() => {
 });
 
 describe("run browser activity stream", () => {
+  it("pushes fresh activity without a client refresh and then labels replay", async () => {
+    vi.useFakeTimers();
+    mocks.inspectRunActivityService
+      .mockResolvedValueOnce({
+        data: { runId: "run-a", status: "running", browserActivity: [] },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          runId: "run-a",
+          status: "completed",
+          browserActivity: [{
+            id: "execution-a",
+            sequence: 1,
+            at: "2026-09-07T00:00:00.000Z",
+            action: "Open website",
+            operation: "browser_navigate",
+            status: "executed",
+            summary: "Completed through the governed Playwright connection.",
+          }],
+        },
+      });
+
+    try {
+      const response = await getStream("run-a");
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain('"mode":"live"');
+
+      const next = reader.read();
+      await vi.advanceTimersByTimeAsync(1_000);
+      const second = await next;
+      expect(new TextDecoder().decode(second.value)).toContain('"mode":"replay"');
+      expect(new TextDecoder().decode(second.value)).toContain('"id":"execution-a"');
+      await expect(reader.read()).resolves.toMatchObject({ done: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("pushes a private terminal replay snapshot and closes", async () => {
     mocks.inspectRunActivityService.mockResolvedValue({
       data: {

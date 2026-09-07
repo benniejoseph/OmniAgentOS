@@ -223,8 +223,27 @@ type BrowserActivityItem = {
     pageTitle?: string;
     contentUrl: string;
   };
+  accessibilitySnapshot?: {
+    id: string;
+    at: string;
+    mimeType: "text/plain";
+    byteCount: number;
+    contentSha256: string;
+    executionId: string;
+    operation: string;
+    contentUrl: string;
+  };
   frameStatus?: "captured" | "suppressed" | "unavailable";
+  accessibilitySnapshotStatus?: "captured" | "suppressed" | "unavailable";
 };
+type BrowserActivityMode = "live" | "replay";
+type BrowserActivityStreamState =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "replay"
+  | "error";
 type TraceStageStatus = "observed" | "pending" | "missing" | "not_applicable";
 type RunTraceStage = {
   id: "intent" | "plan" | "agent" | "model" | "tool" | "evidence" | "effect" | "verification" | "memory";
@@ -400,6 +419,8 @@ export function AgentRunsWorkspace({
   const [browserActivity, setBrowserActivity] = useState<BrowserActivityItem[]>([]);
   const [browserActivityState, setBrowserActivityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [browserActivityError, setBrowserActivityError] = useState<string>();
+  const [browserActivityMode, setBrowserActivityMode] = useState<BrowserActivityMode>();
+  const [browserActivityStreamState, setBrowserActivityStreamState] = useState<BrowserActivityStreamState>("idle");
   const abortControllerRef = useRef<AbortController | null>(null);
   const contextControllerRef = useRef<AbortController | null>(null);
   const contextVersionRef = useRef(0);
@@ -408,6 +429,9 @@ export function AgentRunsWorkspace({
   const evidenceVersionRef = useRef(0);
   const browserActivityControllerRef = useRef<AbortController | null>(null);
   const browserActivityVersionRef = useRef(0);
+  const browserActivityStreamControllerRef = useRef<AbortController | null>(null);
+  const browserActivityModeRef = useRef<BrowserActivityMode | undefined>(undefined);
+  const browserActivityRunIdRef = useRef("");
   const pendingDeltasRef = useRef<string[]>([]);
   const deltaFlushTimerRef = useRef<number | null>(null);
   const initialThreadLoadedRef = useRef(false);
@@ -661,6 +685,7 @@ export function AgentRunsWorkspace({
       contextControllerRef.current?.abort();
       evidenceControllerRef.current?.abort();
       browserActivityControllerRef.current?.abort();
+      browserActivityStreamControllerRef.current?.abort();
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
       }
@@ -811,7 +836,6 @@ export function AgentRunsWorkspace({
         setContextUseReceipt(contextUseReceiptFromPayload(payload));
         const run = asRecord(payload.run);
         const status = stringValue(run.status);
-        void refreshBrowserActivity(activeAgentRunId);
         const statusChanged = Boolean(status && status !== directRunStatusRef.current);
         if (status) directRunStatusRef.current = status;
         if (status === "waiting_clarification") {
@@ -894,6 +918,104 @@ export function AgentRunsWorkspace({
     // The run id and terminal state own this polling lifecycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAgentRunId, agentRunTerminal, loading]);
+
+  useEffect(() => {
+    if (!selectedActivityRunId || sessionStatus !== "ready" || readPermission) {
+      browserActivityStreamControllerRef.current?.abort();
+      return;
+    }
+    const runId = selectedActivityRunId;
+    const controller = new AbortController();
+    browserActivityStreamControllerRef.current?.abort();
+    browserActivityStreamControllerRef.current = controller;
+    browserActivityModeRef.current = undefined;
+    const runChanged = browserActivityRunIdRef.current !== runId;
+    browserActivityRunIdRef.current = runId;
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return;
+      if (runChanged) setBrowserActivity([]);
+      setBrowserActivityMode(undefined);
+      setBrowserActivityStreamState("connecting");
+      if (runChanged) setBrowserActivityState("loading");
+      setBrowserActivityError(undefined);
+    });
+    let reconnectAttempt = 0;
+
+    const connect = async () => {
+      while (!controller.signal.aborted) {
+        if (document.visibilityState !== "visible") {
+          await browserReconnectDelay(1_000, controller.signal);
+          continue;
+        }
+        try {
+          setBrowserActivityStreamState(reconnectAttempt ? "reconnecting" : "connecting");
+          const response = await fetch(
+            `/api/runs/${encodeURIComponent(runId)}/activity/stream`,
+            {
+              cache: "no-store",
+              headers: { accept: "text/event-stream" },
+              signal: controller.signal,
+            },
+          );
+          if (!response.ok || !response.body) {
+            const payload = asRecord(await response.json().catch(() => ({})));
+            throw new BrowserActivityStreamError(
+              stringValue(payload.error, `Browser activity stream returned ${response.status}.`),
+              response.status < 500,
+            );
+          }
+          await readBrowserActivitySse(response.body, (payload) => {
+            if (
+              stringValue(payload.type) !== "browser_activity" ||
+              stringValue(payload.runId) !== runId
+            ) {
+              return;
+            }
+            const mode = stringValue(payload.mode) === "replay" ? "replay" : "live";
+            browserActivityModeRef.current = mode;
+            setBrowserActivityMode(mode);
+            setBrowserActivity(
+              (Array.isArray(payload.browserActivity)
+                ? payload.browserActivity
+                : []) as BrowserActivityItem[],
+            );
+            setBrowserActivityState("ready");
+            setBrowserActivityError(undefined);
+            setBrowserActivityStreamState(mode === "replay" ? "replay" : "connected");
+            reconnectAttempt = 0;
+          });
+          if (controller.signal.aborted || browserActivityModeRef.current === "replay") {
+            break;
+          }
+        } catch (streamError) {
+          if (controller.signal.aborted) break;
+          if (streamError instanceof BrowserActivityStreamError && streamError.terminal) {
+            setBrowserActivityError(streamError.message);
+            setBrowserActivityState("error");
+            setBrowserActivityStreamState("error");
+            break;
+          }
+          setBrowserActivityStreamState("reconnecting");
+          if (!browserActivityModeRef.current) {
+            setBrowserActivityError("Live browser activity is reconnecting.");
+          }
+        }
+        reconnectAttempt += 1;
+        await browserReconnectDelay(
+          Math.min(4_000, 750 * Math.max(1, reconnectAttempt)),
+          controller.signal,
+        );
+      }
+    };
+    void connect();
+    return () => {
+      controller.abort();
+      if (browserActivityStreamControllerRef.current === controller) {
+        browserActivityStreamControllerRef.current = null;
+      }
+    };
+    // The selected run owns one reconnectable server-pushed observation stream.
+  }, [readPermission, selectedActivityRunId, sessionStatus]);
 
   useEffect(() => {
     if (
@@ -1128,11 +1250,16 @@ export function AgentRunsWorkspace({
 
   function clearBrowserActivity() {
     browserActivityControllerRef.current?.abort();
+    browserActivityStreamControllerRef.current?.abort();
     browserActivityVersionRef.current += 1;
+    browserActivityModeRef.current = undefined;
+    browserActivityRunIdRef.current = "";
     setSelectedActivityRunId("");
     setBrowserActivity([]);
     setBrowserActivityState("idle");
     setBrowserActivityError(undefined);
+    setBrowserActivityMode(undefined);
+    setBrowserActivityStreamState("idle");
   }
 
   async function refreshBrowserActivity(runId: string) {
@@ -1164,6 +1291,14 @@ export function AgentRunsWorkspace({
           ? payload.browserActivity
           : []) as BrowserActivityItem[],
       );
+      const status = stringValue(payload.status).toLowerCase();
+      const mode: BrowserActivityMode = ["completed", "failed", "canceled"].includes(status)
+        ? "replay"
+        : "live";
+      browserActivityModeRef.current = mode;
+      browserActivityRunIdRef.current = runId;
+      setBrowserActivityMode(mode);
+      setBrowserActivityStreamState(mode === "replay" ? "replay" : "connected");
       setBrowserActivityState("ready");
     } catch (activityError) {
       if (
@@ -1179,6 +1314,7 @@ export function AgentRunsWorkspace({
           : "Browser activity could not be loaded.",
       );
       setBrowserActivityState("error");
+      setBrowserActivityStreamState("error");
     } finally {
       if (browserActivityControllerRef.current === controller) {
         browserActivityControllerRef.current = null;
@@ -1194,7 +1330,6 @@ export function AgentRunsWorkspace({
     if (tab === "execute") {
       const runId = activityRunId || activeAgentRunId || currentRunIdRef.current || selectedActivityRunId;
       setSelectedActivityRunId(runId);
-      void refreshBrowserActivity(runId);
     }
   }
 
@@ -1712,14 +1847,6 @@ export function AgentRunsWorkspace({
           return;
         }
         setStreamEvents((current) => [...current.slice(-199), event]);
-        if (
-          event.type === "tool" &&
-          event.executionId &&
-          event.status !== "running" &&
-          currentRunIdRef.current
-        ) {
-          void refreshBrowserActivity(currentRunIdRef.current);
-        }
         if (event.type === "delegated") {
           terminalEvent = "delegated";
           agentRequestIdRef.current = "";
@@ -1794,7 +1921,6 @@ export function AgentRunsWorkspace({
       flushPendingDeltas();
       void refreshEvidence();
       if (currentRunIdRef.current) {
-        void refreshBrowserActivity(currentRunIdRef.current);
         void refreshRunContextReceipt(currentRunIdRef.current);
       }
     } catch (agentError) {
@@ -2339,7 +2465,7 @@ export function AgentRunsWorkspace({
               {activeAgentRunId && selectedActivityRunId === activeAgentRunId && browserActivity.some((item) => item.frame) ? (
                 <InlineBrowserView
                   items={browserActivity}
-                  live={loading === "agent" || (!agentRunTerminal && Boolean(activeAgentRunId))}
+                  live={browserActivityMode === "live"}
                   onOpen={() => openTaskDetails("execute", activeAgentRunId)}
                 />
               ) : null}
@@ -2986,7 +3112,8 @@ export function AgentRunsWorkspace({
                   items={browserActivity}
                   state={browserActivityState}
                   error={browserActivityError}
-                  live={loading === "agent" && selectedActivityRunId === activeAgentRunId}
+                  mode={browserActivityMode}
+                  streamState={browserActivityStreamState}
                   onRefresh={() => void refreshBrowserActivity(selectedActivityRunId)}
                 />
                 {!selectedActivityRunId || selectedActivityRunId === activeAgentRunId ? (
@@ -3792,16 +3919,19 @@ function BrowserActivityTimeline({
   items,
   state,
   error,
-  live,
+  mode,
+  streamState,
   onRefresh,
 }: {
   runId: string;
   items: BrowserActivityItem[];
   state: "idle" | "loading" | "ready" | "error";
   error?: string;
-  live: boolean;
+  mode?: BrowserActivityMode;
+  streamState: BrowserActivityStreamState;
   onRefresh: () => void;
 }) {
+  const live = mode === "live";
   const framedItems = useMemo(() => items.filter((item) => item.frame), [items]);
   const latestFrameId = framedItems.at(-1)?.frame?.id || "";
   const [requestedFrameId, setRequestedFrameId] = useState("");
@@ -3810,13 +3940,42 @@ function BrowserActivityTimeline({
   )
     ? requestedFrameId
     : latestFrameId;
-  if (!runId) return null;
   const selectedIndex = Math.max(
     0,
     framedItems.findIndex((item) => item.frame?.id === selectedFrameId),
   );
   const selectedItem = framedItems[selectedIndex];
   const selectedFrame = selectedItem?.frame;
+  const selectedSnapshot = selectedItem?.accessibilitySnapshot;
+  const [snapshotText, setSnapshotText] = useState("");
+  const [snapshotState, setSnapshotState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  useEffect(() => {
+    if (!selectedSnapshot?.contentUrl) {
+      return;
+    }
+    const controller = new AbortController();
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return;
+      setSnapshotText("");
+      setSnapshotState("loading");
+    });
+    void fetch(selectedSnapshot.contentUrl, {
+      cache: "no-store",
+      headers: { accept: "text/plain" },
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error("Snapshot unavailable.");
+      return response.text();
+    }).then((text) => {
+      if (controller.signal.aborted) return;
+      setSnapshotText(text);
+      setSnapshotState("ready");
+    }).catch(() => {
+      if (!controller.signal.aborted) setSnapshotState("error");
+    });
+    return () => controller.abort();
+  }, [selectedSnapshot?.contentUrl]);
+  if (!runId) return null;
   const selectRelativeFrame = (offset: number) => {
     const next = framedItems[selectedIndex + offset]?.frame;
     if (next) setRequestedFrameId(next.id);
@@ -3832,15 +3991,23 @@ function BrowserActivityTimeline({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-semibold">Browser view</p>
-              {framedItems.length ? (
-                <span className={workspaceStyles.browserLiveLabel} data-live={live || undefined}>
+              {framedItems.length || mode ? (
+                <span className={workspaceStyles.browserLiveLabel} data-live={(live && streamState === "connected") || undefined}>
                   <span aria-hidden="true" />
-                  {live ? "Live" : "Replay"}
+                  {mode === "replay"
+                    ? "Replay"
+                    : streamState === "reconnecting"
+                      ? "Reconnecting"
+                      : streamState === "connecting"
+                        ? "Connecting"
+                        : "Live"}
                 </span>
               ) : null}
             </div>
             <p className="mt-1 text-xs leading-5 text-muted">
-              Watch the isolated Playwright session and replay each retained step.
+              {mode === "replay"
+                ? "Review the retained frames and redacted page structure from this completed run."
+                : "Watch fresh activity from the isolated Playwright session as the run proceeds."}
             </p>
           </div>
         </div>
@@ -3853,11 +4020,11 @@ function BrowserActivityTimeline({
           <button
             type="button"
             onClick={onRefresh}
-            disabled={state === "loading"}
+            disabled={state === "loading" || streamState === "connecting"}
             className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground disabled:opacity-50"
           >
             <RefreshCw size={13} className={state === "loading" ? "animate-spin" : ""} aria-hidden="true" />
-            Refresh
+            {mode === "live" ? "Sync now" : "Refresh"}
           </button>
         </div>
       </header>
@@ -3923,6 +4090,26 @@ function BrowserActivityTimeline({
                     </button>
                   </div>
                 </div>
+                {selectedSnapshot ? (
+                  <details className={workspaceStyles.browserAccessibility}>
+                    <summary>
+                      <span className="inline-flex items-center gap-2">
+                        <FileText size={13} aria-hidden="true" />
+                        Accessibility structure
+                      </span>
+                      <span>Redacted · {formatBrowserBytes(selectedSnapshot.byteCount)}</span>
+                    </summary>
+                    <div aria-live="polite">
+                      {snapshotState === "loading" ? (
+                        <p>Loading structured page state…</p>
+                      ) : snapshotState === "error" ? (
+                        <p>The retained page structure could not be opened.</p>
+                      ) : (
+                        <pre>{snapshotText}</pre>
+                      )}
+                    </div>
+                  </details>
+                ) : null}
               </div>
             ) : (
               <div className={workspaceStyles.browserStageEmpty}>
@@ -4002,7 +4189,9 @@ function BrowserActivityTimeline({
                             ? "Frame hidden for text entry"
                             : item.frameStatus === "unavailable"
                               ? "Frame unavailable"
-                              : item.error || item.targetOrigin || item.status.replaceAll("_", " ")}
+                              : item.accessibilitySnapshotStatus === "suppressed"
+                                ? "Page structure hidden for text entry"
+                                : item.error || item.targetOrigin || item.status.replaceAll("_", " ")}
                         </span>
                       </span>
                       <time className="shrink-0 text-[10px] text-muted" dateTime={item.at}>
@@ -4023,7 +4212,7 @@ function BrowserActivityTimeline({
         </div>
       )}
       <p className={workspaceStyles.browserPrivacyNote}>
-        Retained frames are owner-scoped run evidence. Text-entry and file-upload steps omit capture; screenshots may still reflect what the visited page renders. Tool inputs, selectors, credentials, and private reasoning are not included in the action trail.
+        Retained frames and accessibility structure are owner-scoped run evidence. Text-entry and file-upload steps omit both; screenshots may still reflect what the visited page renders. Tool inputs, selectors, credentials, and private reasoning are not included in the action trail.
       </p>
     </section>
   );
@@ -4803,6 +4992,65 @@ async function readSse(stream: ReadableStream<Uint8Array>, onEvent: (event: Stre
   }
 }
 
+async function readBrowserActivitySse(
+  stream: ReadableStream<Uint8Array>,
+  onEvent: (event: JsonRecord) => void,
+) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.replaceAll("\r\n", "\n").split("\n\n");
+    buffer = blocks.pop() || "";
+    for (const block of blocks) emitBrowserActivitySse(block, onEvent);
+  }
+  buffer += decoder.decode();
+  for (const block of buffer.replaceAll("\r\n", "\n").split("\n\n")) {
+    emitBrowserActivitySse(block, onEvent);
+  }
+}
+
+function emitBrowserActivitySse(
+  block: string,
+  onEvent: (event: JsonRecord) => void,
+) {
+  const payload = block
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+  if (!payload) return;
+  const parsed: unknown = JSON.parse(payload);
+  onEvent(asRecord(parsed));
+}
+
+class BrowserActivityStreamError extends Error {
+  constructor(message: string, readonly terminal: boolean) {
+    super(message);
+    this.name = "BrowserActivityStreamError";
+  }
+}
+
+function browserReconnectDelay(milliseconds: number, signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = window.setTimeout(finish, milliseconds);
+    signal.addEventListener("abort", finish, { once: true });
+    function finish() {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    }
+  });
+}
+
 function emitSseEvent(
   block: string,
   onEvent: (event: StreamEvent) => void,
@@ -5291,6 +5539,12 @@ function formatBrowserDuration(durationMs: number) {
   if (durationMs < 1_000) return `${Math.max(0, Math.round(durationMs))}ms`;
   if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)}s`;
   return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1_000)}s`;
+}
+
+function formatBrowserBytes(byteCount: number) {
+  const bounded = Math.max(0, byteCount);
+  if (bounded < 1_024) return `${bounded} B`;
+  return `${Math.max(0.1, bounded / 1_024).toFixed(1)} KB`;
 }
 
 function formatRelativeThreadTime(value: string) {
