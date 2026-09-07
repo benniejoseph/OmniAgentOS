@@ -1,12 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createTrashPreview } from "@/lib/trash/store";
 
 const routeMocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   canonicalRequestActorBindingFromSecurityContext: vi.fn(),
   createAgentSkill: vi.fn(),
   deleteAgentSkill: vi.fn(),
+  getAgentSkill: vi.fn(),
   getAgentSkillForRequest: vi.fn(),
   listAgentSkillsForRequest: vi.fn(),
+  listCustomAgents: vi.fn(),
   updateAgentSkill: vi.fn(),
 }));
 
@@ -29,8 +35,10 @@ vi.mock("@/lib/security/canonical-actor", () => ({
 vi.mock("@/lib/skills/store", () => ({
   createAgentSkill: routeMocks.createAgentSkill,
   deleteAgentSkill: routeMocks.deleteAgentSkill,
+  getAgentSkill: routeMocks.getAgentSkill,
   getAgentSkillForRequest: routeMocks.getAgentSkillForRequest,
   listAgentSkillsForRequest: routeMocks.listAgentSkillsForRequest,
+  listCustomAgents: routeMocks.listCustomAgents,
   updateAgentSkill: routeMocks.updateAgentSkill,
 }));
 
@@ -83,17 +91,28 @@ const customSkill = {
   createdAt: "2026-09-04T10:00:00.000Z",
   updatedAt: "2026-09-04T12:00:00.000Z",
 };
+let dataDirectory = "";
 
-beforeEach(() => {
+beforeEach(async () => {
+  dataDirectory = await mkdtemp(path.join(tmpdir(), "skill-route-trash-"));
+  process.env.OMNIAGENT_DATA_DIR = dataDirectory;
+  delete process.env.DATABASE_URL;
   routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
   routeMocks.canonicalRequestActorBindingFromSecurityContext
     .mockReset()
     .mockReturnValue(requestActorBinding);
   routeMocks.createAgentSkill.mockReset().mockResolvedValue(customSkill);
   routeMocks.deleteAgentSkill.mockReset().mockResolvedValue(true);
+  routeMocks.getAgentSkill.mockReset().mockResolvedValue(customSkill);
   routeMocks.getAgentSkillForRequest.mockReset().mockResolvedValue(customSkill);
   routeMocks.listAgentSkillsForRequest.mockReset().mockResolvedValue([customSkill]);
+  routeMocks.listCustomAgents.mockReset().mockResolvedValue([]);
   routeMocks.updateAgentSkill.mockReset().mockResolvedValue(customSkill);
+});
+
+afterEach(async () => {
+  delete process.env.OMNIAGENT_DATA_DIR;
+  await rm(dataDirectory, { recursive: true, force: true });
 });
 
 describe("request-bound custom Skill routes", () => {
@@ -167,6 +186,20 @@ describe("request-bound custom Skill routes", () => {
     const deleted = await DELETESkill(
       new Request("http://localhost/api/skills/custom-skill", {
         method: "DELETE",
+        headers: { "content-type": "application/json", "idempotency-key": "skill-delete-test" },
+        body: JSON.stringify({
+          preview: createTrashPreview({
+            resourceType: "agent_skill",
+            resourceId: customSkill.id,
+            target: {
+              id: customSkill.id,
+              name: customSkill.name,
+              slug: customSkill.slug,
+              affectedAgents: [],
+            },
+            effectSummary: "Move the exact Skill to trash.",
+          }),
+        }),
       }),
       { params: Promise.resolve({ id: "custom-skill" }) },
     );

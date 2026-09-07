@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createTrashPreview } from "@/lib/trash/store";
 
 const routeMocks = vi.hoisted(() => {
   class AgentSkillAssignmentError extends Error {
@@ -100,8 +104,12 @@ const agent = {
   createdAt: "2026-09-04T10:00:00.000Z",
   updatedAt: "2026-09-04T12:00:00.000Z",
 };
+let dataDirectory = "";
 
-beforeEach(() => {
+beforeEach(async () => {
+  dataDirectory = await mkdtemp(path.join(tmpdir(), "agent-route-trash-"));
+  process.env.OMNIAGENT_DATA_DIR = dataDirectory;
+  delete process.env.DATABASE_URL;
   routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
   routeMocks.canonicalRequestActorBindingFromSecurityContext
     .mockReset()
@@ -121,6 +129,11 @@ beforeEach(() => {
     manageable: true,
   }]);
   routeMocks.updateCustomAgent.mockReset().mockResolvedValue(agent);
+});
+
+afterEach(async () => {
+  delete process.env.OMNIAGENT_DATA_DIR;
+  await rm(dataDirectory, { recursive: true, force: true });
 });
 
 describe("custom Agent Skill integrity route responses", () => {
@@ -242,8 +255,26 @@ describe("custom Agent Skill integrity route responses", () => {
   });
 
   it("keeps custom Agent deletion exact and outside the request-read binding", async () => {
+    const target = {
+      id: agent.id,
+      name: agent.name,
+      slug: agent.slug,
+      skillIds: [...agent.skillIds].sort(),
+      toolIds: [...agent.toolIds].sort(),
+    };
     const response = await DELETEAgent(
-      new Request("http://localhost/api/agents/agent-a", { method: "DELETE" }),
+      new Request("http://localhost/api/agents/agent-a", {
+        method: "DELETE",
+        headers: { "content-type": "application/json", "idempotency-key": "agent-delete-test" },
+        body: JSON.stringify({
+          preview: createTrashPreview({
+            resourceType: "custom_agent",
+            resourceId: agent.id,
+            target,
+            effectSummary: "Move the exact Agent to trash.",
+          }),
+        }),
+      }),
       { params: Promise.resolve({ id: "agent-a" }) },
     );
     expect(response.status).toBe(200);

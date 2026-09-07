@@ -25,6 +25,7 @@ import {
   ASAEL_PLAYWRIGHT_MCP_ENDPOINT,
   isAsaelPlaywrightMcpEndpoint,
 } from "@/lib/connectors/mcp-trust";
+import type { TrashActionPreviewV1 } from "@/lib/trash/contracts";
 
 type McpAuthType = "bearer_vault" | "bearer_env" | "none";
 
@@ -101,6 +102,7 @@ export function McpConnections({
   const [confirmRemoveCredentialId, setConfirmRemoveCredentialId] =
     useState<string>();
   const [confirmDeleteId, setConfirmDeleteId] = useState<string>();
+  const [deletePreviews, setDeletePreviews] = useState<Record<string, TrashActionPreviewV1>>({});
   const [pendingAction, setPendingAction] = useState<string>();
   const [notice, setNotice] = useState<Notice>();
 
@@ -453,14 +455,57 @@ export function McpConnections({
   }
 
   async function deleteConnection(connector: McpConnector) {
+    const preview = deletePreviews[connector.id];
+    if (!preview) {
+      setNotice({ tone: "error", text: "Prepare the exact trash preview before removing this connection." });
+      return;
+    }
     await runConnectorAction({
       actionId: `delete-${connector.id}`,
       path: `/api/connectors/${encodeURIComponent(connector.id)}`,
       method: "DELETE",
-      success: `${connectorLabel(connector)} removed from Asael.`,
-      failure: "The MCP connection could not be deleted.",
-      after: () => setConfirmDeleteId(undefined),
+      body: { preview },
+      success: `${connectorLabel(connector)} moved to Trash. Restore is available for 30 days in Settings → Data & privacy.`,
+      failure: "The MCP connection could not be moved to Trash.",
+      after: () => {
+        setConfirmDeleteId(undefined);
+        setDeletePreviews((current) => {
+          const next = { ...current };
+          delete next[connector.id];
+          return next;
+        });
+      },
     });
+  }
+
+  async function prepareDelete(connector: McpConnector) {
+    if (confirmDeleteId === connector.id) {
+      setConfirmDeleteId(undefined);
+      return;
+    }
+    setPendingAction(`delete-preview-${connector.id}`);
+    setNotice(undefined);
+    try {
+      const result = await requestJson<ConnectorRequestResult & {
+        preview?: TrashActionPreviewV1;
+      }>(`/api/connectors/${encodeURIComponent(connector.id)}`, {
+        method: "POST",
+        headers: requestHeaders(false),
+      }, "The MCP trash preview could not be prepared.");
+      if (!result.preview) throw new Error("The MCP trash preview was not returned.");
+      setDeletePreviews((current) => ({ ...current, [connector.id]: result.preview! }));
+      setCredentialValue("");
+      setCredentialEditorId(undefined);
+      setConfirmRemoveCredentialId(undefined);
+      setConfirmDeleteId(connector.id);
+    } catch (requestError) {
+      setNotice({
+        tone: "error",
+        text: requestError instanceof Error ? requestError.message : "The MCP trash preview could not be prepared.",
+      });
+    } finally {
+      setPendingAction(undefined);
+    }
   }
 
   async function runConnectorAction(input: {
@@ -1021,6 +1066,7 @@ export function McpConnections({
                     confirmRemoveCredentialId === connector.id
                   }
                   confirmDelete={confirmDeleteId === connector.id}
+                  deletePreview={deletePreviews[connector.id]}
                   onCredentialValueChange={setCredentialValue}
                   onToggleCredentialEditor={() =>
                     openCredentialEditor(connector.id)
@@ -1048,14 +1094,7 @@ export function McpConnections({
                       connector.status !== "active",
                     )
                   }
-                  onToggleDelete={() => {
-                    setCredentialValue("");
-                    setCredentialEditorId(undefined);
-                    setConfirmRemoveCredentialId(undefined);
-                    setConfirmDeleteId((current) =>
-                      current === connector.id ? undefined : connector.id,
-                    );
-                  }}
+                  onToggleDelete={() => void prepareDelete(connector)}
                   onDelete={() => void deleteConnection(connector)}
                 />
               ))}
@@ -1082,6 +1121,7 @@ function ConnectionRow({
   credentialValue,
   confirmRemoveCredential,
   confirmDelete,
+  deletePreview,
   onCredentialValueChange,
   onToggleCredentialEditor,
   onRotateCredential,
@@ -1103,6 +1143,7 @@ function ConnectionRow({
   credentialValue: string;
   confirmRemoveCredential: boolean;
   confirmDelete: boolean;
+  deletePreview?: TrashActionPreviewV1;
   onCredentialValueChange: (value: string) => void;
   onToggleCredentialEditor: () => void;
   onRotateCredential: () => void;
@@ -1397,9 +1438,9 @@ function ConnectionRow({
 
       {confirmDelete ? (
         <Confirmation
-          title={`Delete ${connectorLabel(connector)}?`}
-          description="This removes the connection and its discovered tools from Asael. Any provider token must still be revoked separately at the provider."
-          confirmLabel="Delete connection"
+          title={`Move ${connectorLabel(connector)} to Trash?`}
+          description={`${deletePreview?.effectSummary || "This moves the connection and its discovered tools to reversible Trash."} Any provider token must still be revoked separately at the provider.`}
+          confirmLabel="Move to Trash"
           busy={pendingAction === `delete-${connector.id}`}
           onCancel={onToggleDelete}
           onConfirm={onDelete}
@@ -1745,22 +1786,24 @@ function requestHeaders(hasBody: boolean) {
   };
 }
 
-async function requestJson(
+type ConnectorRequestResult = {
+  error?: unknown;
+  message?: unknown;
+  discoveryFailed?: unknown;
+  credentialSaved?: unknown;
+  connectionCreated?: unknown;
+};
+
+async function requestJson<T extends ConnectorRequestResult = ConnectorRequestResult>(
   path: string,
   init: RequestInit,
   fallbackError: string,
-) {
+): Promise<T> {
   const response = await fetch(path, {
     ...init,
     signal: init.signal || AbortSignal.timeout(70_000),
   });
-  const result = (await response.json().catch(() => ({}))) as {
-    error?: unknown;
-    message?: unknown;
-    discoveryFailed?: unknown;
-    credentialSaved?: unknown;
-    connectionCreated?: unknown;
-  };
+  const result = (await response.json().catch(() => ({}))) as T;
   if (!response.ok || result.error || result.discoveryFailed) {
     throw new ConnectorRequestError(
       safeRequestError(fallbackError, response.status, result),

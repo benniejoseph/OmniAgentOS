@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { PersonalDataControls } from "@/components/settings/personal-data-controls";
+import { TrashRecoveryControls } from "@/components/settings/trash-recovery-controls";
 import { AgentGrantSettingsPanel } from "@/components/agents/agent-grant-editor";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import styles from "@/components/settings/settings-workspace.module.css";
@@ -827,6 +828,7 @@ function DataSection({ snapshot }: { snapshot: SettingsSnapshot }) {
     <SectionHeader eyebrow="Data & privacy" title="Ownership, portability, and secret boundaries" description="Understand where configuration lives and keep a portable archive of your agent workspace." />
     <div className="mt-6 grid gap-4 md:grid-cols-3"><SecurityFact icon={Database} title="Tenant isolated" body="Settings records carry tenant and actor ownership and database row-level security is forced." /><SecurityFact icon={LockKeyhole} title="Secrets sealed" body={snapshot.vault.configured ? `Independent keyring ${snapshot.vault.activeKeyId} is active.` : "Credential saves remain locked until the independent keyring is configured."} /><SecurityFact icon={KeyRound} title="Tokens hash-only" body="Service API tokens are shown once. Only their SHA-256 digest and redacted identity remain." /></div>
     <PersonalDataControls />
+    <TrashRecoveryControls />
   </section>;
 }
 
