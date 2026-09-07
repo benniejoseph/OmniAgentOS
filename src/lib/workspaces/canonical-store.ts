@@ -458,13 +458,21 @@ async function appendWorkEvent(input: {
         workspaceId: project.workspaceId,
         projectId: project.projectId,
       },
-    }, { sql: input.sql as Parameters<typeof appendScopedDomainEvent>[1]["sql"] });
+    }, {
+      sql: input.sql as NonNullable<
+        NonNullable<Parameters<typeof appendScopedDomainEvent>[1]>["sql"]
+      >,
+    });
   } else {
     await appendDomainEvent({
       ...shared,
       tenantId: project.tenantId,
       actorId,
-    }, { sql: input.sql as Parameters<typeof appendDomainEvent>[1]["sql"] });
+    }, {
+      sql: input.sql as NonNullable<
+        NonNullable<Parameters<typeof appendDomainEvent>[1]>["sql"]
+      >,
+    });
   }
   return event;
 }
