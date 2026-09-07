@@ -829,8 +829,7 @@ export async function* runAgent(
               },
             },
           } : {}),
-          ...((promptMemoryAccessScope && request.contextSelection?.evidenceIds.length) ||
-              sharedPromptMemoryAccessScope
+          ...(promptMemoryAccessScope && request.contextSelection?.evidenceIds.length
             ? {
                 contextCompilerV2Canary: {
                   runId,

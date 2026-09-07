@@ -424,11 +424,17 @@ describe("agent memory scope", () => {
           scopedRequest.promptSharedMemoryAccess.databaseAccessScope,
         scopedMemoryOnly: true,
         persistTrace: false,
-        contextCompilerV2Canary: expect.objectContaining({
+        contextCompilerV2Shadow: expect.objectContaining({
           runId: "run-memory-scope",
         }),
       }),
     );
+    expect(mocks.appendContextCompilerV2ShadowEventSafely).toHaveBeenCalledWith(
+      "run-memory-scope",
+      { receiptId: "context-receipt-a" },
+      expect.objectContaining({ tenantId: "paid-test-tenant" }),
+    );
+    expect(mocks.appendContextCompilerV2CanaryEvent).not.toHaveBeenCalled();
     expect(mocks.runCouncilRound).not.toHaveBeenCalled();
     expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
     expect(events).toContainEqual(expect.objectContaining({
