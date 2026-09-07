@@ -54,7 +54,7 @@ function mappingInput() {
     internalContractSha256: "c".repeat(64),
     localAgentId: "scout" as const,
     localAgentDefinitionVersion: 1,
-    remoteSkillId: "skill:research",
+    negotiatedSkillId: "skill:research",
     createdAt: "2026-09-07T00:00:00.000Z",
   };
 }

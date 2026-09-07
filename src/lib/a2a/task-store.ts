@@ -39,7 +39,7 @@ export async function createA2ATaskMapping(input: {
   internalTask: DelegationTaskV1;
   localAgentId: A2ATaskMappingV1["localAgentId"];
   localAgentDefinitionVersion: number;
-  remoteSkillId: string;
+  negotiatedSkillId: string;
   executionScope: ExecutionScope;
 }) {
   requireDatabase();
@@ -67,7 +67,7 @@ export async function createA2ATaskMapping(input: {
     internalContractSha256: input.internalTask.contractSha256,
     localAgentId: input.localAgentId,
     localAgentDefinitionVersion: input.localAgentDefinitionVersion,
-    remoteSkillId: input.remoteSkillId,
+    negotiatedSkillId: input.negotiatedSkillId,
     createdAt: new Date().toISOString(),
   });
   return getSql().transaction(async (sql: A2ASql) => {
@@ -77,7 +77,7 @@ export async function createA2ATaskMapping(input: {
         mapping_sha256, peer_id, rollout_id, rollout_sha256, direction,
         external_task_id, external_context_id, internal_task_id,
         internal_delegation_id, internal_contract_sha256, local_agent_id,
-        local_agent_definition_version, remote_skill_id, mapping, created_at
+        local_agent_definition_version, negotiated_skill_id, mapping, created_at
       ) VALUES (
         1, ${mapping.tenantId}, ${mapping.ownerActorId}, ${mapping.mappingId},
         ${mapping.mappingSha256}, ${mapping.peerId}, ${mapping.rolloutId},
@@ -85,7 +85,7 @@ export async function createA2ATaskMapping(input: {
         ${mapping.externalTaskId}, ${mapping.externalContextId},
         ${mapping.internalTaskId}, ${mapping.internalDelegationId},
         ${mapping.internalContractSha256}, ${mapping.localAgentId},
-        ${mapping.localAgentDefinitionVersion}, ${mapping.remoteSkillId},
+        ${mapping.localAgentDefinitionVersion}, ${mapping.negotiatedSkillId},
         ${mapping}::jsonb, ${mapping.createdAt}
       )
       ON CONFLICT (tenant_id, mapping_id) DO NOTHING
@@ -96,6 +96,7 @@ export async function createA2ATaskMapping(input: {
       : await readMapping(sql, {
           tenantId: mapping.tenantId,
           ownerActorId: mapping.ownerActorId,
+          peerId: mapping.peerId,
           externalTaskId: mapping.externalTaskId,
         });
     if (saved.mappingSha256 !== mapping.mappingSha256) {
@@ -153,6 +154,7 @@ export async function appendA2AExchange(input: {
 export async function getA2ATaskMapping(input: {
   tenantId: string;
   ownerActorId: string;
+  peerId: string;
   externalTaskId: string;
 }) {
   requireDatabase();
@@ -224,12 +226,13 @@ export async function readA2ATaskProjection(input: {
 
 async function readMapping(
   sql: A2ASql,
-  input: { tenantId: string; ownerActorId: string; externalTaskId: string },
+  input: { tenantId: string; ownerActorId: string; peerId: string; externalTaskId: string },
 ) {
   const rows = await sql`
     SELECT mapping FROM omni_a2a_task_mappings
     WHERE tenant_id = ${input.tenantId}
       AND owner_actor_id = ${input.ownerActorId}
+      AND peer_id = ${input.peerId}
       AND external_task_id = ${input.externalTaskId}
     LIMIT 1
   `;
@@ -257,7 +260,7 @@ function appendMappingEvent(sql: A2ASql, mapping: A2ATaskMappingV1, executionSco
       internalContractSha256: mapping.internalContractSha256,
       localAgentId: mapping.localAgentId,
       localAgentDefinitionVersion: mapping.localAgentDefinitionVersion,
-      remoteSkillId: mapping.remoteSkillId,
+      negotiatedSkillId: mapping.negotiatedSkillId,
     },
     executionScope,
   }, { sql });

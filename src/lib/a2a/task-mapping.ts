@@ -26,7 +26,7 @@ export const a2aTaskMappingV1Schema = z.object({
   internalContractSha256: sha256Schema,
   localAgentId: z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"]),
   localAgentDefinitionVersion: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
-  remoteSkillId: idSchema,
+  negotiatedSkillId: idSchema,
   createdAt: timestampSchema,
 }).strict().superRefine((value, context) => {
   const { mappingId, mappingSha256, ...body } = value;

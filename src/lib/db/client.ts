@@ -11489,7 +11489,7 @@ async function ensureA2ATaskMappingsV1(sql: SqlClient) {
       internal_contract_sha256 TEXT NOT NULL,
       local_agent_id TEXT NOT NULL,
       local_agent_definition_version BIGINT NOT NULL,
-      remote_skill_id TEXT NOT NULL,
+      negotiated_skill_id TEXT NOT NULL,
       mapping JSONB NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
       PRIMARY KEY (tenant_id, mapping_id),
@@ -11510,7 +11510,7 @@ async function ensureA2ATaskMappingsV1(sql: SqlClient) {
       CHECK (internal_contract_sha256 ~ '^[a-f0-9]{64}$'),
       CHECK (local_agent_id IN ('atlas', 'scout', 'forge', 'sentinel', 'mnemosyne')),
       CHECK (local_agent_definition_version BETWEEN 1 AND 9007199254740991),
-      CHECK (char_length(remote_skill_id) BETWEEN 1 AND 240),
+      CHECK (char_length(negotiated_skill_id) BETWEEN 1 AND 240),
       CHECK (jsonb_typeof(mapping) = 'object'),
       CHECK (mapping->>'version' = 'p8.6-a2a-task-mapping:1'),
       CHECK (mapping->>'mappingId' = mapping_id),
@@ -11528,7 +11528,7 @@ async function ensureA2ATaskMappingsV1(sql: SqlClient) {
       CHECK (mapping->>'internalContractSha256' = internal_contract_sha256),
       CHECK (mapping->>'localAgentId' = local_agent_id),
       CHECK ((mapping->>'localAgentDefinitionVersion')::BIGINT = local_agent_definition_version),
-      CHECK (mapping->>'remoteSkillId' = remote_skill_id),
+      CHECK (mapping->>'negotiatedSkillId' = negotiated_skill_id),
       CHECK ((mapping->>'createdAt')::TIMESTAMPTZ = created_at),
       FOREIGN KEY (owner_actor_id)
         REFERENCES omni_auth_users (actor_id)
