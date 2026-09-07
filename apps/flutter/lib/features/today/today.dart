@@ -193,8 +193,9 @@ class TodayController extends ChangeNotifier {
 }
 
 class TodayView extends StatelessWidget {
-  const TodayView({super.key, required this.controller});
+  const TodayView({super.key, required this.controller, this.focusItemId});
   final TodayController controller;
+  final String? focusItemId;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
@@ -215,6 +216,12 @@ class TodayView extends StatelessWidget {
           action: controller.refresh,
         );
       }
+      final items = [...data.items]
+        ..sort((left, right) {
+          if (left.id == focusItemId) return -1;
+          if (right.id == focusItemId) return 1;
+          return 0;
+        });
       final pending = data.items.where((item) => !item.isDone).length;
       return RefreshIndicator(
         onRefresh: controller.refresh,
@@ -337,12 +344,13 @@ class TodayView extends StatelessWidget {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 sliver: SliverList.builder(
-                  itemCount: data.items.length,
+                  itemCount: items.length,
                   itemBuilder: (context, index) {
-                    final item = data.items[index];
+                    final item = items[index];
                     return _TodayRow(
                       item: item,
                       busy: controller.updating.contains(item.id),
+                      focused: item.id == focusItemId,
                       onToggle: () => controller.toggle(item),
                     );
                   },
@@ -402,10 +410,12 @@ class _TodayRow extends StatelessWidget {
   const _TodayRow({
     required this.item,
     required this.busy,
+    required this.focused,
     required this.onToggle,
   });
   final TodayItem item;
   final bool busy;
+  final bool focused;
   final VoidCallback onToggle;
   @override
   Widget build(BuildContext context) {
@@ -425,8 +435,14 @@ class _TodayRow extends StatelessWidget {
       child: InkWell(
         onTap: busy ? null : onToggle,
         borderRadius: BorderRadius.circular(12),
-        child: Padding(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+          decoration: BoxDecoration(
+            color: focused ? scheme.primaryContainer : null,
+            borderRadius: BorderRadius.circular(12),
+            border: focused ? Border.all(color: scheme.primary) : null,
+          ),
           child: Row(
             children: [
               Checkbox(

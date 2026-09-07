@@ -191,9 +191,11 @@ class ProjectDetailView extends StatefulWidget {
     super.key,
     required this.id,
     required this.repository,
+    this.focusWorkItemId,
   });
   final String id;
   final ProjectsRepository repository;
+  final String? focusWorkItemId;
   @override
   State<ProjectDetailView> createState() => _ProjectDetailViewState();
 }
@@ -356,36 +358,52 @@ class _ProjectDetailViewState extends State<ProjectDetailView> {
         ],
       ),
       const SizedBox(height: 12),
-      ...p.tasks.map(
-        (t) => Card(
-          child: ListTile(
-            onTap: busy ? null : () => _cycle(p, t),
-            leading: Icon(
-              t.done
-                  ? Icons.check_circle_rounded
-                  : t.status == 'doing'
-                  ? Icons.pending_rounded
-                  : Icons.circle_outlined,
+      ...([...p.tasks]..sort((left, right) {
+            if (left.id == widget.focusWorkItemId) return -1;
+            if (right.id == widget.focusWorkItemId) return 1;
+            return 0;
+          }))
+          .map(
+            (t) => Card(
+              color: t.id == widget.focusWorkItemId
+                  ? Theme.of(context).colorScheme.primaryContainer
+                  : null,
+              shape: t.id == widget.focusWorkItemId
+                  ? RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    )
+                  : null,
+              child: ListTile(
+                onTap: busy ? null : () => _cycle(p, t),
+                leading: Icon(
+                  t.done
+                      ? Icons.check_circle_rounded
+                      : t.status == 'doing'
+                      ? Icons.pending_rounded
+                      : Icons.circle_outlined,
+                ),
+                title: Text(t.title),
+                subtitle: Text(
+                  '${t.agentId} · ${t.priority}${t.workflowStatus == null ? '' : ' · ${t.workflowStatus}'}\n${t.detail}',
+                  maxLines: 3,
+                ),
+                trailing: t.awaitingApproval
+                    ? IconButton(
+                        tooltip: 'Approve',
+                        onPressed: () => _run(
+                          () => widget.repository
+                              .execute(p.id, 'approve', taskId: t.id)
+                              .then((_) {}),
+                        ),
+                        icon: const Icon(Icons.approval_rounded),
+                      )
+                    : const Icon(Icons.chevron_right_rounded),
+              ),
             ),
-            title: Text(t.title),
-            subtitle: Text(
-              '${t.agentId} · ${t.priority}${t.workflowStatus == null ? '' : ' · ${t.workflowStatus}'}\n${t.detail}',
-              maxLines: 3,
-            ),
-            trailing: t.awaitingApproval
-                ? IconButton(
-                    tooltip: 'Approve',
-                    onPressed: () => _run(
-                      () => widget.repository
-                          .execute(p.id, 'approve', taskId: t.id)
-                          .then((_) {}),
-                    ),
-                    icon: const Icon(Icons.approval_rounded),
-                  )
-                : const Icon(Icons.chevron_right_rounded),
           ),
-        ),
-      ),
     ],
   );
   Widget _execution(Project p) {

@@ -232,13 +232,20 @@ class InboxController extends ChangeNotifier {
 }
 
 class InboxView extends StatelessWidget {
-  const InboxView({super.key, required this.controller});
+  const InboxView({super.key, required this.controller, this.focusApprovalId});
   final InboxController controller;
+  final String? focusApprovalId;
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
     builder: (_, _) {
       final q = controller.queue;
+      final approvals = q == null ? const <ApprovalItem>[] : [...q.items]
+        ..sort((left, right) {
+          if (left.id == focusApprovalId) return -1;
+          if (right.id == focusApprovalId) return 1;
+          return 0;
+        });
       final notifications = controller.notificationCenter;
       if (controller.loading && !controller.hasData) {
         return const _InboxSkeleton();
@@ -368,11 +375,13 @@ class InboxView extends StatelessWidget {
               SliverPadding(
                 padding: const EdgeInsets.only(bottom: 32),
                 sliver: SliverList.builder(
-                  itemCount: q.items.length,
+                  itemCount: approvals.length,
                   itemBuilder: (_, i) => ApprovalCard(
-                    item: q.items[i],
-                    busy: controller.deciding.contains(q.items[i].id),
-                    onDecision: (value) => controller.decide(q.items[i], value),
+                    item: approvals[i],
+                    busy: controller.deciding.contains(approvals[i].id),
+                    focused: approvals[i].id == focusApprovalId,
+                    onDecision: (value) =>
+                        controller.decide(approvals[i], value),
                   ),
                 ),
               ),
@@ -568,10 +577,12 @@ class ApprovalCard extends StatelessWidget {
     super.key,
     required this.item,
     required this.busy,
+    this.focused = false,
     required this.onDecision,
   });
   final ApprovalItem item;
   final bool busy;
+  final bool focused;
   final ValueChanged<bool> onDecision;
   @override
   Widget build(BuildContext context) {
@@ -585,10 +596,14 @@ class ApprovalCard extends StatelessWidget {
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          color: focused
+              ? Theme.of(context).colorScheme.primaryContainer
+              : Theme.of(context).colorScheme.surfaceContainerLow,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: color.withValues(alpha: item.riskLevel >= 3 ? .45 : .18),
+            color: focused
+                ? Theme.of(context).colorScheme.primary
+                : color.withValues(alpha: item.riskLevel >= 3 ? .45 : .18),
           ),
         ),
         child: Padding(

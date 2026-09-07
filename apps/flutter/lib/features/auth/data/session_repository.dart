@@ -66,6 +66,18 @@ class SessionRepository {
 
   Future<void> signOut() async {
     try {
+      final registrationId = await _store.readPushRegistrationId();
+      if (registrationId != null) {
+        try {
+          await _api.deleteJson(
+            NativePaths.pushRegistrationsRevoke(registrationId),
+            headers: {'idempotency-key': 'push-revoke-$registrationId'},
+          );
+        } catch (_) {
+          // The authoritative logout below revokes every registration bound
+          // to this native session even if the focused unregister call fails.
+        }
+      }
       await _api.postJson(NativePaths.authLogout);
     } finally {
       // A network outage cannot leave this installation appearing signed in.
