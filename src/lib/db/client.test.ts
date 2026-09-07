@@ -733,7 +733,7 @@ describe("ordered database schema versions", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
       version: 121,
       name: "approval_grants_v1",
-      checksum: "870ddeb8b46148b6c19c0d27703b0d7d49454f8daf4752bf155cb9d9f5b20338",
+      checksum: "74a51bdd87e583b6380533d34571455ba717829e390de8ef0806b2a818f37bd6",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 120)).toEqual({
       version: 120,

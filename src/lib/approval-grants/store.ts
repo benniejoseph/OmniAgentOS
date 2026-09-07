@@ -108,7 +108,7 @@ export async function issueApprovalGrant(
           tool_id, tool_contract_sha256, target_sha256,
           executing_principal_type, executing_principal_id,
           state, used_uses, max_uses, lifecycle_revision,
-          grant, issued_at, expires_at
+          grant_payload, issued_at, expires_at
         ) VALUES (
           ${grant.tenantId}, ${grant.ownerActorId}, ${grant.grantId},
           ${grant.sourceApprovalId}, ${grant.bindingSha256}, ${grant.planId},
@@ -120,7 +120,7 @@ export async function issueApprovalGrant(
           ${grant.expiresAt}
         )
         ON CONFLICT (tenant_id, owner_actor_id, grant_id) DO NOTHING
-        RETURNING grant
+        RETURNING grant_payload
       `;
       if (inserted[0]) {
         await appendGrantEvent("issued", grant, scope, sql);
@@ -207,7 +207,7 @@ export async function claimApprovalGrant(
         UPDATE omni_approval_grants
         SET state = ${updated.state}, used_uses = ${updated.usedUses},
             lifecycle_revision = ${updated.lifecycleRevision},
-            grant = ${updated}::jsonb, last_used_at = ${updated.lastUsedAt}
+            grant_payload = ${updated}::jsonb, last_used_at = ${updated.lastUsedAt}
         WHERE tenant_id = ${grant.tenantId}
           AND owner_actor_id = ${grant.ownerActorId}
           AND grant_id = ${grant.grantId}
@@ -302,7 +302,7 @@ export async function revokeApprovalGrantsForPlan(
     await ensureDatabaseSchema();
     return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
       const rows = await sql`
-        SELECT grant FROM omni_approval_grants
+        SELECT grant_payload FROM omni_approval_grants
         WHERE tenant_id = ${scope.tenantId}
           AND owner_actor_id = ${scope.initiatingActorId}
           AND plan_id = ${required(input.planId, "plan id")}
@@ -312,11 +312,11 @@ export async function revokeApprovalGrantsForPlan(
       `;
       const revoked: ApprovalGrantV1[] = [];
       for (const row of rows) {
-        const updated = revoke(approvalGrantV1Schema.parse(row.grant));
+        const updated = revoke(approvalGrantV1Schema.parse(row.grant_payload));
         await sql`
           UPDATE omni_approval_grants
           SET state = ${updated.state}, lifecycle_revision = ${updated.lifecycleRevision},
-              grant = ${updated}::jsonb, revoked_at = ${updated.revokedAt}
+              grant_payload = ${updated}::jsonb, revoked_at = ${updated.revokedAt}
           WHERE tenant_id = ${updated.tenantId}
             AND owner_actor_id = ${updated.ownerActorId}
             AND grant_id = ${updated.grantId}
@@ -363,12 +363,12 @@ export async function listApprovalGrants(
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
-      SELECT grant FROM omni_approval_grants
+      SELECT grant_payload FROM omni_approval_grants
       WHERE tenant_id = ${scope.tenantId}
         AND owner_actor_id = ${scope.initiatingActorId}
       ORDER BY issued_at DESC, grant_id ASC LIMIT ${limit}
     `;
-    return rows.map((row) => approvalGrantV1Schema.parse(row.grant));
+    return rows.map((row) => approvalGrantV1Schema.parse(row.grant_payload));
   }
   const ledger = await readGrantLedger();
   return ledger.grants
@@ -416,12 +416,14 @@ async function readGrantDb(
   forUpdate = false,
 ) {
   const rows = await sql.query(
-    `SELECT grant FROM omni_approval_grants
+    `SELECT grant_payload FROM omni_approval_grants
      WHERE tenant_id = $1 AND owner_actor_id = $2 AND grant_id = $3
      ${forUpdate ? "FOR UPDATE" : ""}`,
     [scope.tenantId, scope.initiatingActorId, grantId],
   );
-  return rows[0] ? approvalGrantV1Schema.parse(rows[0].grant) : undefined;
+  return rows[0]
+    ? approvalGrantV1Schema.parse(rows[0].grant_payload)
+    : undefined;
 }
 
 async function readClaimDb(
