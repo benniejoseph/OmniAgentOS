@@ -1866,3 +1866,19 @@ run execution scope can project an explicit context-grant count, and grant IDs
 do not enter the browser contract. Selecting a node re-enters the existing
 Conversation Activity or Project read surface; it does not create a fork,
 delegation, Project membership, artifact share, memory grant, or other effect.
+
+## Unified Projects and Missions WorkItem projections
+
+P11.4 emits no new domain event. `p11.4-work-item-surface:1` is a read-only
+composition of the existing canonical WorkItem projection, canonical Agent and
+artifact references, exact governed workflow state, and tenant-scoped AI usage
+receipts. Its status, progress, and cost fields observe those authorities; they
+do not approve execution, assign an Agent, attach an artifact, or declare an
+unverified workflow successful.
+
+The `local_projection` compatibility lane for historical legacy rows is
+explicitly non-persistent and carries no invented canonical hashes. Mutations
+still re-enter the existing Project or Mission application service and must
+commit their ordinary typed domain event and canonical shadow atomically. No
+event is synthesized merely because a legacy URL or workspace reads that
+compatibility projection.

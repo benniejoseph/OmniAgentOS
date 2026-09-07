@@ -2060,6 +2060,26 @@ contract, supported node/edge kinds, existing edge endpoints, and the
 non-memory edge marker; navigation targets are reconstructed locally from the
 canonical entity IDs.
 
+## Unified Projects and Missions WorkItem surface
+
+P11.4 pins `p11.4-work-item-surface:1` as the shared browser-safe truth for a
+Project task or Mission root/task. The surface combines the cross-checked
+canonical status projection, canonical Agent assignments and artifact
+references, exact governed workflow binding and step progress, and AI usage
+aggregated only from the workflow run's tenant-scoped ledger stream. Project
+and Mission application services produce this contract before either UI can
+render status, assignment, artifacts, progress, cost, or execution controls.
+
+The database read model verifies source authority, source ID, Project and
+WorkItem IDs, projection hashes, and workflow metadata binding. Contradictions
+fail closed. A historical legacy row that predates canonical shadow writing may
+use the explicit `local_projection` compatibility lane: it preserves the same
+stable IDs and current legacy status but exposes null persistence hashes and
+does not grant create, update, assignment, or execution authority. New writes
+still require their canonical projection. Legacy Mission collection and deep
+links call the same application services, so `/app/missions` and
+`/app/missions/:id` cannot diverge from the current workspace.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
