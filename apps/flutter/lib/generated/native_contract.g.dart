@@ -50,6 +50,7 @@ abstract final class NativePaths {
   static const workspacesCreate = '/api/projects';
   static String workspacesUpdate(String id) => '/api/projects/${Uri.encodeComponent(id)}';
   static const captureCreate = '/api/capture';
+  static const captureTranscribe = '/api/capture/transcribe';
   static const meetingsList = '/api/meetings';
   static String meetingsGet(String id) => '/api/meetings/${Uri.encodeComponent(id)}';
   static const notificationsList = '/api/notifications';

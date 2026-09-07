@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:record/record.dart';
 
 import '../../generated/native_contract.g.dart';
 
@@ -94,6 +97,7 @@ abstract interface class TalkRepository {
     String mode = 'orchestrate',
     String strategy = 'auto',
   });
+  Future<String> transcribeVoice(Uint8List bytes);
 }
 
 class TalkController extends ChangeNotifier {
@@ -103,6 +107,8 @@ class TalkController extends ChangeNotifier {
   String? threadId;
   String? status;
   bool sending = false;
+  bool transcribing = false;
+  Object? voiceError;
   Future<void> send(
     String input, {
     String mode = 'orchestrate',
@@ -126,6 +132,26 @@ class TalkController extends ChangeNotifier {
       strategy: _retryStrategy ?? 'auto',
       replaceFailedResponse: true,
     );
+  }
+
+  Future<String?> transcribeVoice(Uint8List bytes) async {
+    if (transcribing || bytes.isEmpty || bytes.length > 10 * 1024 * 1024) {
+      return null;
+    }
+    transcribing = true;
+    voiceError = null;
+    status = 'Transcribing voice draft';
+    notifyListeners();
+    try {
+      return await repository.transcribeVoice(bytes);
+    } catch (error) {
+      voiceError = error;
+      return null;
+    } finally {
+      transcribing = false;
+      status = null;
+      notifyListeners();
+    }
   }
 
   Future<void> _send(
@@ -223,11 +249,15 @@ class TalkView extends StatefulWidget {
 class _TalkViewState extends State<TalkView> {
   final input = TextEditingController();
   final scroll = ScrollController();
+  final recorder = AudioRecorder();
   String strategy = 'auto';
+  bool recording = false;
+  String? recordingError;
   @override
   void dispose() {
     input.dispose();
     scroll.dispose();
+    unawaited(recorder.dispose());
     super.dispose();
   }
 
@@ -235,6 +265,64 @@ class _TalkViewState extends State<TalkView> {
     final value = input.text;
     input.clear();
     widget.controller.send(value, mode: 'orchestrate', strategy: strategy);
+  }
+
+  Future<void> toggleVoiceDraft() async {
+    if (widget.controller.transcribing || widget.controller.sending) return;
+    setState(() => recordingError = null);
+    if (recording) {
+      setState(() => recording = false);
+      try {
+        final path = await recorder.stop();
+        if (path == null) throw StateError('Voice recording was not saved.');
+        final file = File(path);
+        final bytes = await file.readAsBytes();
+        try {
+          await file.delete();
+        } catch (_) {
+          // The OS may have already cleared the temporary recording.
+        }
+        final transcript = await widget.controller.transcribeVoice(bytes);
+        if (!mounted || transcript == null || transcript.trim().isEmpty) return;
+        final existing = input.text.trim();
+        input.text = existing.isEmpty
+            ? transcript.trim()
+            : '$existing\n${transcript.trim()}';
+        input.selection = TextSelection.collapsed(offset: input.text.length);
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            recordingError = 'Voice draft could not be transcribed. Your typed draft is unchanged.';
+          });
+        }
+      }
+      return;
+    }
+
+    try {
+      if (!await recorder.hasPermission()) {
+        throw StateError('Microphone permission was not granted.');
+      }
+      final path =
+          '${Directory.systemTemp.path}/asael-voice-${DateTime.now().microsecondsSinceEpoch}.m4a';
+      await recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          bitRate: 64000,
+          sampleRate: 24000,
+          numChannels: 1,
+        ),
+        path: path,
+      );
+      if (mounted) setState(() => recording = true);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          recordingError =
+              'Microphone access is required to create a voice draft.';
+        });
+      }
+    }
   }
 
   @override
@@ -398,23 +486,86 @@ class _TalkViewState extends State<TalkView> {
                         ],
                       ),
                       const SizedBox(height: 8),
+                      if (recording || widget.controller.transcribing)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            children: [
+                              Icon(
+                                recording
+                                    ? Icons.mic_rounded
+                                    : Icons.graphic_eq,
+                                color: recording
+                                    ? Theme.of(context).colorScheme.error
+                                    : Theme.of(context).colorScheme.primary,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                recording
+                                    ? 'Recording · tap stop to review transcript'
+                                    : 'Turning voice into an editable draft…',
+                              ),
+                            ],
+                          ),
+                        ),
+                      if (recordingError != null ||
+                          widget.controller.voiceError != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              recordingError ?? 'Voice transcription is temporarily unavailable.',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                            ),
+                          ),
+                        ),
                       TextField(
                         controller: input,
                         minLines: 1,
                         maxLines: 5,
                         textInputAction: TextInputAction.send,
-                        onSubmitted: widget.controller.sending
+                        onSubmitted:
+                            widget.controller.sending ||
+                                widget.controller.transcribing ||
+                                recording
                             ? null
                             : (_) => submit(),
                         decoration: InputDecoration(
                           hintText: 'Describe an outcome or ask a question',
                           filled: true,
-                          suffixIcon: IconButton(
-                            tooltip: 'Send message',
-                            onPressed: widget.controller.sending
-                                ? null
-                                : submit,
-                            icon: const Icon(Icons.arrow_upward_rounded),
+                          suffixIcon: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: recording
+                                    ? 'Stop and transcribe voice draft'
+                                    : 'Record voice draft',
+                                onPressed:
+                                    widget.controller.sending ||
+                                        widget.controller.transcribing
+                                    ? null
+                                    : toggleVoiceDraft,
+                                color: recording
+                                    ? Theme.of(context).colorScheme.error
+                                    : null,
+                                icon: Icon(
+                                  recording
+                                      ? Icons.stop_circle_outlined
+                                      : Icons.mic_none_rounded,
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Send message',
+                                onPressed:
+                                    widget.controller.sending || recording
+                                    ? null
+                                    : submit,
+                                icon: const Icon(Icons.arrow_upward_rounded),
+                              ),
+                            ],
                           ),
                         ),
                       ),

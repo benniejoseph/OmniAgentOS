@@ -185,11 +185,12 @@ class ApiClient {
     Uint8List? bytes,
     String? filename,
     String? contentType,
+    String fileField = 'file',
     Map<String, dynamic>? headers,
   }) async {
     final values = <String, dynamic>{...fields};
     if (bytes != null) {
-      values['file'] = MultipartFile.fromBytes(
+      values[fileField] = MultipartFile.fromBytes(
         bytes,
         filename: filename ?? 'capture.bin',
         contentType: contentType == null

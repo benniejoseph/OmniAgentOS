@@ -8,6 +8,8 @@ import type { SecurityContext } from "@/lib/security/types";
 export const NATIVE_MUTATION_CAPABILITIES = [
   "conversation.send",
   "notifications.update",
+  "capture.submit",
+  "capture.transcribe",
 ] as const;
 
 export type NativeMutationCapability =
