@@ -11657,11 +11657,17 @@ async function ensureA2ATaskMappingsV1(sql: SqlClient) {
     DO $migration$
     BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_a2a_task_mappings FROM omni_runtime';
+        EXECUTE 'REVOKE ALL ON TABLE omni_a2a_exchanges FROM omni_runtime';
+        EXECUTE 'REVOKE ALL ON SEQUENCE omni_a2a_exchanges_sequence_seq FROM omni_runtime';
         GRANT SELECT, INSERT ON omni_a2a_task_mappings TO omni_runtime;
         GRANT SELECT, INSERT ON omni_a2a_exchanges TO omni_runtime;
         GRANT USAGE, SELECT ON SEQUENCE omni_a2a_exchanges_sequence_seq TO omni_runtime;
       END IF;
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_a2a_task_mappings FROM omni_maintenance';
+        EXECUTE 'REVOKE ALL ON TABLE omni_a2a_exchanges FROM omni_maintenance';
+        EXECUTE 'REVOKE ALL ON SEQUENCE omni_a2a_exchanges_sequence_seq FROM omni_maintenance';
         GRANT SELECT, INSERT ON omni_a2a_task_mappings TO omni_maintenance;
         GRANT SELECT, INSERT ON omni_a2a_exchanges TO omni_maintenance;
         GRANT USAGE, SELECT ON SEQUENCE omni_a2a_exchanges_sequence_seq TO omni_maintenance;
