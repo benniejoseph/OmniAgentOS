@@ -335,6 +335,9 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     limit: integer(1, 100, 20),
     threadId: text(1, 200),
   })),
+  readTool("app.memory.readable.show", "Show readable memory", "Show the actor's metadata-only claim overview, timeline, scopes, use history, conflicts, entity counts, and deletion state. Claim content remains behind exact inspection.", objectSchema({
+    limit: integer(1, 200, 100),
+  })),
   readTool("app.memory.search", "Search memory", "Search durable memory visible to the current actor.", requiredObjectSchema({
     query: text(1, 4_000),
     limit: integer(1, 100, 20),

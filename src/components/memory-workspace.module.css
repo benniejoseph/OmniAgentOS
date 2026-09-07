@@ -142,6 +142,53 @@
 .graph :global(.memory-graph-legend span) { color: var(--day-muted); font-size: .53rem; }
 .graphActions { display: flex; align-items: center; gap: .35rem; }
 
+.overview { min-height: 38rem; overflow: hidden auto; background-image: linear-gradient(color-mix(in oklab, var(--day-paper) 72%, transparent), color-mix(in oklab, var(--day-paper) 92%, transparent)), radial-gradient(circle, color-mix(in oklab, var(--day-primary) 18%, transparent) .7px, transparent .9px); background-size: auto, 29px 29px; }
+.overview::before { background: radial-gradient(circle at 85% 8%, var(--day-mint), transparent 30%), radial-gradient(circle at 10% 72%, color-mix(in oklab, var(--day-peach) 54%, transparent), transparent 36%); }
+.overviewLoading { position: relative; z-index: 1; display: grid; min-height: 38rem; place-items: center; align-content: center; gap: .7rem; color: var(--day-muted); font-size: .7rem; }
+.overviewHeader { position: sticky; z-index: 4; top: 0; display: flex; min-height: 6.8rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--day-line); padding: 1.15rem 1.35rem; background: color-mix(in oklab, var(--day-paper-solid) 88%, transparent); backdrop-filter: blur(20px); }
+.overviewHeader p, .sectionHeading p { color: var(--day-primary); font-size: .52rem; font-weight: 780; text-transform: uppercase; letter-spacing: .1em; }
+.overviewHeader h2 { margin-top: .15rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.3rem, 2.3vw, 2rem); font-weight: 600; letter-spacing: -.025em; }
+.overviewHeader span { display: block; margin-top: .28rem; color: var(--day-muted); font-size: .61rem; line-height: 1.5; }
+.overviewHeader button { display: inline-flex; min-height: 2.45rem; flex: 0 0 auto; align-items: center; gap: .35rem; border: 1px solid color-mix(in oklab, var(--day-primary) 32%, var(--day-line)); border-radius: 999px; padding: 0 .8rem; color: var(--day-primary); background: var(--day-mint); font-size: .58rem; font-weight: 760; }
+.overviewBody { position: relative; z-index: 1; display: grid; gap: 1rem; padding: 1rem 1.15rem 1.4rem; }
+.overviewMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; }
+.overviewMetrics article, .overviewMetrics button { display: flex; min-height: 4.5rem; align-items: center; gap: .65rem; border: 1px solid var(--day-line); border-radius: 1.1rem; padding: .7rem .75rem; color: var(--day-primary); background: color-mix(in oklab, var(--day-paper-solid) 78%, transparent); text-align: left; box-shadow: 0 .7rem 1.8rem color-mix(in oklab, var(--day-shadow) 50%, transparent); }
+.overviewMetrics button:hover { border-color: color-mix(in oklab, var(--day-primary) 42%, var(--day-line)); background: var(--day-mint); }
+.overviewMetrics span { display: grid; gap: .08rem; color: var(--day-muted); font-size: .56rem; }
+.overviewMetrics strong { color: var(--day-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.05rem; font-weight: 600; }
+.overviewColumns { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(14rem, .75fr); gap: .75rem; }
+.timeline, .overviewAside > section { border: 1px solid var(--day-line); border-radius: 1.35rem; background: color-mix(in oklab, var(--day-paper-solid) 84%, transparent); }
+.timeline { min-height: 26rem; padding: .95rem; }
+.sectionHeading { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
+.sectionHeading h3 { margin-top: .12rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1rem; font-weight: 600; }
+.sectionHeading > span { border-radius: 999px; padding: .2rem .45rem; color: var(--day-muted); background: var(--day-paper-soft); font-size: .5rem; }
+.timeline ol { display: grid; margin-top: .8rem; }
+.timeline li { display: grid; grid-template-columns: .7rem minmax(0, 1fr); gap: .55rem; }
+.timeline li > i { position: relative; display: block; width: .52rem; height: .52rem; margin-top: .46rem; border: 2px solid var(--day-paper-solid); border-radius: 50%; background: var(--day-primary); box-shadow: 0 0 0 1px color-mix(in oklab, var(--day-primary) 35%, var(--day-line)); }
+.timeline li:not(:last-child) > i::after { position: absolute; top: .52rem; bottom: -3.7rem; left: calc(50% - .5px); width: 1px; background: var(--day-line); content: ""; }
+.timeline li button { display: grid; min-height: 4rem; gap: .08rem; border-bottom: 1px solid var(--day-line); padding: .4rem .2rem .55rem; color: var(--day-ink); text-align: left; }
+.timeline li button:disabled { cursor: default; }
+.timeline li button:not(:disabled):hover strong { color: var(--day-primary); }
+.timeline li span { color: var(--day-primary); font-size: .49rem; font-weight: 760; text-transform: uppercase; letter-spacing: .06em; }
+.timeline li strong { overflow: hidden; font-size: .65rem; text-overflow: ellipsis; white-space: nowrap; }
+.timeline li small { color: var(--day-muted); font-size: .51rem; }
+.overviewAside { display: grid; align-content: start; gap: .75rem; }
+.overviewAside > section { padding: .85rem; }
+.scopeList { display: grid; gap: .65rem; margin-top: .8rem; }
+.scopeList > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .25rem .6rem; }
+.scopeList span { color: var(--day-muted); font-size: .58rem; text-transform: capitalize; }
+.scopeList strong { font-size: .6rem; font-variant-numeric: tabular-nums; }
+.scopeList i { grid-column: 1 / -1; height: .3rem; overflow: hidden; border-radius: 999px; background: var(--day-paper-soft); }
+.scopeList b { display: block; height: 100%; border-radius: inherit; background: var(--day-primary); }
+.deletionState dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .45rem .6rem; margin-top: .8rem; border-top: 1px solid var(--day-line); padding-top: .65rem; font-size: .55rem; }
+.deletionState dt { color: var(--day-muted); }
+.deletionState dd { font-weight: 760; font-variant-numeric: tabular-nums; }
+.overviewAside > .disclosureNote { display: flex; align-items: flex-start; gap: .6rem; border-color: color-mix(in oklab, var(--day-primary) 32%, var(--day-line)); color: var(--day-primary); background: var(--day-mint); }
+.disclosureNote div { display: grid; gap: .2rem; }
+.disclosureNote strong { color: var(--day-ink); font-size: .61rem; }
+.disclosureNote span, .overviewEmpty { color: var(--day-muted); font-size: .54rem; line-height: 1.55; }
+.overviewEmpty { margin-top: .7rem; }
+
 .inspector { min-width: 0; overflow-y: auto; border-radius: 2rem 4.6rem 2rem 2rem; padding: 1.25rem; background: linear-gradient(160deg, var(--day-paper), color-mix(in oklab, var(--day-peach) 23%, var(--day-paper))); }
 .inspector :global(.memory-inspector-heading) { border-bottom-color: var(--day-line); }
 .inspector :global(.memory-inspector-heading p) { color: var(--day-primary); }
@@ -344,6 +391,8 @@
   .layout, .layoutCollapsed { grid-template-columns: 17rem minmax(0, 1fr); }
   .inspector { grid-column: 1 / -1; min-height: 22rem; border-radius: 2rem; }
   .graph > svg { height: 35rem; min-height: 35rem; }
+  .overviewColumns { grid-template-columns: 1fr; }
+  .overviewAside { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 56rem) {
   .stats .stat { display: none; }
@@ -354,9 +403,13 @@
   .index :global(.memory-index-list > button) { min-width: 15rem; border: 1px solid var(--day-line); }
   .graph { margin-bottom: .8rem; border-radius: 3rem 1.5rem; }
   .graph > svg { height: 31rem; min-height: 31rem; }
+  .overviewMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overviewAside { grid-template-columns: 1fr; }
 }
 @media (max-width: 40rem) {
   .graphActions { align-items: stretch; flex-direction: column; }
+  .overviewHeader { align-items: flex-start; flex-direction: column; }
+  .overviewHeader button { width: 100%; justify-content: center; }
   .relationshipEvidence { grid-template-columns: 1fr; padding-left: 0; }
   .header { flex-direction: column; align-items: flex-start; gap: 1rem; padding: 1.2rem .9rem; }
   .headerIntro { align-items: flex-start; }

@@ -384,6 +384,16 @@ returns 401, an authenticated empty or populated Council projection renders in
 Arsenal without client errors, and populated rows show only receipt-derived
 context, capability, tool, scope, and budget authority.
 
+P11.6 readable Memory is a web-only projection and UI release with no
+migration, backfill, environment change, or Fly release. The first Memory load
+must call only the private/no-store readable endpoint; exact claim content,
+entity labels, conflict bodies, and relationship paths are fetched only after
+an explicit selection. Verify anonymous access returns 401, the authenticated
+projection validates as `p11.6-readable-memory:1`, its serialized aggregate
+contains no claim bodies or receipt/query identifiers, and selecting one claim
+still opens the existing provenance, lifecycle, correction, and reviewed
+deletion controls.
+
 ## Production smoke state
 
 The `Production Smoke` workflow supports schedule and manual dispatch. Configure:

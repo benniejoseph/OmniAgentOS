@@ -2080,6 +2080,26 @@ still require their canonical projection. Legacy Mission collection and deep
 links call the same application services, so `/app/missions` and
 `/app/missions/:id` cannot diverge from the current workspace.
 
+## Readable Memory projection
+
+P11.6 makes the Memory workspace consume the strict
+`p11.6-readable-memory:1` projection before disclosing any exact claim. The
+aggregate contains bounded claim titles and metadata, timeline and use counts,
+scope distribution, entity counts, conflict state, and deletion propagation
+totals. It excludes claim bodies, evidence references, entity and graph labels,
+retrieval queries and result titles, receipt identifiers, actor coordinates,
+and access bindings.
+
+The application service independently reads the compatibility and authorized
+canonical-user memory lanes, then associates context use only when a scoped
+retrieval receipt names an already-visible memory ID. Deletion state includes
+only receipts explicitly attributed to the request's canonical/current actor
+identities; legacy-unattributed receipts are not re-owned. The browser fetches
+an exact claim, conflict record, entity label, or evidenced relationship path
+only after the user selects that surface. The former named graph visualization
+is not part of the aggregate view, so sensitive memory cannot leak through a
+visual cluster.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
