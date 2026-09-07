@@ -35,7 +35,12 @@ async function PATCHHandler(request: Request) {
   }
   let context;
   try {
-    context = await authorizeRequest({ request, action: "run.agent", resourceType: "personal_notifications" });
+    context = await authorizeRequest({
+      request,
+      action: "run.agent",
+      resourceType: "personal_notifications",
+      nativeMutationCapability: "notifications.update",
+    });
   } catch (error) {
     return forbiddenResponse(error);
   }

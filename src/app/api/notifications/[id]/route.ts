@@ -37,6 +37,7 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
       action: "run.agent",
       resourceType: "personal_notification",
       resourceId: id,
+      nativeMutationCapability: "notifications.update",
     });
   } catch (error) {
     return forbiddenResponse(error);

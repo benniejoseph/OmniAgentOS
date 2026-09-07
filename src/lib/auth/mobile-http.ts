@@ -1,4 +1,5 @@
 import type { MobileDevice } from "@/lib/auth/mobile-types";
+import type { SecurityContext } from "@/lib/security/types";
 import {
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -64,14 +65,21 @@ export function mobileError(
 }
 
 export function publicMobileIdentity(identity: {
-  context: unknown;
+  context: SecurityContext;
   user: unknown;
   tenant: unknown;
   membership: unknown;
   session: { device: MobileDevice };
 }) {
+  const publicContext = {
+    tenantId: identity.context.tenantId,
+    actorId: identity.context.actorId,
+    role: identity.context.role,
+    source: identity.context.source,
+    auth: identity.context.auth,
+  };
   return {
-    context: identity.context,
+    context: publicContext,
     user: identity.user,
     tenant: identity.tenant,
     membership: identity.membership,

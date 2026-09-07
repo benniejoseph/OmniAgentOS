@@ -53,6 +53,7 @@ abstract final class NativePaths {
   static const meetingsList = '/api/meetings';
   static String meetingsGet(String id) => '/api/meetings/${Uri.encodeComponent(id)}';
   static const notificationsList = '/api/notifications';
+  static const notificationsReadAll = '/api/notifications';
   static String notificationsAcknowledge(String id) => '/api/notifications/${Uri.encodeComponent(id)}';
   static String evidenceRun(String id) => '/api/runs/${Uri.encodeComponent(id)}';
   static String evidenceRunCancel(String id) => '/api/runs/${Uri.encodeComponent(id)}';

@@ -5,7 +5,10 @@ import {
 import { NATIVE_API_CURRENT_VERSION } from "@/lib/mobile/contracts";
 import type { SecurityContext } from "@/lib/security/types";
 
-export const NATIVE_MUTATION_CAPABILITIES = ["conversation.send"] as const;
+export const NATIVE_MUTATION_CAPABILITIES = [
+  "conversation.send",
+  "notifications.update",
+] as const;
 
 export type NativeMutationCapability =
   (typeof NATIVE_MUTATION_CAPABILITIES)[number];
