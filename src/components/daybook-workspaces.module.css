@@ -460,6 +460,26 @@
   box-shadow: 0 0.6rem 1.8rem oklch(from var(--primary) l c h / 0.14);
 }
 
+.projects :global(.projects-header-actions) {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.projects :global(.projects-template-button) {
+  display: inline-flex;
+  min-height: 2.85rem;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding-inline: 1rem;
+  color: var(--foreground);
+  background: var(--surface);
+  font-size: 0.7rem;
+  font-weight: 760;
+}
+
 .projects :global(.projects-stats) {
   gap: clamp(1rem, 3vw, 3rem);
   padding-inline: 0.5rem;
@@ -483,6 +503,252 @@
 .projects :global(.projects-create-form textarea),
 .projects :global(.projects-create-form button) {
   border-radius: 0.85rem;
+}
+
+.projects :global(.projects-template-deck) {
+  margin-top: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 1.8rem 1.8rem 3.6rem 1.8rem;
+  padding: clamp(1rem, 2vw, 1.5rem);
+  background: oklch(from var(--surface) l c h / 0.82);
+  box-shadow: var(--db-shadow-soft);
+  animation: workspace-enter 220ms ease both;
+}
+
+.projects :global(.projects-template-heading) {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.projects :global(.projects-template-heading h2) {
+  margin-top: 0.25rem;
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  font-weight: 540;
+  letter-spacing: -0.04em;
+}
+
+.projects :global(.projects-template-heading p:last-child) {
+  max-width: 44rem;
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.projects :global(.projects-template-heading > span) {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.45rem 0.7rem;
+  color: var(--success);
+  background: oklch(from var(--success) l c h / 0.1);
+  font-size: 0.62rem;
+  font-weight: 740;
+}
+
+.projects :global(.projects-template-publish) {
+  display: grid;
+  grid-template-columns: minmax(13rem, 1fr) minmax(10rem, 0.8fr) minmax(12rem, 1.1fr) auto;
+  align-items: end;
+  gap: 0.7rem;
+  margin-top: 1.2rem;
+  border-block: 1px dashed var(--line);
+  padding-block: 1rem;
+}
+
+.projects :global(.projects-template-publish > div) {
+  align-self: center;
+}
+
+.projects :global(.projects-template-publish strong),
+.projects :global(.projects-template-publish small),
+.projects :global(.projects-template-publish label > span) {
+  display: block;
+}
+
+.projects :global(.projects-template-publish strong) {
+  font-size: 0.75rem;
+}
+
+.projects :global(.projects-template-publish small),
+.projects :global(.projects-template-publish label > span) {
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.58rem;
+}
+
+.projects :global(.projects-template-publish label > span) {
+  margin: 0 0 0.35rem;
+  font-weight: 720;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.projects :global(.projects-template-publish input),
+.projects :global(.projects-template-publish button) {
+  min-height: 2.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+  padding-inline: 0.7rem;
+  color: var(--foreground);
+  background: var(--background);
+  font-size: 0.68rem;
+}
+
+.projects :global(.projects-template-publish input) {
+  width: 100%;
+}
+
+.projects :global(.projects-template-publish button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  color: var(--primary-ink);
+  background: var(--primary);
+  font-weight: 760;
+}
+
+.projects :global(.projects-template-grid) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.projects :global(.projects-template-card) {
+  display: flex;
+  min-height: 15rem;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 1.3rem 1.3rem 2.4rem 1.3rem;
+  padding: 1rem;
+  background: var(--surface-raised);
+}
+
+.projects :global(.projects-template-card-head),
+.projects :global(.projects-template-card-head span),
+.projects :global(.projects-template-card-head em),
+.projects :global(.projects-template-card-actions),
+.projects :global(.projects-template-card-actions button) {
+  display: flex;
+  align-items: center;
+}
+
+.projects :global(.projects-template-card-head) {
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.projects :global(.projects-template-card-head span),
+.projects :global(.projects-template-card-head em) {
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.57rem;
+  font-style: normal;
+  font-weight: 720;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.projects :global(.projects-template-card-head em:first-of-type) {
+  color: var(--primary);
+}
+
+.projects :global(.projects-template-card h3) {
+  margin-top: 1rem;
+  font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif;
+  font-size: 1.35rem;
+  font-weight: 560;
+}
+
+.projects :global(.projects-template-card > p) {
+  display: -webkit-box;
+  margin-top: 0.35rem;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.projects :global(.projects-template-card dl) {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-top: auto;
+  padding-block: 1rem;
+}
+
+.projects :global(.projects-template-card dl div) {
+  min-width: 0;
+}
+
+.projects :global(.projects-template-card dt) {
+  color: var(--muted);
+  font-size: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.projects :global(.projects-template-card dd) {
+  overflow: hidden;
+  margin-top: 0.2rem;
+  font-size: 0.65rem;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projects :global(.projects-template-card-actions) {
+  gap: 0.45rem;
+}
+
+.projects :global(.projects-template-card-actions button) {
+  min-height: 2.3rem;
+  justify-content: center;
+  gap: 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  padding-inline: 0.65rem;
+  color: var(--foreground);
+  background: var(--background);
+  font-size: 0.6rem;
+  font-weight: 720;
+}
+
+.projects :global(.projects-template-card-actions button.is-primary) {
+  color: var(--primary-ink);
+  background: var(--primary);
+}
+
+.projects :global(.projects-template-card-actions button:disabled),
+.projects :global(.projects-template-publish button:disabled) {
+  opacity: 0.5;
+}
+
+.projects :global(.projects-template-empty) {
+  display: flex;
+  min-height: 8rem;
+  align-items: center;
+  gap: 0.8rem;
+  color: var(--muted);
+}
+
+.projects :global(.projects-template-empty strong) {
+  color: var(--foreground);
+  font-size: 0.75rem;
+}
+
+.projects :global(.projects-template-empty p) {
+  margin-top: 0.2rem;
+  font-size: 0.65rem;
 }
 
 .projects :global(.projects-workspace) {
@@ -738,6 +1004,14 @@
   .projects :global(.project-canvas-head) {
     min-height: 9.5rem;
   }
+
+  .projects :global(.projects-template-publish) {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .projects :global(.projects-template-publish > div) {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 48rem) {
@@ -820,6 +1094,34 @@
 
   .projects :global(.projects-header h1) {
     font-size: clamp(3.4rem, 17vw, 5.4rem);
+  }
+
+  .projects :global(.projects-header-actions),
+  .projects :global(.projects-template-heading) {
+    width: 100%;
+  }
+
+  .projects :global(.projects-template-heading) {
+    display: block;
+  }
+
+  .projects :global(.projects-template-heading > span) {
+    margin-top: 0.75rem;
+  }
+
+  .projects :global(.projects-template-publish) {
+    display: block;
+  }
+
+  .projects :global(.projects-template-publish label),
+  .projects :global(.projects-template-publish button) {
+    display: block;
+    width: 100%;
+    margin-top: 0.7rem;
+  }
+
+  .projects :global(.projects-template-publish button) {
+    display: flex;
   }
 
   .projects :global(.projects-stats) {

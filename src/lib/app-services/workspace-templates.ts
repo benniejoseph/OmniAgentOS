@@ -7,6 +7,7 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
+import { showProjectService } from "@/lib/app-services/projects";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import {
   requestSharedMemoryAccessFromSecurityContext,
@@ -16,11 +17,8 @@ import { projectTaskIdForIdempotencyKey } from "@/lib/projects/events";
 import {
   createProject,
   createProjectTasks,
-  getOwnedProject,
-  listProjectTasks,
 } from "@/lib/projects/store";
 import { redactSensitive } from "@/lib/security/context";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import { workspaceTemplateDefinitionInputSchema } from "@/lib/workspace-templates/contracts";
@@ -124,13 +122,16 @@ export async function instantiateWorkspaceTemplateService(
     idempotencyKey: caller.idempotencyKey!,
   });
   if (replay) {
-    const project = await getOwnedProject(replay.projectId, readOwner(caller));
+    const project = (await showProjectService(caller, {
+      projectId: replay.projectId,
+      taskLimit: 100,
+      artifactLimit: 100,
+    })).data.project;
     if (!project) throw new Error("The instantiated project is unavailable.");
-    const tasks = await listProjectTasks(project.id, { tenantId: caller.context.tenantId });
     return completeAppServiceCall(authorized, {
       context: publicTemplateContext(access),
       instantiation: replay,
-      project: { ...project, tasks, artifacts: [] },
+      project,
     });
   }
 
@@ -221,10 +222,16 @@ export async function instantiateWorkspaceTemplateService(
     template,
     projectSnapshot,
   });
+  const projectView = (await showProjectService(caller, {
+    projectId: project.id,
+    taskLimit: 100,
+    artifactLimit: 100,
+  })).data.project;
+  if (!projectView) throw new Error("The instantiated project is unavailable.");
   return completeAppServiceCall(authorized, {
     context: publicTemplateContext(access),
     instantiation,
-    project: { ...project, tasks: createdTasks, artifacts: [] },
+    project: projectView,
   });
 }
 
@@ -319,14 +326,6 @@ function taskIdempotencyKey(rootDigest: string, taskKey: string) {
   return `template-task:${createHash("sha256")
     .update(`${rootDigest}:${taskKey}`, "utf8")
     .digest("hex")}`;
-}
-
-function readOwner(caller: AppServiceCaller) {
-  return {
-    tenantId: caller.context.tenantId,
-    actorId: caller.context.actorId,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context),
-  };
 }
 
 function publicTemplateContext(access: RequestSharedMemoryAccessV1) {
