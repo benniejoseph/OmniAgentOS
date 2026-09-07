@@ -371,7 +371,11 @@ export function customerFactId(input: { accountId: string; idempotencyKey: strin
 export function customerMutationId(input: {
   accountId: string;
   idempotencyKey: string;
-  operation: "account.create" | "account.revise" | "fact.record";
+  operation:
+    | "account.create"
+    | "account.revise"
+    | "fact.record"
+    | "salesforce.writes.configure";
 }) {
   return `customer-mutation:${canonicalJsonSha256(input)}`;
 }
