@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 2 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 1 as const;
+export const NATIVE_API_CURRENT_VERSION = 3 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 2 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -297,11 +297,9 @@ const v2Operations = [
   operation("workspaces.create", "POST", "/api/projects", "Create a canonical Workspace.", "bearer", "JsonObject", "JsonObject"),
   operation("workspaces.update", "PATCH", "/api/projects/{id}", "Update one canonical Workspace.", "bearer", "JsonObject", "JsonObject"),
   { ...operation("capture.create", "POST", "/api/capture", "Submit content to the authoritative Capture service.", "bearer", "JsonObject", "JsonObject"), mediaType: "multipart/form-data" as const },
-  { ...operation("capture.transcribe", "POST", "/api/capture/transcribe", "Transcribe a reviewed native voice draft.", "bearer", "JsonObject", "JsonObject"), mediaType: "multipart/form-data" as const },
   operation("meetings.list", "GET", "/api/meetings", "Read actor-visible meeting projections.", "bearer", undefined, "JsonObject"),
   operation("meetings.get", "GET", "/api/meetings/{id}", "Read one actor-visible meeting projection.", "bearer", undefined, "JsonObject"),
   operation("notifications.list", "GET", "/api/notifications", "Read actor-visible notifications.", "bearer", undefined, "JsonObject"),
-  operation("notifications.readAll", "PATCH", "/api/notifications", "Mark all actor-visible notifications read.", "bearer", "JsonObject", "JsonObject"),
   operation("notifications.acknowledge", "PATCH", "/api/notifications/{id}", "Acknowledge one actor-visible notification.", "bearer", "JsonObject", "JsonObject"),
   operation("evidence.run", "GET", "/api/runs/{id}", "Read one actor-visible run and its evidence.", "bearer", undefined, "JsonObject"),
   operation("evidence.run.cancel", "DELETE", "/api/runs/{id}", "Cancel one actor-visible run through its authoritative service.", "bearer", undefined, "JsonObject"),
@@ -362,6 +360,12 @@ const v2Operations = [
   operation("admin.trust", "GET", "/api/trust", "Read trust policy and evidence.", "bearer", undefined, "JsonObject"),
 ] as const satisfies readonly NativeOperation[];
 
+const v3Operations = [
+  ...v2Operations,
+  { ...operation("capture.transcribe", "POST", "/api/capture/transcribe", "Transcribe a reviewed native voice draft.", "bearer", "JsonObject", "JsonObject"), mediaType: "multipart/form-data" as const },
+  operation("notifications.readAll", "PATCH", "/api/notifications", "Mark all actor-visible notifications read.", "bearer", "JsonObject", "JsonObject"),
+] as const satisfies readonly NativeOperation[];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -406,6 +410,7 @@ export const nativeContractSchemas = Object.freeze({
 export function nativeOperationsForVersion(version: number): readonly NativeOperation[] | undefined {
   if (version === 1) return v1Operations;
   if (version === 2) return v2Operations;
+  if (version === 3) return v3Operations;
   return undefined;
 }
 
@@ -415,7 +420,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [2, 1],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [3, 2],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

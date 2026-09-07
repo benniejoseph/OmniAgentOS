@@ -6,11 +6,11 @@ CSRF protections are unchanged.
 
 ## Endpoints
 
-- `GET /api/mobile/contracts` publicly discovers the current and previous immutable native contract documents. Versioned OpenAPI 3.1, conversation-event JSON Schema, fixtures, and SHA-256 manifests are served from `/native-contracts/v2/*` and `/native-contracts/v1/*`.
+- `GET /api/mobile/contracts` publicly discovers the current and previous immutable native contract documents. Versioned OpenAPI 3.1, conversation-event JSON Schema, fixtures, and SHA-256 manifests are served from `/native-contracts/v3/*` and the frozen `/native-contracts/v2/*` rollout artifact.
 - `POST /api/mobile/auth/login` accepts `email`, `password`, and `device`. A current device envelope includes stable `id`, `name`, `platform`, normalized `appVersion`, positive `buildNumber`, and positive `clientContractVersion`. The legacy shape with no build/contract remains accepted and is classified as unknown. The response returns a short-lived bearer access token, a rotating refresh token, and the server-owned compatibility projection.
 - `POST /api/mobile/auth/refresh` accepts `refreshToken`, the original `deviceId`, and an optional current `client` attestation. Rotation is single-use. Reusing an already consumed refresh token revokes the device session. An attested refresh updates compatibility and last-seen evidence without trusting user/tenant identity from the body.
 - `POST /api/mobile/auth/logout` requires the access token in `Authorization: Bearer <token>` and revokes its device session.
-- `GET /api/mobile/bootstrap` requires a bearer token and returns the current user, tenant, role, device, granted permission names, API metadata, compatibility status, and the static native-client policy.
+- `GET /api/mobile/bootstrap` requires a bearer token and returns the current user, tenant, role, device, granted permission names, API metadata, compatibility status, and the native-client policy. Its `mutationCapabilities` projection reports active/held state and minimum contract version for each explicitly enrolled product operation; it contains no token or private device-session state.
 - `GET /api/mobile/adoption` requires `read.identity` and durable PostgreSQL. It returns only tenant-aggregated active-session and latest-device compatibility counts. No user, device, session, token, email, or raw-version values are exposed. The result is explicitly held and cannot activate Agent catalog enrollment.
 - `GET /api/mobile/devices` requires the current native bearer and returns only that actor's device-session projections in the current tenant. `POST /api/mobile/devices/:id` accepts `revoke` or `remote_wipe` for another owned installation; it cannot address another user or tenant.
 - `GET /api/mobile/wipe` exchanges the last revoked access token for one short-lived, single-use acknowledgement challenge only when that exact installation has a pending wipe. After local erasure, `POST /api/mobile/wipe` consumes the challenge and records completion. It grants no session or application authority.
@@ -18,6 +18,8 @@ CSRF protections are unchanged.
 All mobile auth responses are `private, no-store` and advertise the current, previous, and supported contract versions in response headers. Errors use `{ "error": { "code": "...", "message": "..." } }`. Authentication failures intentionally do not disclose whether an email exists.
 
 The TypeScript registry in `src/lib/mobile/contracts.ts` is the source for the published documents and generated Dart SDK. Run `npm run generate:native-contracts` after an intentional registry change and `npm run check:native-contracts` to reject generated drift. Flutter application code consumes `NativePaths`, `NativeContract`, and `NativeConversationEvents`; API path strings and accepted event discriminants do not have a second hand-maintained copy.
+
+Contract v3 maps Flutter's Today, Conversation, approvals, Workspaces, Capture, Meetings, notifications, and evidence surfaces to the same authoritative routes and application services as web. Notification read-all and voice-draft transcription are separately published operations. Conversation voice records a short local audio draft, uploads it only for scoped transcription, inserts the returned text into the editable composer, and requires the user to press Send. Capture accepts one supported file up to 5 MB. Offline encrypted capture is intentionally deferred to P12.4; APNs/FCM delivery is intentionally deferred to P12.5.
 
 ## Client storage and rotation
 
@@ -27,7 +29,7 @@ Access and refresh tokens are SHA-256 hashed at rest. A session is bound to one 
 
 When biometric unlock is enabled, the secure store refuses to release either credential until an enrolled biometric succeeds. The gate relocks when the app backgrounds and is explicitly separate from server authentication. Android uses `FlutterFragmentActivity`, `USE_BIOMETRIC`, and an AppCompat launch theme; iOS declares its Face ID purpose. Reinstalling creates a new local installation ID, while signing in again with an existing ID revokes and replaces the prior refresh family.
 
-Bearer access resolves through the same RBAC, tenant RLS, canonical-request binding, and audit attribution as browser sessions, but carries `source: mobile`. This keeps cookie-only origin enforcement limited to browser sessions while generic native mutations remain explicitly held until a later capability enrollment. Login, refresh, logout, bootstrap, and authorized reads use their bounded native contracts. Supplying any invalid `Authorization` header fails closed and never falls back to a browser cookie.
+Bearer access resolves through the same RBAC, tenant RLS, canonical-request binding, and audit attribution as browser sessions, but carries `source: mobile`. Cookie-only origin enforcement remains limited to browser sessions. Native mutations fail closed by default; only the registered P12.3 product capabilities are enrolled, and only for a compatible, freshly attested session on current contract v3. Route authorization, application-service execution attribution, governed approvals, and idempotency still apply after enrollment. Supplying any invalid `Authorization` header fails closed and never falls back to a browser cookie.
 
 ## Compatibility and rollout
 

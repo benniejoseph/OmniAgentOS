@@ -15,6 +15,12 @@ import {
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.includes("--check");
+const frozenPreviousDocumentSha256 = Object.freeze({
+  "openapi.json": "f60438afcdc91436614bfb6f803112dd8e9674ac91c03c22ea49c92150832313",
+  "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
+  "fixtures.json": "89cb152fb27d40eab1d64eea59ae2171fbdf304afef5beaef5a49cacac34fe35",
+  "manifest.json": "6c8cbc1bb3125ff8ffc0aa537ea1d3b27c23a91ebe86aa1acd910a64b1ce95b2",
+});
 
 const fixtures = Object.freeze({
   loginRequest: {
@@ -62,25 +68,16 @@ void generate().catch((error: unknown) => {
 async function generate() {
   const expected = new Map<string, string>();
   for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
+    const directory = path.join(repositoryRoot, "public", "native-contracts", `v${version}`);
+    if (version === NATIVE_API_PREVIOUS_VERSION) {
+      await retainFrozenPreviousContract(expected, directory);
+      continue;
+    }
     const operations = nativeOperationsForVersion(version);
     if (!operations) throw new Error(`Missing native operations for v${version}.`);
-    const directory = path.join(repositoryRoot, "public", "native-contracts", `v${version}`);
     const openapi = openApiDocument(version, operations);
-    const events = version === NATIVE_API_CURRENT_VERSION
-      ? schemaDocument("NativeConversationEvent")
-      : previousEventSchema();
-    const versionFixtures = version === NATIVE_API_CURRENT_VERSION
-      ? fixtures
-      : {
-          loginRequest: {
-            ...fixtures.loginRequest,
-            device: { ...fixtures.loginRequest.device, clientContractVersion: version },
-          },
-          refreshRequest: {
-            ...fixtures.refreshRequest,
-            client: { ...fixtures.refreshRequest.client, clientContractVersion: version },
-          },
-        };
+    const events = schemaDocument("NativeConversationEvent");
+    const versionFixtures = fixtures;
     const openapiText = stableJson(openapi);
     const eventsText = stableJson(events);
     const fixturesText = stableJson(versionFixtures);
@@ -128,6 +125,25 @@ async function generate() {
     await writeFile(filename, content, "utf8");
   }
   process.stdout.write(`Generated native contracts v${NATIVE_API_CURRENT_VERSION} and v${NATIVE_API_PREVIOUS_VERSION}.\n`);
+}
+
+async function retainFrozenPreviousContract(
+  expected: Map<string, string>,
+  directory: string,
+) {
+  for (const [basename, expectedSha256] of Object.entries(
+    frozenPreviousDocumentSha256,
+  )) {
+    const filename = path.join(directory, basename);
+    const content = await readFile(filename, "utf8").catch(() => undefined);
+    if (content === undefined) {
+      throw new Error(`Missing frozen previous native contract: ${path.relative(repositoryRoot, filename)}`);
+    }
+    if (sha256(content) !== expectedSha256) {
+      throw new Error(`Frozen previous native contract changed: ${path.relative(repositoryRoot, filename)}`);
+    }
+    expected.set(filename, content);
+  }
 }
 
 function openApiDocument(version: number, operations: readonly NativeOperation[]) {
@@ -195,18 +211,7 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
 
 function schemaNamesForVersion(version: number) {
   const names = Object.keys(nativeContractSchemas);
-  if (version !== NATIVE_API_PREVIOUS_VERSION) return names;
-  // The previous contract is a frozen rollout artifact. New current-version
-  // schemas must not silently alter its document or integrity manifest.
-  const currentOnly = new Set([
-    "NativeDeviceSession",
-    "NativeDeviceListResponse",
-    "NativeDeviceLifecycleRequest",
-    "NativeWipeChallengeResponse",
-    "NativeWipeAcknowledgementRequest",
-    "NativeWipeAcknowledgementResponse",
-  ]);
-  return names.filter((name) => !currentOnly.has(name));
+  return version === NATIVE_API_CURRENT_VERSION ? names : [];
 }
 
 function schemaDocument(name: string) {
@@ -215,17 +220,6 @@ function schemaDocument(name: string) {
   const document = z.toJSONSchema(schema, { target: "draft-2020-12" });
   const { $schema: _, ...component } = document;
   return component;
-}
-
-function previousEventSchema() {
-  return {
-    title: "NativeConversationEventV1",
-    description: "Version 1 did not publish a closed event schema. Existing discriminated event names remain accepted during the compatibility window.",
-    type: "object",
-    required: ["type"],
-    properties: { type: { type: "string", minLength: 1 } },
-    additionalProperties: true,
-  };
 }
 
 function errorResponse() {
