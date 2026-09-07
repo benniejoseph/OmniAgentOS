@@ -26,6 +26,7 @@ import { ConnectedSources, type OAuthGrantItem, type OAuthProviderItem } from "@
 import { LongRecordingStudio } from "@/components/capture/long-recording-studio";
 import { VisualStudio } from "@/components/capture/visual-studio";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
+import { WorkspaceLibrary } from "@/components/workspace-library";
 import { listOfflineCaptures, queueOfflineCapture, removeOfflineCapture, type OfflineCapture } from "@/lib/capture/offline";
 import styles from "./daybook-workspaces.module.css";
 
@@ -417,9 +418,16 @@ export function CaptureWorkspace() {
 
       <VisualStudio configured={geminiConfigured} model={geminiImageModel} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
 
+      <WorkspaceLibrary
+        title="Everything in this workspace"
+        description="Browse files, generated artifacts, images, recordings, transcripts, email, meetings, and connected sources in one versioned and cited view."
+        refreshKey={`${assets.length}:${knowledgeStats?.documents || 0}:${activeJob?.updatedAt || activeJob?.status || "idle"}`}
+        className="mt-7"
+      />
+
       <section className="border-t border-line pt-7" aria-labelledby="capture-library-title" data-daybook="section">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Capture library</p><h2 id="capture-library-title" className="mt-2 text-xl font-semibold tracking-tight">Originals and searchable knowledge.</h2><p className="mt-2 text-sm leading-6 text-muted">Open or download preserved files. Indexed documents are available to the context selector in Command conversations.</p></div>
+          <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Source controls</p><h2 id="capture-library-title" className="mt-2 text-xl font-semibold tracking-tight">Manage originals and the knowledge index.</h2><p className="mt-2 text-sm leading-6 text-muted">These source-specific controls remain here for download, deletion, and indexing. The unified library above is the canonical browse and search view.</p></div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <label className="relative min-w-56"><span className="sr-only">Search captured knowledge</span><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" /><input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Search this list" className="min-h-11 w-full rounded-md border border-line bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary" /></label>
             <label><span className="sr-only">Filter by source</span><select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="min-h-11 rounded-md border border-line bg-surface px-3 text-sm text-foreground"><option value="all">All sources</option><option value="capture">Capture</option><option value="mail">Email</option><option value="drive">Drive</option><option value="calendar">Calendar</option><option value="photos">Photos</option></select></label>
