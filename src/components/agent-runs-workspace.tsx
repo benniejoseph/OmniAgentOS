@@ -385,6 +385,7 @@ const tabs: Array<{ key: TabKey; label: string; icon: typeof TerminalSquare }> =
 
 export function AgentRunsWorkspace({
   initialAgentId,
+  initialRunId,
   initialThreadId,
   initialMissionId,
   initialProjectId,
@@ -392,6 +393,7 @@ export function AgentRunsWorkspace({
   initialGoal,
 }: {
   initialAgentId?: AgentId;
+  initialRunId?: string;
   initialThreadId?: string;
   initialMissionId?: string;
   initialProjectId?: string;
@@ -480,6 +482,7 @@ export function AgentRunsWorkspace({
   const pendingDeltasRef = useRef<string[]>([]);
   const deltaFlushTimerRef = useRef<number | null>(null);
   const initialThreadLoadedRef = useRef(false);
+  const initialRunLoadedRef = useRef(false);
   const responseSpeechControllerRef = useRef<AbortController | null>(null);
   const responseSpeechPlayerRef = useRef<StreamingPcmPlayer | null>(null);
   const agentRequestIdRef = useRef<string>("");
@@ -755,6 +758,9 @@ export function AgentRunsWorkspace({
       if (initialThreadId && !initialThreadLoadedRef.current) {
         initialThreadLoadedRef.current = true;
         void loadThread(initialThreadId);
+      } else if (initialRunId && !initialRunLoadedRef.current) {
+        initialRunLoadedRef.current = true;
+        void loadRunActivity(initialRunId);
       }
     }
     return () => {
@@ -2253,6 +2259,63 @@ export function AgentRunsWorkspace({
       agentRequestIdRef.current = "";
     } catch (threadError) {
       setError(threadError instanceof Error ? threadError.message : "Conversation could not be loaded.");
+    }
+  }
+
+  async function loadRunActivity(id: string) {
+    setError(undefined);
+    try {
+      const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(id)}`));
+      const run = asRecord(payload.run);
+      if (stringValue(run.id) !== id) throw new Error("Run not found.");
+      const ownedThreadId = stringValue(run.threadId);
+      if (ownedThreadId) await loadThread(ownedThreadId);
+      const status = stringValue(run.status);
+      const response = stringValue(run.response);
+      const nextGrounding = run.grounding
+        ? asRecord(run.grounding) as unknown as GroundingReport
+        : undefined;
+      const identity = asRecord(payload.agentIdentity);
+      const card = asRecord(identity.card);
+      if (stringValue(identity.state) === "ready" && stringValue(card.logicalAgentId)) {
+        setPreferredAgent(agentPresentationFromApi({
+          id: stringValue(card.logicalAgentId),
+          name: stringValue(card.name, "Agent"),
+          role: stringValue(card.role, "Agent"),
+          persona: card.persona,
+          accent: card.accent,
+        }));
+      }
+      currentRunIdRef.current = id;
+      directRunStatusRef.current = status;
+      setSelectedActivityRunId(id);
+      setActiveAgentRunId(["completed", "failed", "canceled"].includes(status) ? "" : id);
+      setAgentResponse(response);
+      setGrounding(nextGrounding);
+      setContextUseReceipt(contextUseReceiptFromPayload(payload));
+      setWaitingApproval(status === "waiting_approval" ? {
+        type: "waiting_approval",
+        executionId: stringPath(run, "waitingApproval.executionId", ""),
+        toolId: stringPath(run, "waitingApproval.toolId", ""),
+        message: `${stringPath(run, "waitingApproval.toolName", "A gated action")} needs approval before the task can continue.`,
+      } : undefined);
+      setClarificationRunId(status === "waiting_clarification" ? id : "");
+      setStreamEvents([
+        { type: "run", runId: id, threadId: ownedThreadId || undefined },
+        ...(status === "completed"
+          ? [{ type: "done" as const, response, grounding: nextGrounding }]
+          : status === "failed"
+            ? [{ type: "error" as const, message: stringValue(run.error, "The task stopped before completion.") }]
+            : status === "canceled"
+              ? [{ type: "canceled" as const, message: "The task was canceled." }]
+              : [{ type: "status" as const, label: "Durable run", detail: `Run is ${status.replaceAll("_", " ")}.` }]),
+      ]);
+      setActiveTab("execute");
+      setDetailsOpen(true);
+      setRunAnnouncement("Opened the durable activity and recovery record for this run.");
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Run activity could not be loaded.");
+      setRunAnnouncement("Run activity could not be loaded.");
     }
   }
 
