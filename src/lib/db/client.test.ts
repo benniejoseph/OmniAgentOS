@@ -731,9 +731,9 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 135,
-      name: "resumable_capture_media_v1",
-      checksum: "6504f48c638bb483fdbeb30a1a6efa72e8d97d2c7bdca4c7a266ff36fc9c7c1c",
+      version: 136,
+      name: "meeting_commitment_conversion_v1",
+      checksum: "ab838fcbc59a03d497e77b256e2d7f0e85bd5576ac4fa9980434b764fb9765be",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 129)).toEqual({
       version: 129,
