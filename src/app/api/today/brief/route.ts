@@ -4,6 +4,7 @@ import { generateTodayBriefService, showTodayBriefService, updateTodayPreference
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { TODAY_SECTION_KEYS } from "@/lib/today/sections";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -23,6 +24,7 @@ const preferencesSchema = z.object({
   quietHoursEnabled: z.boolean().optional(),
   quietHoursStart: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
   quietHoursEnd: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  visibleSections: z.array(z.enum(TODAY_SECTION_KEYS)).min(1).max(TODAY_SECTION_KEYS.length).optional(),
 }).strict();
 
 async function GETHandler(request: Request) {

@@ -703,5 +703,10 @@
     "version": 141,
     "name": "customer_success_workflows_v1",
     "checksum": "6ed4f5625107af151e49cf1fe094b9637af2053f5f1c85e31f6984cc1b4e7f38"
+  },
+  {
+    "version": 142,
+    "name": "cohesive_today_preferences_v1",
+    "checksum": "c2ccb45d121194793876b68fec90c68f2d1bdfadcc889aebdd5abd9f4bd8763d"
   }
 ]

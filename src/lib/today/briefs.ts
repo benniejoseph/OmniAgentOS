@@ -26,6 +26,11 @@ import type {
   TodayBriefLedger,
   TodayPreferences,
 } from "@/lib/today/types";
+import {
+  DEFAULT_TODAY_SECTIONS,
+  normalizeTodaySections,
+  type TodaySectionKey,
+} from "@/lib/today/sections";
 
 const briefSchema = z.object({
   summary: z.string().trim().min(1).max(600),
@@ -159,6 +164,7 @@ export async function updateTodayPreferences(
     | "quietHoursEnabled"
     | "quietHoursStart"
     | "quietHoursEnd"
+    | "visibleSections"
   >>,
   options: TodayPreferenceRequestOptions,
 ) {
@@ -191,6 +197,7 @@ export async function updateTodayPreferences(
     quietHoursEnabled: input.quietHoursEnabled ?? currentPreferences?.quietHoursEnabled ?? true,
     quietHoursStart: input.quietHoursStart ?? currentPreferences?.quietHoursStart ?? "22:00",
     quietHoursEnd: input.quietHoursEnd ?? currentPreferences?.quietHoursEnd ?? "07:00",
+    visibleSections: input.visibleSections ?? currentPreferences?.visibleSections ?? [...DEFAULT_TODAY_SECTIONS],
     createdAt: currentPreferences?.createdAt || now,
     updatedAt: now,
   });
@@ -200,12 +207,12 @@ export async function updateTodayPreferences(
       INSERT INTO omni_today_preferences (
         tenant_id, actor_id, brief_enabled, brief_time, timezone,
         reminder_lead_minutes, notifications_enabled, quiet_hours_enabled,
-        quiet_hours_start, quiet_hours_end, created_at, updated_at
+        quiet_hours_start, quiet_hours_end, visible_sections, created_at, updated_at
       ) VALUES (
         ${tenantId}, ${persistedActorId}, ${preferences.briefEnabled}, ${preferences.briefTime},
         ${preferences.timezone}, ${preferences.reminderLeadMinutes},
         ${preferences.notificationsEnabled}, ${preferences.quietHoursEnabled},
-        ${preferences.quietHoursStart}, ${preferences.quietHoursEnd},
+        ${preferences.quietHoursStart}, ${preferences.quietHoursEnd}, ${preferences.visibleSections},
         ${preferences.createdAt}, ${preferences.updatedAt}
       )
       ON CONFLICT (tenant_id, actor_id) DO UPDATE SET
@@ -217,6 +224,7 @@ export async function updateTodayPreferences(
         quiet_hours_enabled = EXCLUDED.quiet_hours_enabled,
         quiet_hours_start = EXCLUDED.quiet_hours_start,
         quiet_hours_end = EXCLUDED.quiet_hours_end,
+        visible_sections = EXCLUDED.visible_sections,
         updated_at = EXCLUDED.updated_at
       RETURNING *
     `;
@@ -325,6 +333,7 @@ async function getPostgresTodayBriefBundle(options: {
             quietHoursEnabled: true,
             quietHoursStart: "22:00",
             quietHoursEnd: "07:00",
+            visibleSections: [...DEFAULT_TODAY_SECTIONS],
             createdAt: wallClock,
             updatedAt: wallClock,
           });
@@ -812,6 +821,7 @@ function preferencesFromRow(row: Record<string, unknown>): TodayPreferences {
     quietHoursEnabled: row.quiet_hours_enabled === undefined ? true : Boolean(row.quiet_hours_enabled),
     quietHoursStart: String(row.quiet_hours_start || "22:00"),
     quietHoursEnd: String(row.quiet_hours_end || "07:00"),
+    visibleSections: normalizeTodaySections(row.visible_sections) as TodaySectionKey[],
     createdAt: dateValue(row.created_at),
     updatedAt: dateValue(row.updated_at),
   });
@@ -960,6 +970,7 @@ function sanitizePreferences(value: TodayPreferences): TodayPreferences {
     quietHoursEnabled: value.quietHoursEnabled ?? true,
     quietHoursStart: validTime(value.quietHoursStart, "22:00"),
     quietHoursEnd: validTime(value.quietHoursEnd, "07:00"),
+    visibleSections: [...normalizeTodaySections(value.visibleSections)],
   };
 }
 

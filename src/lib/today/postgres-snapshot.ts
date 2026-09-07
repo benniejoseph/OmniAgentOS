@@ -10,6 +10,7 @@ import {
   localScheduleParts,
 } from "@/lib/today/briefs";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
+import { DEFAULT_TODAY_SECTIONS, normalizeTodaySections } from "@/lib/today/sections";
 
 const DEFAULT_STATEMENT_TIMEOUT_MS = 5_000;
 const MAX_JSON_TEXT_LENGTH = 2_000_000;
@@ -72,6 +73,7 @@ export async function loadPostgresTodaySnapshot({
           preferences.quiet_hours_enabled,
           preferences.quiet_hours_start,
           preferences.quiet_hours_end,
+          preferences.visible_sections,
           preferences.created_at,
           preferences.updated_at,
           CASE
@@ -104,6 +106,7 @@ export async function loadPostgresTodaySnapshot({
           matched.quiet_hours_enabled,
           matched.quiet_hours_start,
           matched.quiet_hours_end,
+          matched.visible_sections,
           matched.created_at,
           matched.updated_at
         FROM matched_preferences matched
@@ -297,11 +300,11 @@ export async function loadPostgresTodaySnapshot({
         INSERT INTO omni_today_preferences (
           tenant_id, actor_id, brief_enabled, brief_time, timezone,
           reminder_lead_minutes, notifications_enabled, quiet_hours_enabled,
-          quiet_hours_start, quiet_hours_end, created_at, updated_at
+          quiet_hours_start, quiet_hours_end, visible_sections, created_at, updated_at
         )
         SELECT
           ${safeTenantId}, ${exactActorId}, TRUE, '08:00', ${fallbackTimezone},
-          30, TRUE, TRUE, '22:00', '07:00', ${wallClockIso}, ${wallClockIso}
+          30, TRUE, TRUE, '22:00', '07:00', ${[...DEFAULT_TODAY_SECTIONS]}, ${wallClockIso}, ${wallClockIso}
         FROM runtime_settings
         CROSS JOIN preference_match_state state
         CROSS JOIN brief_guard_state brief_guard
@@ -314,7 +317,7 @@ export async function loadPostgresTodaySnapshot({
         RETURNING
           tenant_id, actor_id, brief_enabled, brief_time, timezone,
           reminder_lead_minutes, notifications_enabled, quiet_hours_enabled,
-          quiet_hours_start, quiet_hours_end, created_at, updated_at
+          quiet_hours_start, quiet_hours_end, visible_sections, created_at, updated_at
       ),
       owner_preferences AS MATERIALIZED (
         SELECT * FROM inserted_preferences
@@ -625,6 +628,7 @@ function projectSnapshot(
       quietHoursEnabled: preferences.quietHoursEnabled,
       quietHoursStart: preferences.quietHoursStart,
       quietHoursEnd: preferences.quietHoursEnd,
+      visibleSections: preferences.visibleSections,
     },
     briefLocalDate: local.date,
     briefGenerationDue:
@@ -671,6 +675,7 @@ function projectPreferences(
     quietHoursEnabled: booleanValue(value.quiet_hours_enabled, true),
     quietHoursStart: validTime(value.quiet_hours_start, "22:00"),
     quietHoursEnd: validTime(value.quiet_hours_end, "07:00"),
+    visibleSections: [...normalizeTodaySections(value.visible_sections)],
     createdAt: optionalDate(value.created_at) || context.now.toISOString(),
     updatedAt: optionalDate(value.updated_at) || context.now.toISOString(),
   };

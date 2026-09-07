@@ -1,3 +1,5 @@
+import type { TodaySectionKey } from "@/lib/today/sections";
+
 export type TodayItemKind = "task" | "reminder";
 export type TodayItemPriority = "low" | "medium" | "high";
 export type TodayItemStatus = "open" | "done";
@@ -31,6 +33,7 @@ export type TodayPreferences = {
   quietHoursEnabled: boolean;
   quietHoursStart: string;
   quietHoursEnd: string;
+  visibleSections: TodaySectionKey[];
   createdAt: string;
   updatedAt: string;
 };

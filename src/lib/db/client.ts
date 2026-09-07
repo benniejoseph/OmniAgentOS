@@ -8,6 +8,7 @@ import {
 } from "@/lib/observability/request-timing";
 import { CUSTOMER_HEALTH_SCORING_SCHEMA_SQL } from "@/lib/db/customer-health-schema";
 import { CUSTOMER_SUCCESS_WORKFLOW_SCHEMA_SQL } from "@/lib/db/customer-success-workflow-schema";
+import { COHESIVE_TODAY_PREFERENCES_SCHEMA_SQL } from "@/lib/db/cohesive-today-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -1387,6 +1388,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[140],
       up: ensureCustomerSuccessWorkflowsV1,
+    },
+    {
+      ...databaseSchemaMigrations[141],
+      up: ensureCohesiveTodayPreferencesV1,
     },
   ];
 }
@@ -17750,6 +17755,10 @@ async function ensureCustomerHealthScoringV1(sql: SqlClient) {
 
 async function ensureCustomerSuccessWorkflowsV1(sql: SqlClient) {
   await sql.query(CUSTOMER_SUCCESS_WORKFLOW_SCHEMA_SQL);
+}
+
+async function ensureCohesiveTodayPreferencesV1(sql: SqlClient) {
+  await sql.query(COHESIVE_TODAY_PREFERENCES_SCHEMA_SQL);
 }
 
 async function ensureCanonicalActorScopeRepairV1(sql: SqlClient) {

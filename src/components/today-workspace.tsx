@@ -37,6 +37,7 @@ import {
 } from "@/lib/today/presentation";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
 import type { CustomerSuccessPortfolio } from "@/lib/customer-success/intelligence-contracts";
+import { DEFAULT_TODAY_SECTIONS } from "@/lib/today/sections";
 import type {
   UsagePeriodKey,
   UsagePeriodSummary,
@@ -63,6 +64,7 @@ const emptyPreferences: TodayPreferences = {
   quietHoursEnabled: true,
   quietHoursStart: "22:00",
   quietHoursEnd: "07:00",
+  visibleSections: [...DEFAULT_TODAY_SECTIONS],
 };
 
 export function TodayWorkspace({
