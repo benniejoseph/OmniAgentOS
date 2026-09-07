@@ -2038,6 +2038,28 @@ browser state. Browser and voice activity retain their existing evidence
 authorities, while checkpoint correction continues through the immutable fork
 service. This is a read model and creates no new execution authority or event.
 
+## Canonical Conversation canvas
+
+P11.3 replaces the former visual grouping by conversation mode with the pinned
+`p11.3-conversation-canvas:1` read projection. Its nodes are owned
+Conversations, their actual Agent runs, canonical Projects, durable delegation
+tasks, and retained Project or delegation-shared artifacts. Its only edges are
+backed by named authorities: `agent_run.thread_id`, checkpoint-fork lineage,
+`thread.project_id`, Project-artifact membership, delegation parent execution
+or parent delegation, and the exact sender/recipient fields on a shared
+delegation artifact. Presentation-only root, mode, or proximity edges do not
+exist.
+
+The private application service establishes the canonical/current-email actor
+read scope before loading a bounded graph. Execution-scope receipts expose only
+the number of explicit context grants on a run. Every lineage edge is marked
+`not_implied` for context: a Conversation, Project, delegation, or artifact
+relationship never grants shared memory. Missing legacy scope receipts remain
+explicitly `not_established`. The browser defensively accepts only the pinned
+contract, supported node/edge kinds, existing edge endpoints, and the
+non-memory edge marker; navigation targets are reconstructed locally from the
+canonical entity IDs.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
