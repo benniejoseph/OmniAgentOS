@@ -731,9 +731,9 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 127,
-      name: "ap2_receipt_reconciliation_v1",
-      checksum: "b85bf6d553f897caa31d67ec907d5abf308572652dd45524da150e4ec4a60acb",
+      version: 128,
+      name: "canonical_work_model_v1",
+      checksum: "04e10243d48983a00192987e1a2cb0f4b7dc00a1609a13d172495e911c85c59c",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 126)).toEqual({
       version: 126,
