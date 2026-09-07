@@ -62,7 +62,22 @@ export function toMissionTaskView(task: MissionTask) {
 
 export type MissionTaskView = ReturnType<typeof toMissionTaskView> & {
   workItemStatus?: CanonicalWorkItemStatusView;
+  execution?: MissionTaskExecutionView;
 };
+
+export type MissionTaskExecutionView = Readonly<{
+  schemaVersion: 1;
+  authority: "governed_execution_v1";
+  attemptId: string;
+  executorType: string;
+  agentRunId?: string;
+  workflowRunId?: string;
+  sourceStatus: string;
+  canonicalStatus: ReturnType<typeof canonicalStatusForMissionAttempt>;
+  startedAt?: string;
+  terminalAt?: string;
+  updatedAt: string;
+}>;
 
 export function toMissionArtifactView(artifact: MissionArtifact) {
   const publicData = publicArtifactData(artifact.kind, artifact.data);
@@ -90,9 +105,16 @@ export type MissionArtifactView = ReturnType<typeof toMissionArtifactView>;
  */
 export function toMissionDetailView(detail: MissionDetail) {
   const { mission } = detail;
+  const latestAttempts = latestAttemptsByTask(detail);
   return {
     mission: toMissionSummaryView(mission),
-    tasks: detail.tasks.map(toMissionTaskView),
+    tasks: detail.tasks.map((task) => {
+      const attempt = latestAttempts.get(task.id);
+      return {
+        ...toMissionTaskView(task),
+        ...(attempt ? { execution: missionTaskExecutionView(attempt) } : {}),
+      };
+    }),
     attempts: detail.attempts.map((attempt) => ({
       id: attempt.id,
       missionId: attempt.missionId,
@@ -117,6 +139,35 @@ export type MissionDetailView = Omit<BaseMissionDetailView, "mission" | "tasks">
   mission: MissionSummaryView;
   tasks: MissionTaskView[];
 };
+
+function latestAttemptsByTask(detail: MissionDetail) {
+  const latest = new Map<string, MissionDetail["attempts"][number]>();
+  for (const attempt of detail.attempts) {
+    const current = latest.get(attempt.taskId);
+    if (!current || current.updatedAt < attempt.updatedAt) {
+      latest.set(attempt.taskId, attempt);
+    }
+  }
+  return latest;
+}
+
+function missionTaskExecutionView(
+  attempt: MissionDetail["attempts"][number],
+): MissionTaskExecutionView {
+  return Object.freeze({
+    schemaVersion: 1,
+    authority: "governed_execution_v1",
+    attemptId: attempt.id,
+    executorType: attempt.executorType,
+    agentRunId: attempt.agentRunId,
+    workflowRunId: attempt.workflowRunId,
+    sourceStatus: attempt.status,
+    canonicalStatus: canonicalStatusForMissionAttempt(attempt),
+    startedAt: attempt.startedAt,
+    terminalAt: attempt.terminalAt,
+    updatedAt: attempt.updatedAt,
+  });
+}
 
 function publicTaskMetadata(metadata: Record<string, unknown>) {
   const view: Record<string, unknown> = {};

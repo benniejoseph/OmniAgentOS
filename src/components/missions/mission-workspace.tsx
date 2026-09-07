@@ -1555,9 +1555,11 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
   const originalAssigneeId = taskAssigneeId(task);
   const [assigneeId, setAssigneeId] = useState(originalAssigneeId === "unassigned" ? "" : originalAssigneeId); const [reviewRequired, setReviewRequired] = useState(taskReviewRequired(task)); const [blockerReason, setBlockerReason] = useState(taskBlockerReason(task)); const [dependencyIds, setDependencyIds] = useState(task.dependencyIds); const [comment, setComment] = useState(""); const [reviewNote, setReviewNote] = useState("");
   const column = boardColumnForTask(task, allTasks); const attempts = attemptsForTask(detail, task.id); const comments = commentsForTask(detail, task); const artifacts = artifactsForTask(detail, task.id).filter((artifact) => !isCommentArtifact(artifact));
-  const activeGovernedAttempt = attempts.some((attempt) =>
-    ["queued", "running", "waiting"].includes(attempt.status)
-  );
+  const activeGovernedAttempt = task.execution
+    ? ["queued", "running", "waiting"].includes(task.execution.sourceStatus)
+    : attempts.some((attempt) =>
+        ["queued", "running", "waiting"].includes(attempt.status)
+      );
   const availableTaskActions = taskActionsFor(column, task, activeGovernedAttempt);
   const assignmentOptions = agents.filter(
     (agent) => agent.selectable || agent.id === assigneeId,
