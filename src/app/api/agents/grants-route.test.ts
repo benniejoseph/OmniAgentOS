@@ -33,7 +33,7 @@ import { DELETE } from "@/app/api/agents/[id]/grants/[grantId]/route";
 const auth = {
   tenantId: "tenant-one",
   actorId: "owner@example.test",
-  role: "owner",
+  role: "operator",
 };
 
 beforeEach(() => {

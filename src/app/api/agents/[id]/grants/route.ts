@@ -4,8 +4,6 @@ import { agentMemoryGrantDraftV1Schema } from "@/lib/memory/agent-grant-editor";
 import {
   AgentMemoryGrantConflictError,
   AgentMemoryGrantUnavailableError,
-  createAgentMemoryGrant,
-  listAgentMemoryGrants,
 } from "@/lib/memory/agent-grant-store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -34,12 +32,8 @@ async function GETHandler(
   const actorBinding = canonicalRequestActorBindingFromSecurityContext(auth);
   if (!actorBinding) return canonicalActorUnavailableResponse();
   try {
-    const grants = await listAgentMemoryGrants(id, {
-      tenantId: auth.tenantId,
-      actorId: auth.actorId,
-      canonicalActorId: actorBinding.canonicalActorId,
-    });
-    return Response.json({ grants }, { headers: privateNoStoreHeaders });
+    const result = await listAgentGrantsService(createAppServiceCaller({ context: auth }), { agentId: id });
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return grantErrorResponse(error);
   }
@@ -77,12 +71,11 @@ async function POSTHandler(
   const actorBinding = canonicalRequestActorBindingFromSecurityContext(auth);
   if (!actorBinding) return canonicalActorUnavailableResponse();
   try {
-    const grant = await createAgentMemoryGrant(id, parsed.data, {
-      tenantId: auth.tenantId,
-      actorId: auth.actorId,
-      canonicalActorId: actorBinding.canonicalActorId,
-    });
-    return Response.json({ grant }, {
+    const result = await createAgentGrantService(
+      createRequestMutationAppServiceCaller(request, auth, { purpose: "agent.grant.create", causationId: id }),
+      { agentId: id, grant: parsed.data },
+    );
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, {
       status: 201,
       headers: privateNoStoreHeaders,
     });
@@ -112,3 +105,5 @@ function grantErrorResponse(error: unknown) {
   }
   throw error;
 }
+import { createAgentGrantService, listAgentGrantsService } from "@/lib/app-services/agent-governance";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";

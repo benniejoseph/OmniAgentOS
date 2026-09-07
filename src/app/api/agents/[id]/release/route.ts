@@ -1,13 +1,15 @@
 import { z } from "zod";
 
 import {
+  evaluateAgentReleaseService,
+  showAgentReleaseService,
+  transitionAgentReleaseService,
+} from "@/lib/app-services/agent-governance";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import {
   AgentReleaseConflictError,
   AgentReleaseUnavailableError,
-  evaluateAgentRelease,
-  getAgentRelease,
-  promoteAgentRelease,
   retireAgentRelease,
-  rollbackAgentRelease,
 } from "@/lib/agents/release-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -59,7 +61,8 @@ async function GETHandler(
   const owner = releaseOwner(auth);
   if (!owner) return canonicalActorUnavailableResponse();
   try {
-    return Response.json({ release: await getAgentRelease(id, owner) }, {
+    const result = await showAgentReleaseService(createAppServiceCaller({ context: auth }), { agentId: id });
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, {
       headers: privateNoStoreHeaders,
     });
   } catch (error) {
@@ -99,13 +102,17 @@ async function POSTHandler(
   const owner = releaseOwner(auth);
   if (!owner) return canonicalActorUnavailableResponse();
   try {
-    const release = parsed.data.action === "evaluate"
-      ? await evaluateAgentRelease(id, parsed.data.definitionVersion, owner)
-      : parsed.data.action === "promote"
-        ? await promoteAgentRelease(id, parsed.data.evaluationId, owner)
-        : parsed.data.action === "rollback"
-          ? await rollbackAgentRelease(id, parsed.data.evaluationId, owner)
-          : await retireAgentRelease(id, owner);
+    const release = parsed.data.action === "retire"
+      ? await retireAgentRelease(id, owner)
+      : parsed.data.action === "evaluate"
+        ? (await evaluateAgentReleaseService(
+            createRequestMutationAppServiceCaller(request, auth, { purpose: "agent.release.evaluate", causationId: id }),
+            { agentId: id, definitionVersion: parsed.data.definitionVersion },
+          )).data.release
+        : (await transitionAgentReleaseService(
+            createRequestMutationAppServiceCaller(request, auth, { purpose: `agent.release.${parsed.data.action}`, causationId: id }),
+            { agentId: id, action: parsed.data.action, evaluationId: parsed.data.evaluationId },
+          )).data.release;
     return Response.json({ release }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return releaseErrorResponse(error);

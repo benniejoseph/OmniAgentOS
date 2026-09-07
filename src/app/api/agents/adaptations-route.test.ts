@@ -41,7 +41,7 @@ import { GET, POST } from "@/app/api/agents/[id]/adaptations/route";
 const auth = {
   tenantId: "tenant-one",
   actorId: "owner@example.test",
-  role: "owner",
+  role: "operator",
 };
 const adaptations = [{ adaptationId: `agent-adaptation:${"a".repeat(64)}` }];
 

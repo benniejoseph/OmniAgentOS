@@ -36,7 +36,7 @@ import { GET, POST } from "@/app/api/agents/[id]/release/route";
 const auth = {
   tenantId: "tenant-one",
   actorId: "owner@example.test",
-  role: "owner",
+  role: "operator",
 };
 const release = {
   agentId: "agent-one",
