@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 126,
+      name: "ap2_credential_authorization_v1",
+      checksum: "58e206e5cf85d52958965d7ae06d89a1f61059ee41532970c3645b1dfff60708",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 125)).toEqual({
       version: 125,
       name: "ap2_human_present_mandates_v1",
       checksum: "f8b75e5d61a3a347649d82909e8e18e6f174079d37a5609643df768c0c9031a5",

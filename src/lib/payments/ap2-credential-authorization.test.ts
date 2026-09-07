@@ -3,7 +3,7 @@ import {
   generateKeyPairSync,
   sign,
 } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AP2_BOUNDARY_VERSION } from "@/lib/payments/ap2-contracts";
 import {
@@ -13,6 +13,7 @@ import {
   buildAp2CredentialGrant,
   buildAp2CredentialProviderConfiguration,
   credentialProviderSigningPayload,
+  obtainAp2CredentialProviderAuthorization,
   providerAuthorizationPublicProof,
   verifyAp2CredentialProviderAuthorization,
   type Ap2CredentialAuthorizationRequest,
@@ -136,6 +137,31 @@ describe("P9.17 deterministic AP2 credential authorization", () => {
       ...fixture.request,
       scope: { ...fixture.request.scope, redirectAllowed: true },
     }).success).toBe(false);
+  });
+
+  it("reconciles an unknown provider outcome without blindly authorizing again", async () => {
+    const fixture = completeFixture();
+    const authorize = vi.fn().mockRejectedValue(new Error("connection closed"));
+    const reconcile = vi.fn().mockResolvedValue(fixture.authorization);
+    const mandate = mandateFixture();
+
+    const result = await obtainAp2CredentialProviderAuthorization({
+      provider: {
+        interfaceVersion: "p9.17-ap2-credential-provider:1",
+        configuration: fixture.configuration,
+        authorize,
+        reconcile,
+      },
+      request: fixture.request,
+      checkoutMandateContent: mandate.review.checkoutMandateContent,
+      paymentMandateContent: mandate.review.paymentMandateContent,
+      mandateAuthorization: mandate.authorization,
+      now: fixture.now,
+    });
+
+    expect(result).toEqual(fixture.authorization);
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -322,7 +348,7 @@ function mandateFixture() {
       "counter_progression",
       "user_verification_and_backup_state",
       "authorization_time_and_expiry",
-    ] as const,
+    ] as Ap2MandateVerificationReceipt["checks"],
     verifiedAt,
   };
   const verification: Ap2MandateVerificationReceipt = {
