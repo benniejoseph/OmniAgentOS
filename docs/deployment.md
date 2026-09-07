@@ -205,6 +205,15 @@ mismatched contract and cancel both the upstream body and scheduled audio on
 interruption. Speech events and usage receipts contain metadata and byte counts,
 never response text or audio.
 
+P9.11 keeps voice-command authority in the web tier and requires no new Fly
+route. Realtime transcription requests log probabilities, but Asael retains
+only content-free numeric confidence summaries. Low-confidence, unavailable,
+or edited drafts require explicit visible transcript review. Every
+voice-originated tool above risk zero is forced through the existing durable
+governed approval path, whose client projection shows redacted exact input,
+risk, reversibility, and quorum. Spoken confirmation never approves an action;
+only the authenticated visible Approve/Reject decision route can do so.
+
 ## Self-hosted Playwright browser service
 
 The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](https://github.com/microsoft/playwright-mcp), not a paid browser API. `Dockerfile.playwright-mcp` pins the official browser image by version and digest, while `fly.playwright-mcp.toml` keeps Chromium in a separate 1 GB Singapore machine. The gateway accepts only its bearer token, converts Asael's opaque tenant+actor+run scope into one private browser process, and removes the bearer secret before starting Playwright. A DNS-validating outbound proxy permits public web ports only and blocks loopback, private, link-local, metadata, and internal Fly destinations.
