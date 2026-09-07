@@ -1,6 +1,7 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { listWorkflowExecutionsService } from "@/lib/app-services/workflows";
 import { parseBoundedInteger } from "@/lib/http/body";
-import { listWorkflowPlanNodeExecutions, getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -24,8 +25,6 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
-  return Response.json({
-    executions: await listWorkflowPlanNodeExecutions(limit, { tenantId: context.tenantId }),
-    stats: await getWorkflowPlanNodeExecutionStats({ tenantId: context.tenantId }),
-  });
+  const result = await listWorkflowExecutionsService(createAppServiceCaller({ context }), { limit });
+  return Response.json({ ...result.data, serviceReceipt: result.receipt });
 }

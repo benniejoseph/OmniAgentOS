@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { listWorkflowsService } from "@/lib/app-services/workflows";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
@@ -10,7 +12,6 @@ import {
 import { redactSensitive } from "@/lib/security/context";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { getOperationJobStats } from "@/lib/operations/job-queue";
 import {
   narrowRunBudgetLimits,
   runBudgetCountersV1Schema,
@@ -20,8 +21,6 @@ import {
   assertWorkflowRunExecutionAuthority,
   createWorkflowRun,
   getWorkflowRunDetail,
-  getWorkflowStats,
-  listWorkflowRuns,
   transitionWorkflowRunWithEvents,
 } from "@/lib/workflows/store";
 import {
@@ -30,9 +29,7 @@ import {
   validateWorkflowPlan,
 } from "@/lib/workflows/planner";
 import {
-  publicWorkflowRun,
   publicWorkflowRunDetail,
-  publicWorkflowStats,
 } from "@/lib/workflows/public";
 import { getThread } from "@/lib/threads/store";
 import {
@@ -78,20 +75,12 @@ async function GETHandler(request: Request) {
   });
   const includeStats = url.searchParams.get("stats") !== "false";
   const includeQueue = url.searchParams.get("queue") !== "false";
-  const [runs, stats, queue] = await Promise.all([
-    listWorkflowRuns(limit, { tenantId: context.tenantId }),
-    includeStats
-      ? getWorkflowStats({ tenantId: context.tenantId })
-      : Promise.resolve(undefined),
-    includeQueue
-      ? getOperationJobStats({ tenantId: context.tenantId })
-      : Promise.resolve(undefined),
-  ]);
-  return Response.json({
-    runs: runs.map(publicWorkflowRun),
-    ...(stats ? { stats: publicWorkflowStats(stats) } : {}),
-    ...(queue ? { queue } : {}),
+  const result = await listWorkflowsService(createAppServiceCaller({ context }), {
+    limit,
+    includeStats,
+    includeQueue,
   });
+  return Response.json({ ...result.data, serviceReceipt: result.receipt });
 }
 
 async function POSTHandler(request: Request) {

@@ -59,6 +59,16 @@ import {
   updateAgentService,
   updateSkillService,
 } from "@/lib/app-services/agents";
+import {
+  listWorkflowExecutionsService,
+  listWorkflowPlansService,
+  listWorkflowsService,
+  planWorkflowService,
+  showWorkflowService,
+  signalWorkflowService,
+  startWorkflowService,
+  tickWorkflowService,
+} from "@/lib/app-services/workflows";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -126,6 +136,14 @@ export async function executeFirstPartyAppTool(input: {
     "app.skills.update": () => updateSkillService(caller, input.toolInput as never),
     "app.skills.delete.preview": () => previewSkillDeleteService(caller, input.toolInput as never),
     "app.skills.delete": () => deleteSkillService(caller, input.toolInput as never),
+    "app.workflows.list": () => listWorkflowsService(caller, input.toolInput as never),
+    "app.workflows.show": () => showWorkflowService(caller, input.toolInput as never),
+    "app.workflows.plans.list": () => listWorkflowPlansService(caller, input.toolInput as never),
+    "app.workflows.plan": () => planWorkflowService(caller, input.toolInput as never),
+    "app.workflows.executions.list": () => listWorkflowExecutionsService(caller, input.toolInput as never),
+    "app.workflows.start": () => startWorkflowService(caller, input.toolInput as never),
+    "app.workflows.signal": () => signalWorkflowService(caller, input.toolInput as never),
+    "app.workflows.tick": () => tickWorkflowService(caller, input.toolInput as never),
   };
   const handler = handlers[input.toolId];
   if (!handler) throw new Error(`No first-party application handler is registered for ${input.toolId}.`);
