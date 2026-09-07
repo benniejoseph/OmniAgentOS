@@ -1,4 +1,4 @@
-import { getRunBrowserFrameContent } from "@/lib/browser/frames";
+import { getRunBrowserAccessibilitySnapshotContent } from "@/lib/browser/frames";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { getAgentRun } from "@/lib/runs/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -12,9 +12,9 @@ const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(
   request: Request,
-  context: { params: Promise<{ id: string; frameId: string }> },
+  context: { params: Promise<{ id: string; snapshotId: string }> },
 ) {
-  const { id, frameId } = await context.params;
+  const { id, snapshotId } = await context.params;
   let auth;
   try {
     auth = await authorizeRequest({
@@ -28,53 +28,43 @@ async function GETHandler(
   }
 
   const run = await getAgentRun(id, { tenantId: auth.tenantId });
-  if (!run) {
-    return Response.json(
-      { error: "Browser frame not found." },
-      { status: 404, headers: privateNoStoreHeaders },
-    );
-  }
+  if (!run) return notFound();
   if (run.threadId) {
     const thread = await getOwnedThread(run.threadId, {
       tenantId: auth.tenantId,
       actorId: auth.actorId,
       requestActorBinding: canonicalRequestActorBindingFromSecurityContext(auth),
     });
-    if (!thread) {
-      return Response.json(
-        { error: "Browser frame not found." },
-        { status: 404, headers: privateNoStoreHeaders },
-      );
-    }
+    if (!thread) return notFound();
   } else {
     const binding = canonicalRequestActorBindingFromSecurityContext(auth);
     if (run.ownerActorId !== auth.actorId && run.ownerActorId !== binding?.canonicalActorId) {
-      return Response.json(
-        { error: "Browser frame not found." },
-        { status: 404, headers: privateNoStoreHeaders },
-      );
+      return notFound();
     }
   }
 
-  const frame = await getRunBrowserFrameContent(id, frameId, {
-    tenantId: auth.tenantId,
-    actorId: auth.actorId,
-  });
-  if (!frame) {
-    return Response.json(
-      { error: "Browser frame not found." },
-      { status: 404, headers: privateNoStoreHeaders },
-    );
-  }
+  const snapshot = await getRunBrowserAccessibilitySnapshotContent(
+    id,
+    snapshotId,
+    { tenantId: auth.tenantId, actorId: auth.actorId },
+  );
+  if (!snapshot) return notFound();
 
-  return new Response(frame.bytes, {
+  return new Response(snapshot.bytes, {
     headers: {
       "cache-control": "private, no-store",
-      "content-length": String(frame.asset.byteCount),
+      "content-length": String(snapshot.asset.byteCount),
       "content-security-policy": "default-src 'none'; sandbox",
-      "content-type": frame.asset.mediaType,
-      etag: `"${frame.asset.contentSha256}"`,
+      "content-type": "text/plain; charset=utf-8",
+      etag: `"${snapshot.asset.contentSha256}"`,
       "x-content-type-options": "nosniff",
     },
   });
+}
+
+function notFound() {
+  return Response.json(
+    { error: "Browser accessibility snapshot not found." },
+    { status: 404, headers: privateNoStoreHeaders },
+  );
 }

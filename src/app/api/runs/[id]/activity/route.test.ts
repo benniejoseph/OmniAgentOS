@@ -5,6 +5,7 @@ const routeMocks = vi.hoisted(() => ({
   getAgentRun: vi.fn(),
   getOwnedThread: vi.fn(),
   getRunBrowserFrameContent: vi.fn(),
+  getRunBrowserAccessibilitySnapshotContent: vi.fn(),
   listRunBrowserActivity: vi.fn(),
 }));
 
@@ -32,10 +33,13 @@ vi.mock("@/lib/runs/activity", () => ({
 
 vi.mock("@/lib/browser/frames", () => ({
   getRunBrowserFrameContent: routeMocks.getRunBrowserFrameContent,
+  getRunBrowserAccessibilitySnapshotContent:
+    routeMocks.getRunBrowserAccessibilitySnapshotContent,
 }));
 
 import { GET as GETActivity } from "@/app/api/runs/[id]/activity/route";
 import { GET as GETFrame } from "@/app/api/runs/[id]/activity/frames/[frameId]/route";
+import { GET as GETSnapshot } from "@/app/api/runs/[id]/activity/snapshots/[snapshotId]/route";
 
 const authUserId = "11111111-1111-4111-8111-111111111111";
 const auth = {
@@ -56,6 +60,7 @@ beforeEach(() => {
   routeMocks.getAgentRun.mockReset();
   routeMocks.getOwnedThread.mockReset();
   routeMocks.getRunBrowserFrameContent.mockReset();
+  routeMocks.getRunBrowserAccessibilitySnapshotContent.mockReset();
   routeMocks.listRunBrowserActivity.mockReset();
 });
 
@@ -65,11 +70,14 @@ describe("private run activity failures", () => {
 
     const activityResponse = await getActivity("missing-run");
     const frameResponse = await getFrame("missing-run", "missing-frame");
+    const snapshotResponse = await getSnapshot("missing-run", "missing-snapshot");
 
     expectPrivateNotFound(activityResponse);
     expectPrivateNotFound(frameResponse);
+    expectPrivateNotFound(snapshotResponse);
     expect(routeMocks.listRunBrowserActivity).not.toHaveBeenCalled();
     expect(routeMocks.getRunBrowserFrameContent).not.toHaveBeenCalled();
+    expect(routeMocks.getRunBrowserAccessibilitySnapshotContent).not.toHaveBeenCalled();
   });
 
   it("short-circuits both child reads when the parent thread is inaccessible", async () => {
@@ -82,12 +90,33 @@ describe("private run activity failures", () => {
 
     const activityResponse = await getActivity("run-a");
     const frameResponse = await getFrame("run-a", "frame-a");
+    const snapshotResponse = await getSnapshot("run-a", "snapshot-a");
 
     expectPrivateNotFound(activityResponse);
     expectPrivateNotFound(frameResponse);
-    expect(routeMocks.getOwnedThread).toHaveBeenCalledTimes(2);
+    expectPrivateNotFound(snapshotResponse);
+    expect(routeMocks.getOwnedThread).toHaveBeenCalledTimes(3);
     expect(routeMocks.listRunBrowserActivity).not.toHaveBeenCalled();
     expect(routeMocks.getRunBrowserFrameContent).not.toHaveBeenCalled();
+    expect(routeMocks.getRunBrowserAccessibilitySnapshotContent).not.toHaveBeenCalled();
+  });
+
+  it("keeps an absent accessibility snapshot private after its owner resolves", async () => {
+    routeMocks.getAgentRun.mockResolvedValue({
+      id: "run-a",
+      ownerActorId: auth.actorId,
+      status: "completed",
+    });
+    routeMocks.getRunBrowserAccessibilitySnapshotContent.mockResolvedValue(null);
+
+    const response = await getSnapshot("run-a", "missing-snapshot");
+
+    expectPrivateNotFound(response);
+    expect(routeMocks.getRunBrowserAccessibilitySnapshotContent).toHaveBeenCalledWith(
+      "run-a",
+      "missing-snapshot",
+      { tenantId: auth.tenantId, actorId: auth.actorId },
+    );
   });
 
   it("keeps an absent frame private after the parent thread resolves", async () => {
@@ -112,6 +141,22 @@ describe("private run activity failures", () => {
       { tenantId: auth.tenantId, actorId: auth.actorId },
     );
   });
+
+  it("does not expose an unthreaded sibling actor's observation content", async () => {
+    routeMocks.getAgentRun.mockResolvedValue({
+      id: "run-a",
+      ownerActorId: "sibling@example.test",
+      status: "completed",
+    });
+
+    const frameResponse = await getFrame("run-a", "frame-a");
+    const snapshotResponse = await getSnapshot("run-a", "snapshot-a");
+
+    expectPrivateNotFound(frameResponse);
+    expectPrivateNotFound(snapshotResponse);
+    expect(routeMocks.getRunBrowserFrameContent).not.toHaveBeenCalled();
+    expect(routeMocks.getRunBrowserAccessibilitySnapshotContent).not.toHaveBeenCalled();
+  });
 });
 
 function getActivity(runId: string) {
@@ -125,6 +170,13 @@ function getFrame(runId: string, frameId: string) {
   return GETFrame(
     new Request(`http://localhost/api/runs/${runId}/activity/frames/${frameId}`),
     { params: Promise.resolve({ id: runId, frameId }) },
+  );
+}
+
+function getSnapshot(runId: string, snapshotId: string) {
+  return GETSnapshot(
+    new Request(`http://localhost/api/runs/${runId}/activity/snapshots/${snapshotId}`),
+    { params: Promise.resolve({ id: runId, snapshotId }) },
   );
 }
 
