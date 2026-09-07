@@ -13,11 +13,13 @@ import { projectPendingSalesforceRecords } from "@/lib/customer-success/salesfor
 import {
   claimSalesforceSyncLease,
   failSalesforceSync,
+  listDueSalesforceConnectionsForTenant,
   listCurrentSalesforceHeads,
   recordSalesforceReconciliationFinding,
   settleSalesforceSyncPage,
   type SalesforceMutationAuthority,
 } from "@/lib/customer-success/salesforce-store";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 export async function syncSalesforceWorkspace(input: {
   authority: SalesforceMutationAuthority;
@@ -236,6 +238,47 @@ export async function reconcileSalesforceWorkspace(input: {
     }).catch(() => undefined);
     throw error;
   }
+}
+
+export async function syncDueSalesforceConnections(input: {
+  tenantId: string;
+  limit?: number;
+}) {
+  const connections = await listDueSalesforceConnectionsForTenant(
+    input.tenantId,
+    input.limit || 2,
+  );
+  const results: Array<{
+    connectionId: string;
+    status: "healthy" | "partial" | "busy" | "error";
+  }> = [];
+  for (const connection of connections) {
+    const authority: SalesforceMutationAuthority = {
+      tenantId: connection.tenantId,
+      workspaceId: connection.workspaceId,
+      canonicalActorId: connection.ownerActorId,
+      readableActorIds: [connection.ownerActorId],
+      executionScope: createExecutionScope({
+        tenantId: connection.tenantId,
+        initiatingActorId: connection.ownerActorId,
+        executingPrincipalType: "system",
+        executingPrincipalId: "salesforce:scheduled-sync",
+        workspaceId: connection.workspaceId,
+        correlationId: `salesforce-scheduled:${connection.connectionId}:${Date.now()}`,
+        purpose: "customer.salesforce.scheduled_read_sync",
+      }),
+    };
+    try {
+      const result = await syncSalesforceWorkspace({
+        authority,
+        maxPages: 8,
+      });
+      results.push({ connectionId: connection.connectionId, status: result.status });
+    } catch {
+      results.push({ connectionId: connection.connectionId, status: "error" });
+    }
+  }
+  return Object.freeze(results);
 }
 
 function lastObservation(

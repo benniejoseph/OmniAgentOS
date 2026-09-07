@@ -17,5 +17,9 @@ describe("Account 360 workspace", () => {
     }
     expect(source).toContain("External CRM writes are disabled");
     expect(source).toContain("Neither value was silently selected");
+    expect(source).toContain("Salesforce sync");
+    expect(source).toContain("CRM adapter · read only");
+    expect(source).toContain("Read-only reconciliation");
+    expect(source).toContain("Salesforce OAuth credentials are required");
   });
 });
