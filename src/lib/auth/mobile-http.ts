@@ -1,43 +1,14 @@
-import { z } from "zod";
 import type { MobileDevice } from "@/lib/auth/mobile-types";
 import {
-  isStableNativeVersion,
-} from "@/lib/auth/native-client-contract";
+  NATIVE_API_CURRENT_VERSION,
+  NATIVE_API_PREVIOUS_VERSION,
+  NATIVE_API_SUPPORTED_VERSIONS,
+  nativeClientAttestationSchema,
+  nativeDeviceSchema,
+} from "@/lib/mobile/contracts";
 
-const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
-
-export const mobileClientAttestationSchema = z.object({
-  platform: z.enum(["android", "ios"]),
-  appVersion: z.string().min(1).max(40).refine(isStableNativeVersion),
-  buildNumber: positiveDatabaseInteger,
-  clientContractVersion: positiveDatabaseInteger,
-}).strict();
-
-export const mobileDeviceSchema = z.object({
-  id: z.string().trim().min(8).max(200).regex(/^[A-Za-z0-9._:-]+$/),
-  name: z.string().trim().min(1).max(120),
-  platform: z.enum(["android", "ios"]),
-  // appVersion alone is the pre-contract legacy shape. It remains accepted
-  // and is classified as unknown rather than being rewritten or trusted.
-  appVersion: z.string().min(1).max(40).optional(),
-  buildNumber: positiveDatabaseInteger.optional(),
-  clientContractVersion: positiveDatabaseInteger.optional(),
-}).strict().superRefine((device, context) => {
-  const hasBuild = device.buildNumber !== undefined;
-  const hasContract = device.clientContractVersion !== undefined;
-  if (!hasBuild && !hasContract) return;
-  if (
-    !hasBuild ||
-    !hasContract ||
-    !device.appVersion ||
-    !isStableNativeVersion(device.appVersion)
-  ) {
-    context.addIssue({
-      code: "custom",
-      message: "Native client attestation must include a stable version, build, and contract.",
-    });
-  }
-});
+export const mobileClientAttestationSchema = nativeClientAttestationSchema;
+export const mobileDeviceSchema = nativeDeviceSchema;
 
 export function mobileClientAttestationFromHeaders(request: Request) {
   const values = {
@@ -75,6 +46,9 @@ export function mobileClientAttestationFromHeaders(request: Request) {
 export const mobileNoStoreHeaders = {
   "cache-control": "private, no-store",
   "pragma": "no-cache",
+  "x-asael-native-contract-version": String(NATIVE_API_CURRENT_VERSION),
+  "x-asael-native-previous-contract-version": String(NATIVE_API_PREVIOUS_VERSION),
+  "x-asael-native-supported-contract-versions": NATIVE_API_SUPPORTED_VERSIONS.join(","),
 };
 
 export function mobileError(

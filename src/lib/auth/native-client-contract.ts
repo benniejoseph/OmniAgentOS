@@ -1,5 +1,10 @@
+import {
+  NATIVE_API_CURRENT_VERSION,
+  NATIVE_API_SUPPORTED_VERSIONS,
+} from "@/lib/mobile/contracts";
+
 export const NATIVE_CLIENT_POLICY_SCHEMA_VERSION = 1 as const;
-export const NATIVE_CLIENT_CONTRACT_VERSION = 1 as const;
+export const NATIVE_CLIENT_CONTRACT_VERSION = NATIVE_API_CURRENT_VERSION;
 export const NATIVE_CLIENT_ADOPTION_SCHEMA_VERSION = 1 as const;
 export const NATIVE_CLIENT_ADOPTION_WINDOW_DAYS = 30 as const;
 export const NATIVE_CLIENT_ADOPTION_MAX_SESSION_FAMILIES = 10_000 as const;
@@ -72,11 +77,15 @@ export function evaluateNativeClientCompatibility(
   if (!isNativeClientAttestation(client)) return "unknown";
   const minimumVersion = minimumNativeVersion(client.platform);
   if (!minimumVersion) return "unknown";
-  if (client.clientContractVersion < NATIVE_CLIENT_CONTRACT_VERSION) {
+  if (
+    !NATIVE_API_SUPPORTED_VERSIONS.includes(
+      client.clientContractVersion as (typeof NATIVE_API_SUPPORTED_VERSIONS)[number],
+    )
+  ) {
+    if (client.clientContractVersion > NATIVE_CLIENT_CONTRACT_VERSION) {
+      return "unknown";
+    }
     return "upgrade_required";
-  }
-  if (client.clientContractVersion > NATIVE_CLIENT_CONTRACT_VERSION) {
-    return "unknown";
   }
   return compareStableNativeVersions(
     client.appVersion,
@@ -92,6 +101,7 @@ export function nativeClientPolicy() {
   return Object.freeze({
     schemaVersion: NATIVE_CLIENT_POLICY_SCHEMA_VERSION,
     currentContractVersion: NATIVE_CLIENT_CONTRACT_VERSION,
+    supportedContractVersions: [...NATIVE_API_SUPPORTED_VERSIONS],
     minimumVersions: Object.freeze({
       android: android || null,
       ios: ios || null,
@@ -125,6 +135,7 @@ export function nativeClientCompatibility(
     clientContractVersion: client.clientContractVersion || 0,
     minimumVersion: minimumNativeVersion(client.platform) || null,
     requiredContractVersion: NATIVE_CLIENT_CONTRACT_VERSION,
+    supportedContractVersions: [...NATIVE_API_SUPPORTED_VERSIONS],
     status,
     agentCatalogEnrollment: Object.freeze({
       state: "held" as const,

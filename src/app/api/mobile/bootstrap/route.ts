@@ -16,6 +16,12 @@ import {
   nativeClientCompatibility,
   nativeClientPolicy,
 } from "@/lib/auth/native-client-contract";
+import {
+  NATIVE_API_CONTRACT_ID,
+  NATIVE_API_CURRENT_VERSION,
+  NATIVE_API_PREVIOUS_VERSION,
+  NATIVE_API_SUPPORTED_VERSIONS,
+} from "@/lib/mobile/contracts";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -49,7 +55,18 @@ async function GETHandler(request: Request) {
     authenticated: true,
     ...publicMobileIdentity(observedIdentity),
     permissions: rbacRules.filter((rule) => canPerform(observedIdentity.context.role, rule.action)).map((rule) => rule.action),
-    api: { version: 1, basePath: "/api", mobileBasePath: "/api/mobile" },
+    api: {
+      version: 1,
+      basePath: "/api",
+      mobileBasePath: "/api/mobile",
+      nativeContract: {
+        id: NATIVE_API_CONTRACT_ID,
+        currentVersion: NATIVE_API_CURRENT_VERSION,
+        previousVersion: NATIVE_API_PREVIOUS_VERSION,
+        supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS],
+        discoveryPath: "/api/mobile/contracts",
+      },
+    },
     client: nativeClientCompatibility(observedIdentity.session.device, {
       clientAttestedAt: observedIdentity.session.clientAttestedAt,
     }),

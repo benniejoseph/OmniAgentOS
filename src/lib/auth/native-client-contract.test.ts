@@ -19,7 +19,7 @@ describe("native client compatibility contract", () => {
     expect(isStableNativeVersion(" 1.2.3")).toBe(false);
   });
 
-  it("keeps legacy and newer unknown contracts out of compatibility", () => {
+  it("keeps legacy and future contracts out while retaining the previous version", () => {
     expect(evaluateNativeClientCompatibility({
       platform: "ios",
       appVersion: "1.0.0",
@@ -28,8 +28,14 @@ describe("native client compatibility contract", () => {
       platform: "ios",
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 2,
+      clientContractVersion: 3,
     })).toBe("unknown");
+    expect(evaluateNativeClientCompatibility({
+      platform: "ios",
+      appVersion: "1.0.0",
+      buildNumber: 1,
+      clientContractVersion: 1,
+    })).toBe("compatible");
   });
 
   it("applies the server-owned platform minimum without enrolling Agents", () => {
@@ -38,7 +44,7 @@ describe("native client compatibility contract", () => {
       platform: "android",
       appVersion: "1.9.9",
       buildNumber: 20,
-      clientContractVersion: 1,
+      clientContractVersion: 2,
     })).toBe("upgrade_required");
     expect(nativeClientPolicy().agentCatalogEnrollment.state).toBe("held");
   });
@@ -60,7 +66,7 @@ describe("native client compatibility contract", () => {
       platform: "ios" as const,
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 1,
+      clientContractVersion: 2,
     };
     const asOf = new Date("2026-09-04T12:00:00.000Z");
     expect(nativeClientCompatibility(client, { asOf }).status).toBe("unknown");
