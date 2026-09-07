@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../push/mobile_push.dart';
 import 'device_security.dart';
 import 'device_security_providers.dart';
 
@@ -10,6 +11,7 @@ class DeviceSecurityScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final controller = ref.watch(deviceSecurityControllerProvider);
+    final push = ref.watch(mobilePushCoordinatorProvider);
     return Scaffold(
       appBar: AppBar(
         title: const Column(
@@ -45,6 +47,10 @@ class DeviceSecurityScreen extends ConsumerWidget {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _BiometricCard(controller: controller),
+                    if (push != null) ...[
+                      const SizedBox(height: 12),
+                      _PushNotificationCard(coordinator: push),
+                    ],
                     const SizedBox(height: 24),
                     Text(
                       'Signed-in devices',
@@ -152,6 +158,108 @@ class DeviceSecurityScreen extends ConsumerWidget {
     }
   }
 }
+
+class _PushNotificationCard extends StatelessWidget {
+  const _PushNotificationCard({required this.coordinator});
+
+  final MobilePushCoordinator coordinator;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: coordinator,
+    builder: (context, _) {
+      final busy = coordinator.state == MobilePushState.initializing;
+      final ready = coordinator.state == MobilePushState.ready;
+      return Card(
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.notifications_active_outlined),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Push notifications',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  Chip(
+                    label: Text(_pushStateLabel(coordinator.state)),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                ready
+                    ? 'Exact approvals and work updates can open their source screen on this device.'
+                    : 'Enable notifications to receive causal links for approvals and work updates.',
+              ),
+              if (coordinator.error case final message?) ...[
+                const SizedBox(height: 8),
+                Text(
+                  message,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+              const SizedBox(height: 14),
+              DropdownButtonFormField<MobilePushPreviewPolicy>(
+                initialValue: coordinator.previewPolicy,
+                decoration: const InputDecoration(
+                  labelText: 'Lock-screen preview',
+                  border: OutlineInputBorder(),
+                ),
+                items: [
+                  for (final policy in MobilePushPreviewPolicy.values)
+                    DropdownMenuItem(value: policy, child: Text(policy.label)),
+                ],
+                onChanged: busy
+                    ? null
+                    : (policy) async {
+                        if (policy == null) return;
+                        try {
+                          await coordinator.setPreviewPolicy(policy);
+                        } catch (error) {
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(error.toString())),
+                          );
+                        }
+                      },
+              ),
+              if (!ready) ...[
+                const SizedBox(height: 14),
+                FilledButton.icon(
+                  onPressed: busy ? null : coordinator.enable,
+                  icon: busy
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.notifications_outlined),
+                  label: Text(busy ? 'Connecting' : 'Enable notifications'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+String _pushStateLabel(MobilePushState state) => switch (state) {
+  MobilePushState.initializing => 'Connecting',
+  MobilePushState.disabled => 'Off',
+  MobilePushState.denied => 'Denied',
+  MobilePushState.ready => 'Registered',
+  MobilePushState.configurationRequired => 'Setup required',
+  MobilePushState.error => 'Retry needed',
+};
 
 class _BiometricCard extends StatelessWidget {
   const _BiometricCard({required this.controller});

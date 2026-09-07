@@ -15,6 +15,10 @@ class SecureSessionStore {
   static const _deviceIdKey = 'asael.device_id';
   static const _biometricEnabledKey = 'asael.biometric_enabled';
   static const _captureOutboxSecretKey = 'asael.capture_outbox_secret_v1';
+  static const _pushRegistrationIdKey = 'asael.push_registration_id_v1';
+  static const _pushPreviewPolicyKey = 'asael.push_preview_policy_v1';
+  static const _pendingPushAcknowledgementKey =
+      'asael.pending_push_acknowledgement_v1';
   static const _legacyTokenKey = 'omniagent.session_token';
   final FlutterSecureStorage _storage;
   bool _biometricReleaseUnlocked = false;
@@ -88,6 +92,38 @@ class SecureSessionStore {
 
   Future<String?> readExistingDeviceId() => _storage.read(key: _deviceIdKey);
 
+  Future<String?> readPushRegistrationId() =>
+      _storage.read(key: _pushRegistrationIdKey);
+
+  Future<void> writePushRegistrationId(String value) =>
+      _storage.write(key: _pushRegistrationIdKey, value: value);
+
+  Future<void> clearPushRegistrationId() =>
+      _storage.delete(key: _pushRegistrationIdKey);
+
+  Future<String> readPushPreviewPolicy() async {
+    final value = await _storage.read(key: _pushPreviewPolicyKey);
+    return const {'hidden', 'generic', 'title'}.contains(value)
+        ? value!
+        : 'hidden';
+  }
+
+  Future<void> writePushPreviewPolicy(String value) async {
+    if (!const {'hidden', 'generic', 'title'}.contains(value)) {
+      throw ArgumentError.value(value, 'value', 'Unknown push preview policy.');
+    }
+    await _storage.write(key: _pushPreviewPolicyKey, value: value);
+  }
+
+  Future<String?> readPendingPushAcknowledgement() =>
+      _storage.read(key: _pendingPushAcknowledgementKey);
+
+  Future<void> writePendingPushAcknowledgement(String value) =>
+      _storage.write(key: _pendingPushAcknowledgementKey, value: value);
+
+  Future<void> clearPendingPushAcknowledgement() =>
+      _storage.delete(key: _pendingPushAcknowledgementKey);
+
   Future<DeviceSecretMaterial> readOrCreateCaptureOutboxSecret() async {
     await _requireBiometricRelease();
     final encoded = await _storage.read(key: _captureOutboxSecretKey);
@@ -134,6 +170,8 @@ class SecureSessionStore {
       _storage.delete(key: _refreshTokenKey),
       _storage.delete(key: _accessExpiresAtKey),
       _storage.delete(key: _legacyTokenKey),
+      _storage.delete(key: _pushRegistrationIdKey),
+      _storage.delete(key: _pendingPushAcknowledgementKey),
     ]);
     _biometricReleaseUnlocked = false;
   }
@@ -147,6 +185,9 @@ class SecureSessionStore {
       _storage.delete(key: _deviceIdKey),
       _storage.delete(key: _biometricEnabledKey),
       _storage.delete(key: _captureOutboxSecretKey),
+      _storage.delete(key: _pushRegistrationIdKey),
+      _storage.delete(key: _pushPreviewPolicyKey),
+      _storage.delete(key: _pendingPushAcknowledgementKey),
     ]);
     _biometricReleaseUnlocked = false;
   }

@@ -7,6 +7,7 @@ import 'router/app_router.dart';
 import 'theme/app_theme.dart';
 import '../features/auth/application/session_controller.dart';
 import '../features/capture/capture_providers.dart';
+import '../features/push/mobile_push.dart';
 
 class AsaelApp extends ConsumerStatefulWidget {
   const AsaelApp({super.key});
@@ -40,12 +41,15 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
       ref.read(captureControllerProvider).lock();
     } else if (state == AppLifecycleState.resumed) {
       unawaited(ref.read(captureControllerProvider).syncPending());
+      unawaited(ref.read(mobilePushCoordinatorProvider)?.initialize());
     }
   }
 
   @override
   Widget build(BuildContext context) {
     ref.watch(captureOutboxLifecycleProvider);
+    final router = ref.watch(appRouterProvider);
+    ref.watch(mobilePushCoordinatorProvider)?.attachRouter(router);
     return MaterialApp.router(
       title: 'Asael',
       debugShowCheckedModeBanner: false,
@@ -54,7 +58,7 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
       highContrastTheme: AppTheme.light(highContrast: true),
       highContrastDarkTheme: AppTheme.dark(highContrast: true),
       themeMode: ThemeMode.system,
-      routerConfig: ref.watch(appRouterProvider),
+      routerConfig: router,
     );
   }
 }

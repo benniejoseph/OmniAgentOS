@@ -43,6 +43,9 @@ void main() {
       final store = SecureSessionStore(const FlutterSecureStorage());
       final deviceId = await store.readOrCreateDeviceId();
       await store.setBiometricEnabled(true);
+      await store.writePushRegistrationId('registration-one');
+      await store.writePushPreviewPolicy('generic');
+      await store.writePendingPushAcknowledgement('pending-one');
       await store.writeTokens(
         accessToken: 'access-token',
         refreshToken: 'refresh-token',
@@ -56,6 +59,9 @@ void main() {
       expect(await store.hasStoredCredentials(), isFalse);
       expect(await store.readExistingDeviceId(), deviceId);
       expect(await store.readBiometricEnabled(), isTrue);
+      expect(await store.readPushRegistrationId(), isNull);
+      expect(await store.readPushPreviewPolicy(), 'generic');
+      expect(await store.readPendingPushAcknowledgement(), isNull);
 
       await store.writeTokens(
         accessToken: 'replacement-access',
@@ -69,6 +75,7 @@ void main() {
       expect(await store.hasStoredCredentials(), isFalse);
       expect(await store.readExistingDeviceId(), isNull);
       expect(await store.readBiometricEnabled(), isFalse);
+      expect(await store.readPushPreviewPolicy(), 'hidden');
     },
   );
 

@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/network/api_client.dart';
 import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
@@ -8,6 +9,7 @@ import '../../features/agents/agents.dart';
 import '../../features/agents/agents_providers.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
+import '../../features/customers/customer_detail.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
 import '../../features/knowledge/knowledge.dart';
@@ -54,6 +56,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/devices',
         builder: (_, _) => const DeviceSecurityScreen(),
       ),
+      GoRoute(
+        path: '/customers/:id',
+        builder: (_, state) => CustomerDetailView(
+          id: state.pathParameters['id']!,
+          api: ref.watch(apiClientProvider),
+        ),
+      ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => AdaptiveShell(navigationShell: shell),
         branches: [
@@ -62,9 +71,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               routes: [
                 GoRoute(
                   path: destination.path,
-                  builder: (context, _) => switch (destination.path) {
+                  builder: (context, state) => switch (destination.path) {
                     '/today' => TodayView(
                       controller: ref.watch(todayControllerProvider),
+                      focusItemId: state.uri.queryParameters['workItemId'],
                     ),
                     '/talk' => TalkView(
                       controller: ref.watch(talkControllerProvider),
@@ -123,6 +133,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             builder: (_, state) => ProjectDetailView(
                               id: state.pathParameters['id']!,
                               repository: ref.watch(projectsRepositoryProvider),
+                              focusWorkItemId:
+                                  state.uri.queryParameters['workItemId'],
                             ),
                           ),
                         ]
@@ -145,6 +157,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             builder: (_, state) => MeetingDetailView(
                               id: state.pathParameters['id']!,
                               repository: ref.watch(meetingsRepositoryProvider),
+                            ),
+                          ),
+                        ]
+                      : destination.path == '/inbox'
+                      ? [
+                          GoRoute(
+                            path: 'approvals/:id',
+                            builder: (_, state) => InboxView(
+                              controller: ref.watch(inboxControllerProvider),
+                              focusApprovalId: state.pathParameters['id'],
                             ),
                           ),
                         ]
