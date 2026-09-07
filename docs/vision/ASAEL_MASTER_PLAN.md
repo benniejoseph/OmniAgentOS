@@ -1119,7 +1119,11 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 | P12.5 | Add APNs/FCM delivery with causal deep links and notification actions. | Reuse delivery outbox; create device registrations. | Sensitive content previews follow device/user policy. | Notification opens the exact approval, work item, meeting, customer, or run and acknowledges once. |
 
 **Current status:** P12.1 through P12.5 are implemented and server-deployed.
-P12.5 schema v146 and native contract v4 are live, but the overall phase remains
+P12 completion hardening now cancels and discards an interrupted voice draft,
+binds a push acknowledgement to the delivery registration's exact current
+device and mobile session, and safely reconstructs every discriminated causal
+target. The focused phase-gate suite passes 35 server and 22 Flutter checks.
+Schema v146 and native contract v4 are live, but the overall phase remains
 operationally open until owner-supplied FCM/APNs credentials, matching native
 Firebase app files, a signed binary, and an end-to-end device receipt prove
 delivery. P9.12/P9.13 and Phase 13 remain out of the current sequence.
