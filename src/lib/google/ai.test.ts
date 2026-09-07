@@ -204,13 +204,11 @@ describe("Google AI provider", () => {
     });
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    expect(body.input).toContainEqual(expect.objectContaining({
+    expect(body.input.at(-1)).toEqual(expect.objectContaining({
       type: "function_result",
       call_id: "call-browser",
-    }));
-    expect(body.input.at(-1)).toEqual({
-      type: "user_input",
-      content: [
+      result: [
+        { type: "text", text: "{\"clicked\":true}" },
         expect.objectContaining({
           type: "text",
           text: expect.stringContaining("Untrusted browser observation"),
@@ -221,7 +219,7 @@ describe("Google AI provider", () => {
           data: "UklGRgAAAABXRUJQ",
         },
       ],
-    });
+    }));
     expect(JSON.stringify(result.continuation.state)).not.toContain(
       "UklGRgAAAABXRUJQ",
     );
