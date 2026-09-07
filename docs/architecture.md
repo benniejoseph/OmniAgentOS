@@ -1521,6 +1521,27 @@ Migration v116 installs the append-only forced-RLS projection, restrictive
 actor policy, transition/truncate guards, active-task index, and serving-role
 updates limited to lifecycle columns.
 
+P8.4 adds a brokered, actor-private Mission channel on top of that task ledger.
+The strict `p8.4-delegation-message:1` and
+`p8.4-shared-mission-artifact:1` records bind the Mission, exact parent
+execution/principal/delegation, sender task/delegation/principal/Agent version,
+explicit parent or sibling recipients, content digests, and a deadline-bounded
+timestamp. Messages are capped at 2,000 characters; explicitly shared artifact
+content is capped at 32,000 characters and 64,000 bytes. Both records declare
+that their content is untrusted, carries no authority, cannot mutate state
+directly, and contains neither credentials nor private memory.
+
+Sibling delivery is admitted only when every recipient is an active sibling in
+the canonical delegation task ledger. Parent reads require the exact scoped
+parent principal and execution. Council specialists and workflow Agent nodes
+publish their closed completion proposal into the channel before the parent
+evaluator may accept it, then send a content-bounded handoff referencing the
+artifact digest. The channel reuses Mission artifact persistence and its forced
+owner boundary; `delegation.artifact.shared` and `delegation.message.sent`
+events contain only identities, digests, recipients, and governed execution
+references. Browser projections expose only explicitly shared content and omit
+the sender execution principal.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,

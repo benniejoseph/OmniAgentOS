@@ -1688,3 +1688,21 @@ delegation ID, parent correlation, call causation, and idempotency binding.
 Returned broker artifacts carry only the bounded redacted output, digest, byte
 count, and governed execution evidence ID. An approval-required receipt stops
 the broker at `waiting`; it is never converted into a successful effect event.
+
+## Delegation Mission channel
+
+P8.4 adds `delegation.artifact.shared` and `delegation.message.sent` to the
+delegation stream. Their payloads contain the schema version, Mission and
+parent execution/delegation identifiers, exact parent and delegate principal
+identifiers, sender task and Agent version, record digest, explicit recipient
+coordinates, referenced artifact IDs, and governed tool execution IDs. They do
+not contain message bodies, shared artifact content, credentials, tenant/actor
+identity, or private memory.
+
+The event is an observable receipt rather than delivery authority. The
+authoritative owner-scoped Mission artifact stores the digest-verified
+`p8.4-delegation-message:1` or `p8.4-shared-mission-artifact:1` protocol; exact
+parent scope or an active sibling task in the canonical delegation ledger is
+required to read it. Channel content is always untrusted and cannot directly
+cause a mutation. Council and workflow completion proposals are shared before
+the exact parent evaluator records `result_accepted`.
