@@ -23,16 +23,17 @@
 > P3.5 is production-proven and complete: source-linked turn, episode, project,
 > and lifetime summaries are rebuildable actor-private projections, and bounded
 > historical episodes replace omitted raw transcript context.
-> P3.1 remains held at its explicit external-authority gate. An
-> authenticated direct run can compile only the canonical user's explicitly
-> selected private-memory evidence in `all` mode, under an exact
-> request/actor/purpose-bound user scope. Automatic retrieval, project/session
-> modes, workflows, background workers, agent-private/shared visibility,
-> standing formation, and the full authority resolver remain closed, so P3.1
-> is not complete. P4.1 is partially promoted: explicit private selections use
+> P3.1's served memory coordinates are now covered by composed canonical
+> authority: exact user-private selection, Agent-private identity/grants, and
+> Project/Workspace membership. Mission context resolves its compatibility ID
+> to that Mission's one canonical Project rather than creating a competing
+> Mission memory store. P4.1 is partially promoted: explicit private selections use
 > Context Compiler v2 as a shrink-only authorization intersection, with its
-> metadata-only receipt committed before model disclosure. Automatic, shared,
-> and pre-retrieval promotion remain open. P4.3, P4.4, and P4.5 are production-proven
+> metadata-only receipt committed before model disclosure. Shared scope is
+> authorized before retrieval and ranking; automatic personal promotion remains
+> open. Eight direct-run scopes are active, while automatic personal context and
+> authority-dependent durable workflow/Loop integration keep P4.2 open. P4.3,
+> P4.4, and P4.5 are production-proven
 > and complete: retrieval uses schema-constrained semantic, temporal, entity,
 > relationship, and procedural plans with deterministic fallback and unchanged
 > upstream authorization, explicit provider-neutral embedding spaces, and a
@@ -59,6 +60,8 @@
 ## Latest completed slice
 
 157. P12 completion-gate hardening: voice capture is lifecycle-aware, so inactive, paused, hidden, detached, and disposed Flutter views cancel and discard an unfinished recording and invalidate any late transcription before it can alter or send a draft. Push candidate lookup and acknowledgement require the delivery registration to match the authenticated tenant, actor, exact device, and exact mobile session, so a sibling installation cannot acknowledge another device's delivery. The mapper also omits the work-item-only parent field for approval, meeting, customer, and run targets instead of failing strict discriminated-union parsing. The focused gate passes 35 server checks across revocation, refresh rotation/replay, cross-tenant lifecycle, offline owner binding, causal push, exact-installation acknowledgement, provider behavior, and route authorization, plus 22 Flutter checks across secure-session release, remote wipe, encrypted five-kind Capture/reconnect, push deep-link validation, native contracts, and voice interruption. Vercel's TypeScript/Next.js build generated all 122 routes; deployment `dpl_89EomgZ72EjogvukrrKzUDiugk4c` is Ready and promoted at exact revision `f6d6cbd55d84ca94ad0f6871c56ff597cadb1724`. Canonical health is healthy with database, OpenAI, and cron configured, contract discovery reports v4 current/v3 previous, and anonymous acknowledgement remains denied with 401. The unchanged Fly worker in `iad` and Playwright gateway in `sin` are started with passing checks and healthy public endpoints. No migration or Fly release was required. Code-side P12 gate remediation is complete; the phase remains operationally open only for dedicated FCM/APNs credentials and matching native app files, a signed binary, and a real-device delivery/acknowledgement receipt. P9.12/P9.13 and Phase 13 remain excluded.
+
+158. P3.1/P4.2 canonical Mission context: activate the direct `mission` scope by resolving the attached legacy Mission ID through the canonical Work compatibility map and exact active Project membership. The database scope contains only that canonical Workspace/Project; the Agent execution scope must additionally carry the same requested Mission ID, and any mismatch fails before retrieval. Mission context therefore reuses `project_shared` truth instead of creating a competing `mission_shared` store. Mission-to-Command links select the scope explicitly, while Command disables it without an attached Mission. Workflow plan/start endpoints return 409 for this scope until durable workflow authority is implemented. Fifty-seven focused policy, authority, route, runner, and Mission UI checks pass, and Vercel's TypeScript/Next.js production build generated all 122 routes. Deployment `dpl_2qjTM2EJi9jJ25SpL8DCyw8RPV1s` is Ready and promoted at exact revision `4de7047e3276949e022ba2599102cea434ac0e38`; canonical health is healthy with database, OpenAI, and cron configured, and anonymous Command access redirects to login. No migration or Fly release was required. Direct context now has eight active scopes; automatic personal context and authority-dependent durable workflow/Loop integration remain the actionable P4.1/P4.2 gap.
 
 ## North Star
 
