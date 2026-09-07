@@ -68,6 +68,19 @@ type SalesforcePayload = {
   }>;
   authorizeUrl: string;
   webhook: { configured: boolean };
+  writes: {
+    configured: boolean;
+    enabled: boolean;
+    mode: "approval_required";
+    createObjects: string[];
+    updateObjects: string[];
+    operations: Array<{
+      operationId: string;
+      state: "prepared" | "verified" | "failed";
+      verificationReasonCode: string | null;
+      completedAt: string | null;
+    }>;
+  };
 };
 
 export function CustomerAccountsWorkspace({
@@ -463,11 +476,11 @@ function SalesforcePanel({
     ? Object.values(health.cursor.objects).filter((item) => item.phase === "current").length
     : 0;
   return (
-    <section className={styles.salesforcePanel} aria-label="Salesforce read synchronization" aria-busy={loading || Boolean(action)}>
+    <section className={styles.salesforcePanel} aria-label="Salesforce synchronization and guarded writes" aria-busy={loading || Boolean(action)}>
       <div className={styles.salesforceIdentity}>
         <span><CloudCog size={18} aria-hidden="true" /></span>
         <div>
-          <p className={styles.eyebrow}>CRM adapter · read only</p>
+          <p className={styles.eyebrow}>CRM adapter · governed</p>
           <h2>Salesforce sync</h2>
           <p>
             External records become sourced Account 360 facts. Salesforce never
@@ -482,6 +495,8 @@ function SalesforcePanel({
         <div><small>Scope</small><strong>{health?.objectScope.length || 8} objects · read only</strong></div>
         <div><small>Webhook</small><strong>{payload?.webhook.configured ? "Verified HMAC" : "Not configured"}</strong></div>
         <div><small>Reconciliation</small><strong>{payload?.findings.length || 0} findings</strong></div>
+        <div><small>Write gate</small><strong>{payload?.writes.configured ? "Approval-bound" : "Disabled"}</strong></div>
+        <div><small>Write receipts</small><strong>{payload?.writes.operations.length || 0} retained</strong></div>
       </div>
       <div className={styles.salesforceActions}>
         {!health?.configured ? (
@@ -597,6 +612,7 @@ function AccountDetail({
         </div>
         <span>{formatLabel(account.crmPermissions.readScope)} read</span>
         <span>{formatLabel(account.crmPermissions.writeScope)} write</span>
+        <span>{formatLabel(account.crmPermissions.externalWriteState)} CRM writes</span>
       </section>
 
       <div className={styles.domainGrid}>

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   resolveAccess: vi.fn(),
   getHealth: vi.fn(),
   listFindings: vi.fn(),
+  listWrites: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -26,6 +27,7 @@ vi.mock("@/lib/customer-success/salesforce-access", () => ({
 vi.mock("@/lib/customer-success/salesforce-store", () => ({
   getSalesforceSyncHealth: mocks.getHealth,
   listSalesforceReconciliationFindings: mocks.listFindings,
+  listSalesforceWriteOperations: mocks.listWrites,
 }));
 
 import { GET } from "@/app/api/customer-accounts/salesforce/route";
@@ -50,6 +52,7 @@ beforeEach(() => {
     status: "configuration_required",
   });
   mocks.listFindings.mockReset().mockResolvedValue([]);
+  mocks.listWrites.mockReset().mockResolvedValue([]);
 });
 
 describe("Salesforce connection health route", () => {
@@ -62,6 +65,12 @@ describe("Salesforce connection health route", () => {
       context: { workspaceId: "workspace:personal-a", canWrite: true },
       health: { configured: false, connected: false, status: "configuration_required" },
       findings: [],
+      writes: {
+        configured: false,
+        enabled: false,
+        mode: "approval_required",
+        operations: [],
+      },
       webhook: { configured: false, signature: "hmac-sha256-v1" },
     });
     expect(mocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({
