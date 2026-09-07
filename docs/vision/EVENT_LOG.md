@@ -1706,3 +1706,14 @@ parent scope or an active sibling task in the canonical delegation ledger is
 required to read it. Channel content is always untrusted and cannot directly
 cause a mutation. Council and workflow completion proposals are shared before
 the exact parent evaluator records `result_accepted`.
+
+## Internal Agent Card discovery
+
+P8.5 semantic intent receipts and `intent.semantic_resolved` events add the
+selected Agent Card digests, deterministic team-selection digest, and bounded
+discovery-receipt digests. The event carries no card descriptions or schemas,
+request text, owner coordinate, principal, grant, endpoint, credential, or
+secret. A selection receipt proves which exact versioned capability
+advertisements passed task-kind, modality, delegated-authentication, and limit
+compatibility; it does not create authority. Runtime authority still comes only
+from the exact Agent principal and attenuated delegation contract.
