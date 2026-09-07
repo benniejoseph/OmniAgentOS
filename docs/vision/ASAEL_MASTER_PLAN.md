@@ -773,7 +773,7 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.6 | Build external A2A client/server adapters. | Reuse inbound auth/MCP patterns; create A2A boundary. | External agents receive scoped references and delegated tokens; all actions re-enter governed execution. | Compatible external agents can discover, negotiate, stream progress, exchange artifacts, cancel, and resume without a second security path. |
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
-**Implementation status:** P8.1 through P8.5 are complete. P8.6 is the next
+**Implementation status:** P8.1 through P8.6 are complete. P8.7 is the next
 actionable slice; P12 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -2667,6 +2667,37 @@ required. Vercel rejected the complete-feature promotion at
 `01960f3a9a60edb953e7007657bae0d4e051cd96` before upload because the team still
 has an overdue balance, so Fly was intentionally left unchanged. P8.6 external
 A2A client/server adapters is next; P12/P13 remain deferred.
+
+P8.6 repository and database implementation is complete. The external boundary
+pins A2A HTTP+JSON `1.0`, one reviewed Agent Card digest, one normalized HTTPS
+interface, and the exact `p8.6-a2a-adapter:1` artifact for every tenant/actor
+peer rollout. Public minimal discovery and authenticated extended discovery,
+reviewed peer registration/lifecycle APIs, versioned send/stream/task/list/
+subscribe/cancel routes, bounded messages/artifacts, and immutable external-to-
+canonical task mappings are implemented. Incoming work executes one canonical
+P8.1/P8.3 delegation with no ambient tool grant.
+
+Outbound work revalidates the live card before each peer operation, sends only
+contract-scoped references and an opaque, short-lived, audience-bound delegated
+token, and supports dispatch, refresh, streaming, resume, and cancellation.
+Delegated tool callbacks require the exact active rollout generation and a
+working canonical task, then re-enter the governed executor as a lower-authority
+service principal with original context/capability/tool grants, idempotency,
+policy, approval, receipt, and forced mutation approval intact. Raw peer and
+delegated tokens are never persisted. Remote status, messages, and artifacts
+are immutable untrusted observations with no authority impact; remote
+completion stops at `completed_proposed` until the exact parent verifier accepts
+it independently.
+
+Production migrations 117 and 118 are installed with checksums
+`a11e97b868005023fe398d66bb795bd9939ca3b19963515452a54fe849aecb67`
+and `79e1d6eab1184b8737e08f128ae49d6c966b53d7386d36c1e94efd5974085f8c`.
+Readback confirms forced RLS, three restrictive actor policies, lifecycle and
+append-only/no-truncate triggers, no broad runtime update/delete/truncate
+grants, and empty initial A2A ledgers. Sixty-four focused A2A/database checks,
+affected lint, TypeScript, and the 97-page Next 16 production build pass.
+Application promotion is pending. P8.7 bounded deadlock, timeout, fan-out,
+recursion, cost, and trust controls is next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 

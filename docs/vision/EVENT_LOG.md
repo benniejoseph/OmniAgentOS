@@ -1717,3 +1717,28 @@ secret. A selection receipt proves which exact versioned capability
 advertisements passed task-kind, modality, delegated-authentication, and limit
 compatibility; it does not create authority. Runtime authority still comes only
 from the exact Agent principal and attenuated delegation contract.
+
+## External A2A boundary
+
+P8.6 adds metadata-only `a2a.peer.registered`, `.active`, `.paused`, and
+`.revoked` events for exact peer rollout generations. Payloads contain rollout,
+peer, direction, mode, lifecycle revision, interface/card/adapter digests,
+protocol binding/version, and allowlisted skill/Agent identifiers. They exclude
+service API keys, sealed outbound credentials, delegated tokens, and card
+content.
+
+`a2a.task.mapped` binds one external task/context reference to one canonical
+P8.3 task, delegation, contract digest, peer rollout digest, negotiated skill,
+and local Agent version. `a2a.message.recorded`, `.artifact.recorded`, and
+`.status.recorded` contain only exchange/mapping/peer/task identifiers, payload
+type and digest, direction, and the immutable declarations `untrusted: true`
+and `authorityImpact: none`; external content remains solely in the
+actor-private append-only exchange projection.
+
+Delegated A2A tool calls emit the existing canonical governed-tool execution,
+approval, intent, effect, and receipt events under the original tenant/actor,
+delegated principal, contract delegation, parent correlation, call causation,
+and idempotency binding. Token issuance and raw token values are not events.
+Remote completion produces only the existing `delegation.task.completed_proposed`
+observation receipt; an independent exact parent evaluation remains required
+before `delegation.task.result_accepted`.

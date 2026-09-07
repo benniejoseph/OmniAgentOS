@@ -85,6 +85,16 @@ host/port/database match).
 
 Keep migrations backward-compatible for at least one application rollback. If a future migration removes or rewrites data, use a staged expand/backfill/contract release rather than relying on a code rollback.
 
+P8.6 A2A deployments also require `NEXT_PUBLIC_APP_URL` to be the canonical
+credential-free HTTPS origin used in Agent Cards and delegated callback URLs,
+plus `OMNIAGENT_CREDENTIAL_KEYRING` for endpoint-bound peer credentials and
+delegated-token sealing. The runtime database role needs only the narrow grants
+installed by migrations 117–118; never substitute the migration-owner URL.
+Rollouts are actor-private and default inactive. Register and review a new peer
+generation before activation; pause or revoke it to invalidate all exact-digest
+delegated callbacks. Do not reuse service API keys or outbound bearer tokens
+across peers.
+
 ## Dedicated worker and monitoring
 
 Run web and worker separately:
