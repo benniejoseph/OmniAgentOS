@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildAgentPrivateMemoryAccessBindingV1,
+  buildProjectSharedMemoryAccessBindingV1,
   buildUserPrivateMemoryAccessBindingV1,
+  buildWorkspaceSharedMemoryAccessBindingV1,
   memoryAccessBindingAllows,
   memoryAccessBindingV1Schema,
   MEMORY_PURPOSE_IDS,
@@ -99,5 +101,74 @@ describe("memory access binding v1", () => {
       ...agentScope,
       initiatingActorId: "actor:sibling",
     }, agentBinding)).toBe(false);
+  });
+
+  it("binds project-shared memory to its exact workspace and project", () => {
+    const projectBinding = buildProjectSharedMemoryAccessBindingV1({
+      tenantId: "tenant:alpha",
+      ownerActorId: "actor:owner",
+      workspaceId: "workspace:personal:owner",
+      projectId: "project:launch",
+      originPurpose: "app.projects.context.write",
+      accessBoundAt: "2026-09-07T00:00:00.000Z",
+    });
+    const userScope = scope({
+      workspaceId: "workspace:personal:owner",
+      projectId: "project:launch",
+    });
+    const agentScope = scope({
+      executingPrincipalType: "agent",
+      executingPrincipalId: "agent:atlas",
+      workspaceId: "workspace:personal:owner",
+      projectId: "project:launch",
+      contextGrantIds: ["context:project-launch"],
+      purposeId: MEMORY_PURPOSE_IDS.retrieve,
+    });
+
+    expect(memoryAccessBindingV1Schema.parse(projectBinding)).toEqual(
+      projectBinding,
+    );
+    expect(projectBinding).toMatchObject({
+      visibility: "project_shared",
+      workspaceId: "workspace:personal:owner",
+      projectId: "project:launch",
+      ownerAgentId: null,
+    });
+    expect(memoryAccessBindingAllows(userScope, projectBinding)).toBe(true);
+    expect(memoryAccessBindingAllows(agentScope, projectBinding)).toBe(true);
+    expect(memoryAccessBindingAllows({
+      ...agentScope,
+      contextGrantIds: [],
+    }, projectBinding)).toBe(false);
+    expect(memoryAccessBindingAllows({
+      ...userScope,
+      projectId: "project:other",
+    }, projectBinding)).toBe(false);
+  });
+
+  it("keeps workspace-shared memory separate from every project scope", () => {
+    const workspaceBinding = buildWorkspaceSharedMemoryAccessBindingV1({
+      tenantId: "tenant:alpha",
+      ownerActorId: "actor:owner",
+      workspaceId: "workspace:personal:owner",
+      originPurpose: "app.workspaces.context.write",
+      accessBoundAt: "2026-09-07T00:00:00.000Z",
+    });
+
+    expect(memoryAccessBindingAllows(scope({
+      workspaceId: "workspace:personal:owner",
+    }), workspaceBinding)).toBe(true);
+    expect(memoryAccessBindingAllows(scope({
+      workspaceId: "workspace:personal:owner",
+      projectId: "project:launch",
+    }), workspaceBinding)).toBe(false);
+    expect(memoryAccessBindingAllows(scope({
+      workspaceId: "workspace:other",
+    }), workspaceBinding)).toBe(false);
+    expect(workspaceBinding).toMatchObject({
+      visibility: "workspace_shared",
+      workspaceId: "workspace:personal:owner",
+      projectId: null,
+    });
   });
 });

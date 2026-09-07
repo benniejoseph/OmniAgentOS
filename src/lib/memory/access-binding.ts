@@ -168,6 +168,88 @@ export function buildAgentPrivateMemoryAccessBindingV1(input: {
   });
 }
 
+export function buildProjectSharedMemoryAccessBindingV1(input: {
+  tenantId: string;
+  ownerActorId: string;
+  workspaceId: string;
+  projectId: string;
+  originPurpose: string;
+  allowedPurposeIds?: readonly string[];
+  sensitivity?: MemoryAccessBindingV1["sensitivity"];
+  accessBoundAt?: string;
+}): MemoryAccessBindingV1 {
+  return buildSharedMemoryAccessBindingV1({
+    ...input,
+    visibility: "project_shared",
+    missionId: null,
+  });
+}
+
+export function buildWorkspaceSharedMemoryAccessBindingV1(input: {
+  tenantId: string;
+  ownerActorId: string;
+  workspaceId: string;
+  originPurpose: string;
+  allowedPurposeIds?: readonly string[];
+  sensitivity?: MemoryAccessBindingV1["sensitivity"];
+  accessBoundAt?: string;
+}): MemoryAccessBindingV1 {
+  return buildSharedMemoryAccessBindingV1({
+    ...input,
+    visibility: "workspace_shared",
+    projectId: null,
+    missionId: null,
+  });
+}
+
+function buildSharedMemoryAccessBindingV1(input: {
+  tenantId: string;
+  ownerActorId: string;
+  workspaceId: string;
+  projectId: string | null;
+  missionId: null;
+  visibility: "project_shared" | "workspace_shared";
+  originPurpose: string;
+  allowedPurposeIds?: readonly string[];
+  sensitivity?: MemoryAccessBindingV1["sensitivity"];
+  accessBoundAt?: string;
+}): MemoryAccessBindingV1 {
+  const draft = {
+    version: MEMORY_ACCESS_BINDING_VERSION,
+    state: "scope_bound" as const,
+    tenantId: contractIdSchema.parse(input.tenantId),
+    ownerActorId: contractIdSchema.parse(input.ownerActorId),
+    ownerAgentId: null,
+    workspaceId: contractIdSchema.parse(input.workspaceId),
+    projectId: input.projectId === null
+      ? null
+      : contractIdSchema.parse(input.projectId),
+    missionId: input.missionId,
+    visibility: input.visibility,
+    sensitivity: input.sensitivity || "confidential" as const,
+    originPurpose: input.originPurpose.trim(),
+    allowedPurposeIds: Object.freeze(
+      [...new Set(input.allowedPurposeIds || [
+        MEMORY_PURPOSE_IDS.read,
+        MEMORY_PURPOSE_IDS.retrieve,
+        MEMORY_PURPOSE_IDS.write,
+        MEMORY_PURPOSE_IDS.correct,
+        MEMORY_PURPOSE_IDS.forget,
+        MEMORY_PURPOSE_IDS.export,
+      ])].sort(compareIds),
+    ),
+    accessBoundAt: new Date(input.accessBoundAt || Date.now()).toISOString(),
+  };
+  const parsed = memoryAccessBindingV1Schema.parse({
+    ...draft,
+    accessScopeSha256: memoryAccessBindingSha256(draft),
+  });
+  return Object.freeze({
+    ...parsed,
+    allowedPurposeIds: Object.freeze(parsed.allowedPurposeIds),
+  });
+}
+
 export function memoryAccessBindingAllows(
   scope: DatabaseMemoryAccessScope,
   candidate: unknown,
@@ -193,9 +275,25 @@ export function memoryAccessBindingAllows(
     return binding.missionId === scope.missionId;
   }
   if (binding.visibility === "project_shared") {
-    return binding.projectId === scope.projectId;
+    return binding.workspaceId === scope.workspaceId &&
+      binding.projectId === scope.projectId &&
+      sharedMemoryPrincipalHasGrant(scope);
   }
-  return binding.workspaceId === scope.workspaceId;
+  return binding.workspaceId === scope.workspaceId &&
+    scope.projectId === null &&
+    sharedMemoryPrincipalHasGrant(scope);
+}
+
+function sharedMemoryPrincipalHasGrant(scope: DatabaseMemoryAccessScope) {
+  if (scope.executingPrincipalType === "user") {
+    return scope.executingPrincipalId === scope.initiatingActorId;
+  }
+  if ([MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve].includes(
+    scope.purposeId as (typeof MEMORY_PURPOSE_IDS)[keyof typeof MEMORY_PURPOSE_IDS],
+  )) {
+    return scope.contextGrantIds.length > 0;
+  }
+  return scope.capabilityGrantIds.length > 0;
 }
 
 export function memoryAccessBindingSha256(
