@@ -125,6 +125,7 @@ export async function loadPostgresTodaySnapshot({
           briefs.generated_by,
           briefs.model,
           briefs.source_counts,
+          briefs.memory_ids,
           briefs.generated_at,
           CASE
             WHEN
@@ -134,14 +135,14 @@ export async function loadPostgresTodaySnapshot({
               AND briefs.content ?& ARRAY[
                 'id', 'tenantId', 'actorId', 'localDate', 'summary',
                 'focus', 'watchouts', 'resurfaced', 'generatedBy',
-                'sourceCounts', 'generatedAt'
+                'memoryIds', 'sourceCounts', 'generatedAt'
               ]::text[]
               AND CASE
                 WHEN jsonb_typeof(briefs.content) = 'object'
                   THEN briefs.content - ARRAY[
                     'id', 'tenantId', 'actorId', 'localDate', 'summary',
                     'focus', 'watchouts', 'resurfaced', 'generatedBy',
-                    'model', 'sourceCounts', 'generatedAt'
+                    'model', 'memoryIds', 'sourceCounts', 'generatedAt'
                   ]::text[] = '{}'::jsonb
                 ELSE FALSE
               END
@@ -259,6 +260,24 @@ export async function loadPostgresTodaySnapshot({
                 END
               )
               AND briefs.content -> 'sourceCounts' = briefs.source_counts
+              AND CASE
+                WHEN jsonb_typeof(briefs.content -> 'memoryIds') = 'array'
+                  THEN jsonb_array_length(briefs.content -> 'memoryIds') <= 12
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(
+                        briefs.content -> 'memoryIds'
+                      ) AS memory_entry(value)
+                      WHERE
+                        jsonb_typeof(memory_entry.value) <> 'string'
+                        OR memory_entry.value #>> '{}' IS DISTINCT FROM
+                          btrim(memory_entry.value #>> '{}')
+                        OR char_length(memory_entry.value #>> '{}')
+                          NOT BETWEEN 1 AND 200
+                    )
+                ELSE FALSE
+              END
+              AND briefs.content -> 'memoryIds' = to_jsonb(briefs.memory_ids)
               AND jsonb_typeof(briefs.content -> 'generatedAt') = 'string'
               AND briefs.content ->> 'generatedAt'
                 ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$'
