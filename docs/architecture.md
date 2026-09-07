@@ -112,7 +112,7 @@ Key properties:
 - Text deltas stream to the client immediately but persist to the run ledger in batches.
 
 P9.1 inserts a transport-neutral application-service boundary between product
-callers and domain stores. P9.2 extends it to 102 active `app.*` operations in
+callers and domain stores. P9.2 and P9.3 extend it to 109 active `app.*` operations in
 the required workspace, project, work-item, asset, memory, Agent, Skill, run,
 workflow, connector, settings, Today, and notification families. Their
 overlapping UI routes call `src/lib/app-services/*`; the governed executor no
@@ -132,6 +132,25 @@ excluded operations remain human/direct surfaces because they carry raw
 secrets or binary content, deliver raw browser frames, or could recursively
 fork the Main Agent. Every permanent Agent effect has an exact read-only
 preview digest and requires approval before execution.
+
+P9.3 adds seven Trash operations to that same boundary. Custom Agent, custom
+Skill, MCP, and OpenAPI delete requests must first obtain an exact, expiring
+server preview; commit moves the resource into an actor-private 30-day ledger
+instead of permanently removing its recovery state. Public items contain only
+metadata and digests. The restorable snapshot remains internal, is capped at 1
+MB, and is destroyed on restore, expiry, or permanent purge. Every lifecycle
+transition is revision-fenced, idempotent by preview digest, recorded as a typed
+event, and returns an immutable digest-bound effect receipt.
+
+Restore uses the original identity when the domain permits it. An immutable
+custom Agent retirement is compensated by a new equivalent Agent identity, and
+an MCP connector whose credential was stored in the encrypted vault returns
+disabled without credentials so a human can reconnect it. Those limitations
+are declared before deletion and repeated after recovery. Permanent purge has
+its own fresh irreversible preview, is always risk three and approval-gated,
+and returns the final deletion receipt. PostgreSQL forces tenant/actor RLS on
+items and receipts, permits serving roles to update only lifecycle columns, and
+grants no delete or truncate privilege.
 
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped
