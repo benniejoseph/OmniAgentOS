@@ -21,6 +21,10 @@ import {
   transitionDelegationTask,
 } from "@/lib/delegation/store";
 import {
+  sendDelegationMessage,
+  shareDelegationMissionArtifact,
+} from "@/lib/delegation/channel-store";
+import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
   getSql,
@@ -1208,8 +1212,44 @@ export async function executeAgentPlanNode({
       ))],
       toolExecutionIds: [],
     });
+    const missionId = authorityScope?.missionId;
+    const sharedArtifact = missionId
+      ? await shareDelegationMissionArtifact({
+          task: lifecycleTask,
+          parentExecutionScope: authorityScope,
+          missionId,
+          recipients: { parent: true, delegationTaskIds: [] },
+          kind: "result",
+          title: `${node.label} completion proposal`,
+          mediaType: "application/json",
+          content: JSON.stringify({
+            summary: nodeResult.summary,
+            artifacts: nodeResult.artifacts,
+            acceptanceChecks: nodeResult.acceptanceChecks,
+          }),
+          evidenceIds: [...new Set(nodeResult.artifacts.flatMap(
+            (artifact) => artifact.evidenceIds,
+          ))],
+          toolExecutionIds: [],
+        })
+      : undefined;
+    if (sharedArtifact) {
+      await sendDelegationMessage({
+        task: lifecycleTask,
+        parentExecutionScope: authorityScope,
+        missionId,
+        recipients: { parent: true, delegationTaskIds: [] },
+        kind: "handoff",
+        body: "Completion proposal is ready for parent evaluation.",
+        artifactReferences: [{
+          artifactId: sharedArtifact.artifactId,
+          artifactSha256: sharedArtifact.artifactSha256,
+        }],
+      });
+    }
     const accepted = nodeResult.status === "completed" &&
-      nodeResult.acceptanceChecks.every((check) => check.passed);
+      nodeResult.acceptanceChecks.every((check) => check.passed) &&
+      (!missionId || Boolean(sharedArtifact));
     await advanceLifecycle({
       to: accepted ? "result_accepted" : "rejected",
       evaluatorPrincipalId: delegationContract.scope.parentPrincipalId,

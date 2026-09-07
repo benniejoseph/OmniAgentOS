@@ -27,6 +27,10 @@ import {
   delegationTaskPersistenceAvailable,
   transitionDelegationTask,
 } from "@/lib/delegation/store";
+import {
+  sendDelegationMessage,
+  shareDelegationMissionArtifact,
+} from "@/lib/delegation/channel-store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import type { ModelGenerationResult } from "@/lib/models/types";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
@@ -376,10 +380,45 @@ export async function runCouncilRound(input: {
         evidenceIds: contribution.evidenceIds,
         toolExecutionIds: contribution.delegation.toolExecutionIds,
       });
+      const missionId = input.delegationAuthority.executionScope.missionId;
+      const sharedArtifact = missionId
+        ? await shareDelegationMissionArtifact({
+            task: lifecycleTask,
+            parentExecutionScope: input.delegationAuthority.executionScope,
+            missionId,
+            recipients: { parent: true, delegationTaskIds: [] },
+            kind: "analysis",
+            title: `${agent.name} council proposal`,
+            mediaType: "application/json",
+            content: JSON.stringify({
+              summary: contribution.summary,
+              findings: contribution.findings,
+              risks: contribution.risks,
+              recommendation: contribution.recommendation,
+              confidence: contribution.confidence,
+            }),
+            evidenceIds: contribution.evidenceIds,
+            toolExecutionIds: contribution.delegation.toolExecutionIds,
+          })
+        : undefined;
+      if (sharedArtifact) {
+        await sendDelegationMessage({
+          task: lifecycleTask,
+          parentExecutionScope: input.delegationAuthority.executionScope,
+          missionId,
+          recipients: { parent: true, delegationTaskIds: [] },
+          kind: "handoff",
+          body: "Completion proposal is ready for parent evaluation.",
+          artifactReferences: [{
+            artifactId: sharedArtifact.artifactId,
+            artifactSha256: sharedArtifact.artifactSha256,
+          }],
+        });
+      }
       const accepted = councilContributionIsAcceptable(
         contribution,
         delegationContract,
-      );
+      ) && (!missionId || Boolean(sharedArtifact));
       await advanceLifecycle({
         to: accepted ? "result_accepted" : "rejected",
         evaluatorPrincipalId: delegationContract.scope.parentPrincipalId,
