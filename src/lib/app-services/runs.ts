@@ -27,6 +27,7 @@ import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/
 import { getOwnedThread } from "@/lib/threads/store";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { buildRunTrajectory } from "@/lib/trajectories/builder";
+import { buildConversationProgressV1 } from "@/lib/trajectories/conversation-progress";
 import { evaluateTrajectoryOutcome } from "@/lib/trajectories/evaluate";
 import { buildRunTraceHierarchy, resolveRunCorrelationId } from "@/lib/trajectories/hierarchy";
 import { verifyRunTrajectory } from "@/lib/trajectories/verify";
@@ -124,13 +125,27 @@ export async function inspectRunTrajectoryService(
   const runEvents = await listStreamEvents(`run:${run.id}`, { tenantId: caller.context.tenantId, actorId: run.ownerActorId, limit: 2_000 });
   const correlationId = resolveRunCorrelationId(run, runEvents);
   const correlatedEvents = await listCorrelatedEvents(correlationId, { tenantId: caller.context.tenantId, actorId: run.ownerActorId, limit: 2_000 });
+  const threadEvents = run.threadId
+    ? await listStreamEvents(`thread:${run.threadId}`, { tenantId: caller.context.tenantId, actorId: run.ownerActorId, limit: 2_000 })
+    : [];
+  const agentIdentity = await getAgentIdentityCardForRun(run.id, { tenantId: caller.context.tenantId });
   const traceEvents = [...new Map([...runEvents, ...correlatedEvents].map((event) => [event.id, event])).values()];
+  const conversationEvents = [...new Map(
+    [...traceEvents, ...threadEvents].map((event) => [event.id, event]),
+  ).values()];
   const trajectory = buildRunTrajectory(run, runEvents);
   const verification = verifyRunTrajectory(trajectory, run);
+  const conversationProgress = buildConversationProgressV1({
+    run,
+    events: conversationEvents,
+    correlationId,
+    agentIdentity,
+  });
   return completeAppServiceCall(authorized, {
     trajectory,
     verification,
     traceHierarchy: buildRunTraceHierarchy(run, traceEvents, correlationId),
+    conversationProgress,
     lineage: await listRunForkLineage(run.id, { tenantId: caller.context.tenantId }),
     outcomeEvaluation: evaluateTrajectoryOutcome(trajectory, verification),
   }, { resourceCount: 1 });
