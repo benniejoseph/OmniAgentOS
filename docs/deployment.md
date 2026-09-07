@@ -43,6 +43,14 @@ binary builds also require the `local_auth` platform setup committed under
 `apps/flutter/android` and `apps/flutter/ios`; Vercel deploys the server routes
 and contract documents, not an App Store or Play Store binary.
 
+P12.4 is a Vercel route guard plus Flutter binary change and requires no schema
+or Fly release. The native build adds `cryptography`, `path_provider`,
+`image_picker`, and `connectivity_plus`; iOS declares camera and photo-library
+purposes, while Android disables application backup and declares camera access.
+Vercel must be promoted before distributing that binary because offline retries
+require the owner-digest and stable-correlation checks. A Vercel deployment does
+not publish the iOS or Android binary.
+
 Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it, and it must never be stored on Fly. The paired release runs its paid verification through Asael, so the deployed server supplies the upstream OpenAI authorization while the gateway validates `x-asael-gateway-token` and forwards that header unchanged. Production always enables auth even when `OMNIAGENT_AUTH_ENABLED=false`. Vercel forwarding headers are trusted automatically; other reverse proxies must overwrite client forwarding headers before `OMNIAGENT_TRUST_PROXY_HEADERS=true` is enabled. Do not enable `OMNIAGENT_TRUST_UNSIGNED_IDENTITY_HEADERS`, `OMNIAGENT_CONNECTOR_ALLOW_HTTP`, or `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS` in production.
 
 ## Supported configuration

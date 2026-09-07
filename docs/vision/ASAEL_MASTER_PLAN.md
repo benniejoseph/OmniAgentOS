@@ -1119,9 +1119,9 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 | P12.5 | Add APNs/FCM delivery with causal deep links and notification actions. | Reuse delivery outbox; create device registrations. | Sensitive content previews follow device/user policy. | Notification opens the exact approval, work item, meeting, customer, or run and acknowledges once. |
 
 **Current status:** P12.1 through P12.3 are implemented and server-deployed.
-The overall phase remains open; P12.4 encrypted offline capture/outbox is next,
-followed by P12.5 push delivery. P9.12/P9.13 and Phase 13 remain out of the
-current implementation sequence.
+P12.4 encrypted offline Capture/outbox is implemented as the next server-release
+batch. The overall phase remains open; P12.5 push delivery is next. P9.12/P9.13
+and Phase 13 remain out of the current implementation sequence.
 
 **Phase gate:** revoked-device, reconnect, token rotation, offline capture, push, voice interruption, and cross-tenant isolation scenarios pass before public release.
 
