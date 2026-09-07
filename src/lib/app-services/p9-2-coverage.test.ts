@@ -24,6 +24,7 @@ const requiredFamilies = [
   "app.settings.",
   "app.today.",
   "app.notifications.",
+  "app.communications.",
 ] as const;
 
 describe("P9.2 complete governed application control", () => {
@@ -92,5 +93,21 @@ describe("P9.2 complete governed application control", () => {
       const properties = (byId.get(effectId)?.inputSchema as { properties?: Record<string, unknown> }).properties || {};
       expect(properties.preview, effectId).toBeDefined();
     }
+    expect(byId.get("app.communications.deliver")).toMatchObject({
+      operationClass: "mutation",
+      riskLevel: 2,
+      approvalRequired: true,
+      reversible: false,
+    });
+    const deliveryProperties = (byId.get("app.communications.deliver")?.inputSchema as {
+      properties?: Record<string, unknown>;
+    }).properties || {};
+    expect(deliveryProperties).toEqual(expect.objectContaining({
+      draftId: expect.any(Object),
+      expectedDraftSha256: expect.any(Object),
+      reviewedRecipient: expect.any(Object),
+      reviewedSubject: expect.any(Object),
+      reviewedBody: expect.any(Object),
+    }));
   });
 });
