@@ -841,6 +841,8 @@ async function runTenantMaintenance({
     toolClaimsRecovered: number;
     dailyBriefsGenerated: number;
     personalNotificationsProcessed: number;
+    mobilePushProcessed: number;
+    mobilePushDelivered: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;

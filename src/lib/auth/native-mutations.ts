@@ -77,7 +77,7 @@ function minimumVersion(capability: NativeMutationCapability) {
 
 function held(
   reason: string,
-  minimumContractVersion = NATIVE_API_CURRENT_VERSION,
+  minimumContractVersion: number = NATIVE_API_CURRENT_VERSION,
 ): NativeMutationEnrollment {
   return Object.freeze({
     state: "held",
