@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 124,
+      name: "governed_communications_v1",
+      checksum: "b0199382bc9ed5a5fe99357b3deec7b0b3ed9de8921e89ed6705062b8e2b862f",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 123)).toEqual({
       version: 123,
       name: "actor_rls_policy_repair_v1",
       checksum: "d5dfb0fb60b28c8d8c317ae8c13d9e9000cfa408ae2124dd7d62e7af538bebcd",
