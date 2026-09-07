@@ -1003,6 +1003,10 @@ function domainEventPayload(event: AgentEvent): Record<string, unknown> {
         status: event.status,
         confidence: event.confidence,
         durationMs: event.durationMs,
+        taskId: event.taskId,
+        delegationId: event.delegationId,
+        lifecycleState: event.lifecycleState,
+        lifecycleRevision: event.lifecycleRevision,
         ...hashedTextFields("summary", event.summary),
       };
     case "council_verdict":

@@ -298,7 +298,7 @@ type StreamEvent =
     }
   | { type: "memory"; title?: string; count?: number }
   | { type: "model"; model: string; provider?: "openai" | "google" | "anthropic" | "aws_bedrock" | "local"; tier: "fast" | "reasoning"; inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; latencyMs: number; fallbackUsed: boolean; estimatedCostUsd?: number; costKnown?: boolean; iteration?: number; iterationCount?: number }
-  | { type: "council_member"; agentId: AgentId; agentName: string; role: string; status: "thinking" | "completed" | "failed"; summary?: string; confidence?: number; durationMs?: number }
+  | { type: "council_member"; agentId: AgentId; agentName: string; role: string; status: "thinking" | "completed" | "failed"; summary?: string; confidence?: number; durationMs?: number; taskId?: string; delegationId?: string; lifecycleState?: "proposed" | "accepted" | "working" | "waiting" | "challenged" | "completed_proposed" | "result_accepted" | "rejected" | "canceled" | "expired"; lifecycleRevision?: number }
   | { type: "council_verdict"; status: "passed" | "revised" | "failed"; score: number; assessment: string; requiredChanges: string[] }
   | { type: "delta"; text?: string }
   | {
@@ -4904,7 +4904,12 @@ function streamEventLabel(event: StreamEvent) {
   if (event.type === "council_member") {
     if (event.status === "thinking") return `${event.agentName} is working independently as ${event.role}.`;
     if (event.status === "failed") return `${event.agentName} could not complete its council pass${event.summary ? `: ${event.summary}` : "."}`;
-    return `${event.agentName} completed its ${event.role.toLowerCase()} pass${event.confidence === undefined ? "." : ` at ${Math.round(event.confidence * 100)}% confidence.`}`;
+    const lifecycle = event.lifecycleState === "result_accepted"
+      ? " Parent evaluation accepted the proposed result."
+      : event.lifecycleState === "completed_proposed"
+        ? " The result remains proposed pending parent evaluation."
+        : "";
+    return `${event.agentName} completed its ${event.role.toLowerCase()} pass${event.confidence === undefined ? "." : ` at ${Math.round(event.confidence * 100)}% confidence.`}${lifecycle}`;
   }
   if (event.type === "council_verdict") {
     return event.status === "passed"

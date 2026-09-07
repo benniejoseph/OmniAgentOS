@@ -25,7 +25,23 @@ type CouncilMemberEvent = {
   summary?: string;
   confidence?: number;
   durationMs?: number;
+  taskId?: string;
+  delegationId?: string;
+  lifecycleState?: DelegationLifecycleState;
+  lifecycleRevision?: number;
 };
+
+type DelegationLifecycleState =
+  | "proposed"
+  | "accepted"
+  | "working"
+  | "waiting"
+  | "challenged"
+  | "completed_proposed"
+  | "result_accepted"
+  | "rejected"
+  | "canceled"
+  | "expired";
 
 type CouncilVerdictEvent = {
   type: "council_verdict";
@@ -144,7 +160,7 @@ export function CouncilExecutionMap({ events }: { events: readonly unknown[] }) 
                   <span>{identity.companion} · {member.role}</span>
                   <p>{member.summary || memberStatusCopy(member.status)}</p>
                   <div className={styles.memberMeta}>
-                    <small>{memberStatusLabel(member.status)}</small>
+                    <small>{delegationStatusLabel(member.lifecycleState) || memberStatusLabel(member.status)}</small>
                     {confidence === undefined ? null : <small>{Math.round(confidence * 100)}% confidence</small>}
                   </div>
                   {confidence === undefined ? null : (
@@ -210,7 +226,33 @@ function parseCouncilMember(value: unknown): CouncilMemberEvent | undefined {
     summary: typeof event.summary === "string" ? event.summary : undefined,
     confidence: finiteNumber(event.confidence),
     durationMs: finiteNumber(event.durationMs),
+    taskId: typeof event.taskId === "string" ? event.taskId : undefined,
+    delegationId: typeof event.delegationId === "string"
+      ? event.delegationId
+      : undefined,
+    lifecycleState: delegationLifecycleState(event.lifecycleState),
+    lifecycleRevision: finiteNumber(event.lifecycleRevision),
   };
+}
+
+function delegationLifecycleState(value: unknown): DelegationLifecycleState | undefined {
+  return [
+    "proposed", "accepted", "working", "waiting", "challenged",
+    "completed_proposed", "result_accepted", "rejected", "canceled",
+    "expired",
+  ].find((state) => state === value) as DelegationLifecycleState | undefined;
+}
+
+function delegationStatusLabel(state?: DelegationLifecycleState) {
+  if (state === "result_accepted") return "Accepted by parent evaluator";
+  if (state === "completed_proposed") return "Proposed · awaiting parent";
+  if (state === "waiting") return "Waiting at governed boundary";
+  if (state === "challenged") return "Challenged by policy";
+  if (state === "rejected") return "Rejected by parent evaluator";
+  if (state === "canceled") return "Canceled";
+  if (state === "expired") return "Expired";
+  if (state === "working" || state === "accepted") return "Delegation active";
+  return undefined;
 }
 
 function parseCouncilVerdict(value: unknown): CouncilVerdictEvent | undefined {

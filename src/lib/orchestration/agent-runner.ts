@@ -1400,6 +1400,10 @@ export async function* runAgent(
           summary: contribution.summary,
           confidence: contribution.confidence,
           durationMs: contribution.durationMs,
+          taskId: contribution.delegation.taskId,
+          delegationId: contribution.delegation.delegationId,
+          lifecycleState: contribution.delegation.lifecycleState,
+          lifecycleRevision: contribution.delegation.lifecycleRevision,
         });
       }
     }

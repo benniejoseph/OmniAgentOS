@@ -212,7 +212,10 @@ function toTrajectoryEvent(event: DomainEvent): TrajectoryEvent {
   } else if (event.type === "run.memory") {
     copy(receipt, payload, ["count"]);
   } else if (event.type === "run.council_member") {
-    copy(receipt, payload, ["agentId", "status", "confidence", "durationMs"]);
+    copy(receipt, payload, [
+      "agentId", "status", "confidence", "durationMs", "taskId",
+      "delegationId", "lifecycleState", "lifecycleRevision",
+    ]);
   } else if (event.type === "run.council_verdict") {
     copy(receipt, payload, ["status", "score"]);
   } else if (event.type === "run.status") {
