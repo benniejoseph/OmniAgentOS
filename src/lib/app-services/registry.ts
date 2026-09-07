@@ -55,6 +55,17 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("app.connectors.review", "manage.connector", "connector_contract", "connector-events.v1"),
   read("app.connectors.delete.preview", "manage.connector", "connector"),
   mutation("app.connectors.delete", "manage.connector", "connector", "connector-events.v1"),
+  read("app.settings.show", "read", "settings"),
+  read("app.settings.models.list", "read", "model_catalog"),
+  mutation("app.settings.assignments.update", "manage.connector", "model_assignment", "settings-events.v1"),
+  mutation("app.settings.mcp.update", "manage.connector", "mcp_export", "settings-events.v1"),
+  mutation("app.settings.providers.update", "manage.connector", "provider_connection", "settings-events.v1"),
+  mutation("app.settings.providers.validate", "manage.connector", "provider_connection", "settings-events.v1"),
+  read("app.settings.providers.revoke.preview", "manage.connector", "provider_connection"),
+  mutation("app.settings.providers.revoke", "manage.connector", "provider_connection", "settings-events.v1"),
+  read("app.settings.api_keys.list", "read", "service_api_key"),
+  read("app.settings.api_keys.revoke.preview", "manage.connector", "service_api_key"),
+  mutation("app.settings.api_keys.revoke", "manage.connector", "service_api_key", "settings-events.v1"),
   read("missions.list", "read", "missions"),
   read("missions.show", "read", "mission"),
   mutation("missions.create", "run.agent", "mission", "missions.atomic-events.v1"),
@@ -142,6 +153,17 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   { toolId: "app.connectors.review", operation: "app.connectors.review" },
   { toolId: "app.connectors.delete.preview", operation: "app.connectors.delete.preview" },
   { toolId: "app.connectors.delete", operation: "app.connectors.delete" },
+  { toolId: "app.settings.show", operation: "app.settings.show" },
+  { toolId: "app.settings.models.list", operation: "app.settings.models.list" },
+  { toolId: "app.settings.assignments.update", operation: "app.settings.assignments.update" },
+  { toolId: "app.settings.mcp.update", operation: "app.settings.mcp.update" },
+  { toolId: "app.settings.providers.update", operation: "app.settings.providers.update" },
+  { toolId: "app.settings.providers.validate", operation: "app.settings.providers.validate" },
+  { toolId: "app.settings.providers.revoke.preview", operation: "app.settings.providers.revoke.preview" },
+  { toolId: "app.settings.providers.revoke", operation: "app.settings.providers.revoke" },
+  { toolId: "app.settings.api_keys.list", operation: "app.settings.api_keys.list" },
+  { toolId: "app.settings.api_keys.revoke.preview", operation: "app.settings.api_keys.revoke.preview" },
+  { toolId: "app.settings.api_keys.revoke", operation: "app.settings.api_keys.revoke" },
   { toolId: "memory.search", operation: "memory.search" },
   { toolId: "memory.inspect", operation: "memory.inspect" },
   { toolId: "memory.forget.preview", operation: "memory.forget.preview" },
@@ -161,6 +183,13 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   toolId: string;
   operation: AppServiceOperation;
 }>);
+
+export const MAIN_AGENT_EXCLUDED_APP_OPERATIONS = Object.freeze([
+  { operation: "app.connectors.credentials.write", reason: "Raw connector credentials must use the human-only secret entry surface." },
+  { operation: "app.settings.providers.create", reason: "Provider credentials must use the human-only secret entry surface." },
+  { operation: "app.settings.providers.rotate", reason: "Provider credentials must use the human-only secret rotation surface." },
+  { operation: "app.settings.api_keys.create", reason: "One-time bearer tokens must never enter an agent transcript or tool ledger." },
+] as const);
 
 const byOperation = new Map(
   APP_SERVICE_OPERATION_CONTRACTS.map((contract) => [contract.operation, contract]),
@@ -197,6 +226,7 @@ export function validateAppServiceRegistry() {
     duplicateOperations: [...new Set(duplicateOperations)],
     invalidMutationContracts,
     mainAgentOperationCount: MAIN_AGENT_APP_SERVICE_BINDINGS.length,
+    excludedAgentOperationCount: MAIN_AGENT_EXCLUDED_APP_OPERATIONS.length,
     missingAgentOperations,
     agentAccessPaths: ["governed_tool_executor", "application_service"] as const,
     forbiddenAgentAccessPaths: [] as readonly string[],

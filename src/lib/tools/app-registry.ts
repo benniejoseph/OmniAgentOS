@@ -200,6 +200,31 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.connectors.delete", "Delete connector", "Permanently delete one connector and its exact operation set only when the preview digest still matches.", requiredObjectSchema({
     kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), expectedTargetSha256: sha256("Digest returned by app.connectors.delete.preview."),
   }, ["kind", "connectorId", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.settings.show", "Show settings", "Read the current actor's redacted provider, model, assignment, API-key metadata, MCP exposure, vault readiness, and platform settings.", objectSchema({})),
+  readTool("app.settings.models.list", "List models", "List the current actor's selectable model catalog without credentials.", objectSchema({})),
+  mutationTool("app.settings.assignments.update", "Update model assignment", "Update one model routing assignment; cross-provider fallback requires explicit disclosure consent.", requiredObjectSchema({
+    scope: { type: "string", enum: ["main_agent", "orchestrator", "workflow", "council", "memory", "embeddings", "vision", "audio"] },
+    provider: modelProvider(), modelId: text(1, 240), fallbackProvider: modelProvider(), fallbackModelId: text(1, 240),
+    crossProviderFallbackConsent: { type: "boolean", enum: [true] },
+  }, ["scope", "provider", "modelId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.settings.mcp.update", "Update MCP exposure", "Update the current actor's first-party MCP export configuration and allowed scopes.", requiredObjectSchema({
+    enabled: { type: "boolean" }, serverName: text(1, 120), allowedScopes: serviceApiScopes(), exposeResources: { type: "boolean", default: false },
+  }, ["enabled", "serverName", "allowedScopes"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.settings.providers.update", "Update provider metadata", "Rename or enable/disable one exact tenant-vault provider connection without handling credentials.", requiredObjectSchema({
+    id: opaqueId("Exact provider-connection ID."), label: text(1, 120), enabled: { type: "boolean" },
+  }, ["id"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.settings.providers.validate", "Validate provider", "Validate one exact provider connection and refresh its model catalog.", requiredObjectSchema({
+    id: opaqueId("Exact provider-connection ID."),
+  }, ["id"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.settings.providers.revoke.preview", "Preview provider revocation", "Preview the exact redacted provider credential record that revocation will scrub.", requiredObjectSchema({ id: opaqueId("Exact provider-connection ID.") }, ["id"])),
+  mutationTool("app.settings.providers.revoke", "Revoke provider", "Revoke and scrub one exact tenant-vault provider credential only when the preview digest still matches.", requiredObjectSchema({
+    id: opaqueId("Exact provider-connection ID."), expectedTargetSha256: sha256("Digest returned by the provider revocation preview."),
+  }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.settings.api_keys.list", "List service API keys", "List only redacted service API-key metadata for the current actor.", objectSchema({})),
+  readTool("app.settings.api_keys.revoke.preview", "Preview API-key revocation", "Preview one exact redacted service API key before revocation.", requiredObjectSchema({ id: opaqueId("Exact service API-key ID.") }, ["id"])),
+  mutationTool("app.settings.api_keys.revoke", "Revoke service API key", "Revoke one exact service API key only when its redacted target digest still matches.", requiredObjectSchema({
+    id: opaqueId("Exact service API-key ID."), expectedTargetSha256: sha256("Digest returned by the API-key revocation preview."),
+  }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
 ] satisfies readonly ToolDefinition[]);
 
 function readTool(id: string, name: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
@@ -291,4 +316,15 @@ function workflowBudgetsSchema() {
 
 function connectorKind() {
   return { type: "string", enum: ["mcp", "openapi"] };
+}
+
+function modelProvider() {
+  return { type: "string", enum: ["openai", "google", "anthropic", "aws_bedrock"] };
+}
+
+function serviceApiScopes() {
+  return {
+    type: "array", uniqueItems: true, maxItems: 12,
+    items: { type: "string", enum: ["mcp:discover", "mcp:tools:list", "mcp:tools:execute", "a2a:discover", "a2a:tasks:read", "a2a:tasks:write", "missions:read", "missions:write", "memory:read", "memory:write", "runs:read", "settings:read"] },
+  };
 }
