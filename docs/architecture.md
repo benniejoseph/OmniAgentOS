@@ -1929,6 +1929,39 @@ idempotent owner-controlled application-service mutation that locks the exact
 Account 360 revision, persists policy and score evidence under forced Workspace
 RLS, and emits the metadata-only `customer.account.health.evaluated` event.
 
+## Governed customer-success workflows
+
+P10.13 adds the immutable `asael-csm-pack:1` definitions for onboarding,
+adoption review, risk escalation, renewal planning, QBR/EBR, meeting prep or
+follow-up, support escalation, and expansion discovery. Each definition has a
+strict discriminated input contract, acceptance criteria, required artifacts,
+required evidence classes, a default owner action, and the project/work-item
+template used for execution. The definition digest is retained on every run so
+a later application release cannot silently reinterpret existing work.
+
+Starting a workflow requires the exact current Account 360 revision and digest,
+canonical Workspace write authority, and the current account owner. It creates
+one idempotent actor-owned Project plus deterministic dependency-aware WorkItems
+through the existing Project event boundary. A second account lock rechecks the
+revision before the immutable workflow run is committed. The run retains the
+typed input digest, exact account and definition snapshots, semantic account
+owner, project/task identities, next action, and an initial `in_progress`
+outcome receipt.
+
+Completed, blocked, and cancelled outcomes are append-only revisions. A
+completed outcome must satisfy every required artifact and evidence key; each
+artifact receipt must name an artifact produced by the exact workflow Project,
+and every claimed evidence reference must already be attached to that artifact.
+The current projection is monotonic and terminal completed/cancelled outcomes
+cannot be rewritten. Both ledgers use forced tenant plus canonical Workspace
+and account-owner RLS.
+
+Workflow creation has no external side-effect path. Customer communications are
+declared `draft_only_until_governed_delivery`, and CRM changes are
+`proposal_only_until_governed_write`. WorkItems may prepare those proposals,
+but delivery and Salesforce mutation can happen only through their existing
+approval-bound governed tools and effect receipts.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
