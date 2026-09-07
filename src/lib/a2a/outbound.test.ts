@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({
   resolveA2APeerBearerToken: vi.fn(),
   getDelegationTask: vi.fn(),
   transitionDelegationTask: vi.fn(),
+  reserveExternalA2ASafety: vi.fn(),
+  getExternalA2ASafety: vi.fn(),
+  touchExternalA2ASafety: vi.fn(),
 }));
 
 vi.mock("@/lib/a2a/client", () => ({
@@ -30,6 +33,11 @@ vi.mock("@/lib/a2a/store", () => ({
 vi.mock("@/lib/delegation/store", () => ({
   getDelegationTask: mocks.getDelegationTask,
   transitionDelegationTask: mocks.transitionDelegationTask,
+}));
+vi.mock("@/lib/a2a/safety-store", () => ({
+  reserveExternalA2ASafety: mocks.reserveExternalA2ASafety,
+  getExternalA2ASafety: mocks.getExternalA2ASafety,
+  touchExternalA2ASafety: mocks.touchExternalA2ASafety,
 }));
 
 import {
@@ -92,6 +100,9 @@ describe("outbound A2A adapter", () => {
     });
     mocks.getA2APeer.mockResolvedValue(activeRollout());
     mocks.getDelegationTask.mockImplementation(async () => canonicalTask);
+    mocks.reserveExternalA2ASafety.mockResolvedValue(safetyState());
+    mocks.getExternalA2ASafety.mockResolvedValue(safetyState());
+    mocks.touchExternalA2ASafety.mockResolvedValue(safetyState());
   });
 
   afterEach(() => vi.useRealTimers());
@@ -109,6 +120,7 @@ describe("outbound A2A adapter", () => {
     });
 
     expect(mocks.discoverExternalA2APeerV1).toHaveBeenCalledOnce();
+    expect(mocks.reserveExternalA2ASafety).toHaveBeenCalledOnce();
     expect(sent).toHaveLength(1);
     expect(JSON.stringify(sent[0])).toContain("opaque-delegated-token");
     const persistedMessage = mocks.appendA2AExchange.mock.calls.find(
@@ -281,6 +293,20 @@ function delegatedToken() {
       expiresAt: "2026-09-07T06:05:00.000Z",
       audience: "asael-a2a-delegated-tool-gateway",
     },
+  };
+}
+
+function safetyState() {
+  const rollout = activeRollout();
+  return {
+    reservation: {
+      peerId: rollout.peerId,
+      rolloutId: rollout.rolloutId,
+      rolloutSha256: rollout.rolloutSha256,
+      contractSha256: buildContract().contractSha256,
+      forceMutationApproval: true,
+    },
+    status: "active",
   };
 }
 

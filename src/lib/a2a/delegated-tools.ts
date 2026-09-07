@@ -8,6 +8,7 @@ import {
   assertA2APeerRolloutActive,
   type A2APeerRolloutV1,
 } from "@/lib/a2a/rollout";
+import { claimExternalA2AToolCall } from "@/lib/a2a/safety-store";
 import { getA2APeer } from "@/lib/a2a/store";
 import { getDelegationTask } from "@/lib/delegation/store";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
@@ -116,12 +117,20 @@ export async function executeDelegatedA2AToolV1(input: {
     capabilityGrantIds: envelope.principal.capabilityGrantIds,
     purpose: `a2a.delegated_tool.${request.toolId}`,
   });
+  const safety = await claimExternalA2AToolCall({
+    tenantId: envelope.principal.tenantId,
+    ownerActorId: envelope.principal.initiatingActorId,
+    internalTaskId: envelope.internalTaskId,
+    toolId: request.toolId,
+    idempotencyKey: request.idempotencyKey,
+    executionScope,
+  });
   const result = await executeGovernedTool({
     toolId: request.toolId,
     input: request.input,
     dryRun: false,
     approved: false,
-    forceApproval: true,
+    forceApproval: safety.state.reservation.forceMutationApproval,
     context,
     executionScope,
     idempotencyKey: `${envelope.tokenId}:${request.idempotencyKey}`,

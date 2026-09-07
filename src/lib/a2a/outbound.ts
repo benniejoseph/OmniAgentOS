@@ -4,6 +4,11 @@ import {
   type A2AClientStreamEventV1,
 } from "@/lib/a2a/client";
 import { issueDelegatedA2ATokenV1 } from "@/lib/a2a/delegated-token";
+import {
+  getExternalA2ASafety,
+  reserveExternalA2ASafety,
+  touchExternalA2ASafety,
+} from "@/lib/a2a/safety-store";
 import type { A2ATaskMappingV1 } from "@/lib/a2a/task-mapping";
 import {
   assertA2APeerRolloutActive,
@@ -65,6 +70,18 @@ export async function startExternalA2ATaskV1(input: {
     input.abortSignal,
   );
   assertContractAndTask(contract, input.internalTask, rollout);
+  if (!["proposed", "accepted", "working"].includes(input.internalTask.state)) {
+    throw new A2AOutboundError(
+      "The canonical task cannot start an external delegation.",
+      409,
+    );
+  }
+  await reserveExternalA2ASafety({
+    contract,
+    internalTask: input.internalTask,
+    rollout,
+    executionScope: input.parentExecutionScope,
+  });
   let task = await moveTaskToWorking(input.internalTask, input.parentExecutionScope);
   const issued = issueDelegatedA2ATokenV1({
     contract,
@@ -88,7 +105,12 @@ export async function startExternalA2ATaskV1(input: {
       abortSignal: input.abortSignal,
     });
   } catch (error) {
-    await waitAfterDispatchFailure(task, input.parentExecutionScope);
+    task = await waitAfterDispatchFailure(task, input.parentExecutionScope);
+    await syncSafetyForTask({
+      task,
+      executionScope: input.parentExecutionScope,
+      reason: "outbound_dispatch_failed",
+    }).catch(() => undefined);
     throw new A2AOutboundError(
       error instanceof Error
         ? `The external A2A task could not be dispatched: ${error.message}`
@@ -127,6 +149,11 @@ export async function startExternalA2ATaskV1(input: {
     remoteTask,
     parentExecutionScope: input.parentExecutionScope,
   });
+  await syncSafetyForTask({
+    task,
+    executionScope: input.parentExecutionScope,
+    reason: "remote_task_observed",
+  });
   return { mapping, internalTask: task, remoteTask } as const;
 }
 
@@ -152,6 +179,11 @@ export async function refreshExternalA2ATaskV1(input: {
     task,
     remoteTask,
     parentExecutionScope: input.parentExecutionScope,
+  });
+  await syncSafetyForTask({
+    task: internalTask,
+    executionScope: input.parentExecutionScope,
+    reason: "remote_task_refreshed",
   });
   return { mapping: input.mapping, internalTask, remoteTask } as const;
 }
@@ -224,6 +256,11 @@ export async function resumeExternalA2ATaskV1(input: {
     remoteTask,
     parentExecutionScope: input.parentExecutionScope,
   });
+  await syncSafetyForTask({
+    task,
+    executionScope: input.parentExecutionScope,
+    reason: "remote_task_resumed",
+  });
   return { mapping: input.mapping, internalTask: task, remoteTask } as const;
 }
 
@@ -258,6 +295,11 @@ export async function cancelExternalA2ATaskV1(input: {
     },
     parentExecutionScope: input.parentExecutionScope,
   });
+  await syncSafetyForTask({
+    task: internalTask,
+    executionScope: input.parentExecutionScope,
+    reason: "parent_canceled",
+  });
   return { mapping: input.mapping, internalTask, remoteTask } as const;
 }
 
@@ -284,11 +326,24 @@ export async function* subscribeExternalA2ATaskV1(input: {
         ownerActorId: input.mapping.ownerActorId,
         taskId: input.mapping.internalTaskId,
       });
-      await applyRemoteTaskObservation({
+      const observed = await applyRemoteTaskObservation({
         mapping: input.mapping,
         task,
         remoteTask: event.task,
         parentExecutionScope: input.parentExecutionScope,
+      });
+      await syncSafetyForTask({
+        task: observed,
+        executionScope: input.parentExecutionScope,
+        reason: "remote_stream_task_observed",
+      });
+    } else {
+      await touchExternalA2ASafety({
+        tenantId: input.mapping.tenantId,
+        ownerActorId: input.mapping.ownerActorId,
+        internalTaskId: input.mapping.internalTaskId,
+        executionScope: input.parentExecutionScope,
+        reason: "remote_stream_progress",
       });
     }
     yield event;
@@ -369,7 +424,32 @@ async function loadOutboundAuthority(
   ) {
     throw new A2AOutboundError("The A2A task mapping no longer matches its canonical task.", 409);
   }
-  return { rollout, task } as const;
+  const safety = await getExternalA2ASafety({
+    tenantId: mapping.tenantId,
+    ownerActorId: mapping.ownerActorId,
+    internalTaskId: mapping.internalTaskId,
+  });
+  if (
+    safety.reservation.peerId !== mapping.peerId ||
+    safety.reservation.rolloutId !== mapping.rolloutId ||
+    safety.reservation.rolloutSha256 !== mapping.rolloutSha256 ||
+    safety.reservation.contractSha256 !== mapping.internalContractSha256
+  ) {
+    throw new A2AOutboundError(
+      "The A2A task no longer matches its external safety authority.",
+      403,
+    );
+  }
+  if (!isTerminalInternalState(task.state) && task.state !== "completed_proposed") {
+    await touchExternalA2ASafety({
+      tenantId: mapping.tenantId,
+      ownerActorId: mapping.ownerActorId,
+      internalTaskId: mapping.internalTaskId,
+      executionScope: parentExecutionScope,
+      reason: "outbound_operation_started",
+    });
+  }
+  return { rollout, task, safety } as const;
 }
 
 function buildOutboundDelegationMessage(input: {
@@ -687,6 +767,31 @@ function assertContractAndTask(
   ) {
     throw new A2AOutboundError("The external delegation is outside its canonical scope.", 403);
   }
+}
+
+async function syncSafetyForTask(input: {
+  task: DelegationTaskV1;
+  executionScope: ExecutionScope;
+  reason: string;
+}) {
+  const status = input.task.state === "completed_proposed" ||
+      input.task.state === "result_accepted"
+    ? "completed"
+    : input.task.state === "challenged" || input.task.state === "rejected"
+      ? "challenged"
+      : input.task.state === "canceled"
+        ? "canceled"
+        : input.task.state === "expired"
+          ? "expired"
+          : "active";
+  return touchExternalA2ASafety({
+    tenantId: input.task.tenantId,
+    ownerActorId: input.task.ownerActorId,
+    internalTaskId: input.task.taskId,
+    executionScope: input.executionScope,
+    status,
+    reason: input.reason,
+  });
 }
 
 function assertParentScope(mapping: A2ATaskMappingV1, scope: ExecutionScope) {
