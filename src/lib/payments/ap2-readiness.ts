@@ -12,7 +12,7 @@ import {
 } from "@/lib/payments/ap2-contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
-export const AP2_READINESS_VERSION = "p9.17-ap2-readiness:1" as const;
+export const AP2_READINESS_VERSION = "p9.18-ap2-readiness:1" as const;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -113,6 +113,35 @@ const readinessBodySchema = z.object({
     unknownProviderOutcomeRequiresReconciliation: z.literal(true),
     authorizationConfersPaymentEffectAuthority: z.literal(false),
   }).strict(),
+  receiptReconciliation: z.object({
+    implementationVersion: z.literal("p9.18-ap2-receipt-reconciliation:1"),
+    schemaMigrationVersion: z.literal(127),
+    signedReceiptFormats: z.tuple([
+      z.literal("checkout_receipt_jwt"),
+      z.literal("payment_receipt_jwt"),
+    ]),
+    rawSignedReceiptsStoredAsPrivateEvidence: z.literal(true),
+    rawSignedReceiptsReturnedByApiOrTool: z.literal(false),
+    providerObservationsIndependentlySigned: z.literal(true),
+    lifecycleStates: z.tuple([
+      z.literal("authorization"),
+      z.literal("capture"),
+      z.literal("settlement"),
+      z.literal("cancellation"),
+      z.literal("refund"),
+      z.literal("dispute"),
+      z.literal("fulfillment"),
+    ]),
+    paidRequires: z.tuple([
+      z.literal("accepted_checkout_receipt"),
+      z.literal("accepted_payment_receipt"),
+      z.literal("signed_processor_authorization"),
+      z.literal("signed_exact_total_capture"),
+    ]),
+    modelOrBrowserAssertionCanEstablishPaymentState: z.literal(false),
+    idempotentTransactionBoundReconciliationJobs: z.literal(true),
+    recoverableDiscrepanciesExposed: z.literal(true),
+  }).strict(),
   capability: z.object({
     state: z.literal("disabled_configuration_only"),
     transactionsPermitted: z.literal(false),
@@ -120,17 +149,15 @@ const readinessBodySchema = z.object({
     acceptedAdapterReleaseCount: z.literal(0),
     humanPresentMandateFlowImplemented: z.literal(true),
     credentialIsolationImplemented: z.literal(true),
+    receiptReconciliationImplemented: z.literal(true),
     humanPresentFlowEnabled: z.literal(false),
     humanNotPresentFlowEnabled: z.literal(false),
-    missingGates: z.tuple([
-      z.literal("p9.18_signed_receipts_and_reconciliation"),
-    ]),
+    missingGates: z.tuple([]),
     activationBlockers: z.tuple([
       z.literal("reviewed_merchant_adapter"),
       z.literal("reviewed_webauthn_attestation_policy"),
       z.literal("isolated_credential_provider"),
       z.literal("reviewed_merchant_payment_processor"),
-      z.literal("signed_receipt_reconciliation"),
     ]),
   }).strict(),
 }).strict();
@@ -264,6 +291,32 @@ export function loadAp2Readiness(): Ap2Readiness {
       unknownProviderOutcomeRequiresReconciliation: true,
       authorizationConfersPaymentEffectAuthority: false,
     },
+    receiptReconciliation: {
+      implementationVersion: "p9.18-ap2-receipt-reconciliation:1",
+      schemaMigrationVersion: 127,
+      signedReceiptFormats: ["checkout_receipt_jwt", "payment_receipt_jwt"],
+      rawSignedReceiptsStoredAsPrivateEvidence: true,
+      rawSignedReceiptsReturnedByApiOrTool: false,
+      providerObservationsIndependentlySigned: true,
+      lifecycleStates: [
+        "authorization",
+        "capture",
+        "settlement",
+        "cancellation",
+        "refund",
+        "dispute",
+        "fulfillment",
+      ],
+      paidRequires: [
+        "accepted_checkout_receipt",
+        "accepted_payment_receipt",
+        "signed_processor_authorization",
+        "signed_exact_total_capture",
+      ],
+      modelOrBrowserAssertionCanEstablishPaymentState: false,
+      idempotentTransactionBoundReconciliationJobs: true,
+      recoverableDiscrepanciesExposed: true,
+    },
     capability: {
       state: "disabled_configuration_only",
       transactionsPermitted: false,
@@ -271,17 +324,15 @@ export function loadAp2Readiness(): Ap2Readiness {
       acceptedAdapterReleaseCount: 0,
       humanPresentMandateFlowImplemented: true,
       credentialIsolationImplemented: true,
+      receiptReconciliationImplemented: true,
       humanPresentFlowEnabled: false,
       humanNotPresentFlowEnabled: false,
-      missingGates: [
-        "p9.18_signed_receipts_and_reconciliation",
-      ],
+      missingGates: [],
       activationBlockers: [
         "reviewed_merchant_adapter",
         "reviewed_webauthn_attestation_policy",
         "isolated_credential_provider",
         "reviewed_merchant_payment_processor",
-        "signed_receipt_reconciliation",
       ],
     },
   });
