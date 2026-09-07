@@ -1,4 +1,5 @@
 import type { CaptureExtractionReceipt } from "@/lib/capture/extraction";
+import type { CaptureSegmentMediaTranscript } from "@/lib/capture/media-contracts";
 
 export type CaptureRecordingStatus =
   | "recording"
@@ -47,6 +48,8 @@ export type CaptureSegment = {
   transcriptionStatus: CaptureTranscriptionStatus;
   transcriptionModel?: string;
   transcriptionError?: string;
+  mediaTranscript?: CaptureSegmentMediaTranscript;
+  rawAudioDeletedAt?: string;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
