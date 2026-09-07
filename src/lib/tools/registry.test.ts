@@ -77,4 +77,23 @@ describe("governed native tool schemas", () => {
       required: ["projectId", "workItemId"],
     });
   });
+
+  it("keeps destructive app data controls behind exact previews and approval", () => {
+    expect(getGovernedTool("app.memory.forget.preview")).toMatchObject({
+      riskLevel: 0,
+      operationClass: "read_only",
+    });
+    expect(getGovernedTool("app.memory.forget")).toMatchObject({
+      riskLevel: 2,
+      approvalRequired: true,
+      reversible: false,
+    });
+    expect(getGovernedTool("app.knowledge.delete.preview")).toMatchObject({
+      riskLevel: 0,
+      operationClass: "read_only",
+    });
+    expect(getGovernedTool("app.knowledge.delete")?.inputSchema).toMatchObject({
+      required: ["source", "expectedTargetsSha256"],
+    });
+  });
 });

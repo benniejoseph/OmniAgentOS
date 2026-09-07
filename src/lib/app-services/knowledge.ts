@@ -17,6 +17,7 @@ import {
 } from "@/lib/rag/store";
 import { redactSensitive } from "@/lib/security/context";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import type { AiUsageScope } from "@/lib/usage/types";
 
 export const knowledgeListServiceInputSchema = z.object({
@@ -42,6 +43,12 @@ export const knowledgeSourceDeleteServiceInputSchema = z.object({
     "google:calendar:",
     "google:drive:",
   ]),
+}).strict();
+
+export const knowledgeSourceDeletePreviewServiceInputSchema = knowledgeSourceDeleteServiceInputSchema;
+
+export const governedKnowledgeSourceDeleteServiceInputSchema = knowledgeSourceDeleteServiceInputSchema.extend({
+  expectedTargetsSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
 type KnowledgeServiceOptions = Readonly<{
@@ -204,6 +211,52 @@ export async function deleteKnowledgeSourceService(
     deleted,
     source: value.source,
   }, { resourceCount: deleted.documents });
+}
+
+export async function previewGovernedKnowledgeSourceDeleteService(
+  caller: AppServiceCaller,
+  input: z.input<typeof knowledgeSourceDeletePreviewServiceInputSchema>,
+) {
+  const value = knowledgeSourceDeletePreviewServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.knowledge.delete.preview"),
+  );
+  const targets = (await listKnowledgeDocuments(5_000, {
+    tenantId: caller.context.tenantId,
+  }))
+    .filter((document) => document.source.startsWith(value.source))
+    .map((document) => ({ id: document.id, source: document.source, title: document.title }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return completeAppServiceCall(authorized, {
+    source: value.source,
+    targets,
+    targetsSha256: canonicalJsonSha256(targets),
+    irreversible: true as const,
+  }, { resourceCount: targets.length });
+}
+
+export async function deleteGovernedKnowledgeSourceService(
+  caller: AppServiceCaller,
+  input: z.input<typeof governedKnowledgeSourceDeleteServiceInputSchema>,
+) {
+  const value = governedKnowledgeSourceDeleteServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.knowledge.delete"),
+  );
+  const preview = await previewGovernedKnowledgeSourceDeleteService(caller, {
+    source: value.source,
+  });
+  if (preview.data.targetsSha256 !== value.expectedTargetsSha256) {
+    throw new Error("Knowledge deletion targets changed after preview; review the exact targets again.");
+  }
+  const result = await deleteKnowledgeSourceService(caller, { source: value.source });
+  return completeAppServiceCall(authorized, {
+    ...result.data,
+    deletedTargetIds: preview.data.targets.map((target) => target.id),
+    targetsSha256: preview.data.targetsSha256,
+  }, { resourceCount: result.data.deleted.documents });
 }
 
 function withoutEmbedding<T extends { embedding?: number[] }>(record: T) {
