@@ -8,6 +8,10 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const databaseClient = readFileSync(
+  new URL("../db/client.ts", import.meta.url),
+  "utf8",
+);
 
 describe("P10.6 meeting domain migration", () => {
   it("keeps revisions immutable and advances the projection monotonically", () => {
@@ -25,6 +29,9 @@ describe("P10.6 meeting domain migration", () => {
     expect(migration).toContain("meeting.effective_access_class");
     expect(migration).toContain("omni_actor_scope_v1_allows_canonical");
     expect(migration).not.toMatch(
+      /FROM public\.omni_work_project_memberships membership[\s\S]{0,300}membership\.subject_kind/,
+    );
+    expect(databaseClient).not.toMatch(
       /FROM public\.omni_work_project_memberships membership[\s\S]{0,300}membership\.subject_kind/,
     );
   });
