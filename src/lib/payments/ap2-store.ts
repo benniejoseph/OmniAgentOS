@@ -285,13 +285,13 @@ export async function getAp2MandateAuthorization(reviewId: string, owner: Owner)
   requireDatabase();
   await ensureDatabaseSchema();
   const rows = await getSql()`
-    SELECT authorization FROM omni_ap2_mandate_authorizations
+    SELECT authorization_payload FROM omni_ap2_mandate_authorizations
     WHERE tenant_id = ${scope.tenantId} AND owner_actor_id = ${scope.actorId}
       AND review_id = ${required(reviewId, 240, "review id")}
     LIMIT 1
   `;
   return rows[0]
-    ? ap2MandateAuthorizationSchema.parse(rows[0].authorization)
+    ? ap2MandateAuthorizationSchema.parse(rows[0].authorization_payload)
     : undefined;
 }
 
@@ -309,14 +309,14 @@ export async function authorizeAp2HumanPresentReview(input: {
       throw new Ap2HumanPresentStoreError("AP2 mandate review not found.", "not_found");
     }
     const existingRows = await sql`
-      SELECT authorization FROM omni_ap2_mandate_authorizations
+      SELECT authorization_payload FROM omni_ap2_mandate_authorizations
       WHERE tenant_id = ${scope.tenantId} AND owner_actor_id = ${scope.actorId}
         AND review_id = ${review.reviewId} LIMIT 1
     `;
     if (existingRows[0]) {
       return {
         review,
-        authorization: ap2MandateAuthorizationSchema.parse(existingRows[0].authorization),
+        authorization: ap2MandateAuthorizationSchema.parse(existingRows[0].authorization_payload),
         created: false,
       };
     }
@@ -338,7 +338,7 @@ export async function authorizeAp2HumanPresentReview(input: {
     await sql`
       INSERT INTO omni_ap2_mandate_authorizations (
         tenant_id, owner_actor_id, authorization_id, review_id, credential_id,
-        authorization_sha256, authorization, verified_at
+        authorization_sha256, authorization_payload, verified_at
       ) VALUES (
         ${authorization.tenantId}, ${authorization.ownerActorId},
         ${authorization.authorizationId}, ${authorization.reviewId},

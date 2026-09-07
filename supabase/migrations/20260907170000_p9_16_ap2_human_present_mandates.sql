@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS omni_ap2_mandate_authorizations (
   review_id TEXT NOT NULL,
   credential_id TEXT NOT NULL,
   authorization_sha256 TEXT NOT NULL,
-  authorization JSONB NOT NULL,
+  authorization_payload JSONB NOT NULL,
   verified_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (tenant_id, owner_actor_id, authorization_id),
   UNIQUE (tenant_id, owner_actor_id, review_id),
@@ -99,12 +99,12 @@ CREATE TABLE IF NOT EXISTS omni_ap2_mandate_authorizations (
     REFERENCES omni_ap2_signing_credentials (tenant_id, owner_actor_id, credential_id),
   CHECK (authorization_id ~ '^ap2_authorization:[0-9a-f-]{36}$'),
   CHECK (authorization_sha256 ~ '^[a-f0-9]{64}$'),
-  CHECK (authorization ->> 'authorizationId' = authorization_id),
-  CHECK (authorization ->> 'tenantId' = tenant_id),
-  CHECK (authorization ->> 'ownerActorId' = owner_actor_id),
-  CHECK (authorization ->> 'reviewId' = review_id),
-  CHECK (authorization ->> 'credentialId' = credential_id),
-  CHECK (authorization ->> 'authorizationSha256' = authorization_sha256)
+  CHECK (authorization_payload ->> 'authorizationId' = authorization_id),
+  CHECK (authorization_payload ->> 'tenantId' = tenant_id),
+  CHECK (authorization_payload ->> 'ownerActorId' = owner_actor_id),
+  CHECK (authorization_payload ->> 'reviewId' = review_id),
+  CHECK (authorization_payload ->> 'credentialId' = credential_id),
+  CHECK (authorization_payload ->> 'authorizationSha256' = authorization_sha256)
 );
 
 CREATE INDEX IF NOT EXISTS omni_ap2_credentials_owner_state_idx
