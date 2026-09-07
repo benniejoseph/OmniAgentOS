@@ -411,7 +411,7 @@ export async function acknowledgeMobilePushDelivery(
   deliveryId: string,
   idempotencyKey: string,
 ) {
-  exactNativeContext(context);
+  const native = exactNativeContext(context);
   requirePushStorage();
   await ensureDatabaseSchema();
   return getSql().transaction(async (sql: PushSql) => {
@@ -420,6 +420,14 @@ export async function acknowledgeMobilePushDelivery(
       WHERE id = ${deliveryId}
         AND tenant_id = ${context.tenantId}
         AND owner_actor_id = ${context.actorId}
+        AND EXISTS (
+          SELECT 1 FROM omni_mobile_push_registrations registration
+          WHERE registration.id = omni_mobile_push_deliveries.registration_id
+            AND registration.tenant_id = omni_mobile_push_deliveries.tenant_id
+            AND registration.owner_actor_id = omni_mobile_push_deliveries.owner_actor_id
+            AND registration.device_id = ${native.deviceId}
+            AND registration.mobile_session_id = ${native.sessionId}
+        )
       LIMIT 1
       FOR UPDATE
     `;
@@ -440,6 +448,14 @@ export async function acknowledgeMobilePushDelivery(
         AND tenant_id = ${context.tenantId}
         AND owner_actor_id = ${context.actorId}
         AND status = 'delivered'
+        AND EXISTS (
+          SELECT 1 FROM omni_mobile_push_registrations registration
+          WHERE registration.id = omni_mobile_push_deliveries.registration_id
+            AND registration.tenant_id = omni_mobile_push_deliveries.tenant_id
+            AND registration.owner_actor_id = omni_mobile_push_deliveries.owner_actor_id
+            AND registration.device_id = ${native.deviceId}
+            AND registration.mobile_session_id = ${native.sessionId}
+        )
       RETURNING *
     `;
     const delivery = deliveryFromRow(rows[0]);
@@ -471,7 +487,7 @@ export async function getMobilePushAcknowledgementCandidate(
   context: SecurityContext,
   deliveryId: string,
 ) {
-  exactNativeContext(context);
+  const native = exactNativeContext(context);
   requirePushStorage();
   await ensureDatabaseSchema();
   const rows = await getSql()`
@@ -480,6 +496,14 @@ export async function getMobilePushAcknowledgementCandidate(
       AND tenant_id = ${context.tenantId}
       AND owner_actor_id = ${context.actorId}
       AND status IN ('delivered', 'acknowledged')
+      AND EXISTS (
+        SELECT 1 FROM omni_mobile_push_registrations registration
+        WHERE registration.id = omni_mobile_push_deliveries.registration_id
+          AND registration.tenant_id = omni_mobile_push_deliveries.tenant_id
+          AND registration.owner_actor_id = omni_mobile_push_deliveries.owner_actor_id
+          AND registration.device_id = ${native.deviceId}
+          AND registration.mobile_session_id = ${native.sessionId}
+      )
     LIMIT 1
   `;
   return rows[0] ? deliveryFromRow(rows[0]) : undefined;
@@ -732,13 +756,15 @@ function registrationFromRow(row: Record<string, unknown>): MobilePushRegistrati
 }
 
 function deliveryFromRow(row: Record<string, unknown>): MobilePushDelivery {
-  const target = mobilePushTargetSchema.parse({
-    kind: row.cause_kind,
-    id: row.cause_id,
-    parentId: row.cause_kind === "work_item"
-      ? row.parent_id || undefined
-      : undefined,
-  });
+  const target = mobilePushTargetSchema.parse(
+    row.cause_kind === "work_item"
+      ? {
+          kind: row.cause_kind,
+          id: row.cause_id,
+          parentId: row.parent_id || undefined,
+        }
+      : { kind: row.cause_kind, id: row.cause_id },
+  );
   return {
     id: String(row.id),
     tenantId: String(row.tenant_id),
