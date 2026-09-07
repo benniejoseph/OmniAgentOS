@@ -162,6 +162,41 @@
 .mediaInsights section { margin-top: .6rem; border-top: 1px solid var(--line); padding-top: .6rem; }
 .mediaInsights section p { font-size: .63rem; line-height: 1.55; }
 .mediaInsights section small, .mutedLine { display: block; margin-top: .25rem; color: var(--muted); font-size: .51rem; }
+.actionItem { position: relative; }
+.proposeButton { display: inline-flex; min-height: 2rem; align-items: center; gap: .3rem; margin-top: .55rem; border: 1px solid oklch(from var(--primary) l c h / .24); border-radius: 999px; padding: 0 .65rem; color: var(--primary); background: oklch(from var(--primary) l c h / .06); font-size: .52rem; font-weight: 760; }
+.proposeButton:disabled { cursor: not-allowed; opacity: .55; }
+.proposalState { display: inline-flex; margin-top: .55rem; border-radius: 999px; padding: .25rem .55rem; color: var(--primary); background: oklch(from var(--primary) l c h / .08); font-size: .5rem; font-weight: 760; text-transform: capitalize; }
+.proposalState[data-state="confirmed"] { color: var(--success); background: oklch(from var(--success) l c h / .08); }
+.proposalState[data-state="dismissed"] { color: var(--muted); background: var(--surface-raised); }
+.commitmentGrid { display: grid; gap: .75rem; }
+.commitmentCard { border: 1px solid var(--line); border-radius: .9rem; padding: 1rem; background: var(--surface); }
+.commitmentCard[data-state="confirmed"] { border-color: oklch(from var(--success) l c h / .3); }
+.commitmentCard[data-state="dismissed"] { opacity: .72; }
+.commitmentCardHeader { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.commitmentCardHeader > div { display: flex; align-items: center; gap: .45rem; }
+.commitmentCardHeader > div > span { display: grid; width: 1.9rem; height: 1.9rem; place-items: center; border-radius: 50%; color: var(--primary); background: oklch(from var(--primary) l c h / .09); }
+.commitmentCardHeader strong { font-size: .68rem; }
+.commitmentCardHeader small { color: var(--muted); font-size: .5rem; font-weight: 750; text-transform: uppercase; }
+.commitmentCard > p { margin-top: .75rem; font-size: .72rem; line-height: 1.6; }
+.proposalEvidence { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .7rem; }
+.proposalEvidence span { border-radius: 999px; padding: .22rem .5rem; color: var(--warning); background: oklch(from var(--warning) l c h / .08); font-size: .49rem; font-weight: 730; }
+.proposalEvidence span[data-evidence="explicit_transcript"] { color: var(--success); background: oklch(from var(--success) l c h / .08); }
+.commitmentFormGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; margin-top: .85rem; }
+.commitmentFormGrid label, .draftFields label { display: grid; gap: .3rem; }
+.commitmentFormGrid label > span, .draftFields label > span { color: var(--muted); font-size: .52rem; font-weight: 760; text-transform: uppercase; }
+.commitmentFormGrid select, .commitmentFormGrid input, .draftFields select, .draftFields input, .draftFields textarea { width: 100%; min-height: 2.45rem; border: 1px solid var(--line); border-radius: .65rem; padding: .5rem .65rem; color: var(--foreground); background: var(--background); font-size: .63rem; outline: none; }
+.draftFields textarea { resize: vertical; line-height: 1.55; }
+.commitmentFormGrid select:focus, .commitmentFormGrid input:focus, .draftFields select:focus, .draftFields input:focus, .draftFields textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px oklch(from var(--primary) l c h / .09); }
+.draftToggle { display: flex; align-items: center; gap: .5rem; margin-top: .85rem; font-size: .6rem; font-weight: 720; }
+.draftToggle input { width: 1rem; height: 1rem; accent-color: var(--primary); }
+.draftToggle span { display: inline-flex; align-items: center; gap: .3rem; }
+.policyNotice { color: var(--muted); font-size: .54rem !important; }
+.draftFields { display: grid; gap: .65rem; margin-top: .75rem; border: 1px dashed var(--line); border-radius: .75rem; padding: .75rem; background: var(--background); }
+.draftFields > p { display: flex; align-items: center; gap: .3rem; color: var(--muted); font-size: .52rem; }
+.commitmentActions { display: flex; justify-content: flex-end; gap: .55rem; margin-top: .85rem; border-top: 1px solid var(--line); padding-top: .8rem; }
+.resolutionFacts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; margin-top: .75rem; }
+.resolutionFacts span { border: 1px solid var(--line); border-radius: .65rem; padding: .55rem .65rem; color: var(--muted); font-size: .55rem; overflow-wrap: anywhere; }
+.resolutionFacts strong { display: block; margin-bottom: .2rem; color: var(--foreground); font-size: .5rem; text-transform: uppercase; }
 .mediaTranscript { border-top: 1px solid var(--line); padding: 1rem; }
 .mediaTranscript > div { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .mediaTranscript > div span { color: var(--muted); font-size: .52rem; }
@@ -234,7 +269,7 @@
   .rail { max-height: 20rem; overflow: auto; }
   .meetingHeader, .detailTopline { align-items: stretch; flex-direction: column; }
   .badges { justify-content: flex-start; }
-  .metadataGrid, .participantGrid, .sourceGrid, .twoColumn, .formGrid, .participantEditor, .mediaChapters, .mediaInsights { grid-template-columns: 1fr; }
+  .metadataGrid, .participantGrid, .sourceGrid, .twoColumn, .formGrid, .participantEditor, .mediaChapters, .mediaInsights, .commitmentFormGrid, .resolutionFacts { grid-template-columns: 1fr; }
   .mediaChapters section { border-right: 0; }
   .mediaInsights > div + div { border-top: 1px solid var(--line); border-left: 0; }
   .mediaHeader { flex-direction: column; }
@@ -244,6 +279,8 @@
   .metadata:last-child { border-bottom: 0; }
   .picker { grid-template-columns: 1fr; }
   .editorFooter > * { flex: 1; }
+  .commitmentActions { flex-direction: column-reverse; }
+  .commitmentActions > * { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
