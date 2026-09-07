@@ -795,7 +795,10 @@ deferred.
 **Implementation status:** P9.1 is complete. Fifteen current first-party Main
 Agent operations across memory, knowledge, Missions, and runs now use the same
 transport-neutral application services as their overlapping UI routes. P9.2
-is next; P12 and P13 remain deferred.
+is next. Vercel rejected the complete-feature promotion at
+`98e27c9eb676a6a1c2cffbb4065f35cfb528da50` before upload because the team
+still reports an overdue balance, so Fly was intentionally left unchanged.
+P12 and P13 remain deferred.
 
 #### Browser and computer use
 
@@ -2742,7 +2745,10 @@ UI route surfaces and all 15 current Main Agent application tools now share
 tenant/actor/RBAC validation, mutation scope and idempotency requirements,
 existing typed domain events, and one metadata-only service receipt. The
 governed executor has no direct import path to those stores or retrievers and
-no product-DOM path. P9.2 is next; P12/P13 remain deferred.
+no product-DOM path. The complete-feature Vercel promotion at
+`98e27c9eb676a6a1c2cffbb4065f35cfb528da50` was rejected before upload by the
+same overdue team balance, so Fly remains on the prior paired release. P9.2 is
+next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
