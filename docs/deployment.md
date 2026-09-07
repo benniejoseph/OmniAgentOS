@@ -35,6 +35,14 @@ Set these through the platform secret/configuration store, never in source contr
 
 Native contract artifacts are committed release inputs under `public/native-contracts/v1` and `public/native-contracts/v2`. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, or Dart SDK differ from the TypeScript registry. Keep exactly the current and previous versions during rollout. Removing v1 requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
 
+P12.2 requires migration `20260908093000_p12_2_mobile_device_lifecycle.sql`
+(internal schema v145) before publishing the device lifecycle routes. The
+migration validates predecessor v144, installs the constrained revocation/wipe
+state and challenge index, and commits its schema marker atomically. Native
+binary builds also require the `local_auth` platform setup committed under
+`apps/flutter/android` and `apps/flutter/ios`; Vercel deploys the server routes
+and contract documents, not an App Store or Play Store binary.
+
 Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it, and it must never be stored on Fly. The paired release runs its paid verification through Asael, so the deployed server supplies the upstream OpenAI authorization while the gateway validates `x-asael-gateway-token` and forwards that header unchanged. Production always enables auth even when `OMNIAGENT_AUTH_ENABLED=false`. Vercel forwarding headers are trusted automatically; other reverse proxies must overwrite client forwarding headers before `OMNIAGENT_TRUST_PROXY_HEADERS=true` is enabled. Do not enable `OMNIAGENT_TRUST_UNSIGNED_IDENTITY_HEADERS`, `OMNIAGENT_CONNECTOR_ALLOW_HTTP`, or `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS` in production.
 
 ## Supported configuration
