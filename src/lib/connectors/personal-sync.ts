@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 
 import { refreshOAuthAccess, type OAuthProvider } from "@/lib/connectors/oauth-providers";
-import { claimOAuthSyncLease, getOAuthGrantSecrets, listOAuthGrantsForTenant, saveOAuthGrant, updateOAuthSyncState } from "@/lib/connectors/oauth-store";
+import {
+  claimOAuthSyncLease,
+  getOAuthGrantSecrets,
+  listOAuthGrantsForTenant,
+  saveOAuthGrant,
+  updateOAuthSyncState,
+  type OAuthSourceCoverageCheckpoint,
+} from "@/lib/connectors/oauth-store";
 import { observeGoogleDriveCanonicalMetadata } from "@/lib/connectors/google-drive-canonical";
 import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
@@ -54,7 +61,11 @@ type GoogleSourceObservation = Readonly<{
 }>;
 type PersonalSourceSettlement = Readonly<{
   source: PersonalSourceId;
-  status: "healthy" | "error";
+  status: "syncing" | "healthy" | "error";
+  backfillState: OAuthSourceCoverageCheckpoint["backfillState"];
+  lastAttemptedAt: string;
+  lastSuccessfulAt?: string;
+  failureCode?: OAuthSourceCoverageCheckpoint["failureCode"];
   imported: number;
   removed: number;
   error?: string;
@@ -143,9 +154,13 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
     const sources: PersonalSourceSettlement[] = [];
     for (const observation of observations) {
       if (observation.status === "rejected") {
+        const lastAttemptedAt = new Date().toISOString();
         sources.push({
           source: observation.source,
           status: "error",
+          backfillState: googleSourceBackfillState(observation.source, nextCursor),
+          lastAttemptedAt,
+          failureCode: personalSourceFailureCode(observation.reason),
           imported: 0,
           removed: 0,
           error: safeSourceSyncError(observation.reason),
@@ -210,12 +225,29 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
           sourceImported += 1;
         }
         const candidateCursor = { ...nextCursor, ...observation.value.cursor };
+        const lastSuccessfulAt = new Date().toISOString();
+        const backfillState = googleSourceBackfillState(
+          observation.source,
+          candidateCursor,
+        );
+        const sourceStatus = backfillState === "complete"
+          ? "healthy" as const
+          : "syncing" as const;
         const checkpoint = await updateOAuthSyncState({
           ...input,
           status: "syncing",
           cursor: JSON.stringify(candidateCursor),
           syncedItems: sourceImported,
           lease,
+          sourceSettlements: [{
+            source: observation.source,
+            schemaVersion: 1,
+            status: sourceStatus,
+            backfillState,
+            lastAttemptedAt: lastSuccessfulAt,
+            lastSuccessfulAt,
+            failureCode: "none",
+          }],
         });
         if (!checkpoint) {
           throw new Error("Connected source was revoked during synchronization.");
@@ -223,14 +255,22 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
         nextCursor = candidateCursor;
         sources.push({
           source: observation.source,
-          status: "healthy",
+          status: sourceStatus,
+          backfillState,
+          lastAttemptedAt: lastSuccessfulAt,
+          lastSuccessfulAt,
+          failureCode: "none",
           imported: sourceImported,
           removed: sourceRemoved,
         });
       } catch (error) {
+        const lastAttemptedAt = new Date().toISOString();
         sources.push({
           source: observation.source,
           status: "error",
+          backfillState: googleSourceBackfillState(observation.source, nextCursor),
+          lastAttemptedAt,
+          failureCode: personalSourceFailureCode(error),
           imported: sourceImported,
           removed: sourceRemoved,
           error: safeSourceSyncError(error),
@@ -240,19 +280,31 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
     const imported = sources.reduce((sum, source) => sum + source.imported, 0);
     const removed = sources.reduce((sum, source) => sum + source.removed, 0);
     const failed = sources.filter((source) => source.status === "error");
+    const advancing = sources.filter((source) => source.status === "syncing");
     const status = failed.length
       ? failed.length === sources.length ? "error" as const : "partial" as const
-      : "healthy" as const;
+      : advancing.length ? "partial" as const : "healthy" as const;
     const error = failed.length
       ? failed.map((source) => `${source.source}: ${source.error}`).join("; ")
       : undefined;
     const grant = await updateOAuthSyncState({
       ...input,
-      status: status === "healthy" ? "healthy" : "error",
+      status: failed.length ? "error" : advancing.length ? "syncing" : "healthy",
       cursor: JSON.stringify(nextCursor),
       error,
       lease,
       releaseLease: true,
+      sourceSettlements: sources.map((source) => ({
+        source: source.source,
+        schemaVersion: 1,
+        status: source.status,
+        backfillState: source.backfillState,
+        lastAttemptedAt: source.lastAttemptedAt,
+        ...(source.lastSuccessfulAt
+          ? { lastSuccessfulAt: source.lastSuccessfulAt }
+          : {}),
+        ...(source.failureCode ? { failureCode: source.failureCode } : {}),
+      })),
     });
     if (!grant) {
       throw new Error("Connected source synchronization lost its lease.");
@@ -793,6 +845,41 @@ function optionalCanonicalProviderTimestamp(value: unknown) {
   return value === null || value === undefined || value === ""
     ? undefined
     : canonicalProviderTimestamp(value, "provider timestamp");
+}
+
+function googleSourceBackfillState(
+  source: PersonalSourceId,
+  cursor: Partial<SyncCursor>,
+): OAuthSourceCoverageCheckpoint["backfillState"] {
+  if (source === "mail") {
+    if (cursor.gmailBackfillPageToken) return "in_progress";
+    return cursor.gmailHistoryId ? "complete" : "unknown";
+  }
+  if (source === "calendar") {
+    if (cursor.calendarPageToken) return "in_progress";
+    return cursor.calendar ? "complete" : "unknown";
+  }
+  if (cursor.drivePageToken) return "in_progress";
+  return cursor.driveModifiedAfter ? "complete" : "unknown";
+}
+
+function personalSourceFailureCode(
+  error: unknown,
+): NonNullable<OAuthSourceCoverageCheckpoint["failureCode"]> {
+  const message = error instanceof Error ? error.message : "";
+  if (/\b401\b|unauthori[sz]ed|access expired/i.test(message)) {
+    return "provider_unauthorized";
+  }
+  if (/\b403\b|forbidden|permission/i.test(message)) {
+    return "provider_forbidden";
+  }
+  if (/\b429\b|rate limit/i.test(message)) {
+    return "provider_rate_limited";
+  }
+  if (/\b5\d\d\b|unavailable|timeout/i.test(message)) {
+    return "provider_unavailable";
+  }
+  return "processing_failed";
 }
 
 function safeSourceSyncError(error: unknown) {

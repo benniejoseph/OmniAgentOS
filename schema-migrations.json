@@ -713,5 +713,10 @@
     "version": 143,
     "name": "functional_model_assignments_v1",
     "checksum": "b2c0979801a5aed19e44b0c12ed6c457ac766868baae1d4ca27d1abddb269cae"
+  },
+  {
+    "version": 144,
+    "name": "source_coverage_projection_v1",
+    "checksum": "a40a9c1c20b2732a44219a9cb3eacf1291d6f7b9e12e8dce3d70e49a70d299db"
   }
 ]
