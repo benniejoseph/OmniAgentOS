@@ -10,6 +10,17 @@ import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/gov
 import type { DelegationContractV1 } from "@/lib/delegation/contracts";
 import { buildWorkflowNodeDelegationContractV1 } from "@/lib/delegation/workflow-adapter";
 import {
+  buildDelegationTaskV1,
+  isTerminalDelegationTaskState,
+  transitionDelegationTaskV1,
+  type DelegationTaskTransition,
+} from "@/lib/delegation/lifecycle";
+import {
+  createDelegationTask,
+  delegationTaskPersistenceAvailable,
+  transitionDelegationTask,
+} from "@/lib/delegation/store";
+import {
   ensureDatabaseSchema,
   getDatabaseTenantContext,
   getSql,
@@ -1021,6 +1032,34 @@ export async function executeAgentPlanNode({
 }) {
   assertWorkflowWallClockBudget(budget);
   const authorityScope = executionAuthority?.executionScope;
+  let lifecycleTask = buildDelegationTaskV1(delegationContract);
+  if (delegationTaskPersistenceAvailable()) {
+    if (!authorityScope) {
+      throw new Error("Persisted workflow delegation requires its parent execution scope.");
+    }
+    lifecycleTask = await createDelegationTask({
+      contract: delegationContract,
+      parentExecutionScope: authorityScope,
+    });
+  }
+  const advanceLifecycle = async (transition: DelegationTaskTransition) => {
+    const at = new Date(Math.max(
+      Date.now(),
+      Date.parse(lifecycleTask.updatedAt),
+    )).toISOString();
+    lifecycleTask = delegationTaskPersistenceAvailable()
+      ? await transitionDelegationTask({
+          taskId: lifecycleTask.taskId,
+          tenantId: lifecycleTask.tenantId,
+          expectedRevision: lifecycleTask.lifecycleRevision,
+          transition,
+          parentExecutionScope: requiredDelegationParentScope(authorityScope),
+          at,
+        })
+      : transitionDelegationTaskV1({ task: lifecycleTask, transition, at }).task;
+  };
+  await advanceLifecycle({ to: "accepted" });
+  await advanceLifecycle({ to: "working" });
   const metadataActorId = typeof detail.run.input.metadata?.actorId === "string"
     ? detail.run.input.metadata.actorId.trim()
     : "";
@@ -1036,6 +1075,11 @@ export async function executeAgentPlanNode({
     requiredFeature: "json_schema",
   });
   if (!runtimeModel.configured) {
+    await cancelFailedWorkflowDelegation(
+      lifecycleTask,
+      advanceLifecycle,
+      "The workflow Agent model is not configured.",
+    );
     throw new Error(`Workflow node ${node.id} requires a configured agent model.`);
   }
   const executionScope = authorityScope
@@ -1100,7 +1144,7 @@ export async function executeAgentPlanNode({
     }));
     const parsed: unknown = JSON.parse(generated.text);
     const nodeResult = parseWorkflowNodeAgentResult(parsed, nodeInput);
-    const executionReceipt: WorkflowNodeExecutionReceiptV1 = {
+    let executionReceipt: WorkflowNodeExecutionReceiptV1 = {
       schemaVersion: WORKFLOW_NODE_CONTRACT_VERSION,
       nodeId: node.id,
       executor: "agent",
@@ -1133,10 +1177,92 @@ export async function executeAgentPlanNode({
       executionReceipt,
       delegationContract,
     );
+    const proposalReceiptSha256 = canonicalJsonSha256({
+      version: "p8.3-workflow-node-proposal:1",
+      nodeId: node.id,
+      nodeResult,
+      executionReceipt,
+    });
+    const acceptanceChecksSha256 = canonicalJsonSha256({
+      version: "p8.3-workflow-parent-evaluation:1",
+      delegationId: delegationContract.delegationId,
+      checks: nodeResult.acceptanceChecks.map((check) => ({
+        criterion: check.criterion,
+        passed: check.passed,
+        evidenceIds: check.evidenceIds,
+      })),
+    });
+    await advanceLifecycle({
+      to: "completed_proposed",
+      proposalReceiptSha256,
+      acceptanceChecksSha256,
+      artifactSha256s: nodeResult.artifacts.map((artifact) =>
+        canonicalJsonSha256({
+          name: artifact.name,
+          kind: artifact.kind,
+          content: artifact.content,
+        })
+      ),
+      evidenceIds: [...new Set(nodeResult.artifacts.flatMap(
+        (artifact) => artifact.evidenceIds,
+      ))],
+      toolExecutionIds: [],
+    });
+    const accepted = nodeResult.status === "completed" &&
+      nodeResult.acceptanceChecks.every((check) => check.passed);
+    await advanceLifecycle({
+      to: accepted ? "result_accepted" : "rejected",
+      evaluatorPrincipalId: delegationContract.scope.parentPrincipalId,
+      evaluatorAgentId: delegationContract.verifier.agentId,
+      evaluatorDefinitionVersion: delegationContract.verifier.definitionVersion,
+      score: accepted ? 1 : 0,
+    });
+    executionReceipt = {
+      ...executionReceipt,
+      delegation: {
+        ...executionReceipt.delegation!,
+        taskId: lifecycleTask.taskId,
+        lifecycleState: lifecycleTask.state,
+        lifecycleRevision: lifecycleTask.lifecycleRevision,
+        proposalReceiptSha256,
+      },
+    };
     return { nodeResult, executionReceipt };
+  } catch (error) {
+    await cancelFailedWorkflowDelegation(
+      lifecycleTask,
+      advanceLifecycle,
+      "The workflow Agent did not produce a valid completion proposal.",
+    );
+    throw error;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function cancelFailedWorkflowDelegation(
+  task: ReturnType<typeof buildDelegationTaskV1>,
+  advance: (transition: DelegationTaskTransition) => Promise<void>,
+  reason: string,
+) {
+  if (isTerminalDelegationTaskState(task.state) || task.state === "waiting") return;
+  if (task.state === "accepted") await advance({ to: "working" });
+  if (task.state === "working") {
+    await advance({
+      to: "challenged",
+      reason,
+      challengeSha256: canonicalJsonSha256({
+        delegationId: task.delegationId,
+        reason,
+      }),
+    });
+  }
+  await advance({ to: "canceled", initiator: "system", reason });
+}
+
+function requiredDelegationParentScope(scope?: ExecutionScope) {
+  if (!scope) throw new Error("Delegation parent execution scope is required.");
+  return scope;
 }
 
 function buildToolNodeResult({

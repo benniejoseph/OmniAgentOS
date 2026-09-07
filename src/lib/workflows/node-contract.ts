@@ -104,6 +104,20 @@ export type WorkflowNodeExecutionReceiptV1 = Readonly<{
     delegatePrincipalId: string;
     verifierAgentId: string;
     verifierDefinitionVersion: number;
+    taskId?: string;
+    lifecycleState?:
+      | "proposed"
+      | "accepted"
+      | "working"
+      | "waiting"
+      | "challenged"
+      | "completed_proposed"
+      | "result_accepted"
+      | "rejected"
+      | "canceled"
+      | "expired";
+    lifecycleRevision?: number;
+    proposalReceiptSha256?: string;
   }>;
 }>;
 

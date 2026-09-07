@@ -137,6 +137,10 @@ describe("workflow agent node execution", () => {
         contractSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         delegatePrincipalId: expect.any(String),
         verifierAgentId: "sentinel",
+        taskId: expect.stringMatching(/^delegation-task:delegation:/),
+        lifecycleState: "result_accepted",
+        lifecycleRevision: 4,
+        proposalReceiptSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
     });
     expect(mocks.generateModelStructured).toHaveBeenCalledOnce();
