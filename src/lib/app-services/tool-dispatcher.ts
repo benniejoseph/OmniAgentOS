@@ -40,6 +40,12 @@ import {
   listWorkspaceTemplatesService,
   publishWorkspaceTemplateService,
 } from "@/lib/app-services/workspace-templates";
+import {
+  createMeetingService,
+  listMeetingsService,
+  showMeetingService,
+  updateMeetingService,
+} from "@/lib/app-services/meetings";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -190,6 +196,10 @@ export async function executeFirstPartyAppTool(input: {
     "app.workspace_templates.list": () => listWorkspaceTemplatesService(caller, input.toolInput as never),
     "app.workspace_templates.publish": () => publishWorkspaceTemplateService(caller, input.toolInput as never),
     "app.workspace_templates.instantiate": () => instantiateWorkspaceTemplateService(caller, input.toolInput as never),
+    "app.meetings.list": () => listMeetingsService(caller, input.toolInput as never),
+    "app.meetings.show": () => showMeetingService(caller, input.toolInput as never),
+    "app.meetings.create": () => createMeetingService(caller, input.toolInput as never),
+    "app.meetings.update": () => updateMeetingService(caller, input.toolInput as never),
     "app.projects.list": () => listProjectsService(caller, input.toolInput as never),
     "app.projects.show": () => showProjectService(caller, input.toolInput as never),
     "app.projects.create": () => createProjectService(caller, input.toolInput as never),
