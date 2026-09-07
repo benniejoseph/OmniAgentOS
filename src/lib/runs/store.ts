@@ -326,7 +326,7 @@ export async function appendAgentRunIdentityPin(
     !run ||
     pin.logicalAgentId !== run.agentId ||
     options.executionScope.executingPrincipalType !== "agent" ||
-    options.executionScope.executingPrincipalId !== run.agentId
+    options.executionScope.executingPrincipalId !== pin.principalId
   ) {
     throw new Error("Agent run identity pin does not match its run boundary.");
   }

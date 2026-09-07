@@ -321,9 +321,14 @@ describe("agent run approval continuations (file mode)", () => {
 
   it("binds exactly one immutable agent identity to a run", async () => {
     const store = await import("@/lib/runs/store");
-    const { buildAgentRunIdentityPinV1, buildBuiltInAgentIdentityV1 } =
+    const {
+      buildAgentRunIdentityPinV1,
+      buildBuiltInAgentIdentityV1,
+      parseAgentRunIdentityPinV1,
+    } =
       await import("@/lib/agents/identity-contracts");
     const { createExecutionScope } = await import("@/lib/security/execution-scope");
+    const { sourceContractSha256 } = await import("@/lib/sources/contracts");
     const tenantId = "identity-binding";
     const actorId = "actor-1";
     const run = await store.createAgentRun({
@@ -334,17 +339,6 @@ describe("agent run approval continuations (file mode)", () => {
       messages: [{ role: "user", content: "bind identity" }],
       agentId: "atlas",
     });
-    const scope = createExecutionScope({
-      tenantId,
-      initiatingActorId: actorId,
-      executingPrincipalType: "agent",
-      executingPrincipalId: "atlas",
-      correlationId: `run:${run.id}`,
-      purpose: "agent.run",
-    });
-    await store.bindAgentRunExecutionScope(run.id, scope, {
-      tenantId,
-    });
     const original = buildAgentRunIdentityPinV1({
       runId: run.id,
       identity: buildBuiltInAgentIdentityV1({
@@ -352,6 +346,17 @@ describe("agent run approval continuations (file mode)", () => {
         tenantId,
         controllerActorId: actorId,
       }),
+    });
+    const scope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: original.principalId,
+      correlationId: `run:${run.id}`,
+      purpose: "agent.run",
+    });
+    await store.bindAgentRunExecutionScope(run.id, scope, {
+      tenantId,
     });
 
     await store.appendAgentRunIdentityPin(run.id, original, {
@@ -366,13 +371,17 @@ describe("agent run approval continuations (file mode)", () => {
       store.getAgentRunIdentityPin(run.id, { tenantId }),
     ).resolves.toEqual(original);
 
-    const conflicting = buildAgentRunIdentityPinV1({
-      runId: run.id,
-      identity: buildBuiltInAgentIdentityV1({
-        agentId: "atlas",
-        tenantId,
-        controllerActorId: "actor-2",
-      }),
+    const { pinSha256: _pinSha256, ...conflictingBody } = {
+      ...original,
+      policyPins: original.policyPins.map((policy, index) =>
+        index === 0
+          ? { ...policy, policySha256: "a".repeat(64) }
+          : policy
+      ),
+    };
+    const conflicting = parseAgentRunIdentityPinV1({
+      ...conflictingBody,
+      pinSha256: sourceContractSha256(conflictingBody),
     });
     await expect(
       store.appendAgentRunIdentityPin(run.id, conflicting, {
