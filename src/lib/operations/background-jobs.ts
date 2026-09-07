@@ -17,6 +17,14 @@ import {
   resolveCaptureRecordingActorForIngestJob,
 } from "@/lib/capture/recordings";
 import {
+  executeCaptureMediaProcessingJob,
+  executeCaptureMediaSegmentJob,
+  isCaptureMediaDeferredResult,
+  renderCaptureMediaKnowledge,
+  type CaptureMediaDeferredResult,
+} from "@/lib/capture/media-jobs";
+import { markCaptureMediaProcessingStatus } from "@/lib/capture/media-store";
+import {
   runWithDatabaseActorScope,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
@@ -44,6 +52,7 @@ import {
 import {
   BACKGROUND_OPERATION_JOB_TYPES,
   completeOperationJob,
+  deferOperationJob,
   enqueueOperationJob,
   failOperationJob,
   getOperationJob,
@@ -381,6 +390,33 @@ async function processBackgroundOperationJob(
       guard.signal,
     );
     guard.assertActive();
+    if (isCaptureMediaDeferredResult(result)) {
+      const waiting = await updateOperationJobPayload(
+        job.id,
+        leaseOwner,
+        {
+          progress: {
+            stage: "waiting",
+            reason: result.reason,
+            deferredAt: new Date().toISOString(),
+          },
+        },
+        { tenantId: job.tenantId },
+      );
+      assertLeaseMutation(waiting, job.id);
+      const deferred = await deferOperationJob(job.id, leaseOwner, {
+        tenantId: job.tenantId,
+        delaySeconds: result.delaySeconds,
+        reason: result.reason,
+      });
+      assertLeaseMutation(deferred, job.id);
+      return {
+        id: job.id,
+        type: job.type,
+        status: "queued",
+        resourceId: result.resourceId,
+      };
+    }
     const updated = await updateOperationJobPayload(
       job.id,
       leaseOwner,
@@ -418,6 +454,12 @@ async function processBackgroundOperationJob(
     } else if (job.type === "knowledge.ingest" && !failed) {
       await cleanCanceledCaptureIngestSafely(job);
     }
+    if (
+      job.type === "capture.media.recording.process" &&
+      failed?.status === "failed"
+    ) {
+      await markCaptureMediaFailureSafely(job, message);
+    }
     return {
       id: job.id,
       type: job.type,
@@ -441,13 +483,15 @@ function executeBackgroundOperationInAccessScope(
   if (
     job.type === "asset.object.commit" ||
     job.type === "asset.object.delete" ||
-    job.type === "asset.object.backfill"
+    job.type === "asset.object.backfill" ||
+    job.type === "capture.media.segment.transcribe" ||
+    job.type === "capture.media.recording.process"
   ) {
     const actorId = typeof job.payload.actorId === "string"
       ? normalizeQueuedActorId(job.payload.actorId)
       : undefined;
     if (!actorId) {
-      throw new Error("Asset object job is missing its owner actor binding.");
+      throw new Error("Owner-bound background job is missing its actor binding.");
     }
     return runWithDatabaseActorScope(job.tenantId, [actorId], () =>
       executeBackgroundOperation(job, abortSignal)
@@ -514,6 +558,43 @@ async function markCaptureIngestFailureSafely(job: OperationJobRecord, message: 
   }
 }
 
+async function markCaptureMediaFailureSafely(
+  job: OperationJobRecord,
+  message: string,
+) {
+  const actorId = typeof job.payload.actorId === "string"
+    ? normalizeQueuedActorId(job.payload.actorId)
+    : undefined;
+  const request = objectValue(job.payload.request);
+  const processing = objectValue(request?.processing);
+  const recordingId = typeof processing?.recordingId === "string"
+    ? processing.recordingId
+    : undefined;
+  if (!actorId || !recordingId) return;
+  try {
+    const source = parsePersistedExecutionScope(job.payload.executionScope);
+    if (!source) return;
+    assertExecutionScopeTenant(source, job.tenantId);
+    if (source.initiatingActorId !== actorId) return;
+    const executionScope = deriveExecutionScope(source, {
+      executingPrincipalType: "system",
+      executingPrincipalId: "background-operations-worker",
+      causationId: job.id,
+      purpose: "capture.media.processing.failure",
+    });
+    await runWithDatabaseActorScope(job.tenantId, [actorId], () =>
+      markCaptureMediaProcessingStatus(
+        recordingId,
+        { tenantId: job.tenantId, actorId, executionScope },
+        { operationJobId: job.id, status: "failed", error: message },
+      )
+    );
+  } catch {
+    // The operation job remains the durable failure source if the media head
+    // projection is stale, deleted, or temporarily unavailable.
+  }
+}
+
 async function resolveKnowledgeIngestActorId(
   job: OperationJobRecord,
   request: KnowledgeIngestJobRequest,
@@ -552,9 +633,54 @@ async function resolveKnowledgeIngestActorId(
 async function executeBackgroundOperation(
   job: OperationJobRecord,
   abortSignal: AbortSignal,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | CaptureMediaDeferredResult> {
   abortSignal.throwIfAborted();
   const request = job.payload.request;
+  if (job.type === "capture.media.segment.transcribe") {
+    return executeCaptureMediaSegmentJob(job, abortSignal);
+  }
+  if (job.type === "capture.media.recording.process") {
+    return executeCaptureMediaProcessingJob(
+      job,
+      abortSignal,
+      async ({ recording, output, executionScope }) => {
+        const evidenceRefs = [...new Set([
+          output.mediaRevisionId,
+          ...output.summary.citations.map((citation) => citation.turnId),
+        ])].slice(0, 100);
+        return enqueueKnowledgeIngestJob({
+          tenantId: job.tenantId,
+          actorId: recording.actorId,
+          executionScope,
+          idempotencyKey: `capture-media:${output.mediaRevisionId}`,
+          request: {
+            title: recording.title,
+            content: renderCaptureMediaKnowledge(output),
+            source: recording.source,
+            sourceType: "file",
+            tags: [...new Set([
+              "capture",
+              "recording",
+              "conversation",
+              "diarized",
+              ...recording.tags,
+            ])].slice(0, 50),
+            metadata: {
+              captureRecordingId: recording.id,
+              mediaRevisionId: output.mediaRevisionId,
+              outputSha256: output.outputSha256,
+              durationMs: recording.durationMs,
+              segmentCount: recording.segmentCount,
+              completedAt: recording.completedAt || output.processedAt,
+              structuredSourceKind: "audio",
+              extractionState: "completed",
+            },
+            evidenceRefs,
+          },
+        });
+      },
+    );
+  }
   if (job.type === "asset.object.commit") {
     const object = await commitAssetObjectJob(job, { signal: abortSignal });
     return {
@@ -1101,6 +1227,12 @@ function normalizeQueuedContent(value: string) {
     .map((part) => part.trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function stableStringify(value: unknown): string {

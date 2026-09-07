@@ -140,4 +140,66 @@ describe("capture media processing store", () => {
       },
     })).rejects.toThrow(/execution scope/i);
   });
+
+  it("creates a new revision when confirmed semantics change for the same audio", async () => {
+    await queueCaptureMediaProcessing({
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      executionScope,
+      operationJobId: "job-a",
+      request: {
+        schemaVersion: 1,
+        recordingId: "capture_recording_a",
+        languageHints: ["en-US"],
+        speakerMappings: [],
+        rawAudioRetention: { mode: "retain" },
+      },
+    });
+    const baseTurn = {
+      segmentId: "capture_segment_a",
+      segmentIndex: 0,
+      sourceAudioSha256: "a".repeat(64),
+      startMilliseconds: 0,
+      endMilliseconds: 2_000,
+      languageTag: "en-US",
+      speaker: { label: "A", identity: "diarized" as const },
+      text: "Send the plan tomorrow.",
+    };
+    const turn = { ...baseTurn, turnId: mediaTurnId(baseTurn) };
+    const citation = mediaCitationForTurn(turn);
+    const draft = {
+      schemaVersion: 1 as const,
+      tenantId: "tenant-a",
+      ownerActorId: "actor-a",
+      recordingId: "capture_recording_a",
+      sourceAudioManifestSha256: sha256Json([turn.sourceAudioSha256]),
+      transcriptionModel: "gpt-4o-transcribe-diarize",
+      extractionModel: "gpt-5",
+      languageTags: ["en-US"],
+      turns: [turn],
+      chapters: [],
+      summary: { text: "A plan will be sent tomorrow.", citations: [citation] },
+      actionItems: [],
+      decisions: [],
+      warnings: [],
+      rawAudioRetention: { mode: "retain" as const },
+    };
+    const first = await commitCaptureMediaOutput(
+      { tenantId: "tenant-a", actorId: "actor-a", executionScope },
+      "job-a",
+      draft,
+    );
+    const second = await commitCaptureMediaOutput(
+      { tenantId: "tenant-a", actorId: "actor-a", executionScope },
+      "job-a",
+      {
+        ...draft,
+        summary: { text: "The plan is due tomorrow.", citations: [citation] },
+      },
+    );
+
+    expect(first.mediaRevision).toBe(1);
+    expect(second.mediaRevision).toBe(2);
+    expect(mocks.ledger.revisions).toHaveLength(2);
+  });
 });
