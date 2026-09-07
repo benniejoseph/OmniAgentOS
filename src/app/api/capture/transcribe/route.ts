@@ -15,7 +15,13 @@ const MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 async function POSTHandler(request: Request) {
   let context;
   try {
-    context = await authorizeRequest({ request, action: "write.memory", resourceType: "knowledge", metadata: { operation: "transcribe" } });
+    context = await authorizeRequest({
+      request,
+      action: "write.memory",
+      resourceType: "knowledge",
+      nativeMutationCapability: "capture.transcribe",
+      metadata: { operation: "transcribe" },
+    });
   } catch (error) {
     return forbiddenResponse(error);
   }

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'talk.dart';
@@ -24,5 +26,22 @@ class ApiTalkRepository implements TalkRepository {
       headers: const {'Accept': 'text/event-stream'},
     );
     yield* parseSse(body.stream);
+  }
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async {
+    final json = await api.postMultipart(
+      NativePaths.captureTranscribe,
+      fields: const {},
+      bytes: bytes,
+      filename: 'voice-draft.m4a',
+      contentType: 'audio/mp4',
+      fileField: 'audio',
+    );
+    final text = json['text'];
+    if (text is! String || text.trim().isEmpty) {
+      throw StateError('The voice draft did not contain transcribable speech.');
+    }
+    return text;
   }
 }

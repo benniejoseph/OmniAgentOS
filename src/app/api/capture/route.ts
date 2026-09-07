@@ -57,6 +57,7 @@ async function POSTHandler(request: Request) {
   try {
     context = await authorizeRequest({
       request, action: "write.memory", resourceType: "knowledge",
+      nativeMutationCapability: "capture.submit",
       metadata: { operation: "capture", declaredBytes },
     });
   } catch (error) {

@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:mime/mime.dart';
 
 class CaptureDraft {
   const CaptureDraft({
@@ -80,6 +82,9 @@ class _CaptureViewState extends State<CaptureView> {
   final title = TextEditingController(),
       note = TextEditingController(),
       tags = TextEditingController();
+  CaptureAttachment? attachment;
+  String? attachmentError;
+  bool picking = false;
   @override
   void dispose() {
     title.dispose();
@@ -98,15 +103,100 @@ class _CaptureViewState extends State<CaptureView> {
             .map((e) => e.trim())
             .where((e) => e.isNotEmpty)
             .toList(),
+        file: attachment,
       ),
     );
     if (ok && mounted) {
       title.clear();
       note.clear();
       tags.clear();
+      setState(() {
+        attachment = null;
+        attachmentError = null;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Capture queued for your knowledge base')),
       );
+    }
+  }
+
+  Future<void> pickAttachment() async {
+    if (picking) return;
+    setState(() {
+      picking = true;
+      attachmentError = null;
+    });
+    try {
+      final file = await FilePicker.pickFile(
+        dialogTitle: 'Choose a capture file',
+        type: FileType.custom,
+        allowedExtensions: const [
+          'txt',
+          'md',
+          'csv',
+          'json',
+          'html',
+          'xml',
+          'yaml',
+          'log',
+          'rtf',
+          'sql',
+          'js',
+          'ts',
+          'tsx',
+          'py',
+          'swift',
+          'kt',
+          'toml',
+          'ics',
+          'vcf',
+          'ipynb',
+          'png',
+          'jpg',
+          'jpeg',
+          'webp',
+          'mp3',
+          'm4a',
+          'wav',
+          'ogg',
+          'mp4',
+          'webm',
+          'xlsx',
+          'xlsm',
+          'pptx',
+          'ppsx',
+          'odt',
+          'ods',
+          'odp',
+          'epub',
+          'pdf',
+          'docx',
+        ],
+      );
+      if (file == null) return;
+      final length = await file.length();
+      if (length == 0 || length > 5 * 1024 * 1024) {
+        throw const FormatException('Choose a non-empty file up to 5 MB.');
+      }
+      final bytes = await file.readAsBytes();
+      if (!mounted) return;
+      setState(() {
+        attachment = CaptureAttachment(
+          name: file.name,
+          bytes: bytes,
+          contentType:
+              lookupMimeType(file.name, headerBytes: bytes) ??
+              'application/octet-stream',
+        );
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          attachmentError = 'This file could not be attached. Choose a supported file up to 5 MB.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => picking = false);
     }
   }
 
@@ -137,6 +227,44 @@ class _CaptureViewState extends State<CaptureView> {
                 prefixIcon: Icon(Icons.title_rounded),
               ),
             ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: picking || widget.controller.submitting
+                  ? null
+                  : pickAttachment,
+              icon: picking
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.attach_file_rounded),
+              label: Text(
+                attachment == null
+                    ? 'Attach file or image'
+                    : 'Replace attachment',
+              ),
+            ),
+            if (attachment != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: InputChip(
+                  avatar: const Icon(Icons.description_outlined, size: 18),
+                  label: Text(
+                    '${attachment!.name} · ${_fileSize(attachment!.bytes.length)}',
+                  ),
+                  onDeleted: widget.controller.submitting
+                      ? null
+                      : () => setState(() => attachment = null),
+                ),
+              ),
+            if (attachmentError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  attachmentError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
             const SizedBox(height: 12),
             TextField(
               controller: note,
@@ -233,6 +361,10 @@ class _CaptureViewState extends State<CaptureView> {
     ),
   );
 }
+
+String _fileSize(int bytes) => bytes >= 1024 * 1024
+    ? '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB'
+    : '${(bytes / 1024).ceil()} KB';
 
 class _CaptureGuide extends StatelessWidget {
   const _CaptureGuide({super.key});

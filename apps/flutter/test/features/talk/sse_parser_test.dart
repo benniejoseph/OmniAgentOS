@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:asael/features/talk/talk.dart';
@@ -6,6 +7,9 @@ import 'package:asael/features/talk/talk.dart';
 class _TalkRepository implements TalkRepository {
   final calls = <({String message, String mode, String strategy})>[];
   var failNext = false;
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Reviewed voice';
 
   @override
   Stream<SseEvent> send({
@@ -70,6 +74,22 @@ void main() {
         (message: 'Do this', mode: 'orchestrate', strategy: 'direct'),
         (message: 'Do this', mode: 'orchestrate', strategy: 'direct'),
       ]);
+    },
+  );
+
+  test(
+    'transcribes voice into a reviewable draft without sending it',
+    () async {
+      final repository = _TalkRepository();
+      final controller = TalkController(repository);
+
+      final transcript = await controller.transcribeVoice(
+        Uint8List.fromList([1]),
+      );
+
+      expect(transcript, 'Reviewed voice');
+      expect(controller.messages, isEmpty);
+      expect(repository.calls, isEmpty);
     },
   );
 }

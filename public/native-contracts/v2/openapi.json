@@ -1615,6 +1615,82 @@
         }
       }
     },
+    "/api/capture/transcribe": {
+      "post": {
+        "operationId": "capture.transcribe",
+        "summary": "Transcribe a reviewed native voice draft.",
+        "tags": [
+          "capture"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonObject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "multipart/form-data": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/meetings": {
       "get": {
         "operationId": "meetings.list",

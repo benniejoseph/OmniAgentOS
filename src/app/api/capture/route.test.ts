@@ -112,6 +112,11 @@ describe("request-bound Capture asset collection route", () => {
     }));
 
     expect(response.status).toBe(400);
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nativeMutationCapability: "capture.submit",
+      }),
+    );
     expect(
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
     ).not.toHaveBeenCalled();
