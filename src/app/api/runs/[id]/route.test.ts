@@ -96,6 +96,7 @@ describe("run feedback effects", () => {
     const actorId = "feedback-owner";
     const run = await runs.createAgentRun({
       tenantId,
+      actorId,
       mode: "execute",
       prompt: "Call the governed endpoint.",
       messages: [{ role: "user", content: "Call the governed endpoint." }],

@@ -143,6 +143,7 @@ export async function recordRunFeedbackService(
   const value = runFeedbackServiceInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.runs.feedback"));
   const run = await getAgentRun(value.runId, { tenantId: caller.context.tenantId });
+  await assertRunReadable(run, caller);
   if (!run) return completeAppServiceCall(authorized, { run: null }, { resourceCount: 0 });
   if (run.status !== "completed") throw new Error("Feedback is available only after a run completes.");
   const feedback = { verdict: value.verdict, correction: value.correction };
@@ -176,6 +177,7 @@ export async function cancelRunService(
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.runs.cancel"));
   const owner = { tenantId: caller.context.tenantId };
   const run = await getAgentRun(value.runId, owner);
+  await assertRunReadable(run, caller);
   if (!run) return completeAppServiceCall(authorized, { run: null, canceledJobs: 0 }, { resourceCount: 0 });
   const terminal = ["completed", "failed", "canceled"].includes(run.status);
   if (!terminal) {
