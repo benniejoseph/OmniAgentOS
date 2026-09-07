@@ -10,6 +10,10 @@ import {
   realtimeTranscriptText,
   type RealtimeTranscriptState,
 } from "@/lib/voice/realtime-transcript";
+import {
+  StreamingPcmPlayer,
+  streamVersionedSpeech,
+} from "@/lib/voice/pcm-player";
 
 type VoicePhase =
   | "consent"
@@ -21,6 +25,8 @@ type VoicePhase =
   | "review"
   | "reconnecting"
   | "sending"
+  | "waiting"
+  | "replying"
   | "error";
 
 type VoiceSession = Readonly<{
@@ -40,6 +46,11 @@ type VoiceSession = Readonly<{
 
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 type SessionOutcome = "sent" | "canceled" | "failed";
+type VoiceCommandReply = Readonly<{
+  text: string;
+  runId?: string;
+  agentId?: string;
+}>;
 
 const REALTIME_TRANSPORT_URL = "https://api.openai.com/v1/realtime/calls";
 const restingMeter = [0.18, 0.28, 0.42, 0.24, 0.52, 0.34, 0.62, 0.3, 0.48, 0.24, 0.16];
@@ -72,7 +83,10 @@ export function VoiceMode({
   conversationId?: string;
   mode?: AgentMode;
   onConversationBound: (conversationId: string) => void;
-  onTranscript: (text: string, conversationId: string) => void;
+  onTranscript: (
+    text: string,
+    conversationId: string,
+  ) => Promise<VoiceCommandReply | undefined>;
 }) {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<VoicePhase>("consent");
@@ -91,6 +105,9 @@ export function VoiceMode({
   const audioContextRef = useRef<AudioContext | null>(null);
   const meterFrameRef = useRef<number | null>(null);
   const requestControllerRef = useRef<AbortController | null>(null);
+  const speechControllerRef = useRef<AbortController | null>(null);
+  const speechPlayerRef = useRef<StreamingPcmPlayer | null>(null);
+  const speechActiveRef = useRef(false);
   const reconnectTimerRef = useRef<number | null>(null);
   const maxSessionTimerRef = useRef<number | null>(null);
   const sessionRef = useRef<VoiceSession | null>(null);
@@ -135,6 +152,14 @@ export function VoiceMode({
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     setMeterLevels(restingMeter);
+  }, []);
+
+  const stopSpeech = useCallback(() => {
+    speechActiveRef.current = false;
+    speechControllerRef.current?.abort();
+    speechControllerRef.current = null;
+    speechPlayerRef.current?.stop();
+    speechPlayerRef.current = null;
   }, []);
 
   const stopTransport = useCallback(() => {
@@ -184,19 +209,21 @@ export function VoiceMode({
   const closeDialog = useCallback((outcome: SessionOutcome = "canceled") => {
     sessionTokenRef.current += 1;
     void reportSession(outcome);
+    stopSpeech();
     stopTransport();
     setOpen(false);
     setPhase("consent");
     resetSession();
     window.requestAnimationFrame(() => triggerRef.current?.focus());
-  }, [reportSession, resetSession, stopTransport]);
+  }, [reportSession, resetSession, stopSpeech, stopTransport]);
 
   useEffect(() => () => {
     mountedRef.current = false;
     sessionTokenRef.current += 1;
     void reportSession("canceled");
+    stopSpeech();
     stopTransport();
-  }, [reportSession, stopTransport]);
+  }, [reportSession, stopSpeech, stopTransport]);
 
   useEffect(() => {
     if (!isActivePhase(phase)) return;
@@ -270,13 +297,18 @@ export function VoiceMode({
   function failVoice(message: string, token: number) {
     if (!mountedRef.current || token !== sessionTokenRef.current) return;
     void reportSession("failed");
+    stopSpeech();
     stopTransport();
     setPhase("error");
     setError(message);
     setAnnouncement(message);
   }
 
-  async function issueSession(token: number, reconnectAttempt: number): Promise<VoiceSession> {
+  async function issueSession(
+    token: number,
+    reconnectAttempt: number,
+    conversationOverride?: string,
+  ): Promise<VoiceSession> {
     const existing = sessionRef.current;
     const controller = new AbortController();
     requestControllerRef.current?.abort();
@@ -287,7 +319,11 @@ export function VoiceMode({
       body: JSON.stringify({
         ...(reconnectAttempt && existing
           ? { sessionId: existing.sessionId, conversationId: existing.conversationId }
-          : conversationId ? { conversationId } : {}),
+          : conversationOverride
+            ? { conversationId: conversationOverride }
+            : conversationId
+              ? { conversationId }
+              : {}),
         mode,
         ...(language === "auto" ? {} : { language }),
         providerConsent: true,
@@ -321,8 +357,12 @@ export function VoiceMode({
       try { providerEvent = JSON.parse(event.data); } catch { return; }
       const eventType = eventTypeOf(providerEvent);
       if (eventType === "input_audio_buffer.speech_started") {
+        const interruptedReply = speechActiveRef.current;
+        if (interruptedReply) stopSpeech();
         setPhase("speaking");
-        setAnnouncement("Speech detected. Live transcription is updating.");
+        setAnnouncement(interruptedReply
+          ? "Reply interrupted. Listening to your new turn."
+          : "Speech detected. Live transcription is updating.");
       } else if (eventType === "input_audio_buffer.speech_stopped") {
         setPhase("listening");
         setAnnouncement("Turn detected. Listening for more.");
@@ -444,6 +484,80 @@ export function VoiceMode({
     setAnnouncement("Transcription stopped. Review and edit before sending.");
   }
 
+  async function startContinuationListening(
+    activeConversationId: string,
+    token: number,
+  ) {
+    sessionRef.current = null;
+    transcriptStateRef.current = EMPTY_REALTIME_TRANSCRIPT;
+    reconnectCountRef.current = 0;
+    reportedRef.current = false;
+    setTranscriptState(EMPTY_REALTIME_TRANSCRIPT);
+    setElapsedSeconds(0);
+    setAnnouncement("Reopening listening so you can interrupt the reply.");
+    const stream = await requestMicrophone();
+    if (!mountedRef.current || token !== sessionTokenRef.current) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new DOMException("Canceled", "AbortError");
+    }
+    streamRef.current = stream;
+    startMeter(stream);
+    const nextSession = await issueSession(token, 0, activeConversationId);
+    sessionRef.current = nextSession;
+    onConversationBound(nextSession.conversationId);
+    recordingStartedAtRef.current = Date.now();
+    await connectPeer(nextSession, stream, token);
+    const channel = dataChannelRef.current;
+    if (!channel) throw new Error("The listening channel did not open.");
+    await waitForDataChannelOpen(channel, () => (
+      mountedRef.current && token === sessionTokenRef.current
+    ));
+    maxSessionTimerRef.current = window.setTimeout(
+      () => void finishListening(),
+      10 * 60 * 1_000,
+    );
+  }
+
+  async function streamReply(
+    reply: VoiceCommandReply,
+    activeConversationId: string,
+    token: number,
+  ) {
+    const controller = new AbortController();
+    const player = new StreamingPcmPlayer();
+    speechControllerRef.current = controller;
+    speechPlayerRef.current = player;
+    speechActiveRef.current = true;
+    setPhase("replying");
+    setAnnouncement(`${agentName} is replying. Speak at any time to interrupt.`);
+    try {
+      await streamVersionedSpeech({
+        text: reply.text,
+        threadId: activeConversationId,
+        runId: reply.runId,
+        agentId: reply.agentId,
+      }, {
+        player,
+        signal: controller.signal,
+        onStarted: () => {
+          if (token !== sessionTokenRef.current) return;
+          setPhase("replying");
+          setAnnouncement(`${agentName} is speaking. Speak to interrupt.`);
+        },
+      });
+      return token === sessionTokenRef.current;
+    } catch (speechError) {
+      if (isAbortError(speechError) || controller.signal.aborted) return false;
+      throw speechError;
+    } finally {
+      if (speechControllerRef.current === controller) {
+        speechControllerRef.current = null;
+        speechActiveRef.current = false;
+      }
+      if (speechPlayerRef.current === player) speechPlayerRef.current = null;
+    }
+  }
+
   async function sendTranscript() {
     const session = sessionRef.current;
     const transcript = realtimeTranscriptText(transcriptStateRef.current).trim();
@@ -456,13 +570,36 @@ export function VoiceMode({
     setAnnouncement("Sending the reviewed transcript to the conversation.");
     stopTransport();
     await reportSession("sent");
-    if (!mountedRef.current) return;
+    const token = sessionTokenRef.current;
+    if (!mountedRef.current || token !== sessionTokenRef.current) return;
     onConversationBound(session.conversationId);
-    onTranscript(transcript, session.conversationId);
-    setOpen(false);
-    setPhase("consent");
-    resetSession();
-    window.requestAnimationFrame(() => triggerRef.current?.focus());
+    setPhase("waiting");
+    setAnnouncement(`${agentName} is working on the reviewed command.`);
+    try {
+      const reply = await onTranscript(transcript, session.conversationId);
+      if (!mountedRef.current || token !== sessionTokenRef.current) return;
+      if (!reply?.text.trim()) {
+        throw new Error(`${agentName} did not return a speakable response.`);
+      }
+      await startContinuationListening(session.conversationId, token);
+      const completed = await streamReply(reply, session.conversationId, token);
+      if (completed && token === sessionTokenRef.current) {
+        setPhase("listening");
+        setAnnouncement("Reply complete. Listening for your next turn.");
+      }
+    } catch (sendError) {
+      if (isAbortError(sendError) || token !== sessionTokenRef.current) return;
+      failVoice(sendError instanceof Error
+        ? sendError.message
+        : "The voice reply could not be completed.", token);
+    }
+  }
+
+  function interruptReply() {
+    if (!speechActiveRef.current) return;
+    stopSpeech();
+    setPhase("listening");
+    setAnnouncement("Reply interrupted. Listening for your next turn.");
   }
 
   function retryVoice() {
@@ -516,7 +653,7 @@ export function VoiceMode({
               <div className="relative flex flex-1 flex-col px-6 pb-5 pt-3 text-left">
                 <div className="mx-auto grid size-24 place-items-center rounded-full border border-primary/30 bg-primary/10 text-primary"><ShieldCheck size={34} aria-hidden="true" /></div>
                 <h3 className="mt-6 text-center text-lg font-semibold">Live transcription session</h3>
-                <p className="mt-2 text-center text-sm leading-6 text-muted">OpenAI processes live microphone audio to produce partial text. Asael does not store the audio. The transcript remains an editable command draft until you send or cancel it.</p>
+                <p className="mt-2 text-center text-sm leading-6 text-muted">OpenAI processes live microphone audio to produce partial text. Asael does not store the audio. The transcript remains an editable command draft until you send it, then the exact agent result streams back in Asael&apos;s versioned voice. Speaking interrupts playback.</p>
                 <div className="mt-5 rounded-xl border border-line bg-surface px-4 py-3 text-xs leading-5 text-muted">
                   <p><strong className="text-foreground">Provider:</strong> OpenAI</p>
                   <p><strong className="text-foreground">Turn detection:</strong> server voice activity detection</p>
@@ -531,11 +668,11 @@ export function VoiceMode({
               </div>
             ) : (
               <div className="relative flex flex-1 flex-col items-center px-6 pb-4 pt-2 text-center">
-                <div className={clsx("relative grid size-32 place-items-center rounded-full border transition-all duration-300", phase === "speaking" ? "border-primary/40 bg-primary/10 shadow-[0_0_55px_color-mix(in_oklab,var(--color-primary)_25%,transparent)]" : "border-line bg-surface")} aria-hidden="true">
+                <div className={clsx("relative grid size-32 place-items-center rounded-full border transition-all duration-300", ["speaking", "replying"].includes(phase) ? "border-primary/40 bg-primary/10 shadow-[0_0_55px_color-mix(in_oklab,var(--color-primary)_25%,transparent)]" : "border-line bg-surface")} aria-hidden="true">
                   <div className="flex h-20 items-center gap-1">
                     {meterLevels.map((level, index) => <span key={index} className={clsx("w-1 rounded-full transition-[height,opacity] duration-100", isActivePhase(phase) ? "bg-primary opacity-90" : "bg-muted/45 opacity-55")} style={{ height: `${Math.round(8 + level * 50)}px` }} />)}
                   </div>
-                  {["requesting", "connecting", "finishing", "reconnecting", "sending"].includes(phase) ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/72 backdrop-blur-sm"><Loader2 size={28} className="animate-spin text-primary" /></span> : null}
+                  {["requesting", "connecting", "finishing", "reconnecting", "sending", "waiting"].includes(phase) ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/72 backdrop-blur-sm"><Loader2 size={28} className="animate-spin text-primary" /></span> : null}
                   {phase === "error" ? <span className="absolute inset-0 grid place-items-center rounded-full bg-background/80"><Mic size={28} className="text-danger" /></span> : null}
                 </div>
                 <p id="voice-mode-status" className="mt-5 text-lg font-semibold tracking-tight">{status.title}</p>
@@ -548,12 +685,12 @@ export function VoiceMode({
                     onChange={(event) => setTranscriptState((current) => editRealtimeTranscript(current, event.currentTarget.value))}
                     rows={5}
                     maxLength={100_000}
-                    disabled={["requesting", "connecting", "sending"].includes(phase)}
+                    disabled={["requesting", "connecting", "sending", "waiting", "replying"].includes(phase)}
                     placeholder={isActivePhase(phase) ? "Partial transcription will appear here…" : "No speech recognized yet."}
                     className="mt-1.5 min-h-28 w-full resize-none rounded-xl border border-line bg-surface px-3 py-2.5 text-sm font-normal leading-6 outline-none focus:border-primary disabled:opacity-65"
                   />
                 </label>
-                {agentVoice ? <p className="mt-2 text-xs leading-5 text-muted">{agentName}&apos;s reply voice ({agentVoice}) is applied after this transcription stage.</p> : null}
+                {agentVoice ? <p className="mt-2 text-xs leading-5 text-muted">{agentName}&apos;s identity ({agentVoice}) is spoken through Asael&apos;s governed voice profile.</p> : null}
               </div>
             )}
 
@@ -572,6 +709,11 @@ export function VoiceMode({
                 <>
                   <button type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">Cancel</button>
                   <button ref={primaryActionRef} type="button" onClick={() => void sendTranscript()} disabled={!transcript.trim()} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90 disabled:opacity-35"><Send size={15} aria-hidden="true" />Send to {agentName}</button>
+                </>
+              ) : phase === "replying" ? (
+                <>
+                  <button type="button" onClick={() => closeDialog()} className="min-h-11 rounded-full px-5 text-sm font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground">End voice mode</button>
+                  <button ref={primaryActionRef} type="button" onClick={interruptReply} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-foreground px-6 text-sm font-semibold text-background transition hover:opacity-90"><Square size={14} fill="currentColor" aria-hidden="true" />Interrupt reply</button>
                 </>
               ) : phase === "error" ? (
                 <>
@@ -658,12 +800,14 @@ function voiceStatus(phase: VoicePhase, elapsedSeconds: number, error: string) {
   if (phase === "finishing") return { title: "Finishing this turn", detail: "Waiting briefly for the last partial transcription." };
   if (phase === "review") return { title: "Review before sending", detail: "Edit the transcript. Nothing is sent to the Command API until you confirm." };
   if (phase === "sending") return { title: "Sending command", detail: "The reviewed text is being attributed to this conversation." };
+  if (phase === "waiting") return { title: "Waiting for the result", detail: "The governed agent run is completing before speech playback starts." };
+  if (phase === "replying") return { title: "Speaking response", detail: "This is the exact agent result. Speak or use Interrupt reply to stop it." };
   if (phase === "error") return { title: "Voice mode needs attention", detail: error || "Nothing was sent." };
   return { title: "Realtime voice", detail: "Review provider use before starting." };
 }
 
 function isActivePhase(phase: VoicePhase) {
-  return ["listening", "speaking", "reconnecting"].includes(phase);
+  return ["listening", "speaking", "reconnecting", "replying"].includes(phase);
 }
 
 function formatDuration(seconds: number) {
@@ -674,4 +818,19 @@ function formatDuration(seconds: number) {
 
 function delay(milliseconds: number) {
   return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function waitForDataChannelOpen(
+  channel: RTCDataChannel,
+  isCurrent: () => boolean,
+) {
+  const deadline = Date.now() + 10_000;
+  while (channel.readyState === "connecting" && Date.now() < deadline) {
+    if (!isCurrent()) throw new DOMException("Canceled", "AbortError");
+    await delay(50);
+  }
+  if (!isCurrent()) throw new DOMException("Canceled", "AbortError");
+  if (channel.readyState !== "open") {
+    throw new Error("The listening channel did not become ready.");
+  }
 }
