@@ -22,6 +22,7 @@ import {
   NATIVE_API_PREVIOUS_VERSION,
   NATIVE_API_SUPPORTED_VERSIONS,
 } from "@/lib/mobile/contracts";
+import { nativeMutationCapabilityPolicy } from "@/lib/auth/native-mutations";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -70,6 +71,7 @@ async function GETHandler(request: Request) {
     client: nativeClientCompatibility(observedIdentity.session.device, {
       clientAttestedAt: observedIdentity.session.clientAttestedAt,
     }),
+    nativeMutationCapabilities: nativeMutationCapabilityPolicy(observedIdentity.context),
     nativeClientPolicy: nativeClientPolicy(),
   }, { headers: mobileNoStoreHeaders });
 }

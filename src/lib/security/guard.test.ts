@@ -168,6 +168,39 @@ describe("cookie-authenticated mutation origin checks", () => {
     ).toThrow(/native mutations remain held/i);
   });
 
+  it("enrolls only a fresh current-contract native capability", () => {
+    const request = new Request("https://app.example.test/api/agent", { method: "POST" });
+    const currentNativeContext = {
+      source: "mobile" as const,
+      native: {
+        deviceId: "device-1",
+        platform: "ios" as const,
+        appVersion: "1.0.0",
+        buildNumber: 1,
+        clientContractVersion: 2,
+        clientAttestedAt: new Date().toISOString(),
+      },
+    };
+
+    expect(() => assertTrustedSessionMutation(
+      request,
+      currentNativeContext,
+      "conversation.send",
+    )).not.toThrow();
+    expect(() => assertTrustedSessionMutation(
+      request,
+      currentNativeContext,
+    )).toThrow(/capability enrollment/i);
+    expect(() => assertTrustedSessionMutation(
+      request,
+      {
+        ...currentNativeContext,
+        native: { ...currentNativeContext.native, clientContractVersion: 1 },
+      },
+      "conversation.send",
+    )).toThrow(/current native contract/i);
+  });
+
   it("can protect cookie-only routes such as logout", () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://app.example.test";
 
