@@ -29,6 +29,7 @@ describe("Account 360 workspace", () => {
     expect(source).toContain("freshness and conflict adjusted");
     expect(source).toContain("weighted factors with evidence");
     expect(source).toContain("This missing factor contributes zero confidence");
+    expect(source).toContain("Re-evaluate before relying on it");
     expect(source).toContain("expectedAccountSha256");
   });
 });
