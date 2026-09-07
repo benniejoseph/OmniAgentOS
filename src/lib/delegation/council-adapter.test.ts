@@ -28,7 +28,10 @@ describe("P8.1 council delegation adapter", () => {
         governedToolIds: [],
       },
       budgets: { modelTurns: 1, toolCalls: 0, agents: 1, retries: 0 },
-      verifier: { agentId: "sentinel", method: "agent_then_deterministic" },
+      verifier: {
+        agentId: "sentinel",
+        method: "deterministic_schema_and_evidence",
+      },
     });
     expect(contract.inputArtifacts).toHaveLength(1);
     expect(contract.delegate.principalId).toMatch(

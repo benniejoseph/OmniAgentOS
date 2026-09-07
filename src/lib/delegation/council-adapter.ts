@@ -232,7 +232,7 @@ export function buildCouncilMemberDelegationContractV1(input: {
     verifier: {
       agentId: verifier.definition.logicalAgentId,
       definitionVersion: verifier.definition.definitionVersion,
-      method: "agent_then_deterministic",
+      method: "deterministic_schema_and_evidence",
       requiredEvidenceKinds: [
         "artifact_digest",
         "model_receipt",

@@ -15,6 +15,18 @@ import {
   type DelegationBrokerProgress,
   type DelegationBrokerResult,
 } from "@/lib/delegation/broker";
+import {
+  buildDelegationTaskV1,
+  isTerminalDelegationTaskState,
+  transitionDelegationTaskV1,
+  type DelegationTaskTransition,
+  type DelegationTaskV1,
+} from "@/lib/delegation/lifecycle";
+import {
+  createDelegationTask,
+  delegationTaskPersistenceAvailable,
+  transitionDelegationTask,
+} from "@/lib/delegation/store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import type { ModelGenerationResult } from "@/lib/models/types";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
@@ -46,6 +58,9 @@ export type CouncilContribution = {
     delegatePrincipalId: string;
     delegatedPrincipalSha256?: string;
     toolExecutionIds: string[];
+    taskId?: string;
+    lifecycleState?: DelegationTaskV1["state"];
+    lifecycleRevision?: number;
   };
   clarification?: string;
   error?: string;
@@ -133,6 +148,34 @@ export async function runCouncilRound(input: {
       attempt,
       tools: grantedTools,
     });
+    let lifecycleTask = buildDelegationTaskV1(delegationContract);
+    if (delegationTaskPersistenceAvailable()) {
+      lifecycleTask = await createDelegationTask({
+        contract: delegationContract,
+        parentExecutionScope: input.delegationAuthority.executionScope,
+      });
+    }
+    const advanceLifecycle = async (transition: DelegationTaskTransition) => {
+      const at = new Date(Math.max(
+        Date.now(),
+        Date.parse(lifecycleTask.updatedAt),
+      )).toISOString();
+      lifecycleTask = delegationTaskPersistenceAvailable()
+        ? await transitionDelegationTask({
+            taskId: lifecycleTask.taskId,
+            tenantId: lifecycleTask.tenantId,
+            expectedRevision: lifecycleTask.lifecycleRevision,
+            transition,
+            parentExecutionScope: input.delegationAuthority.executionScope,
+            at,
+          })
+        : transitionDelegationTaskV1({
+            task: lifecycleTask,
+            transition,
+            at,
+          }).task;
+      return lifecycleTask;
+    };
     const delegationExecutionScope = deriveExecutionScope(
       input.delegationAuthority.executionScope,
       {
@@ -174,7 +217,42 @@ export async function runCouncilRound(input: {
             checkpointHooks: input.checkpointHooks,
           }),
           executeTool: input.executeDelegatedTool,
-          onProgress: input.onDelegationProgress,
+          onProgress: async (progress) => {
+            await input.onDelegationProgress?.(progress);
+            if (progress.state === "accepted" && lifecycleTask.state === "proposed") {
+              await advanceLifecycle({ to: "accepted" });
+            } else if (
+              progress.state === "working" &&
+              ["accepted", "waiting", "challenged"].includes(lifecycleTask.state)
+            ) {
+              await advanceLifecycle({ to: "working" });
+            } else if (
+              (progress.state === "waiting" ||
+                progress.state === "clarification_required") &&
+              lifecycleTask.state === "working"
+            ) {
+              await advanceLifecycle({
+                to: "waiting",
+                reason: progress.state === "clarification_required"
+                  ? "clarification_required"
+                  : progress.status === "approval_required"
+                    ? "approval_required"
+                    : "tool_executing",
+                ...(progress.executionId
+                  ? { toolExecutionId: progress.executionId }
+                  : {}),
+              });
+            } else if (
+              progress.state === "challenged" &&
+              ["working", "waiting"].includes(lifecycleTask.state)
+            ) {
+              await advanceLifecycle({
+                to: "challenged",
+                reason: "The broker rejected a plan outside the delegation contract.",
+                challengeSha256: contentSha256(progress),
+              });
+            }
+          },
           abortSignal: input.abortSignal,
         });
         if (
@@ -187,6 +265,7 @@ export async function runCouncilRound(input: {
             startedAt,
             contract: delegationContract,
             brokerResult,
+            lifecycleTask,
           });
           await invokeCheckpointHook(input.checkpointHooks?.afterDelegation, {
             agentId,
@@ -196,6 +275,9 @@ export async function runCouncilRound(input: {
           });
           return contribution;
         }
+      } else {
+        await advanceLifecycle({ to: "accepted" });
+        await advanceLifecycle({ to: "working" });
       }
       await invokeCheckpointHook(input.checkpointHooks?.beforeModel, {
         sourceId,
@@ -271,8 +353,46 @@ export async function runCouncilRound(input: {
         evidenceIds: stringArray(parsed.evidenceIds, 12),
         confidence: boundedScore(parsed.confidence),
         durationMs: Date.now() - startedAt,
-        delegation: delegationBinding(delegationContract, brokerResult),
+        delegation: delegationBinding(
+          delegationContract,
+          brokerResult,
+          lifecycleTask,
+        ),
       };
+      const proposalReceiptSha256 = contributionReceiptSha256(contribution);
+      await advanceLifecycle({
+        to: "completed_proposed",
+        proposalReceiptSha256,
+        acceptanceChecksSha256: councilAcceptanceChecksSha256(
+          contribution,
+          delegationContract,
+        ),
+        artifactSha256s: [contentSha256({
+          summary: contribution.summary,
+          findings: contribution.findings,
+          risks: contribution.risks,
+          recommendation: contribution.recommendation,
+        })],
+        evidenceIds: contribution.evidenceIds,
+        toolExecutionIds: contribution.delegation.toolExecutionIds,
+      });
+      const accepted = councilContributionIsAcceptable(
+        contribution,
+        delegationContract,
+      );
+      await advanceLifecycle({
+        to: accepted ? "result_accepted" : "rejected",
+        evaluatorPrincipalId: delegationContract.scope.parentPrincipalId,
+        evaluatorAgentId: delegationContract.verifier.agentId,
+        evaluatorDefinitionVersion:
+          delegationContract.verifier.definitionVersion,
+        score: accepted ? 1 : 0,
+      });
+      contribution.delegation = delegationBinding(
+        delegationContract,
+        brokerResult,
+        lifecycleTask,
+      );
       await invokeCheckpointHook(input.checkpointHooks?.afterDelegation, {
         agentId,
         attempt,
@@ -289,6 +409,29 @@ export async function runCouncilRound(input: {
           error,
         });
       }
+      if (
+        !isTerminalDelegationTaskState(lifecycleTask.state) &&
+        lifecycleTask.state !== "waiting"
+      ) {
+        if (["working", "accepted"].includes(lifecycleTask.state)) {
+          if (lifecycleTask.state === "accepted") {
+            await advanceLifecycle({ to: "working" });
+          }
+          await advanceLifecycle({
+            to: "challenged",
+            reason: "The delegated execution did not produce a valid proposal.",
+            challengeSha256: contentSha256({
+              delegationId: delegationContract.delegationId,
+              failureKind: checkpointFailureKind(error),
+            }),
+          });
+        }
+        await advanceLifecycle({
+          to: "canceled",
+          initiator: "system",
+          reason: "The bounded delegation failed before parent evaluation.",
+        });
+      }
       const contribution: CouncilContribution = {
         agentId,
         name: agent.name,
@@ -301,7 +444,11 @@ export async function runCouncilRound(input: {
         evidenceIds: [],
         confidence: 0,
         durationMs: Date.now() - startedAt,
-        delegation: delegationBinding(delegationContract),
+        delegation: delegationBinding(
+          delegationContract,
+          undefined,
+          lifecycleTask,
+        ),
         error: error instanceof Error ? error.message : "Council contribution failed.",
       };
       await invokeCheckpointHook(input.checkpointHooks?.afterDelegation, {
@@ -599,6 +746,7 @@ function brokerBoundaryContribution(input: {
   startedAt: number;
   contract: ReturnType<typeof buildCouncilMemberDelegationContractV1>;
   brokerResult: DelegationBrokerResult;
+  lifecycleTask: DelegationTaskV1;
 }): CouncilContribution {
   const clarification = input.brokerResult.status === "clarification_required"
     ? input.brokerResult.clarification || "The delegated task needs clarification."
@@ -619,7 +767,11 @@ function brokerBoundaryContribution(input: {
     evidenceIds: input.brokerResult.toolResults.map((result) => result.executionId),
     confidence: 0,
     durationMs: Date.now() - input.startedAt,
-    delegation: delegationBinding(input.contract, input.brokerResult),
+    delegation: delegationBinding(
+      input.contract,
+      input.brokerResult,
+      input.lifecycleTask,
+    ),
     ...(clarification ? { clarification } : {}),
     error: summary,
   };
@@ -698,6 +850,13 @@ async function invokeCheckpointHook<T>(
 }
 
 function contributionReceiptSha256(contribution: CouncilContribution) {
+  const {
+    lifecycleState: _lifecycleState,
+    lifecycleRevision: _lifecycleRevision,
+    ...stableDelegation
+  } = contribution.delegation;
+  void _lifecycleState;
+  void _lifecycleRevision;
   return contentSha256({
     schemaVersion: 1,
     agentId: contribution.agentId,
@@ -708,13 +867,14 @@ function contributionReceiptSha256(contribution: CouncilContribution) {
     recommendation: contribution.recommendation,
     evidenceIds: contribution.evidenceIds,
     confidence: contribution.confidence,
-    delegation: contribution.delegation,
+    delegation: stableDelegation,
   });
 }
 
 function delegationBinding(
   contract: ReturnType<typeof buildCouncilMemberDelegationContractV1>,
   brokerResult?: DelegationBrokerResult,
+  task: DelegationTaskV1 = buildDelegationTaskV1(contract),
 ): CouncilContribution["delegation"] {
   return {
     delegationId: contract.delegationId,
@@ -726,7 +886,45 @@ function delegationBinding(
         brokerResult.delegatedPrincipal.principalSha256,
     } : {}),
     toolExecutionIds: brokerResult?.toolResults.map((result) => result.executionId) || [],
+    taskId: task.taskId,
+    lifecycleState: task.state,
+    lifecycleRevision: task.lifecycleRevision,
   };
+}
+
+function councilContributionIsAcceptable(
+  contribution: CouncilContribution,
+  contract: ReturnType<typeof buildCouncilMemberDelegationContractV1>,
+) {
+  return contribution.status === "completed" &&
+    contribution.summary.trim().length > 0 &&
+    contribution.recommendation.trim().length > 0 &&
+    contribution.delegation.delegationId === contract.delegationId &&
+    contribution.delegation.contractSha256 === contract.contractSha256 &&
+    Buffer.byteLength(JSON.stringify({
+      summary: contribution.summary,
+      findings: contribution.findings,
+      risks: contribution.risks,
+      recommendation: contribution.recommendation,
+      evidenceIds: contribution.evidenceIds,
+    }), "utf8") <= contract.output.maxBytes;
+}
+
+function councilAcceptanceChecksSha256(
+  contribution: CouncilContribution,
+  contract: ReturnType<typeof buildCouncilMemberDelegationContractV1>,
+) {
+  return contentSha256({
+    version: "p8.3-council-parent-evaluation:1",
+    delegationId: contract.delegationId,
+    contractSha256: contract.contractSha256,
+    requiredCriterionIds: contract.acceptanceCriteria.map(
+      (criterion) => criterion.criterionId,
+    ),
+    schemaBound: contribution.status === "completed",
+    evidenceIds: contribution.evidenceIds,
+    acceptable: councilContributionIsAcceptable(contribution, contract),
+  });
 }
 
 function contentSha256(value: unknown) {

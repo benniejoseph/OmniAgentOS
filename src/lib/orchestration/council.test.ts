@@ -45,6 +45,11 @@ describe("agent council", () => {
     expect(contributions.every((item) =>
       /^[a-f0-9]{64}$/.test(item.delegation.contractSha256)
     )).toBe(true);
+    expect(contributions.every((item) =>
+      item.delegation.lifecycleState === "result_accepted" &&
+      item.delegation.lifecycleRevision === 4 &&
+      item.delegation.taskId === `delegation-task:${item.delegation.delegationId}`
+    )).toBe(true);
     expect(mocks.generateModelStructured).toHaveBeenCalledTimes(2);
     expect(formatCouncilContributions(contributions)).toContain("Scout (Research)");
     const scoutInstructions = String(
@@ -176,6 +181,8 @@ describe("agent council", () => {
     expect(contribution.delegation).toMatchObject({
       delegatedPrincipalSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       toolExecutionIds: ["delegated-execution-one"],
+      lifecycleState: "result_accepted",
+      lifecycleRevision: 4,
     });
     expect(String(mocks.generateModelStructured.mock.calls[1]?.[0]?.input))
       .toContain("<delegated_tool_results");
