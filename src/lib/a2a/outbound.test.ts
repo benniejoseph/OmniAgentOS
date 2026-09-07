@@ -123,6 +123,16 @@ describe("outbound A2A adapter", () => {
     expect(mocks.reserveExternalA2ASafety).toHaveBeenCalledOnce();
     expect(sent).toHaveLength(1);
     expect(JSON.stringify(sent[0])).toContain("opaque-delegated-token");
+    expect(sent[0]).toMatchObject({
+      metadata: {
+        boundaryVersion: "p8.7-a2a-outbound-delegation:1",
+        safetyBoundary: {
+          trustTier: "external_untrusted",
+          forceMutationApproval: true,
+          canRedelegate: false,
+        },
+      },
+    });
     const persistedMessage = mocks.appendA2AExchange.mock.calls.find(
       ([value]) => value.direction === "outbound" && value.payload.type === "message",
     )?.[0];
@@ -305,6 +315,15 @@ function safetyState() {
       rolloutSha256: rollout.rolloutSha256,
       contractSha256: buildContract().contractSha256,
       forceMutationApproval: true,
+      version: "p8.7-a2a-safety-reservation:1",
+      safetyId: `a2a-safety:${"f".repeat(64)}`,
+      safetySha256: "f".repeat(64),
+      trustTier: "external_untrusted",
+      canRedelegate: false,
+      budgets: buildContract().budgets,
+      maxToolCalls: 1,
+      deadlineAt: "2026-09-07T06:05:00.000Z",
+      progressTimeoutMs: 60_000,
     },
     status: "active",
   };

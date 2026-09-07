@@ -202,6 +202,12 @@ export function assertExternalA2ASafety(input: {
       );
     }
   }
+  if (contract.budgets.wallTimeMs < 1_000) {
+    throw new A2ASafetyError(
+      "External delegation wall-time budget cannot sustain a safety lease.",
+      "budget",
+    );
+  }
   const nowMs = Date.parse(input.now || new Date().toISOString());
   const createdAtMs = Date.parse(contract.deadline.createdAt);
   const completeByMs = Date.parse(contract.deadline.completeBy);
