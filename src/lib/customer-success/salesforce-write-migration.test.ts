@@ -14,6 +14,7 @@ describe("Salesforce guarded-write migration", () => {
     expect(migration).toContain("FORCE ROW LEVEL SECURITY");
     expect(migration).toContain("omni_salesforce_write_operations_update_scope");
     expect(migration).toContain("provider_idempotency_key_sha256");
+    expect(migration).toContain("commit_snapshot JSONB");
     expect(migration).not.toMatch(/GRANT\s+DELETE/i);
   });
 
@@ -21,6 +22,6 @@ describe("Salesforce guarded-write migration", () => {
     expect(migration).toContain("version = 138");
     expect(migration).toContain("'salesforce_read_sync_v1'");
     expect(migration).toContain("'salesforce_guarded_writes_v1'");
-    expect(migration).toContain("0685f82f1c7cd09120b6cff93923d3f6bf821326e029dc92932b4775778dd196");
+    expect(migration).toContain("1abb9529ce56ff31484da98bc52de725d7c6402792dbff1b0b1706abc7c9f1e1");
   });
 });

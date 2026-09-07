@@ -109,6 +109,7 @@ export type SalesforceWriteOperation = Readonly<{
   providerAcknowledgementSha256: string | null;
   observedTargetStateSha256: string | null;
   verificationReasonCode: "state_matched" | "target_missing" | "state_mismatch" | null;
+  commit: SalesforceWriteCommit | null;
   attemptCount: number;
   lastAttemptAt: string | null;
   completedAt: string | null;
@@ -883,6 +884,7 @@ export async function settleSalesforceWriteOperation(input: {
             provider_acknowledgement_sha256 = ${commit.providerAcknowledgementSha256},
             observed_target_state_sha256 = ${commit.observedTargetStateSha256},
             verification_reason_code = ${commit.verificationReasonCode},
+            commit_snapshot = ${commit}::JSONB,
             completed_at = clock_timestamp(), updated_at = clock_timestamp()
         WHERE tenant_id = ${input.authority.tenantId}
           AND workspace_id = ${input.authority.workspaceId}
@@ -1409,6 +1411,9 @@ function salesforceWriteOperationFromRow(
       : null,
     verificationReasonCode: row.verification_reason_code
       ? String(row.verification_reason_code) as SalesforceWriteOperation["verificationReasonCode"]
+      : null,
+    commit: row.commit_snapshot
+      ? salesforceWriteCommitSchema.parse(row.commit_snapshot)
       : null,
     attemptCount: Number(row.attempt_count),
     lastAttemptAt: row.last_attempt_at ? timestamp(row.last_attempt_at) : null,
