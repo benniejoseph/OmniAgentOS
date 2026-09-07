@@ -16,6 +16,7 @@ import type { ToolDefinition } from "@/lib/tools/types";
 
 export const AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT = 6;
 export const AGENT_EXTERNAL_TOOL_ALLOWLIST_LIMIT = 12;
+export const AGENT_MODEL_TOOL_LIMIT = 32;
 export const AGENT_TOOL_SCHEMA_MAX_BYTES = 16 * 1024;
 export const AGENT_TOOL_SCHEMA_RUN_MAX_BYTES = 64 * 1024;
 
@@ -233,9 +234,58 @@ export async function loadProgressiveAgentTools(
       ),
   );
 
-  return applyToolSchemaBudget(
-    deduplicateDefinitions([...nativeDefinitions, ...externalDefinitions]),
+  const selectedNativeDefinitions = selectNativeDefinitions(
+    nativeDefinitions,
+    input.query,
+    Math.max(0, AGENT_MODEL_TOOL_LIMIT - externalDefinitions.length),
   );
+  return applyToolSchemaBudget(deduplicateDefinitions([
+    ...externalDefinitions,
+    ...selectedNativeDefinitions,
+  ]));
+}
+
+function selectNativeDefinitions(
+  definitions: readonly ToolDefinition[],
+  query: string | undefined,
+  limit: number,
+) {
+  if (definitions.length <= limit) return [...definitions];
+  const terms = [...new Set(
+    (query || "")
+      .normalize("NFKD")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((term) => term.length >= 3),
+  )];
+  return definitions
+    .map((definition, index) => ({
+      definition,
+      index,
+      score: nativeToolQueryScore(definition, terms),
+    }))
+    .sort((left, right) =>
+      right.score - left.score ||
+      left.definition.riskLevel - right.definition.riskLevel ||
+      left.index - right.index
+    )
+    .slice(0, limit)
+    .map(({ definition }) => definition);
+}
+
+function nativeToolQueryScore(
+  definition: ToolDefinition,
+  terms: readonly string[],
+) {
+  if (!terms.length) return 0;
+  const id = definition.id.toLowerCase();
+  const name = definition.name.toLowerCase();
+  const description = definition.description.toLowerCase();
+  return terms.reduce((score, term) =>
+    score +
+      (id.includes(term) ? 6 : 0) +
+      (name.includes(term) ? 4 : 0) +
+      (description.includes(term) ? 1 : 0), 0);
 }
 
 export function applyToolSchemaBudget(
