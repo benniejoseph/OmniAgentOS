@@ -17,66 +17,70 @@ type AssignmentRoleContract = Readonly<{
   acceptedCapabilities: readonly string[];
 }>;
 
+function assignmentRoleContract(contract: AssignmentRoleContract) {
+  return Object.freeze(contract);
+}
+
 export const modelAssignmentRoleContracts: Readonly<
   Record<ModelAssignmentScope, AssignmentRoleContract>
 > = Object.freeze({
-  main_agent: Object.freeze({
+  main_agent: assignmentRoleContract({
     title: "Main agent",
     description: "Everyday conversation and direct governed tasks",
     runtimePurpose: "Direct Agent model and tool turns",
     supportedProviders: ["openai", "google", "anthropic", "aws_bedrock"],
     acceptedCapabilities: ["tools", "text"],
   }),
-  orchestrator: Object.freeze({
+  orchestrator: assignmentRoleContract({
     title: "Orchestrator",
     description: "Intent classification, delegation, and task routing",
     runtimePurpose: "Semantic routing before task execution",
     supportedProviders: ["openai", "google", "anthropic", "aws_bedrock"],
     acceptedCapabilities: ["text"],
   }),
-  planner: Object.freeze({
+  planner: assignmentRoleContract({
     title: "Planner",
     description: "Project and durable workflow planning and synthesis",
     runtimePurpose: "Structured Project and workflow plans",
     supportedProviders: ["openai", "anthropic"],
     acceptedCapabilities: ["text"],
   }),
-  verifier: Object.freeze({
+  verifier: assignmentRoleContract({
     title: "Verifier",
     description: "Evidence-bound workflow and Council review",
     runtimePurpose: "Structured outcome verification",
     supportedProviders: ["openai", "anthropic"],
     acceptedCapabilities: ["text"],
   }),
-  council: Object.freeze({
+  council: assignmentRoleContract({
     title: "Agent council",
     description: "Specialist contributions, tool plans, and synthesis",
     runtimePurpose: "Bounded Council member model calls",
     supportedProviders: ["openai", "anthropic"],
     acceptedCapabilities: ["text"],
   }),
-  memory: Object.freeze({
+  memory: assignmentRoleContract({
     title: "Memory reasoning",
     description: "Semantic recall and context query planning",
     runtimePurpose: "Non-authoritative retrieval query planning",
     supportedProviders: ["openai", "anthropic"],
     acceptedCapabilities: ["text"],
   }),
-  embeddings: Object.freeze({
+  embeddings: assignmentRoleContract({
     title: "Embeddings",
     description: "Document and memory vector indexing",
     runtimePurpose: "External embedding generation",
     supportedProviders: ["openai"],
     acceptedCapabilities: ["embeddings"],
   }),
-  vision: Object.freeze({
+  vision: assignmentRoleContract({
     title: "Vision",
     description: "Image and visual-document understanding",
     runtimePurpose: "OCR and visual extraction",
     supportedProviders: ["openai"],
     acceptedCapabilities: ["vision"],
   }),
-  audio: Object.freeze({
+  audio: assignmentRoleContract({
     title: "Audio transcription",
     description: "Uploaded recording and meeting transcription",
     runtimePurpose: "Capture and meeting transcription",

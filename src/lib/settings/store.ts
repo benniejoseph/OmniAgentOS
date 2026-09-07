@@ -879,7 +879,7 @@ export async function saveModelAssignment(input: {
           RETURNING *
         `;
         return assignmentFromRow(rows[0]);
-      });
+      }) as ModelAssignment;
       await assignmentEvent(saved);
       return saved;
     }
