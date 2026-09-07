@@ -37,6 +37,7 @@ import type {
   PersonalNotificationStatus,
   TodayPreferences,
 } from "@/lib/today/types";
+import { enqueueMobilePush } from "@/lib/mobile/push-store";
 
 export async function getNotificationCenter(options: {
   tenantId?: string;
@@ -383,6 +384,16 @@ async function upsertNotification(input: {
         input.mutation,
         sql,
       );
+      if (sql) {
+        await enqueueMobilePush({
+          tenantId: saved.tenantId,
+          actorId: saved.actorId,
+          notificationId: saved.id,
+          target: { kind: "work_item", id: saved.sourceId },
+          occurrenceKey: saved.occurrenceKey,
+          sql,
+        });
+      }
       return saved;
     }
     const notification: PersonalNotification = {
@@ -412,6 +423,16 @@ async function upsertNotification(input: {
       input.mutation,
       sql,
     );
+    if (sql) {
+      await enqueueMobilePush({
+        tenantId: saved.tenantId,
+        actorId: saved.actorId,
+        notificationId: saved.id,
+        target: { kind: "work_item", id: saved.sourceId },
+        occurrenceKey: saved.occurrenceKey,
+        sql,
+      });
+    }
     return saved;
   };
   if (hasDatabaseUrl()) {

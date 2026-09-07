@@ -538,16 +538,26 @@ export async function revokeMobileSession(
 ) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await runWithDatabaseTenantScope(identity.context.tenantId, () => getSql()`
-      UPDATE omni_mobile_sessions
-      SET revoked_at = COALESCE(revoked_at, NOW()),
-          revocation_reason = COALESCE(revocation_reason, ${reason}),
-          updated_at = NOW()
-      WHERE id = ${identity.session.id}
-        AND tenant_id = ${identity.context.tenantId}
-        AND user_id = ${identity.user.id}
-        AND revoked_at IS NULL
-    `);
+    await runWithDatabaseTenantScope(identity.context.tenantId, () =>
+      getSql().transaction(async (sql: MobileSqlTransaction) => {
+        await sql`
+          UPDATE omni_mobile_sessions
+          SET revoked_at = COALESCE(revoked_at, NOW()),
+              revocation_reason = COALESCE(revocation_reason, ${reason}),
+              updated_at = NOW()
+          WHERE id = ${identity.session.id}
+            AND tenant_id = ${identity.context.tenantId}
+            AND user_id = ${identity.user.id}
+            AND revoked_at IS NULL
+        `;
+        await revokeMobilePushRegistrations(
+          sql,
+          identity.context.tenantId,
+          identity.user.id,
+          identity.session.id,
+        );
+      }),
+    );
     return;
   }
   const now = new Date().toISOString();
@@ -567,9 +577,11 @@ export async function revokeMobileSessionsForUser(
 ) {
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await runWithDatabaseTenantScope(
-      tenantId,
-      () => getSql()`UPDATE omni_mobile_sessions SET revoked_at = NOW(), revocation_reason = ${reason}, updated_at = NOW() WHERE user_id = ${userId} AND tenant_id = ${tenantId} AND revoked_at IS NULL`,
+    await runWithDatabaseTenantScope(tenantId, () =>
+      getSql().transaction(async (sql: MobileSqlTransaction) => {
+        await sql`UPDATE omni_mobile_sessions SET revoked_at = NOW(), revocation_reason = ${reason}, updated_at = NOW() WHERE user_id = ${userId} AND tenant_id = ${tenantId} AND revoked_at IS NULL`;
+        await revokeMobilePushRegistrations(sql, tenantId, userId);
+      }),
     );
     return;
   }
@@ -640,7 +652,15 @@ export async function changeMobileDeviceLifecycle(
         `;
         const current = rows[0] ? mobileSessionFromRow(rows[0]) : undefined;
         if (!current) return undefined;
-        if (action === "revoke" && current.revokedAt) return current;
+        if (action === "revoke" && current.revokedAt) {
+          await revokeMobilePushRegistrations(
+            sql,
+            context.tenantId,
+            userId,
+            sessionId,
+          );
+          return current;
+        }
         const updated = action === "remote_wipe"
           ? await sql`
               UPDATE omni_mobile_sessions
@@ -666,7 +686,14 @@ export async function changeMobileDeviceLifecycle(
                 AND revoked_at IS NULL
               RETURNING *
             `;
-        return updated[0] ? mobileSessionFromRow(updated[0]) : current;
+        const result = updated[0] ? mobileSessionFromRow(updated[0]) : current;
+        await revokeMobilePushRegistrations(
+          sql,
+          context.tenantId,
+          userId,
+          sessionId,
+        );
+        return result;
       }) as Promise<MobileSessionRecord | undefined>,
     );
   } else {
@@ -710,6 +737,25 @@ export async function changeMobileDeviceLifecycle(
         new Date(),
       )
     : undefined;
+}
+
+async function revokeMobilePushRegistrations(
+  sql: MobileSqlTransaction,
+  tenantId: string,
+  userId: string,
+  mobileSessionId?: string,
+) {
+  await sql`
+    UPDATE omni_mobile_push_registrations
+    SET state = 'revoked',
+        lifecycle_revision = lifecycle_revision + 1,
+        revoked_at = NOW(),
+        updated_at = NOW()
+    WHERE tenant_id = ${tenantId}
+      AND user_id = ${userId}
+      AND (${mobileSessionId || null}::text IS NULL OR mobile_session_id = ${mobileSessionId || null})
+      AND state = 'active'
+  `;
 }
 
 export async function getMobileWipeChallengeFromRequest(request: Request) {

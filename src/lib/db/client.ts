@@ -18046,7 +18046,7 @@ async function ensureMobilePushDeliveryV1(sql: SqlClient) {
       CHECK ((status = 'running') = (lease_owner IS NOT NULL)),
       CHECK (delivered_at IS NULL OR status IN ('delivered', 'acknowledged')),
       CHECK ((acknowledged_at IS NOT NULL) = (status = 'acknowledged')),
-      CHECK (cause_kind <> 'work_item' OR parent_id IS NOT NULL)
+      CHECK (cause_kind = 'work_item' OR parent_id IS NULL)
     );
     CREATE INDEX IF NOT EXISTS omni_mobile_push_delivery_queue_idx
       ON omni_mobile_push_deliveries (tenant_id, status, run_at, created_at);

@@ -16,10 +16,10 @@ import {
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.includes("--check");
 const frozenPreviousDocumentSha256 = Object.freeze({
-  "openapi.json": "f60438afcdc91436614bfb6f803112dd8e9674ac91c03c22ea49c92150832313",
+  "openapi.json": "70221e8ffca613ed9e561abe389f01232d03b669574ab7ad443b83896fa3849f",
   "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
-  "fixtures.json": "89cb152fb27d40eab1d64eea59ae2171fbdf304afef5beaef5a49cacac34fe35",
-  "manifest.json": "6c8cbc1bb3125ff8ffc0aa537ea1d3b27c23a91ebe86aa1acd910a64b1ce95b2",
+  "fixtures.json": "e2f31431c7bd9a0a751626cae63720c60e6e975d7eb4a53cb9373c60c0777167",
+  "manifest.json": "dba1eca253500d94c85362743297defdc959c3fd2f6b5334b6be1e9e1964ee2f",
 });
 
 const fixtures = Object.freeze({

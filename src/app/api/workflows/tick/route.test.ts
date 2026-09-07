@@ -14,6 +14,7 @@ const routeMocks = vi.hoisted(() => ({
   recoverStaleToolExecutionClaims: vi.fn(),
   processDueDailyBriefs: vi.fn(),
   processDueNotifications: vi.fn(),
+  dispatchMobilePushDeliveries: vi.fn(),
   processActiveProjectExecutions: vi.fn(),
   syncDuePersonalProviders: vi.fn(),
   syncDueSalesforceConnections: vi.fn(),
@@ -105,6 +106,10 @@ vi.mock("@/lib/today/briefs", async (importOriginal) => ({
 vi.mock("@/lib/today/notifications", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/today/notifications")>()),
   processDueNotifications: routeMocks.processDueNotifications,
+}));
+
+vi.mock("@/lib/mobile/push-store", () => ({
+  dispatchMobilePushDeliveries: routeMocks.dispatchMobilePushDeliveries,
 }));
 
 vi.mock("@/lib/projects/execution", async (importOriginal) => ({
@@ -231,6 +236,12 @@ beforeEach(() => {
   });
   routeMocks.processDueDailyBriefs.mockReset().mockResolvedValue([]);
   routeMocks.processDueNotifications.mockReset().mockResolvedValue([]);
+  routeMocks.dispatchMobilePushDeliveries.mockReset().mockResolvedValue({
+    processed: 0,
+    delivered: 0,
+    retried: 0,
+    failed: 0,
+  });
   routeMocks.processActiveProjectExecutions.mockReset().mockResolvedValue([]);
   routeMocks.syncDuePersonalProviders.mockReset().mockResolvedValue([]);
   routeMocks.syncDueSalesforceConnections.mockReset().mockResolvedValue([]);

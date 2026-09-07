@@ -47,6 +47,7 @@ import {
 } from "@/lib/workflows/queue";
 import { processDueDailyBriefs } from "@/lib/today/briefs";
 import { processDueNotifications } from "@/lib/today/notifications";
+import { dispatchMobilePushDeliveries } from "@/lib/mobile/push-store";
 import { processActiveProjectExecutions } from "@/lib/projects/execution";
 import { syncDuePersonalProviders } from "@/lib/connectors/personal-sync";
 import { syncDueSalesforceConnections } from "@/lib/customer-success/salesforce-sync";
@@ -439,6 +440,10 @@ async function POSTHandler(request: Request) {
       tenantId: context.tenantId,
       limit: 20,
     });
+    const mobilePush = await dispatchMobilePushDeliveries({
+      tenantId: context.tenantId,
+      limit: 20,
+    });
     const projectExecutions = await processActiveProjectExecutions({
       tenantId: context.tenantId,
       limit: 10,
@@ -499,6 +504,8 @@ async function POSTHandler(request: Request) {
         alertsEnabled: Boolean(parsed.data.alerts),
         alertEnqueued: alerts?.enqueued.length || 0,
         alertProcessed: alerts?.dispatch.processed.length || 0,
+        mobilePushProcessed: mobilePush.processed,
+        mobilePushDelivered: mobilePush.delivered,
       },
     });
     return Response.json({
@@ -509,6 +516,7 @@ async function POSTHandler(request: Request) {
       recoveredToolClaims,
       dailyBriefs,
       personalNotifications,
+      mobilePush,
       projectExecutions,
       connectedSourceSyncs,
       salesforceSyncs,
@@ -719,6 +727,8 @@ async function runAllTenantScheduledWork({
     toolClaimsRecovered: number;
     dailyBriefsGenerated: number;
     personalNotificationsProcessed: number;
+    mobilePushProcessed: number;
+    mobilePushDelivered: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
@@ -845,6 +855,8 @@ async function runTenantMaintenance({
     toolClaimsRecovered: 0,
     dailyBriefsGenerated: 0,
     personalNotificationsProcessed: 0,
+    mobilePushProcessed: 0,
+    mobilePushDelivered: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
     salesforceConnectionsSynced: 0,
@@ -887,6 +899,11 @@ async function runTenantMaintenance({
     result.personalNotificationsProcessed = (
       await processDueNotifications({ tenantId, limit: 20 })
     ).length;
+  }
+  if (Date.now() < deadlineAt) {
+    const mobilePush = await dispatchMobilePushDeliveries({ tenantId, limit: 20 });
+    result.mobilePushProcessed = mobilePush.processed;
+    result.mobilePushDelivered = mobilePush.delivered;
   }
   if (Date.now() < deadlineAt) {
     result.projectExecutionsProcessed = (

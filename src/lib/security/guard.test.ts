@@ -168,7 +168,7 @@ describe("cookie-authenticated mutation origin checks", () => {
     ).toThrow(/native mutations remain held/i);
   });
 
-  it("enrolls only a fresh current-contract native capability", () => {
+  it("keeps v3 product mutations active while reserving push for v4", () => {
     const request = new Request("https://app.example.test/api/agent", { method: "POST" });
     const currentNativeContext = {
       source: "mobile" as const,
@@ -177,7 +177,7 @@ describe("cookie-authenticated mutation origin checks", () => {
         platform: "ios" as const,
         appVersion: "1.0.0",
         buildNumber: 1,
-        clientContractVersion: 3,
+        clientContractVersion: 4,
         clientAttestedAt: new Date().toISOString(),
       },
     };
@@ -195,10 +195,18 @@ describe("cookie-authenticated mutation origin checks", () => {
       request,
       {
         ...currentNativeContext,
-        native: { ...currentNativeContext.native, clientContractVersion: 2 },
+        native: { ...currentNativeContext.native, clientContractVersion: 3 },
       },
       "conversation.send",
-    )).toThrow(/current native contract/i);
+    )).not.toThrow();
+    expect(() => assertTrustedSessionMutation(
+      request,
+      {
+        ...currentNativeContext,
+        native: { ...currentNativeContext.native, clientContractVersion: 3 },
+      },
+      "push.registration.update",
+    )).toThrow(/contract v4/i);
   });
 
   it("can protect cookie-only routes such as logout", () => {
