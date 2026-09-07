@@ -72,7 +72,7 @@ export async function extractCaptureMediaInsights(input: {
       escapeUntrustedPromptText(JSON.stringify(extractionTurns.map(projectTurnForModel)))
     }\n</untrusted_timestamped_transcript>`,
     abortSignal: input.abortSignal,
-    reasoningEffort: "low",
+    reasoningEffort: "low" as const,
     model: AGENT_MODEL,
     usageScope: input.usageScope,
   };

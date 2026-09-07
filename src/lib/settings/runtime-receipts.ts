@@ -62,7 +62,7 @@ export async function listModelAssignmentRuntimeReceipts(input: {
     const callReceipts = arrayField(row, "call_receipts", "callReceipts");
     receipts.set(assignment.scope, {
       scope: assignment.scope,
-      assignmentId,
+      assignmentId: assignment.id,
       assignmentRevision: revision,
       assignmentConfigurationSha256: sha256,
       state: status === "completed" ? "succeeded" : "failed",
