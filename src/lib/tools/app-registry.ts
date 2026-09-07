@@ -225,6 +225,25 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.settings.api_keys.revoke", "Revoke service API key", "Revoke one exact service API key only when its redacted target digest still matches.", requiredObjectSchema({
     id: opaqueId("Exact service API-key ID."), expectedTargetSha256: sha256("Digest returned by the API-key revocation preview."),
   }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.assets.list", "List captured assets", "List actor-readable uploaded assets and recording metadata without copying stored binary content into the transcript.", objectSchema({
+    kind: assetKind(), limit: integer(1, 100, 50),
+  })),
+  readTool("app.assets.show", "Show captured asset", "Read metadata for one exact uploaded asset or recording without returning stored binary content.", requiredObjectSchema({
+    kind: assetKind(), id: opaqueId("Exact capture asset or recording ID."),
+  }, ["kind", "id"])),
+  mutationTool("app.assets.recordings.start", "Start recording record", "Create a governed recording record that direct user-to-storage audio segments can attach to.", objectSchema(recordingProperties()), { reversible: true }),
+  mutationTool("app.assets.recordings.update", "Update recording", "Update the title, language, or tags for one exact recording.", requiredObjectSchema({
+    id: opaqueId("Exact recording ID."), ...recordingProperties(),
+  }, ["id"]), { reversible: true }),
+  mutationTool("app.assets.recordings.complete", "Complete recording", "Finalize and enqueue indexing for one exact recording whose audio segments were uploaded directly by the user.", requiredObjectSchema({
+    id: opaqueId("Exact recording ID."),
+  }, ["id"]), { reversible: false }),
+  readTool("app.assets.delete.preview", "Preview captured-content deletion", "Preview the exact asset, derived knowledge reference, ingest job, and recording segment IDs affected by deletion.", requiredObjectSchema({
+    kind: assetKind(), id: opaqueId("Exact capture asset or recording ID."),
+  }, ["kind", "id"])),
+  mutationTool("app.assets.delete", "Delete captured content", "Permanently delete one exact capture asset or recording and its derived knowledge only when its preview digest still matches.", requiredObjectSchema({
+    kind: assetKind(), id: opaqueId("Exact capture asset or recording ID."), expectedTargetSha256: sha256("Digest returned by app.assets.delete.preview."),
+  }, ["kind", "id", "expectedTargetSha256"]), { riskLevel: 3, approvalRequired: true, reversible: false }),
 ] satisfies readonly ToolDefinition[]);
 
 function readTool(id: string, name: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
@@ -326,5 +345,16 @@ function serviceApiScopes() {
   return {
     type: "array", uniqueItems: true, maxItems: 12,
     items: { type: "string", enum: ["mcp:discover", "mcp:tools:list", "mcp:tools:execute", "a2a:discover", "a2a:tasks:read", "a2a:tasks:write", "missions:read", "missions:write", "memory:read", "memory:write", "runs:read", "settings:read"] },
+  };
+}
+
+function assetKind() {
+  return { type: "string", enum: ["asset", "recording"] };
+}
+
+function recordingProperties(): Record<string, unknown> {
+  return {
+    title: text(0, 240), language: text(0, 35),
+    tags: { type: "array", maxItems: 50, uniqueItems: true, items: text(1, 80) },
   };
 }

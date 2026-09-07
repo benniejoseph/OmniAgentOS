@@ -159,4 +159,18 @@ describe("governed native tool schemas", () => {
       reversible: false,
     });
   });
+
+  it("keeps captured binary content out of transcripts and deletion at risk three", () => {
+    expect(MAIN_AGENT_EXCLUDED_APP_OPERATIONS.map((entry) => entry.operation)).toEqual(
+      expect.arrayContaining(["app.assets.upload", "app.assets.recordings.segment.write"]),
+    );
+    expect(getGovernedTool("app.assets.show")?.description).toContain(
+      "without returning stored binary content",
+    );
+    expect(getGovernedTool("app.assets.delete")).toMatchObject({
+      riskLevel: 3,
+      approvalRequired: true,
+      reversible: false,
+    });
+  });
 });

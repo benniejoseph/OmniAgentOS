@@ -92,6 +92,15 @@ import {
   updateProviderService,
   validateProviderService,
 } from "@/lib/app-services/settings";
+import {
+  completeRecordingService,
+  deleteAssetService,
+  listAssetsService,
+  previewAssetDeleteService,
+  showAssetService,
+  startRecordingService,
+  updateRecordingService,
+} from "@/lib/app-services/assets";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -186,6 +195,13 @@ export async function executeFirstPartyAppTool(input: {
     "app.settings.api_keys.list": () => listApiKeysService(caller, input.toolInput as never),
     "app.settings.api_keys.revoke.preview": () => previewApiKeyRevokeService(caller, input.toolInput as never),
     "app.settings.api_keys.revoke": () => revokeApiKeyService(caller, input.toolInput as never),
+    "app.assets.list": () => listAssetsService(caller, input.toolInput as never),
+    "app.assets.show": () => showAssetService(caller, input.toolInput as never),
+    "app.assets.recordings.start": () => startRecordingService(caller, input.toolInput as never),
+    "app.assets.recordings.update": () => updateRecordingService(caller, input.toolInput as never),
+    "app.assets.recordings.complete": () => completeRecordingService(caller, input.toolInput as never),
+    "app.assets.delete.preview": () => previewAssetDeleteService(caller, input.toolInput as never),
+    "app.assets.delete": () => deleteAssetService(caller, input.toolInput as never),
   };
   const handler = handlers[input.toolId];
   if (!handler) throw new Error(`No first-party application handler is registered for ${input.toolId}.`);
