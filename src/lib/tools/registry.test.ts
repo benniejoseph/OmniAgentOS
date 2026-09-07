@@ -123,6 +123,16 @@ describe("governed native tool schemas", () => {
     });
   });
 
+  it("keeps run feedback and cancellation under explicit approval", () => {
+    for (const id of ["app.runs.feedback", "app.runs.cancel"]) {
+      expect(getGovernedTool(id)).toMatchObject({
+        riskLevel: 2,
+        approvalRequired: true,
+        reversible: false,
+      });
+    }
+  });
+
   it("keeps connector trust changes and deletion approval-gated", () => {
     for (const id of [
       "app.connectors.register",
