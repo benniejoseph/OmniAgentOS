@@ -27,6 +27,7 @@ Viewer permissions cover protected reads. Operator permissions cover agent runs,
 - `GET|POST /api/onboarding/access-requests`: admin-only list and approve/decline workflow for historical requests in the Inbox.
 - `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/session`.
 - `POST /api/mobile/auth/login`, `POST /api/mobile/auth/refresh`, `POST /api/mobile/auth/logout`, and `GET /api/mobile/bootstrap` provide the native opaque-token contract. Current clients attest normalized platform/version/build/contract metadata; legacy clients remain accepted but compatibility-unknown. All responses are private and no-store.
+- `GET /api/mobile/contracts` publicly discovers the immutable current-v2 and previous-v1 OpenAPI, event-schema, fixture, and SHA-256 manifest documents under `/native-contracts/v{version}/`. The generated v2 Dart boundary references the existing authoritative web routes; it creates no parallel native business logic or authority path.
 - `GET /api/mobile/adoption` is admin/system (`read.identity`) only and returns tenant-aggregate, PostgreSQL-authoritative native compatibility evidence. It never returns per-device or per-session identifiers and always reports Agent catalog enrollment as held.
 - `GET|POST /api/auth/control-plane`: admin-only tenant/user/membership administration. `POST` creates a workspace user and returns a generated initial password when one is not supplied.
 

@@ -1058,7 +1058,7 @@ reports tenant-aggregate latest-device adoption and every still-refreshable
 session family, so deduplication cannot conceal an older legacy credential.
 The report is PostgreSQL-authoritative, identifier-free, and always held.
 
-The Flutter client now sends the version-1 device contract, stores both
+The Flutter client stores both
 rotating credentials plus a stable installation ID in secure storage, restores
 through `/api/mobile/bootstrap`, and re-attests on refresh. Native bearer
 contexts use a distinct `mobile` source: they retain the same tenant, RBAC,
@@ -1069,6 +1069,18 @@ shape during server rollback, while any unattested refresh downgrades its
 structured compatibility to unknown. Bare Agent lists, Agent runtime identity, writes,
 membership authority, and all consent holds remain unchanged until a later
 reviewed enrollment release has sufficient adoption and revocation evidence.
+
+P12.1 makes native contract version 2 current while retaining version 1 for
+one rollout window. One TypeScript registry generates immutable OpenAPI 3.1,
+conversation-event JSON Schema, fixtures, SHA-256 manifests, and the Dart
+operation/event boundary. Flutter has no hand-maintained API path strings:
+its generated paths call the same routes and application services used by the
+web client, so tenant scope, governed execution, approvals, and idempotency do
+not fork. Bootstrap and response headers advertise `[2, 1]`; v2 clients verify
+that exact service compatibility and accept the immediately previous server as
+an explicit rollback fallback. Unknown event discriminants fail closed before
+feature state consumes untrusted stream data. Publishing this boundary adds no
+mobile authority, database state, credential, or external effect.
 
 The thirteenth request-bound slice extends only the public Capture asset byte
 GET. PostgreSQL selects the globally unique, non-internal asset and its bytes
