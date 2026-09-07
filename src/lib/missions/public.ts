@@ -15,6 +15,7 @@ import {
   canonicalStatusForMissionTask,
 } from "@/lib/status/canonical";
 import type { CanonicalWorkItemStatusView } from "@/lib/workspaces/read-model";
+import type { CanonicalWorkItemSurface } from "@/lib/workspaces/surface";
 
 export function toMissionSummaryView(mission: Mission): RequestMissionSummary {
   return {
@@ -37,6 +38,7 @@ export function toMissionSummaryView(mission: Mission): RequestMissionSummary {
 
 export type MissionSummaryView = RequestMissionSummary & {
   workItemStatus?: CanonicalWorkItemStatusView;
+  workItem?: CanonicalWorkItemSurface;
 };
 
 export function toMissionTaskView(task: MissionTask) {
@@ -62,6 +64,7 @@ export function toMissionTaskView(task: MissionTask) {
 
 export type MissionTaskView = ReturnType<typeof toMissionTaskView> & {
   workItemStatus?: CanonicalWorkItemStatusView;
+  workItem?: CanonicalWorkItemSurface;
   execution?: MissionTaskExecutionView;
 };
 
