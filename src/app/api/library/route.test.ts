@@ -40,6 +40,8 @@ beforeEach(() => {
   mocks.listWorkspaceLibrary.mockReset().mockResolvedValue({
     items: [],
     total: 0,
+    totalIsLowerBound: false,
+    nextOffset: null,
     countsByKind: {},
   });
 });
@@ -47,7 +49,7 @@ beforeEach(() => {
 describe("workspace library route", () => {
   it("binds search, kinds, project, and the readable actor identity", async () => {
     const response = await GET(new Request(
-      "http://localhost/api/library?q=launch&kind=image,transcript&project=project-1&limit=25",
+      "http://localhost/api/library?q=launch&kind=image,transcript&project=project-1&limit=25&offset=50",
     ));
 
     expect(response.status).toBe(200);
@@ -75,6 +77,7 @@ describe("workspace library route", () => {
       kinds: ["image", "transcript"],
       projectId: "project-1",
       limit: 25,
+      offset: 50,
     });
     await expect(response.json()).resolves.toMatchObject({
       items: [],

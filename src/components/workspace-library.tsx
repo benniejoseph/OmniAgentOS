@@ -38,6 +38,8 @@ type WorkspaceLibraryProps = Readonly<{
 type LibraryPayload = Readonly<{
   items: readonly WorkspaceLibraryItem[];
   total: number;
+  totalIsLowerBound: boolean;
+  nextOffset: number | null;
   countsByKind: Partial<Record<WorkspaceLibraryKind, number>>;
 }>;
 
@@ -75,16 +77,39 @@ export function WorkspaceLibrary({
   );
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<WorkspaceLibraryKind | "all">("all");
-  const [payload, setPayload] = useState<LibraryPayload>({ items: [], total: 0, countsByKind: {} });
+  const [offset, setOffset] = useState(0);
+  const [urlProjectId, setUrlProjectId] = useState<string>();
+  const [payload, setPayload] = useState<LibraryPayload>({ items: [], total: 0, totalIsLowerBound: false, nextOffset: null, countsByKind: {} });
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string>();
   const [reloadNonce, setReloadNonce] = useState(0);
+  const effectiveProjectId = projectId || urlProjectId;
   const requestHref = useMemo(() => workspaceLibraryQueryHref({
     query,
     kinds: kind === "all" ? availableKinds : [kind],
-    projectId,
+    projectId: effectiveProjectId,
     limit,
-  }), [availableKinds, kind, limit, projectId, query]);
+    offset,
+  }), [availableKinds, effectiveProjectId, kind, limit, offset, query]);
+
+  useEffect(() => {
+    const params = new URL(window.location.href).searchParams;
+    const requestedQuery = params.get("libraryQuery") || "";
+    const requestedKind = params.get("libraryKind");
+    const requestedOffset = Number(params.get("libraryOffset") || 0);
+    const requestedProject = params.get("project") || undefined;
+    const timer = window.setTimeout(() => {
+      if (requestedQuery) setQuery(requestedQuery);
+      if (requestedKind && availableKinds.includes(requestedKind as WorkspaceLibraryKind)) {
+        setKind(requestedKind as WorkspaceLibraryKind);
+      }
+      if (Number.isInteger(requestedOffset) && requestedOffset > 0 && requestedOffset <= 10_000) {
+        setOffset(requestedOffset);
+      }
+      if (!projectId && requestedProject) setUrlProjectId(requestedProject);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [availableKinds, projectId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -101,6 +126,8 @@ export function WorkspaceLibrary({
         setPayload({
           items: Array.isArray(body.items) ? body.items : [],
           total: typeof body.total === "number" ? body.total : 0,
+          totalIsLowerBound: Boolean(body.totalIsLowerBound),
+          nextOffset: typeof body.nextOffset === "number" ? body.nextOffset : null,
           countsByKind: body.countsByKind || {},
         });
         setError(undefined);
@@ -142,7 +169,7 @@ export function WorkspaceLibrary({
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
             <input
               value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
+              onChange={(event) => { setQuery(event.currentTarget.value); setOffset(0); }}
               placeholder="Search titles, sources, and citations"
               className="min-h-10 w-full rounded-md border border-line bg-background pl-9 pr-3 text-sm outline-none focus:border-primary"
             />
@@ -151,7 +178,7 @@ export function WorkspaceLibrary({
             <span className="sr-only">Filter workspace assets by kind</span>
             <select
               value={kind}
-              onChange={(event) => setKind(event.currentTarget.value as WorkspaceLibraryKind | "all")}
+              onChange={(event) => { setKind(event.currentTarget.value as WorkspaceLibraryKind | "all"); setOffset(0); }}
               className="min-h-10 w-full rounded-md border border-line bg-background px-3 text-sm text-foreground sm:w-auto"
             >
               <option value="all">All asset types</option>
@@ -162,7 +189,7 @@ export function WorkspaceLibrary({
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 border-y border-line py-3 text-xs text-muted">
-        <strong className="text-foreground">{state === "loading" && !payload.items.length ? "—" : payload.total}</strong>
+        <strong className="text-foreground">{state === "loading" && !payload.items.length ? "—" : `${payload.total}${payload.totalIsLowerBound ? "+" : ""}`}</strong>
         <span>readable asset{payload.total === 1 ? "" : "s"}</span>
         <span aria-hidden="true">·</span>
         <span>stable versions</span>
@@ -172,13 +199,13 @@ export function WorkspaceLibrary({
           <button
             key={candidate}
             type="button"
-            onClick={() => setKind(candidate)}
+            onClick={() => { setKind(candidate); setOffset(0); }}
             className={clsx("rounded-full px-2 py-1 font-semibold", kind === candidate ? "bg-primary text-primary-ink" : "bg-background text-muted hover:text-foreground")}
           >
             {workspaceLibraryKindLabel(candidate)} {payload.countsByKind[candidate] || 0}
           </button>
         ))}
-        {kind !== "all" ? <button type="button" onClick={() => setKind("all")} className="font-semibold text-primary">Clear type</button> : null}
+        {kind !== "all" ? <button type="button" onClick={() => { setKind("all"); setOffset(0); }} className="font-semibold text-primary">Clear type</button> : null}
       </div>
 
       {state === "error" ? (
@@ -195,9 +222,21 @@ export function WorkspaceLibrary({
       ) : null}
 
       {payload.items.length ? (
-        <div className={clsx("mt-4 grid gap-3", compact ? "grid-cols-1" : "md:grid-cols-2 2xl:grid-cols-3")}>
-          {payload.items.map((item) => <WorkspaceLibraryCard key={item.id} item={item} compact={compact} />)}
-        </div>
+        <>
+          <div className={clsx("mt-4 grid gap-3", compact ? "grid-cols-1" : "md:grid-cols-2 2xl:grid-cols-3")}>
+            {payload.items.map((item) => <WorkspaceLibraryCard key={item.id} item={item} compact={compact} />)}
+          </div>
+          {payload.nextOffset !== null ? (
+            <div className="mt-4 flex justify-center">
+              <Link
+                href={workspaceLibraryBrowseHref({ query, kind, projectId: effectiveProjectId, offset: payload.nextOffset })}
+                className="action-button"
+              >
+                Browse the next page
+              </Link>
+            </div>
+          ) : null}
+        </>
       ) : state === "ready" ? (
         <div className="mt-4 rounded-lg border border-dashed border-line px-5 py-8 text-center">
           <Library size={22} className="mx-auto text-muted" aria-hidden="true" />
@@ -255,13 +294,29 @@ export function workspaceLibraryQueryHref(input: {
   kinds?: readonly WorkspaceLibraryKind[];
   projectId?: string;
   limit: number;
+  offset?: number;
 }) {
   const params = new URLSearchParams();
   if (input.query?.trim()) params.set("q", input.query.trim());
   for (const kind of [...new Set(input.kinds || [])]) params.append("kind", kind);
   if (input.projectId?.trim()) params.set("project", input.projectId.trim());
   params.set("limit", String(Math.min(Math.max(Math.trunc(input.limit), 1), 100)));
+  if (input.offset && input.offset > 0) params.set("offset", String(Math.min(Math.trunc(input.offset), 10_000)));
   return `/api/library?${params.toString()}`;
+}
+
+function workspaceLibraryBrowseHref(input: {
+  query: string;
+  kind: WorkspaceLibraryKind | "all";
+  projectId?: string;
+  offset: number;
+}) {
+  const params = new URLSearchParams();
+  if (input.query.trim()) params.set("libraryQuery", input.query.trim());
+  if (input.kind !== "all") params.set("libraryKind", input.kind);
+  if (input.projectId) params.set("project", input.projectId);
+  params.set("libraryOffset", String(input.offset));
+  return `/app/capture?${params.toString()}`;
 }
 
 export function workspaceLibraryKindLabel(kind: WorkspaceLibraryKind) {

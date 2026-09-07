@@ -14,6 +14,7 @@ export const workspaceLibraryListServiceInputSchema = z.object({
   kinds: z.array(workspaceLibraryKindSchema).max(20).default([]),
   projectId: z.string().trim().min(1).max(320).optional(),
   limit: z.number().int().min(1).max(100).default(60),
+  offset: z.number().int().min(0).max(10_000).default(0),
 }).strict();
 
 export async function listWorkspaceLibraryService(
@@ -34,6 +35,7 @@ export async function listWorkspaceLibraryService(
     kinds: value.kinds,
     projectId: value.projectId,
     limit: value.limit,
+    offset: value.offset,
   });
   return completeAppServiceCall(authorized, result, {
     resourceCount: result.items.length,

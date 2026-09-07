@@ -7,6 +7,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
 export const GET = withDatabaseRequestScope(GETHandler);
 
 const privateNoStoreHeaders = { "cache-control": "private, no-store" };
@@ -32,6 +33,7 @@ async function GETHandler(request: Request) {
     kinds,
     projectId: url.searchParams.get("project") || undefined,
     limit: numberOrDefault(url.searchParams.get("limit"), 60),
+    offset: numberOrDefault(url.searchParams.get("offset"), 0),
   });
   if (!parsed.success) {
     return Response.json(
