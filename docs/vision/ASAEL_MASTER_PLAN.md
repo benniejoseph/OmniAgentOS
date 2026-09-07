@@ -693,6 +693,14 @@ aggregate Phase 2 gate remains open for that external proof only.
 
 **Phase gate:** unsupported active assistant-derived facts are zero; explicit-memory recall and correction propagation meet the declared benchmark; cross-scope exposure is zero.
 
+**Current status:** P3.2 through P3.7 are complete. P3.1's served
+user-private, Agent-private, Project-shared, and Workspace-shared lanes use
+separate canonical actor, Agent principal/grant, and membership authority.
+Mission context resolves its legacy ID to the exact canonical Project instead
+of creating a competing Mission memory store. The aggregate phase remains
+unchecked until its focused cross-scope gate is rerun against this composed
+authority boundary.
+
 ### Phase 4 — Context Management
 
 **Goal:** Give each turn and agent only the most relevant authorized context, with user control and predictable cost.
@@ -708,6 +716,13 @@ aggregate Phase 2 gate remains open for that external proof only.
 | P4.7 | Add prompt/context continuation and caching per provider. | Modify provider adapters and loop input. | Provider-bound opaque state never crosses providers; canonical transcript remains server-owned. | Long threads preserve roles and structure while reducing repeated tokens and latency. |
 
 **Phase gate:** override compliance 100%; scope violations zero; context stays within budget; retrieval relevance, freshness, latency, and cost are measurable per successful task.
+
+**Current status:** direct Conversation runs activate `none`, `current_turn`,
+`session`, `agent_private`, `mission`, `project`, `workspace`, and
+`explicit_selection`. Shared Mission/Project/Workspace candidates are filtered
+by canonical membership before ranking. Automatic personal context and
+authority-dependent durable workflow/Loop integration remain held, so P4.1 and
+P4.2 are not yet complete.
 
 ### Phase 5 — Graph Engineering
 

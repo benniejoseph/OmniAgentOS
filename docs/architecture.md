@@ -1555,12 +1555,19 @@ The first two discard supplied and stored conversation history; session mode
 retains the actor-owned thread context but turns off durable retrieval; explicit
 selection is the only scope allowed to carry a context selection. Agent-private
 retrieval uses an exact actor-and-agent database principal and excludes every
-legacy tenant memory, knowledge, and graph store before ranking. Personal
-automatic, mission, project, and workspace modes remain authority-held and fail
-before execution. The selected scope is persisted as an enum in the
-content-free harness event. Legacy requests without the new field retain their
-prior behavior. Durable workflow and Loop v2 adoption require their own pinned
-contract changes and are not silently enrolled by this direct-run slice.
+legacy tenant memory, knowledge, and graph store before ranking. Later P10.4
+authority activates Project and Workspace context by resolving exact active
+canonical membership before any shared-memory query. A Mission is an execution
+view over one canonical Project, so direct Mission context resolves the legacy
+Mission ID through that compatibility mapping and reuses the Project-shared
+memory lane. The Agent execution scope retains both the canonical Project and
+requested Mission ID; the user-principal database scope retains only the
+canonical Project, and the handoff rejects any mismatch. This avoids a second
+Mission truth store. Automatic personal context remains authority-held. The
+selected scope is persisted as an enum in the content-free harness event.
+Legacy requests without the new field retain their prior behavior. Durable
+workflow and Loop v2 adoption require their own pinned contract changes and
+are not silently enrolled by this direct-run slice.
 
 P7.3 forms a durable episodic memory only from an exact verified effect receipt
 and binds it immutably to both the initiating actor and executing logical Agent.
