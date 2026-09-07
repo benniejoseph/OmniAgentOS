@@ -1,17 +1,17 @@
 import { z } from "zod";
 
 import {
-  activateAgentAdaptation,
+  listAgentAdaptationsService,
+  manageAgentAdaptationService,
+  refreshAgentAdaptationsService,
+} from "@/lib/app-services/agent-governance";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import {
   AgentAdaptationConflictError,
   AgentAdaptationUnavailableError,
-  evaluateAgentAdaptation,
-  listAgentAdaptations,
-  observeAgentAdaptationEvidence,
-  rollbackAgentAdaptation,
 } from "@/lib/agents/adaptation-store";
 import {
   AgentIdentityResolutionError,
-  resolveAgentIdentityForExecution,
 } from "@/lib/agents/identity-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -52,11 +52,8 @@ async function GETHandler(
   const owner = adaptationOwner(auth);
   if (!owner) return canonicalActorUnavailableResponse();
   try {
-    const identity = await currentIdentity(id, owner);
-    return Response.json({
-      adaptations: await listAgentAdaptations(id, owner),
-      definitionVersion: identity.definition.definitionVersion,
-    }, { headers: privateNoStoreHeaders });
+    const result = await listAgentAdaptationsService(createAppServiceCaller({ context: auth }), { agentId: id });
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return adaptationErrorResponse(error);
   }
@@ -94,37 +91,11 @@ async function POSTHandler(
   const owner = adaptationOwner(auth);
   if (!owner) return canonicalActorUnavailableResponse();
   try {
-    const identity = await currentIdentity(id, owner);
-    const adaptations = parsed.data.action === "refresh"
-      ? await observeAgentAdaptationEvidence(
-          id,
-          identity.definition.definitionVersion,
-          owner,
-        )
-      : parsed.data.action === "evaluate"
-        ? await evaluateAgentAdaptation(
-            id,
-            parsed.data.adaptationId,
-            identity.definition.definitionVersion,
-            owner,
-          )
-        : parsed.data.action === "activate"
-          ? await activateAgentAdaptation(
-              id,
-              parsed.data.adaptationId,
-              identity.definition.definitionVersion,
-              owner,
-            )
-          : await rollbackAgentAdaptation(
-              id,
-              parsed.data.adaptationId,
-              identity.definition.definitionVersion,
-              owner,
-            );
-    return Response.json({
-      adaptations,
-      definitionVersion: identity.definition.definitionVersion,
-    }, { headers: privateNoStoreHeaders });
+    const caller = createRequestMutationAppServiceCaller(request, auth, { purpose: `agent.adaptation.${parsed.data.action}`, causationId: id });
+    const result = parsed.data.action === "refresh"
+      ? await refreshAgentAdaptationsService(caller, { agentId: id })
+      : await manageAgentAdaptationService(caller, { agentId: id, action: parsed.data.action, adaptationId: parsed.data.adaptationId });
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return adaptationErrorResponse(error);
   }
@@ -137,17 +108,6 @@ function adaptationOwner(auth: Awaited<ReturnType<typeof authorizeRequest>>) {
     actorId: auth.actorId,
     canonicalActorId: binding.canonicalActorId,
   } : undefined;
-}
-
-function currentIdentity(
-  agentId: string,
-  owner: NonNullable<ReturnType<typeof adaptationOwner>>,
-) {
-  return resolveAgentIdentityForExecution({
-    tenantId: owner.tenantId,
-    actorId: owner.actorId,
-    agentId,
-  });
 }
 
 function canonicalActorUnavailableResponse() {
