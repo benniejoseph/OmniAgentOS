@@ -346,6 +346,15 @@ The fast, background, and maintenance cadence values are delays after a complete
 
 `vercel.json` schedules a daily tick as a recovery backstop. A daily-only deployment can leave unattended work waiting up to 24 hours.
 
+P11.2 Conversation progress is a web-only read projection. It requires no
+database migration, Fly worker/gateway release, new environment variable, or
+backfill. The trajectory service performs bounded sequential owner-scoped reads
+of at most 2,000 thread events so a one-slot Vercel runtime does not fan out
+database admission. Release it with the ordinary web deployment and verify the
+canonical health revision plus an authenticated Results-to-Conversation run
+deep-link. Historical runs may truthfully report an unbound Agent identity, no
+context receipt, or no checkpoint recovery when those records predate capture.
+
 ## Production smoke state
 
 The `Production Smoke` workflow supports schedule and manual dispatch. Configure:

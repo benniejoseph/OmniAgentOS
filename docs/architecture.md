@@ -2016,6 +2016,28 @@ row, including exact `memoryIds` lineage. Vercel's one-slot runtime serializes
 the bounded Workspace Summary reads so cold dashboard requests do not exhaust
 the admission queue; runtimes with larger pools retain parallel reads.
 
+## Unified Conversation progress
+
+P11.2 adds the pinned `p11.2-conversation-progress:1` read projection to the
+existing private run trajectory. It derives request, plan, context, Agent,
+model, governed-tool, browser, voice, approval, evidence, result, and recovery
+items only from persisted events matching the run owner's tenant, actor, and
+correlation scope, exact thread voice events, and verified checkpoint receipts.
+Each item carries a SHA-256 event reference or an exact checkpoint boundary;
+the projection never copies prompts, responses, tool arguments or output,
+credentials, retrieved content, or private reasoning.
+
+The Conversation Activity surface renders that same projection for live and
+historical runs. It resolves the immutable Agent identity pin, summarizes the
+content-free context receipt, collapses terminal work into the conversation's
+result and evidence, and exposes only the recovery action supported by the
+current durable state: approval, clarification, cancel, retry, or checkpoint
+correction. Results deep-link to the exact run with `/app/command?run=<id>`;
+the server re-establishes the owner-scoped thread and run rather than trusting
+browser state. Browser and voice activity retain their existing evidence
+authorities, while checkpoint correction continues through the immutable fork
+service. This is a read model and creates no new execution authority or event.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
