@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../auth/native_client_info.dart';
 import '../config/app_config.dart';
 import '../storage/secure_session_store.dart';
+import '../../generated/native_contract.g.dart';
 import 'api_exception.dart';
 
 final dioProvider = Provider<Dio>((ref) {
@@ -24,7 +25,7 @@ final dioProvider = Provider<Dio>((ref) {
     try {
       try {
         response = await refreshDio.post<Object?>(
-          '/api/mobile/auth/refresh',
+          NativePaths.authRefresh,
           data: {
             'refreshToken': refreshToken,
             'deviceId': deviceId,
@@ -34,7 +35,7 @@ final dioProvider = Provider<Dio>((ref) {
       } on DioException catch (error) {
         if (error.response?.statusCode != 400) rethrow;
         response = await refreshDio.post<Object?>(
-          '/api/mobile/auth/refresh',
+          NativePaths.authRefresh,
           data: {
             'refreshToken': refreshToken,
             'deviceId': deviceId,
@@ -113,8 +114,7 @@ BaseOptions _baseOptions() => BaseOptions(
 
 bool _isCredentialRoute(String value) {
   final path = Uri.tryParse(value)?.path ?? value;
-  return path == '/api/mobile/auth/login' ||
-      path == '/api/mobile/auth/refresh';
+  return path == NativePaths.authLogin || path == NativePaths.authRefresh;
 }
 
 Future<void> _persistNativeTokens(

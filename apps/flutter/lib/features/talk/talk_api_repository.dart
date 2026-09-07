@@ -1,4 +1,5 @@
 import '../../core/network/api_client.dart';
+import '../../generated/native_contract.g.dart';
 import 'talk.dart';
 
 class ApiTalkRepository implements TalkRepository {
@@ -12,7 +13,7 @@ class ApiTalkRepository implements TalkRepository {
     String strategy = 'auto',
   }) async* {
     final body = await api.postStream(
-      '/api/agent',
+      NativePaths.conversationSend,
       data: {
         'message': message,
         'threadId': ?threadId,

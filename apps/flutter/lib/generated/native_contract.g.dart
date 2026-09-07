@@ -9,6 +9,22 @@ abstract final class NativeContract {
   static const discoveryPath = '/api/mobile/contracts';
 
   static bool supports(int version) => supportedVersions.contains(version);
+
+  static void verifyBootstrap(Map<String, dynamic> response) {
+    final api = response['api'];
+    if (api is! Map || api['nativeContract'] == null) {
+      // The immediately previous server did not advertise discovery metadata.
+      return;
+    }
+    final contract = api['nativeContract'];
+    if (contract is! Map || contract['id'] != id) {
+      throw const FormatException('The service returned a different native contract.');
+    }
+    final versions = contract['supportedVersions'];
+    if (versions is! List || !versions.contains(currentVersion)) {
+      throw const FormatException('This native client contract is not supported by the service.');
+    }
+  }
 }
 
 abstract final class NativePaths {
@@ -35,7 +51,62 @@ abstract final class NativePaths {
   static const notificationsList = '/api/notifications';
   static String notificationsAcknowledge(String id) => '/api/notifications/${Uri.encodeComponent(id)}';
   static String evidenceRun(String id) => '/api/runs/${Uri.encodeComponent(id)}';
+  static String evidenceRunCancel(String id) => '/api/runs/${Uri.encodeComponent(id)}';
   static String evidenceWorkflow(String id) => '/api/workflows/${Uri.encodeComponent(id)}';
+  static const workspaceSummary = '/api/workspace-summary';
+  static const evaluationsList = '/api/evaluations';
+  static const agentsList = '/api/agents';
+  static const agentsCreate = '/api/agents';
+  static String agentsUpdate(String id) => '/api/agents/${Uri.encodeComponent(id)}';
+  static String agentsDelete(String id) => '/api/agents/${Uri.encodeComponent(id)}';
+  static const agentsPerformance = '/api/agents/performance';
+  static const skillsList = '/api/skills';
+  static const skillsCreate = '/api/skills';
+  static String skillsUpdate(String id) => '/api/skills/${Uri.encodeComponent(id)}';
+  static String skillsDelete(String id) => '/api/skills/${Uri.encodeComponent(id)}';
+  static const memoryList = '/api/memory';
+  static const memoryCreate = '/api/memory';
+  static String memoryUpdate(String id) => '/api/memory/${Uri.encodeComponent(id)}';
+  static String memoryDelete(String id) => '/api/memory/${Uri.encodeComponent(id)}';
+  static const memoryGraphGet = '/api/memory/graph';
+  static const memoryGraphRebuild = '/api/memory/graph';
+  static const knowledgeList = '/api/knowledge';
+  static const knowledgeSourceDelete = '/api/knowledge';
+  static const missionsList = '/api/missions';
+  static const missionsCreate = '/api/missions';
+  static String missionsGet(String id) => '/api/missions/${Uri.encodeComponent(id)}';
+  static String missionsUpdate(String id) => '/api/missions/${Uri.encodeComponent(id)}';
+  static String missionsEvents(String id) => '/api/missions/${Uri.encodeComponent(id)}/events';
+  static String workspacesPlan(String id) => '/api/projects/${Uri.encodeComponent(id)}/plan';
+  static String workspacesTasksCreate(String id) => '/api/projects/${Uri.encodeComponent(id)}/tasks';
+  static String workspacesTasksUpdate(String id, String taskId) => '/api/projects/${Uri.encodeComponent(id)}/tasks/${Uri.encodeComponent(taskId)}';
+  static String workspacesExecute(String id) => '/api/projects/${Uri.encodeComponent(id)}/execution';
+  static String workspacesArtifactsFeedback(String id, String artifactId) => '/api/projects/${Uri.encodeComponent(id)}/artifacts/${Uri.encodeComponent(artifactId)}/feedback';
+  static const adminWorkflows = '/api/workflows';
+  static const adminTriggers = '/api/triggers';
+  static const adminOperations = '/api/operations';
+  static const adminWorkflowsTick = '/api/workflows/tick';
+  static const adminConnectionCatalog = '/api/connection-catalog';
+  static const adminConnectors = '/api/connectors';
+  static const adminOauth = '/api/oauth';
+  static const adminOpenapiConnectors = '/api/openapi-connectors';
+  static const adminHealth = '/api/health';
+  static const adminObservability = '/api/observability';
+  static const adminSlo = '/api/observability/slo';
+  static const adminIncidents = '/api/incidents';
+  static const adminAlerts = '/api/alerts';
+  static const adminReleaseEvidence = '/api/release/evidence';
+  static const adminSecurityAudits = '/api/security/audits';
+  static const adminSecurityIsolation = '/api/security/isolation-report';
+  static const adminSecurityRetention = '/api/security/retention';
+  static const adminSecurityContext = '/api/security/context';
+  static const adminWorkspaceReadiness = '/api/workspace-readiness';
+  static const adminAuthControlPlane = '/api/auth/control-plane';
+  static const adminSystemMigrations = '/api/system/migrations';
+  static const adminDataExport = '/api/data/export';
+  static const adminTools = '/api/tools';
+  static const adminCapabilities = '/api/capabilities';
+  static const adminTrust = '/api/trust';
 }
 
 abstract final class NativeConversationEvents {

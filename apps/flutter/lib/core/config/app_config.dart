@@ -14,5 +14,4 @@ class AppConfig {
     'APP_BUILD_NUMBER',
     defaultValue: 1,
   );
-  static const nativeClientContractVersion = 1;
 }

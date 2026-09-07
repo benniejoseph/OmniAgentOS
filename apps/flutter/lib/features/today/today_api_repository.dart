@@ -1,4 +1,5 @@
 import '../../core/network/api_client.dart';
+import '../../generated/native_contract.g.dart';
 import 'today.dart';
 
 class ApiTodayRepository implements TodayRepository {
@@ -6,7 +7,7 @@ class ApiTodayRepository implements TodayRepository {
   final ApiClient api;
   @override
   Future<TodaySnapshot> load() async =>
-      TodaySnapshot.fromJson(await api.getJson('/api/today'));
+      TodaySnapshot.fromJson(await api.getJson(NativePaths.todayGet));
   @override
   Future<TodayItem> create({
     required String title,
@@ -15,7 +16,7 @@ class ApiTodayRepository implements TodayRepository {
     DateTime? dueAt,
   }) async {
     final json = await api.postJson(
-      '/api/today',
+      NativePaths.todayCreate,
       data: {
         'title': title,
         'kind': kind,
@@ -29,7 +30,7 @@ class ApiTodayRepository implements TodayRepository {
   @override
   Future<TodayItem> update(String id, Json changes) async {
     final json = await api.patchJson(
-      '/api/today/${Uri.encodeComponent(id)}',
+      NativePaths.todayUpdate(id),
       data: changes,
     );
     return TodayItem.fromJson(json['item'] as Json);
@@ -37,7 +38,7 @@ class ApiTodayRepository implements TodayRepository {
 
   @override
   Future<DailyBrief?> generateBrief({bool force = false}) async {
-    final json = await api.postJson('/api/today/brief', data: {'force': force});
+    final json = await api.postJson(NativePaths.todayBrief, data: {'force': force});
     return json['brief'] is Json
         ? DailyBrief.fromJson(json['brief'] as Json)
         : null;

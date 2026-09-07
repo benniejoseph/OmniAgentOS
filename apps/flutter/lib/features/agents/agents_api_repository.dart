@@ -1,4 +1,5 @@
 import '../../core/network/api_client.dart';
+import '../../generated/native_contract.g.dart';
 import 'agents.dart';
 
 class ApiAgentsRepository implements AgentsRepository {
@@ -7,9 +8,9 @@ class ApiAgentsRepository implements AgentsRepository {
   @override
   Future<AgentLedger> load() async {
     final responses = await Future.wait([
-      api.getJson('/api/agents'),
-      api.getJson('/api/skills'),
-      api.getJson('/api/agents/performance'),
+      api.getJson(NativePaths.agentsList),
+      api.getJson(NativePaths.skillsList),
+      api.getJson(NativePaths.agentsPerformance),
     ]);
     final a = responses[0], s = responses[1], p = responses[2];
     return AgentLedger(
@@ -38,26 +39,26 @@ class ApiAgentsRepository implements AgentsRepository {
   @override
   Future<AgentProfile> saveAgent(Json input, {String? id}) async {
     final j = id == null
-        ? await api.postJson('/api/agents', data: input)
-        : await api.patchJson('/api/agents/$id', data: input);
+        ? await api.postJson(NativePaths.agentsCreate, data: input)
+        : await api.patchJson(NativePaths.agentsUpdate(id), data: input);
     return AgentProfile.fromJson(Map<String, dynamic>.from(j['agent'] as Map));
   }
 
   @override
   Future<AgentSkill> saveSkill(Json input, {String? id}) async {
     final j = id == null
-        ? await api.postJson('/api/skills', data: input)
-        : await api.patchJson('/api/skills/$id', data: input);
+        ? await api.postJson(NativePaths.skillsCreate, data: input)
+        : await api.patchJson(NativePaths.skillsUpdate(id), data: input);
     return AgentSkill.fromJson(Map<String, dynamic>.from(j['skill'] as Map));
   }
 
   @override
   Future<void> deleteAgent(String id) async {
-    await api.deleteJson('/api/agents/$id');
+    await api.deleteJson(NativePaths.agentsDelete(id));
   }
 
   @override
   Future<void> deleteSkill(String id) async {
-    await api.deleteJson('/api/skills/$id');
+    await api.deleteJson(NativePaths.skillsDelete(id));
   }
 }

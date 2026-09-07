@@ -1,4 +1,5 @@
 import '../../core/network/api_client.dart';
+import '../../generated/native_contract.g.dart';
 import 'inbox.dart';
 
 class ApiInboxRepository implements InboxRepository {
@@ -6,7 +7,7 @@ class ApiInboxRepository implements InboxRepository {
   final ApiClient api;
   @override
   Future<ApprovalQueue> load() async => ApprovalQueue.fromJson(
-    await api.getJson('/api/approvals', query: {'limit': 50}),
+    await api.getJson(NativePaths.approvalsList, query: {'limit': 50}),
   );
   @override
   Future<void> decide(
@@ -17,7 +18,7 @@ class ApiInboxRepository implements InboxRepository {
     String? ticket,
   }) async {
     await api.postJson(
-      '/api/approvals/${Uri.encodeComponent(item.id)}',
+      NativePaths.approvalsDecide(item.id),
       data: {
         'kind': item.kind,
         'decision': approve ? 'approve' : 'reject',

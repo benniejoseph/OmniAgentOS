@@ -4,6 +4,7 @@ import '../../../core/auth/native_client_info.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/storage/secure_session_store.dart';
+import '../../../generated/native_contract.g.dart';
 import '../domain/app_session.dart';
 
 class SessionRepository {
@@ -18,7 +19,7 @@ class SessionRepository {
     if (accessToken != null) {
       try {
         return AppSession.fromJson(
-          await _api.getJson('/api/mobile/bootstrap'),
+          await _api.getJson(NativePaths.bootstrapGet),
         );
       } on ApiException catch (error) {
         if (error.statusCode != 401) rethrow;
@@ -37,7 +38,7 @@ class SessionRepository {
       );
       await _persistTokens(rotated);
       return AppSession.fromJson(
-        await _api.getJson('/api/mobile/bootstrap'),
+        await _api.getJson(NativePaths.bootstrapGet),
       );
     } on ApiException catch (error) {
       if (error.statusCode != 401) rethrow;
@@ -62,7 +63,7 @@ class SessionRepository {
 
   Future<void> signOut() async {
     try {
-      await _api.postJson('/api/mobile/auth/logout');
+      await _api.postJson(NativePaths.authLogout);
     } finally {
       // A network outage cannot leave this installation appearing signed in.
       // Server-side revocation is still attempted first and the refresh family
@@ -102,7 +103,7 @@ class SessionRepository {
   }) async {
     try {
       return await _api.postJson(
-        '/api/mobile/auth/login',
+        NativePaths.authLogin,
         data: {
           'email': email,
           'password': password,
@@ -118,7 +119,7 @@ class SessionRepository {
       // shape; credentials and tenant identity are never changed or inferred.
       if (error.statusCode != 400) rethrow;
       return _api.postJson(
-        '/api/mobile/auth/login',
+        NativePaths.authLogin,
         data: {
           'email': email,
           'password': password,
@@ -134,7 +135,7 @@ class SessionRepository {
   }) async {
     try {
       return await _api.postJson(
-        '/api/mobile/auth/refresh',
+        NativePaths.authRefresh,
         data: {
           'refreshToken': refreshToken,
           'deviceId': deviceId,
@@ -144,7 +145,7 @@ class SessionRepository {
     } on ApiException catch (error) {
       if (error.statusCode != 400) rethrow;
       return _api.postJson(
-        '/api/mobile/auth/refresh',
+        NativePaths.authRefresh,
         data: {
           'refreshToken': refreshToken,
           'deviceId': deviceId,
