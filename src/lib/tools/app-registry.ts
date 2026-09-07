@@ -44,6 +44,25 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     objective: text(1, 2_000),
     status: { type: "string", enum: ["draft", "active"] },
   }, ["templateId"]), { approvalRequired: true, reversible: true }),
+  readTool("app.meetings.list", "List meetings", "List first-class meetings readable through the current workspace, project, and source-derived access boundary.", objectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    status: { type: "string", enum: ["scheduled", "in_progress", "completed", "cancelled"] },
+    limit: integer(1, 200, 100),
+  })),
+  readTool("app.meetings.show", "Show meeting", "Read one exact meeting revision with its participants, consent, source links, assets, decisions, commitments, and follow-up.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    meetingId: { type: "string", pattern: "^meeting:[0-9a-f-]{36}$", maxLength: 44 },
+  }, ["meetingId"])),
+  mutationTool("app.meetings.create", "Create meeting", "Create a first-class meeting after resolving every calendar, recording, asset, and source link to an exact governed revision.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    ...meetingDraftProperties(),
+  }, meetingDraftRequired()), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  mutationTool("app.meetings.update", "Revise meeting", "Publish a new immutable meeting revision using an exact expected revision and freshly resolved source authorities.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    meetingId: { type: "string", pattern: "^meeting:[0-9a-f-]{36}$", maxLength: 44 },
+    expectedRevision: integer(1, Number.MAX_SAFE_INTEGER),
+    ...meetingDraftProperties(),
+  }, ["meetingId", "expectedRevision", ...meetingDraftRequired()]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.projects.list", "List projects", "List the current actor's projects with their work items and artifacts.", objectSchema({
     limit: integer(1, 100, 50),
     status: { type: "string", enum: ["draft", "active", "completed", "archived"] },
@@ -505,6 +524,90 @@ function workspaceTemplatePlaybookSchema() {
         acceptanceCriteria: { type: "array", minItems: 1, maxItems: 20, items: text(1, 500) },
       }, ["aliases", "toolBindings", "acceptanceCriteria"]),
     ],
+  };
+}
+
+function meetingDraftRequired() {
+  return [
+    "title", "status", "scheduledStartAt", "scheduledEndAt", "timezone",
+    "declaredAccessClass",
+  ];
+}
+
+function meetingDraftProperties() {
+  const participantId = opaqueId("Exact participant identity inside the meeting.");
+  const sourceLinkId = opaqueId("Exact link identity inside the meeting.");
+  return {
+    title: text(1, 240),
+    summary: text(0, 8_000),
+    status: { type: "string", enum: ["scheduled", "in_progress", "completed", "cancelled"] },
+    scheduledStartAt: { type: "string", format: "date-time" },
+    scheduledEndAt: { type: "string", format: "date-time" },
+    actualStartAt: { type: ["string", "null"], format: "date-time" },
+    actualEndAt: { type: ["string", "null"], format: "date-time" },
+    timezone: text(1, 100),
+    location: text(0, 500),
+    projectId: { type: ["string", "null"], maxLength: 240 },
+    declaredAccessClass: { type: "string", enum: ["owner_private", "project_members", "workspace_members"] },
+    participants: {
+      type: "array", maxItems: 250, items: requiredObjectSchema({
+        participantId,
+        displayName: text(1, 160),
+        email: { type: ["string", "null"], format: "email", maxLength: 320 },
+        entityId: { type: ["string", "null"], maxLength: 240 },
+        role: { type: "string", enum: ["organizer", "required", "optional", "guest"] },
+        response: { type: "string", enum: ["accepted", "declined", "tentative", "needs_action", "unknown"] },
+        attendeeConsent: { type: "string", enum: ["granted", "declined", "pending", "unknown"] },
+        recordingConsent: { type: "string", enum: ["granted", "declined", "pending", "not_required", "unknown"] },
+        consentCapturedAt: { type: ["string", "null"], format: "date-time" },
+        source: { type: "string", enum: ["calendar", "manual"] },
+      }, ["participantId", "displayName", "role", "response", "attendeeConsent", "recordingConsent", "source"]),
+    },
+    sourceLinks: {
+      type: "array", maxItems: 100, items: requiredObjectSchema({
+        linkId: sourceLinkId,
+        kind: { type: "string", enum: ["calendar_event", "capture_recording", "capture_asset", "source_revision"] },
+        sourceId: opaqueId("Exact calendar/source/capture identity."),
+        sourceRevisionId: opaqueId("Exact immutable revision when already known."),
+        mediaRole: { type: "string", enum: ["calendar", "recording", "transcript", "attachment", "reference"] },
+        label: text(1, 240),
+      }, ["linkId", "kind", "sourceId", "mediaRole", "label"]),
+    },
+    entityLinks: {
+      type: "array", maxItems: 100, items: requiredObjectSchema({
+        entityId: opaqueId("Exact Entity Registry identity."),
+        entityType: { type: "string", enum: ["person", "organization", "account", "project"] },
+        label: text(1, 240),
+        relationship: { type: "string", enum: ["customer", "account", "participant", "subject", "related"] },
+      }, ["entityId", "entityType", "label", "relationship"]),
+    },
+    decisions: {
+      type: "array", maxItems: 250, items: requiredObjectSchema({
+        decisionId: opaqueId("Meeting-local decision identity."),
+        summary: text(1, 2_000),
+        ownerParticipantId: { anyOf: [participantId, { type: "null" }] },
+        sourceLinkId: { anyOf: [sourceLinkId, { type: "null" }] },
+      }, ["decisionId", "summary"]),
+    },
+    commitments: {
+      type: "array", maxItems: 250, items: requiredObjectSchema({
+        commitmentId: opaqueId("Meeting-local commitment identity."),
+        summary: text(1, 2_000),
+        ownerParticipantId: { anyOf: [participantId, { type: "null" }] },
+        dueAt: { type: ["string", "null"], format: "date-time" },
+        sourceLinkId: { anyOf: [sourceLinkId, { type: "null" }] },
+      }, ["commitmentId", "summary"]),
+    },
+    followUps: {
+      type: "array", maxItems: 250, items: requiredObjectSchema({
+        followUpId: opaqueId("Meeting-local follow-up identity."),
+        label: text(1, 500),
+        status: { type: "string", enum: ["proposed", "accepted", "completed", "dismissed"] },
+        workItemId: { type: ["string", "null"], maxLength: 240 },
+        draftId: { type: ["string", "null"], maxLength: 240 },
+        commitmentId: { type: ["string", "null"], maxLength: 240 },
+      }, ["followUpId", "label", "status"]),
+    },
   };
 }
 
