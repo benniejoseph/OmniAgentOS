@@ -1,0 +1,15 @@
+{
+  "title": "NativeConversationEventV1",
+  "description": "Version 1 did not publish a closed event schema. Existing discriminated event names remain accepted during the compatibility window.",
+  "type": "object",
+  "required": [
+    "type"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": true
+}

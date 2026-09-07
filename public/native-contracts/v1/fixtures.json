@@ -1,0 +1,24 @@
+{
+  "loginRequest": {
+    "email": "operator@example.test",
+    "password": "fixture-password",
+    "device": {
+      "id": "asael-fixture-device",
+      "name": "Asael on iOS",
+      "platform": "ios",
+      "appVersion": "1.0.0",
+      "buildNumber": 2,
+      "clientContractVersion": 1
+    }
+  },
+  "refreshRequest": {
+    "refreshToken": "fixture-refresh-token-00000000000000000000",
+    "deviceId": "asael-fixture-device",
+    "client": {
+      "platform": "ios",
+      "appVersion": "1.0.0",
+      "buildNumber": 2,
+      "clientContractVersion": 1
+    }
+  }
+}

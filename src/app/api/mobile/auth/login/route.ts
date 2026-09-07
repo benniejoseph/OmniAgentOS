@@ -1,28 +1,22 @@
-import { z } from "zod";
-import { MAX_PASSWORD_LENGTH, PasswordWorkCapacityError, hashSessionToken } from "@/lib/auth/crypto";
+import { PasswordWorkCapacityError, hashSessionToken } from "@/lib/auth/crypto";
 import { authenticateMobilePassword } from "@/lib/auth/mobile";
-import { mobileDeviceSchema, mobileError, mobileNoStoreHeaders, publicMobileIdentity } from "@/lib/auth/mobile-http";
+import { mobileError, mobileNoStoreHeaders, publicMobileIdentity } from "@/lib/auth/mobile-http";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseJsonBody } from "@/lib/http/body";
 import { getTrustedClientIp } from "@/lib/http/client-ip";
 import { checkSharedRateLimit, RateLimitStoreUnavailableError } from "@/lib/http/rate-limit";
 import { nativeClientCompatibility } from "@/lib/auth/native-client-contract";
+import { nativeLoginRequestSchema } from "@/lib/mobile/contracts";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
-
-const schema = z.object({
-  email: z.string().email().max(320),
-  password: z.string().min(1).max(MAX_PASSWORD_LENGTH),
-  device: mobileDeviceSchema,
-}).strict();
 
 async function POSTHandler(request: Request) {
   const ip = getTrustedClientIp(request);
   try {
     const limit = await checkSharedRateLimit({ key: `mobile:login:${ip}`, limit: 30, windowMs: 15 * 60 * 1000 });
     if (!limit.allowed) return mobileError(429, "rate_limited", "Too many sign-in attempts. Try again later.", { "Retry-After": String(limit.retryAfterSeconds) });
-    const parsed = schema.safeParse(await parseJsonBody(request, 16_384));
+    const parsed = nativeLoginRequestSchema.safeParse(await parseJsonBody(request, 16_384));
     if (!parsed.success) return mobileError(400, "invalid_request", "The sign-in request is invalid.");
     const accountHash = hashSessionToken(parsed.data.email.trim().toLowerCase());
     const accountLimit = await checkSharedRateLimit({ key: `mobile:login:account:${accountHash}`, limit: 10, windowMs: 15 * 60 * 1000 });
