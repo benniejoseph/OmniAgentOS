@@ -14,6 +14,8 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "today.update",
   "workspaces.update",
   "evidence.cancel",
+  "push.registration.update",
+  "push.delivery.acknowledge",
 ] as const;
 
 export type NativeMutationCapability =
@@ -36,16 +38,20 @@ export function nativeMutationEnrollment(
   if (context.source !== "mobile" || !context.native) {
     return held("An authenticated native session is required.");
   }
+  const minimumContractVersion = minimumVersion(capability);
   if (
-    context.native.clientContractVersion !== NATIVE_API_CURRENT_VERSION ||
+    (context.native.clientContractVersion || 0) < minimumContractVersion ||
     evaluateNativeClientCompatibility(context.native) !== "compatible" ||
     !isFreshNativeClientAttestation(context.native.clientAttestedAt, asOf)
   ) {
-    return held("A fresh client on the current native contract is required.");
+    return held(
+      `A fresh compatible client on native contract v${minimumContractVersion} or later is required.`,
+      minimumContractVersion,
+    );
   }
   return Object.freeze({
     state: "active",
-    minimumContractVersion: NATIVE_API_CURRENT_VERSION,
+    minimumContractVersion,
   });
 }
 
@@ -62,10 +68,20 @@ export function nativeMutationCapabilityPolicy(
   );
 }
 
-function held(reason: string): NativeMutationEnrollment {
+function minimumVersion(capability: NativeMutationCapability) {
+  return capability === "push.registration.update" ||
+      capability === "push.delivery.acknowledge"
+    ? NATIVE_API_CURRENT_VERSION
+    : 3;
+}
+
+function held(
+  reason: string,
+  minimumContractVersion = NATIVE_API_CURRENT_VERSION,
+): NativeMutationEnrollment {
   return Object.freeze({
     state: "held",
-    minimumContractVersion: NATIVE_API_CURRENT_VERSION,
+    minimumContractVersion,
     reason,
   });
 }

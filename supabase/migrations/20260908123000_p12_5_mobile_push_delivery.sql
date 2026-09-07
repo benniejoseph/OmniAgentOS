@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS omni_mobile_push_deliveries (
   CHECK (provider_message_id_sha256 IS NULL OR provider_message_id_sha256 ~ '^[a-f0-9]{64}$'),
   CHECK (delivered_at IS NULL OR status IN ('delivered', 'acknowledged')),
   CHECK ((acknowledged_at IS NOT NULL) = (status = 'acknowledged')),
-  CHECK (cause_kind <> 'work_item' OR parent_id IS NOT NULL)
+  CHECK (cause_kind = 'work_item' OR parent_id IS NULL)
 );
 
 CREATE INDEX IF NOT EXISTS omni_mobile_push_delivery_queue_idx

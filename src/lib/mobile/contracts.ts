@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 3 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 2 as const;
+export const NATIVE_API_CURRENT_VERSION = 4 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 3 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -227,6 +227,56 @@ export const nativeWipeAcknowledgementResponseSchema = z.object({
   acknowledged: z.literal(true),
 }).strict();
 
+export const nativePushRegistrationRequestSchema = z.object({
+  provider: z.enum(["apns", "fcm"]),
+  environment: z.enum(["sandbox", "production"]),
+  token: z.string().trim().min(20).max(4_096),
+  previewPolicy: z.enum(["hidden", "generic", "title"]),
+}).strict();
+
+const nativePushRegistrationSchema = z.object({
+  id: opaqueId,
+  deviceId: opaqueId,
+  platform: z.enum(["android", "ios"]),
+  provider: z.enum(["apns", "fcm"]),
+  environment: z.enum(["sandbox", "production"]),
+  previewPolicy: z.enum(["hidden", "generic", "title"]),
+  state: z.enum(["active", "revoked"]),
+  lifecycleRevision: positiveDatabaseInteger,
+  lastRegisteredAt: isoDateTime,
+  lastDeliveredAt: isoDateTime.nullable(),
+  revokedAt: isoDateTime.nullable(),
+}).strict();
+
+export const nativePushRegistrationResponseSchema = z.object({
+  schemaVersion: z.literal(1),
+  registration: nativePushRegistrationSchema,
+  changed: z.boolean(),
+  providers: z.object({
+    apns: z.enum(["configured", "configuration_required"]),
+    fcm: z.enum(["configured", "configuration_required"]),
+  }).strict(),
+}).strict();
+
+export const nativePushRegistrationListResponseSchema = z.object({
+  schemaVersion: z.literal(1),
+  registrations: z.array(nativePushRegistrationSchema).max(10),
+  providers: z.object({
+    apns: z.enum(["configured", "configuration_required"]),
+    fcm: z.enum(["configured", "configuration_required"]),
+  }).strict(),
+}).strict();
+
+export const nativePushAcknowledgementResponseSchema = z.object({
+  schemaVersion: z.literal(1),
+  acknowledged: z.literal(true),
+  newlyAcknowledged: z.boolean(),
+  notificationId: opaqueId.nullable(),
+  causeKind: z.enum(["approval", "work_item", "meeting", "customer", "run"]),
+  causeId: opaqueId,
+  deepLink: z.string().min(2).max(1_000),
+}).strict();
+
 export const nativeConversationRequestSchema = z.object({
   message: z.string().min(1).max(120_000),
   threadId: z.string().uuid().optional(),
@@ -366,6 +416,15 @@ const v3Operations = [
   operation("notifications.readAll", "PATCH", "/api/notifications", "Mark all actor-visible notifications read.", "bearer", "JsonObject", "JsonObject"),
 ] as const satisfies readonly NativeOperation[];
 
+const v4Operations = [
+  ...v3Operations,
+  operation("push.registrations.list", "GET", "/api/mobile/push/registrations", "Read push registrations for the current installation.", "bearer", undefined, "NativePushRegistrationListResponse"),
+  operation("push.registrations.upsert", "POST", "/api/mobile/push/registrations", "Register or rotate an encrypted APNs/FCM device token.", "bearer", "NativePushRegistrationRequest", "NativePushRegistrationResponse"),
+  operation("push.registrations.revoke", "DELETE", "/api/mobile/push/registrations/{id}", "Revoke one current-installation push registration.", "bearer", undefined, "JsonObject"),
+  operation("push.deliveries.acknowledge", "POST", "/api/mobile/push/deliveries/{id}/acknowledge", "Acknowledge one actor-owned causal push delivery exactly once.", "bearer", "JsonObject", "NativePushAcknowledgementResponse"),
+  operation("customers.get", "GET", "/api/customer-accounts/{id}", "Read one actor-visible Customer 360 projection.", "bearer", undefined, "JsonObject"),
+] as const satisfies readonly NativeOperation[];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -385,6 +444,10 @@ export const nativeContractSchemas = Object.freeze({
   NativeWipeChallengeResponse: nativeWipeChallengeResponseSchema,
   NativeWipeAcknowledgementRequest: nativeWipeAcknowledgementRequestSchema,
   NativeWipeAcknowledgementResponse: nativeWipeAcknowledgementResponseSchema,
+  NativePushRegistrationRequest: nativePushRegistrationRequestSchema,
+  NativePushRegistrationResponse: nativePushRegistrationResponseSchema,
+  NativePushRegistrationListResponse: nativePushRegistrationListResponseSchema,
+  NativePushAcknowledgementResponse: nativePushAcknowledgementResponseSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
   NativeContractDiscovery: z.object({
@@ -411,6 +474,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 1) return v1Operations;
   if (version === 2) return v2Operations;
   if (version === 3) return v3Operations;
+  if (version === 4) return v4Operations;
   return undefined;
 }
 
@@ -420,7 +484,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [3, 2],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [4, 3],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
