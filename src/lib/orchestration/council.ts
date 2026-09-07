@@ -401,7 +401,7 @@ export async function runCouncilRound(input: {
             toolExecutionIds: contribution.delegation.toolExecutionIds,
           })
         : undefined;
-      if (sharedArtifact) {
+      if (missionId && sharedArtifact) {
         await sendDelegationMessage({
           task: lifecycleTask,
           parentExecutionScope: input.delegationAuthority.executionScope,

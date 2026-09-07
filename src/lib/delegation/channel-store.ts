@@ -181,9 +181,12 @@ export async function listDelegationChannelForParent(input: {
   missionId: string;
 }) {
   const scope = input.parentExecutionScope;
+  const ownerActorId = scope.initiatingActorId?.trim();
+  const parentPrincipalId = scope.executingPrincipalId?.trim();
   if (
     scope.missionId !== input.missionId ||
-    !scope.executingPrincipalId.trim() ||
+    !ownerActorId ||
+    !parentPrincipalId ||
     !input.parentExecutionId.trim()
   ) {
     throw new Error("Delegation Mission channel does not match its parent scope.");
@@ -191,11 +194,11 @@ export async function listDelegationChannelForParent(input: {
   const records = await readMissionChannel(
     input.missionId,
     scope.tenantId,
-    scope.initiatingActorId,
+    ownerActorId,
   );
   return records.filter((record) =>
     record.value.parentExecutionId === input.parentExecutionId &&
-    record.value.parentPrincipalId === scope.executingPrincipalId &&
+    record.value.parentPrincipalId === parentPrincipalId &&
     record.value.parentDelegationId === (scope.delegationId || null) &&
     record.value.recipients.parent
   );
