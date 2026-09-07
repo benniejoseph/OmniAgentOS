@@ -100,6 +100,30 @@ describe("P11.9 source coverage projection", () => {
     expect(projection.knowledgeIndex.state).toBe("unknown");
     expect(projection.knowledgeIndex.sourceItems).toBeNull();
   });
+
+  it("keeps conflicting Capture inventories unknown instead of inferring an empty source", () => {
+    const inventory = ownedInventory();
+    const projection = projectSourceCoverage({
+      integrations: { state: "ready", value: overview([]) },
+      oauth: { state: "ready", value: [] },
+      ownedSources: {
+        state: "ready",
+        value: {
+          ...inventory,
+          domains: [{ id: "capture", currentItems: 2, lastObservedAt: now }],
+          capture: { total: 0, indexed: 0, pending: 0, failed: 0, lastUpdatedAt: null },
+        },
+      },
+      generatedAt: now,
+    });
+
+    expect(domain(projection, "capture")).toMatchObject({
+      coverage: { state: "unknown", observedItems: 2 },
+      blindSpot: true,
+      nextAction: { state: "action_required" },
+    });
+    expect(domain(projection, "capture").coverage.detail).toContain("inventories disagree");
+  });
 });
 
 function domain(projection: ReturnType<typeof projectSourceCoverage>, id: string) {
