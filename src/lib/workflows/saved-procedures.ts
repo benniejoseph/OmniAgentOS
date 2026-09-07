@@ -3,6 +3,7 @@ import { z } from "zod";
 import { listMemories } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import type { SupervisorKnownProcedure } from "@/lib/orchestration/supervisor";
+import type { WorkspaceTemplateVersion } from "@/lib/workspace-templates/contracts";
 
 export const SAVED_PROCEDURE_V1_TAG = "asael:saved-procedure:v1";
 
@@ -24,7 +25,7 @@ const savedProcedureContractSchema = z.object({
   toolBindings: z.array(toolBindingSchema).min(1).max(12),
 }).strict();
 
-const workflowProcedureSnapshotBodySchema = z.object({
+const workflowProcedureSnapshotV1BodySchema = z.object({
   schemaVersion: z.literal(1),
   id: canonicalIdSchema,
   matchedAlias: z.string().trim().min(1).max(240),
@@ -33,9 +34,38 @@ const workflowProcedureSnapshotBodySchema = z.object({
   toolBindings: z.array(toolBindingSchema).min(1).max(12),
 }).strict();
 
-const workflowProcedureSnapshotSchema = workflowProcedureSnapshotBodySchema.extend({
+const workflowProcedureSnapshotV1Schema = workflowProcedureSnapshotV1BodySchema.extend({
   snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
+
+const workspaceTemplateProcedureSourceSchema = z.object({
+  kind: z.literal("workspace_template"),
+  workspaceId: canonicalIdSchema,
+  templateId: canonicalIdSchema,
+  templateVersionId: canonicalIdSchema,
+  templateVersion: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  templateSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+const workflowProcedureSnapshotV2BodySchema = z.object({
+  schemaVersion: z.literal(2),
+  id: canonicalIdSchema,
+  matchedAlias: z.string().trim().min(1).max(240),
+  source: workspaceTemplateProcedureSourceSchema,
+  aliases: z.array(z.string().trim().min(1).max(240)).min(1).max(24),
+  mode: z.enum(["orchestrate", "research", "execute", "learn"]),
+  toolBindings: z.array(toolBindingSchema).min(1).max(12),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).min(1).max(20),
+}).strict();
+
+const workflowProcedureSnapshotV2Schema = workflowProcedureSnapshotV2BodySchema.extend({
+  snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+const workflowProcedureSnapshotSchema = z.discriminatedUnion("schemaVersion", [
+  workflowProcedureSnapshotV1Schema,
+  workflowProcedureSnapshotV2Schema,
+]);
 
 export type SavedProcedureToolBinding = Readonly<{
   toolId: string;
@@ -47,10 +77,13 @@ export type SavedProcedure = Readonly<{
   aliases: readonly string[];
   requiredToolIds: readonly string[];
   toolBindings: readonly SavedProcedureToolBinding[];
-  sourceMemoryId: string;
+  sourceMemoryId?: string;
+  source?: Readonly<z.infer<typeof workspaceTemplateProcedureSourceSchema>>;
+  mode?: "orchestrate" | "research" | "execute" | "learn";
+  acceptanceCriteria?: readonly string[];
 }>;
 
-export type WorkflowProcedureSnapshot = Readonly<{
+export type WorkflowProcedureSnapshotV1 = Readonly<{
   schemaVersion: 1;
   id: string;
   matchedAlias: string;
@@ -59,6 +92,20 @@ export type WorkflowProcedureSnapshot = Readonly<{
   toolBindings: readonly SavedProcedureToolBinding[];
   snapshotSha256: string;
 }>;
+
+export type WorkflowProcedureSnapshotV2 = Readonly<{
+  schemaVersion: 2;
+  id: string;
+  matchedAlias: string;
+  source: Readonly<z.infer<typeof workspaceTemplateProcedureSourceSchema>>;
+  aliases: readonly string[];
+  mode: "orchestrate" | "research" | "execute" | "learn";
+  toolBindings: readonly SavedProcedureToolBinding[];
+  acceptanceCriteria: readonly string[];
+  snapshotSha256: string;
+}>;
+
+export type WorkflowProcedureSnapshot = WorkflowProcedureSnapshotV1 | WorkflowProcedureSnapshotV2;
 
 export async function listSavedProcedures(input: {
   tenantId: string;
@@ -96,7 +143,20 @@ export function buildWorkflowProcedureSnapshot(
   procedure: SavedProcedure,
   matchedAlias: string,
 ): WorkflowProcedureSnapshot {
-  const body = workflowProcedureSnapshotBodySchema.parse({
+  if (procedure.source?.kind === "workspace_template") {
+    const body = workflowProcedureSnapshotV2BodySchema.parse({
+      schemaVersion: 2,
+      id: procedure.id,
+      matchedAlias,
+      source: procedure.source,
+      aliases: procedure.aliases,
+      mode: procedure.mode || "orchestrate",
+      toolBindings: procedure.toolBindings,
+      acceptanceCriteria: procedure.acceptanceCriteria,
+    });
+    return freezeSnapshot({ ...body, snapshotSha256: sha256(body) });
+  }
+  const body = workflowProcedureSnapshotV1BodySchema.parse({
     schemaVersion: 1,
     id: procedure.id,
     matchedAlias,
@@ -119,6 +179,47 @@ export function parseWorkflowProcedureSnapshot(
   if (sha256(body) !== snapshotSha256) return undefined;
   if (!body.aliases.includes(body.matchedAlias)) return undefined;
   return freezeSnapshot(parsed.data);
+}
+
+export function savedProceduresFromWorkspaceTemplates(
+  templates: readonly WorkspaceTemplateVersion[],
+): readonly SavedProcedure[] {
+  return Object.freeze(templates.flatMap((template) => {
+    if (!template.playbook) return [];
+    const playbook = template.playbook;
+    return [Object.freeze({
+      id: template.templateId,
+      aliases: Object.freeze([...playbook.aliases]),
+      requiredToolIds: Object.freeze(
+        playbook.toolBindings.map((binding) => binding.toolId).sort(),
+      ),
+      toolBindings: Object.freeze(playbook.toolBindings.map((binding) => Object.freeze({
+        toolId: binding.toolId,
+        input: Object.freeze(binding.input),
+      }))),
+      source: Object.freeze({
+        kind: "workspace_template" as const,
+        workspaceId: template.workspaceId,
+        templateId: template.templateId,
+        templateVersionId: template.templateVersionId,
+        templateVersion: template.version,
+        templateSha256: template.templateSha256,
+      }),
+      mode: playbook.mode,
+      acceptanceCriteria: Object.freeze([...playbook.acceptanceCriteria]),
+    })];
+  }));
+}
+
+export function mergeSavedProcedureCatalogs(
+  ...catalogs: readonly (readonly SavedProcedure[])[]
+): readonly SavedProcedure[] {
+  const merged = catalogs.flat().sort((left, right) => left.id.localeCompare(right.id));
+  const ids = merged.map((procedure) => procedure.id);
+  if (new Set(ids).size !== ids.length) {
+    throw new Error("Saved procedure IDs must be unique within a workspace.");
+  }
+  return Object.freeze(merged);
 }
 
 export function parseSavedProcedureContractV1(
@@ -169,14 +270,21 @@ function parseSavedProcedureMemory(
 }
 
 function freezeSnapshot(value: z.infer<typeof workflowProcedureSnapshotSchema>): WorkflowProcedureSnapshot {
-  return Object.freeze({
+  const snapshot = {
     ...value,
     aliases: Object.freeze([...value.aliases]),
     toolBindings: Object.freeze(value.toolBindings.map((binding) => Object.freeze({
       toolId: binding.toolId,
       input: Object.freeze(binding.input),
     }))),
-  });
+    ...(value.schemaVersion === 2
+      ? {
+          source: Object.freeze({ ...value.source }),
+          acceptanceCriteria: Object.freeze([...value.acceptanceCriteria]),
+        }
+      : {}),
+  };
+  return Object.freeze(snapshot) as WorkflowProcedureSnapshot;
 }
 
 function normalizeAlias(value: string) {

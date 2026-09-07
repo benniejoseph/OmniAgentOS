@@ -55,6 +55,7 @@ type BuildWorkflowPlanInput = {
   reuseExisting?: boolean;
   allowedToolIds?: string[];
   requiredToolBindings?: readonly SavedProcedureToolBinding[];
+  requiredAcceptanceCriteria?: readonly string[];
   readOnlyTools?: boolean;
   agentInstructions?: string;
   replan?: {
@@ -181,6 +182,9 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
 
   const mode = input.mode || "orchestrate";
   const requiredToolBindings = normalizeRequiredToolBindings(input.requiredToolBindings);
+  const requiredAcceptanceCriteria = normalizeRequiredAcceptanceCriteria(
+    input.requiredAcceptanceCriteria,
+  );
   if (
     input.allowedToolIds &&
     requiredToolBindings.some((binding) => !input.allowedToolIds?.includes(binding.toolId))
@@ -231,6 +235,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     contextTraceId: context.trace?.id,
     toolCandidates,
     requiredToolBindings,
+    requiredAcceptanceCriteria,
     agentInstructions: [
       input.agentInstructions,
       input.replan ? workflowSubtreeReplanInstructions(input.replan) : undefined,
@@ -546,6 +551,7 @@ async function generatePlan({
   contextTraceId,
   toolCandidates,
   requiredToolBindings,
+  requiredAcceptanceCriteria,
   agentInstructions,
   abortSignal,
   sourceStreamId,
@@ -561,6 +567,7 @@ async function generatePlan({
   contextTraceId?: string;
   toolCandidates: PlannerToolCandidate[];
   requiredToolBindings: readonly SavedProcedureToolBinding[];
+  requiredAcceptanceCriteria: readonly string[];
   agentInstructions?: string;
   abortSignal?: AbortSignal;
   sourceStreamId: string;
@@ -577,6 +584,7 @@ async function generatePlan({
         requireApproval,
         toolCandidates,
         requiredToolBindings,
+        requiredAcceptanceCriteria,
         contextTraceId,
       }),
     };
@@ -595,6 +603,7 @@ async function generatePlan({
       requireApproval,
       toolCandidates,
       requiredToolBindings,
+      requiredAcceptanceCriteria,
       contextTraceId,
     });
     return {
@@ -671,6 +680,7 @@ async function generatePlan({
       requireApproval,
       toolCandidates,
       requiredToolBindings,
+      requiredAcceptanceCriteria,
       contextTraceId,
     });
     return {
@@ -817,12 +827,14 @@ function deterministicPlan({
   requireApproval,
   toolCandidates,
   requiredToolBindings = [],
+  requiredAcceptanceCriteria = [],
 }: {
   goal: string;
   mode: WorkflowDynamicPlan["mode"];
   requireApproval: boolean;
   toolCandidates: PlannerToolCandidate[];
   requiredToolBindings?: readonly SavedProcedureToolBinding[];
+  requiredAcceptanceCriteria?: readonly string[];
   contextTraceId?: string;
 }): WorkflowDynamicPlan {
   const selectedToolIds = unique([
@@ -910,7 +922,9 @@ function deterministicPlan({
       riskLevel: 0,
       approvalRequired: false,
       policy: "auto",
-      acceptanceCriteria: ["Every acceptance criterion is checked.", "Failures remain retryable."],
+      acceptanceCriteria: requiredAcceptanceCriteria.length
+        ? [...requiredAcceptanceCriteria]
+        : ["Every acceptance criterion is checked.", "Failures remain retryable."],
       expectedOutputs: ["verification result"],
     },
     {
@@ -949,6 +963,7 @@ function deterministicPlan({
         "Tool choices are registered and risk-scored.",
         "Execution and verification outputs are persisted.",
         "Verified durable outcomes are written back to memory when useful.",
+        ...requiredAcceptanceCriteria,
       ],
       nodes,
       edges: edgesFromNodes(nodes),
@@ -1617,6 +1632,14 @@ function normalizeRequiredToolBindings(
     throw new Error("Saved procedure tool bindings must be unique.");
   }
   return Object.freeze(normalized);
+}
+
+function normalizeRequiredAcceptanceCriteria(
+  criteria: readonly string[] | undefined,
+) {
+  return Object.freeze(unique((criteria || []).map((criterion) =>
+    criterion.trim().slice(0, 500)
+  ).filter(Boolean)).slice(0, 20));
 }
 
 function assertRequiredToolsAvailable(

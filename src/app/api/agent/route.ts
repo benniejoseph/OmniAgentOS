@@ -7,7 +7,7 @@ import {
   AGENT_RUNS_PER_MINUTE,
   WORKFLOW_RUN_BUDGET_LIMITS,
 } from "@/lib/config";
-import { withDatabaseRequestScope } from "@/lib/db/client";
+import { hasDatabaseUrl, withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -88,9 +88,13 @@ import type { PreparedDurableSpecialist } from "@/lib/subagents/types";
 import {
   buildWorkflowProcedureSnapshot,
   listSavedProcedures,
+  mergeSavedProcedureCatalogs,
   parseWorkflowProcedureSnapshot,
+  savedProceduresFromWorkspaceTemplates,
   toSupervisorKnownProcedures,
 } from "@/lib/workflows/saved-procedures";
+import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
+import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 
 export const runtime = "nodejs";
 // gpt-5 research/orchestrate runs can exceed 60s; 300s is the Vercel Pro ceiling.
@@ -409,10 +413,23 @@ async function POSTHandler(request: Request) {
   } : undefined;
   let savedProcedures;
   try {
-    savedProcedures = await listSavedProcedures({
+    const memoryProcedures = await listSavedProcedures({
       tenantId: context.tenantId,
       actorId: context.actorId,
     });
+    const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
+    const templateProcedures = hasDatabaseUrl() && actorBinding
+      ? savedProceduresFromWorkspaceTemplates(await listWorkspaceTemplates({
+          tenantId: context.tenantId,
+          workspaceId: promptSharedMemoryAccess?.authority.workspaceId ||
+            personalWorkspaceId(actorBinding.canonicalActorId),
+          canonicalActorId: actorBinding.canonicalActorId,
+        }, { activeOnly: true, limit: 100 }))
+      : [];
+    savedProcedures = mergeSavedProcedureCatalogs(
+      memoryProcedures,
+      templateProcedures,
+    );
   } catch (error) {
     console.error(
       "Saved procedure catalog unavailable.",
@@ -882,6 +899,9 @@ async function POSTHandler(request: Request) {
                   decision.procedure.matchedAlias,
                 )
               : undefined;
+            const workflowMode = savedProcedure?.schemaVersion === 2
+              ? savedProcedure.mode
+              : mode;
             const { createWorkflowRun } = await import("@/lib/workflows/store");
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
@@ -897,7 +917,7 @@ async function POSTHandler(request: Request) {
                 requesterRole: context.role,
               },
               goal: executionMessage,
-              mode,
+              mode: workflowMode,
               requireApproval: Boolean(parsed.data.voiceInput) || decision.requiresApproval || customAgent?.approvalPolicy === "always",
               budgetLimits: workflowBudgetLimits,
               metadata: {

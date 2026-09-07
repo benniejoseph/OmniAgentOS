@@ -67,6 +67,10 @@ export const workspaceTemplateProjectSchema = z.object({
     context.addIssue({ code: "custom", path: ["tasks"], message: "Template task keys must be unique." });
     return;
   }
+  const titles = project.tasks.map((task) => task.title.toLowerCase());
+  if (new Set(titles).size !== titles.length) {
+    context.addIssue({ code: "custom", path: ["tasks"], message: "Template task titles must be unique." });
+  }
   const known = new Set(keys);
   project.tasks.forEach((task, taskIndex) => {
     if (new Set(task.dependsOnKeys).size !== task.dependsOnKeys.length) {
