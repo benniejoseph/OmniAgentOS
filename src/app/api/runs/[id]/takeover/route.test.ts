@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
+  forbiddenResponse: vi.fn(),
   getActiveBrowserTakeover: vi.fn(),
   recordBrowserTakeoverAction: vi.fn(),
   releaseBrowserTakeover: vi.fn(),
@@ -25,7 +26,7 @@ vi.mock("@/lib/db/client", () => ({
 }));
 vi.mock("@/lib/security/guard", () => ({
   authorizeRequest: mocks.authorizeRequest,
-  forbiddenResponse: vi.fn(),
+  forbiddenResponse: mocks.forbiddenResponse,
 }));
 vi.mock("@/lib/browser/profiles", () => ({
   getActiveBrowserTakeover: mocks.getActiveBrowserTakeover,
@@ -167,6 +168,20 @@ beforeEach(() => {
 });
 
 describe("browser takeover route", () => {
+  it("authenticates before disclosing takeover action validation", async () => {
+    mocks.authorizeRequest.mockRejectedValue(new Error("Authentication required."));
+    mocks.forbiddenResponse.mockReturnValue(Response.json(
+      { error: "Authentication required." },
+      { status: 401 },
+    ));
+
+    const response = await post({ action: "not-a-real-action" });
+
+    expect(response.status).toBe(401);
+    expect(mocks.authorizeRequest).toHaveBeenCalledOnce();
+    expect(mocks.getAgentRun).not.toHaveBeenCalled();
+  });
+
   it("requires the actor-owned run to be paused on a managed browser action", async () => {
     mocks.getAgentRun.mockResolvedValue({ ...run, status: "running" });
 
