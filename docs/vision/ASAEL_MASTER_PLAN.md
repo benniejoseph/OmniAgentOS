@@ -773,7 +773,7 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.6 | Build external A2A client/server adapters. | Reuse inbound auth/MCP patterns; create A2A boundary. | External agents receive scoped references and delegated tokens; all actions re-enter governed execution. | Compatible external agents can discover, negotiate, stream progress, exchange artifacts, cancel, and resume without a second security path. |
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
-**Implementation status:** P8.1 through P8.3 are complete. P8.4 is the next
+**Implementation status:** P8.1 through P8.4 are complete. P8.5 is the next
 actionable slice; P12 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -2626,6 +2626,24 @@ Next 16 production build pass. Vercel rejected the complete-feature promotion
 at `9e5e1898b288e046807597f070ec5f30dcea2866` before upload because the team
 still has an overdue balance, so Fly was intentionally left unchanged. P8.4
 bounded messages and shared mission artifacts is next; P12/P13 remain deferred.
+
+P8.4 repository implementation is complete. The strict
+`p8.4-delegation-message:1` and `p8.4-shared-mission-artifact:1` protocols bind
+the exact Mission, parent execution/principal/delegation, sender task and Agent
+version, explicit parent or active-sibling recipients, deadline, and content
+digests. Messages and explicitly shared artifact content are bounded,
+credential-rejected, marked untrusted and non-authoritative, contain no private
+memory, and cannot mutate state directly.
+
+The broker reuses the actor-private Mission artifact plane, validates siblings
+against the canonical delegation ledger, requires exact parent scope for parent
+reads, and emits content-free message/artifact receipts. Council specialists
+and workflow Agent nodes publish a closed completion artifact plus a handoff
+before their exact parent evaluator may accept the result. Browser projection
+exposes only the deliberately shared record and omits execution principals.
+Seventeen focused checks across five test files, affected lint, TypeScript, and
+the 96-page Next 16 production build pass. No migration was required. P8.5
+internal Agent Cards and capability discovery is next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
