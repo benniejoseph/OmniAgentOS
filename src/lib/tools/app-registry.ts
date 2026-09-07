@@ -135,6 +135,40 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     validTo: { type: ["string", "null"], format: "date-time" },
     staleAfter: { type: ["string", "null"], format: "date-time" },
   }, ["accountId", "factKey", "value", "source", "owner", "confidenceBasisPoints", "validFrom"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.customer_accounts.health.show", "Show customer health", "Read the current explainable customer health score, immutable history, exact factor evidence, freshness and confidence penalties, and active deterministic policy.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    historyLimit: integer(1, 100, 20),
+  }, ["accountId"])),
+  mutationTool("app.customer_accounts.health.evaluate", "Evaluate customer health", "Evaluate one exact Account 360 revision through the deterministic versioned factor policy. Optional model suggestions remain explicitly non-authoritative and cannot alter any factor or score.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    expectedAccountRevision: integer(1, Number.MAX_SAFE_INTEGER),
+    expectedAccountSha256: sha256("Exact Account 360 revision digest."),
+    modelSuggestions: {
+      type: "array",
+      maxItems: 20,
+      items: requiredObjectSchema({
+        suggestionKind: { type: "string", enum: ["next_action", "factor_review", "input_gap"] },
+        statement: text(1, 1_000),
+        citedEvidence: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          items: requiredObjectSchema({
+            factRevisionId: opaqueId("Exact current fact revision ID."),
+            factSha256: sha256("Exact current fact revision digest."),
+          }, ["factRevisionId", "factSha256"]),
+        },
+        confidenceBasisPoints: integer(0, 10_000),
+        origin: requiredObjectSchema({
+          providerId: opaqueId("Model provider identity."),
+          modelId: opaqueId("Exact model identity."),
+          promptSha256: sha256("Digest of the suggestion prompt contract."),
+        }, ["providerId", "modelId", "promptSha256"]),
+      }, ["suggestionKind", "statement", "citedEvidence", "confidenceBasisPoints", "origin"]),
+    },
+  }, ["accountId", "expectedAccountRevision", "expectedAccountSha256"]), { reversible: true }),
   mutationTool("app.customer_accounts.salesforce.writes.configure", "Configure Salesforce writes", "Activate or disable approval-bound Salesforce writes for one exact owner-controlled Account 360 revision. Activation requires a linked Salesforce Account and reviewed provider configuration.", requiredObjectSchema({
     workspaceId: opaqueId("Optional exact workspace ID."),
     accountId: customerAccountIdSchema(),
