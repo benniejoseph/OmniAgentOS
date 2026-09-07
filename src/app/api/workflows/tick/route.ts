@@ -39,6 +39,7 @@ import {
   checkWorkerCompatibility,
   workerCompatibilityErrorResponse,
 } from "@/lib/operations/worker-request";
+import { reconcileAbandonedExternalA2ATasks } from "@/lib/a2a/maintenance";
 import { recoverStaleToolExecutionClaims } from "@/lib/tools/audit-store";
 import {
   processAllTenantWorkflowQueues,
@@ -714,6 +715,7 @@ async function runAllTenantScheduledWork({
     personalNotificationsProcessed: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
+    externalDelegationsTerminated: number;
     memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
@@ -824,6 +826,7 @@ async function runTenantMaintenance({
     personalNotificationsProcessed: number;
     projectExecutionsProcessed: number;
     connectedSourcesSynced: number;
+    externalDelegationsTerminated: number;
     memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
@@ -836,6 +839,7 @@ async function runTenantMaintenance({
     personalNotificationsProcessed: 0,
     projectExecutionsProcessed: 0,
     connectedSourcesSynced: 0,
+    externalDelegationsTerminated: 0,
     loopV2Recovery: emptyLoopV2RecoverySummary(),
   };
   if (Date.now() < deadlineAt) {
@@ -851,6 +855,10 @@ async function runTenantMaintenance({
     result.toolClaimsRecovered = (
       await recoverStaleToolExecutionClaims({ tenantId })
     ).length;
+  }
+  if (Date.now() < deadlineAt) {
+    const a2a = await reconcileAbandonedExternalA2ATasks({ tenantId, limit: 5 });
+    result.externalDelegationsTerminated = a2a.expired + a2a.canceled;
   }
   if (Date.now() < deadlineAt) {
     result.memoryMaintenance = (

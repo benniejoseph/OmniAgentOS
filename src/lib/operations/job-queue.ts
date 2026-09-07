@@ -1397,6 +1397,8 @@ export async function listMaintenanceTenantIds({
             SELECT tenant_id FROM omni_personal_notifications
             UNION
             SELECT tenant_id FROM omni_projects
+            UNION
+            SELECT tenant_id FROM omni_a2a_safety_reservations
           )
           SELECT tenant_id
           FROM tenant_ids
