@@ -3,7 +3,8 @@ import { TodayWorkspace } from "@/components/today-workspace";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { showCohesiveTodayService } from "@/lib/app-services/cohesive-today";
 import { getServerWorkspaceSession } from "@/lib/auth/server-workspace-session";
-import { runWithDatabaseTenantScope } from "@/lib/db/client";
+import { runWithDatabaseActorScope } from "@/lib/db/client";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export const metadata: Metadata = {
   title: "Today",
@@ -11,15 +12,17 @@ export const metadata: Metadata = {
 
 export default async function AppDashboardPage() {
   const session = await getServerWorkspaceSession();
-  const tenantId = session.context?.tenantId;
-  if (!tenantId || !session.context) {
+  const context = session.context;
+  if (!context) {
     return <TodayWorkspace />;
   }
+  const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
 
-  const initial = await runWithDatabaseTenantScope(
-    tenantId,
+  const initial = await runWithDatabaseActorScope(
+    context.tenantId,
+    actorBinding?.readableOwnerActorIds || [context.actorId],
     () => showCohesiveTodayService(
-      createAppServiceCaller({ context: session.context! }),
+      createAppServiceCaller({ context }),
       {},
     ),
   );

@@ -1816,7 +1816,7 @@ export async function listAgentRunSummaries(
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT
-        id, tenant_id, mode, status, prompt, response, grounding, feedback, error, continuation, agent_id, specialist_ids,
+        id, tenant_id, owner_actor_id, mode, status, prompt, response, grounding, feedback, error, continuation, agent_id, specialist_ids,
         started_at, completed_at
       FROM omni_agent_runs
       WHERE tenant_id = ${tenantId}

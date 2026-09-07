@@ -23,4 +23,15 @@ describe("cohesive Today workspace", () => {
     expect(source).toContain("Active agents");
     expect(source).toContain("visibleSections");
   });
+
+  it("renders its initial projection inside the authenticated actor scope", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/app/app/page.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain("runWithDatabaseActorScope");
+    expect(source).toContain("actorBinding?.readableOwnerActorIds || [context.actorId]");
+    expect(source).not.toContain("runWithDatabaseTenantScope");
+  });
 });
