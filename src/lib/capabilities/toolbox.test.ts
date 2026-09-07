@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_EXTERNAL_TOOL_ALLOWLIST_LIMIT,
   AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT,
+  AGENT_MODEL_TOOL_LIMIT,
   applyToolSchemaBudget,
   capabilityFunctionName,
   loadProgressiveAgentTools,
@@ -10,6 +11,39 @@ import type { CapabilityDescriptor } from "@/lib/capabilities/types";
 import type { ToolDefinition } from "@/lib/tools/types";
 
 describe("progressive agent toolbox", () => {
+  it("caps model-facing tools while retaining relevant native and external tools", async () => {
+    const nativeDefinitions = Array.from({ length: 50 }, (_, index) => tool({
+      id: index === 49 ? "app.memory.shared.list" : `app.unrelated.tool-${index}`,
+      name: index === 49 ? "List shared memory" : `Unrelated tool ${index}`,
+    }));
+    const descriptors = Array.from(
+      { length: AGENT_EXTERNAL_TOOL_DEFAULT_LIMIT },
+      (_, index) => descriptor(`mcp:workspace:search-${index}`),
+    );
+
+    const result = await loadProgressiveAgentTools(
+      { tenantId: "tenant-a", query: "use workspace shared memory" },
+      {
+        listNative: () => nativeDefinitions,
+        search: vi.fn(async () => ({
+          capabilities: descriptors,
+          query: "use workspace shared memory",
+          total: descriptors.length,
+          limit: 50,
+          hasMore: false,
+        })),
+        resolveMcp: vi.fn(async (id) => tool({ id, category: "mcp" })),
+        resolveOpenApi: vi.fn(async () => null),
+      },
+    );
+
+    expect(result.definitions).toHaveLength(AGENT_MODEL_TOOL_LIMIT);
+    expect(result.definitions.map((item) => item.id))
+      .toEqual(expect.arrayContaining(descriptors.map((item) => item.id)));
+    expect(result.definitions.map((item) => item.id))
+      .toContain("app.memory.shared.list");
+  });
+
   it("hydrates only the top six metadata matches by default", async () => {
     const descriptors = Array.from(
       { length: 20 },
