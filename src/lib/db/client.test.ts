@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 127,
+      name: "ap2_receipt_reconciliation_v1",
+      checksum: "b85bf6d553f897caa31d67ec907d5abf308572652dd45524da150e4ec4a60acb",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 126)).toEqual({
       version: 126,
       name: "ap2_credential_authorization_v1",
       checksum: "58e206e5cf85d52958965d7ae06d89a1f61059ee41532970c3645b1dfff60708",
