@@ -1,9 +1,9 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { createSkillService, listSkillsService } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillInputSchema } from "@/lib/skills/schema";
-import { createAgentSkill, listAgentSkillsForRequest } from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -13,14 +13,8 @@ async function GETHandler(request: Request) {
   let context;
   try { context = await authorizeRequest({ request, action: "read", resourceType: "agent_skill" }); }
   catch (error) { return forbiddenResponse(error); }
-  return Response.json({
-    skills: await listAgentSkillsForRequest({
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      requestActorBinding:
-        canonicalRequestActorBindingFromSecurityContext(context),
-    }),
-  }, { headers: { "cache-control": "private, no-store" } });
+  const result = await listSkillsService(createAppServiceCaller({ context }), {});
+  return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: { "cache-control": "private, no-store" } });
 }
 
 async function POSTHandler(request: Request) {
@@ -32,8 +26,11 @@ async function POSTHandler(request: Request) {
   const parsed = skillInputSchema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid skill", details: parsed.error.flatten() }, { status: 400 });
   try {
-    const skill = await createAgentSkill(parsed.data, { tenantId: context.tenantId, actorId: context.actorId });
-    return Response.json({ skill }, { status: 201 });
+    const result = await createSkillService(
+      createRequestMutationAppServiceCaller(request, context, { purpose: "skill.create" }),
+      parsed.data,
+    );
+    return Response.json({ ...result.data, serviceReceipt: result.receipt }, { status: 201 });
   } catch (error) {
     const duplicate = error instanceof Error && /unique|duplicate/i.test(error.message);
     return Response.json({ error: duplicate ? "A skill with this name already exists." : "Skill creation failed." }, { status: duplicate ? 409 : 500 });

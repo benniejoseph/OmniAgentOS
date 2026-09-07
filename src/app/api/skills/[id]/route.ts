@@ -1,9 +1,10 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { showSkillService, updateSkillService } from "@/lib/app-services/agents";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { skillPatchSchema } from "@/lib/skills/schema";
-import { deleteAgentSkill, getAgentSkillForRequest, updateAgentSkill } from "@/lib/skills/store";
+import { deleteAgentSkill } from "@/lib/skills/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -15,14 +16,10 @@ async function GETHandler(request: Request, context: RouteContext<"/api/skills/[
   try { auth = await authorizeRequest({ request, action: "read", resourceType: "agent_skill" }); }
   catch (error) { return forbiddenResponse(error); }
   const { id } = await context.params;
-  const skill = await getAgentSkillForRequest(id, {
-    tenantId: auth.tenantId,
-    actorId: auth.actorId,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(auth),
-  });
+  const result = await showSkillService(createAppServiceCaller({ context: auth }), { id });
   const headers = { "cache-control": "private, no-store" };
-  return skill
-    ? Response.json({ skill }, { headers })
+  return result.data.skill
+    ? Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers })
     : Response.json({ error: "Skill not found." }, { status: 404, headers });
 }
 
@@ -35,8 +32,11 @@ async function PATCHHandler(request: Request, context: RouteContext<"/api/skills
   const parsed = skillPatchSchema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid skill update", details: parsed.error.flatten() }, { status: 400 });
   const { id } = await context.params;
-  const skill = await updateAgentSkill(id, parsed.data, { tenantId: auth.tenantId, actorId: auth.actorId });
-  return skill ? Response.json({ skill }) : Response.json({ error: "Custom skill not found." }, { status: 404 });
+  const result = await updateSkillService(
+    createRequestMutationAppServiceCaller(request, auth, { purpose: "skill.update", causationId: id }),
+    { id, change: parsed.data },
+  );
+  return result.data.skill ? Response.json({ ...result.data, serviceReceipt: result.receipt }) : Response.json({ error: "Custom skill not found." }, { status: 404 });
 }
 
 async function DELETEHandler(request: Request, context: RouteContext<"/api/skills/[id]">) {
