@@ -237,6 +237,24 @@ type BrowserActivityItem = {
   accessibilitySnapshotStatus?: "captured" | "suppressed" | "unavailable";
 };
 type BrowserActivityMode = "live" | "replay";
+type BrowserProfile = {
+  id: string;
+  name: string;
+  allowedDomains: string[];
+  state: "active" | "revoked";
+  lifecycleRevision: number;
+  consentedAt: string;
+  lastUsedAt: string | null;
+};
+type BrowserTakeover = {
+  id: string;
+  runId: string;
+  state: "active" | "released" | "expired" | "revoked";
+  actionCount: number;
+  profileActive: boolean;
+  startedAt: string;
+  expiresAt: string;
+};
 type BrowserActivityStreamState =
   | "idle"
   | "connecting"
@@ -3114,6 +3132,10 @@ export function AgentRunsWorkspace({
                   error={browserActivityError}
                   mode={browserActivityMode}
                   streamState={browserActivityStreamState}
+                  takeoverEligible={Boolean(
+                    waitingApproval &&
+                    selectedActivityRunId === activeAgentRunId
+                  )}
                   onRefresh={() => void refreshBrowserActivity(selectedActivityRunId)}
                 />
                 {!selectedActivityRunId || selectedActivityRunId === activeAgentRunId ? (
@@ -3921,6 +3943,7 @@ function BrowserActivityTimeline({
   error,
   mode,
   streamState,
+  takeoverEligible,
   onRefresh,
 }: {
   runId: string;
@@ -3929,6 +3952,7 @@ function BrowserActivityTimeline({
   error?: string;
   mode?: BrowserActivityMode;
   streamState: BrowserActivityStreamState;
+  takeoverEligible: boolean;
   onRefresh: () => void;
 }) {
   const live = mode === "live";
@@ -4028,6 +4052,7 @@ function BrowserActivityTimeline({
           </button>
         </div>
       </header>
+      <BrowserTakeoverPanel runId={runId} eligible={takeoverEligible} />
       {state === "loading" && !items.length ? (
         <div className="flex min-h-72 items-center justify-center gap-2 px-4 text-sm text-muted">
           <Loader2 size={16} className="animate-spin" aria-hidden="true" />
@@ -4211,11 +4236,357 @@ function BrowserActivityTimeline({
           <p className="mt-1 text-xs leading-5 text-muted">This run did not use the connected Playwright browser.</p>
         </div>
       )}
+      <BrowserProfilePanel />
       <p className={workspaceStyles.browserPrivacyNote}>
         Retained frames and accessibility structure are owner-scoped run evidence. Text-entry and file-upload steps omit both; screenshots may still reflect what the visited page renders. Tool inputs, selectors, credentials, and private reasoning are not included in the action trail.
       </p>
     </section>
   );
+}
+
+function BrowserTakeoverPanel({ runId, eligible }: { runId: string; eligible: boolean }) {
+  const [takeover, setTakeover] = useState<BrowserTakeover>();
+  const [observation, setObservation] = useState("");
+  const [target, setTarget] = useState("");
+  const [secretText, setSecretText] = useState("");
+  const [key, setKey] = useState("Enter");
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState<{ tone: "error" | "success"; text: string }>();
+
+  useEffect(() => {
+    if (!runId || !eligible) return;
+    const controller = new AbortController();
+    void readJson(`/api/runs/${encodeURIComponent(runId)}/takeover`, {
+      cache: "no-store",
+      signal: controller.signal,
+    }).then((payload) => {
+      if (controller.signal.aborted) return;
+      const current = asRecord(payload).takeover;
+      setTakeover(current && typeof current === "object" ? current as BrowserTakeover : undefined);
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [eligible, runId]);
+
+  const targetOptions = useMemo(() => browserSnapshotTargets(observation), [observation]);
+  if (!eligible && takeover?.state !== "active") return null;
+
+  async function act(
+    action: "start" | "observe" | "click" | "type" | "press_key" | "handback",
+    input: Record<string, unknown> = {},
+  ) {
+    setBusy(action);
+    setMessage(undefined);
+    try {
+      const payload = asRecord(await readJson(
+        `/api/runs/${encodeURIComponent(runId)}/takeover`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `browser-takeover-${action}-${crypto.randomUUID()}`,
+          },
+          body: JSON.stringify({ action, ...input }),
+        },
+      ));
+      const next = payload.takeover;
+      if (next && typeof next === "object") setTakeover(next as BrowserTakeover);
+      if (typeof payload.observation === "string") setObservation(payload.observation);
+      if (action === "start") {
+        setMessage({ tone: "success", text: "You have exclusive browser control for ten minutes." });
+      } else if (action === "type") {
+        setSecretText("");
+        setMessage({
+          tone: "success",
+          text: stringValue(payload.message, "Text sent directly without retaining it in the run."),
+        });
+      } else if (action === "handback") {
+        setObservation("");
+        setMessage({ tone: "success", text: "Control returned. The agent is queued with a fresh page observation." });
+      }
+      return payload;
+    } catch (actionError) {
+      setMessage({ tone: "error", text: refreshMessage(actionError) });
+      return undefined;
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function start() {
+    const started = await act("start");
+    if (started) await act("observe");
+  }
+
+  const active = takeover?.state === "active";
+  return (
+    <section className="mx-3 mt-3 rounded-lg border border-primary/25 bg-primary/5 p-3" aria-label="Browser takeover">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold">Take over this browser</p>
+          <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">
+            The agent is paused. Your clicks and typed values go directly to this isolated session; typed values are not written to run history or sent to a model.
+          </p>
+        </div>
+        {!active ? (
+          <button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => void start()}>
+            {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <MonitorPlay size={14} aria-hidden="true" />}
+            Take control
+          </button>
+        ) : (
+          <span className="rounded-full bg-success/15 px-2.5 py-1 text-[11px] font-semibold text-success">
+            You are in control
+          </span>
+        )}
+      </div>
+      {message ? (
+        <p className={clsx(
+          "mt-3 rounded-md border px-3 py-2 text-xs leading-5",
+          message.tone === "error"
+            ? "border-danger/35 bg-danger/10 text-danger"
+            : "border-success/30 bg-success/10 text-success",
+        )} role="status">{message.text}</p>
+      ) : null}
+      {active ? (
+        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="min-w-0 rounded-md border border-line bg-background p-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold">Interactive page structure</p>
+              <button
+                type="button"
+                className="action-button"
+                disabled={Boolean(busy)}
+                onClick={() => void act("observe")}
+              >
+                <RefreshCw size={13} className={busy === "observe" ? "animate-spin" : ""} aria-hidden="true" />
+                Refresh
+              </button>
+            </div>
+            <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface p-3 text-[11px] leading-5 text-muted">
+              {observation || "Refresh to load the current page controls."}
+            </pre>
+          </div>
+          <div className="space-y-3 rounded-md border border-line bg-background p-3">
+            <label className="block text-xs font-semibold">
+              Control reference
+              <input
+                value={target}
+                onChange={(event) => setTarget(event.target.value)}
+                list={`takeover-targets-${runId}`}
+                placeholder="e.g. e12"
+                autoComplete="off"
+                className="mt-1.5 w-full rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs"
+              />
+              <datalist id={`takeover-targets-${runId}`}>
+                {targetOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </datalist>
+            </label>
+            <button
+              type="button"
+              className="action-button w-full justify-center"
+              disabled={Boolean(busy) || !target.trim()}
+              onClick={() => void act("click", { target: target.trim() })}
+            >
+              Click selected control
+            </button>
+            <label className="block text-xs font-semibold">
+              Private text
+              <input
+                type="password"
+                value={secretText}
+                onChange={(event) => setSecretText(event.target.value)}
+                autoComplete="off"
+                placeholder="Password, code, or account value"
+                className="mt-1.5 w-full rounded-md border border-line bg-surface px-3 py-2 text-xs"
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                className="action-button justify-center"
+                disabled={Boolean(busy) || !target.trim() || !secretText}
+                onClick={() => void act("type", { target: target.trim(), text: secretText })}
+              >
+                Type
+              </button>
+              <button
+                type="button"
+                className="action-button justify-center"
+                disabled={Boolean(busy) || !target.trim() || !secretText}
+                onClick={() => void act("type", { target: target.trim(), text: secretText, submit: true })}
+              >
+                Type + enter
+              </button>
+            </div>
+            <label className="block text-xs font-semibold">
+              Keyboard key
+              <input
+                value={key}
+                onChange={(event) => setKey(event.target.value)}
+                autoComplete="off"
+                className="mt-1.5 w-full rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs"
+              />
+            </label>
+            <button
+              type="button"
+              className="action-button w-full justify-center"
+              disabled={Boolean(busy) || !key.trim()}
+              onClick={() => void act("press_key", { key: key.trim() })}
+            >
+              Press key
+            </button>
+            <button
+              type="button"
+              className="primary-button w-full justify-center"
+              disabled={Boolean(busy)}
+              onClick={() => void act("handback")}
+            >
+              {busy === "handback" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
+              Return to agent
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function BrowserProfilePanel() {
+  const [profiles, setProfiles] = useState<BrowserProfile[]>([]);
+  const [name, setName] = useState("");
+  const [domains, setDomains] = useState("");
+  const [state, setState] = useState<"loading" | "ready" | "saving" | "error">("loading");
+  const [message, setMessage] = useState("");
+
+  async function loadProfiles() {
+    setState("loading");
+    try {
+      const payload = asRecord(await readJson("/api/browser/profiles", { cache: "no-store" }));
+      setProfiles(Array.isArray(payload.profiles) ? payload.profiles as BrowserProfile[] : []);
+      setState("ready");
+    } catch (loadError) {
+      setMessage(refreshMessage(loadError));
+      setState("error");
+    }
+  }
+
+  useEffect(() => {
+    queueMicrotask(() => void loadProfiles());
+  }, []);
+
+  async function createProfile() {
+    const allowedDomains = domains.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
+    if (!name.trim() || !allowedDomains.length) return;
+    setState("saving");
+    setMessage("");
+    try {
+      await readJson("/api/browser/profiles", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), allowedDomains }),
+      });
+      setName("");
+      setDomains("");
+      await loadProfiles();
+      setMessage("Persistent profile consent saved. A matching future run will use it automatically.");
+    } catch (profileError) {
+      setMessage(refreshMessage(profileError));
+      setState("error");
+    }
+  }
+
+  async function revokeProfile(profile: BrowserProfile) {
+    setState("saving");
+    setMessage("");
+    try {
+      await readJson(`/api/browser/profiles/${encodeURIComponent(profile.id)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedRevision: profile.lifecycleRevision }),
+      });
+      await loadProfiles();
+      setMessage("Profile revoked. New and resumed browser actions can no longer use it.");
+    } catch (profileError) {
+      setMessage(refreshMessage(profileError));
+      setState("error");
+    }
+  }
+
+  return (
+    <details className="mx-3 mt-3 rounded-lg border border-line bg-background px-3">
+      <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 text-xs font-semibold">
+        <span className="flex items-center gap-2"><ShieldCheck size={14} aria-hidden="true" />Persistent browser profiles</span>
+        <span className="text-[11px] font-normal text-muted">{profiles.filter((profile) => profile.state === "active").length} active</span>
+      </summary>
+      <div className="border-t border-line py-3">
+        <p className="text-xs leading-5 text-muted">
+          Opt in to an encrypted profile for specific domains. Cookies stay in the encrypted browser service store and are excluded from Agent memory, tool output, and page observations.
+        </p>
+        {profiles.length ? (
+          <ul className="mt-3 space-y-2">
+            {profiles.map((profile) => (
+              <li key={profile.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold">{profile.name}</p>
+                  <p className="mt-1 break-words text-[11px] leading-5 text-muted">{profile.allowedDomains.join(" · ")}</p>
+                </div>
+                {profile.state === "active" ? (
+                  <button
+                    type="button"
+                    className="action-button"
+                    disabled={state === "saving"}
+                    onClick={() => void revokeProfile(profile)}
+                  >
+                    Revoke
+                  </button>
+                ) : (
+                  <span className="rounded-full bg-surface-raised px-2 py-1 text-[10px] font-semibold text-muted">Revoked</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,.7fr)_minmax(0,1.3fr)_auto]">
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Profile name"
+            maxLength={120}
+            className="rounded-md border border-line bg-surface px-3 py-2 text-xs"
+          />
+          <input
+            value={domains}
+            onChange={(event) => setDomains(event.target.value)}
+            placeholder="example.com, accounts.example.com"
+            className="rounded-md border border-line bg-surface px-3 py-2 text-xs"
+          />
+          <button
+            type="button"
+            className="primary-button justify-center"
+            disabled={state === "saving" || !name.trim() || !domains.trim()}
+            onClick={() => void createProfile()}
+          >
+            {state === "saving" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
+            Consent
+          </button>
+        </div>
+        {message ? <p className="mt-2 text-[11px] leading-5 text-muted" role="status">{message}</p> : null}
+      </div>
+    </details>
+  );
+}
+
+function browserSnapshotTargets(snapshot: string) {
+  const targets: Array<{ value: string; label: string }> = [];
+  for (const line of snapshot.split("\n")) {
+    const match = line.match(/\[ref=([^\]\s]+)\]/);
+    if (!match || targets.some((target) => target.value === match[1])) continue;
+    targets.push({
+      value: match[1],
+      label: line.replace(/\s+/g, " ").trim().slice(0, 120),
+    });
+    if (targets.length >= 200) break;
+  }
+  return targets;
 }
 
 function TaskProgressTimeline({

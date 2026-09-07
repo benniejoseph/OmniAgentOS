@@ -280,7 +280,7 @@ export async function resolveBrowserProfileSession(input: {
   targetHostname?: string;
   executionScope?: ExecutionScope;
 }): Promise<BrowserProfileSession | undefined> {
-  requireDatabase();
+  if (!hasDatabaseUrl()) return undefined;
   await ensureDatabaseSchema();
   const tenantId = requiredText(input.tenantId, 160);
   const ownerActorId = requiredText(input.ownerActorId, 500);
@@ -375,7 +375,7 @@ export async function resolveBrowserProfileSession(input: {
       AND profile_id = ${profile.id} AND state = 'active'
   `;
   if (input.executionScope) {
-    const scope = requiredOwnerScope(input.executionScope, tenantId, ownerActorId);
+    const scope = requiredActorScope(input.executionScope, tenantId, ownerActorId);
     await appendBrowserEvent(profile, scope, "browser.profile.bound", {
       profileId: profile.id,
       lifecycleRevision: profile.lifecycleRevision,
@@ -604,12 +604,22 @@ function appendBrowserEvent(
 }
 
 function requiredOwnerScope(scope: ExecutionScope, tenantId: string, actorId: string) {
-  assertExecutionScopeTenant(scope, tenantId);
+  requiredActorScope(scope, tenantId, actorId);
   if (
-    scope.initiatingActorId !== actorId ||
     scope.executingPrincipalType !== "user" ||
     scope.executingPrincipalId !== actorId
   ) {
+    throw new BrowserProfileError(
+      "Browser profile mutation scope requires its authenticated owner.",
+      "invalid_contract",
+    );
+  }
+  return scope;
+}
+
+function requiredActorScope(scope: ExecutionScope, tenantId: string, actorId: string) {
+  assertExecutionScopeTenant(scope, tenantId);
+  if (scope.initiatingActorId !== actorId) {
     throw new BrowserProfileError(
       "Browser profile mutation scope does not match its owner.",
       "invalid_contract",
