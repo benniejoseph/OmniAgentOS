@@ -1,71 +1,78 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-
 import {
-  meetingSourceLinkFromLibrary,
-  normalizeMeetingParticipantConsent,
+  ProcessedMeetingMedia,
+  type ProcessedMeetingMediaView,
 } from "@/components/meetings-workspace";
 
-describe("meeting workspace source and consent mapping", () => {
-  it("retains the exact calendar source revision selected from Library", () => {
-    const link = meetingSourceLinkFromLibrary({
-      id: "library:calendar:event-1",
-      kind: "meeting",
-      sourceAuthority: "source_item",
-      sourceId: "source-item-1",
-      title: "Customer review",
-      sourceLabel: "Google Calendar",
-      status: "ready",
-      currentVersion: {
-        sourceRevisionId: "source-revision-1",
-        mediaType: "text/calendar",
+describe("processed meeting media", () => {
+  it("renders timestamped speakers and direct citations", () => {
+    const media: ProcessedMeetingMediaView = {
+      processingStatus: "ready",
+      operationJobId: "media-job-1",
+      rawAudioDeletedAt: "2026-09-08T10:05:00.000Z",
+      updatedAt: "2026-09-08T10:05:00.000Z",
+      output: {
+        mediaRevisionId: "recording-1:media:v1",
+        processedAt: "2026-09-08T10:05:00.000Z",
+        languageTags: ["en-US"],
+        turns: [{
+          turnId: `media-turn:${"a".repeat(64)}`,
+          startMilliseconds: 65_000,
+          endMilliseconds: 68_000,
+          languageTag: "en-US",
+          speaker: {
+            label: "A",
+            identity: "known",
+            participantId: "participant:owner",
+            displayName: "Owner",
+          },
+          text: "We approved the launch.",
+        }],
+        chapters: [],
+        summary: {
+          text: "The launch was approved.",
+          citations: [{
+            turnId: `media-turn:${"a".repeat(64)}`,
+            segmentIndex: 0,
+            startMilliseconds: 65_000,
+            endMilliseconds: 68_000,
+            speakerLabel: "A",
+            speakerParticipantId: "participant:owner",
+          }],
+        },
+        actionItems: [],
+        decisions: [],
+        warnings: [],
       },
-    });
-    expect(link).toMatchObject({
-      kind: "calendar_event",
-      sourceId: "source-item-1",
-      sourceRevisionId: "source-revision-1",
-      mediaRole: "calendar",
-    });
-  });
-
-  it("lets the server bind a captured recording to its current exact digest", () => {
-    const link = meetingSourceLinkFromLibrary({
-      id: "library:recording:recording-1",
-      kind: "recording",
-      sourceAuthority: "capture_recording",
-      sourceId: "recording-1",
-      title: "Recorded call",
-      sourceLabel: "Capture",
-      status: "ready",
-      currentVersion: {
-        sourceRevisionId: null,
-        mediaType: "audio/webm",
-      },
-    });
-    expect(link.kind).toBe("capture_recording");
-    expect(link.mediaRole).toBe("recording");
-    expect(link.sourceRevisionId).toBeUndefined();
-  });
-
-  it("timestamps explicit consent and clears the timestamp when consent is unknown", () => {
-    const participant = {
-      participantId: "participant-1",
-      displayName: "Customer",
-      email: null,
-      entityId: null,
-      role: "required" as const,
-      response: "accepted" as const,
-      attendeeConsent: "granted" as const,
-      recordingConsent: "pending" as const,
-      consentCapturedAt: null,
-      source: "manual" as const,
     };
-    const captured = normalizeMeetingParticipantConsent(participant);
-    expect(captured.consentCapturedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(normalizeMeetingParticipantConsent({
-      ...captured,
-      attendeeConsent: "unknown",
-      recordingConsent: "unknown",
-    }).consentCapturedAt).toBeNull();
+
+    const html = renderToStaticMarkup(createElement(ProcessedMeetingMedia, {
+      label: "Customer call",
+      media,
+    }));
+
+    expect(html).toContain("The launch was approved.");
+    expect(html).toContain("1:05 · Speaker A");
+    expect(html).toContain("Owner");
+    expect(html).toContain("We approved the launch.");
+    expect(html).toContain("Raw audio deleted");
+  });
+
+  it("shows durable background status before an output revision exists", () => {
+    const html = renderToStaticMarkup(createElement(ProcessedMeetingMedia, {
+      label: "Research interview",
+      media: {
+        processingStatus: "waiting",
+        operationJobId: "media-job-2",
+        rawAudioDeletedAt: null,
+        updatedAt: "2026-09-08T10:05:00.000Z",
+        output: null,
+      },
+    }));
+
+    expect(html).toContain("continuing in the background");
+    expect(html).toContain("waiting");
   });
 });

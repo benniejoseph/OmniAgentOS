@@ -37,6 +37,12 @@ vi.mock("@/lib/db/client", () => {
 vi.mock("@/lib/events/store", () => ({ appendScopedDomainEvent: mocks.event }));
 
 import { buildMeetingRevision } from "@/lib/meetings/contracts";
+import {
+  mediaCitationForTurn,
+  mediaTurnId,
+  sha256Json,
+  withCaptureMediaOutputDigest,
+} from "@/lib/capture/media-contracts";
 import { readMeetingLinkedSources, saveMeeting } from "@/lib/meetings/store";
 
 function authority(idempotencyKey = "meeting-write-1") {
@@ -270,5 +276,139 @@ describe("meeting store", () => {
     expect(view.transcript).toBeNull();
     expect(mocks.queries.some((query) => query.text.includes("FROM omni_capture_segments")))
       .toBe(false);
+  });
+
+  it("exposes the immutable processed media revision bound to the meeting", async () => {
+    const meetingId = "meeting:44444444-4444-4444-8444-444444444444";
+    const linkedMeeting = buildMeetingRevision({
+      tenantId: "tenant-a",
+      workspaceId,
+      ownerActorId: actorId,
+      meetingId,
+      revision: 1,
+      revisedAt: timestamp,
+      definition: {
+        ...draft(),
+        participants: [{
+          participantId: "participant:owner",
+          displayName: "Owner",
+          email: null,
+          entityId: null,
+          role: "organizer",
+          response: "accepted",
+          attendeeConsent: "granted",
+          recordingConsent: "granted",
+          consentCapturedAt: timestamp,
+          source: "manual",
+        }],
+        sourceLinks: [{
+          linkId: "link:recording",
+          kind: "capture_recording",
+          sourceId: "recording-1",
+          sourceRevisionId: `capture-recording-revision:${"f".repeat(64)}`,
+          sourceRevisionSha256: "f".repeat(64),
+          sourceAuthoritySha256: "e".repeat(64),
+          accessClass: "owner_private",
+          mediaRole: "recording",
+          label: "Recording",
+        }],
+      },
+    });
+    const turnInput = {
+      segmentId: "segment-1",
+      segmentIndex: 0,
+      sourceAudioSha256: "a".repeat(64),
+      startMilliseconds: 1_000,
+      endMilliseconds: 3_000,
+      languageTag: "en-US",
+      speaker: {
+        label: "A",
+        identity: "known" as const,
+        participantId: "participant:owner",
+        displayName: "Owner",
+      },
+      text: "We approved the launch.",
+    };
+    const turn = { ...turnInput, turnId: mediaTurnId(turnInput) };
+    const output = withCaptureMediaOutputDigest({
+      schemaVersion: 1,
+      tenantId: "tenant-a",
+      ownerActorId: actorId,
+      recordingId: "recording-1",
+      meetingId,
+      mediaRevision: 1,
+      mediaRevisionId: "recording-1:media:v1",
+      sourceAudioManifestSha256: sha256Json([turn.sourceAudioSha256]),
+      transcriptionModel: "gpt-4o-transcribe-diarize",
+      extractionModel: "gpt-5",
+      languageTags: ["en-US"],
+      turns: [turn],
+      chapters: [],
+      summary: {
+        text: "The launch was approved.",
+        citations: [mediaCitationForTurn(turn)],
+      },
+      actionItems: [],
+      decisions: [],
+      warnings: [],
+      rawAudioRetention: { mode: "delete_after_processing" },
+      processedAt: "2026-09-08T11:02:00.000Z",
+    });
+    mocks.responses.push(
+      [{
+        id: "recording-1",
+        actor_id: actorId,
+        status: "ready",
+        language: "en-US",
+        started_at: timestamp,
+        completed_at: "2026-09-08T11:00:00.000Z",
+        duration_ms: 3_600_000,
+        byte_count: 100,
+        segment_count: 1,
+        transcript: "Processed content",
+        source: "capture:recording:recording-1",
+        knowledge_document_id: "document-1",
+        ingest_job_id: "ingest-1",
+        updated_at: "2026-09-08T11:02:00.000Z",
+      }],
+      [{
+        tenant_id: "tenant-a",
+        owner_actor_id: actorId,
+        recording_id: "recording-1",
+        meeting_id: meetingId,
+        processing_status: "ready",
+        processing_generation: 3,
+        operation_job_id: "media-job-1",
+        output_snapshot: output,
+        raw_audio_retention_mode: "delete_after_processing",
+        raw_audio_retain_until: null,
+        raw_audio_deleted_at: "2026-09-08T11:02:01.000Z",
+        last_error_sha256: null,
+        created_at: "2026-09-08T11:00:00.000Z",
+        updated_at: "2026-09-08T11:02:01.000Z",
+      }],
+    );
+
+    const [view] = await readMeetingLinkedSources({
+      tenantId: "tenant-a",
+      workspaceId,
+      canonicalActorId: actorId,
+      readableActorIds: [actorId],
+    }, linkedMeeting);
+
+    expect(view.media).toMatchObject({
+      processingStatus: "ready",
+      operationJobId: "media-job-1",
+      rawAudioDeletedAt: "2026-09-08T11:02:01.000Z",
+      output: {
+        mediaRevisionId: "recording-1:media:v1",
+        outputSha256: output.outputSha256,
+        summary: { text: "The launch was approved." },
+      },
+    });
+    expect(mocks.queries.some((query) =>
+      query.text.includes("FROM omni_capture_media_heads") &&
+      query.text.includes("meeting_id =")
+    )).toBe(true);
   });
 });

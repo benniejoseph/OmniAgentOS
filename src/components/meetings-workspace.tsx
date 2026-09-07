@@ -91,6 +91,56 @@ type Meeting = {
   followUps: FollowUp[];
   revisedAt: string;
 };
+type MediaCitation = {
+  turnId: string;
+  segmentIndex: number;
+  startMilliseconds: number;
+  endMilliseconds: number;
+  speakerLabel: string;
+  speakerParticipantId?: string;
+};
+type MediaTurn = {
+  turnId: string;
+  startMilliseconds: number;
+  endMilliseconds: number;
+  languageTag: string;
+  speaker: {
+    label: string;
+    identity: "known" | "diarized" | "unknown";
+    participantId?: string;
+    displayName?: string;
+  };
+  text: string;
+};
+type CitedMediaText = { text: string; citations: MediaCitation[] };
+export type ProcessedMeetingMediaView = {
+  processingStatus: "queued" | "processing" | "waiting" | "ready" | "failed";
+  operationJobId: string;
+  rawAudioDeletedAt: string | null;
+  updatedAt: string;
+  output: null | {
+    mediaRevisionId: string;
+    processedAt: string;
+    languageTags: string[];
+    turns: MediaTurn[];
+    chapters: Array<CitedMediaText & {
+      chapterId: string;
+      title: string;
+      startMilliseconds: number;
+      endMilliseconds: number;
+    }>;
+    summary: CitedMediaText;
+    actionItems: Array<CitedMediaText & {
+      actionItemId: string;
+      ownerParticipantId?: string;
+      dueAt?: string;
+      ownershipEvidence: "explicit" | "unconfirmed";
+      dueDateEvidence: "explicit" | "unconfirmed";
+    }>;
+    decisions: Array<CitedMediaText & { decisionId: string }>;
+    warnings: string[];
+  };
+};
 type LinkedSource = {
   linkId: string;
   kind: SourceLink["kind"];
@@ -105,6 +155,7 @@ type LinkedSource = {
   updatedAt: string | null;
   transcript: string | null;
   transcriptTruncated: boolean;
+  media: ProcessedMeetingMediaView | null;
   segments: Array<{ segmentIndex: number; mimeType: string; durationMs: number }>;
 };
 type WorkspaceContext = { workspaceId: string; accessLevel: string; canWrite: boolean };
@@ -379,7 +430,10 @@ function MeetingDetail({
   canWrite: boolean;
   onEdit: () => void;
 }) {
-  const transcriptSources = linkedSources.filter((source) => source.transcript);
+  const transcriptSources = linkedSources.filter((source) =>
+    source.transcript && !source.media?.output
+  );
+  const processedMedia = linkedSources.filter((source) => source.media);
   return (
     <div className={styles.detail}>
       <div className={styles.detailTopline}>
@@ -424,13 +478,19 @@ function MeetingDetail({
       </section>
 
       <section className={styles.section}>
-        <SectionHeading icon={<MessageSquareText size={17} />} eyebrow="Conversation record" title="Transcript" count={transcriptSources.length} />
-        {transcriptSources.length ? transcriptSources.map((source) => (
+        <SectionHeading icon={<MessageSquareText size={17} />} eyebrow="Cited conversation record" title="Processed media" count={processedMedia.length} />
+        {processedMedia.length ? processedMedia.map((source) => (
+          <ProcessedMeetingMedia
+            key={source.linkId}
+            label={source.label}
+            media={source.media!}
+          />
+        )) : transcriptSources.length ? transcriptSources.map((source) => (
           <article key={source.linkId} className={styles.transcript}>
             <div><strong>{source.label}</strong><span>{source.transcriptTruncated ? "First 500,000 characters" : "Exact linked revision"}</span></div>
             <p>{source.transcript}</p>
           </article>
-        )) : <EmptyLine>An exact recording transcript will appear here. Changed or unavailable revisions are never substituted silently.</EmptyLine>}
+        )) : <EmptyLine>Timestamped processing continues after the browser closes. A diarized transcript, chapters, and cited outcomes will appear here when ready.</EmptyLine>}
       </section>
 
       <div className={styles.twoColumn}>
@@ -449,6 +509,122 @@ function MeetingDetail({
         <SectionHeading icon={<CircleUserRound size={17} />} eyebrow="Customer context" title="Linked accounts and entities" count={meeting.entityLinks.length} />
         <div className={styles.entityList}>{meeting.entityLinks.map((entity) => <span key={entity.entityId}><strong>{entity.label}</strong><small>{entity.relationship} · {entity.entityType}</small></span>)}</div>
       </section> : null}
+    </div>
+  );
+}
+
+export function ProcessedMeetingMedia({
+  label,
+  media,
+}: {
+  label: string;
+  media: ProcessedMeetingMediaView;
+}) {
+  const output = media.output;
+  if (!output) {
+    return (
+      <article className={styles.mediaPending} data-status={media.processingStatus}>
+        {media.processingStatus === "failed"
+          ? <AlertTriangle size={18} />
+          : <Loader2 className="animate-spin" size={18} />}
+        <div>
+          <strong>{label}</strong>
+          <p>{media.processingStatus === "failed"
+            ? "Media processing needs attention. The original audio remains stored."
+            : "Audio is stored. Diarization, timestamping, chapters, and cited extraction are continuing in the background."}</p>
+        </div>
+        <span>{media.processingStatus}</span>
+      </article>
+    );
+  }
+  return (
+    <article className={styles.processedMedia}>
+      <header className={styles.mediaHeader}>
+        <div>
+          <p className={styles.eyebrow}>Immutable {output.mediaRevisionId}</p>
+          <h4>{label}</h4>
+          <p>{output.languageTags.join(" · ")} · processed {formatCompactDate(output.processedAt)}</p>
+        </div>
+        <div className={styles.badges}>
+          <span data-tone="completed"><Check size={12} /> Cited</span>
+          {media.rawAudioDeletedAt ? <span><ShieldCheck size={12} /> Raw audio deleted</span> : null}
+        </div>
+      </header>
+
+      <div className={styles.mediaSummary}>
+        <strong>Summary</strong>
+        <p>{output.summary.text}</p>
+        <MediaCitations citations={output.summary.citations} />
+      </div>
+
+      {output.chapters.length ? (
+        <div className={styles.mediaChapters}>
+          {output.chapters.map((chapter) => (
+            <section key={chapter.chapterId}>
+              <span>{formatMediaTimestamp(chapter.startMilliseconds)}–{formatMediaTimestamp(chapter.endMilliseconds)}</span>
+              <strong>{chapter.title}</strong>
+              <p>{chapter.text}</p>
+              <MediaCitations citations={chapter.citations} />
+            </section>
+          ))}
+        </div>
+      ) : null}
+
+      {output.actionItems.length || output.decisions.length ? (
+        <div className={styles.mediaInsights}>
+          <div>
+            <strong>Action items</strong>
+            {output.actionItems.length ? output.actionItems.map((item) => (
+              <section key={item.actionItemId}>
+                <p>{item.text}</p>
+                <small>{[
+                  item.ownerParticipantId ? "Explicit owner" : "Owner unconfirmed",
+                  item.dueAt ? `Due ${formatCompactDate(item.dueAt)}` : "Due date unconfirmed",
+                ].join(" · ")}</small>
+                <MediaCitations citations={item.citations} />
+              </section>
+            )) : <p className={styles.mutedLine}>No explicit action items found.</p>}
+          </div>
+          <div>
+            <strong>Decisions</strong>
+            {output.decisions.length ? output.decisions.map((decision) => (
+              <section key={decision.decisionId}>
+                <p>{decision.text}</p>
+                <MediaCitations citations={decision.citations} />
+              </section>
+            )) : <p className={styles.mutedLine}>No explicit decisions found.</p>}
+          </div>
+        </div>
+      ) : null}
+
+      <div className={styles.mediaTranscript}>
+        <div><strong>Speaker transcript</strong><span>{output.turns.length} timestamped turns</span></div>
+        <ol>
+          {output.turns.map((turn) => (
+            <li key={turn.turnId}>
+              <span>{formatMediaTimestamp(turn.startMilliseconds)}</span>
+              <strong>{turn.speaker.displayName || `Speaker ${turn.speaker.label}`}</strong>
+              <p>{turn.text}</p>
+              <small>{turn.languageTag}{turn.speaker.identity === "known" ? " · confirmed participant" : " · diarized label"}</small>
+            </li>
+          ))}
+        </ol>
+      </div>
+      {output.warnings.length ? (
+        <p className={styles.mediaWarning}><AlertTriangle size={13} /> {output.warnings.join(" · ")}</p>
+      ) : null}
+    </article>
+  );
+}
+
+function MediaCitations({ citations }: { citations: MediaCitation[] }) {
+  return (
+    <div className={styles.citations} aria-label="Transcript citations">
+      {citations.map((citation) => (
+        <span key={citation.turnId}>
+          {formatMediaTimestamp(citation.startMilliseconds)} · Speaker {citation.speakerLabel}
+        </span>
+      ))}
     </div>
   );
 }
@@ -573,6 +749,7 @@ function formatDateRange(start: string, end: string) { const first = new Date(st
 function formatTime(value: string) { return new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
 function formatCompactDate(value: string) { return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: new Date(value).getFullYear() === new Date().getFullYear() ? undefined : "numeric" }); }
 function formatDuration(ms: number) { const minutes = Math.round(ms / 60_000); return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes} min`; }
+function formatMediaTimestamp(ms: number) { const seconds = Math.max(0, Math.floor(ms / 1_000)); const hours = Math.floor(seconds / 3_600); const minutes = Math.floor((seconds % 3_600) / 60); const remainder = seconds % 60; return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${minutes}:${String(remainder).padStart(2, "0")}`; }
 function formatBytes(bytes: number) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1024 ** 2).toFixed(1)} MB`; }
 function toLocalInput(value: string) { const date = new Date(value); const offset = date.getTimezoneOffset() * 60_000; return new Date(date.getTime() - offset).toISOString().slice(0, 16); }
 function fromLocalInput(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString(); }

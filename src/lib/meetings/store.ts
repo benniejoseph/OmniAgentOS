@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
 import {
+  captureMediaHeadFromRow,
+  type CaptureMediaHead,
+} from "@/lib/capture/media-store";
+import type { CaptureMediaOutput } from "@/lib/capture/media-contracts";
+
+import {
   ensureDatabaseSchema,
   getSql,
   hasDatabaseUrl,
@@ -56,11 +62,20 @@ export type MeetingLinkedSourceView = Readonly<{
   updatedAt: string | null;
   transcript: string | null;
   transcriptTruncated: boolean;
+  media: MeetingProcessedMediaView | null;
   segments: readonly Readonly<{
     segmentIndex: number;
     mimeType: string;
     durationMs: number;
   }>[];
+}>;
+
+export type MeetingProcessedMediaView = Readonly<{
+  processingStatus: CaptureMediaHead["processingStatus"];
+  operationJobId: string;
+  rawAudioDeletedAt: string | null;
+  updatedAt: string;
+  output: CaptureMediaOutput | null;
 }>;
 
 export class MeetingConflictError extends Error {
@@ -155,7 +170,12 @@ export async function readMeetingLinkedSources(
     const views: MeetingLinkedSourceView[] = [];
     for (const link of meeting.sourceLinks) {
       if (link.kind === "capture_recording") {
-        views.push(await readCaptureRecordingView(getSql(), valid, link));
+        views.push(await readCaptureRecordingView(
+          getSql(),
+          valid,
+          meeting.meetingId,
+          link,
+        ));
       } else if (link.kind === "capture_asset") {
         views.push(await readCaptureAssetView(getSql(), valid, link));
       } else {
@@ -173,6 +193,7 @@ export async function readMeetingLinkedSources(
           updatedAt: null,
           transcript: null,
           transcriptTruncated: false,
+          media: null,
           segments: Object.freeze([]),
         }));
       }
@@ -502,6 +523,7 @@ async function resolveCaptureAssetLink(
 async function readCaptureRecordingView(
   sql: MeetingSql,
   authority: MeetingReadAuthority,
+  meetingId: string,
   link: MeetingSourceLink,
 ): Promise<MeetingLinkedSourceView> {
   const rows = await sql`
@@ -516,6 +538,18 @@ async function readCaptureRecordingView(
   `;
   const row = rows[0];
   if (!row) return unavailableLinkedSource(link);
+  const mediaRows = await sql`
+    SELECT *
+    FROM omni_capture_media_heads
+    WHERE tenant_id = ${authority.tenantId}
+      AND owner_actor_id = ${String(row.actor_id)}
+      AND recording_id = ${link.sourceId}
+      AND meeting_id = ${meetingId}
+    LIMIT 1
+  `;
+  const media = mediaRows[0]
+    ? meetingProcessedMediaView(captureMediaHeadFromRow(mediaRows[0]))
+    : null;
   const body = captureRecordingRevisionBody(authority.tenantId, row);
   const revisionState = canonicalJsonSha256(body) === link.sourceRevisionSha256
     ? "exact" as const
@@ -547,6 +581,7 @@ async function readCaptureRecordingView(
     updatedAt: timestamp(row.updated_at),
     transcript: revisionState === "exact" ? boundedTranscript : null,
     transcriptTruncated: revisionState === "exact" && boundedTranscript.length < transcript.length,
+    media,
     segments: Object.freeze(segmentRows.map((segment) => Object.freeze({
       segmentIndex: Number(segment.segment_index),
       mimeType: String(segment.mime_type),
@@ -590,6 +625,7 @@ async function readCaptureAssetView(
     updatedAt: timestamp(row.updated_at),
     transcript: null,
     transcriptTruncated: false,
+    media: null,
     segments: Object.freeze([]),
   });
 }
@@ -609,7 +645,20 @@ function unavailableLinkedSource(link: MeetingSourceLink): MeetingLinkedSourceVi
     updatedAt: null,
     transcript: null,
     transcriptTruncated: false,
+    media: null,
     segments: Object.freeze([]),
+  });
+}
+
+function meetingProcessedMediaView(
+  head: CaptureMediaHead,
+): MeetingProcessedMediaView {
+  return Object.freeze({
+    processingStatus: head.processingStatus,
+    operationJobId: head.operationJobId,
+    rawAudioDeletedAt: head.rawAudioDeletedAt || null,
+    updatedAt: head.updatedAt,
+    output: head.output || null,
   });
 }
 
