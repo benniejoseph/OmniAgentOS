@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("OAuth provider authorization", () => {
-  it("creates a read-only PKCE authorization bound to the actor", () => {
+  it("creates a least-privilege PKCE authorization bound to the actor", () => {
     process.env.GOOGLE_OAUTH_CLIENT_ID = "client-id";
     process.env.GOOGLE_OAUTH_CLIENT_SECRET = "client-secret";
     process.env.NEXT_PUBLIC_APP_URL = "https://omni.example";
@@ -18,6 +18,7 @@ describe("OAuth provider authorization", () => {
     expect(url.origin).toBe("https://accounts.google.com");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("scope")).toContain("gmail.readonly");
+    expect(url.searchParams.get("scope")).toContain("gmail.send");
     expect(url.searchParams.get("scope")).toContain("drive.readonly");
     expect(url.searchParams.get("scope")).not.toContain("gmail.modify");
     const state = openOAuthState("google", url.searchParams.get("state") || "");
