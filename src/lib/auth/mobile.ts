@@ -932,6 +932,14 @@ function mobileIdentity(session: MobileSessionRecord, identity: Pick<AuthSession
   return { session, user: identity.user, tenant: identity.tenant, membership: identity.membership, context: {
     tenantId: identity.tenant.id, actorId: identity.user.email, role: identity.membership.role, source: "mobile",
     auth: { userId: identity.user.id, email: identity.user.email, sessionId: session.id, tenantName: identity.tenant.name },
+    native: {
+      deviceId: session.device.id,
+      platform: session.device.platform,
+      appVersion: session.device.appVersion,
+      buildNumber: session.device.buildNumber,
+      clientContractVersion: session.device.clientContractVersion,
+      clientAttestedAt: session.clientAttestedAt,
+    },
   } };
 }
 

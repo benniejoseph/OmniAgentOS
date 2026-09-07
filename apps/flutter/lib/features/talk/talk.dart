@@ -103,13 +103,51 @@ class TalkController extends ChangeNotifier {
   String? threadId;
   String? status;
   bool sending = false;
-  Future<void> send(String input, {String mode = 'orchestrate'}) async {
+  Future<void> send(
+    String input, {
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+  }) async {
+    return _send(input, mode: mode, strategy: strategy);
+  }
+
+  String? _retryInput;
+  String? _retryMode;
+  String? _retryStrategy;
+
+  bool get canRetry => !sending && _retryInput != null;
+
+  Future<void> retryLast() async {
+    final input = _retryInput;
+    if (input == null || sending) return;
+    await _send(
+      input,
+      mode: _retryMode ?? 'orchestrate',
+      strategy: _retryStrategy ?? 'auto',
+      replaceFailedResponse: true,
+    );
+  }
+
+  Future<void> _send(
+    String input, {
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    bool replaceFailedResponse = false,
+  }) async {
     final text = input.trim();
     if (text.isEmpty || sending) return;
-    messages.add(TalkMessage(role: TalkRole.user, text: text));
-    messages.add(
-      const TalkMessage(role: TalkRole.assistant, text: '', streaming: true),
-    );
+    if (replaceFailedResponse && messages.lastOrNull?.failed == true) {
+      messages[messages.length - 1] = const TalkMessage(
+        role: TalkRole.assistant,
+        text: '',
+        streaming: true,
+      );
+    } else {
+      messages.add(TalkMessage(role: TalkRole.user, text: text));
+      messages.add(
+        const TalkMessage(role: TalkRole.assistant, text: '', streaming: true),
+      );
+    }
     sending = true;
     status = 'Connecting';
     notifyListeners();
@@ -118,6 +156,7 @@ class TalkController extends ChangeNotifier {
         message: text,
         threadId: threadId,
         mode: mode,
+        strategy: strategy,
       )) {
         if (event.data['threadId'] is String) {
           threadId = event.data['threadId'] as String;
@@ -152,6 +191,9 @@ class TalkController extends ChangeNotifier {
         }
         notifyListeners();
       }
+      _retryInput = null;
+      _retryMode = null;
+      _retryStrategy = null;
     } catch (_) {
       messages[messages.length - 1] = messages.last.copyWith(
         text: messages.last.text.isEmpty
@@ -160,6 +202,9 @@ class TalkController extends ChangeNotifier {
         streaming: false,
         failed: true,
       );
+      _retryInput = text;
+      _retryMode = mode;
+      _retryStrategy = strategy;
     } finally {
       sending = false;
       status = null;
@@ -178,7 +223,7 @@ class TalkView extends StatefulWidget {
 class _TalkViewState extends State<TalkView> {
   final input = TextEditingController();
   final scroll = ScrollController();
-  String mode = 'orchestrate';
+  String strategy = 'auto';
   @override
   void dispose() {
     input.dispose();
@@ -189,7 +234,7 @@ class _TalkViewState extends State<TalkView> {
   void submit() {
     final value = input.text;
     input.clear();
-    widget.controller.send(value, mode: mode);
+    widget.controller.send(value, mode: 'orchestrate', strategy: strategy);
   }
 
   @override
@@ -296,7 +341,26 @@ class _TalkViewState extends State<TalkView> {
                                     strokeWidth: 2,
                                   ),
                                 )
-                              : SelectableText(m.text),
+                              : Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SelectableText(m.text),
+                                    if (m.failed &&
+                                        i ==
+                                            widget.controller.messages.length -
+                                                1) ...[
+                                      const SizedBox(height: 8),
+                                      TextButton.icon(
+                                        onPressed: widget.controller.canRetry
+                                            ? widget.controller.retryLast
+                                            : null,
+                                        icon: const Icon(Icons.refresh_rounded),
+                                        label: const Text('Retry'),
+                                      ),
+                                    ],
+                                  ],
+                                ),
                         ),
                       );
                     },
@@ -322,14 +386,14 @@ class _TalkViewState extends State<TalkView> {
                         children: [
                           _ModeChip(
                             label: 'Orchestrate',
-                            selected: mode == 'orchestrate',
-                            onTap: () => setState(() => mode = 'orchestrate'),
+                            selected: strategy == 'auto',
+                            onTap: () => setState(() => strategy = 'auto'),
                           ),
                           const SizedBox(width: 8),
                           _ModeChip(
                             label: 'Direct',
-                            selected: mode == 'direct',
-                            onTap: () => setState(() => mode = 'direct'),
+                            selected: strategy == 'direct',
+                            onTap: () => setState(() => strategy = 'direct'),
                           ),
                         ],
                       ),

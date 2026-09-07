@@ -12,6 +12,14 @@ export type SecurityContext = {
     sessionId: string;
     tenantName: string;
   };
+  native?: {
+    deviceId: string;
+    platform: "android" | "ios";
+    appVersion?: string;
+    buildNumber?: number;
+    clientContractVersion?: number;
+    clientAttestedAt?: string;
+  };
 };
 
 export type SecurityAuditRecord = {

@@ -9,6 +9,10 @@ import { recordSecurityAudit } from "@/lib/security/audit-store";
 import type { SecurityContext } from "@/lib/security/types";
 import { measureRequestStage } from "@/lib/observability/request-timing";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
+import {
+  nativeMutationEnrollment,
+  type NativeMutationCapability,
+} from "@/lib/auth/native-mutations";
 
 const safeRequestMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -19,6 +23,7 @@ export async function authorizeRequest({
   resourceId,
   riskLevel,
   metadata,
+  nativeMutationCapability,
   deferAllowedAuditToOutcome = false,
 }: {
   request: Request;
@@ -27,6 +32,8 @@ export async function authorizeRequest({
   resourceId?: string;
   riskLevel?: number;
   metadata?: Record<string, unknown>;
+  /** Explicit enrollment for one native mutation; omitted mutations stay held. */
+  nativeMutationCapability?: NativeMutationCapability;
   /**
    * Trusted system workers may authenticate a high-frequency poll without
    * writing a redundant allow row. The caller must persist any consequential
@@ -84,7 +91,7 @@ export async function authorizeRequest({
   }
 
   try {
-    assertTrustedSessionMutation(request, context);
+    assertTrustedSessionMutation(request, context, nativeMutationCapability);
     requirePermission(context, action);
     assertOutcomeManagedAllowedAudit(context, deferAllowedAuditToOutcome);
   } catch (error) {
@@ -168,16 +175,27 @@ export function shouldDeferAllowedAudit(
 
 export function assertTrustedSessionMutation(
   request: Request,
-  context?: Pick<SecurityContext, "source">,
+  context?: Pick<SecurityContext, "source" | "native">,
+  nativeMutationCapability?: NativeMutationCapability,
 ) {
   if (safeRequestMethods.has(request.method.toUpperCase())) {
     return;
   }
   if (context?.source === "mobile") {
-    throw new SecurityPolicyError(
-      "Native mutations remain held until capability enrollment is activated.",
-      403,
-    );
+    if (!nativeMutationCapability) {
+      throw new SecurityPolicyError(
+        "Native mutations remain held until capability enrollment is activated.",
+        403,
+      );
+    }
+    const enrollment = nativeMutationEnrollment(context, nativeMutationCapability);
+    if (enrollment.state !== "active") {
+      throw new SecurityPolicyError(
+        `Native mutation ${nativeMutationCapability} is held. ${enrollment.reason}`,
+        403,
+      );
+    }
+    return;
   }
   if (context && context.source !== "session") return;
 

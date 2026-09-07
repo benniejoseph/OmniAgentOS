@@ -234,6 +234,7 @@ async function POSTHandler(request: Request) {
       request,
       action: "run.agent",
       resourceType: "agent_run",
+      nativeMutationCapability: "conversation.send",
       metadata: {
         mode: parsed.data.mode || "orchestrate",
         messageCount: parsed.data.messages?.length || 1,
