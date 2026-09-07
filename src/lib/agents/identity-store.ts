@@ -636,18 +636,8 @@ async function resolveCanonicalOwnerActorId(
   sql: IdentitySql,
 ) {
   const rows = await sql`
-    SELECT DISTINCT identifier.canonical_actor_id
-    FROM omni_auth_user_actor_identifiers identifier
-    JOIN omni_auth_users auth_user
-      ON auth_user.actor_id = identifier.canonical_actor_id
-    JOIN omni_auth_memberships membership
-      ON membership.user_id = auth_user.id
-      AND membership.tenant_id = ${tenantId}
-      AND membership.status = 'active'
-    WHERE identifier.actor_identifier = ${actorId}
-      AND auth_user.status = 'active'
-    ORDER BY identifier.canonical_actor_id
-    LIMIT 2
+    SELECT owner_actor_id AS canonical_actor_id
+    FROM omni_ensure_personal_workspace_v1(${tenantId}, ${actorId})
   `;
   if (rows.length !== 1) {
     throw new AgentIdentityResolutionError(
@@ -690,11 +680,16 @@ async function resolveDefinitionSkills(
     ? await sql`
         SELECT skill.*
         FROM omni_custom_skills skill
-        JOIN omni_auth_user_actor_identifiers identifier
-          ON identifier.actor_identifier = skill.actor_id
-          AND identifier.canonical_actor_id = ${String(definitionRow.owner_actor_id)}
         WHERE skill.tenant_id = ${String(definitionRow.tenant_id)}
           AND skill.id = ANY(${customIds}::text[])
+          AND omni_actor_scope_v1_allows(
+            skill.tenant_id,
+            skill.actor_id
+          )
+          AND omni_actor_scope_v1_allows_canonical(
+            skill.tenant_id,
+            ${String(definitionRow.owner_actor_id)}
+          )
         ORDER BY skill.id
       `
     : [];

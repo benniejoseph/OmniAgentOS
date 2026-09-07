@@ -68,6 +68,11 @@ describe("P7.1 custom agent identity store", () => {
     expect(database.statements.some((value) =>
       /INSERT INTO omni_agent_principal_policies/.test(value.text)
     )).toBe(true);
+    expect(database.statements[0].text)
+      .toMatch(/omni_ensure_personal_workspace_v1/);
+    expect(database.statements.some((value) =>
+      /omni_auth_user_actor_identifiers/.test(value.text)
+    )).toBe(false);
     expect(database.statements.some((value) =>
       /SET state = 'active'/.test(value.text)
     )).toBe(true);
@@ -236,6 +241,78 @@ describe("P7.1 custom agent identity store", () => {
     expect(identity.principal.principalVersionId).toBe("agent:agent-one:g2");
     expect(identity.definition.declaredSkills[0].skillSha256)
       .toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("resolves custom skills through scoped actor functions", async () => {
+    const customSkill = {
+      id: "skill-one",
+      tenant_id: "tenant-one",
+      actor_id: "owner@example.test",
+      slug: "evidence",
+      name: "Evidence",
+      description: "Find exact evidence.",
+      instructions: "Use exact sources.",
+      category: "research",
+      status: "active",
+      version: 1,
+      tool_ids: ["runs.list"],
+      tags: [],
+      knowledge_tags: [],
+      created_at: "2026-09-07T01:00:00.000Z",
+      updated_at: "2026-09-07T01:00:00.000Z",
+    };
+    const database = fakeSql([[
+      {
+        schema_version: 1,
+        tenant_id: "tenant-one",
+        agent_definition_id: "agent-one",
+        definition_version: 3,
+        previous_definition_version: 2,
+        owner_actor_id: canonicalActorId,
+        slug: "researcher",
+        name: "Researcher",
+        role: "Research specialist",
+        description: "Finds exact evidence.",
+        instructions: "Use exact evidence.",
+        persona_profile: DEFAULT_CUSTOM_AGENT_PERSONA,
+        status: "ready",
+        accent: "blue",
+        model_policy: "openai_fast",
+        skill_ids: ["skill-one"],
+        published_at: "2026-09-07T04:00:00.000Z",
+        principal_id: "agent:agent-one",
+        principal_generation: 2,
+        controller_actor_id: canonicalActorId,
+        principal_state: "active",
+        principal_created_at: "2026-09-07T03:00:00.000Z",
+        principal_revoked_at: null,
+        authority_mode: "explicit_grants",
+        autonomy: "governed",
+        approval_policy: "risk_based",
+        memory_scope: "all",
+        tool_grant_ids: ["runs.list"],
+        context_grant_ids: [],
+        capability_grant_ids: [],
+        budget_policy_version_id: "agent-run-budget:2",
+        expires_at: null,
+      },
+    ], [customSkill]]);
+
+    const identity = await resolveCustomAgentIdentityWithSql({
+      tenantId: "tenant-one",
+      agentId: "agent-one",
+      ownerActorId: canonicalActorId,
+      sql: database.sql,
+    });
+
+    expect(identity.definition.declaredSkills).toHaveLength(1);
+    expect(identity.definition.declaredSkills[0].skillId).toBe("skill-one");
+    expect(database.statements[1].text)
+      .toMatch(/omni_actor_scope_v1_allows\(/);
+    expect(database.statements[1].text)
+      .toMatch(/omni_actor_scope_v1_allows_canonical/);
+    expect(database.statements[1].text)
+      .not.toMatch(/omni_auth_user_actor_identifiers/);
   });
 
   it("executes the exact evaluated snapshot after promotion", async () => {
