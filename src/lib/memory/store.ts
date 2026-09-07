@@ -1974,6 +1974,38 @@ export async function getMemoryDeletionReceipt(
 }
 
 /**
+ * Lists only deletion receipts explicitly attributed to one of the caller's
+ * already-resolved actor identities. Legacy-unattributed receipts are never
+ * folded into a personal overview because their ownership cannot be proven.
+ */
+export async function listAttributedMemoryDeletionReceipts(
+  options: {
+    tenantId?: string;
+    initiatingActorIds: readonly string[];
+    limit?: number;
+  },
+): Promise<MemoryDeletionReceiptV1[]> {
+  if (!hasDatabaseUrl()) return [];
+  await ensureDatabaseSchema();
+  const tenantId = normalizeTenantId(options.tenantId);
+  const initiatingActorIds = canonicalizeMemoryDeletionIds(
+    options.initiatingActorIds,
+  );
+  if (!initiatingActorIds.length) return [];
+  const limit = Math.min(Math.max(options.limit || 50, 1), 100);
+  const rows = await getSql()`
+    SELECT *
+    FROM omni_memory_deletion_receipts
+    WHERE tenant_id = ${tenantId}
+      AND attribution_kind = 'scope_bound'
+      AND initiating_actor_id = ANY(${initiatingActorIds}::text[])
+    ORDER BY forgotten_at DESC, id COLLATE "C"
+    LIMIT ${limit}
+  `;
+  return rows.map(memoryDeletionReceiptFromRow);
+}
+
+/**
  * Compatibility facade. Postgres callers must supply a scope; file-backed
  * callers retain the historical best-effort return shape.
  */

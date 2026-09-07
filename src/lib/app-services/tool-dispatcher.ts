@@ -31,6 +31,7 @@ import {
   updateMemoryLifecycleService,
   writeMemoryService,
 } from "@/lib/app-services/memory";
+import { showReadableMemoryService } from "@/lib/app-services/readable-memory";
 import {
   listSharedMemoryService,
   writeSharedMemoryService,
@@ -265,6 +266,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.work_items.create": () => createWorkItemService(caller, input.toolInput as never),
     "app.work_items.update": () => updateWorkItemService(caller, input.toolInput as never),
     "app.memory.list": () => listMemoryService(caller, input.toolInput as never),
+    "app.memory.readable.show": () => showReadableMemoryService(caller, input.toolInput as never),
     "app.memory.search": () => searchMemoryService(caller, input.toolInput as never),
     "app.memory.inspect": () => inspectMemoryService(caller, input.toolInput as never),
     "app.memory.write": () => writeMemoryService(caller, input.toolInput as never),

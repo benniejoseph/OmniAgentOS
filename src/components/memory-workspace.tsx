@@ -6,10 +6,11 @@ import {
   Archive,
   Brain,
   Check,
-  CircleDot,
+  Clock3,
   Database,
   Download,
-  GitMerge,
+  Eye,
+  FolderKanban,
   Loader2,
   Network,
   PanelLeftClose,
@@ -23,6 +24,7 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  Users,
   Wrench,
   X,
 } from "lucide-react";
@@ -49,7 +51,11 @@ import type {
   MemoryPromotionDecision,
   MemoryPromotionReview,
 } from "@/lib/memory/lifecycle";
-import type { MemoryGraphEdge, MemoryGraphNode, MemoryGraphStats, MemoryRecord, MemoryType } from "@/lib/memory/types";
+import type {
+  ReadableMemoryClaim,
+  ReadableMemoryOverview,
+} from "@/lib/memory/readable-overview";
+import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
 import {
   memoryScopePresentation,
   portableArchiveFilename,
@@ -58,7 +64,6 @@ import styles from "@/components/memory-workspace.module.css";
 
 type LoadState = "loading" | "ready" | "error";
 type SaveState = "idle" | "saving" | "saved" | "error";
-type PositionedNode = MemoryGraphNode & { x: number; y: number };
 type ForgetState = "idle" | "previewing" | "ready" | "deleting";
 type MemoryDeletionPreview = {
   expectedReceiptManifestSha256: string;
@@ -108,16 +113,15 @@ const memoryTiers = Object.keys(memoryTierPoliciesV1) as MemoryTier[];
 const userCreatableMemoryTiers = memoryTiers.filter((tier) => tier !== "working");
 
 export function MemoryWorkspace() {
-  const [memories, setMemories] = useState<MemoryRecord[]>([]);
-  const [nodes, setNodes] = useState<MemoryGraphNode[]>([]);
-  const [edges, setEdges] = useState<MemoryGraphEdge[]>([]);
-  const [stats, setStats] = useState<MemoryGraphStats>();
+  const [overview, setOverview] = useState<ReadableMemoryOverview>();
+  const [memories, setMemories] = useState<ReadableMemoryClaim[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [detailLoading, setDetailLoading] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [query, setQuery] = useState("");
   const [tierFilter, setTierFilter] = useState<MemoryTier | "all">("all");
   const [selectedMemoryId, setSelectedMemoryId] = useState<string>();
-  const [selectedNodeId, setSelectedNodeId] = useState<string>();
+  const [selectedMemory, setSelectedMemory] = useState<MemoryRecord>();
   const [draft, setDraft] = useState<{ title: string; content: string; confidence: number }>();
   const [showCreate, setShowCreate] = useState(false);
   const [showReconciliation, setShowReconciliation] = useState(false);
@@ -147,33 +151,18 @@ export function MemoryWorkspace() {
   const load = useCallback(async () => {
     setLoadState("loading");
     try {
-      const [memoryResponse, graphResponse, reconciliationResponse, maintenanceResponse] = await Promise.all([
-        fetch("/api/memory?limit=100", { cache: "no-store" }),
-        fetch("/api/memory/graph?limit=100", { cache: "no-store" }),
-        fetch("/api/memory/reconciliation?status=all&limit=100", {
-          cache: "no-store",
-        }),
-        fetch("/api/memory/maintenance?status=all&limit=100", {
-          cache: "no-store",
-        }),
-      ]);
-      if (!memoryResponse.ok || !graphResponse.ok || !reconciliationResponse.ok || !maintenanceResponse.ok) {
+      const response = await fetch("/api/memory/readable?limit=100", {
+        cache: "no-store",
+      });
+      if (!response.ok) {
         throw new Error("Memory workspace could not be loaded.");
       }
-      const memoryPayload = await memoryResponse.json() as { memories?: MemoryRecord[] };
-      const graphPayload = await graphResponse.json() as { nodes?: MemoryGraphNode[]; edges?: MemoryGraphEdge[]; stats?: MemoryGraphStats };
-      const reconciliationPayload = await reconciliationResponse.json() as {
-        reviews?: MemoryReconciliationReview[];
+      const payload = await response.json() as {
+        overview?: ReadableMemoryOverview;
       };
-      const maintenancePayload = await maintenanceResponse.json() as {
-        reviews?: MemoryPromotionReview[];
-      };
-      setMemories(memoryPayload.memories || []);
-      setNodes(graphPayload.nodes || []);
-      setEdges(graphPayload.edges || []);
-      setStats(graphPayload.stats);
-      setReconciliationReviews(reconciliationPayload.reviews || []);
-      setMaintenanceReviews(maintenancePayload.reviews || []);
+      if (!payload.overview) throw new Error("Memory overview is unavailable.");
+      setOverview(payload.overview);
+      setMemories(payload.overview.claims);
       setLoadState("ready");
       setError(undefined);
     } catch (loadError) {
@@ -199,15 +188,51 @@ export function MemoryWorkspace() {
     }
   }, []);
 
+  async function openEntityRegistry() {
+    await loadEntityRegistry();
+    setShowEntities(true);
+  }
+
+  async function openReconciliation() {
+    setError(undefined);
+    try {
+      const response = await fetch(
+        "/api/memory/reconciliation?status=all&limit=100",
+        { cache: "no-store" },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || "Memory reviews could not be loaded.");
+      }
+      setReconciliationReviews(payload.reviews || []);
+      setShowReconciliation(true);
+    } catch (reviewError) {
+      setError(message(reviewError));
+    }
+  }
+
+  async function openMaintenance() {
+    setError(undefined);
+    try {
+      const response = await fetch(
+        "/api/memory/maintenance?status=all&limit=100",
+        { cache: "no-store" },
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || "Memory maintenance could not be loaded.");
+      }
+      setMaintenanceReviews(payload.reviews || []);
+      setShowMaintenance(true);
+    } catch (maintenanceError) {
+      setError(message(maintenanceError));
+    }
+  }
+
   useEffect(() => {
     const task = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(task);
   }, [load]);
-
-  useEffect(() => {
-    const task = window.setTimeout(() => void loadEntityRegistry(), 0);
-    return () => window.clearTimeout(task);
-  }, [loadEntityRegistry]);
 
   const filtered = useMemo(() => {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -217,43 +242,50 @@ export function MemoryWorkspace() {
         resolveMemoryTier(memory.tier, memory.type) !== tierFilter
       ) return false;
       if (!terms.length) return true;
-      const haystack = `${memory.title} ${memory.content} ${memory.tags.join(" ")} ${memory.source}`.toLowerCase();
+      const haystack = `${memory.title} ${memory.type} ${memory.tier} ${memory.provenance} ${memory.sourceKind}`.toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
   }, [memories, query, tierFilter]);
-  const selectedMemory = memories.find((memory) => memory.id === selectedMemoryId);
   const selectedMemoryScope = selectedMemory
     ? memoryScopePresentation(selectedMemory)
     : undefined;
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId);
-  const positionedNodes = useMemo(() => positionGraphNodes(nodes.slice(0, 42)), [nodes]);
-  const visibleNodeIds = useMemo(() => new Set(positionedNodes.map((node) => node.id)), [positionedNodes]);
-  const visibleEdges = edges.filter((edge) => visibleNodeIds.has(edge.sourceNodeId) && visibleNodeIds.has(edge.targetNodeId)).slice(0, 90);
   const pendingEntityReviews = countPendingEntityMergeReviews(entityRegistry);
-  const pendingMemoryReviews = reconciliationReviews.filter(
-    (review) => review.status === "pending",
-  ).length;
+  const pendingMemoryReviews = overview?.conflicts.pending || 0;
   const pendingPromotionReviews = maintenanceReviews.filter(
     (review) => review.status === "pending",
   ).length;
 
-  function selectMemory(memory: MemoryRecord) {
+  async function selectMemory(memory: Pick<ReadableMemoryClaim, "id">) {
     setSelectedMemoryId(memory.id);
-    setSelectedNodeId(undefined);
-    setDraft({ title: memory.title, content: memory.content, confidence: memory.confidence ?? 0.7 });
+    setSelectedMemory(undefined);
+    setDraft(undefined);
+    setDetailLoading(true);
     setForgetState("idle");
     setForgetPreview(undefined);
     setDeletionResult(undefined);
     setSaveState("idle");
-  }
-
-  function selectNode(node: MemoryGraphNode) {
-    const linkedMemory = memories.find((memory) => node.memoryIds.includes(memory.id));
-    if (linkedMemory) selectMemory(linkedMemory);
-    else {
-      setSelectedNodeId(node.id);
+    setError(undefined);
+    try {
+      const response = await fetch(
+        `/api/memory/${encodeURIComponent(memory.id)}`,
+        { cache: "no-store" },
+      );
+      const payload = await response.json();
+      if (!response.ok || !payload.memory) {
+        throw new Error(payload.message || payload.error || "Memory detail could not be loaded.");
+      }
+      const exact = payload.memory as MemoryRecord;
+      setSelectedMemory(exact);
+      setDraft({
+        title: exact.title,
+        content: exact.content,
+        confidence: exact.confidence ?? 0.7,
+      });
+    } catch (selectionError) {
       setSelectedMemoryId(undefined);
-      setDraft(undefined);
+      setError(message(selectionError));
+    } finally {
+      setDetailLoading(false);
     }
   }
 
@@ -304,10 +336,6 @@ export function MemoryWorkspace() {
       const corrected = payload.corrected as MemoryRecord;
       const review = payload.review as MemoryReconciliationReview | undefined;
       if (review?.status === "pending") {
-        setMemories((current) => [
-          corrected,
-          ...current.filter((item) => item.id !== corrected.id),
-        ]);
         setReconciliationReviews((current) => [
           review,
           ...current.filter((item) => item.id !== review.id),
@@ -323,15 +351,16 @@ export function MemoryWorkspace() {
         setAnnouncement(
           "Contradiction held for review. The existing claim remains active.",
         );
+        void load();
         return;
       }
-      setMemories((current) => [corrected, ...current.map((item) => item.id === selectedMemory.id ? { ...item, claimStatus: "superseded" as const } : item)]);
       setSelectedMemoryId(corrected.id);
+      setSelectedMemory(corrected);
       setDraft({ title: corrected.title, content: corrected.content, confidence: corrected.confidence ?? 0.7 });
       setSaveState("saved");
       setAnnouncement("Memory corrected. The previous claim remains in its provenance lineage.");
       void refreshGraph();
-      void loadEntityRegistry();
+      void load();
     } catch (saveError) {
       setSaveState("error");
       setError(message(saveError));
@@ -342,28 +371,9 @@ export function MemoryWorkspace() {
     setReconciliationReviews((current) => current.map((item) =>
       item.id === review.id ? review : item
     ));
-    setMemories((current) => {
-      const replacements = new Map<string, MemoryRecord>([
-        [review.candidate.id, review.candidate],
-        ...(review.existing
-          ? [[review.existing.id, review.existing] as [string, MemoryRecord]]
-          : []),
-      ]);
-      const seen = new Set<string>();
-      const next = current.map((memory) => {
-        const replacement = replacements.get(memory.id);
-        if (!replacement) return memory;
-        seen.add(memory.id);
-        return replacement;
-      });
-      for (const [id, memory] of replacements) {
-        if (!seen.has(id)) next.unshift(memory);
-      }
-      return next;
-    });
     setAnnouncement(reconciliationDecisionAnnouncement(review));
     void refreshGraph();
-    void loadEntityRegistry();
+    void load();
   }
 
   async function requestForgetPreview() {
@@ -404,13 +414,14 @@ export function MemoryWorkspace() {
       setDeletionResult(payload as MemoryDeletionResult);
       setMemories((current) => current.filter((item) => item.id !== selectedMemory.id));
       setSelectedMemoryId(undefined);
+      setSelectedMemory(undefined);
       setDraft(undefined);
       setForgetState("idle");
       setForgetPreview(undefined);
       setSaveState("idle");
       setAnnouncement("Memory deletion committed. Its receipt and affected projection counts are available.");
       void refreshGraph();
-      void loadEntityRegistry();
+      void load();
     } catch (forgetError) {
       setForgetState("ready");
       setSaveState("error");
@@ -422,9 +433,6 @@ export function MemoryWorkspace() {
     try {
       const response = await fetch("/api/memory/graph", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: "memory-workspace" }) });
       if (!response.ok) throw new Error("Graph rebuild failed.");
-      const graphResponse = await fetch("/api/memory/graph?limit=100", { cache: "no-store" });
-      const payload = await graphResponse.json() as { nodes?: MemoryGraphNode[]; edges?: MemoryGraphEdge[]; stats?: MemoryGraphStats };
-      setNodes(payload.nodes || []); setEdges(payload.edges || []); setStats(payload.stats);
     } catch (graphError) { setError(message(graphError)); }
   }
 
@@ -446,10 +454,13 @@ export function MemoryWorkspace() {
         throw new Error(payload.message || payload.error || "Lifecycle update failed.");
       }
       const updated = payload.memory as MemoryRecord;
-      setMemories((current) => current.map((memory) =>
-        memory.id === updated.id ? updated : memory
-      ));
-      selectMemory(updated);
+      setSelectedMemory(updated);
+      setDraft({
+        title: updated.title,
+        content: updated.content,
+        confidence: updated.confidence ?? 0.7,
+      });
+      void load();
       setAnnouncement(
         action === "pin"
           ? "Memory pinned. Priority decay is paused while the claim remains unchanged."
@@ -515,12 +526,9 @@ export function MemoryWorkspace() {
         item.id === resolved.id ? resolved : item
       ));
       if (payload.promotedMemory) {
-        const promoted = payload.promotedMemory as MemoryRecord;
-        setMemories((current) => [
-          promoted,
-          ...current.filter((memory) => memory.id !== promoted.id),
-        ]);
+        setSelectedMemory(payload.promotedMemory as MemoryRecord);
       }
+      void load();
       setAnnouncement(decision === "promote"
         ? "Verified episodes promoted to a procedure with review lineage."
         : "Procedure promotion dismissed; source episodes remain unchanged.");
@@ -540,12 +548,12 @@ export function MemoryWorkspace() {
           <div><p>Knowledge workspace</p><h1>Memory</h1><span>Review what agents can recall, trace every source, and correct outdated knowledge.</span></div>
         </div>
         <div className={clsx("memory-studio-stats", styles.stats)}>
-          <div className={styles.stat}><Database size={14} aria-hidden="true" /><span><strong>{memories.length}</strong><small>Memories</small></span></div>
-          <div className={styles.stat}><Brain size={14} aria-hidden="true" /><span><strong>{stats?.nodes || 0}</strong><small>Concepts</small></span></div>
-          <div className={styles.stat}><Network size={14} aria-hidden="true" /><span><strong>{stats?.edges || 0}</strong><small>Links</small></span></div>
-          <button type="button" className={clsx(styles.stat, styles.entityTrigger)} onClick={() => setShowEntities(true)}><GitMerge size={14} aria-hidden="true" /><span><strong>{entityRegistry?.entities.length || 0}</strong><small>{pendingEntityReviews ? `${pendingEntityReviews} to review` : "Entities"}</small></span></button>
-          <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingMemoryReviews > 0 && styles.reviewTriggerPending)} onClick={() => setShowReconciliation(true)}><AlertTriangle size={14} aria-hidden="true" /><span><strong>{pendingMemoryReviews}</strong><small>{pendingMemoryReviews === 1 ? "Claim to review" : "Claims to review"}</small></span></button>
-          <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingPromotionReviews > 0 && styles.reviewTriggerPending)} onClick={() => setShowMaintenance(true)}><Wrench size={14} aria-hidden="true" /><span><strong>{pendingPromotionReviews}</strong><small>{pendingPromotionReviews === 1 ? "Promotion to review" : "Promotions to review"}</small></span></button>
+          <div className={styles.stat}><Database size={14} aria-hidden="true" /><span><strong>{overview?.summary.claims || 0}</strong><small>Claims</small></span></div>
+          <div className={styles.stat}><Brain size={14} aria-hidden="true" /><span><strong>{overview?.summary.active || 0}</strong><small>Active</small></span></div>
+          <div className={styles.stat}><Clock3 size={14} aria-hidden="true" /><span><strong>{overview?.summary.recentUses || 0}</strong><small>Recent uses</small></span></div>
+          <button type="button" className={clsx(styles.stat, styles.entityTrigger)} onClick={() => void openEntityRegistry()}><Users size={14} aria-hidden="true" /><span><strong>{(overview?.entities.people || 0) + (overview?.entities.projects || 0)}</strong><small>{pendingEntityReviews ? `${pendingEntityReviews} to review` : "People & projects"}</small></span></button>
+          <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingMemoryReviews > 0 && styles.reviewTriggerPending)} onClick={() => void openReconciliation()}><AlertTriangle size={14} aria-hidden="true" /><span><strong>{pendingMemoryReviews}</strong><small>{pendingMemoryReviews === 1 ? "Claim to review" : "Claims to review"}</small></span></button>
+          <button type="button" className={clsx(styles.stat, styles.entityTrigger, pendingPromotionReviews > 0 && styles.reviewTriggerPending)} onClick={() => void openMaintenance()}><Wrench size={14} aria-hidden="true" /><span><strong>{pendingPromotionReviews}</strong><small>Lifecycle</small></span></button>
           <button type="button" className={clsx(styles.stat, styles.entityTrigger)} disabled={exportBusy} onClick={() => void downloadMemoryArchive()} title="Download a verified portable archive without secrets or original assets"><Download size={14} aria-hidden="true" /><span><strong>{exportBusy ? "Preparing…" : "Export"}</strong><small>Portable archive</small></span></button>
           <button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> Add memory</button>
         </div>
@@ -563,22 +571,24 @@ export function MemoryWorkspace() {
             <div className="memory-search"><Search size={14} aria-hidden="true" /><label className="sr-only" htmlFor="memory-search">Search memory</label><input id="memory-search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="Search memories" /></div>
             <div className="memory-type-filter" aria-label="Memory tier filter"><button type="button" className={clsx(tierFilter === "all" && "is-selected")} onClick={() => setTierFilter("all")}>All</button>{memoryTiers.map((tier) => <button type="button" key={tier} className={clsx(tierFilter === tier && "is-selected")} onClick={() => setTierFilter(tier)}>{tier}</button>)}</div>
             <div className="memory-index-list">
-              {loadState === "loading" ? <div className="memory-index-empty"><Loader2 className="animate-spin" size={18} aria-hidden="true" /> Loading memory…</div> : filtered.length ? filtered.map((memory) => <button key={memory.id} type="button" className={clsx(selectedMemoryId === memory.id && "is-selected", `is-${memory.claimStatus || "active"}`)} onClick={() => selectMemory(memory)}><i /><span><strong>{memory.title}</strong><small>{resolveMemoryTier(memory.tier, memory.type)} · {memory.type} · {memory.pinnedAt ? "pinned" : memory.archivedAt ? "archived" : memory.source}</small><em>{Math.round((memory.confidence ?? .7) * 100)}% confidence</em></span></button>) : <div className="memory-index-empty"><Brain size={18} aria-hidden="true" /> No memories match this view.</div>}
+              {loadState === "loading" ? <div className="memory-index-empty"><Loader2 className="animate-spin" size={18} aria-hidden="true" /> Loading memory…</div> : filtered.length ? filtered.map((memory) => <button key={memory.id} type="button" className={clsx(selectedMemoryId === memory.id && "is-selected", `is-${memory.state}`)} onClick={() => void selectMemory(memory)}><i /><span><strong>{memory.title}</strong><small>{memory.tier} · {memory.type} · {memory.state}</small><em>{Math.round(memory.confidence * 100)}% confidence · details withheld</em></span></button>) : <div className="memory-index-empty"><Brain size={18} aria-hidden="true" /> No memories match this view.</div>}
             </div>
           </div>
         </aside>
 
-        <section className={clsx("memory-graph", styles.graph)} aria-label="Knowledge graph">
-          <div className="memory-graph-toolbar"><div className={styles.graphTitle}><span><GitMerge size={14} aria-hidden="true" /> Knowledge graph</span><small>{positionedNodes.length} visible concepts · {visibleEdges.length} relationships</small></div><div className={styles.graphActions}><button type="button" onClick={() => setShowRelationshipPaths(true)}><Network size={13} aria-hidden="true" /> Trace paths</button><button type="button" onClick={() => void refreshGraph()}><RefreshCw size={13} aria-hidden="true" /> Rebuild</button></div></div>
-          <svg viewBox="0 0 760 560" role="img" aria-label={`${positionedNodes.length} memory concepts connected by ${visibleEdges.length} visible relationships`}>
-            <g className="memory-graph-edges">{visibleEdges.map((edge) => { const source = positionedNodes.find((node) => node.id === edge.sourceNodeId); const target = positionedNodes.find((node) => node.id === edge.targetNodeId); return source && target ? <line key={edge.id} x1={source.x} y1={source.y} x2={target.x} y2={target.y} style={{ opacity: Math.min(.18 + edge.weight * .12, .65) }} /> : null; })}</g>
-            <g className="memory-graph-nodes">{positionedNodes.map((node) => <g key={node.id} role="button" tabIndex={0} aria-label={`${node.label}, ${node.kind}`} className={clsx(selectedNodeId === node.id && "is-selected", node.memoryIds.some((id) => id === selectedMemoryId) && "is-related", `kind-${node.kind}`)} transform={`translate(${node.x} ${node.y})`} onClick={() => selectNode(node)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") selectNode(node); }}><circle r={Math.min(8 + node.weight * 1.8, 20)} /><text y={Math.min(8 + node.weight * 1.8, 20) + 13} textAnchor="middle">{truncate(node.label, 22)}</text></g>)}</g>
-          </svg>
-          <div className="memory-graph-legend"><span><i className="kind-memory" /> Memory</span><span><i className="kind-concept" /> Concept</span><span><i className="kind-system" /> System</span><span><i className="kind-workflow" /> Workflow</span></div>
-        </section>
+        <MemoryOverviewPanel
+          overview={overview}
+          onSelectMemory={(id) => {
+            const claim = memories.find((memory) => memory.id === id);
+            if (claim) void selectMemory(claim);
+          }}
+          onShowEntities={() => void openEntityRegistry()}
+          onShowReviews={() => void openReconciliation()}
+          onShowRelationships={() => setShowRelationshipPaths(true)}
+        />
 
         <aside className={clsx("memory-inspector", styles.inspector)} aria-label="Memory details">
-          {selectedMemory && draft ? <>
+          {detailLoading ? <div className="memory-inspector-empty"><Loader2 className="animate-spin" size={26} aria-hidden="true" /><h2>Opening exact claim</h2><p>Content and provenance are disclosed only for the claim you selected.</p></div> : selectedMemory && draft ? <>
             <div className="memory-inspector-heading"><div><p>{resolveMemoryTier(selectedMemory.tier, selectedMemory.type)} · {selectedMemory.type}</p><h2>{selectedMemory.title}</h2></div><span className={clsx(`is-${selectedMemory.claimStatus || "active"}`)}>{selectedMemory.archivedAt ? "archived" : selectedMemory.pinnedAt ? "pinned" : selectedMemory.claimStatus || "active"}</span></div>
             <label>Title<input value={draft.title} onChange={(event) => { setDraft({ ...draft, title: event.currentTarget.value }); setSaveState("idle"); }} /></label>
             <label>Claim<textarea rows={9} value={draft.content} onChange={(event) => { setDraft({ ...draft, content: event.currentTarget.value }); setSaveState("idle"); }} /></label>
@@ -588,16 +598,79 @@ export function MemoryWorkspace() {
             <div className={styles.lifecycleActions} aria-label="Memory lifecycle controls"><button type="button" disabled={Boolean(maintenanceBusy) || Boolean(selectedMemory.archivedAt)} onClick={() => void updateLifecycle(selectedMemory.pinnedAt ? "unpin" : "pin")}>{maintenanceBusy === `memory:${selectedMemory.id}` ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : selectedMemory.pinnedAt ? <PinOff size={13} aria-hidden="true" /> : <Pin size={13} aria-hidden="true" />}{selectedMemory.pinnedAt ? "Unpin" : "Pin"}</button><button type="button" disabled={Boolean(maintenanceBusy) || Boolean(selectedMemory.pinnedAt)} onClick={() => void updateLifecycle(selectedMemory.archivedAt ? "restore" : "archive")}>{selectedMemory.archivedAt ? <RotateCcw size={13} aria-hidden="true" /> : <Archive size={13} aria-hidden="true" />}{selectedMemory.archivedAt ? "Restore" : "Archive"}</button></div>
             {forgetPreview ? <DeletionPreview preview={forgetPreview} /> : null}
             <div className="memory-inspector-actions"><button type="button" className="memory-save" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection()}>{saveState === "saving" && forgetState !== "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : saveState === "saved" ? <Check size={13} aria-hidden="true" /> : <Sparkles size={13} aria-hidden="true" />}{saveState === "saved" ? "Corrected" : "Save correction"}</button><button type="button" className="memory-cancel" disabled={saveState === "saving" || !draft.title.trim() || !draft.content.trim()} onClick={() => void saveCorrection(true)}><AlertTriangle size={13} aria-hidden="true" /> Flag contradiction</button><button type="button" className={clsx("memory-forget", forgetState === "ready" && "is-confirming")} disabled={forgetState === "previewing" || forgetState === "deleting"} onClick={() => forgetState === "ready" ? void forgetSelected() : void requestForgetPreview()}>{forgetState === "previewing" || forgetState === "deleting" ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}{forgetState === "previewing" ? "Checking impact" : forgetState === "deleting" ? "Committing deletion" : forgetState === "ready" ? "Forget permanently" : "Review forget impact"}</button>{forgetState === "ready" ? <button type="button" className="memory-cancel" onClick={() => { setForgetState("idle"); setForgetPreview(undefined); }}><X size={13} aria-hidden="true" /> Cancel</button> : null}</div>
-          </> : deletionResult ? <DeletionReceipt result={deletionResult} onClose={() => setDeletionResult(undefined)} /> : selectedNode ? <div className="memory-node-inspector"><CircleDot size={22} aria-hidden="true" /><p>{selectedNode.kind}</p><h2>{selectedNode.label}</h2><span>{selectedNode.summary}</span><dl><dt>Sources</dt><dd>{selectedNode.sourceCount}</dd><dt>Weight</dt><dd>{selectedNode.weight.toFixed(1)}</dd><dt>Memories</dt><dd>{selectedNode.memoryIds.length}</dd></dl></div> : <div className="memory-inspector-empty"><Brain size={26} aria-hidden="true" /><h2>Select a memory</h2><p>Inspect provenance, correct a claim, or forget information that should no longer influence your agents.</p></div>}
+          </> : deletionResult ? <DeletionReceipt result={deletionResult} onClose={() => setDeletionResult(undefined)} /> : <div className="memory-inspector-empty"><Eye size={26} aria-hidden="true" /><h2>Details stay private</h2><p>Select one claim to disclose its exact content, provenance, lifecycle controls, and deletion impact.</p></div>}
         </aside>
       </div>
-      {showCreate ? <CreateMemoryDialog onClose={() => setShowCreate(false)} onCreated={(memory, projection) => { setShowCreate(false); setMemories((current) => [memory, ...current]); selectMemory(memory); setAnnouncement(projection?.candidateCount ? `Memory added. ${projection.createdCount} new and ${projection.linkedCount} existing private entities matched; ${projection.reviewRequiredCount} require review.` : "Memory added."); void refreshGraph(); void loadEntityRegistry(); }} /> : null}
+      {showCreate ? <CreateMemoryDialog onClose={() => setShowCreate(false)} onCreated={(memory, projection) => { setShowCreate(false); setSelectedMemoryId(memory.id); setSelectedMemory(memory); setDraft({ title: memory.title, content: memory.content, confidence: memory.confidence ?? .7 }); setAnnouncement(projection?.candidateCount ? `Memory added. ${projection.createdCount} new and ${projection.linkedCount} existing private entities matched; ${projection.reviewRequiredCount} require review.` : "Memory added."); void refreshGraph(); void load(); }} /> : null}
       {showRelationshipPaths ? <RelationshipPathDialog initialQuery={selectedMemory?.title || query} onClose={() => setShowRelationshipPaths(false)} /> : null}
       {showEntities ? <EntityRegistryDialog registry={entityRegistry} loadError={entityRegistryError} onClose={() => setShowEntities(false)} onReload={loadEntityRegistry} onAnnouncement={setAnnouncement} /> : null}
       {showReconciliation ? <MemoryReconciliationDialog reviews={reconciliationReviews} onClose={() => setShowReconciliation(false)} onResolved={recordResolvedReview} /> : null}
       {showMaintenance ? <MemoryMaintenanceDialog reviews={maintenanceReviews} memories={memories} report={maintenanceReport} busyId={maintenanceBusy} onRun={() => void runMaintenance()} onDecision={(review, decision) => void decidePromotion(review, decision)} onClose={() => setShowMaintenance(false)} /> : null}
     </main>
   );
+}
+
+export function MemoryOverviewPanel({
+  overview,
+  onSelectMemory,
+  onShowEntities,
+  onShowReviews,
+  onShowRelationships,
+}: {
+  overview?: ReadableMemoryOverview;
+  onSelectMemory: (id: string) => void;
+  onShowEntities: () => void;
+  onShowReviews: () => void;
+  onShowRelationships: () => void;
+}) {
+  if (!overview) {
+    return <section className={clsx(styles.graph, styles.overview)} aria-label="Readable memory overview"><div className={styles.overviewLoading}><Loader2 className="animate-spin" size={24} aria-hidden="true" /><span>Building a safe memory overview…</span></div></section>;
+  }
+  return <section className={clsx(styles.graph, styles.overview)} aria-label="Readable memory overview">
+    <header className={styles.overviewHeader}>
+      <div><p>Readable memory</p><h2>What Asael believes</h2><span>Claim bodies and named relationships stay out of this aggregate view.</span></div>
+      <button type="button" onClick={onShowRelationships}><Network size={13} aria-hidden="true" /> Trace one relationship</button>
+    </header>
+    <div className={styles.overviewBody}>
+      <section className={styles.overviewMetrics} aria-label="Memory summary">
+        <article><Brain size={16} aria-hidden="true" /><span><strong>{overview.summary.active}</strong> active claims</span></article>
+        <button type="button" onClick={onShowReviews}><AlertTriangle size={16} aria-hidden="true" /><span><strong>{overview.conflicts.pending}</strong> need review</span></button>
+        <button type="button" onClick={onShowEntities}><Users size={16} aria-hidden="true" /><span><strong>{overview.entities.people}</strong> people</span></button>
+        <button type="button" onClick={onShowEntities}><FolderKanban size={16} aria-hidden="true" /><span><strong>{overview.entities.projects}</strong> projects</span></button>
+      </section>
+
+      <div className={styles.overviewColumns}>
+        <section className={styles.timeline} aria-labelledby="memory-timeline-heading">
+          <div className={styles.sectionHeading}><div><p>Use history</p><h3 id="memory-timeline-heading">Memory timeline</h3></div><span>{overview.timeline.length} events</span></div>
+          {overview.timeline.length ? <ol>{overview.timeline.slice(0, 24).map((item) => {
+            const claim = item.memoryId
+              ? overview.claims.find((candidate) => candidate.id === item.memoryId)
+              : undefined;
+            return <li key={item.id}>
+              <i aria-hidden="true" />
+              <button type="button" disabled={!claim} onClick={() => claim && onSelectMemory(claim.id)}>
+                <span>{item.label}</span>
+                <strong>{claim?.title || (item.kind === "deletion_barrier_recorded" ? "Content permanently withheld" : `${item.count} ${item.count === 1 ? "claim" : "claims"}`)}</strong>
+                <small>{formatDateTime(item.occurredAt)} · content withheld</small>
+              </button>
+            </li>;
+          })}</ol> : <p className={styles.overviewEmpty}>No memory history has been recorded yet.</p>}
+        </section>
+
+        <aside className={styles.overviewAside}>
+          <section>
+            <div className={styles.sectionHeading}><div><p>Authority boundaries</p><h3>Scopes</h3></div><span>{overview.scopes.length}</span></div>
+            <div className={styles.scopeList}>{overview.scopes.length ? overview.scopes.map((scope) => <div key={scope.boundary}><span>{scope.boundary}</span><strong>{scope.count}</strong><i><b style={{ width: `${Math.max(8, (scope.count / Math.max(overview.summary.claims, 1)) * 100)}%` }} /></i></div>) : <p className={styles.overviewEmpty}>No claim scopes yet.</p>}</div>
+          </section>
+          <section className={styles.deletionState}>
+            <div className={styles.sectionHeading}><div><p>Deletion state</p><h3>Permanent barriers</h3></div><span>{overview.deletion.barriers}</span></div>
+            <dl><dt>Claims blocked</dt><dd>{overview.deletion.barriers + overview.deletion.descendantsBlocked}</dd><dt>Retrieval traces invalidated</dt><dd>{overview.deletion.tracesInvalidated}</dd><dt>Graph projections invalidated</dt><dd>{overview.deletion.graphProjectionsInvalidated}</dd><dt>Latest barrier</dt><dd>{overview.deletion.latestAt ? formatDate(overview.deletion.latestAt) : "None"}</dd></dl>
+          </section>
+          <section className={styles.disclosureNote}><ShieldCheck size={18} aria-hidden="true" /><div><strong>Progressive disclosure is active</strong><span>Only claim titles and metadata appear here. Exact content, evidence, entity names, and relationship paths require a deliberate selection.</span></div></section>
+        </aside>
+      </div>
+    </div>
+  </section>;
 }
 
 function MemoryMaintenanceDialog({
@@ -610,7 +683,7 @@ function MemoryMaintenanceDialog({
   onClose,
 }: {
   reviews: MemoryPromotionReview[];
-  memories: MemoryRecord[];
+  memories: ReadableMemoryClaim[];
   report?: MemoryMaintenanceReport;
   busyId?: string;
   onRun: () => void;
@@ -621,7 +694,7 @@ function MemoryMaintenanceDialog({
   onClose: () => void;
 }) {
   const pending = reviews.filter((review) => review.status === "pending");
-  return <div className={clsx("memory-dialog-backdrop", styles.dialogBackdrop, styles.registryBackdrop)} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className={clsx("memory-dialog", styles.dialog, styles.registryDialog, styles.reconciliationDialog)} role="dialog" aria-modal="true" aria-labelledby="memory-maintenance-title"><header className={styles.registryHeader}><div><p>Lifecycle control</p><h2 id="memory-maintenance-title">Memory maintenance</h2><span>Deduplicate recall, decay retrieval priority, and review repeated verified episodes before they become procedures. Archival never deletes historical truth.</span></div><div className={styles.registryHeaderActions}><button type="button" disabled={Boolean(busyId)} onClick={onRun} aria-label="Run memory maintenance">{busyId === "run" ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}</button><button type="button" onClick={onClose} aria-label="Close memory maintenance"><X size={16} aria-hidden="true" /></button></div></header><div className={styles.registrySummary}><span><strong>{pending.length}</strong> pending promotions</span>{report ? <><span><strong>{report.autoArchivedDuplicates}</strong> duplicates archived</span><span><strong>{Math.round(report.duplicateRateAfter * 10000) / 100}%</strong> duplicate rate</span></> : null}</div><section className={styles.registrySection}><div className={styles.registrySectionHeading}><div><p>Explicit review</p><h3>Procedure candidates</h3></div><span>{pending.length}</span></div>{pending.length ? <div className={styles.reconciliationList}>{pending.map((review) => { const source = memories.find((memory) => memory.id === review.canonicalMemoryId); return <article key={review.id} className={styles.reconciliationCard}><header><span><Wrench size={13} aria-hidden="true" /> Repeated verified episode</span><small>{formatDate(review.createdAt)}</small></header><div><h4>{source?.title || "Verified episode pattern"}</h4><p>{source ? truncate(source.content, 240) : `${review.sourceMemoryIds.length} source memories`}</p></div><div className={styles.maintenanceLineage}><span>{review.sourceMemoryIds.length} verified occurrences</span><code title={review.sourceClaimSha256}>{review.sourceClaimSha256.slice(0, 16)}…</code></div><div className={styles.reconciliationActions}><button type="button" disabled={Boolean(busyId)} onClick={() => onDecision(review, "dismiss")}>Dismiss</button><button type="button" disabled={Boolean(busyId)} onClick={() => onDecision(review, "promote")}>{busyId === review.id ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />} Promote to procedure</button></div></article>; })}</div> : <p className={styles.registryEmpty}>No repeated verified episodes are waiting for promotion.</p>}</section></section></div>;
+  return <div className={clsx("memory-dialog-backdrop", styles.dialogBackdrop, styles.registryBackdrop)} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className={clsx("memory-dialog", styles.dialog, styles.registryDialog, styles.reconciliationDialog)} role="dialog" aria-modal="true" aria-labelledby="memory-maintenance-title"><header className={styles.registryHeader}><div><p>Lifecycle control</p><h2 id="memory-maintenance-title">Memory maintenance</h2><span>Deduplicate recall, decay retrieval priority, and review repeated verified episodes before they become procedures. Archival never deletes historical truth.</span></div><div className={styles.registryHeaderActions}><button type="button" disabled={Boolean(busyId)} onClick={onRun} aria-label="Run memory maintenance">{busyId === "run" ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}</button><button type="button" onClick={onClose} aria-label="Close memory maintenance"><X size={16} aria-hidden="true" /></button></div></header><div className={styles.registrySummary}><span><strong>{pending.length}</strong> pending promotions</span>{report ? <><span><strong>{report.autoArchivedDuplicates}</strong> duplicates archived</span><span><strong>{Math.round(report.duplicateRateAfter * 10000) / 100}%</strong> duplicate rate</span></> : null}</div><section className={styles.registrySection}><div className={styles.registrySectionHeading}><div><p>Explicit review</p><h3>Procedure candidates</h3></div><span>{pending.length}</span></div>{pending.length ? <div className={styles.reconciliationList}>{pending.map((review) => { const source = memories.find((memory) => memory.id === review.canonicalMemoryId); return <article key={review.id} className={styles.reconciliationCard}><header><span><Wrench size={13} aria-hidden="true" /> Repeated verified episode</span><small>{formatDate(review.createdAt)}</small></header><div><h4>{source?.title || "Verified episode pattern"}</h4><p>{source ? `${source.provenance} · exact claim content withheld` : `${review.sourceMemoryIds.length} source memories`}</p></div><div className={styles.maintenanceLineage}><span>{review.sourceMemoryIds.length} verified occurrences</span><code title={review.sourceClaimSha256}>{review.sourceClaimSha256.slice(0, 16)}…</code></div><div className={styles.reconciliationActions}><button type="button" disabled={Boolean(busyId)} onClick={() => onDecision(review, "dismiss")}>Dismiss</button><button type="button" disabled={Boolean(busyId)} onClick={() => onDecision(review, "promote")}>{busyId === review.id ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />} Promote to procedure</button></div></article>; })}</div> : <p className={styles.registryEmpty}>No repeated verified episodes are waiting for promotion.</p>}</section></section></div>;
 }
 
 function DeletionPreview({ preview }: { preview: MemoryDeletionPreview }) {
@@ -741,19 +814,6 @@ function memoryTypeForTier(tier: MemoryTier): MemoryType {
   return "fact";
 }
 
-function positionGraphNodes(nodes: MemoryGraphNode[]): PositionedNode[] {
-  const sorted = [...nodes].sort((left, right) => right.weight - left.weight);
-  return sorted.map((node, index) => {
-    if (index === 0) return { ...node, x: 380, y: 280 };
-    const ring = index < 9 ? 1 : index < 24 ? 2 : 3;
-    const membersBefore = ring === 1 ? 1 : ring === 2 ? 9 : 24;
-    const membersInRing = ring === 1 ? 8 : ring === 2 ? 15 : Math.max(sorted.length - 24, 1);
-    const angle = ((index - membersBefore) / membersInRing) * Math.PI * 2 - Math.PI / 2;
-    const radiusX = ring * 105; const radiusY = ring * 72;
-    return { ...node, x: 380 + Math.cos(angle) * radiusX, y: 280 + Math.sin(angle) * radiusY };
-  });
-}
-
-function truncate(value: string, max: number) { return value.length > max ? `${value.slice(0, max - 1)}…` : value; }
 function formatDate(value: string) { return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value)); }
+function formatDateTime(value: string) { return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value)); }
 function message(error: unknown) { return error instanceof Error ? error.message : "Something went wrong."; }
