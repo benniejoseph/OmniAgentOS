@@ -1,10 +1,24 @@
 import { Ap2HumanPresentStoreError } from "@/lib/payments/ap2-store";
+import { Ap2PaymentStoreError } from "@/lib/payments/ap2-payment-store";
 
 export const ap2PrivateHeaders = Object.freeze({
   "cache-control": "private, no-store",
 });
 
 export function ap2ErrorResponse(error: unknown) {
+  if (error instanceof Ap2PaymentStoreError) {
+    const status = error.code === "not_found"
+      ? 404
+      : error.code === "conflict"
+        ? 409
+        : error.code === "database_required"
+          ? 503
+          : 400;
+    return Response.json(
+      { error: error.code, message: error.message },
+      { status, headers: ap2PrivateHeaders },
+    );
+  }
   if (error instanceof Ap2HumanPresentStoreError) {
     const status = error.code === "not_found"
       ? 404

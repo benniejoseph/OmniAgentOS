@@ -147,7 +147,9 @@ import {
 } from "@/lib/app-services/communications";
 import {
   listAp2MandateReviewsService,
+  listAp2PaymentTransactionsService,
   prepareAp2MandateReviewService,
+  showAp2PaymentTransactionService,
   showAp2ReadinessService,
 } from "@/lib/app-services/payments";
 
@@ -279,6 +281,8 @@ export async function executeFirstPartyAppTool(input: {
     "app.communications.drafts.create": () => createCommunicationDraftService(caller, input.toolInput as never),
     "app.communications.deliver": () => deliverCommunicationDraftService(caller, input.toolInput as never),
     "app.payments.ap2.readiness": () => showAp2ReadinessService(caller, input.toolInput as never),
+    "app.payments.ap2.transactions.list": () => listAp2PaymentTransactionsService(caller, input.toolInput as never),
+    "app.payments.ap2.transactions.show": () => showAp2PaymentTransactionService(caller, input.toolInput as never),
     "app.payments.ap2.mandates.list": () => listAp2MandateReviewsService(caller, input.toolInput as never),
     "app.payments.ap2.mandates.prepare": () => prepareAp2MandateReviewService(caller, input.toolInput as never),
     "app.assets.list": () => listAssetsService(caller, input.toolInput as never),
