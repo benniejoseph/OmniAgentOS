@@ -1,302 +1,368 @@
-import type { CSSProperties } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowUpRight,
   CheckCircle2,
+  Coins,
+  KeyRound,
   Loader2,
+  MessageSquare,
   Network,
+  PackageCheck,
   ShieldCheck,
-  Sparkles,
+  Wrench,
 } from "lucide-react";
 import { clsx } from "clsx";
-import {
-  AgentMascot,
-  getAgentMascotIdentity,
-} from "@/components/agents/agent-mascot";
+import type { ReactNode } from "react";
+
+import { AgentMascot } from "@/components/agents/agent-mascot";
 import styles from "@/components/agents/council-execution-map.module.css";
+import type {
+  AgentCouncilMap,
+  AgentCouncilMapMember,
+} from "@/lib/agents/council-map-contract";
 
-type CouncilMemberStatus = "thinking" | "completed" | "failed";
+type CouncilLoadState = "loading" | "ready" | "unavailable";
 
-type CouncilMemberEvent = {
-  type: "council_member";
-  agentId: string;
-  agentName: string;
-  role: string;
-  status: CouncilMemberStatus;
-  summary?: string;
-  confidence?: number;
-  durationMs?: number;
-  taskId?: string;
-  delegationId?: string;
-  lifecycleState?: DelegationLifecycleState;
-  lifecycleRevision?: number;
-};
-
-type DelegationLifecycleState =
-  | "proposed"
-  | "accepted"
-  | "working"
-  | "waiting"
-  | "challenged"
-  | "completed_proposed"
-  | "result_accepted"
-  | "rejected"
-  | "canceled"
-  | "expired";
-
-type CouncilVerdictEvent = {
-  type: "council_verdict";
-  status: "passed" | "revised" | "failed";
-  score: number;
-  assessment: string;
-  requiredChanges: string[];
-};
-
-const seatLayouts: Record<number, Array<{ x: number; y: number }>> = {
-  1: [{ x: 50, y: 22 }],
-  2: [{ x: 17, y: 50 }, { x: 83, y: 50 }],
-  3: [{ x: 50, y: 19 }, { x: 17, y: 77 }, { x: 83, y: 77 }],
-  4: [{ x: 17, y: 22 }, { x: 83, y: 22 }, { x: 17, y: 76 }, { x: 83, y: 76 }],
-  5: [{ x: 17, y: 19 }, { x: 83, y: 19 }, { x: 13, y: 69 }, { x: 87, y: 69 }, { x: 50, y: 87 }],
-  6: [{ x: 17, y: 22 }, { x: 50, y: 15 }, { x: 83, y: 22 }, { x: 17, y: 78 }, { x: 50, y: 85 }, { x: 83, y: 78 }],
-};
-
-export function CouncilExecutionMap({ events }: { events: readonly unknown[] }) {
-  const latestByAgent = new Map<string, CouncilMemberEvent>();
-  let verdict: CouncilVerdictEvent | undefined;
-
-  for (const event of events) {
-    const member = parseCouncilMember(event);
-    if (member) latestByAgent.set(member.agentId, member);
-    const nextVerdict = parseCouncilVerdict(event);
-    if (nextVerdict) verdict = nextVerdict;
+export function CouncilExecutionMap({
+  map,
+  state,
+}: {
+  map?: AgentCouncilMap;
+  state: CouncilLoadState;
+}) {
+  if (state === "loading") return <CouncilNotice kind="loading" />;
+  if (state === "unavailable" || map?.state === "unavailable") {
+    return <CouncilNotice kind="unavailable" />;
   }
-
-  const members = [...latestByAgent.values()];
-  if (!members.length && !verdict) return null;
-
-  const visibleMembers = members.slice(0, 6);
-  const seatPositions = seatLayouts[visibleMembers.length] || seatLayouts[6];
-  const activeCount = members.filter((member) => member.status === "thinking").length;
-  const completedCount = members.filter((member) => member.status === "completed").length;
-  const verdictScore = normalizedScore(verdict?.score) || 0;
+  if (!map || map.state === "empty") return <CouncilNotice kind="empty" />;
 
   return (
-    <section className={styles.council} aria-label="Live agent council">
+    <section className={styles.council} aria-label="Live Agent Council delegation map">
       <header className={styles.header}>
         <div className={styles.titleGroup}>
-          <span className={styles.titleIcon} aria-hidden="true"><Network size={17} /></span>
+          <span className={styles.titleIcon} aria-hidden="true"><Network size={18} /></span>
           <div>
-            <p className={styles.eyebrow}>Live collaboration</p>
-            <h3>Agent Council Chamber</h3>
+            <p className={styles.eyebrow}>Canonical delegation ledger</p>
+            <h2>Live Council map</h2>
+            <p>Who is working, what each Agent can access, and who verifies the result.</p>
           </div>
         </div>
-        <div className={clsx(styles.councilStatus, verdict && styles.isComplete)}>
-          {verdict ? <CheckCircle2 size={14} aria-hidden="true" /> : <span className={styles.liveDot} aria-hidden="true" />}
-          {verdict
-            ? "Synthesis complete"
-            : activeCount
-              ? `${activeCount} perspective${activeCount === 1 ? "" : "s"} active`
-              : `${completedCount} perspective${completedCount === 1 ? "" : "s"} delivered`}
+        <div className={styles.summary} aria-label="Council summary">
+          <SummaryValue value={map.summary.activeMemberCount} label="active" live />
+          <SummaryValue value={map.summary.memberCount} label="members" />
+          <SummaryValue
+            value={formatKnownCost(map.summary.knownEstimatedCostMicrousd)}
+            label="known cost"
+          />
         </div>
       </header>
 
-      <div className={styles.chamber}>
-        <div className={styles.constellation} aria-hidden="true">
-          <span className={styles.fieldOne} />
-          <span className={styles.fieldTwo} />
-          <span className={styles.fieldThree} />
-        </div>
+      <div className={styles.executions}>
+        {map.executions.map((execution) => (
+          <article className={styles.execution} key={execution.parentExecutionId}>
+            <header className={styles.executionHeader}>
+              <div className={styles.executionCopy}>
+                <span className={styles.runState} data-state={execution.status}>
+                  <span aria-hidden="true" />{runStatusLabel(execution.status)}
+                </span>
+                <h3>{execution.currentWork}</h3>
+                <p>
+                  {execution.members.length} delegated Agent{execution.members.length === 1 ? "" : "s"}
+                  <span aria-hidden="true"> · </span>
+                  updated {formatTime(execution.updatedAt)}
+                </p>
+              </div>
+              <div className={styles.executionActions}>
+                <CostBadge cost={execution.verifierCost} prefix="Verifier" />
+                <Link href={execution.href} className={styles.runLink}>
+                  Open run <ArrowUpRight size={13} aria-hidden="true" />
+                </Link>
+              </div>
+            </header>
 
-        <svg className={styles.connections} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          {visibleMembers.map((member, index) => {
-            const position = seatPositions[index];
-            return (
-              <g key={member.agentId} className={styles[member.status]}>
-                <line x1="50" y1="50" x2={position.x} y2={position.y} />
-                <circle cx={position.x} cy={position.y} r="0.9" />
-              </g>
-            );
-          })}
-        </svg>
+            <div className={styles.delegationLane}>
+              <div className={styles.parentNode} aria-label="Parent coordinator">
+                <AgentMascot agentId="atlas" agentName="Atlas" size="small" decorative />
+                <span><strong>Atlas</strong><small>Parent coordinator</small></span>
+              </div>
+              <span className={styles.laneLine} aria-hidden="true" />
+              <span className={styles.laneLabel}><KeyRound size={11} /> scoped grants</span>
+            </div>
 
-        <div className={styles.synthesisCore}>
-          <span className={styles.coreOrbit} aria-hidden="true" />
-          <span className={styles.coreGlyph} aria-hidden="true"><Sparkles size={22} /></span>
-          <strong>Synthesis core</strong>
-          <small>
-            {verdict
-              ? `${completedCount} perspectives reconciled`
-              : "Reconciling independent passes"}
-          </small>
-        </div>
-
-        <div className={styles.seats}>
-          {visibleMembers.map((member, index) => {
-            const position = seatPositions[index];
-            const identity = getAgentMascotIdentity(member.agentId);
-            const confidence = normalizedScore(member.confidence);
-            const seatStyle = {
-              "--seat-x": `${position.x}%`,
-              "--seat-y": `${position.y}%`,
-            } as CSSProperties;
-
-            return (
-              <article
-                key={member.agentId}
-                className={clsx(styles.seat, styles[member.status])}
-                data-agent={identity.id}
-                style={seatStyle}
-              >
-                <AgentMascot
-                  agentId={member.agentId}
-                  agentName={member.agentName}
-                  size="medium"
-                />
-                <div className={styles.memberCopy}>
-                  <div className={styles.memberHeading}>
-                    <strong>{member.agentName}</strong>
-                    <StatusIcon status={member.status} />
-                  </div>
-                  <span>{identity.companion} · {member.role}</span>
-                  <p>{member.summary || memberStatusCopy(member.status)}</p>
-                  <div className={styles.memberMeta}>
-                    <small>{delegationStatusLabel(member.lifecycleState) || memberStatusLabel(member.status)}</small>
-                    {confidence === undefined ? null : <small>{Math.round(confidence * 100)}% confidence</small>}
-                  </div>
-                  {confidence === undefined ? null : (
-                    <span className={styles.confidenceTrack} aria-label={`${Math.round(confidence * 100)} percent confidence`}>
-                      <span style={{ width: `${confidence * 100}%` }} />
-                    </span>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </div>
+            <div className={styles.members}>
+              {execution.members.map((member) => (
+                <CouncilMemberCard member={member} key={member.taskId} />
+              ))}
+            </div>
+          </article>
+        ))}
       </div>
-
-      {members.length > visibleMembers.length ? (
-        <p className={styles.overflowNote}>+{members.length - visibleMembers.length} additional council members contributed to synthesis.</p>
-      ) : null}
-
-      {verdict ? (
-        <footer className={clsx(styles.verdict, styles[`verdict-${verdict.status}`])}>
-          <span className={styles.verdictIcon} aria-hidden="true">
-            {verdict.status === "failed" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
-          </span>
-          <div className={styles.verdictCopy}>
-            <p className={styles.verdictLabel}>{verdictTitle(verdict.status)}</p>
-            <p>{verdict.assessment}</p>
-            {verdict.requiredChanges.length ? (
-              <small>{verdict.requiredChanges.length} required change{verdict.requiredChanges.length === 1 ? "" : "s"} recorded</small>
-            ) : null}
-          </div>
-          <div className={styles.score} aria-label={`${Math.round(verdictScore * 100)} percent council score`}>
-            <strong>{Math.round(verdictScore * 100)}</strong>
-            <span>score</span>
-          </div>
-        </footer>
-      ) : null}
     </section>
   );
 }
 
-function StatusIcon({ status }: { status: CouncilMemberStatus }) {
-  if (status === "thinking") return <Loader2 size={13} className={styles.statusSpinner} aria-label="Working" />;
-  if (status === "failed") return <AlertTriangle size={13} aria-label="Needs retry" />;
-  return <CheckCircle2 size={13} aria-label="Complete" />;
+function CouncilMemberCard({ member }: { member: AgentCouncilMapMember }) {
+  const active = ["proposed", "accepted", "working", "waiting", "challenged", "completed_proposed"]
+    .includes(member.state);
+  return (
+    <article className={styles.member} data-state={member.state}>
+      <header className={styles.memberHeader}>
+        <AgentMascot
+          agentId={member.identity.agentId}
+          agentName={member.identity.name}
+          size="medium"
+        />
+        <div className={styles.memberIdentity}>
+          <p>{member.identity.role} · definition v{member.identity.definitionVersion}</p>
+          <h4>{member.identity.name}</h4>
+          <span className={clsx(styles.memberState, active && styles.isActive)}>
+            {active ? <span className={styles.liveDot} aria-hidden="true" /> : <StateIcon state={member.state} />}
+            {taskStateLabel(member.state)}
+          </span>
+        </div>
+        <div className={styles.confidence}>
+          <strong>{member.confidence === null ? "—" : `${Math.round(member.confidence * 100)}%`}</strong>
+          <span>confidence</span>
+        </div>
+      </header>
+
+      <div className={styles.currentWork}>
+        <span>Current work</span>
+        <p>{member.currentWork}</p>
+      </div>
+
+      <div className={styles.factGrid}>
+        <Fact
+          icon={<KeyRound size={13} />}
+          label="Context"
+          value={authorityCount(member.authority.context.state, member.authority.context.grantCount)}
+        />
+        <Fact
+          icon={<Wrench size={13} />}
+          label="Tools"
+          value={toolCount(member)}
+        />
+        <Fact
+          icon={<Coins size={13} />}
+          label="Cost"
+          value={costLabel(member.cost)}
+        />
+      </div>
+
+      <section className={styles.authority} aria-label={`${member.identity.name} authority`}>
+        <div className={styles.sectionHeading}>
+          <span><ShieldCheck size={14} /> Allowed authority</span>
+          <AuthoritySource member={member} />
+        </div>
+        <p className={styles.purpose}>{member.authority.purpose}</p>
+        <div className={styles.chips}>
+          {member.authority.source === "historical_unavailable" ? (
+            <span className={styles.unavailableChip}>Historical grants unavailable</span>
+          ) : (
+            <>
+              <span>{member.authority.context.grantCount} context grant{member.authority.context.grantCount === 1 ? "" : "s"}</span>
+              <span>{member.authority.capabilities.grantCount} capability grant{member.authority.capabilities.grantCount === 1 ? "" : "s"}</span>
+              {member.authority.tools.ids.map((toolId) => <span key={toolId}>{toolId}</span>)}
+              {!member.authority.tools.ids.length ? <span>No governed tools</span> : null}
+            </>
+          )}
+        </div>
+        <div className={styles.scopeLine}>
+          <span>Project: {member.authority.scope.projectId || "none"}</span>
+          <span>Mission: {member.authority.scope.missionId || "none"}</span>
+          <span>Budget: {budgetLabel(member)}</span>
+        </div>
+      </section>
+
+      <div className={styles.exchangeGrid}>
+        <ExchangePanel
+          icon={<MessageSquare size={14} />}
+          title="Messages"
+          state={messageStateLabel(member)}
+        >
+          {member.messages.items.slice(0, 3).map((message) => (
+            <div className={styles.exchangeItem} key={`${message.messageId}:${message.direction}`}>
+              <span>{message.direction} · {message.kind}</span>
+              <p>{message.body}</p>
+              <small>Untrusted shared content</small>
+            </div>
+          ))}
+        </ExchangePanel>
+        <ExchangePanel
+          icon={<PackageCheck size={14} />}
+          title="Outputs"
+          state={outputStateLabel(member)}
+        >
+          {member.outputs.items.slice(0, 3).map((output) => (
+            <div className={styles.exchangeItem} key={output.artifactId}>
+              <span>{output.kind} · {output.title}</span>
+              <p>{output.content}</p>
+              <small>Untrusted shared content</small>
+            </div>
+          ))}
+        </ExchangePanel>
+      </div>
+
+      <footer className={styles.verifier}>
+        <AgentMascot
+          agentId={member.verifier.identity.agentId}
+          agentName={member.verifier.identity.name}
+          size="small"
+          decorative
+        />
+        <div>
+          <span>Verifier</span>
+          <strong>{member.verifier.identity.name}</strong>
+          <small>{verifierMethodLabel(member.verifier.method)}</small>
+        </div>
+        <div className={styles.verdict} data-verdict={member.verifier.verdict}>
+          <span>{verdictLabel(member.verifier.verdict)}</span>
+          <small>
+            {member.verifier.score === null ? "Not scored" : `${Math.round(member.verifier.score * 100)}% score`}
+            {` · ${Math.round(member.verifier.acceptanceThreshold * 100)}% required`}
+          </small>
+        </div>
+      </footer>
+    </article>
+  );
 }
 
-function parseCouncilMember(value: unknown): CouncilMemberEvent | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const event = value as Record<string, unknown>;
-  if (
-    event.type !== "council_member" ||
-    typeof event.agentId !== "string" ||
-    typeof event.agentName !== "string" ||
-    typeof event.role !== "string" ||
-    (event.status !== "thinking" && event.status !== "completed" && event.status !== "failed")
-  ) return undefined;
-  return {
-    type: "council_member",
-    agentId: event.agentId,
-    agentName: event.agentName,
-    role: event.role,
-    status: event.status,
-    summary: typeof event.summary === "string" ? event.summary : undefined,
-    confidence: finiteNumber(event.confidence),
-    durationMs: finiteNumber(event.durationMs),
-    taskId: typeof event.taskId === "string" ? event.taskId : undefined,
-    delegationId: typeof event.delegationId === "string"
-      ? event.delegationId
-      : undefined,
-    lifecycleState: delegationLifecycleState(event.lifecycleState),
-    lifecycleRevision: finiteNumber(event.lifecycleRevision),
-  };
+function CouncilNotice({ kind }: { kind: "loading" | "unavailable" | "empty" }) {
+  const copy = kind === "loading"
+    ? ["Loading the Council", "Reading your scoped delegation ledger."]
+    : kind === "unavailable"
+      ? ["Council map unavailable", "The canonical delegation ledger could not be read. No authority was inferred."]
+      : ["Council is ready", "Multi-agent runs will appear here with their grants, exchanges, cost, confidence, and verifier."];
+  return (
+    <section className={clsx(styles.notice, styles[kind])} aria-label="Agent Council status">
+      <span aria-hidden="true">
+        {kind === "loading" ? <Loader2 size={20} /> : kind === "unavailable" ? <AlertTriangle size={20} /> : <Network size={20} />}
+      </span>
+      <div><h2>{copy[0]}</h2><p>{copy[1]}</p></div>
+    </section>
+  );
 }
 
-function delegationLifecycleState(value: unknown): DelegationLifecycleState | undefined {
-  return [
-    "proposed", "accepted", "working", "waiting", "challenged",
-    "completed_proposed", "result_accepted", "rejected", "canceled",
-    "expired",
-  ].find((state) => state === value) as DelegationLifecycleState | undefined;
+function SummaryValue({ value, label, live }: { value: string | number; label: string; live?: boolean }) {
+  return <span>{live ? <i aria-hidden="true" /> : null}<strong>{value}</strong><small>{label}</small></span>;
 }
 
-function delegationStatusLabel(state?: DelegationLifecycleState) {
-  if (state === "result_accepted") return "Accepted by parent evaluator";
-  if (state === "completed_proposed") return "Proposed · awaiting parent";
-  if (state === "waiting") return "Waiting at governed boundary";
-  if (state === "challenged") return "Challenged by policy";
-  if (state === "rejected") return "Rejected by parent evaluator";
-  if (state === "canceled") return "Canceled";
-  if (state === "expired") return "Expired";
-  if (state === "working" || state === "accepted") return "Delegation active";
-  return undefined;
+function Fact({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return <div>{icon}<span><small>{label}</small><strong>{value}</strong></span></div>;
 }
 
-function parseCouncilVerdict(value: unknown): CouncilVerdictEvent | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const event = value as Record<string, unknown>;
-  if (
-    event.type !== "council_verdict" ||
-    (event.status !== "passed" && event.status !== "revised" && event.status !== "failed") ||
-    typeof event.assessment !== "string"
-  ) return undefined;
-  return {
-    type: "council_verdict",
-    status: event.status,
-    score: finiteNumber(event.score) || 0,
-    assessment: event.assessment,
-    requiredChanges: Array.isArray(event.requiredChanges)
-      ? event.requiredChanges.filter((item): item is string => typeof item === "string")
-      : [],
-  };
+function ExchangePanel({
+  icon,
+  title,
+  state,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  state: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className={styles.exchange}>
+      <div className={styles.sectionHeading}><span>{icon}{title}</span><small>{state}</small></div>
+      <div className={styles.exchangeItems}>{children}</div>
+    </section>
+  );
 }
 
-function finiteNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+function CostBadge({ cost, prefix }: { cost: AgentCouncilMapMember["cost"]; prefix: string }) {
+  return <span className={styles.costBadge}><Coins size={12} />{prefix}: {costLabel(cost)}</span>;
 }
 
-function normalizedScore(value?: number) {
-  if (value === undefined) return undefined;
-  return Math.min(Math.max(value, 0), 1);
+function AuthoritySource({ member }: { member: AgentCouncilMapMember }) {
+  return member.authority.source === "delegation_grants"
+    ? <small><CheckCircle2 size={11} /> receipt verified</small>
+    : <small><AlertTriangle size={11} /> unavailable</small>;
 }
 
-function memberStatusLabel(status: CouncilMemberStatus) {
-  if (status === "thinking") return "Exploring";
-  if (status === "failed") return "Needs another pass";
-  return "Perspective delivered";
+function StateIcon({ state }: { state: AgentCouncilMapMember["state"] }) {
+  return state === "result_accepted"
+    ? <CheckCircle2 size={11} aria-hidden="true" />
+    : <AlertTriangle size={11} aria-hidden="true" />;
 }
 
-function memberStatusCopy(status: CouncilMemberStatus) {
-  if (status === "thinking") return "Reviewing the task from this specialist perspective.";
-  if (status === "failed") return "This perspective could not be completed.";
-  return "Independent findings are ready for synthesis.";
+function authorityCount(state: AgentCouncilMapMember["authority"]["context"]["state"], count: number) {
+  if (state === "unavailable") return "Unavailable";
+  return `${count} grant${count === 1 ? "" : "s"}`;
 }
 
-function verdictTitle(status: CouncilVerdictEvent["status"]) {
-  if (status === "passed") return "Council consensus reached";
-  if (status === "revised") return "Answer strengthened after review";
-  return "Council requested another pass";
+function toolCount(member: AgentCouncilMapMember) {
+  if (member.authority.tools.state === "unavailable") return "Unavailable";
+  const count = member.authority.tools.ids.length;
+  return `${count} tool${count === 1 ? "" : "s"}`;
+}
+
+function budgetLabel(member: AgentCouncilMapMember) {
+  const budget = member.authority.budgets;
+  if (budget.modelTurns === null) return "unavailable";
+  return `${budget.modelTurns} turn${budget.modelTurns === 1 ? "" : "s"}, ${budget.tokens?.toLocaleString() || 0} tokens`;
+}
+
+function costLabel(cost: AgentCouncilMapMember["cost"]) {
+  if (cost.state === "not_recorded") return "Not recorded";
+  if (cost.state === "unknown") return "Unknown";
+  const known = formatKnownCost(cost.knownEstimatedCostMicrousd);
+  return cost.state === "partial" ? `${known} + unknown` : known;
+}
+
+function formatKnownCost(microusd: number) {
+  if (!microusd) return "$0.00";
+  const usd = microusd / 1_000_000;
+  return usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
+}
+
+function messageStateLabel(member: AgentCouncilMapMember) {
+  if (member.messages.state === "not_applicable") return "No Mission channel";
+  if (member.messages.state === "unavailable") return "Unavailable";
+  return `${member.messages.items.length} shared`;
+}
+
+function outputStateLabel(member: AgentCouncilMapMember) {
+  if (member.outputs.state === "receipt_only") return "Receipt only";
+  if (member.outputs.state === "unavailable") return "Unavailable";
+  return `${member.outputs.items.length} recorded`;
+}
+
+function verifierMethodLabel(method: AgentCouncilMapMember["verifier"]["method"]) {
+  if (method === "deterministic_schema_and_evidence") return "Deterministic schema + evidence";
+  if (method === "agent_then_deterministic") return "Agent review + deterministic checks";
+  return "Historical method unavailable";
+}
+
+function verdictLabel(verdict: AgentCouncilMapMember["verifier"]["verdict"]) {
+  if (verdict === "accepted") return "Accepted";
+  if (verdict === "rejected") return "Rejected";
+  if (verdict === "unavailable") return "Unavailable";
+  return "Pending review";
+}
+
+function taskStateLabel(state: AgentCouncilMapMember["state"]) {
+  return ({
+    proposed: "Proposed",
+    accepted: "Accepted task",
+    working: "Working",
+    waiting: "Waiting at boundary",
+    challenged: "Challenged",
+    completed_proposed: "Result proposed",
+    result_accepted: "Result accepted",
+    rejected: "Rejected",
+    canceled: "Canceled",
+    expired: "Expired",
+  } satisfies Record<AgentCouncilMapMember["state"], string>)[state];
+}
+
+function runStatusLabel(status: AgentCouncilMap["executions"][number]["status"]) {
+  return status.replaceAll("_", " ");
+}
+
+function formatTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(new Date(value));
 }

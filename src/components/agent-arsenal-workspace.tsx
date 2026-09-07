@@ -25,8 +25,13 @@ import {
 import { AgentGrantEditor } from "@/components/agents/agent-grant-editor";
 import { AgentAdaptationEditor } from "@/components/agents/agent-adaptation-editor";
 import { AgentReleaseEditor } from "@/components/agents/agent-release-editor";
+import { CouncilExecutionMap } from "@/components/agents/council-execution-map";
 import { upsertById } from "@/lib/agents/client-state";
 import { arsenalAgents, type ArsenalAgent } from "@/lib/agents/arsenal";
+import {
+  safeParseAgentCouncilMap,
+  type AgentCouncilMap,
+} from "@/lib/agents/council-map-contract";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import type { AgentPerformance } from "@/lib/agents/performance";
 import type {
@@ -59,6 +64,8 @@ export function AgentArsenalWorkspace() {
   const [skills, setSkills] = useState<AgentSkill[]>([]);
   const [tools, setTools] = useState<ToolOption[]>([]);
   const [performance, setPerformance] = useState<AgentPerformance[]>([]);
+  const [councilMap, setCouncilMap] = useState<AgentCouncilMap>();
+  const [councilState, setCouncilState] = useState<"loading" | "ready" | "unavailable">("loading");
   const [state, setState] = useState<"loading" | "ready" | "unavailable">(
     "loading",
   );
@@ -146,6 +153,37 @@ export function AgentArsenalWorkspace() {
     return () => {
       window.clearTimeout(timer);
       loadController.current?.abort();
+    };
+  }, []);
+  useEffect(() => {
+    let controller: AbortController | undefined;
+    let disposed = false;
+    const loadCouncil = async () => {
+      controller?.abort();
+      const requestController = new AbortController();
+      controller = requestController;
+      try {
+        const payload = await readJson<{ map?: unknown }>("/api/agents/council?limit=60", {
+          signal: requestController.signal,
+        });
+        if (disposed || requestController.signal.aborted) return;
+        const parsed = safeParseAgentCouncilMap(payload.map);
+        if (!parsed) throw new Error("Agent Council response is invalid.");
+        setCouncilMap(parsed);
+        setCouncilState("ready");
+      } catch {
+        if (disposed || requestController.signal.aborted) return;
+        setCouncilMap(undefined);
+        setCouncilState("unavailable");
+      }
+    };
+    const timer = window.setTimeout(() => void loadCouncil(), 0);
+    const interval = window.setInterval(() => void loadCouncil(), 12_000);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+      window.clearInterval(interval);
+      controller?.abort();
     };
   }, []);
 
@@ -241,6 +279,7 @@ export function AgentArsenalWorkspace() {
           {message}
         </p>
       ) : null}
+      <CouncilExecutionMap map={councilMap} state={councilState} />
       <div className="arsenal-layout">
         <nav className="arsenal-roster" aria-label="Agent roster">
           <div className={styles.rosterHeading}>
