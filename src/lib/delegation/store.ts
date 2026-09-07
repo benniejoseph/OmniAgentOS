@@ -52,6 +52,7 @@ export async function createDelegationTask(input: {
         contract_id, contract_sha256, delegate_principal_id,
         delegate_agent_id, delegate_definition_version,
         verifier_agent_id, verifier_definition_version,
+        verifier_acceptance_threshold,
         state, lifecycle_revision, task, task_sha256,
         created_at, accept_by, complete_by, updated_at, terminal_at
       ) VALUES (
@@ -61,6 +62,7 @@ export async function createDelegationTask(input: {
         ${task.contractSha256}, ${task.delegatePrincipalId},
         ${task.delegateAgentId}, ${task.delegateDefinitionVersion},
         ${task.verifierAgentId}, ${task.verifierDefinitionVersion},
+        ${task.verifierAcceptanceThreshold},
         ${task.state}, ${task.lifecycleRevision}, ${task}::jsonb,
         ${task.taskSha256}, ${task.createdAt}, ${task.acceptBy},
         ${task.completeBy}, ${task.updatedAt}, ${task.terminalAt}
