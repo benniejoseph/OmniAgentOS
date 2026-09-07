@@ -4,6 +4,7 @@ import {
   buildMeetingRevision,
   meetingRevisionSchema,
   strictestMeetingAccessClass,
+  type MeetingDefinitionInput,
 } from "@/lib/meetings/contracts";
 
 const actorId = "actor:11111111-1111-4111-8111-111111111111";
@@ -11,7 +12,7 @@ const meetingId = "meeting:22222222-2222-4222-8222-222222222222";
 const timestamp = "2026-09-08T10:00:00.000Z";
 const digest = "a".repeat(64);
 
-function definition() {
+function definition(): MeetingDefinitionInput {
   return {
     title: "Quarterly customer review",
     summary: "Review delivery and agree next steps.",
@@ -86,17 +87,23 @@ describe("meeting contracts", () => {
   });
 
   it("rejects recording links while any participant consent is unresolved", () => {
-    const value = definition();
-    value.participants[0].recordingConsent = "pending" as never;
-    value.sourceLinks.push({
-      ...value.sourceLinks[0],
-      linkId: "link:recording",
-      kind: "capture_recording",
-      sourceId: "capture-recording-1",
-      sourceRevisionId: "capture-recording-1:v1",
-      mediaRole: "recording",
-      accessClass: "owner_private",
-    });
+    const original = definition();
+    const value = {
+      ...original,
+      participants: original.participants.map((participant) => ({
+        ...participant,
+        recordingConsent: "pending" as const,
+      })),
+      sourceLinks: [...original.sourceLinks, {
+        ...original.sourceLinks[0],
+        linkId: "link:recording",
+        kind: "capture_recording" as const,
+        sourceId: "capture-recording-1",
+        sourceRevisionId: "capture-recording-1:v1",
+        mediaRole: "recording" as const,
+        accessClass: "owner_private" as const,
+      }],
+    };
     expect(() => buildMeetingRevision({
       tenantId: "tenant-a",
       workspaceId: "workspace:tenant-a",

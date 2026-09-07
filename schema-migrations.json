@@ -663,5 +663,10 @@
     "version": 133,
     "name": "canonical_actor_scope_repair_v1",
     "checksum": "f700debf165e44134b59e46fdfc258a4fb9e51a7158adfb26760c77acff45678"
+  },
+  {
+    "version": 134,
+    "name": "meeting_domain_v1",
+    "checksum": "2dd5db3415b794678d2dcfff211e0621623e66b814b8ac166058ab2737fb3c56"
   }
 ]
