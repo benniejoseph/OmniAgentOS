@@ -65,6 +65,12 @@ export type McpSessionScope = {
   tenantId: string;
   actorId: string;
   executionId: string;
+  /** Ephemeral profile transport authority. Never persist this on a run. */
+  browserProfile?: {
+    id: string;
+    revision: number;
+    allowedDomains: string[];
+  };
 };
 
 export async function discoverMcpTools(
@@ -405,6 +411,10 @@ function playwrightSessionKey(
     .update(scope.actorId.trim(), "utf8")
     .update("\u0000", "utf8")
     .update(scope.executionId.trim(), "utf8")
+    .update("\u0000", "utf8")
+    .update(scope.browserProfile?.id || "temporary", "utf8")
+    .update("\u0000", "utf8")
+    .update(String(scope.browserProfile?.revision || 0), "utf8")
     .digest("base64url");
 }
 
@@ -615,10 +625,18 @@ async function createRequestInit(
     if (!sessionScope) {
       throw new Error("Playwright browser requests require an explicit tenant, actor, and execution scope.");
     }
-    headers.set(
-      "x-omniagent-browser-scope",
-      createPlaywrightScope(connector, bearerToken, sessionScope),
-    );
+    const browserScope = createPlaywrightScope(connector, bearerToken, sessionScope);
+    headers.set("x-omniagent-browser-scope", browserScope);
+    if (sessionScope.browserProfile) {
+      const profileAuthority = createPlaywrightProfileAuthority(
+        bearerToken,
+        browserScope,
+        sessionScope,
+      );
+      headers.set("x-omniagent-browser-profile", profileAuthority.locator);
+      headers.set("x-omniagent-browser-profile-grant", profileAuthority.grant);
+      secretValues.push(profileAuthority.grant, profileAuthority.locator);
+    }
     if (persistentPlaywrightSession) {
       headers.set("x-omniagent-browser-session", "run");
     }
@@ -777,7 +795,66 @@ function createPlaywrightScope(
     .update(executionId, "utf8")
     .update("\u0000", "utf8")
     .update(connectorId, "utf8")
+    .update("\u0000", "utf8")
+    .update(scope?.browserProfile?.id || "temporary", "utf8")
+    .update("\u0000", "utf8")
+    .update(String(scope?.browserProfile?.revision || 0), "utf8")
     .digest("base64url");
+}
+
+export function createPlaywrightProfileAuthority(
+  token: string,
+  browserScope: string,
+  scope: McpSessionScope,
+  now = Date.now(),
+) {
+  const profile = scope.browserProfile;
+  if (!profile) {
+    throw new Error("A consented browser profile is required.");
+  }
+  if (!Number.isSafeInteger(profile.revision) || profile.revision < 1) {
+    throw new Error("Browser profile revision is invalid.");
+  }
+  const domains = normalizeProfileAuthorityDomains(profile.allowedDomains);
+  const locator = createHmac("sha256", token)
+    .update("omniagent-playwright-profile-locator-v1\u0000", "utf8")
+    .update(normalizeTenantId(scope.tenantId), "utf8")
+    .update("\u0000", "utf8")
+    .update(normalizeScopePart(scope.actorId, "actor"), "utf8")
+    .update("\u0000", "utf8")
+    .update(normalizeScopePart(profile.id, "profile"), "utf8")
+    .digest("hex");
+  const payload = Buffer.from(JSON.stringify({
+    v: 1,
+    p: locator,
+    r: profile.revision,
+    d: domains,
+    s: createHash("sha256").update(browserScope, "utf8").digest("hex"),
+    exp: Math.trunc(now + 5 * 60_000),
+  }), "utf8").toString("base64url");
+  const signingKey = createHmac("sha256", token)
+    .update("omniagent-playwright-profile-grant-key-v1", "utf8")
+    .digest();
+  const signature = createHmac("sha256", signingKey)
+    .update(`bpg1.${payload}`, "utf8")
+    .digest("base64url");
+  return { locator, grant: `bpg1.${payload}.${signature}` };
+}
+
+function normalizeProfileAuthorityDomains(values: readonly string[]) {
+  const domains = [...new Set(values.map((value) => value.trim().toLowerCase()))].sort();
+  if (
+    domains.length < 1 ||
+    domains.length > 20 ||
+    domains.some((domain) =>
+      domain.length > 253 ||
+      !domain.includes(".") ||
+      !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])$/.test(domain)
+    )
+  ) {
+    throw new Error("Browser profile domains are invalid.");
+  }
+  return domains;
 }
 
 function normalizeScopePart(value: string, label: string) {

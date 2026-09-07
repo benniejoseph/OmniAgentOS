@@ -12,7 +12,11 @@ const credentialMocks = vi.hoisted(() => ({
 vi.mock("@/lib/security/network", () => networkMocks);
 vi.mock("@/lib/connectors/credential-store", () => credentialMocks);
 
-import { callMcpTool, discoverMcpTools } from "@/lib/connectors/mcp-client";
+import {
+  callMcpTool,
+  createPlaywrightProfileAuthority,
+  discoverMcpTools,
+} from "@/lib/connectors/mcp-client";
 
 describe("discoverMcpTools", () => {
   beforeEach(() => {
@@ -289,6 +293,38 @@ describe("discoverMcpTools", () => {
     expect(initializeCount).toBe(1);
     expect(sessionMode).toBe("run");
     expect(toolCalls).toEqual(["browser_navigate", "browser_snapshot"]);
+  });
+
+  it("creates a short-lived opaque profile grant bound to the browser scope", () => {
+    const authority = createPlaywrightProfileAuthority(
+      "playwright-service-token-for-tests",
+      "opaque-browser-scope",
+      {
+        tenantId: "test-tenant",
+        actorId: "actor-a",
+        executionId: "agent:run-profile",
+        browserProfile: {
+          id: "browser_profile:00000000-0000-4000-8000-000000000001",
+          revision: 3,
+          allowedDomains: ["login.example.com", "example.com"],
+        },
+      },
+      1_000,
+    );
+
+    expect(authority.locator).toMatch(/^[a-f0-9]{64}$/);
+    expect(authority.grant).toMatch(/^bpg1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
+    expect(authority.grant).not.toContain("actor-a");
+    expect(authority.grant).not.toContain("browser_profile");
+    const [, encoded] = authority.grant.split(".");
+    expect(JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"))).toEqual({
+      v: 1,
+      p: authority.locator,
+      r: 3,
+      d: ["example.com", "login.example.com"],
+      s: expect.stringMatching(/^[a-f0-9]{64}$/),
+      exp: 301_000,
+    });
   });
 
   it("rejects MCP tool results that carry the protocol error flag", async () => {

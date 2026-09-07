@@ -32,6 +32,10 @@ import {
 import { listRunsService } from "@/lib/app-services/runs";
 import { executeFirstPartyAppTool } from "@/lib/app-services/tool-dispatcher";
 import { captureBrowserFrameAfterToolSafely } from "@/lib/browser/frames";
+import {
+  browserProfileTargetHostname,
+  resolveBrowserProfileSession,
+} from "@/lib/browser/profiles";
 import type { ModelBrowserObservation } from "@/lib/models/browser-observation";
 import {
   createGoogleCalendarEvent,
@@ -50,6 +54,7 @@ import { callOpenApiOperation } from "@/lib/connectors/openapi-client";
 import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
+import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { readResponseTextLimited } from "@/lib/http/body";
 import {
   publicMemoryDeletionReceiptV1,
@@ -1385,6 +1390,12 @@ export async function executeGovernedTool({
       });
     }
     let result: unknown;
+    const effectiveMcpSessionScope = await resolveBrowserProfileMcpScope({
+      tool,
+      toolInput: preparedInput,
+      sessionScope: mcpSessionScope,
+      executionScope: scopedRequest.executionScope || executionScope,
+    });
     try {
       result = await runTool(
         tool,
@@ -1392,7 +1403,7 @@ export async function executeGovernedTool({
         toolRuntimeContext,
         executionRecord?.id || idempotencyKey,
         abortSignal,
-        mcpSessionScope,
+        effectiveMcpSessionScope,
         scopedRequest.binding?.executionScope || executionScope,
         effectContext?.targetId || providerEffectIntent?.targetId,
         executionRecord?.createdAt,
@@ -1460,7 +1471,7 @@ export async function executeGovernedTool({
           executionId: saved.id,
           executionScope: frameExecutionScope,
           context: toolRuntimeContext,
-          sessionScope: mcpSessionScope,
+          sessionScope: effectiveMcpSessionScope,
           abortSignal,
         });
         browserObservation = captured?.modelObservation;
@@ -1523,6 +1534,37 @@ export async function executeGovernedTool({
     );
     return { record: saved, result: null };
   }
+}
+
+async function resolveBrowserProfileMcpScope(input: {
+  tool: ToolDefinition;
+  toolInput: Record<string, unknown>;
+  sessionScope?: McpSessionScope;
+  executionScope?: ExecutionScope;
+}) {
+  if (input.tool.category !== "mcp" || !input.sessionScope) {
+    return input.sessionScope;
+  }
+  const mcpTool = await getMcpToolById(input.tool.id, {
+    tenantId: input.sessionScope.tenantId,
+  });
+  if (!mcpTool) return input.sessionScope;
+  const connector = await getMcpConnector(mcpTool.connectorId, {
+    tenantId: input.sessionScope.tenantId,
+  });
+  if (!connector || !isAsaelPlaywrightMcpEndpoint(connector.endpoint)) {
+    return input.sessionScope;
+  }
+  const profile = await resolveBrowserProfileSession({
+    tenantId: input.sessionScope.tenantId,
+    ownerActorId: input.sessionScope.actorId,
+    executionId: input.sessionScope.executionId,
+    targetHostname: browserProfileTargetHostname(mcpTool.name, input.toolInput),
+    executionScope: input.executionScope,
+  });
+  return profile
+    ? { ...input.sessionScope, browserProfile: profile }
+    : input.sessionScope;
 }
 
 type ResolvedToolExecutionScope = Readonly<{

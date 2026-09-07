@@ -1,7 +1,21 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import { spawn } from "node:child_process";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
+import { execFile, spawn } from "node:child_process";
 import { lookup as dnsLookup } from "node:dns/promises";
-import { mkdir, rm } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import {
   createServer,
   request as httpRequest,
@@ -11,6 +25,7 @@ import {
   connect as connectSocket,
   isIP,
 } from "node:net";
+import { promisify } from "node:util";
 
 const TOKEN_PATTERN = /^[A-Za-z0-9._~-]{32,256}$/;
 const SCOPE_PATTERN = /^[A-Za-z0-9._~-]{32,128}$/;
@@ -19,6 +34,11 @@ const MCP_PATH = "/mcp";
 const MCP_KEEPER_PROTOCOL_VERSION = "2025-06-18";
 const MAX_MCP_BODY_BYTES = 1_048_576;
 const MAX_KEEPER_RESPONSE_BYTES = 1_048_576;
+const MAX_PROFILE_ARCHIVE_BYTES = 128 * 1024 * 1024;
+const PROFILE_GRANT_PATTERN = /^bpg1\.[A-Za-z0-9_-]{20,7000}\.[A-Za-z0-9_-]{43}$/;
+const PROFILE_LOCATOR_PATTERN = /^[a-f0-9]{64}$/;
+const PROFILE_ARCHIVE_MAGIC = Buffer.from("OAP1", "ascii");
+const execFileAsync = promisify(execFile);
 const CHILD_STOP_GRACE_MS = 5_000;
 const SHUTDOWN_GRACE_MS = 20_000;
 const MCP_UPSTREAM_INACTIVITY_MS = 70_000;
@@ -55,12 +75,6 @@ const MCP_RESPONSE_HEADERS = new Set([
 const listenPort = boundedInteger(
   process.env.OMNIAGENT_PLAYWRIGHT_MCP_PORT,
   8080,
-  1,
-  65_535,
-);
-const egressProxyPort = boundedInteger(
-  process.env.OMNIAGENT_PLAYWRIGHT_MCP_EGRESS_PROXY_PORT,
-  8899,
   1,
   65_535,
 );
@@ -112,12 +126,21 @@ const acceptedTokenDigests = [
   digestToken(primaryToken),
   ...(previousToken ? [digestToken(previousToken)] : []),
 ];
+const acceptedProfileGrantKeys = [
+  profileGrantKey(primaryToken),
+  ...(previousToken ? [profileGrantKey(previousToken)] : []),
+];
+const profileEncryptionKey = optionalProfileEncryptionKey(
+  process.env.OMNIAGENT_PLAYWRIGHT_PROFILE_KEY,
+);
 delete process.env.OMNIAGENT_PLAYWRIGHT_MCP_TOKEN;
 delete process.env.OMNIAGENT_PLAYWRIGHT_MCP_PREVIOUS_TOKEN;
+delete process.env.OMNIAGENT_PLAYWRIGHT_PROFILE_KEY;
 
 const blockedAddresses = createBlockedAddressList();
 const scopes = new Map();
 const scopeDirectories = "/tmp/playwright-mcp/scopes";
+const profileArchiveDirectory = "/data/playwright-profiles";
 const sockets = new Set();
 const tunnelSockets = new Set();
 let activeRequests = 0;
@@ -125,30 +148,9 @@ let shuttingDown = false;
 let scopeCreationQueue = Promise.resolve();
 
 await mkdir(scopeDirectories, { recursive: true, mode: 0o700 });
-
-const egressProxy = createServer((request, response) => {
-  void proxyPlainHttpRequest(request, response).catch((error) => {
-    if (!response.headersSent && !response.destroyed) {
-      writeJson(response, error instanceof NetworkPolicyError ? error.status : 502, {
-        error: error instanceof NetworkPolicyError
-          ? "Browser destination is not allowed."
-          : "Browser network request failed.",
-      });
-    } else if (!response.destroyed) {
-      response.destroy();
-    }
-  });
-});
-egressProxy.on("connect", (request, clientSocket, head) => {
-  void proxyConnectRequest(request, clientSocket, head).catch((error) => {
-    rejectTunnel(
-      clientSocket,
-      error instanceof NetworkPolicyError ? error.status : 502,
-    );
-  });
-});
-configureHttpServer(egressProxy);
-trackServerSockets(egressProxy);
+if (profileEncryptionKey) {
+  await mkdir(profileArchiveDirectory, { recursive: true, mode: 0o700 });
+}
 
 const gateway = createServer((request, response) => {
   void handleGatewayRequest(request, response).catch((error) => {
@@ -174,7 +176,6 @@ const gateway = createServer((request, response) => {
 configureHttpServer(gateway);
 trackServerSockets(gateway);
 
-await listen(egressProxy, egressProxyPort, LOOPBACK_HOST);
 await listen(gateway, listenPort, "0.0.0.0");
 
 const reaper = setInterval(() => {
@@ -195,6 +196,7 @@ console.log(JSON.stringify({
   maxScopes,
   scopeTtlMs,
   scopeReclaimIdleMs,
+  persistentProfiles: Boolean(profileEncryptionKey),
 }));
 
 async function handleGatewayRequest(request, response) {
@@ -272,6 +274,7 @@ async function handleGatewayRequest(request, response) {
     request.resume();
     return;
   }
+  const profileGrant = openProfileGrant(request, scopeValue);
 
   const requestLength = declaredRequestLength(request);
   if (requestLength.error) {
@@ -291,7 +294,7 @@ async function handleGatewayRequest(request, response) {
   try {
     const requestBody = await readMcpRequestBody(request, requestLength.value);
     const isToolCall = requestBody ? containsToolCall(requestBody) : false;
-    const scope = await getOrCreateScope(scopeValue);
+    const scope = await getOrCreateScope(scopeValue, profileGrant);
     if (isToolCall) scope.hasToolCall = true;
     scope.activeRequests += 1;
     scope.lastUsedAt = Date.now();
@@ -331,11 +334,12 @@ async function handleGatewayRequest(request, response) {
   }
 }
 
-function getOrCreateScope(scopeValue) {
+function getOrCreateScope(scopeValue, profileGrant) {
   const scopeKey = createHash("sha256").update(scopeValue).digest("hex");
   const pending = scopeCreationQueue.then(async () => {
     const existing = scopes.get(scopeKey);
     if (existing && !existing.stopping && !hasChildExited(existing.child)) {
+      assertScopeProfileMatches(existing, profileGrant);
       return existing;
     }
 
@@ -343,7 +347,7 @@ function getOrCreateScope(scopeValue) {
     if (scopes.size >= maxScopes) {
       throw new GatewayCapacityError();
     }
-    const created = await startScope(scopeKey);
+    const created = await startScope(scopeKey, profileGrant);
     scopes.set(scopeKey, created);
     return created;
   });
@@ -372,13 +376,30 @@ async function makeScopeCapacity() {
   }
 }
 
-async function startScope(scopeKey) {
+async function startScope(scopeKey, profileGrant) {
   const scopeDirectory = `${scopeDirectories}/${scopeKey}`;
   const outputDirectory = `${scopeDirectory}/output`;
   const profileDirectory = `${scopeDirectory}/profile`;
   await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
   await mkdir(profileDirectory, { recursive: true, mode: 0o700 });
+  if (profileGrant) {
+    try {
+      if (!profileEncryptionKey) {
+        throw new GatewayRequestError(
+          "Persistent browser profiles are not configured on this gateway.",
+          503,
+        );
+      }
+      await restoreEncryptedProfile(profileGrant, profileDirectory, scopeDirectory);
+    } catch (error) {
+      await rm(scopeDirectory, { recursive: true, force: true });
+      throw error;
+    }
+  }
   const port = await reserveLoopbackPort();
+  const egressProxyPort = await reserveLoopbackPort();
+  const egressProxy = createScopedEgressProxy(profileGrant?.domains);
+  await listen(egressProxy, egressProxyPort, LOOPBACK_HOST);
   const childEnvironment = { ...process.env };
   delete childEnvironment.OMNIAGENT_PLAYWRIGHT_MCP_TOKEN;
   delete childEnvironment.OMNIAGENT_PLAYWRIGHT_MCP_PREVIOUS_TOKEN;
@@ -426,6 +447,7 @@ async function startScope(scopeKey) {
   } catch (error) {
     signalChildTree(child, "SIGKILL");
     await childExit;
+    await closeServer(egressProxy);
     await rm(scopeDirectory, { recursive: true, force: true });
     throw error;
   }
@@ -441,6 +463,8 @@ async function startScope(scopeKey) {
     port,
     child,
     childExit,
+    egressProxy,
+    profileGrant,
     activeRequests: 0,
     hasToolCall: false,
     lastUsedAt: Date.now(),
@@ -452,7 +476,10 @@ async function startScope(scopeKey) {
     if (scopes.get(scopeKey) === scope) {
       scopes.delete(scopeKey);
     }
-    void rm(scopeDirectory, { recursive: true, force: true });
+    void closeServer(egressProxy);
+    if (!scope.stopping) {
+      void rm(scopeDirectory, { recursive: true, force: true });
+    }
     if (!scope.stopping && !shuttingDown) {
       console.error(JSON.stringify({
         level: "error",
@@ -562,6 +589,24 @@ async function stopScope(scope, reason) {
     signalChildTree(scope.child, "SIGKILL");
     await scope.childExit;
   }
+  await closeServer(scope.egressProxy);
+  if (scope.profileGrant) {
+    try {
+      await saveEncryptedProfile(
+        scope.profileGrant,
+        `${scope.directory}/profile`,
+        scope.directory,
+      );
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        message: "Persistent browser profile could not be sealed.",
+        scope: scope.fingerprint,
+        profile: scope.profileGrant.locator.slice(0, 12),
+        error: safeErrorMessage(error),
+      }));
+    }
+  }
   await rm(scope.directory, { recursive: true, force: true });
   console.log(JSON.stringify({
     level: "info",
@@ -569,6 +614,33 @@ async function stopScope(scope, reason) {
     scope: scope.fingerprint,
     reason,
   }));
+}
+
+function createScopedEgressProxy(allowedDomains) {
+  const server = createServer((request, response) => {
+    void proxyPlainHttpRequest(request, response, allowedDomains).catch((error) => {
+      if (!response.headersSent && !response.destroyed) {
+        writeJson(response, error instanceof NetworkPolicyError ? error.status : 502, {
+          error: error instanceof NetworkPolicyError
+            ? "Browser destination is not allowed."
+            : "Browser network request failed.",
+        });
+      } else if (!response.destroyed) {
+        response.destroy();
+      }
+    });
+  });
+  server.on("connect", (request, clientSocket, head) => {
+    void proxyConnectRequest(request, clientSocket, head, allowedDomains).catch((error) => {
+      rejectTunnel(
+        clientSocket,
+        error instanceof NetworkPolicyError ? error.status : 502,
+      );
+    });
+  });
+  configureHttpServer(server);
+  trackServerSockets(server);
+  return server;
 }
 
 async function reapExpiredScopes() {
@@ -687,7 +759,7 @@ function containsToolCall(body) {
   );
 }
 
-async function proxyPlainHttpRequest(request, response) {
+async function proxyPlainHttpRequest(request, response, allowedDomains) {
   let target;
   try {
     target = new URL(request.url || "");
@@ -702,7 +774,7 @@ async function proxyPlainHttpRequest(request, response) {
   ) {
     throw new NetworkPolicyError("Browser proxy allows plain HTTP only on port 80.");
   }
-  const address = await resolvePublicAddress(target.hostname);
+  const address = await resolvePublicAddress(target.hostname, allowedDomains);
   await new Promise((resolve, reject) => {
     const upstream = httpRequest({
       host: address.address,
@@ -731,9 +803,9 @@ async function proxyPlainHttpRequest(request, response) {
   });
 }
 
-async function proxyConnectRequest(request, clientSocket, head) {
+async function proxyConnectRequest(request, clientSocket, head, allowedDomains) {
   const target = parseConnectTarget(request.url);
-  const address = await resolvePublicAddress(target.hostname);
+  const address = await resolvePublicAddress(target.hostname, allowedDomains);
   await new Promise((resolve, reject) => {
     let connected = false;
     const upstreamSocket = connectSocket({
@@ -789,8 +861,18 @@ function parseConnectTarget(authority) {
   return { hostname: parsed.hostname, port };
 }
 
-async function resolvePublicAddress(value) {
+async function resolvePublicAddress(value, allowedDomains) {
   const hostname = normalizeHostname(value);
+  if (
+    allowedDomains &&
+    !allowedDomains.some((domain) =>
+      hostname === domain || hostname.endsWith(`.${domain}`)
+    )
+  ) {
+    throw new NetworkPolicyError(
+      "Browser destination is outside the consented profile domains.",
+    );
+  }
   if (isBlockedHostname(hostname)) {
     throw new NetworkPolicyError("Browser destination hostname is blocked.");
   }
@@ -930,6 +1012,202 @@ function tokensEqual(left, right) {
 
 function digestToken(token) {
   return createHash("sha256").update(token).digest();
+}
+
+function profileGrantKey(token) {
+  return createHmac("sha256", token)
+    .update("omniagent-playwright-profile-grant-key-v1", "utf8")
+    .digest();
+}
+
+function openProfileGrant(request, scopeValue) {
+  const rawLocator = singleHeader(request, "x-omniagent-browser-profile");
+  const rawGrant = singleHeader(request, "x-omniagent-browser-profile-grant");
+  const hasLocator = request.headers["x-omniagent-browser-profile"] !== undefined;
+  const hasGrant = request.headers["x-omniagent-browser-profile-grant"] !== undefined;
+  if (!hasLocator && !hasGrant) return undefined;
+  if (
+    !hasLocator ||
+    !hasGrant ||
+    !rawLocator ||
+    !PROFILE_LOCATOR_PATTERN.test(rawLocator) ||
+    !rawGrant ||
+    !PROFILE_GRANT_PATTERN.test(rawGrant)
+  ) {
+    throw new GatewayRequestError("Browser profile authority is invalid.", 403);
+  }
+  const [, encoded, signature] = rawGrant.split(".");
+  const provided = Buffer.from(signature, "base64url");
+  const signed = `bpg1.${encoded}`;
+  const valid = acceptedProfileGrantKeys.some((key) => {
+    const expected = createHmac("sha256", key).update(signed, "utf8").digest();
+    return provided.length === expected.length && timingSafeEqual(provided, expected);
+  });
+  if (!valid) {
+    throw new GatewayRequestError("Browser profile authority is invalid.", 403);
+  }
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  } catch {
+    throw new GatewayRequestError("Browser profile authority is invalid.", 403);
+  }
+  const domains = Array.isArray(payload?.d)
+    ? [...new Set(payload.d.map((value) => String(value).trim().toLowerCase()))].sort()
+    : [];
+  const now = Date.now();
+  if (
+    payload?.v !== 1 ||
+    payload?.p !== rawLocator ||
+    !PROFILE_LOCATOR_PATTERN.test(String(payload?.p || "")) ||
+    !Number.isSafeInteger(payload?.r) ||
+    payload.r < 1 ||
+    domains.length < 1 ||
+    domains.length > 20 ||
+    domains.some((domain) =>
+      domain.length > 253 ||
+      !domain.includes(".") ||
+      !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])$/.test(domain)
+    ) ||
+    payload?.s !== createHash("sha256").update(scopeValue, "utf8").digest("hex") ||
+    !Number.isSafeInteger(payload?.exp) ||
+    payload.exp <= now ||
+    payload.exp > now + 6 * 60_000
+  ) {
+    throw new GatewayRequestError("Browser profile authority is invalid or expired.", 403);
+  }
+  return Object.freeze({
+    locator: rawLocator,
+    revision: payload.r,
+    domains: Object.freeze(domains),
+  });
+}
+
+function assertScopeProfileMatches(scope, profileGrant) {
+  if (!scope.profileGrant && !profileGrant) return;
+  if (
+    !scope.profileGrant ||
+    !profileGrant ||
+    scope.profileGrant.locator !== profileGrant.locator ||
+    scope.profileGrant.revision !== profileGrant.revision ||
+    scope.profileGrant.domains.length !== profileGrant.domains.length ||
+    scope.profileGrant.domains.some((domain, index) => domain !== profileGrant.domains[index])
+  ) {
+    throw new GatewayRequestError(
+      "Browser profile authority does not match the active scope.",
+      409,
+    );
+  }
+}
+
+async function restoreEncryptedProfile(profileGrant, profileDirectory, scopeDirectory) {
+  const archivePath = persistentProfileArchivePath(profileGrant.locator);
+  let sealed;
+  try {
+    sealed = await readFile(archivePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (sealed.length > MAX_PROFILE_ARCHIVE_BYTES + 64) {
+    throw new Error("Persistent browser profile archive exceeds its size limit.");
+  }
+  if (
+    sealed.length < PROFILE_ARCHIVE_MAGIC.length + 12 + 16 ||
+    !sealed.subarray(0, PROFILE_ARCHIVE_MAGIC.length).equals(PROFILE_ARCHIVE_MAGIC)
+  ) {
+    throw new Error("Persistent browser profile archive is invalid.");
+  }
+  const ivOffset = PROFILE_ARCHIVE_MAGIC.length;
+  const tagOffset = ivOffset + 12;
+  const cipherOffset = tagOffset + 16;
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    profileEncryptionKey,
+    sealed.subarray(ivOffset, tagOffset),
+  );
+  decipher.setAAD(profileArchiveAad(profileGrant.locator));
+  decipher.setAuthTag(sealed.subarray(tagOffset, cipherOffset));
+  const archive = Buffer.concat([
+    decipher.update(sealed.subarray(cipherOffset)),
+    decipher.final(),
+  ]);
+  if (archive.length > MAX_PROFILE_ARCHIVE_BYTES) {
+    throw new Error("Persistent browser profile archive exceeds its size limit.");
+  }
+  const temporaryArchive = `${scopeDirectory}/profile-restore-${randomBytes(8).toString("hex")}.tar`;
+  try {
+    await writeFile(temporaryArchive, archive, { mode: 0o600 });
+    await execFileAsync("tar", ["-C", profileDirectory, "-xf", temporaryArchive], {
+      timeout: 30_000,
+      maxBuffer: 1_048_576,
+    });
+  } finally {
+    await rm(temporaryArchive, { force: true });
+  }
+}
+
+async function saveEncryptedProfile(profileGrant, profileDirectory, scopeDirectory) {
+  if (!profileEncryptionKey) {
+    throw new Error("Persistent browser profile encryption is not configured.");
+  }
+  const temporaryArchive = `${scopeDirectory}/profile-save-${randomBytes(8).toString("hex")}.tar`;
+  const temporarySealed = `${profileArchiveDirectory}/.${profileGrant.locator}-${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await execFileAsync("tar", [
+      "--exclude=Singleton*",
+      "-C",
+      profileDirectory,
+      "-cf",
+      temporaryArchive,
+      ".",
+    ], { timeout: 30_000, maxBuffer: 1_048_576 });
+    const archiveStat = await stat(temporaryArchive);
+    if (archiveStat.size > MAX_PROFILE_ARCHIVE_BYTES) {
+      throw new Error("Persistent browser profile archive exceeds its size limit.");
+    }
+    const archive = await readFile(temporaryArchive);
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", profileEncryptionKey, iv);
+    cipher.setAAD(profileArchiveAad(profileGrant.locator));
+    const ciphertext = Buffer.concat([cipher.update(archive), cipher.final()]);
+    const sealed = Buffer.concat([
+      PROFILE_ARCHIVE_MAGIC,
+      iv,
+      cipher.getAuthTag(),
+      ciphertext,
+    ]);
+    await mkdir(profileArchiveDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(temporarySealed, sealed, { mode: 0o600 });
+    await rename(temporarySealed, persistentProfileArchivePath(profileGrant.locator));
+  } finally {
+    await rm(temporaryArchive, { force: true });
+    await rm(temporarySealed, { force: true });
+  }
+}
+
+function persistentProfileArchivePath(locator) {
+  if (!PROFILE_LOCATOR_PATTERN.test(locator)) {
+    throw new Error("Persistent browser profile locator is invalid.");
+  }
+  return `${profileArchiveDirectory}/${locator}.oap`;
+}
+
+function profileArchiveAad(locator) {
+  return Buffer.from(`omniagent-browser-profile-v1\u0000${locator}`, "utf8");
+}
+
+function optionalProfileEncryptionKey(value) {
+  const encoded = String(value || "").trim();
+  if (!encoded) return undefined;
+  if (!/^[A-Za-z0-9_-]{43}$/.test(encoded)) {
+    fail("OMNIAGENT_PLAYWRIGHT_PROFILE_KEY must be a 32-byte base64url key.");
+  }
+  const key = Buffer.from(encoded, "base64url");
+  if (key.length !== 32) {
+    fail("OMNIAGENT_PLAYWRIGHT_PROFILE_KEY must be a 32-byte base64url key.");
+  }
+  return key;
 }
 
 function singleHeader(request, name) {
@@ -1080,12 +1358,13 @@ async function shutdown(exitCode, signal) {
     for (const socket of sockets) socket.destroy();
     for (const socket of tunnelSockets) socket.destroy();
     gateway.closeAllConnections?.();
-    egressProxy.closeAllConnections?.();
+    for (const scope of scopes.values()) {
+      scope.egressProxy.closeAllConnections?.();
+    }
   }, SHUTDOWN_GRACE_MS);
   forceTimer.unref();
   await Promise.all([
     closeServer(gateway),
-    closeServer(egressProxy),
     ...[...scopes.values()].map((scope) => stopScope(scope, "shutdown")),
   ]);
   clearTimeout(forceTimer);

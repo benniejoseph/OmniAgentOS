@@ -15,6 +15,8 @@ const requestHeaderAllowlist = [
   "mcp-session-id",
   "x-omniagent-browser-scope",
   "x-omniagent-browser-session",
+  "x-omniagent-browser-profile",
+  "x-omniagent-browser-profile-grant",
 ] as const;
 const responseHeaderAllowlist = [
   "cache-control",
