@@ -69,6 +69,10 @@ import {
   recordCustomerSuccessWorkflowOutcomeService,
   startCustomerSuccessWorkflowService,
 } from "@/lib/app-services/customer-success-workflows";
+import {
+  showCustomerSuccessIntelligenceService,
+  showCustomerSuccessPortfolioService,
+} from "@/lib/app-services/customer-success-intelligence";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
@@ -228,6 +232,8 @@ export async function executeFirstPartyAppTool(input: {
     "app.meetings.commitments.resolve": () => resolveMeetingCommitmentService(caller, input.toolInput as never),
     "app.customer_accounts.list": () => listCustomerAccountsService(caller, input.toolInput as never),
     "app.customer_accounts.show": () => showCustomerAccountService(caller, input.toolInput as never),
+    "app.customer_accounts.portfolio.show": () => showCustomerSuccessPortfolioService(caller, input.toolInput as never),
+    "app.customer_accounts.intelligence.show": () => showCustomerSuccessIntelligenceService(caller, input.toolInput as never),
     "app.customer_accounts.create": () => createCustomerAccountService(caller, input.toolInput as never),
     "app.customer_accounts.revise": () => reviseCustomerAccountService(caller, input.toolInput as never),
     "app.customer_accounts.facts.record": () => recordCustomerFactService(caller, input.toolInput as never),

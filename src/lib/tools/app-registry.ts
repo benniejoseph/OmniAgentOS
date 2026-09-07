@@ -102,6 +102,16 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     workspaceId: opaqueId("Optional exact workspace ID."),
     accountId: customerAccountIdSchema(),
   }, ["accountId"])),
+  readTool("app.customer_accounts.portfolio.show", "Show customer-success portfolio", "Rank readable Account 360 records by deterministic attention state and show evidence-bound next-best actions, risk, commitments, approvals, uncertainty, confidence, and freshness.", objectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    limit: integer(1, 200, 100),
+  })),
+  readTool("app.customer_accounts.intelligence.show", "Show customer account intelligence", "Read one governed customer-success decision projection: what changed, current risks and commitments, exact related approvals, and a non-authoritative next-best action with evidence, freshness, confidence, and uncertainty.", requiredObjectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID."),
+    accountId: customerAccountIdSchema(),
+    historyLimit: integer(1, 250, 100),
+    timelineLimit: integer(1, 250, 100),
+  }, ["accountId"])),
   mutationTool("app.customer_accounts.create", "Create customer account", "Create one provider-neutral Account 360 record with explicit owner and customer-data purposes. External CRM writes remain disabled.", requiredObjectSchema({
     workspaceId: opaqueId("Optional exact workspace ID."),
     name: text(1, 240),

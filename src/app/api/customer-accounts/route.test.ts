@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   create: vi.fn(),
   revise: vi.fn(),
   record: vi.fn(),
+  portfolio: vi.fn(),
+  intelligence: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -25,12 +27,19 @@ vi.mock("@/lib/app-services/customer-accounts", async (importOriginal) => ({
   reviseCustomerAccountService: mocks.revise,
   recordCustomerFactService: mocks.record,
 }));
+vi.mock("@/lib/app-services/customer-success-intelligence", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/app-services/customer-success-intelligence")>()),
+  showCustomerSuccessPortfolioService: mocks.portfolio,
+  showCustomerSuccessIntelligenceService: mocks.intelligence,
+}));
 
 import {
   GET as GETAccount,
   PATCH as PATCHAccount,
 } from "@/app/api/customer-accounts/[id]/route";
 import { POST as POSTFact } from "@/app/api/customer-accounts/[id]/facts/route";
+import { GET as GETIntelligence } from "@/app/api/customer-accounts/[id]/intelligence/route";
+import { GET as GETPortfolio } from "@/app/api/customer-accounts/portfolio/route";
 import {
   GET as GETAccounts,
   POST as POSTAccount,
@@ -72,6 +81,14 @@ beforeEach(() => {
   mocks.record.mockReset().mockResolvedValue({
     data: { context: {}, fact: { factId: `customer-fact:${"b".repeat(64)}` } },
     receipt: { operation: "app.customer_accounts.facts.record" },
+  });
+  mocks.portfolio.mockReset().mockResolvedValue({
+    data: { context: {}, portfolio: { accounts: [], counts: { total: 0 } } },
+    receipt: { operation: "app.customer_accounts.portfolio.show" },
+  });
+  mocks.intelligence.mockReset().mockResolvedValue({
+    data: { context: {}, intelligence: { portfolio: { accountId }, timeline: [] } },
+    receipt: { operation: "app.customer_accounts.intelligence.show" },
   });
 });
 
@@ -167,5 +184,31 @@ describe("customer Account 360 routes", () => {
     );
     expect(response.status).toBe(400);
     expect(mocks.record).not.toHaveBeenCalled();
+  });
+
+  it("serves private portfolio and account intelligence projections", async () => {
+    const portfolio = await GETPortfolio(new Request(
+      "http://localhost/api/customer-accounts/portfolio?limit=25",
+    ));
+    const intelligence = await GETIntelligence(
+      new Request(
+        `http://localhost/api/customer-accounts/${encodeURIComponent(accountId)}/intelligence?historyLimit=40&timelineLimit=30`,
+      ),
+      { params: Promise.resolve({ id: encodeURIComponent(accountId) }) },
+    );
+
+    expect([portfolio.status, intelligence.status]).toEqual([200, 200]);
+    expect(portfolio.headers.get("cache-control")).toBe("private, no-store");
+    expect(intelligence.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.portfolio).toHaveBeenCalledWith(expect.any(Object), { limit: 25 });
+    expect(mocks.intelligence).toHaveBeenCalledWith(expect.any(Object), {
+      accountId,
+      historyLimit: 40,
+      timelineLimit: 30,
+    });
+    expect(mocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({
+      resourceType: "customer_success_intelligence",
+      resourceId: accountId,
+    }));
   });
 });
