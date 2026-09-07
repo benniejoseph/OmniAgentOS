@@ -405,6 +405,24 @@ suggestions remain visibly not installed, and no raw cursor or credential value
 is serialized. Confirm the browser shows the same installed, permission, sync,
 freshness, failure, and cost states returned by the endpoint.
 
+P11.8 functional Settings is a Vercel web/runtime release plus additive
+migration `20260908080000_p11_8_functional_model_assignments.sql` (internal
+schema version 143). Apply the migration before promotion. Old assignments are
+deliberately invalidated to configuration-only and must be saved again against
+an enabled tenant-vault provider and a current catalog model with the exact
+role capability; do not reactivate them through a data backfill. Generic roles
+may use fallback only where the runtime emits attempt receipts, while
+embeddings, vision, and audio transcription accept one primary route.
+
+Deploy the complete feature once. Verify the canonical health revision,
+anonymous Settings rejection, the private/no-store
+`p11.8-functional-model-routing:1` snapshot, and a real model call for each
+activated route. A successful receipt must match the active assignment ID,
+scope, revision, configuration digest, and `tenant_vault` credential source;
+stale receipts and deployment-environment calls must not appear as assignment
+proof. The Fly worker needs a release only if its protocol or worker-owned
+model boundary changes.
+
 ## Production smoke state
 
 The `Production Smoke` workflow supports schedule and manual dispatch. Configure:
