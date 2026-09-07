@@ -72,6 +72,19 @@ function missionWorkItem(id: string): CanonicalWorkItemSurface {
   };
 }
 
+function missionTaskWorkItem(missionId: string, taskId: string): CanonicalWorkItemSurface {
+  const surface = missionWorkItem(missionId);
+  const status = {
+    ...surface.status,
+    projectId: `mission_project:${missionId}`,
+    workItemId: taskId,
+    kind: "task" as const,
+    sourceAuthority: "legacy_mission_task" as const,
+    sourceId: taskId,
+  };
+  return { ...surface, status };
+}
+
 const exactWorkItem = missionWorkItem("mission-exact");
 
 const exactMission: MissionSummaryView = {
@@ -111,7 +124,7 @@ const retainedMission: MissionSummaryView = {
   workItem: retainedWorkItem,
 };
 
-describe("Mission request-readable UI", () => {
+describe("Mission request-readable and canonical WorkItem UI", () => {
   it("selects exact, retained, and unverified surfaces independently", () => {
     expect(missionSelectionMode(exactMission, "readable_v1")).toBe("exact");
     expect(missionSelectionMode(retainedMission, "readable_v1")).toBe("retained");
@@ -283,9 +296,15 @@ describe("Mission request-readable UI", () => {
   });
 
   it("accepts exact detail only for the requested mission and scoped children", () => {
+    const taskWorkItem = missionTaskWorkItem(exactMission.id, "task-1");
     const detail = {
       mission: exactMission,
-      tasks: [{ id: "task-1", missionId: exactMission.id }],
+      tasks: [{
+        id: "task-1",
+        missionId: exactMission.id,
+        workItemStatus: taskWorkItem.status,
+        workItem: taskWorkItem,
+      }],
       attempts: [{ id: "attempt-1", missionId: exactMission.id }],
       artifacts: [{ id: "artifact-1", missionId: exactMission.id }],
     };
@@ -293,7 +312,11 @@ describe("Mission request-readable UI", () => {
     expect(missionDetailHasExpectedId(detail, "mission-other")).toBe(false);
     expect(missionDetailHasExpectedId({
       ...detail,
-      tasks: [{ id: "task-1", missionId: "mission-other" }],
+      tasks: [{ ...detail.tasks[0], missionId: "mission-other" }],
+    }, exactMission.id)).toBe(false);
+    expect(missionDetailHasExpectedId({
+      ...detail,
+      tasks: [{ ...detail.tasks[0], workItem: undefined }],
     }, exactMission.id)).toBe(false);
     const normalized = normalizeMissionDetail({
       ...detail,
