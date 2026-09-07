@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 2;
-  static const previousVersion = 1;
-  static const supportedVersions = <int>[2, 1];
+  static const currentVersion = 3;
+  static const previousVersion = 2;
+  static const supportedVersions = <int>[3, 2];
   static const discoveryPath = '/api/mobile/contracts';
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -50,11 +50,9 @@ abstract final class NativePaths {
   static const workspacesCreate = '/api/projects';
   static String workspacesUpdate(String id) => '/api/projects/${Uri.encodeComponent(id)}';
   static const captureCreate = '/api/capture';
-  static const captureTranscribe = '/api/capture/transcribe';
   static const meetingsList = '/api/meetings';
   static String meetingsGet(String id) => '/api/meetings/${Uri.encodeComponent(id)}';
   static const notificationsList = '/api/notifications';
-  static const notificationsReadAll = '/api/notifications';
   static String notificationsAcknowledge(String id) => '/api/notifications/${Uri.encodeComponent(id)}';
   static String evidenceRun(String id) => '/api/runs/${Uri.encodeComponent(id)}';
   static String evidenceRunCancel(String id) => '/api/runs/${Uri.encodeComponent(id)}';
@@ -113,6 +111,8 @@ abstract final class NativePaths {
   static const adminTools = '/api/tools';
   static const adminCapabilities = '/api/capabilities';
   static const adminTrust = '/api/trust';
+  static const captureTranscribe = '/api/capture/transcribe';
+  static const notificationsReadAll = '/api/notifications';
 }
 
 abstract final class NativeConversationEvents {

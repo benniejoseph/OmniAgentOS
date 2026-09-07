@@ -177,7 +177,7 @@ describe("cookie-authenticated mutation origin checks", () => {
         platform: "ios" as const,
         appVersion: "1.0.0",
         buildNumber: 1,
-        clientContractVersion: 2,
+        clientContractVersion: 3,
         clientAttestedAt: new Date().toISOString(),
       },
     };
@@ -195,7 +195,7 @@ describe("cookie-authenticated mutation origin checks", () => {
       request,
       {
         ...currentNativeContext,
-        native: { ...currentNativeContext.native, clientContractVersion: 1 },
+        native: { ...currentNativeContext.native, clientContractVersion: 2 },
       },
       "conversation.send",
     )).toThrow(/current native contract/i);

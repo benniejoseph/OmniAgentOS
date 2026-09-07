@@ -1102,6 +1102,21 @@ preference before attempting acknowledgement, so a network failure cannot undo
 local erasure. The self-service Devices & security surface cannot wipe its own
 current session and uses the generated v2 paths for all lifecycle calls.
 
+P12.3 opens no generic native write authority. The security context retains
+server-derived device contract and freshness metadata internally, while the
+serialized identity omits it. Each product route must name one registered
+native mutation capability, and the guard admits it only for a freshly
+attested compatible client on current contract v3 before applying ordinary
+RBAC, tenant/actor scope, audit, execution attribution, approval, and
+idempotency checks. Today, Conversation, approvals, Workspaces, Capture,
+notifications, and evidence reuse their existing application services;
+Meetings remains an actor-visible read projection. Flutter keeps old data
+visible when a refresh source fails, reports partial sources independently,
+and requires explicit retry or user action. Short microphone audio is used
+only to obtain editable transcript text and does not itself authorize or send
+an Agent command. P12.4 owns encrypted offline capture/outbox behavior and
+P12.5 owns APNs/FCM registration and delivery.
+
 The thirteenth request-bound slice extends only the public Capture asset byte
 GET. PostgreSQL selects the globally unique, non-internal asset and its bytes
 from the validated canonical/current-email pair in one statement, retains the

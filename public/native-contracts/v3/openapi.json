@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Asael native API",
-    "version": "2",
+    "version": "3",
     "description": "Generated current native contract. Domain behavior remains in the authoritative server services used by web and native clients."
   },
   "servers": [
@@ -1771,6 +1771,80 @@
             "bearerAuth": []
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "notifications.readAll",
+        "summary": "Mark all actor-visible notifications read.",
+        "tags": [
+          "notifications"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonObject"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful response.",
@@ -6021,6 +6095,82 @@
           }
         }
       }
+    },
+    "/api/capture/transcribe": {
+      "post": {
+        "operationId": "capture.transcribe",
+        "summary": "Transcribe a reviewed native voice draft.",
+        "tags": [
+          "capture"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/JsonObject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response.",
+            "content": {
+              "multipart/form-data": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded error response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6334,11 +6484,11 @@
             "prefixItems": [
               {
                 "type": "number",
-                "const": 2
+                "const": 3
               },
               {
                 "type": "number",
-                "const": 1
+                "const": 2
               }
             ]
           },
@@ -6743,11 +6893,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 2
+                    "const": 3
                   },
                   {
                     "type": "number",
-                    "const": 1
+                    "const": 2
                   }
                 ]
               },
@@ -6905,11 +7055,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 2
+                    "const": 3
                   },
                   {
                     "type": "number",
-                    "const": 1
+                    "const": 2
                   }
                 ]
               },
@@ -7268,22 +7418,22 @@
                   },
                   "currentVersion": {
                     "type": "number",
-                    "const": 2
+                    "const": 3
                   },
                   "previousVersion": {
                     "type": "number",
-                    "const": 1
+                    "const": 2
                   },
                   "supportedVersions": {
                     "type": "array",
                     "prefixItems": [
                       {
                         "type": "number",
-                        "const": 2
+                        "const": 3
                       },
                       {
                         "type": "number",
-                        "const": 1
+                        "const": 2
                       }
                     ]
                   },
@@ -7371,11 +7521,11 @@
                 "prefixItems": [
                   {
                     "type": "number",
-                    "const": 2
+                    "const": 3
                   },
                   {
                     "type": "number",
-                    "const": 1
+                    "const": 2
                   }
                 ]
               },
@@ -8437,22 +8587,22 @@
           },
           "currentVersion": {
             "type": "number",
-            "const": 2
+            "const": 3
           },
           "previousVersion": {
             "type": "number",
-            "const": 1
+            "const": 2
           },
           "supportedVersions": {
             "type": "array",
             "prefixItems": [
               {
                 "type": "number",
-                "const": 2
+                "const": 3
               },
               {
                 "type": "number",
-                "const": 1
+                "const": 2
               }
             ]
           },
