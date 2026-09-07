@@ -1,14 +1,9 @@
 import { z } from "zod";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { generateTodayBriefService, showTodayBriefService, updateTodayPreferencesService } from "@/lib/app-services/today";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import {
-  generateDailyBrief,
-  getTodayBriefBundle,
-  updateTodayPreferences,
-} from "@/lib/today/briefs";
-import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -37,12 +32,8 @@ async function GETHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const bundle = await getTodayBriefBundle({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
-  });
-  return Response.json(bundle, { headers: { "cache-control": "private, no-store" } });
+  const result = await showTodayBriefService(createAppServiceCaller({ context }), {});
+  return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: { "cache-control": "private, no-store" } });
 }
 
 async function POSTHandler(request: Request) {
@@ -54,14 +45,11 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const brief = await generateDailyBrief({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    force: parsed.force,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
-  });
-  invalidateTodaySnapshot(context);
-  return Response.json({ brief });
+  const result = await generateTodayBriefService(
+    createRequestMutationAppServiceCaller(request, context, { purpose: "today.brief.generate" }),
+    parsed,
+  );
+  return Response.json({ ...result.data, serviceReceipt: result.receipt });
 }
 
 async function PATCHHandler(request: Request) {
@@ -73,13 +61,11 @@ async function PATCHHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const preferences = await updateTodayPreferences(parsed, {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
-  });
-  invalidateTodaySnapshot(context);
-  return Response.json({ preferences });
+  const result = await updateTodayPreferencesService(
+    createRequestMutationAppServiceCaller(request, context, { purpose: "today.preferences.update" }),
+    parsed,
+  );
+  return Response.json({ ...result.data, serviceReceipt: result.receipt });
 }
 
 async function parseBody<T extends z.ZodType>(request: Request, schema: T): Promise<z.infer<T> | Response> {

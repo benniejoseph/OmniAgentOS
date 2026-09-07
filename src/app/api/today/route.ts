@@ -1,11 +1,9 @@
 import { z } from "zod";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { createTodayItemService, showTodayService } from "@/lib/app-services/today";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { loadTodaySnapshot } from "@/lib/today/snapshot";
-import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
-import { createTodayItem } from "@/lib/today/store";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -25,12 +23,8 @@ async function GETHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const snapshot = await loadTodaySnapshot({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
-  });
-  return Response.json(snapshot, {
+  const result = await showTodayService(createAppServiceCaller({ context }), {});
+  return Response.json({ ...result.data, serviceReceipt: result.receipt }, {
     headers: { "cache-control": "private, no-store" },
   });
 }
@@ -52,11 +46,9 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const item = await createTodayItem({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    ...parsed.data,
-  });
-  invalidateTodaySnapshot(context);
-  return Response.json({ item }, { status: 201 });
+  const result = await createTodayItemService(
+    createRequestMutationAppServiceCaller(request, context, { purpose: "today.item.create" }),
+    parsed.data,
+  );
+  return Response.json({ ...result.data, serviceReceipt: result.receipt }, { status: 201 });
 }

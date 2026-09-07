@@ -1,13 +1,9 @@
 import { z } from "zod";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { listNotificationsService, readAllNotificationsService } from "@/lib/app-services/notifications";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { notificationBulkMutationFromRequest } from "@/lib/today/notification-events";
-import {
-  getNotificationCenter,
-  markAllNotificationsRead,
-} from "@/lib/today/notifications";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -22,15 +18,8 @@ async function GETHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const center = await getNotificationCenter({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    // Reminder generation is owned by the scheduled workflow worker. Keep the
-    // interactive inbox read side-effect free and off the dashboard critical path.
-    processDue: false,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
-  });
-  return Response.json(center, { headers: { "cache-control": "private, no-store" } });
+  const result = await listNotificationsService(createAppServiceCaller({ context }), {});
+  return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: { "cache-control": "private, no-store" } });
 }
 
 async function PATCHHandler(request: Request) {
@@ -51,12 +40,11 @@ async function PATCHHandler(request: Request) {
     return forbiddenResponse(error);
   }
   try {
-    const notifications = await markAllNotificationsRead({
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      mutation: notificationBulkMutationFromRequest(request, context),
-    });
-    return Response.json({ notifications, updated: notifications.length });
+    const result = await readAllNotificationsService(
+      createRequestMutationAppServiceCaller(request, context, { purpose: "notification.read_all", causationId: "notifications:read_all" }),
+      {},
+    );
+    return Response.json({ ...result.data, serviceReceipt: result.receipt });
   } catch (error) {
     const message = error instanceof Error
       ? error.message

@@ -31,6 +31,20 @@ import {
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
+import {
+  createTodayItemService,
+  generateTodayBriefService,
+  showTodayBriefService,
+  showTodayService,
+  updateTodayItemService,
+  updateTodayPreferencesService,
+} from "@/lib/app-services/today";
+import {
+  listNotificationsService,
+  readAllNotificationsService,
+  updateNotificationService,
+} from "@/lib/app-services/notifications";
+import { listRunsService, showRunService } from "@/lib/app-services/runs";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -75,6 +89,17 @@ export async function executeFirstPartyAppTool(input: {
     "app.knowledge.ingest": () => ingestKnowledgeService(caller, input.toolInput as never),
     "app.knowledge.delete.preview": () => previewGovernedKnowledgeSourceDeleteService(caller, input.toolInput as never),
     "app.knowledge.delete": () => deleteGovernedKnowledgeSourceService(caller, input.toolInput as never),
+    "app.today.show": () => showTodayService(caller, input.toolInput as never),
+    "app.today.item.create": () => createTodayItemService(caller, input.toolInput as never),
+    "app.today.item.update": () => updateTodayItemService(caller, input.toolInput as never),
+    "app.today.brief.show": () => showTodayBriefService(caller, input.toolInput as never),
+    "app.today.brief.generate": () => generateTodayBriefService(caller, input.toolInput as never),
+    "app.today.preferences.update": () => updateTodayPreferencesService(caller, input.toolInput as never),
+    "app.notifications.list": () => listNotificationsService(caller, input.toolInput as never),
+    "app.notifications.update": () => updateNotificationService(caller, input.toolInput as never),
+    "app.notifications.read_all": () => readAllNotificationsService(caller, input.toolInput as never),
+    "app.runs.list": () => listRunsService(caller, input.toolInput as never),
+    "app.runs.show": () => showRunService(caller, input.toolInput as never),
   };
   const handler = handlers[input.toolId];
   if (!handler) throw new Error(`No first-party application handler is registered for ${input.toolId}.`);

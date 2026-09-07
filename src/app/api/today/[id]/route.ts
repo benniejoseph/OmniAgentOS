@@ -1,10 +1,9 @@
 import { z } from "zod";
+import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { updateTodayItemService } from "@/lib/app-services/today";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { invalidateTodaySnapshot } from "@/lib/today/snapshot-cache";
-import { updateTodayItem } from "@/lib/today/store";
 
 export const runtime = "nodejs";
 export const PATCH = withDatabaseRequestScope(PATCHHandler);
@@ -39,15 +38,11 @@ async function PATCHHandler(
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const item = await updateTodayItem(id, parsed.data, {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
-  });
-  if (item) {
-    invalidateTodaySnapshot(context);
-  }
-  return item
-    ? Response.json({ item })
+  const result = await updateTodayItemService(
+    createRequestMutationAppServiceCaller(request, context, { purpose: "today.item.update", causationId: id }),
+    { itemId: id, ...parsed.data },
+  );
+  return result.data.item
+    ? Response.json({ ...result.data, serviceReceipt: result.receipt })
     : Response.json({ error: "Focus item not found." }, { status: 404 });
 }
