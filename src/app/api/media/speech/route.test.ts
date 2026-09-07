@@ -4,11 +4,15 @@ const mocks = vi.hoisted(() => {
   class CustomAgentReadConflictError extends Error {}
   return {
     CustomAgentReadConflictError,
+    appendScopedDomainEvent: vi.fn(),
     authorizeRequest: vi.fn(),
     canonicalRequestActorBindingFromSecurityContext: vi.fn(),
+    checkSharedRateLimit: vi.fn(),
+    createOpenAISpeechStream: vi.fn(),
     getCustomAgentForRequest: vi.fn(),
+    getOwnedThread: vi.fn(),
+    recordAiUsageSafely: vi.fn(),
     recordRuntimeEventSafely: vi.fn(),
-    synthesizeGoogleSpeech: vi.fn(),
   };
 });
 
@@ -16,6 +20,13 @@ vi.mock("@/lib/db/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/db/client")>()),
   withDatabaseRequestScope:
     (handler: (...args: never[]) => Promise<Response>) => handler,
+}));
+vi.mock("@/lib/events/store", () => ({
+  appendScopedDomainEvent: mocks.appendScopedDomainEvent,
+}));
+vi.mock("@/lib/http/rate-limit", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/http/rate-limit")>()),
+  checkSharedRateLimit: mocks.checkSharedRateLimit,
 }));
 vi.mock("@/lib/security/guard", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/security/guard")>()),
@@ -25,15 +36,21 @@ vi.mock("@/lib/security/canonical-actor", () => ({
   canonicalRequestActorBindingFromSecurityContext:
     mocks.canonicalRequestActorBindingFromSecurityContext,
 }));
-vi.mock("@/lib/google/ai", () => ({
-  synthesizeGoogleSpeech: mocks.synthesizeGoogleSpeech,
-}));
 vi.mock("@/lib/observability/store", () => ({
   recordRuntimeEventSafely: mocks.recordRuntimeEventSafely,
 }));
 vi.mock("@/lib/skills/store", () => ({
   CustomAgentReadConflictError: mocks.CustomAgentReadConflictError,
   getCustomAgentForRequest: mocks.getCustomAgentForRequest,
+}));
+vi.mock("@/lib/threads/store", () => ({
+  getOwnedThread: mocks.getOwnedThread,
+}));
+vi.mock("@/lib/usage/ledger", () => ({
+  recordAiUsageSafely: mocks.recordAiUsageSafely,
+}));
+vi.mock("@/lib/voice/openai-speech", () => ({
+  createOpenAISpeechStream: mocks.createOpenAISpeechStream,
 }));
 
 import { POST } from "@/app/api/media/speech/route";
@@ -56,44 +73,84 @@ const actorBinding = {
     "actor-one",
   ],
 };
+const threadId = "22222222-2222-4222-8222-222222222222";
 
 beforeEach(() => {
+  mocks.appendScopedDomainEvent.mockReset().mockResolvedValue({});
   mocks.authorizeRequest.mockReset().mockResolvedValue(auth);
   mocks.canonicalRequestActorBindingFromSecurityContext.mockReset()
     .mockReturnValue(actorBinding);
-  mocks.getCustomAgentForRequest.mockReset();
-  mocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
-  mocks.synthesizeGoogleSpeech.mockReset().mockResolvedValue(
-    Buffer.from("audio"),
+  mocks.checkSharedRateLimit.mockReset().mockResolvedValue({
+    allowed: true,
+    retryAfterSeconds: 0,
+  });
+  mocks.createOpenAISpeechStream.mockReset().mockImplementation(() =>
+    Promise.resolve(byteStream([new Uint8Array([1, 2]), new Uint8Array([3, 4])]))
   );
+  mocks.getCustomAgentForRequest.mockReset();
+  mocks.getOwnedThread.mockReset().mockResolvedValue({ id: threadId });
+  mocks.recordAiUsageSafely.mockReset().mockResolvedValue(undefined);
+  mocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
 });
 
-describe("P7.2 agent voice identity", () => {
-  it("attributes built-in speech to the exact central persona", async () => {
+describe("P9.10 versioned streaming Agent speech", () => {
+  it("streams exact PCM under the pinned Asael voice profile", async () => {
     const response = await POST(speechRequest({
       text: "Verified answer.",
       agentId: "scout",
+      threadId,
+      runId: "run:one",
+      voiceProfileVersion: "asael-voice:1",
     }));
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-disposition"))
-      .toBe("inline; filename=scout-response.mp3");
-    expect(mocks.getCustomAgentForRequest).not.toHaveBeenCalled();
-    expect(mocks.recordRuntimeEventSafely).toHaveBeenCalledWith(
+    expect(response.headers.get("content-type")).toBe("audio/pcm");
+    expect(response.headers.get("x-asael-audio-sample-rate")).toBe("24000");
+    expect(response.headers.get("x-asael-audio-encoding")).toBe("pcm_s16le");
+    expect(response.headers.get("x-asael-voice-profile")).toBe("asael-voice:1");
+    expect(response.headers.get("x-asael-voice-profile-sha256"))
+      .toMatch(/^[a-f0-9]{64}$/);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+      new Uint8Array([1, 2, 3, 4]),
+    );
+    expect(mocks.getOwnedThread).toHaveBeenCalledWith(threadId, {
+      tenantId: auth.tenantId,
+      actorId: auth.actorId,
+      requestActorBinding: actorBinding,
+    });
+    expect(mocks.createOpenAISpeechStream).toHaveBeenCalledWith(
       expect.objectContaining({
-        resourceId: "scout",
-        metadata: expect.objectContaining({
+        text: "Verified answer.",
+        profile: expect.objectContaining({
+          profileVersion: "asael-voice:1",
           agentId: "scout",
-          voiceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          model: "gpt-4o-mini-tts",
+          voice: "cedar",
         }),
+      }),
+    );
+    expect(mocks.recordAiUsageSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "completed",
+        provider: "openai",
+        model: "gpt-4o-mini-tts",
+        usage: { inputCharacters: 16, outputBytes: 4 },
+      }),
+    );
+    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        streamId: `thread:${threadId}`,
+        type: "voice.speech_streamed",
+        payload: expect.not.objectContaining({ text: expect.anything() }),
       }),
     );
   });
 
-  it("resolves an owned custom Agent before synthesizing its voice", async () => {
+  it("resolves an owned custom Agent definition before fixing its delivery digest", async () => {
     mocks.getCustomAgentForRequest.mockResolvedValue({
       id: "agent-one",
       name: "Evidence Guide",
+      activeDefinitionVersion: 4,
       persona: {
         ...DEFAULT_CUSTOM_AGENT_PERSONA,
         voice: "Measured and evidence-led.",
@@ -103,29 +160,78 @@ describe("P7.2 agent voice identity", () => {
     const response = await POST(speechRequest({
       text: "Source-backed answer.",
       agentId: "agent-one",
+      voiceProfileVersion: "asael-voice:1",
     }));
+    await response.arrayBuffer();
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-disposition"))
-      .toBe("inline; filename=evidence-guide-response.mp3");
     expect(mocks.getCustomAgentForRequest).toHaveBeenCalledWith("agent-one", {
       tenantId: auth.tenantId,
       actorId: auth.actorId,
       requestActorBinding: actorBinding,
     });
+    expect(mocks.createOpenAISpeechStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({
+          agentId: "agent-one",
+          agentDefinitionVersion: 4,
+          instructions: expect.stringContaining("Measured and evidence-led."),
+        }),
+      }),
+    );
   });
 
-  it("does not synthesize speech for an unavailable custom Agent", async () => {
-    mocks.getCustomAgentForRequest.mockResolvedValue(undefined);
-
-    const response = await POST(speechRequest({
+  it("rejects an unavailable conversation or Agent before provider use", async () => {
+    mocks.getOwnedThread.mockResolvedValueOnce(null);
+    const missingThread = await POST(speechRequest({
       text: "Do not speak this.",
+      threadId,
+      voiceProfileVersion: "asael-voice:1",
+    }));
+    mocks.getCustomAgentForRequest.mockResolvedValue(undefined);
+    const missingAgent = await POST(speechRequest({
+      text: "Do not speak this either.",
       agentId: "missing-agent",
+      voiceProfileVersion: "asael-voice:1",
     }));
 
-    expect(response.status).toBe(404);
-    expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(mocks.synthesizeGoogleSpeech).not.toHaveBeenCalled();
+    expect(missingThread.status).toBe(404);
+    expect(missingAgent.status).toBe(404);
+    expect(mocks.createOpenAISpeechStream).not.toHaveBeenCalled();
+  });
+
+  it("records client cancellation as an interrupted stream without transcript text", async () => {
+    const response = await POST(speechRequest({
+      text: "Long answer that will be interrupted.",
+      threadId,
+      voiceProfileVersion: "asael-voice:1",
+    }));
+    const reader = response.body!.getReader();
+    await reader.read();
+    await reader.cancel("barge-in");
+
+    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "voice.speech_interrupted" }),
+    );
+    expect(mocks.recordAiUsageSafely).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "failed",
+        failureKind: "abort",
+        retryable: false,
+      }),
+    );
+    expect(JSON.stringify(mocks.appendScopedDomainEvent.mock.calls[0]?.[0]))
+      .not.toContain("Long answer");
+  });
+
+  it("rejects unknown voice versions before provider use", async () => {
+    const response = await POST(speechRequest({
+      text: "Do not speak this.",
+      voiceProfileVersion: "latest",
+    }));
+
+    expect(response.status).toBe(400);
+    expect(mocks.createOpenAISpeechStream).not.toHaveBeenCalled();
   });
 });
 
@@ -134,5 +240,14 @@ function speechRequest(body: Record<string, unknown>) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+function byteStream(chunks: Uint8Array[]) {
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
   });
 }

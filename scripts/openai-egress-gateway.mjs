@@ -47,6 +47,14 @@ const routeDefinitions = [
     contentType: "multipart/form-data",
   },
   {
+    id: "audio_speech",
+    method: "POST",
+    path: "/v1/audio/speech",
+    maxBodyBytes: 32 * 1024,
+    timeoutMs: 120_000,
+    contentType: "application/json",
+  },
+  {
     id: "realtime_client_secrets",
     method: "POST",
     path: "/v1/realtime/client_secrets",
