@@ -1,13 +1,11 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { showWorkflowService } from "@/lib/app-services/workflows";
 import {
-  getWorkflowRunDetail,
   getWorkflowRunStatus,
 } from "@/lib/workflows/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import {
-  publicWorkflowRunDetail,
-  publicWorkflowStatus,
-} from "@/lib/workflows/public";
+import { publicWorkflowStatus } from "@/lib/workflows/public";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
@@ -43,13 +41,9 @@ async function GETHandler(
     return Response.json({ run: publicWorkflowStatus(status) });
   }
 
-  const detail = await getWorkflowRunDetail(id, {
-    tenantId: securityContext.tenantId,
-  });
-
-  if (!detail) {
+  const result = await showWorkflowService(createAppServiceCaller({ context: securityContext }), { workflowId: id });
+  if (!result.data.workflow) {
     return Response.json({ error: "Workflow run not found." }, { status: 404 });
   }
-
-  return Response.json(publicWorkflowRunDetail(detail));
+  return Response.json({ ...result.data.workflow, serviceReceipt: result.receipt });
 }

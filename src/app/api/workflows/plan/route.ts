@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { listWorkflowPlansService } from "@/lib/app-services/workflows";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   jsonBodyErrorResponse,
   parseBoundedInteger,
   parseJsonBody,
 } from "@/lib/http/body";
-import { buildDynamicWorkflowPlan, getWorkflowPlanStats, listWorkflowPlans } from "@/lib/workflows/planner";
+import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/planner";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import {
@@ -52,10 +54,8 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
 
-  return Response.json({
-    plans: await listWorkflowPlans(limit, { tenantId: context.tenantId }),
-    stats: await getWorkflowPlanStats({ tenantId: context.tenantId }),
-  });
+  const result = await listWorkflowPlansService(createAppServiceCaller({ context }), { limit });
+  return Response.json({ ...result.data, serviceReceipt: result.receipt });
 }
 
 async function POSTHandler(request: Request) {

@@ -107,4 +107,18 @@ describe("governed native tool schemas", () => {
       });
     }
   });
+
+  it("keeps workflow control bounded and approval-gated at signals", () => {
+    expect(getGovernedTool("app.workflows.start")).toMatchObject({
+      riskLevel: 1,
+      operationClass: "mutation",
+    });
+    expect(getGovernedTool("app.workflows.signal")).toMatchObject({
+      riskLevel: 2,
+      approvalRequired: true,
+    });
+    expect(getGovernedTool("app.workflows.tick")?.inputSchema).toMatchObject({
+      required: ["workflowId"],
+    });
+  });
 });
