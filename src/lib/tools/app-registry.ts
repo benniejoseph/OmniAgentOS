@@ -6,6 +6,9 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     approvalLimit: integer(1, 25, 12),
   })),
   readTool("app.workspaces.readiness", "Workspace readiness", "Read the authenticated tenant workspace readiness checks.", objectSchema({})),
+  readTool("app.sources.coverage.show", "Show source coverage", "Read connected knowledge domains, bounded backfill completeness, last verified freshness, and explicit source blind spots without inferring absence as a negative fact.", objectSchema({
+    workspaceId: opaqueId("Optional exact workspace ID for Workspace-scoped integrations."),
+  })),
   readTool("app.memory.shared.list", "List shared knowledge", "List durable knowledge from one explicitly selected project or workspace membership scope.", requiredObjectSchema({
     scope: { type: "string", enum: ["project", "workspace"] },
     projectId: opaqueId("Required when scope is project."),
