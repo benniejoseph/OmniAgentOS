@@ -1542,6 +1542,23 @@ events contain only identities, digests, recipients, and governed execution
 references. Browser projections expose only explicitly shared content and omit
 the sender execution principal.
 
+P8.5 separates capability discovery from the P7.2 identity-only card. Each
+built-in Agent has a digest-bound `p8.5-agent-card:1` that pins the exact
+definition version/digest and advertises only closed input/output schemas,
+semantic task kinds, text/JSON/artifact-reference modalities, tool policy,
+delegated-principal authentication requirements, supported internal protocols,
+and hard limits. Cards contain no tenant/actor coordinate, execution principal,
+grant, endpoint, credential, or secret and keep external A2A disabled.
+
+Semantic intent policy v2 ranks only validated card capabilities and then
+deterministically checks availability, auth scheme, modality coverage, task
+kind, and every requested limit. Multi-kind work selects one compatible card
+per kind and adds the advertised verifier where required. Its content-free
+selection/card/discovery digests enter the intent receipt and event; they are
+evidence of selection, never grants. `/api/agents/cards` exposes the same
+authenticated, private/no-store projections and optional deterministic
+discovery receipt.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,

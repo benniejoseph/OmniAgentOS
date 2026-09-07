@@ -773,7 +773,7 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.6 | Build external A2A client/server adapters. | Reuse inbound auth/MCP patterns; create A2A boundary. | External agents receive scoped references and delegated tokens; all actions re-enter governed execution. | Compatible external agents can discover, negotiate, stream progress, exchange artifacts, cancel, and resume without a second security path. |
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
-**Implementation status:** P8.1 through P8.4 are complete. P8.5 is the next
+**Implementation status:** P8.1 through P8.5 are complete. P8.6 is the next
 actionable slice; P12 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -2647,6 +2647,24 @@ rejected the complete-feature promotion at
 `62e238bee8725b56a407a9fafc6b8c4e5576df09` before upload because the team still
 has an overdue balance, so Fly was intentionally left unchanged. P8.5 internal
 Agent Cards and capability discovery is next; P12/P13 remain deferred.
+
+P8.5 repository implementation is complete. Each built-in now exposes a
+digest-verified internal `p8.5-agent-card:1` with exact definition identity,
+general and specialist capability IDs, closed input/output schemas and digests,
+semantic task kinds, supported modalities, tool policy, delegated-principal
+authentication requirements, protocol versions, and hard execution limits.
+Cards keep external A2A disabled and contain no owner coordinate, principal,
+grant, endpoint, credential, or secret.
+
+Deterministic discovery rejects unavailable, auth-, modality-, task-, schema-,
+or limit-incompatible cards. Semantic intent policy v2 selects the primary and
+complete specialist team from those exact cards and persists only content-free
+card, selection, and discovery digests. The authenticated private/no-store
+`GET /api/agents/cards` endpoint exposes the same cards and optional ranked
+receipt. Fifty-three focused checks across seven test files, affected lint,
+TypeScript, and the 97-page Next 16 production build pass. No migration was
+required. P8.6 external A2A client/server adapters is next; P12/P13 remain
+deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
