@@ -6,7 +6,7 @@ const target: ModelTarget = {
   provider: "anthropic",
   model: "claude-test",
   tier: "fast",
-  features: ["text", "tools"],
+  features: ["text", "tools", "vision"],
 };
 
 describe("Anthropic model adapter tool turns", () => {
@@ -191,5 +191,81 @@ describe("Anthropic model adapter tool turns", () => {
       tool_use_id: "call-1",
       content: "{\"name\":\"Ada Lovelace\"}",
     }]);
+  });
+
+  it("attaches browser evidence to one tool result without retaining it", async () => {
+    process.env.ANTHROPIC_API_KEY = "test-key";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      model: "claude-test",
+      content: [{ type: "text", text: "The page is ready." }],
+      usage: { input_tokens: 12, output_tokens: 3 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await anthropicModelAdapter.generateToolTurn!({
+      input: "Continue",
+      preferredProvider: "anthropic",
+      tools: [],
+      continuation: {
+        provider: "anthropic",
+        state: [{
+          role: "assistant",
+          content: [{
+            type: "tool_use",
+            id: "call-browser",
+            name: "browser_click",
+            input: { ref: "e7" },
+          }],
+        }],
+        conversation: [
+          { type: "message", role: "user", content: "Continue" },
+          {
+            type: "tool_call",
+            callId: "call-browser",
+            name: "browser_click",
+            argumentsJson: "{\"ref\":\"e7\"}",
+          },
+        ],
+      },
+      toolResults: [{
+        callId: "call-browser",
+        name: "browser_click",
+        output: "{\"clicked\":true}",
+        browserObservation: {
+          schemaVersion: 1,
+          source: "browser",
+          trust: "untrusted_data",
+          executionId: "execution-browser",
+          operation: "browser_click",
+          accessibilitySnapshot: "- heading \"Ready\" [level=1]",
+          screenshot: {
+            mimeType: "image/webp",
+            dataBase64: "UklGRgAAAABXRUJQ",
+          },
+        },
+      }],
+    }, target);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const toolResult = body.messages.at(-1).content[0];
+    expect(toolResult.content).toEqual([
+      { type: "text", text: "{\"clicked\":true}" },
+      expect.objectContaining({
+        type: "text",
+        text: expect.stringContaining("Untrusted browser observation"),
+      }),
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/webp",
+          data: "UklGRgAAAABXRUJQ",
+        },
+      },
+    ]);
+    expect(JSON.stringify(result.continuation.state)).not.toContain(
+      "UklGRgAAAABXRUJQ",
+    );
+    expect(JSON.stringify(result.continuation.state)).not.toContain("Ready");
   });
 });

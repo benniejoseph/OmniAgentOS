@@ -21,6 +21,10 @@ import {
   type ModelConversationItem,
   type ModelConversationSeedItem,
 } from "@/lib/models/conversation";
+import {
+  renderModelBrowserObservation,
+  type ModelBrowserObservation,
+} from "@/lib/models/browser-observation";
 import { promptCacheKeyForScope } from "@/lib/models/prompt-cache";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
@@ -271,7 +275,11 @@ export type ResponseFunctionCallItem = {
 export type ConversationItem =
   | ModelConversationSeedItem
   | ResponseFunctionCallItem
-  | { type: "function_call_output"; call_id: string; output: string };
+  | { type: "function_call_output"; call_id: string; output: string }
+  | {
+      type: "ephemeral_browser_observation";
+      observation: ModelBrowserObservation;
+    };
 
 export type ResponseTurnInput = string | ConversationItem[];
 
@@ -672,6 +680,25 @@ export function openAIResponseInput(input: ResponseTurnInput) {
         content: renderUntrustedObservation(item),
       };
     }
+    if (item.type === "ephemeral_browser_observation") {
+      const screenshot = item.observation.screenshot;
+      return {
+        role: "user" as const,
+        content: [
+          {
+            type: "input_text" as const,
+            text: renderModelBrowserObservation(item.observation),
+          },
+          ...(screenshot
+            ? [{
+                type: "input_image" as const,
+                detail: "high" as const,
+                image_url: `data:${screenshot.mimeType};base64,${screenshot.dataBase64}`,
+              }]
+            : []),
+        ],
+      };
+    }
     return item;
   });
 }
@@ -682,6 +709,9 @@ export function canonicalConversationFromOpenAIItems(
   const callNames = new Map<string, string>();
   const conversation: ModelConversationItem[] = [];
   for (const item of items) {
+    if (item.type === "ephemeral_browser_observation") {
+      continue;
+    }
     if (item.type === "message" || item.type === "observation") {
       conversation.push(item);
     } else if (item.type === "function_call") {

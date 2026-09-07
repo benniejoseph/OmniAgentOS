@@ -5,7 +5,7 @@ const google = vi.hoisted(() => ({ configured: vi.fn(), targets: vi.fn(), genera
 const anthropic = vi.hoisted(() => ({ configured: vi.fn(), targets: vi.fn(), generateText: vi.fn(), generateStructured: vi.fn(), generateToolTurn: vi.fn() }));
 
 vi.mock("@/lib/models/adapters/openai", () => ({
-  openAIModelAdapter: adapter("openai", openAI, ["text", "json_schema", "tools"]),
+  openAIModelAdapter: adapter("openai", openAI, ["text", "json_schema", "tools", "vision"]),
 }));
 vi.mock("@/lib/models/adapters/google", () => ({
   googleModelAdapter: adapter("google", google, ["text", "tools"]),
@@ -193,6 +193,49 @@ describe("model gateway", () => {
     expect(disclosed.toolResults[0].output).toHaveLength(8_000);
   });
 
+  it("discloses browser images only to targets advertising vision", async () => {
+    google.configured.mockReturnValue(true);
+    google.generateToolTurn.mockResolvedValue(toolTurnResult("google"));
+    const browserObservation = modelBrowserObservation();
+    google.targets.mockReturnValue([
+      target("google", "text-tool-model", ["text", "tools"]),
+    ]);
+
+    await generateModelToolTurn({
+      input: "inspect the page",
+      preferredProvider: "google",
+      tools: [],
+      toolResults: [{
+        callId: "call-browser",
+        name: "browser_click",
+        output: "clicked",
+        browserObservation,
+      }],
+    });
+    expect(google.generateToolTurn.mock.calls[0][0].toolResults[0])
+      .not.toHaveProperty("browserObservation.screenshot");
+    expect(google.generateToolTurn.mock.calls[0][0].toolResults[0])
+      .toHaveProperty("browserObservation.accessibilitySnapshot");
+
+    google.generateToolTurn.mockClear();
+    google.targets.mockReturnValue([
+      target("google", "vision-tool-model", ["text", "tools", "vision"]),
+    ]);
+    await generateModelToolTurn({
+      input: "inspect the page",
+      preferredProvider: "google",
+      tools: [],
+      toolResults: [{
+        callId: "call-browser",
+        name: "browser_click",
+        output: "clicked",
+        browserObservation,
+      }],
+    });
+    expect(google.generateToolTurn.mock.calls[0][0].toolResults[0])
+      .toHaveProperty("browserObservation.screenshot.mimeType", "image/webp");
+  });
+
   it("rejects opaque continuation state from another provider", async () => {
     google.configured.mockReturnValue(true);
     await expect(generateModelToolTurn({
@@ -282,9 +325,28 @@ function adapter(id: "openai" | "google" | "anthropic", mock: Record<string, Ret
 function target(
   provider: "openai" | "google" | "anthropic",
   model: string,
-  features: Array<"text" | "json_schema" | "tools">,
+  features: Array<"text" | "json_schema" | "tools" | "vision">,
 ) {
   return { provider, model, tier: "fast", features };
+}
+
+function modelBrowserObservation() {
+  return {
+    schemaVersion: 1 as const,
+    source: "browser" as const,
+    trust: "untrusted_data" as const,
+    executionId: "execution-browser",
+    operation: "browser_click",
+    pageState: { origin: "https://example.test", title: "Example" },
+    accessibilitySnapshot: "- button \"Continue\" [ref=e7]",
+    screenshot: {
+      mimeType: "image/webp" as const,
+      dataBase64: Buffer.from([
+        0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00,
+        0x57, 0x45, 0x42, 0x50,
+      ]).toString("base64"),
+    },
+  };
 }
 
 function toolTurnResult(provider: "openai" | "google" | "anthropic") {

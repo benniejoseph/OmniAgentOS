@@ -13,6 +13,7 @@ import {
 import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { getMcpConnector, parseMcpToolId } from "@/lib/connectors/store";
 import { appendDomainEventSafely } from "@/lib/events/store";
+import type { ModelBrowserObservation } from "@/lib/models/browser-observation";
 import {
   assertExecutionScopeTenant,
   deriveExecutionScope,
@@ -71,6 +72,13 @@ export type BrowserAccessibilitySnapshotSummary = {
   operation: string;
 };
 
+export type BrowserObservationCapture = Readonly<{
+  frame?: BrowserFrameSummary;
+  accessibilitySnapshot?: BrowserAccessibilitySnapshotSummary;
+  /** Ephemeral provider input. This is deliberately absent from stored events. */
+  modelObservation?: ModelBrowserObservation;
+}>;
+
 export async function captureBrowserFrameAfterToolSafely(input: {
   toolId: string;
   toolInput: Record<string, unknown>;
@@ -80,7 +88,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
   context?: SecurityContext;
   sessionScope?: McpSessionScope;
   abortSignal?: AbortSignal;
-}) {
+}): Promise<BrowserObservationCapture | undefined> {
   const scope = input.sessionScope;
   const runId = scope ? agentRunId(scope.executionId) : undefined;
   if (!scope || !runId) return undefined;
@@ -148,7 +156,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
 
     // This is bounded observability attached to an already-governed browser
     // action, not a model-requested action or an alternate execution path.
-    const frame = await captureFrame({
+    const frameCapture = await captureFrame({
       connector,
       runId,
       operation,
@@ -173,7 +181,7 @@ export async function captureBrowserFrameAfterToolSafely(input: {
       });
       return undefined;
     });
-    await captureAccessibilitySnapshot({
+    const snapshotCapture = await captureAccessibilitySnapshot({
       connector,
       runId,
       operation,
@@ -195,9 +203,47 @@ export async function captureBrowserFrameAfterToolSafely(input: {
           category: snapshotFailureCategory(error),
         },
       });
+      return undefined;
     });
     await pruneRunObservations(runId, scope, executionScope).catch(() => undefined);
-    return frame;
+    const actionPage = browserPage(input.toolResult);
+    const fallbackUrl = operation === "browser_navigate"
+      ? safePageUrl(input.toolInput.url)
+      : undefined;
+    const pageUrl = frameCapture?.pageState.url || actionPage.url || fallbackUrl;
+    const pageTitle = frameCapture?.pageState.title || actionPage.title;
+    const modelObservation = frameCapture || snapshotCapture || pageUrl || pageTitle
+      ? {
+          schemaVersion: 1 as const,
+          source: "browser" as const,
+          trust: "untrusted_data" as const,
+          executionId: input.executionId,
+          operation,
+          ...(
+            pageUrl || pageTitle
+              ? {
+                  pageState: {
+                    ...(pageUrl ? { url: pageUrl, origin: safeOrigin(pageUrl) } : {}),
+                    ...(pageTitle ? { title: pageTitle } : {}),
+                  },
+                }
+              : {}
+          ),
+          ...(snapshotCapture?.content
+            ? { accessibilitySnapshot: snapshotCapture.content }
+            : {}),
+          ...(frameCapture?.screenshot
+            ? { screenshot: frameCapture.screenshot }
+            : {}),
+        } satisfies ModelBrowserObservation
+      : undefined;
+    return {
+      ...(frameCapture?.frame ? { frame: frameCapture.frame } : {}),
+      ...(snapshotCapture?.summary
+        ? { accessibilitySnapshot: snapshotCapture.summary }
+        : {}),
+      ...(modelObservation ? { modelObservation } : {}),
+    };
   } catch (error) {
     await appendObservationEvent({
       runId,
@@ -289,6 +335,69 @@ export async function getRunBrowserAccessibilitySnapshotContent(
     return undefined;
   }
   return content;
+}
+
+/**
+ * Rehydrates one exact execution's private browser evidence for an approval
+ * resume. The result is still ephemeral and must not be stored in continuation
+ * state or general tool transcripts.
+ */
+export async function loadRunBrowserModelObservation(
+  runId: string,
+  executionId: string,
+  owner: { tenantId: string; actorId: string },
+): Promise<ModelBrowserObservation | undefined> {
+  const [frames, snapshots] = await Promise.all([
+    listRunBrowserFrames(runId, owner),
+    listRunBrowserAccessibilitySnapshots(runId, owner),
+  ]);
+  const frame = frames.find((item) => item.executionId === executionId);
+  const snapshot = snapshots.find((item) => item.executionId === executionId);
+  if (!frame && !snapshot) return undefined;
+  const [frameContent, snapshotContent] = await Promise.all([
+    frame ? getRunBrowserFrameContent(runId, frame.id, owner) : undefined,
+    snapshot
+      ? getRunBrowserAccessibilitySnapshotContent(runId, snapshot.id, owner)
+      : undefined,
+  ]);
+  const operation = frame?.operation || snapshot?.operation;
+  if (!operation) return undefined;
+  const pageUrl = frameContent
+    ? safePageUrl(stringMetadata(frameContent.asset.metadata, "pageUrl"))
+    : undefined;
+  const pageOrigin = frame?.pageOrigin || (pageUrl ? safeOrigin(pageUrl) : undefined);
+  const pageTitle = frame?.pageTitle;
+  const accessibilitySnapshot = snapshotContent
+    ? snapshotContent.bytes.toString("utf8").trim()
+    : undefined;
+  return {
+    schemaVersion: 1,
+    source: "browser",
+    trust: "untrusted_data",
+    executionId,
+    operation,
+    ...(pageUrl || pageOrigin || pageTitle
+      ? {
+          pageState: {
+            ...(pageUrl ? { url: pageUrl } : {}),
+            ...(pageOrigin ? { origin: pageOrigin } : {}),
+            ...(pageTitle ? { title: pageTitle } : {}),
+          },
+        }
+      : {}),
+    ...(accessibilitySnapshot ? { accessibilitySnapshot } : {}),
+    ...(frameContent && FRAME_MIME_TYPES.has(frameContent.asset.mediaType)
+      ? {
+          screenshot: {
+            mimeType: frameContent.asset.mediaType as
+              | "image/jpeg"
+              | "image/png"
+              | "image/webp",
+            dataBase64: frameContent.bytes.toString("base64"),
+          },
+        }
+      : {}),
+  };
 }
 
 function browserFrameFromAsset(
@@ -393,7 +502,18 @@ async function captureFrame(input: {
       pageOrigin,
     },
   });
-  return frame;
+  return {
+    frame,
+    screenshot: {
+      mimeType: image.mimeType as "image/jpeg" | "image/png" | "image/webp",
+      dataBase64: bytes.toString("base64"),
+    },
+    pageState: {
+      ...(pageUrl ? { url: pageUrl } : {}),
+      ...(pageOrigin ? { origin: pageOrigin } : {}),
+      ...(pageTitle ? { title: pageTitle } : {}),
+    },
+  };
 }
 
 async function captureAccessibilitySnapshot(input: {
@@ -457,7 +577,10 @@ async function captureAccessibilitySnapshot(input: {
       redactionVersion: "p9.5-browser-snapshot-redaction:1",
     },
   });
-  return browserSnapshotFromAsset(asset);
+  return {
+    summary: browserSnapshotFromAsset(asset),
+    content: snapshot,
+  };
 }
 
 async function pruneRunObservations(

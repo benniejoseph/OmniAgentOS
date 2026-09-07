@@ -97,13 +97,24 @@ export const openAIModelAdapter: ModelProviderAdapter = {
     const prior = request.continuation?.state.length
       ? request.continuation.state as ConversationItem[]
       : openAIConversationItems(conversation);
-    const input: ConversationItem[] = [
+    const durableInput: ConversationItem[] = [
       ...prior,
       ...(request.toolResults || []).map((result) => ({
         type: "function_call_output" as const,
         call_id: result.callId,
         output: result.output,
       })),
+    ];
+    const input: ConversationItem[] = [
+      ...durableInput,
+      ...(request.toolResults || []).flatMap((result) =>
+        result.browserObservation
+          ? [{
+              type: "ephemeral_browser_observation" as const,
+              observation: result.browserObservation,
+            }]
+          : []
+      ),
     ];
     const turn = await streamResponseTurn({
       instructions: request.instructions,
@@ -125,7 +136,7 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       continuation: {
         provider: "openai",
         state: [
-          ...input,
+          ...durableInput,
           ...(turn.text
             ? [{
                 type: "message",

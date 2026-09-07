@@ -147,6 +147,89 @@ describe("Google AI provider", () => {
     });
   });
 
+  it("sends browser state and an image for one turn without retaining them", async () => {
+    process.env.GEMINI_API_KEY = "test-key";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "interaction-vision",
+      model: "gemini-test",
+      status: "completed",
+      steps: [{
+        type: "model_output",
+        content: [{ type: "text", text: "The success banner is visible." }],
+      }],
+      usage: { total_input_tokens: 12, total_output_tokens: 3, total_tokens: 15 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateGeminiToolTurn({
+      prompt: "Continue",
+      model: "gemini-test",
+      tools: [],
+      continuation: {
+        provider: "google",
+        state: [{
+          type: "function_call",
+          id: "call-browser",
+          name: "browser_click",
+          arguments: { ref: "e7" },
+        }],
+        conversation: [
+          { type: "message", role: "user", content: "Continue" },
+          {
+            type: "tool_call",
+            callId: "call-browser",
+            name: "browser_click",
+            argumentsJson: "{\"ref\":\"e7\"}",
+          },
+        ],
+      },
+      toolResults: [{
+        callId: "call-browser",
+        name: "browser_click",
+        output: "{\"clicked\":true}",
+        browserObservation: {
+          schemaVersion: 1,
+          source: "browser",
+          trust: "untrusted_data",
+          executionId: "execution-browser",
+          operation: "browser_click",
+          pageState: { title: "Success" },
+          accessibilitySnapshot: "- heading \"Success\" [level=1]",
+          screenshot: {
+            mimeType: "image/webp",
+            dataBase64: "UklGRgAAAABXRUJQ",
+          },
+        },
+      }],
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.input).toContainEqual(expect.objectContaining({
+      type: "function_result",
+      call_id: "call-browser",
+    }));
+    expect(body.input.at(-1)).toEqual({
+      type: "user_input",
+      content: [
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("Untrusted browser observation"),
+        }),
+        {
+          type: "image",
+          mime_type: "image/webp",
+          data: "UklGRgAAAABXRUJQ",
+        },
+      ],
+    });
+    expect(JSON.stringify(result.continuation.state)).not.toContain(
+      "UklGRgAAAABXRUJQ",
+    );
+    expect(JSON.stringify(result.continuation.state)).not.toContain(
+      "Redacted accessibility snapshot",
+    );
+  });
+
   it("replays a canonical tool transcript without Google-owned state", async () => {
     process.env.GEMINI_API_KEY = "test-key";
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({

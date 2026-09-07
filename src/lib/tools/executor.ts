@@ -32,6 +32,7 @@ import {
 import { listRunsService } from "@/lib/app-services/runs";
 import { executeFirstPartyAppTool } from "@/lib/app-services/tool-dispatcher";
 import { captureBrowserFrameAfterToolSafely } from "@/lib/browser/frames";
+import type { ModelBrowserObservation } from "@/lib/models/browser-observation";
 import {
   createGoogleCalendarEvent,
   googleCalendarCreateSchema,
@@ -288,6 +289,8 @@ export type GovernedToolEffectBinding = Readonly<{
 export type GovernedToolExecutionResult = {
   record: ToolExecutionRecord;
   result: unknown;
+  /** One-turn browser evidence; excluded from the persisted execution record. */
+  browserObservation?: ModelBrowserObservation;
 };
 
 export type GovernedToolCheckpointInput = Readonly<{
@@ -1437,6 +1440,7 @@ export async function executeGovernedTool({
       }
       throw error;
     }
+    let browserObservation: ModelBrowserObservation | undefined;
     if (tool.category === "mcp") {
       const frameExecutionScope = scopedRequest.executionScope ||
         (toolRuntimeContext
@@ -1449,7 +1453,7 @@ export async function executeGovernedTool({
             })
           : undefined);
       if (frameExecutionScope) {
-        await captureBrowserFrameAfterToolSafely({
+        const captured = await captureBrowserFrameAfterToolSafely({
           toolId: tool.id,
           toolInput: preparedInput,
           toolResult: safeResult,
@@ -1459,6 +1463,7 @@ export async function executeGovernedTool({
           sessionScope: mcpSessionScope,
           abortSignal,
         });
+        browserObservation = captured?.modelObservation;
       }
     }
     await recordTrustOutcomeSafely(
@@ -1467,7 +1472,11 @@ export async function executeGovernedTool({
       "success",
       effectiveApproved,
     );
-    return { record: saved, result: safeResult };
+    return {
+      record: saved,
+      result: safeResult,
+      ...(browserObservation ? { browserObservation } : {}),
+    };
   } catch (error) {
     if (
       error instanceof ExecutionClaimLostError ||

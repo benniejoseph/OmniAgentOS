@@ -113,6 +113,123 @@ describe("non-OpenAI governed provider tool loop", () => {
     ).toEqual([5, 6]);
   });
 
+  it("supplies the next provider turn with the governed browser observation", async () => {
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      if (!request.toolResults) {
+        return turn({
+          toolCalls: [{
+            callId: "call-browser",
+            name: "browser_click",
+            argumentsJson: "{\"ref\":\"e7\"}",
+          }],
+        });
+      }
+      expect(request.toolResults).toEqual([expect.objectContaining({
+        callId: "call-browser",
+        output: expect.stringContaining("tool_result"),
+        browserObservation: expect.objectContaining({
+          executionId: "execution-browser",
+          accessibilitySnapshot: expect.stringContaining("Success"),
+          screenshot: expect.objectContaining({ mimeType: "image/webp" }),
+        }),
+      })]);
+      return turn({ text: "The click succeeded; continue." });
+    });
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Use what the browser actually shows.",
+      prompt: "Continue",
+      tools: [modelTool("browser_click")],
+      toolbox: {
+        byFunctionName: new Map([["browser_click", {
+          definition: toolDefinition("mcp:browser:browser_click"),
+          functionName: "browser_click",
+        }]]),
+      },
+      securityContext: {
+        tenantId: "tenant-1",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-browser",
+      generateTurn,
+      executeTool: vi.fn(async () => ({
+        record: executionRecord("mcp:browser:browser_click", "executed", {
+          id: "execution-browser",
+        }),
+        result: { clicked: true },
+        browserObservation: browserObservation(),
+      })) as never,
+    });
+
+    const collected = await collect(loop);
+    expect(collected.result.text).toBe("The click succeeded; continue.");
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it("removes ephemeral browser evidence before parking provider state", async () => {
+    const browserDefinition = toolDefinition("mcp:browser:browser_snapshot");
+    const approvalDefinition = toolDefinition("http.request", {
+      riskLevel: 2,
+      approvalRequired: true,
+    });
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Use tools.",
+      prompt: "Inspect then submit",
+      tools: [modelTool("browser_snapshot"), modelTool("http_request")],
+      toolbox: {
+        byFunctionName: new Map([
+          ["browser_snapshot", {
+            definition: browserDefinition,
+            functionName: "browser_snapshot",
+          }],
+          ["http_request", {
+            definition: approvalDefinition,
+            functionName: "http_request",
+          }],
+        ]),
+      },
+      securityContext: {
+        tenantId: "tenant-1",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-browser-approval",
+      serializeToolCalls: true,
+      generateTurn: vi.fn(async () => turn({
+        toolCalls: [
+          { callId: "call-browser", name: "browser_snapshot", argumentsJson: "{}" },
+          { callId: "call-approval", name: "http_request", argumentsJson: "{}" },
+        ],
+      })),
+      executeTool: vi.fn(async (request: { toolId: string }) =>
+        request.toolId === browserDefinition.id
+          ? {
+              record: executionRecord(request.toolId, "executed", {
+                id: "execution-browser",
+              }),
+              result: { ok: true },
+              browserObservation: browserObservation(),
+            }
+          : {
+              record: executionRecord(request.toolId, "approval_required"),
+              result: null,
+            }
+      ) as never,
+    });
+
+    const collected = await collect(loop);
+    const parked = collected.result.waitingApproval?.providerState
+      .toolResultsBeforeApproval[0];
+    expect(parked?.output).toContain("tool_result");
+    expect(parked).not.toHaveProperty("browserObservation");
+  });
+
   it("parks approval-required calls without advancing the provider turn", async () => {
     const generateTurn = vi.fn(async () => turn({
       toolCalls: [{ callId: "call-approval", name: "http_request", argumentsJson: "{\"url\":\"https://example.com\"}" }],
@@ -354,6 +471,22 @@ function modelTool(name: string) {
   };
 }
 
+function browserObservation() {
+  return {
+    schemaVersion: 1 as const,
+    source: "browser" as const,
+    trust: "untrusted_data" as const,
+    executionId: "execution-browser",
+    operation: "browser_click",
+    pageState: { origin: "https://example.test", title: "Success" },
+    accessibilitySnapshot: "- heading \"Success\" [level=1]",
+    screenshot: {
+      mimeType: "image/webp" as const,
+      dataBase64: "UklGRgAAAABXRUJQ",
+    },
+  };
+}
+
 function toolDefinition(
   id: string,
   overrides: Partial<ToolDefinition> = {},
@@ -377,6 +510,7 @@ function executionRecord(
   toolId: string,
   status: ToolExecutionRecord["status"],
   overrides: {
+    id?: string;
     name?: string;
     riskLevel?: ToolExecutionRecord["riskLevel"];
     approvalRequired?: boolean;
@@ -384,7 +518,7 @@ function executionRecord(
   } = {},
 ): ToolExecutionRecord {
   return {
-    id: `execution-${toolId}`,
+    id: overrides.id || `execution-${toolId}`,
     toolId,
     toolName: overrides.name || toolId,
     riskLevel: overrides.riskLevel || 0,
