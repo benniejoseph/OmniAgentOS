@@ -36,6 +36,10 @@ class AdaptiveShell extends StatelessWidget {
           Navigator.pop(sheetContext);
           context.push('/administration');
         },
+        onDevices: () {
+          Navigator.pop(sheetContext);
+          context.push('/devices');
+        },
       ),
     );
   }
@@ -87,21 +91,40 @@ class AdaptiveShell extends StatelessWidget {
                   alignment: Alignment.bottomCenter,
                   child: Padding(
                     padding: const EdgeInsets.only(bottom: 16),
-                    child: extended
-                        ? FilledButton.tonalIcon(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (extended)
+                          FilledButton.tonalIcon(
+                            onPressed: () => context.push('/devices'),
+                            icon: const Icon(Icons.devices_rounded),
+                            label: const Text('Devices & security'),
+                          )
+                        else
+                          IconButton.filledTonal(
+                            tooltip: 'Devices & security',
+                            onPressed: () => context.push('/devices'),
+                            icon: const Icon(Icons.devices_rounded),
+                          ),
+                        const SizedBox(height: 8),
+                        if (extended)
+                          FilledButton.tonalIcon(
                             onPressed: () => context.push('/administration'),
                             icon: const Icon(
                               Icons.admin_panel_settings_outlined,
                             ),
                             label: const Text('Control plane'),
                           )
-                        : IconButton.filledTonal(
+                        else
+                          IconButton.filledTonal(
                             tooltip: 'Control plane',
                             onPressed: () => context.push('/administration'),
                             icon: const Icon(
                               Icons.admin_panel_settings_outlined,
                             ),
                           ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -129,10 +152,12 @@ class _WorkspaceLauncher extends StatelessWidget {
     required this.currentIndex,
     required this.onSelect,
     required this.onAdministration,
+    required this.onDevices,
   });
   final int currentIndex;
   final ValueChanged<int> onSelect;
   final VoidCallback onAdministration;
+  final VoidCallback onDevices;
 
   @override
   Widget build(BuildContext context) => ConstrainedBox(
@@ -189,17 +214,31 @@ class _WorkspaceLauncher extends StatelessWidget {
         ),
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
-          sliver: SliverToBoxAdapter(
-            child: ListTile(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
+          sliver: SliverList.list(
+            children: [
+              ListTile(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                leading: const Icon(Icons.devices_rounded),
+                title: const Text('Devices & security'),
+                subtitle: const Text('Sessions, biometrics, and remote wipe'),
+                trailing: const Icon(Icons.arrow_outward_rounded),
+                onTap: onDevices,
               ),
-              leading: const Icon(Icons.admin_panel_settings_outlined),
-              title: const Text('Control plane'),
-              subtitle: const Text('Automation, tools, security, and settings'),
-              trailing: const Icon(Icons.arrow_outward_rounded),
-              onTap: onAdministration,
-            ),
+              ListTile(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                leading: const Icon(Icons.admin_panel_settings_outlined),
+                title: const Text('Control plane'),
+                subtitle: const Text(
+                  'Automation, tools, security, and settings',
+                ),
+                trailing: const Icon(Icons.arrow_outward_rounded),
+                onTap: onAdministration,
+              ),
+            ],
           ),
         ),
       ],

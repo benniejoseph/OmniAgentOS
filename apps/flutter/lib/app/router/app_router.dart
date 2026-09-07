@@ -19,6 +19,7 @@ import '../../features/projects/projects_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/results_view.dart';
 import '../../features/settings/admin_console.dart';
+import '../../features/security/device_security_screen.dart';
 import '../../features/talk/talk.dart';
 import '../../features/talk/talk_providers.dart';
 import '../../features/today/today.dart';
@@ -47,6 +48,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (_, _) => const SessionBootstrapScreen(),
       ),
       GoRoute(path: '/administration', builder: (_, _) => const AdminConsole()),
+      GoRoute(
+        path: '/devices',
+        builder: (_, _) => const DeviceSecurityScreen(),
+      ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => AdaptiveShell(navigationShell: shell),
         branches: [
