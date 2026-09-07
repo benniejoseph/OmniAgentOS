@@ -2620,8 +2620,12 @@ accepts or rejects it against the contract threshold. Runtime events,
 trajectory receipts, workflow receipts, and the Council UI expose the task ID,
 lifecycle revision, and parent disposition. Migration 116 is installed in
 production with its exact marker; readback confirms forced RLS, the restrictive
-actor policy, both lifecycle guards, and an empty initial ledger. P8.4 bounded
-messages and shared mission artifacts is next; P12/P13 remain deferred.
+actor policy, both lifecycle guards, and an empty initial ledger. Seventy-two
+focused checks across eleven files, affected lint, TypeScript, and the 96-route
+Next 16 production build pass. Vercel rejected the complete-feature promotion
+at `9e5e1898b288e046807597f070ec5f30dcea2866` before upload because the team
+still has an overdue balance, so Fly was intentionally left unchanged. P8.4
+bounded messages and shared mission artifacts is next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
