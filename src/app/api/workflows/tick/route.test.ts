@@ -19,6 +19,7 @@ const routeMocks = vi.hoisted(() => ({
   recordSecurityAudit: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   recordWorkerHeartbeat: vi.fn(),
+  reconcileAbandonedExternalA2ATasks: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -131,6 +132,11 @@ vi.mock("@/lib/operations/worker-heartbeat", async (importOriginal) => ({
   recordWorkerHeartbeat: routeMocks.recordWorkerHeartbeat,
 }));
 
+vi.mock("@/lib/a2a/maintenance", () => ({
+  reconcileAbandonedExternalA2ATasks:
+    routeMocks.reconcileAbandonedExternalA2ATasks,
+}));
+
 import { POST } from "@/app/api/workflows/tick/route";
 
 const emptyWorkflowQueue = {
@@ -209,6 +215,14 @@ beforeEach(() => {
     .mockResolvedValue(emptyLoopV2Recovery);
   routeMocks.repairStuckAgentRuns.mockReset().mockResolvedValue(0);
   routeMocks.recoverStaleToolExecutionClaims.mockReset().mockResolvedValue([]);
+  routeMocks.reconcileAbandonedExternalA2ATasks.mockReset().mockResolvedValue({
+    scanned: 0,
+    expired: 0,
+    canceled: 0,
+    alreadyTerminal: 0,
+    failed: 0,
+    results: [],
+  });
   routeMocks.processDueDailyBriefs.mockReset().mockResolvedValue([]);
   routeMocks.processDueNotifications.mockReset().mockResolvedValue([]);
   routeMocks.processActiveProjectExecutions.mockReset().mockResolvedValue([]);
@@ -374,6 +388,7 @@ describe("dedicated worker heartbeat timing", () => {
       maintenance: [{
         tenantId: "tenant-a",
         agentRunsRepaired: 0,
+        externalDelegationsTerminated: 0,
         loopV2Recovery: { claimed: 1, failedClosed: 1 },
       }],
       idle: false,
@@ -382,6 +397,10 @@ describe("dedicated worker heartbeat timing", () => {
     expect(routeMocks.recoverInterruptedLoopV2Runs).toHaveBeenCalledWith({
       tenantId: "tenant-a",
       limit: 1,
+    });
+    expect(routeMocks.reconcileAbandonedExternalA2ATasks).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      limit: 5,
     });
   });
 });
