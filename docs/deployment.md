@@ -355,6 +355,15 @@ canonical health revision plus an authenticated Results-to-Conversation run
 deep-link. Historical runs may truthfully report an unbound Agent identity, no
 context receipt, or no checkpoint recovery when those records predate capture.
 
+P11.3 Conversation canvas is also a web-only read projection with no migration,
+backfill, environment change, or Fly release. The exact-Conversation read is the
+normal UI path; the workspace-wide path is capped at 24 Conversations, 200
+runs, 300 delegations, and 200 shared artifacts, with explicit truncation. The
+database request installs the caller's canonical/current-email actor scope
+before reading every source authority. Verify both a workspace-wide map and an
+exact Conversation map after the ordinary web release; the latter should open
+an exact run's existing Activity record.
+
 ## Production smoke state
 
 The `Production Smoke` workflow supports schedule and manual dispatch. Configure:

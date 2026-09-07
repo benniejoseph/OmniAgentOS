@@ -1851,3 +1851,18 @@ clarification, cancellation, retry, and checkpoint correction must re-enter
 their existing governed routes and produce the existing typed events,
 checkpoints, and effect receipts. A completed projection merely points back to
 the authoritative conversation result and its retained evidence.
+
+## Canonical Conversation canvas projections
+
+P11.3 emits no new domain event. `p11.3-conversation-canvas:1` is a bounded
+read-only graph over existing thread/run bindings, immutable checkpoint-fork
+lineage, Project bindings and artifacts, durable delegation tasks, exact
+delegation parentage, and delegation artifact sender/recipient contracts. Each
+edge names that authority and its canonical relationship ID; visual grouping,
+layout position, and conversation mode are not recorded as relationships.
+
+Canvas edges carry `contextAccess.state: not_implied`. Only a valid persisted
+run execution scope can project an explicit context-grant count, and grant IDs
+do not enter the browser contract. Selecting a node re-enters the existing
+Conversation Activity or Project read surface; it does not create a fork,
+delegation, Project membership, artifact share, memory grant, or other effect.
