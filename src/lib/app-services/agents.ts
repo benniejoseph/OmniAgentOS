@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
+import { listInternalAgentCardsV1 } from "@/lib/agents/discovery-card";
+import { discoverInternalAgentsV1 } from "@/lib/agents/discovery";
+import { getAgentPerformance } from "@/lib/agents/performance";
 import {
   authorizeAppServiceCall,
   completeAppServiceCall,
@@ -31,6 +34,10 @@ const agentListSchema = z.object({ ownerScope: z.enum(["exact", "readable"]).def
 const idSchema = z.object({ id: z.string().trim().min(1).max(200) }).strict();
 const agentShowSchema = idSchema.extend({ includeBuiltIns: z.boolean().default(true) }).strict();
 const deleteSchema = idSchema.extend({ expectedTargetSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const cardDiscoverySchema = z.object({
+  query: z.string().trim().min(1).max(4_000).optional(),
+  taskKind: z.enum(["general", "coordinate", "research", "build", "verify", "memory"]).optional(),
+}).strict();
 
 export const agentCreateServiceInputSchema = customAgentInputSchema;
 export const agentUpdateServiceInputSchema = z.object({ id: z.string().trim().min(1).max(200), change: customAgentPatchSchema }).strict();
@@ -51,6 +58,31 @@ export async function showAgentService(caller: AppServiceCaller, input: z.input<
   const builtIn = value.includeBuiltIns ? arsenalAgents.find((agent) => agent.id === value.id) : undefined;
   const agent = builtIn ? { ...builtIn, builtIn: true, selectable: true, manageable: false } : await getCustomAgentForRequest(value.id, readOwner(caller));
   return completeAppServiceCall(authorized, { agent: agent || null }, { resourceCount: agent ? 1 : 0 });
+}
+
+export async function discoverAgentCardsService(caller: AppServiceCaller, input: z.input<typeof cardDiscoverySchema>) {
+  const value = cardDiscoverySchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.cards"));
+  const cards = listInternalAgentCardsV1({ tenantId: caller.context.tenantId, controllerActorId: caller.context.actorId });
+  const discovery = value.query ? discoverInternalAgentsV1({
+    cards,
+    request: {
+      query: value.query,
+      taskKinds: [value.taskKind || "general"],
+      inputModalities: ["text", "artifact_reference"],
+      outputModalities: ["application/json", "artifact_reference"],
+      limits: { maxInputArtifacts: 32, maxOutputArtifacts: 8, maxOutputBytes: 64_000, maxWallClockMs: 900_000, maxFanOut: 0 },
+      authenticationScheme: "delegated_principal",
+    },
+  }) : undefined;
+  return completeAppServiceCall(authorized, { version: "p8.5-agent-card-collection:1", cards, ...(discovery ? { discovery } : {}) }, { resourceCount: cards.length });
+}
+
+export async function showAgentPerformanceService(caller: AppServiceCaller, input: z.input<typeof emptySchema>) {
+  emptySchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.performance"));
+  const agents = await getAgentPerformance(caller.context.tenantId);
+  return completeAppServiceCall(authorized, { agents }, { resourceCount: agents.length });
 }
 
 export async function createAgentService(caller: AppServiceCaller, input: z.input<typeof agentCreateServiceInputSchema>) {
