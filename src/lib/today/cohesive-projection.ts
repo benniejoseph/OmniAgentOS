@@ -305,7 +305,16 @@ function summaryState<T>(
 ): TodayProjectionSourceState {
   if (parent.status !== "ready") return externalState(source, parent, observedAt, null, detail);
   if (!child) return Object.freeze({ source, status: "error", freshness: "unknown", observedAt, lastChangedAt: null, detail: "This source did not return a projection." });
-  if (child.status !== "ready") return Object.freeze({ source, status: child.status, freshness: "unknown", observedAt, lastChangedAt: null, detail: child.error });
+  if (child.status !== "ready") return Object.freeze({
+    source,
+    status: child.status,
+    freshness: "unknown",
+    observedAt,
+    lastChangedAt: null,
+    detail: child.status === "restricted"
+      ? "This source is not visible to your current role."
+      : "This source could not be refreshed; retry from Today.",
+  });
   return readyState(source, observedAt, parent.value?.generatedAt || observedAt, detail);
 }
 

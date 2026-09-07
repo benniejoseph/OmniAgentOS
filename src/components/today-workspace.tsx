@@ -8,6 +8,7 @@ import {
   Bell,
   BrainCircuit,
   Building2,
+  CalendarDays,
   Check,
   Circle,
   Coins,
@@ -37,7 +38,16 @@ import {
 } from "@/lib/today/presentation";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
 import type { CustomerSuccessPortfolio } from "@/lib/customer-success/intelligence-contracts";
-import { DEFAULT_TODAY_SECTIONS } from "@/lib/today/sections";
+import type {
+  CohesiveTodayProjection,
+  TodayAgendaItem,
+  TodayProjectionSourceState,
+} from "@/lib/today/cohesive-projection";
+import {
+  DEFAULT_TODAY_SECTIONS,
+  TODAY_SECTION_KEYS,
+  type TodaySectionKey,
+} from "@/lib/today/sections";
 import type {
   UsagePeriodKey,
   UsagePeriodSummary,
@@ -53,7 +63,6 @@ type DailyBrief = NonNullable<TodaySnapshot["brief"]>;
 
 const FULL_REFRESH_INTERVAL_MS = 60_000;
 const FULL_REFRESH_MIN_GAP_MS = 30_000;
-const ACTIVE_WORK_REFRESH_INTERVAL_MS = 15_000;
 
 const emptyPreferences: TodayPreferences = {
   briefEnabled: true,
@@ -68,17 +77,13 @@ const emptyPreferences: TodayPreferences = {
 };
 
 export function TodayWorkspace({
-  initialToday,
-  initialSummary,
-  initialUsage,
+  initialProjection,
 }: {
-  initialToday?: TodaySnapshot;
-  initialSummary?: unknown;
-  initialUsage?: UsageSummary;
+  initialProjection?: CohesiveTodayProjection;
 }) {
   const { session, status: sessionStatus } = useWorkspaceSession();
-  const hasInitialWorkspace = initialToday !== undefined && initialSummary !== undefined;
-  const [today, setToday] = useState<TodaySnapshot>(initialToday || {
+  const hasInitialWorkspace = initialProjection !== undefined;
+  const [today, setToday] = useState<TodaySnapshot>(initialProjection?.today || {
     generatedAt: "",
     items: [],
     threads: [],
@@ -89,15 +94,14 @@ export function TodayWorkspace({
     briefGenerationDue: false,
     projects: [],
   });
-  const [summary, setSummary] = useState<JsonRecord>(() => record(initialSummary));
-  const [usage, setUsage] = useState<UsageSummary | undefined>(initialUsage);
+  const [summary, setSummary] = useState<JsonRecord>(() => record(initialProjection?.workspaceSummary));
+  const [usage, setUsage] = useState<UsageSummary | undefined>(initialProjection?.usage || undefined);
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriodKey>("day");
-  const [usageLoading, setUsageLoading] = useState(!initialUsage);
-  const [usageError, setUsageError] = useState<string>();
+  const [usageLoading, setUsageLoading] = useState(!initialProjection?.usage);
   const [todayError, setTodayError] = useState<string>();
-  const [summaryError, setSummaryError] = useState<string>();
-  const [customerPortfolio, setCustomerPortfolio] = useState<CustomerSuccessPortfolio>();
-  const [customerPortfolioError, setCustomerPortfolioError] = useState<string>();
+  const [customerPortfolio, setCustomerPortfolio] = useState<CustomerSuccessPortfolio | undefined>(initialProjection?.customerPortfolio || undefined);
+  const [agenda, setAgenda] = useState<readonly TodayAgendaItem[]>(initialProjection?.agenda || []);
+  const [sourceStates, setSourceStates] = useState<readonly TodayProjectionSourceState[]>(initialProjection?.sources || []);
   const [loading, setLoading] = useState(!hasInitialWorkspace);
   const [saving, setSaving] = useState(false);
   const [generatingBrief, setGeneratingBrief] = useState(false);
@@ -109,13 +113,8 @@ export function TodayWorkspace({
   const [announcement, setAnnouncement] = useState("Today is ready.");
   const [now, setNow] = useState<Date | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const todayRequestRef = useRef<AbortController | null>(null);
-  const summaryRequestRef = useRef<AbortController | null>(null);
-  const usageRequestRef = useRef<AbortController | null>(null);
-  const customerPortfolioRequestRef = useRef<AbortController | null>(null);
-  const summaryRefreshRef = useRef<() => Promise<void>>(async () => undefined);
   const lastFullRefreshAtRef = useRef(
-    initialToday?.generatedAt ? Date.parse(initialToday.generatedAt) : 0,
+    initialProjection?.generatedAt ? Date.parse(initialProjection.generatedAt) : 0,
   );
   const briefAttemptRef = useRef("");
   const workspaceAvailable = Boolean(session && (!session.authEnabled || session.authenticated));
@@ -129,12 +128,25 @@ export function TodayWorkspace({
       text(item.status).toLowerCase(),
     ),
   );
-  const visibleWork = activeWork.length
-    ? activeWork
-    : [...runs, ...workflows].slice(0, 5);
+  const activeWorkflowWork = workflows.filter((item) =>
+    ["running", "queued", "pending", "waiting_approval", "paused"].includes(
+      text(item.status).toLowerCase(),
+    ),
+  );
+  const visibleWorkflowWork = activeWorkflowWork.length
+    ? activeWorkflowWork
+    : workflows.slice(0, 5);
   const sourceErrors = ["runs", "workflows", "approvals"]
     .map((source) => ({ source, error: sourceError(summary, source) }))
     .filter((item) => item.error);
+  const activeRuns = runs.filter((item) => [
+    "running", "queued", "resuming", "waiting_approval", "waiting_clarification",
+  ].includes(text(item.status).toLowerCase()));
+  const visibleSections = new Set(today.preferences.visibleSections || DEFAULT_TODAY_SECTIONS);
+  const usageSource = sourceStates.find((source) => source.source === "consumption");
+  const usageError = usageSource && usageSource.status !== "ready" && usageSource.status !== "hidden"
+    ? usageSource.detail
+    : undefined;
 
   const visibleItems = useMemo(() => {
     const day = localDayKey(now);
@@ -159,82 +171,6 @@ export function TodayWorkspace({
     }
   }
 
-  async function refreshToday() {
-    if (sessionStatus !== "ready" || !workspaceAvailable) return;
-    todayRequestRef.current?.abort();
-    const controller = new AbortController();
-    todayRequestRef.current = controller;
-    try {
-      const payload = await readJson("/api/today", { signal: controller.signal });
-      if (controller.signal.aborted) return;
-      const nextToday = payload as unknown as TodaySnapshot;
-      setToday(nextToday);
-      setTodayError(undefined);
-      maybeGenerateBrief(nextToday);
-    } catch (error) {
-      if (!controller.signal.aborted) setTodayError(errorMessage(error));
-    }
-  }
-
-  async function refreshSummary() {
-    if (sessionStatus !== "ready" || !workspaceAvailable) return;
-    summaryRequestRef.current?.abort();
-    const controller = new AbortController();
-    summaryRequestRef.current = controller;
-    try {
-      const payload = await readJson(
-        "/api/workspace-summary?limit=16&approvalLimit=12",
-        { signal: controller.signal },
-      );
-      if (controller.signal.aborted) return;
-      setSummary(record(payload.summary));
-      setSummaryError(undefined);
-    } catch (error) {
-      if (!controller.signal.aborted) setSummaryError(errorMessage(error));
-    }
-  }
-
-  async function refreshUsage() {
-    if (sessionStatus !== "ready" || !workspaceAvailable) return;
-    usageRequestRef.current?.abort();
-    const controller = new AbortController();
-    usageRequestRef.current = controller;
-    setUsageLoading(true);
-    try {
-      const payload = await readJson("/api/usage/summary", {
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted) return;
-      const nextUsage = payload.summary;
-      if (!isUsageSummary(nextUsage)) {
-        throw new Error("Usage summary returned an invalid response.");
-      }
-      setUsage(nextUsage);
-      setUsageError(undefined);
-    } catch (error) {
-      if (!controller.signal.aborted) setUsageError(errorMessage(error));
-    } finally {
-      if (!controller.signal.aborted) setUsageLoading(false);
-    }
-  }
-
-  async function refreshCustomerPortfolio() {
-    if (sessionStatus !== "ready" || !workspaceAvailable) return;
-    customerPortfolioRequestRef.current?.abort();
-    const controller = new AbortController();
-    customerPortfolioRequestRef.current = controller;
-    try {
-      const payload = await readJson("/api/customer-accounts/portfolio?limit=20", {
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted) return;
-      setCustomerPortfolio(payload.portfolio as CustomerSuccessPortfolio);
-      setCustomerPortfolioError(undefined);
-    } catch (error) {
-      if (!controller.signal.aborted) setCustomerPortfolioError(errorMessage(error));
-    }
-  }
-
   async function load({
     force = false,
     showLoading = false,
@@ -255,12 +191,29 @@ export function TodayWorkspace({
     }
     lastFullRefreshAtRef.current = timestamp;
     if (showLoading) setLoading(true);
-    void refreshUsage();
+    setUsageLoading(true);
     try {
-      await Promise.all([refreshToday(), refreshSummary(), refreshCustomerPortfolio()]);
+      const payload = await readJson(
+        "/api/today/agenda?workLimit=16&approvalLimit=12&meetingLimit=50&accountLimit=50",
+      );
+      const projection = payload.projection as CohesiveTodayProjection;
+      if (!projection?.today || !Array.isArray(projection.sources)) {
+        throw new Error("Today returned an invalid cohesive projection.");
+      }
+      setToday(projection.today);
+      setSummary(record(projection.workspaceSummary));
+      setCustomerPortfolio(projection.customerPortfolio || undefined);
+      setUsage(projection.usage || undefined);
+      setAgenda(projection.agenda || []);
+      setSourceStates(projection.sources);
+      setTodayError(undefined);
+      maybeGenerateBrief(projection.today);
       if (announce) setAnnouncement("Today refreshed.");
+    } catch (error) {
+      setTodayError(errorMessage(error));
     } finally {
       if (showLoading) setLoading(false);
+      setUsageLoading(false);
     }
   }
 
@@ -273,10 +226,6 @@ export function TodayWorkspace({
     return () => {
       window.clearInterval(minuteTimer);
       window.clearTimeout(clockTimer);
-      todayRequestRef.current?.abort();
-      summaryRequestRef.current?.abort();
-      usageRequestRef.current?.abort();
-      customerPortfolioRequestRef.current?.abort();
     };
   }, []);
 
@@ -293,36 +242,6 @@ export function TodayWorkspace({
     // Session identity is the automatic load boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasInitialWorkspace, sessionStatus, session]);
-
-  useEffect(() => {
-    if (initialUsage || !hasInitialWorkspace || sessionStatus !== "ready" || !workspaceAvailable) return;
-    const usageTimer = window.setTimeout(() => void refreshUsage(), 0);
-    return () => window.clearTimeout(usageTimer);
-    // Session identity is the automatic usage-load boundary.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialUsage, hasInitialWorkspace, sessionStatus, session]);
-
-  useEffect(() => {
-    if (sessionStatus !== "ready" || !workspaceAvailable) return;
-    const portfolioTimer = window.setTimeout(() => void refreshCustomerPortfolio(), 0);
-    return () => window.clearTimeout(portfolioTimer);
-    // Session identity is the customer-portfolio authority boundary.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionStatus, session, workspaceAvailable]);
-
-  useEffect(() => {
-    summaryRefreshRef.current = refreshSummary;
-  });
-
-  useEffect(() => {
-    if (!workspaceAvailable || activeWork.length === 0) return;
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        void summaryRefreshRef.current();
-      }
-    }, ACTIVE_WORK_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [activeWork.length, workspaceAvailable]);
 
   useLiveRefresh({
     enabled: workspaceAvailable,
@@ -424,7 +343,8 @@ export function TodayWorkspace({
         body: JSON.stringify(today.preferences),
       });
       setToday((current) => ({ ...current, preferences: payload.preferences as TodayPreferences }));
-      setAnnouncement("Daily brief schedule updated.");
+      await load({ force: true });
+      setAnnouncement("Today preferences updated.");
     } catch (error) {
       setTodayError(errorMessage(error));
     } finally {
@@ -434,6 +354,18 @@ export function TodayWorkspace({
 
   function updatePreference<Key extends keyof TodayPreferences>(key: Key, value: TodayPreferences[Key]) {
     setToday((current) => ({ ...current, preferences: { ...current.preferences, [key]: value } }));
+  }
+
+  function toggleTodaySection(section: TodaySectionKey, visible: boolean) {
+    const current = [...(today.preferences.visibleSections || DEFAULT_TODAY_SECTIONS)];
+    const next = visible
+      ? [...new Set([...current, section])]
+      : current.filter((candidate) => candidate !== section);
+    if (!next.length) {
+      setAnnouncement("Keep at least one Today section visible.");
+      return;
+    }
+    updatePreference("visibleSections", next);
   }
 
   return (
@@ -494,10 +426,10 @@ export function TodayWorkspace({
         />
       ) : null}
 
-      {todayError || summaryError || customerPortfolioError ? (
+      {todayError ? (
         <div className="today-error" role="alert">
           <strong>Some context is unavailable.</strong>
-          <span>{[todayError, summaryError, customerPortfolioError].filter(Boolean).join(" ")}</span>
+          <span>{todayError}</span>
         </div>
       ) : null}
 
@@ -515,57 +447,81 @@ export function TodayWorkspace({
           </div>
         </div>
         <div className="today-overview-list">
-          <TodayOverviewLink
+          {visibleSections.has("focus") ? <TodayOverviewLink
             icon={Circle}
             label="Open today"
             value={open.length}
             detail={`${completed} completed`}
             href="#today-focus"
-          />
-          <TodayOverviewLink
+          /> : null}
+          {visibleSections.has("agenda") ? <TodayOverviewLink
+            icon={CalendarDays}
+            label="Agenda"
+            value={agenda.filter((item) => item.kind === "meeting" || item.kind === "commitment").length}
+            detail={`${agenda.filter((item) => item.kind === "meeting").length} meetings`}
+            href="#today-agenda"
+          /> : null}
+          {visibleSections.has("active_agents") || visibleSections.has("work") ? <TodayOverviewLink
             icon={Workflow}
             label="Work in progress"
             value={activeWork.length}
             detail="Agents and workflows"
             href="/app/workflows"
-          />
-          <TodayOverviewLink
+          /> : null}
+          {visibleSections.has("approvals") ? <TodayOverviewLink
             icon={Bell}
             label="Approvals"
             value={approvals.length}
             detail="Waiting for review"
             href="/app/approvals"
             attention={approvals.length > 0}
-          />
-          <TodayOverviewLink
+          /> : null}
+          {visibleSections.has("work") ? <TodayOverviewLink
             icon={FolderKanban}
             label="Projects"
             value={today.projects?.length || 0}
             detail="Active projects in view"
             href="/app/projects"
-          />
-          <TodayOverviewLink
+          /> : null}
+          {visibleSections.has("customers") ? <TodayOverviewLink
             icon={Building2}
             label="Customer attention"
             value={(customerPortfolio?.counts.urgent || 0) + (customerPortfolio?.counts.attention || 0)}
             detail={`${customerPortfolio?.counts.pendingApprovals || 0} approvals · ${customerPortfolio?.counts.overdueCommitments || 0} overdue`}
             href="/app/accounts"
             attention={Boolean(customerPortfolio?.counts.urgent || customerPortfolio?.counts.attention)}
-          />
-          <TodayOverviewLink
+          /> : null}
+          {visibleSections.has("memory") ? <TodayOverviewLink
             icon={BrainCircuit}
             label="Memory"
             value={today.memories.length}
             detail="Recent memories in view"
             href="/app/memory"
-          />
-          <TodayOverviewLink
+          /> : null}
+          {visibleSections.has("conversations") ? <TodayOverviewLink
             icon={MessageSquareText}
             label="Conversations"
             value={today.threads.length}
             detail="Recent threads"
             href="/app/command"
-          />
+          /> : null}
+        </div>
+      </section>
+
+      <section className={styles.projectionStatus} aria-labelledby="today-projection-status-title">
+        <div>
+          <p className={styles.projectionKicker}>Canonical projection</p>
+          <h2 id="today-projection-status-title">What Today knows</h2>
+          <p>Each domain reports its own visibility and freshness. An unavailable source stays unknown instead of becoming an empty fact.</p>
+        </div>
+        <div className={styles.sourceStateGrid}>
+          {sourceStates.map((source) => (
+            <div key={source.source} className={styles.sourceState} data-status={source.status}>
+              <span>{sourceLabel(source.source)}</span>
+              <strong>{source.status === "ready" ? "Current" : source.status}</strong>
+              <small>{source.lastChangedAt ? `Last change ${formatTodayRelative(source.lastChangedAt, relativeAsOf)}` : source.detail}</small>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -625,14 +581,27 @@ export function TodayWorkspace({
               <label><span>Remind me</span><select value={today.preferences.reminderLeadMinutes} onChange={(event) => updatePreference("reminderLeadMinutes", Number(event.currentTarget.value))}>
                 <option value={5}>5 min before</option><option value={15}>15 min before</option><option value={30}>30 min before</option><option value={60}>1 hour before</option><option value={120}>2 hours before</option>
               </select></label>
-              <button type="submit" disabled={savingSchedule}>{savingSchedule ? "Saving…" : "Save schedule"}</button>
+              <fieldset className={styles.sectionPicker}>
+                <legend>Visible sections</legend>
+                {TODAY_SECTION_KEYS.map((section) => (
+                  <label key={section}>
+                    <input
+                      type="checkbox"
+                      checked={visibleSections.has(section)}
+                      onChange={(event) => toggleTodaySection(section, event.currentTarget.checked)}
+                    />
+                    <span>{sectionLabel(section)}</span>
+                  </label>
+                ))}
+              </fieldset>
+              <button type="submit" disabled={savingSchedule}>{savingSchedule ? "Saving…" : "Save preferences"}</button>
             </form>
           </details>
         </div>
       </section>
 
-      <section className="today-grid">
-        <div className="today-focus" id="today-focus">
+      {visibleSections.has("focus") || visibleSections.has("agenda") ? <section className="today-grid">
+        {visibleSections.has("focus") ? <div className="today-focus" id="today-focus">
           <div className="today-section-heading">
             <div>
               <h2>Tasks and reminders</h2>
@@ -682,28 +651,41 @@ export function TodayWorkspace({
               <div className="today-empty"><Sparkles size={20} aria-hidden="true" /><p>No tasks or reminders yet.</p><span>Add your first item above.</span></div>
             )}
           </div>
-        </div>
+        </div> : null}
 
-        <aside className="today-agenda">
-          <div className="today-section-heading compact"><div><h2>Schedule</h2><p className="today-section-copy">Reminders with a time appear here.</p></div></div>
+        {visibleSections.has("agenda") ? <aside className="today-agenda" id="today-agenda">
+          <div className="today-section-heading compact"><div><h2>Agenda</h2><p className="today-section-copy">Meetings, confirmed commitments, and personal reminders.</p></div></div>
           <div className="today-timeline">
-            {reminders.length ? reminders.slice(0, 6).map((item) => (
-              <div key={item.id} className={clsx("today-timeline-item", item.reminderState && `is-${item.reminderState}`)}><span>{item.dueAt ? formatTodayTime(item.dueAt, presentationTimezone) : "Anytime"}</span><div><strong>{item.title}</strong><small>{item.reminderState === "overdue" ? "Overdue" : item.reminderState === "due_soon" ? "Due soon" : `${item.priority} priority`}</small></div></div>
-            )) : <div className="today-timeline-item"><span>Open</span><div><strong>No reminders scheduled</strong><small>Your timeline has room.</small></div></div>}
+            {agenda.filter((item) => ["reminder", "meeting", "commitment"].includes(item.kind)).length
+              ? agenda.filter((item) => ["reminder", "meeting", "commitment"].includes(item.kind)).slice(0, 8).map((item) => (
+                <Link key={item.itemId} href={item.href} className={clsx("today-timeline-item", `is-${item.priority}`)}>
+                  <span>{item.scheduledAt ? formatTodayTime(item.scheduledAt, presentationTimezone) : "Open"}</span>
+                  <div><strong>{item.title}</strong><small>{agendaKindLabel(item.kind)} · {item.detail}</small></div>
+                </Link>
+              ))
+              : <div className="today-timeline-item"><span>Open</span><div><strong>No meetings or commitments scheduled</strong><small>Your canonical agenda is clear.</small></div></div>}
           </div>
-          <div className="today-attention">
+          {visibleSections.has("approvals") ? <div className="today-attention">
             <Bell size={15} aria-hidden="true" />
             <div>
               <strong>{approvals.length ? `${approvals.length} ${approvals.length === 1 ? "approval" : "approvals"} waiting` : "No approvals waiting"}</strong>
               <p>{approvals.length ? "Review consequential actions before they continue." : "There are no paused actions to review."}</p>
             </div>
             <Link href="/app/approvals">View</Link>
-          </div>
-        </aside>
-      </section>
+          </div> : null}
+        </aside> : null}
+      </section> : null}
 
-      <section className="today-context-grid">
-        <TodayContextSection icon={Building2} title="Customer attention" description="Evidence-bound next actions across your customer portfolio." href="/app/accounts">
+      {["approvals", "customers", "active_agents", "work", "memory", "conversations"].some((section) => visibleSections.has(section as TodaySectionKey)) ? <section className="today-context-grid">
+        {visibleSections.has("approvals") ? <TodayContextSection icon={Bell} title="Needs your approval" description="Consequential actions remain paused until you review them." href="/app/approvals">
+          {approvals.length ? approvals.slice(0, 5).map((approval, index) => (
+            <Link key={text(approval.id) || index} href="/app/approvals" className="today-context-row">
+              <span className="today-live-dot is-active" /><div><strong>{text(approval.title, "Approval required")}</strong><small>Risk {text(approval.riskLevel, "unknown")} · {text(approval.status, "waiting").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
+            </Link>
+          )) : <ContextEmpty>No governed action is waiting for your approval.</ContextEmpty>}
+        </TodayContextSection> : null}
+
+        {visibleSections.has("customers") ? <TodayContextSection icon={Building2} title="Customer attention" description="Evidence-bound next actions across your customer portfolio." href="/app/accounts">
           {customerPortfolio?.accounts.length ? customerPortfolio.accounts.slice(0, 5).map((account) => (
             <Link key={account.accountId} href={`/app/accounts/${encodeURIComponent(account.accountId)}`} className="today-context-row">
               <span className={clsx("today-live-dot", ["urgent", "attention"].includes(account.attention) && "is-active")} />
@@ -714,49 +696,51 @@ export function TodayWorkspace({
               <ArrowRight size={14} aria-hidden="true" />
             </Link>
           )) : <ContextEmpty>No customer account currently needs attention.</ContextEmpty>}
-        </TodayContextSection>
+        </TodayContextSection> : null}
 
-        <TodayContextSection icon={Workflow} title="Work in progress" description="Agents and workflows currently active." href="/app/workflows">
-          {visibleWork.length ? visibleWork.slice(0, 5).map((item, index) => (
-            <Link key={text(item.id) || index} href={item.goal ? "/app/workflows" : "/app/command"} className="today-context-row">
-              <span className="today-live-dot" /><div><strong>{text(item.goal || item.prompt, "Untitled work")}</strong><small>{text(item.status, "active").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
+        {visibleSections.has("active_agents") ? <TodayContextSection icon={Cpu} title="Active agents" description="Real agent-run identities and their current state." href="/app/command">
+          {activeRuns.length ? activeRuns.slice(0, 5).map((run, index) => (
+            <Link key={text(run.id) || index} href="/app/command" className="today-context-row">
+              <span className="today-live-dot" /><div><strong>{text(run.agentId, "atlas")}</strong><small>{text(run.prompt, "Untitled work")} · {text(run.status, "active").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
             </Link>
-          )) : <ContextEmpty>Nothing is running in the background.</ContextEmpty>}
-          {sourceErrors.map(({ source, error }) => (
-            <details key={source} className="today-source-error">
-              <summary><AlertTriangle size={12} aria-hidden="true" />Could not refresh {source}</summary>
-              <p>{error}</p>
-            </details>
-          ))}
-        </TodayContextSection>
+          )) : <ContextEmpty>No agent is currently running.</ContextEmpty>}
+        </TodayContextSection> : null}
 
-        <TodayContextSection icon={FolderKanban} title="Projects" description="Progress and the next task in each active project." href="/app/projects">
-          {today.projects?.length ? today.projects.map((project) => (
+        {visibleSections.has("work") ? <TodayContextSection icon={Workflow} title="Canonical work" description="Workflow state plus active projects and their next WorkItem." href="/app/workflows">
+          {visibleWorkflowWork.length ? visibleWorkflowWork.slice(0, 4).map((item, index) => (
+            <Link key={text(item.id) || index} href="/app/workflows" className="today-context-row">
+              <span className="today-live-dot" /><div><strong>{text(item.goal, "Untitled workflow")}</strong><small>{text(item.status, "active").replaceAll("_", " ")}</small></div><ArrowRight size={14} aria-hidden="true" />
+            </Link>
+          )) : null}
+          {today.projects?.length ? today.projects.slice(0, 4).map((project) => (
             <Link key={project.id} href="/app/projects" className="today-project-row"><div><strong>{project.title}</strong><p>{project.nextTask || project.objective}{project.nextTaskStatus ? ` · ${project.nextTaskStatus}` : ""}</p><span><i style={{ width: `${project.totalTasks ? project.closedTasks / project.totalTasks * 100 : 0}%` }} /></span></div><small>{project.closedTasks}/{project.totalTasks} closed{project.unverifiedTasks ? ` · ${project.unverifiedTasks} unverified` : ""}</small></Link>
-          )) : <ContextEmpty>Your active projects and next milestones will appear here.</ContextEmpty>}
-        </TodayContextSection>
+          )) : !visibleWorkflowWork.length ? <ContextEmpty>No active workflow or project is in view.</ContextEmpty> : null}
+          {sourceErrors.filter(({ source }) => source === "workflows").map(({ source, error }) => (
+            <details key={source} className="today-source-error"><summary><AlertTriangle size={12} aria-hidden="true" />Could not refresh {source}</summary><p>{error}</p></details>
+          ))}
+        </TodayContextSection> : null}
 
-        <TodayContextSection icon={BrainCircuit} title="Memory" description="Recent knowledge Asael may use." href="/app/memory">
+        {visibleSections.has("memory") ? <TodayContextSection icon={BrainCircuit} title="Memory" description="Recent knowledge Asael may use." href="/app/memory">
           {today.memories.length ? today.memories.slice(0, 4).map((memory) => (
             <Link key={memory.id} href="/app/memory" className="today-memory-row"><div><strong>{memory.title}</strong><p>{memory.content}</p></div><span>{memory.type}</span></Link>
           )) : <ContextEmpty>Capture a note and useful knowledge will resurface here.</ContextEmpty>}
-        </TodayContextSection>
+        </TodayContextSection> : null}
 
-        <TodayContextSection icon={MessageSquareText} title="Conversations" description="Pick up where you left off." href="/app/command">
+        {visibleSections.has("conversations") ? <TodayContextSection icon={MessageSquareText} title="Conversations" description="Pick up where you left off." href="/app/command">
           {today.threads.length ? today.threads.slice(0, 5).map((thread) => (
             <Link key={thread.id} href={`/app/command?thread=${encodeURIComponent(thread.id)}`} className="today-context-row"><div><strong>{thread.title}</strong><small>{formatTodayRelative(thread.updatedAt, relativeAsOf)}</small></div><ArrowRight size={14} aria-hidden="true" /></Link>
           )) : <ContextEmpty>Your recent conversations will appear here.</ContextEmpty>}
-        </TodayContextSection>
-      </section>
+        </TodayContextSection> : null}
+      </section> : null}
 
-      <UsageCockpit
+      {visibleSections.has("consumption") ? <UsageCockpit
         summary={usage}
         periodKey={usagePeriod}
         loading={usageLoading}
         error={usageError}
         onPeriodChange={setUsagePeriod}
-        onRetry={() => void refreshUsage()}
-      />
+        onRetry={() => void load({ force: true, showLoading: true })}
+      /> : null}
     </main>
   );
 }
@@ -1168,20 +1152,6 @@ function sourceError(summary: JsonRecord, source: string) {
   return value.status === "error" ? text(value.error, "Source unavailable.") : "";
 }
 
-function isUsageSummary(value: unknown): value is UsageSummary {
-  const candidate = record(value);
-  const periods = record(candidate.periods);
-  return typeof candidate.generatedAt === "string" &&
-    ["day", "week", "month"].every((key) => {
-      const period = record(periods[key]);
-      return Array.isArray(period.series) &&
-        Array.isArray(period.providers) &&
-        Array.isArray(period.models) &&
-        Boolean(period.current) &&
-        Boolean(period.previous);
-    });
-}
-
 function comparison(current: number, previous: number): {
   label: string;
   symbol: string;
@@ -1263,6 +1233,39 @@ function formatUpdatedAt(value: string) {
   return Number.isFinite(date.getTime())
     ? date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     : "recently";
+}
+
+function agendaKindLabel(kind: TodayAgendaItem["kind"]) {
+  return kind === "meeting" ? "Meeting" : kind === "commitment" ? "Commitment" : "Reminder";
+}
+
+function sourceLabel(source: TodayProjectionSourceState["source"]) {
+  const labels: Record<TodayProjectionSourceState["source"], string> = {
+    personal_reminders: "Personal reminders",
+    meetings: "Meetings",
+    commitments: "Commitments",
+    customer_risks: "Customer risks",
+    approvals: "Approvals",
+    active_agents: "Active agents",
+    work: "Canonical work",
+    consumption: "AI consumption",
+  };
+  return labels[source];
+}
+
+function sectionLabel(section: TodaySectionKey) {
+  const labels: Record<TodaySectionKey, string> = {
+    focus: "Tasks and reminders",
+    agenda: "Meetings and commitments",
+    approvals: "Approvals",
+    customers: "Customer attention",
+    active_agents: "Active agents",
+    work: "Canonical work",
+    memory: "Memory",
+    conversations: "Conversations",
+    consumption: "AI consumption",
+  };
+  return labels[section];
 }
 
 function record(value: unknown): JsonRecord { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}; }
