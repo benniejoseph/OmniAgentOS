@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { getGovernedTool } from "@/lib/tools/registry";
+import { MAIN_AGENT_EXCLUDED_APP_OPERATIONS } from "@/lib/app-services/registry";
 
 describe("governed native tool schemas", () => {
   it("keeps memory.correct compatible with OpenAI function schemas", () => {
@@ -138,6 +139,24 @@ describe("governed native tool schemas", () => {
     }
     expect(getGovernedTool("app.connectors.delete")?.inputSchema).toMatchObject({
       required: ["kind", "connectorId", "expectedTargetSha256"],
+    });
+  });
+
+  it("keeps settings secrets out of agent tools", () => {
+    expect(MAIN_AGENT_EXCLUDED_APP_OPERATIONS.map((entry) => entry.operation)).toEqual(
+      expect.arrayContaining([
+        "app.connectors.credentials.write",
+        "app.settings.providers.create",
+        "app.settings.providers.rotate",
+        "app.settings.api_keys.create",
+      ]),
+    );
+    expect(getGovernedTool("app.settings.providers.create")).toBeUndefined();
+    expect(getGovernedTool("app.settings.api_keys.create")).toBeUndefined();
+    expect(getGovernedTool("app.settings.providers.revoke")).toMatchObject({
+      riskLevel: 2,
+      approvalRequired: true,
+      reversible: false,
     });
   });
 });

@@ -79,6 +79,19 @@ import {
   showConnectorService,
   updateConnectorService,
 } from "@/lib/app-services/connectors";
+import {
+  listApiKeysService,
+  listModelsService,
+  previewApiKeyRevokeService,
+  previewProviderRevokeService,
+  revokeApiKeyService,
+  revokeProviderService,
+  showSettingsService,
+  updateMcpExportService,
+  updateModelAssignmentService,
+  updateProviderService,
+  validateProviderService,
+} from "@/lib/app-services/settings";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -162,6 +175,17 @@ export async function executeFirstPartyAppTool(input: {
     "app.connectors.review": () => reviewConnectorService(caller, input.toolInput as never),
     "app.connectors.delete.preview": () => previewConnectorDeleteService(caller, input.toolInput as never),
     "app.connectors.delete": () => deleteConnectorService(caller, input.toolInput as never),
+    "app.settings.show": () => showSettingsService(caller, input.toolInput as never),
+    "app.settings.models.list": () => listModelsService(caller, input.toolInput as never),
+    "app.settings.assignments.update": () => updateModelAssignmentService(caller, input.toolInput as never),
+    "app.settings.mcp.update": () => updateMcpExportService(caller, input.toolInput as never),
+    "app.settings.providers.update": () => updateProviderService(caller, input.toolInput as never),
+    "app.settings.providers.validate": () => validateProviderService(caller, input.toolInput as never),
+    "app.settings.providers.revoke.preview": () => previewProviderRevokeService(caller, input.toolInput as never),
+    "app.settings.providers.revoke": () => revokeProviderService(caller, input.toolInput as never),
+    "app.settings.api_keys.list": () => listApiKeysService(caller, input.toolInput as never),
+    "app.settings.api_keys.revoke.preview": () => previewApiKeyRevokeService(caller, input.toolInput as never),
+    "app.settings.api_keys.revoke": () => revokeApiKeyService(caller, input.toolInput as never),
   };
   const handler = handlers[input.toolId];
   if (!handler) throw new Error(`No first-party application handler is registered for ${input.toolId}.`);
