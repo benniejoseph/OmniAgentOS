@@ -774,7 +774,7 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 through P9.7 are complete; P9.8 is the next actionable slice, while P12
+P9.1 through P9.8 are complete; P9.9 is the next actionable slice, while P12
 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -792,7 +792,7 @@ and P13 remain deferred.
 | P9.3 | Add reversible trash, undo, compensation, and two-step destructive action UX. | Modify domain deletes; create trash/compensation contracts. | Irreversible/high-impact deletes remain approval-gated and never graduate automatically. | Edit/archive/delete actions have clear preview, effect receipt, undo/compensation where possible, and final deletion receipt. |
 | P9.4 | Add plan/domain/action-class approval grants. | Modify trust policy. | Grants bind actor, agent, tool contract, target, plan digest, budget, and expiry; replanning invalidates them. | Repetitive safe operations avoid per-click approval without permitting new targets or action classes. |
 
-**Implementation status:** P9.1 through P9.7 are complete. The governed catalog
+**Implementation status:** P9.1 through P9.8 are complete. The governed catalog
 now contains 109 active `app.*` operations, including actor-private Trash list,
 detail, receipt, restore-preview, restore, purge-preview, and purge tools. Custom
 Agent, custom Skill, MCP, and OpenAPI removal first requires an exact expiring
@@ -870,7 +870,24 @@ Vercel deployment `dpl_3BSWUNg6dC4wg8w573FBYokHHJnk` is Ready at exact
 revision `972e60f7722c5ccec92f720d213f535d58f89716`; the Singapore browser
 gateway is healthy at revision `80499c5619a673b7ea57cb4022163a846e0cd7d7`
 with `persistentProfiles: true`, and the compatible worker/OpenAI gateway is
-healthy. P9.8 is next. P12 and P13 remain deferred.
+healthy. P9.8 installs the fixed `p9.8-browser-action-policy:1` classification
+after validated input and actor/profile binding but before approval policy. Safe
+observation, navigation, and known tab-management variants are read-only or
+reversible risk-zero/one actions; exact reviewed workflow navigation is eligible
+for the existing short-lived plan grant. Clicks, typing, forms, selections, key
+presses, drags, dialogs, and unknown browser powers fail closed as irreversible
+consequential effects, remain per-action approval-gated, and persist the existing
+provider effect intent plus an honest post-action verification receipt. Arbitrary
+code, upload/drop, and direct network powers remain risk three. Page labels,
+accessibility text, model prose, and remote annotations cannot lower risk, and
+profile revocation is revalidated before approval replay. Fifty-one focused
+browser-policy, executor, workflow-grant, connector, and provider-effect checks,
+affected lint, TypeScript, and the 99-page production build pass. No migration or
+Fly rebuild was required. Vercel deployment
+`dpl_9UUv66tfycs5uxhp7TNjUrBugifL` is Ready at exact revision
+`2888062dddb26d8d4a535f2a1dab0345096923dd`; the canonical web and both
+compatible Fly gateways return HTTP 200 health. P9.9 is next. P12 and P13 remain
+deferred.
 
 #### Browser and computer use
 
@@ -2811,7 +2828,7 @@ production build pass. Vercel rejected the complete-feature promotion at
 still reports an overdue balance; Fly was intentionally left unchanged. This
 closes Phase 8.
 
-P9.1 through P9.7 are complete. The shared registry and dispatcher expose 109
+P9.1 through P9.8 are complete. The shared registry and dispatcher expose 109
 active `app.*` tools across all thirteen required product families with
 tenant/actor/RBAC revalidation, exact mutation scope and idempotency,
 content-free service receipts, governed typed domain events, risk-based
@@ -2857,8 +2874,17 @@ the latter restores usable exact-actor RLS on 12 affected phase ledgers. The
 production profile consent/read/revoke canary passes. Vercel deployment
 `dpl_3BSWUNg6dC4wg8w573FBYokHHJnk` serves exact revision
 `972e60f7722c5ccec92f720d213f535d58f89716`; both Fly services are healthy and
-the browser gateway reports persistent profiles enabled. P9.8 is next. P12/P13
-remain deferred.
+the browser gateway reports persistent profiles enabled. P9.8 adds a fixed,
+input-aware managed-Playwright classifier before approval policy: observation,
+navigation, and known tab actions remain routine and reversible, while clicks,
+text/form input, selection, key, drag, dialog, unknown, and privileged operations
+remain explicitly governed. Only exact reviewed reversible navigation may use a
+bounded workflow grant; all consequential operations require per-action approval
+and the existing effect intent/verification receipt. Untrusted page/model labels
+cannot downgrade a click. No migration or Fly rebuild was required. Vercel
+deployment `dpl_9UUv66tfycs5uxhp7TNjUrBugifL` serves exact revision
+`2888062dddb26d8d4a535f2a1dab0345096923dd`; all three production health
+surfaces return HTTP 200. P9.9 is next. P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 

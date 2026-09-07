@@ -397,6 +397,15 @@ Connector endpoints are SSRF-checked and secret references are restricted, but o
 - keep risky or side-effecting operations approval-gated;
 - monitor redirects, DNS changes, response size/latency, vendor outages, and unexpected tool catalog drift.
 
+The managed Playwright connector additionally applies the fixed
+`p9.8-browser-action-policy:1` policy after validated input and actor/profile
+resolution. Observation, direct navigation, and the closed set of tab actions
+are routine and reversible. Clicks, typing/forms, selections, keys, drags,
+dialogs, and unknown operations are irreversible consequential actions that
+always require per-action approval and a governed effect receipt; page labels
+and remote metadata never downgrade them. Code execution, file transfer, and
+direct network operations remain risk three.
+
 ## Required checks and branch protection
 
 Configure branch protection externally to require these exact checks:
