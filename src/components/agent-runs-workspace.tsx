@@ -49,6 +49,10 @@ import { VoiceMode } from "@/components/voice/voice-mode";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
+import {
+  StreamingPcmPlayer,
+  streamVersionedSpeech,
+} from "@/lib/voice/pcm-player";
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
@@ -63,6 +67,11 @@ type AgentPresentation = {
   visualIdentity: string;
   accent: "emerald" | "blue" | "amber" | "violet" | "rose";
 };
+type VoiceCommandReply = Readonly<{
+  text: string;
+  runId?: string;
+  agentId?: string;
+}>;
 type ActiveContextScopeId = Extract<
   ContextScopeId,
   "none" | "current_turn" | "session" | "agent_private" | "explicit_selection"
@@ -453,8 +462,8 @@ export function AgentRunsWorkspace({
   const pendingDeltasRef = useRef<string[]>([]);
   const deltaFlushTimerRef = useRef<number | null>(null);
   const initialThreadLoadedRef = useRef(false);
-  const responseAudioRef = useRef<HTMLAudioElement | null>(null);
-  const responseAudioUrlRef = useRef<string | undefined>(undefined);
+  const responseSpeechControllerRef = useRef<AbortController | null>(null);
+  const responseSpeechPlayerRef = useRef<StreamingPcmPlayer | null>(null);
   const agentRequestIdRef = useRef<string>("");
   const directRunStatusRef = useRef("");
   const currentRunIdRef = useRef("");
@@ -707,8 +716,8 @@ export function AgentRunsWorkspace({
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
       }
-      responseAudioRef.current?.pause();
-      if (responseAudioUrlRef.current) URL.revokeObjectURL(responseAudioUrlRef.current);
+      responseSpeechControllerRef.current?.abort();
+      responseSpeechPlayerRef.current?.stop();
     };
     // Session changes are the only automatic evidence refresh trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1758,7 +1767,7 @@ export function AgentRunsWorkspace({
     submittedGoal?: string;
     submittedThreadId?: string;
     prepareContextAutomatically?: boolean;
-  }) {
+  }): Promise<VoiceCommandReply | undefined> {
     if (runPermission) {
       setError(runPermission);
       return;
@@ -1820,6 +1829,10 @@ export function AgentRunsWorkspace({
     setActiveTab("execute");
     setRunAnnouncement("Agent run started.");
     const requestId = agentRequestIdRef.current || crypto.randomUUID();
+    const submittedAgentId = preferredAgentId;
+    let completedResponse = "";
+    let streamedResponse = "";
+    let completedRunId = resumeRunId || "";
     agentRequestIdRef.current = requestId;
     setTurns((current) => [
       ...current,
@@ -1838,7 +1851,7 @@ export function AgentRunsWorkspace({
           message: submittedGoal,
           requestId,
           strategy: resumeRunId ? "auto" : "direct",
-          agentId: preferredAgentId,
+          agentId: submittedAgentId,
           contextScope: resumeRunId ? undefined : contextScope,
           contextSelection: resumeRunId ? undefined : contextSelection,
         }),
@@ -1854,6 +1867,7 @@ export function AgentRunsWorkspace({
       await readSse(response.body, (event) => {
         if (event.type === "run" && event.runId) {
           currentRunIdRef.current = event.runId;
+          completedRunId = event.runId;
           setActiveAgentRunId(event.runId);
           setSelectedActivityRunId(event.runId);
           if (event.threadId) {
@@ -1862,6 +1876,7 @@ export function AgentRunsWorkspace({
           return;
         }
         if (event.type === "delta" && event.text) {
+          streamedResponse += event.text;
           queueDelta(event.text);
           return;
         }
@@ -1871,6 +1886,7 @@ export function AgentRunsWorkspace({
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           const acknowledgement = event.acknowledgement || "This task is continuing as a durable workflow.";
+          completedResponse = acknowledgement;
           if (event.threadId) setThreadId(event.threadId);
           if (event.workflowId) setWorkflowRun({ run: { id: event.workflowId } });
           setAgentResponse(acknowledgement);
@@ -1887,6 +1903,7 @@ export function AgentRunsWorkspace({
           agentRequestIdRef.current = "";
           setClarificationRunId(event.runId || currentRunIdRef.current || "");
           const clarification = event.message || "Name or identify the exact item you want changed before I continue.";
+          completedResponse = clarification;
           if (event.threadId) setThreadId(event.threadId);
           setAgentResponse(clarification);
           setTurns((current) => [
@@ -1902,12 +1919,13 @@ export function AgentRunsWorkspace({
           agentRequestIdRef.current = "";
           setClarificationRunId("");
           flushPendingDeltas();
-          setAgentResponse(event.response || "");
+          completedResponse = event.response || streamedResponse;
+          setAgentResponse(completedResponse);
           setGrounding(event.grounding);
-          if (event.response) {
+          if (completedResponse) {
             setTurns((current) => [
               ...current,
-              { id: `assistant-${Date.now()}`, role: "assistant", content: event.response || "", createdAt: new Date().toISOString(), runId: currentRunIdRef.current || undefined },
+              { id: `assistant-${Date.now()}`, role: "assistant", content: completedResponse, createdAt: new Date().toISOString(), runId: currentRunIdRef.current || undefined },
             ]);
           }
           setGoal("");
@@ -1958,32 +1976,52 @@ export function AgentRunsWorkspace({
       abortControllerRef.current = null;
       setLoading(undefined);
     }
+    return completedResponse.trim()
+      ? {
+          text: completedResponse,
+          runId: completedRunId || undefined,
+          agentId: submittedAgentId,
+        }
+      : undefined;
   }
 
   async function listenToResponse(text = currentAssistantResponse) {
-    if (!text.trim() || speechLoading) return;
-    if (responseAudioRef.current && !responseAudioRef.current.paused) {
-      responseAudioRef.current.pause();
+    if (responseSpeechControllerRef.current) {
+      responseSpeechControllerRef.current.abort();
+      responseSpeechControllerRef.current = null;
+      responseSpeechPlayerRef.current?.stop();
+      responseSpeechPlayerRef.current = null;
+      setSpeechLoading(false);
       return;
     }
+    if (!text.trim()) return;
+    const controller = new AbortController();
+    const player = new StreamingPcmPlayer();
+    responseSpeechControllerRef.current = controller;
+    responseSpeechPlayerRef.current = player;
     setSpeechLoading(true);
     try {
-      const response = await fetch("/api/media/speech", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, agentId: preferredAgentId }),
+      await streamVersionedSpeech({
+        text,
+        threadId: threadId || undefined,
+        runId: currentRunIdRef.current || undefined,
+        agentId: preferredAgentId,
+      }, {
+        player,
+        signal: controller.signal,
       });
-      if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(stringValue(asRecord(body).error, "Speech playback failed.")); }
-      const blob = await response.blob();
-      if (responseAudioUrlRef.current) URL.revokeObjectURL(responseAudioUrlRef.current);
-      const url = URL.createObjectURL(blob);
-      responseAudioUrlRef.current = url;
-      const audio = new Audio(url);
-      responseAudioRef.current = audio;
-      await audio.play();
     } catch (speechError) {
+      if (controller.signal.aborted) return;
       setError(speechError instanceof Error ? speechError.message : "Speech playback failed.");
-    } finally { setSpeechLoading(false); }
+    } finally {
+      if (responseSpeechControllerRef.current === controller) {
+        responseSpeechControllerRef.current = null;
+        setSpeechLoading(false);
+      }
+      if (responseSpeechPlayerRef.current === player) {
+        responseSpeechPlayerRef.current = null;
+      }
+    }
   }
 
   async function refreshThreads() {
@@ -2526,12 +2564,13 @@ export function AgentRunsWorkspace({
                       <button
                         type="button"
                         onClick={() => void listenToResponse(currentAssistantResponse)}
-                        disabled={speechLoading}
                         className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground"
-                        aria-label={`Listen to ${activeAssistantName}'s response`}
+                        aria-label={speechLoading
+                          ? `Stop ${activeAssistantName}'s response`
+                          : `Listen to ${activeAssistantName}'s response`}
                       >
-                        {speechLoading ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Volume2 size={13} aria-hidden="true" />}
-                        Listen
+                        {speechLoading ? <Square size={12} fill="currentColor" aria-hidden="true" /> : <Volume2 size={13} aria-hidden="true" />}
+                        {speechLoading ? "Stop listening" : "Listen"}
                       </button>
                       {grounding ? (
                         <span className="inline-flex min-h-9 items-center rounded-full bg-surface-raised px-3 text-xs font-medium text-muted">
@@ -2671,12 +2710,12 @@ export function AgentRunsWorkspace({
               onPlan={() => void buildPlan()}
               onAgent={() => void runAgent({ prepareContextAutomatically: true })}
               onVoiceConversationBound={setThreadId}
-              onVoiceTranscript={(transcript, voiceConversationId) => {
+              onVoiceTranscript={async (transcript, voiceConversationId) => {
                 const existingDraft = goal.trim();
                 const voiceGoal = existingDraft ? `${existingDraft}\n\n${transcript}` : transcript;
                 setThreadId(voiceConversationId);
                 changeGoal(voiceGoal);
-                void runAgent({
+                return await runAgent({
                   submittedGoal: voiceGoal,
                   submittedThreadId: voiceConversationId,
                   prepareContextAutomatically: true,
@@ -4830,7 +4869,10 @@ function GoalStage({
   onPlan: () => void;
   onAgent: () => void;
   onVoiceConversationBound: (conversationId: string) => void;
-  onVoiceTranscript: (transcript: string, conversationId: string) => void;
+  onVoiceTranscript: (
+    transcript: string,
+    conversationId: string,
+  ) => Promise<VoiceCommandReply | undefined>;
   onStop: () => void;
   onWorkflow: () => void;
 }) {
@@ -4976,22 +5018,22 @@ function GoalStage({
               ) : null}
             </div>
 
-            {loading === "agent" ? (
-              <button type="button" onClick={onStop} className="grid size-9 shrink-0 place-items-center rounded-full bg-danger text-white" aria-label="Stop response">
-                <Square size={13} aria-hidden="true" />
-              </button>
-            ) : (
-              <div className="flex shrink-0 items-center gap-1">
-                <VoiceMode
-                  disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
-                  disabledReason={voiceDisabledReason}
-                  agentName={preferredAgent?.name || "Asael"}
-                  agentVoice={preferredAgent?.voice}
-                  conversationId={voiceConversationId}
-                  mode={mode}
-                  onConversationBound={onVoiceConversationBound}
-                  onTranscript={onVoiceTranscript}
-                />
+            <div className="flex shrink-0 items-center gap-1">
+              <VoiceMode
+                disabled={draftLocked || contextLoading || Boolean(voiceDisabledReason)}
+                disabledReason={voiceDisabledReason}
+                agentName={preferredAgent?.name || "Asael"}
+                agentVoice={preferredAgent?.voice}
+                conversationId={voiceConversationId}
+                mode={mode}
+                onConversationBound={onVoiceConversationBound}
+                onTranscript={onVoiceTranscript}
+              />
+              {loading === "agent" ? (
+                <button type="button" onClick={onStop} className="grid size-9 shrink-0 place-items-center rounded-full bg-danger text-white" aria-label="Stop response">
+                  <Square size={13} aria-hidden="true" />
+                </button>
+              ) : (
                 <button
                   type="button"
                   onClick={onAgent}
@@ -5002,8 +5044,8 @@ function GoalStage({
                 >
                   <ArrowUp size={17} aria-hidden="true" />
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
         {workflowInProgress ? <p className="mt-1.5 px-2 text-center text-[10px] leading-4 text-muted">This conversation is locked while active work finishes or waits for approval.</p> : null}
