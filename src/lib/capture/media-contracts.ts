@@ -264,6 +264,11 @@ export type CaptureSegmentMediaTranscript = z.infer<
   typeof captureSegmentMediaTranscriptSchema
 >;
 export type CaptureMediaCitation = z.infer<typeof captureMediaCitationSchema>;
+export type CaptureMediaChapter = z.infer<typeof captureMediaChapterSchema>;
+export type CaptureMediaActionItem = z.infer<
+  typeof captureMediaActionItemSchema
+>;
+export type CaptureMediaDecision = z.infer<typeof captureMediaDecisionSchema>;
 export type CaptureMediaOutput = z.infer<typeof captureMediaOutputSchema>;
 
 export function mediaTurnId(input: Omit<CaptureMediaTurn, "turnId">) {
