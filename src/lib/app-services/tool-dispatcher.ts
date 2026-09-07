@@ -138,6 +138,13 @@ import {
   restoreTrashService,
   showTrashService,
 } from "@/lib/app-services/trash";
+import {
+  createCommunicationDraftService,
+  deliverCommunicationDraftService,
+  listCommunicationDraftsService,
+  listCommunicationPoliciesService,
+  upsertCommunicationPolicyService,
+} from "@/lib/app-services/communications";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -261,6 +268,11 @@ export async function executeFirstPartyAppTool(input: {
     "app.settings.api_keys.list": () => listApiKeysService(caller, input.toolInput as never),
     "app.settings.api_keys.revoke.preview": () => previewApiKeyRevokeService(caller, input.toolInput as never),
     "app.settings.api_keys.revoke": () => revokeApiKeyService(caller, input.toolInput as never),
+    "app.communications.policies.list": () => listCommunicationPoliciesService(caller, input.toolInput as never),
+    "app.communications.policies.upsert": () => upsertCommunicationPolicyService(caller, input.toolInput as never),
+    "app.communications.drafts.list": () => listCommunicationDraftsService(caller, input.toolInput as never),
+    "app.communications.drafts.create": () => createCommunicationDraftService(caller, input.toolInput as never),
+    "app.communications.deliver": () => deliverCommunicationDraftService(caller, input.toolInput as never),
     "app.assets.list": () => listAssetsService(caller, input.toolInput as never),
     "app.assets.show": () => showAssetService(caller, input.toolInput as never),
     "app.assets.index": () => indexStoredAssetService(caller, input.toolInput as never),

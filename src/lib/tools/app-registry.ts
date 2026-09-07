@@ -313,6 +313,34 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.settings.api_keys.revoke", "Revoke service API key", "Revoke one exact service API key only when its redacted target digest still matches.", requiredObjectSchema({
     id: opaqueId("Exact service API-key ID."), expectedTargetSha256: sha256("Digest returned by the API-key revocation preview."),
   }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.communications.policies.list", "List contact policies", "List the current actor's governed person and channel communication policies.", objectSchema({})),
+  mutationTool("app.communications.policies.upsert", "Set contact policy", "Create or update one actor-private contact policy with explicit relationship, consent, disclosure, quiet-hours, frequency, and opt-out controls.", requiredObjectSchema({
+    personRef: opaqueId("Stable person reference."), displayName: text(1, 240),
+    channel: { type: "string", enum: ["email", "message", "voice"] }, address: text(3, 500),
+    relationship: { type: "string", enum: ["personal", "colleague", "customer", "vendor", "other"] },
+    allowedPurposes: { type: "array", minItems: 1, maxItems: 5, uniqueItems: true, items: { type: "string", enum: ["informational", "coordination", "follow_up", "support", "commercial"] } },
+    allowedDisclosure: { type: "string", enum: ["public_only", "relationship_context", "confidential"] },
+    consent: { type: "string", enum: ["explicit", "relationship_basis", "unknown"] },
+    maxDeliveriesPerDay: integer(1, 50),
+    quietHours: requiredObjectSchema({
+      enabled: { type: "boolean" }, timeZone: text(1, 120),
+      start: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+      end: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+    }, ["enabled", "timeZone", "start", "end"]),
+    status: { type: "string", enum: ["active", "paused", "opted_out"] }, optOutReason: text(1, 500),
+  }, ["personRef", "displayName", "channel", "address", "relationship", "allowedPurposes", "allowedDisclosure", "consent", "maxDeliveriesPerDay", "quietHours", "status"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.communications.drafts.list", "List message drafts", "List actor-private governed communication drafts, including their exact lifecycle state.", objectSchema({})),
+  mutationTool("app.communications.drafts.create", "Create message draft", "Create an immutable actor-private draft under one exact contact policy; this does not contact the recipient.", requiredObjectSchema({
+    policyId: { type: "string", pattern: "^contact_policy:[0-9a-f-]{36}$", maxLength: 51 },
+    purpose: { type: "string", enum: ["informational", "coordination", "follow_up", "support", "commercial"] },
+    disclosure: { type: "string", enum: ["public_only", "relationship_context", "confidential"] },
+    subject: text(1, 998), body: text(1, 50_000), canonicalThreadId: opaqueId("Optional owned conversation ID."),
+  }, ["policyId", "purpose", "disclosure", "subject", "body"]), { reversible: true }),
+  mutationTool("app.communications.deliver", "Deliver approved message", "Deliver only the exact persisted Gmail draft shown for approval. Recipient, subject, body, and immutable digest must all still match; spoken or free-form confirmation is insufficient.", requiredObjectSchema({
+    draftId: { type: "string", pattern: "^message_draft:[0-9a-f-]{36}$", maxLength: 50 },
+    expectedDraftSha256: sha256("Immutable digest returned with the draft."),
+    reviewedRecipient: text(3, 500), reviewedSubject: text(1, 998), reviewedBody: text(1, 50_000),
+  }, ["draftId", "expectedDraftSha256", "reviewedRecipient", "reviewedSubject", "reviewedBody"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   readTool("app.assets.list", "List captured assets", "List actor-readable uploaded assets and recording metadata without copying stored binary content into the transcript.", objectSchema({
     kind: assetKind(), limit: integer(1, 100, 50),
   })),
