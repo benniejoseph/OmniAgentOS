@@ -162,10 +162,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.agents.update", "Update custom agent", "Update one exact custom agent.", requiredObjectSchema({
     id: opaqueId("Exact custom-agent ID."), change: objectSchema(agentProperties()),
   }, ["id", "change"]), { reversible: true }),
-  readTool("app.agents.delete.preview", "Preview custom-agent deletion", "Preview the exact custom agent, skill assignments, and tool assignments that permanent deletion will retire.", requiredObjectSchema({ id: opaqueId("Exact custom-agent ID.") }, ["id"])),
-  mutationTool("app.agents.delete", "Delete custom agent", "Permanently retire and delete one exact custom agent only when its preview digest still matches.", requiredObjectSchema({
-    id: opaqueId("Exact custom-agent ID."), expectedTargetSha256: sha256("Digest returned by app.agents.delete.preview."),
-  }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.agents.delete.preview", "Preview custom-agent trash", "Preview moving one exact custom Agent to reversible trash, including the immutable-identity compensation limitation.", requiredObjectSchema({ id: opaqueId("Exact custom-agent ID.") }, ["id"])),
+  mutationTool("app.agents.delete", "Move custom agent to trash", "Move one exact custom Agent to retained trash only while its complete expiring preview still matches.", requiredObjectSchema({
+    id: opaqueId("Exact custom-agent ID."), preview: trashPreviewContract("custom_agent"),
+  }, ["id", "preview"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.agents.release.show", "Show agent release", "Read the active release channel, available definition versions, and evaluations for one custom agent.", requiredObjectSchema({
     agentId: opaqueId("Exact custom-agent ID."),
   }, ["agentId"])),
@@ -210,10 +210,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.skills.update", "Update skill", "Update one exact custom skill.", requiredObjectSchema({
     id: opaqueId("Exact custom-skill ID."), change: objectSchema(skillProperties()),
   }, ["id", "change"]), { reversible: true }),
-  readTool("app.skills.delete.preview", "Preview skill deletion", "Preview the exact custom skill and affected custom agents before permanent deletion.", requiredObjectSchema({ id: opaqueId("Exact custom-skill ID.") }, ["id"])),
-  mutationTool("app.skills.delete", "Delete skill", "Permanently delete one exact custom skill only when its target preview still matches.", requiredObjectSchema({
-    id: opaqueId("Exact custom-skill ID."), expectedTargetSha256: sha256("Digest returned by app.skills.delete.preview."),
-  }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.skills.delete.preview", "Preview skill trash", "Preview moving one exact custom Skill and its current Agent assignments to reversible trash.", requiredObjectSchema({ id: opaqueId("Exact custom-skill ID.") }, ["id"])),
+  mutationTool("app.skills.delete", "Move skill to trash", "Move one exact custom Skill to retained trash only while its complete expiring preview still matches.", requiredObjectSchema({
+    id: opaqueId("Exact custom-skill ID."), preview: trashPreviewContract("agent_skill"),
+  }, ["id", "preview"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.workflows.list", "List workflows", "List tenant-scoped workflow runs with optional queue and aggregate status.", objectSchema({
     limit: integer(1, 100, 20), includeStats: { type: "boolean", default: true }, includeQueue: { type: "boolean", default: true },
   })),
@@ -260,12 +260,12 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.connectors.review", "Approve connector contracts", "Promote the exact discovered contract set only when its review fingerprint still matches.", requiredObjectSchema({
     kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), expectedFingerprint: text(20, 200),
   }, ["kind", "connectorId", "expectedFingerprint"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
-  readTool("app.connectors.delete.preview", "Preview connector deletion", "Preview the exact connector and operation IDs removed by permanent deletion.", requiredObjectSchema({
+  readTool("app.connectors.delete.preview", "Preview connector trash", "Preview moving the exact connector and operation contracts to reversible trash, including any credential reconnection limitation.", requiredObjectSchema({
     kind: connectorKind(), connectorId: opaqueId("Exact connector ID."),
   }, ["kind", "connectorId"])),
-  mutationTool("app.connectors.delete", "Delete connector", "Permanently delete one connector and its exact operation set only when the preview digest still matches.", requiredObjectSchema({
-    kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), expectedTargetSha256: sha256("Digest returned by app.connectors.delete.preview."),
-  }, ["kind", "connectorId", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  mutationTool("app.connectors.delete", "Move connector to trash", "Move one connector and its exact contract set to retained trash only while its complete expiring preview still matches.", requiredObjectSchema({
+    kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), preview: trashPreviewContract(),
+  }, ["kind", "connectorId", "preview"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   readTool("app.settings.show", "Show settings", "Read the current actor's redacted provider, model, assignment, API-key metadata, MCP exposure, vault readiness, and platform settings.", objectSchema({})),
   readTool("app.settings.models.list", "List models", "List the current actor's selectable model catalog without credentials.", objectSchema({})),
   mutationTool("app.settings.assignments.update", "Update model assignment", "Update one model routing assignment; cross-provider fallback requires explicit disclosure consent.", requiredObjectSchema({
@@ -359,6 +359,32 @@ function opaqueId(description: string) {
 
 function sha256(description: string) {
   return { type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$", description };
+}
+
+function trashPreviewContract(resourceType?: string) {
+  return requiredObjectSchema({
+    version: { type: "string", enum: ["p9.3-trash-preview:1"] },
+    action: { type: "string", enum: ["trash"] },
+    trashId: { type: "null" },
+    resourceType: {
+      type: "string",
+      enum: resourceType
+        ? [resourceType]
+        : ["mcp_connector", "openapi_connector"],
+    },
+    resourceId: opaqueId("Exact resource ID."),
+    lifecycleRevision: { type: "integer", enum: [0] },
+    targetSha256: sha256("Digest of the exact previewed target."),
+    effectSummary: text(1, 500),
+    reversible: { type: "boolean", enum: [true] },
+    issuedAt: { type: "string", format: "date-time" },
+    expiresAt: { type: "string", format: "date-time" },
+    previewSha256: sha256("Self-verifying digest returned by the preview operation."),
+  }, [
+    "version", "action", "trashId", "resourceType", "resourceId",
+    "lifecycleRevision", "targetSha256", "effectSummary", "reversible",
+    "issuedAt", "expiresAt", "previewSha256",
+  ]);
 }
 
 function idList(maxItems = 50) {

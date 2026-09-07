@@ -10,7 +10,6 @@ import { discoverMcpTools } from "@/lib/connectors/mcp-client";
 import { importOpenApiSpec, loadOpenApiSpec } from "@/lib/connectors/openapi-importer";
 import {
   createOpenApiConnectorRecord,
-  deleteOpenApiConnector,
   getOpenApiConnector,
   listOpenApiConnectors,
   listOpenApiOperations,
@@ -22,7 +21,6 @@ import {
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import {
   createMcpConnectorRecord,
-  deleteMcpConnector,
   getMcpConnector,
   listMcpConnectors,
   listMcpTools,
@@ -33,6 +31,16 @@ import {
 } from "@/lib/connectors/store";
 import { assertPublicHttpUrl } from "@/lib/security/network";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { trashActionPreviewV1Schema } from "@/lib/trash/contracts";
+import {
+  captureRestorableResource,
+  compensationForSnapshot,
+  moveRestorableResourceToTrash,
+} from "@/lib/trash/resources";
+import {
+  createTrashPreview,
+  getTrashLifecycleResultByPreview,
+} from "@/lib/trash/store";
 
 const kindSchema = z.enum(["mcp", "openapi"]);
 const envNameSchema = z.string().regex(/^[A-Z0-9_]+$/).max(120);
@@ -61,7 +69,7 @@ const updateSchema = z.object({
 }).strict().refine(({ kind: _kind, connectorId: _connectorId, ...change }) => Object.keys(change).length > 0, { message: "A connector change is required." });
 const refreshSchema = targetSchema.extend({ specUrl: z.string().url().max(2_048).optional(), baseUrl: z.string().url().max(2_048).optional() }).strict();
 const reviewSchema = targetSchema.extend({ expectedFingerprint: z.string().trim().min(20).max(200) }).strict();
-const deleteSchema = targetSchema.extend({ expectedTargetSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const deleteSchema = targetSchema.extend({ preview: trashActionPreviewV1Schema }).strict();
 
 export async function listConnectorsService(caller: AppServiceCaller, input: z.input<typeof listSchema>) {
   const value = listSchema.parse(input);
@@ -189,18 +197,79 @@ export async function previewConnectorDeleteService(caller: AppServiceCaller, in
     connector: detail.data.connector,
     operationIds: detail.data.operations.map((operation: { id: string }) => operation.id).sort(),
   } : null;
-  return completeAppServiceCall(authorized, { target, targetSha256: canonicalJsonSha256(target), irreversible: true as const }, { resourceCount: target ? 1 : 0 });
+  const resourceType = value.kind === "mcp" ? "mcp_connector" as const : "openapi_connector" as const;
+  const snapshot = target && caller.executionScope
+    ? await captureRestorableResource(resourceType, value.connectorId, caller.executionScope)
+    : undefined;
+  const preview = target ? createTrashPreview({
+    resourceType,
+    resourceId: value.connectorId,
+    target,
+    effectSummary: `Move ${value.kind.toUpperCase()} connector ${String(detail.data.connector?.name || value.connectorId)} and ${target.operationIds.length} contract(s) to trash.`,
+  }) : null;
+  return completeAppServiceCall(authorized, {
+    target,
+    targetSha256: canonicalJsonSha256(target),
+    preview,
+    reversible: Boolean(preview),
+    compensation: snapshot ? compensationForSnapshot(snapshot) : null,
+  }, { resourceCount: target ? 1 : 0 });
 }
 
 export async function deleteConnectorService(caller: AppServiceCaller, input: z.input<typeof deleteSchema>) {
   const value = deleteSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.connectors.delete"));
-  const preview = await previewConnectorDeleteService(caller, value);
-  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) throw new Error("Connector deletion target changed after preview; review the exact target again.");
-  const deleted = value.kind === "mcp"
-    ? await deleteMcpConnector(value.connectorId, { executionScope: caller.executionScope! })
-    : await deleteOpenApiConnector(value.connectorId, { executionScope: caller.executionScope! });
-  return completeAppServiceCall(authorized, { deleted: Boolean(deleted), target: preview.data.target, targetSha256: preview.data.targetSha256 }, { resourceCount: deleted ? 1 : 0 });
+  const prior = await getTrashLifecycleResultByPreview(
+    value.preview.previewSha256,
+    { executionScope: caller.executionScope! },
+  );
+  if (prior) {
+    return completeAppServiceCall(authorized, {
+      movedToTrash: true,
+      trash: prior.item,
+      effectReceipt: prior.receipt,
+      target: null,
+      targetSha256: prior.item.targetSha256,
+    });
+  }
+  const owner = { tenantId: caller.context.tenantId };
+  const detail = value.kind === "mcp"
+    ? await Promise.all([
+        getMcpConnector(value.connectorId, owner),
+        listMcpTools(value.connectorId, owner),
+      ])
+    : await Promise.all([
+        getOpenApiConnector(value.connectorId, owner),
+        listOpenApiOperations(value.connectorId, owner),
+      ]);
+  const connector = detail[0];
+  if (!connector) throw new Error("Connector not found.");
+  const target = {
+    kind: value.kind,
+    connector: redactConnector(connector),
+    operationIds: detail[1].map((operation) => operation.id).sort(),
+  };
+  const resourceType = value.kind === "mcp" ? "mcp_connector" as const : "openapi_connector" as const;
+  const snapshot = await captureRestorableResource(
+    resourceType,
+    value.connectorId,
+    caller.executionScope!,
+  );
+  if (!snapshot) throw new Error("Connector changed after preview.");
+  const moved = await moveRestorableResourceToTrash({
+    preview: value.preview,
+    displayLabel: connector.name,
+    target,
+    snapshot,
+    executionScope: caller.executionScope!,
+  });
+  return completeAppServiceCall(authorized, {
+    movedToTrash: true,
+    trash: moved.item,
+    effectReceipt: moved.receipt,
+    target,
+    targetSha256: canonicalJsonSha256(target),
+  });
 }
 
 function assertSecretBinding(caller: AppServiceCaller, envName: string | undefined, targetUrl: string) {

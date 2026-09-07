@@ -65,23 +65,31 @@ describe("P9.2 complete governed application control", () => {
 
   it("requires exact previews before permanent application effects", () => {
     const byId = new Map(FIRST_PARTY_APP_TOOLS.map((tool) => [tool.id, tool]));
-    const exactEffects = [
+    const permanentEffects = [
       ["app.memory.forget.preview", "app.memory.forget"],
       ["app.knowledge.delete.preview", "app.knowledge.delete"],
-      ["app.agents.delete.preview", "app.agents.delete"],
       ["app.agents.release.retire.preview", "app.agents.release.retire"],
       ["app.agents.grants.revoke.preview", "app.agents.grants.revoke"],
-      ["app.skills.delete.preview", "app.skills.delete"],
-      ["app.connectors.delete.preview", "app.connectors.delete"],
       ["app.settings.providers.revoke.preview", "app.settings.providers.revoke"],
       ["app.settings.api_keys.revoke.preview", "app.settings.api_keys.revoke"],
       ["app.assets.delete.preview", "app.assets.delete"],
     ] as const;
-    for (const [previewId, effectId] of exactEffects) {
+    for (const [previewId, effectId] of permanentEffects) {
       expect(byId.get(previewId), previewId).toMatchObject({ operationClass: "read_only", riskLevel: 0 });
       expect(byId.get(effectId), effectId).toMatchObject({ operationClass: "mutation", approvalRequired: true, reversible: false });
       const properties = (byId.get(effectId)?.inputSchema as { properties?: Record<string, unknown> }).properties || {};
       expect(Object.keys(properties).some((key) => /expected.*sha256/i.test(key)), effectId).toBe(true);
+    }
+    const reversibleEffects = [
+      ["app.agents.delete.preview", "app.agents.delete"],
+      ["app.skills.delete.preview", "app.skills.delete"],
+      ["app.connectors.delete.preview", "app.connectors.delete"],
+    ] as const;
+    for (const [previewId, effectId] of reversibleEffects) {
+      expect(byId.get(previewId), previewId).toMatchObject({ operationClass: "read_only", riskLevel: 0 });
+      expect(byId.get(effectId), effectId).toMatchObject({ operationClass: "mutation", approvalRequired: true, reversible: true });
+      const properties = (byId.get(effectId)?.inputSchema as { properties?: Record<string, unknown> }).properties || {};
+      expect(properties.preview, effectId).toBeDefined();
     }
   });
 });

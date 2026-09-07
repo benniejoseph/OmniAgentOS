@@ -15,8 +15,6 @@ import { customAgentInputSchema, customAgentPatchSchema, skillInputSchema, skill
 import {
   createAgentSkill,
   createCustomAgent,
-  deleteAgentSkill,
-  deleteCustomAgent,
   getAgentSkill,
   getAgentSkillForRequest,
   getCustomAgent,
@@ -28,12 +26,21 @@ import {
   updateCustomAgent,
 } from "@/lib/skills/store";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { trashActionPreviewV1Schema } from "@/lib/trash/contracts";
+import {
+  captureRestorableResource,
+  moveRestorableResourceToTrash,
+} from "@/lib/trash/resources";
+import {
+  createTrashPreview,
+  getTrashLifecycleResultByPreview,
+} from "@/lib/trash/store";
 
 const emptySchema = z.object({}).strict();
 const agentListSchema = z.object({ ownerScope: z.enum(["exact", "readable"]).default("readable") }).strict();
 const idSchema = z.object({ id: z.string().trim().min(1).max(200) }).strict();
 const agentShowSchema = idSchema.extend({ includeBuiltIns: z.boolean().default(true) }).strict();
-const deleteSchema = idSchema.extend({ expectedTargetSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const deleteSchema = idSchema.extend({ preview: trashActionPreviewV1Schema }).strict();
 const cardDiscoverySchema = z.object({
   query: z.string().trim().min(1).max(4_000).optional(),
   taskKind: z.enum(["general", "coordinate", "research", "build", "verify", "memory"]).optional(),
@@ -103,19 +110,61 @@ export async function previewAgentDeleteService(caller: AppServiceCaller, input:
   const value = idSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.delete.preview"));
   const agent = await getCustomAgent(value.id, exactOwner(caller));
-  const target = agent ? { id: agent.id, name: agent.name, slug: agent.slug, skillIds: [...agent.skillIds].sort(), toolIds: [...agent.toolIds].sort() } : null;
-  return completeAppServiceCall(authorized, { target, targetSha256: canonicalJsonSha256(target), irreversible: true as const }, { resourceCount: target ? 1 : 0 });
+  const target = agent ? agentDeleteTarget(agent) : null;
+  const preview = target ? createTrashPreview({
+    resourceType: "custom_agent",
+    resourceId: value.id,
+    target,
+    effectSummary: `Move custom Agent ${agent!.name} to trash. Its retired identity cannot be reactivated; undo creates an equivalent new Agent identity.`,
+  }) : null;
+  return completeAppServiceCall(authorized, {
+    target,
+    targetSha256: canonicalJsonSha256(target),
+    preview,
+    reversible: Boolean(preview),
+    compensation: preview ? "equivalent_agent_identity" as const : null,
+  }, { resourceCount: target ? 1 : 0 });
 }
 
 export async function deleteAgentService(caller: AppServiceCaller, input: z.input<typeof deleteSchema>) {
   const value = deleteSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.agents.delete"));
-  const preview = await previewAgentDeleteService(caller, { id: value.id });
-  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) {
-    throw new Error("Agent deletion target changed after preview; review the exact target again.");
+  const prior = await getTrashLifecycleResultByPreview(
+    value.preview.previewSha256,
+    { executionScope: caller.executionScope! },
+  );
+  if (prior) {
+    return completeAppServiceCall(authorized, {
+      movedToTrash: true,
+      trash: prior.item,
+      effectReceipt: prior.receipt,
+      target: null,
+      targetSha256: prior.item.targetSha256,
+    });
   }
-  const deleted = await deleteCustomAgent(value.id, exactOwner(caller));
-  return completeAppServiceCall(authorized, { deleted, target: preview.data.target, targetSha256: preview.data.targetSha256 }, { resourceCount: deleted ? 1 : 0 });
+  const agent = await getCustomAgent(value.id, exactOwner(caller));
+  const target = agent ? agentDeleteTarget(agent) : null;
+  if (!target) throw new Error("Custom Agent not found.");
+  const snapshot = await captureRestorableResource(
+    "custom_agent",
+    value.id,
+    caller.executionScope!,
+  );
+  if (!snapshot) throw new Error("Custom Agent changed after preview.");
+  const moved = await moveRestorableResourceToTrash({
+    preview: value.preview,
+    displayLabel: agent!.name,
+    target,
+    snapshot,
+    executionScope: caller.executionScope!,
+  });
+  return completeAppServiceCall(authorized, {
+    movedToTrash: true,
+    trash: moved.item,
+    effectReceipt: moved.receipt,
+    target,
+    targetSha256: canonicalJsonSha256(target),
+  });
 }
 
 export async function listSkillsService(caller: AppServiceCaller, input: z.input<typeof emptySchema>) {
@@ -154,18 +203,81 @@ export async function previewSkillDeleteService(caller: AppServiceCaller, input:
     id: skill.id, name: skill.name, slug: skill.slug,
     affectedAgents: agents.filter((agent) => agent.skillIds.includes(skill.id)).map((agent) => ({ id: agent.id, name: agent.name })).sort((a, b) => a.id.localeCompare(b.id)),
   } : null;
-  return completeAppServiceCall(authorized, { target, targetSha256: canonicalJsonSha256(target), irreversible: true as const }, { resourceCount: target ? 1 : 0 });
+  const preview = target ? createTrashPreview({
+    resourceType: "agent_skill",
+    resourceId: value.id,
+    target,
+    effectSummary: `Move custom Skill ${skill!.name} to trash and detach it from ${target.affectedAgents.length} Agent(s). Undo restores the Skill and surviving assignments.`,
+  }) : null;
+  return completeAppServiceCall(authorized, {
+    target,
+    targetSha256: canonicalJsonSha256(target),
+    preview,
+    reversible: Boolean(preview),
+    compensation: preview ? "exact_restore" as const : null,
+  }, { resourceCount: target ? 1 : 0 });
 }
 
 export async function deleteSkillService(caller: AppServiceCaller, input: z.input<typeof deleteSchema>) {
   const value = deleteSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.skills.delete"));
-  const preview = await previewSkillDeleteService(caller, { id: value.id });
-  if (!preview.data.target || preview.data.targetSha256 !== value.expectedTargetSha256) {
-    throw new Error("Skill deletion target changed after preview; review the exact target again.");
+  const prior = await getTrashLifecycleResultByPreview(
+    value.preview.previewSha256,
+    { executionScope: caller.executionScope! },
+  );
+  if (prior) {
+    return completeAppServiceCall(authorized, {
+      movedToTrash: true,
+      trash: prior.item,
+      effectReceipt: prior.receipt,
+      target: null,
+      targetSha256: prior.item.targetSha256,
+    });
   }
-  const deleted = await deleteAgentSkill(value.id, exactOwner(caller));
-  return completeAppServiceCall(authorized, { deleted, target: preview.data.target, targetSha256: preview.data.targetSha256 }, { resourceCount: deleted ? 1 : 0 });
+  const [skill, agents] = await Promise.all([
+    getAgentSkill(value.id, exactOwner(caller)),
+    listCustomAgents(exactOwner(caller)),
+  ]);
+  const target = skill && !skill.builtIn ? {
+    id: skill.id,
+    name: skill.name,
+    slug: skill.slug,
+    affectedAgents: agents
+      .filter((agent) => agent.skillIds.includes(skill.id))
+      .map((agent) => ({ id: agent.id, name: agent.name }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  } : null;
+  if (!target) throw new Error("Custom Skill not found.");
+  const snapshot = await captureRestorableResource(
+    "agent_skill",
+    value.id,
+    caller.executionScope!,
+  );
+  if (!snapshot) throw new Error("Custom Skill changed after preview.");
+  const moved = await moveRestorableResourceToTrash({
+    preview: value.preview,
+    displayLabel: skill!.name,
+    target,
+    snapshot,
+    executionScope: caller.executionScope!,
+  });
+  return completeAppServiceCall(authorized, {
+    movedToTrash: true,
+    trash: moved.item,
+    effectReceipt: moved.receipt,
+    target,
+    targetSha256: canonicalJsonSha256(target),
+  });
+}
+
+function agentDeleteTarget(agent: Awaited<ReturnType<typeof getCustomAgent>> & {}) {
+  return {
+    id: agent.id,
+    name: agent.name,
+    slug: agent.slug,
+    skillIds: [...agent.skillIds].sort(),
+    toolIds: [...agent.toolIds].sort(),
+  };
 }
 
 function exactOwner(caller: AppServiceCaller) { return { tenantId: caller.context.tenantId, actorId: caller.context.actorId }; }
