@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { listApprovalGrants } from "@/lib/approval-grants/store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { foldTrustProfile } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { listTrustProfiles } from "@/lib/trust/ledger";
 import { computeAutonomy, graduationThreshold, isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
 
@@ -46,11 +49,26 @@ async function GETHandler(request: Request) {
     });
   }
 
-  const profiles = await listTrustProfiles({ tenantId: context.tenantId });
+  const correlationId = request.headers.get("x-request-id")?.trim() || randomUUID();
+  const [profiles, grants] = await Promise.all([
+    listTrustProfiles({ tenantId: context.tenantId }),
+    listApprovalGrants({
+      executionScope: executionScopeFromSecurityContext(context, {
+        correlationId,
+        purpose: "trust.approval_grants.list",
+      }),
+      limit: 100,
+    }),
+  ]);
   const graduated = profiles.filter((profile) => profile.autonomyMode === "auto_with_alert");
+  const activeGrants = grants.filter((grant) =>
+    grant.state === "active" && Date.parse(grant.expiresAt) > Date.now()
+  );
 
   return Response.json({
-    enabled: isGraduatedAutonomyEnabled(),
+    enabled: true,
+    authorityMode: "bounded_grants",
+    legacyGraduatedAutonomyConfigured: isGraduatedAutonomyEnabled(),
     threshold: graduationThreshold(),
     profiles: profiles.map((profile) => ({
       ...profile,
@@ -58,8 +76,11 @@ async function GETHandler(request: Request) {
     })),
     stats: {
       tracked: profiles.length,
-      graduated: graduated.length,
+      grantEligible: graduated.length,
       gating: profiles.length - graduated.length,
+      grants: grants.length,
+      activeGrants: activeGrants.length,
     },
+    grants,
   });
 }

@@ -63,6 +63,7 @@ type TrustProfile = {
 
 type TrustResponse = {
   enabled: boolean;
+  authorityMode?: "bounded_grants";
   threshold: number;
   profiles: TrustProfile[];
 };
@@ -987,8 +988,8 @@ function TrackRecord({
           <p className="mt-2 text-xs text-muted">
             {trust.autonomy?.reason || (graduated
               ? enabled
-                ? "Earned autonomy. Future calls run automatically with alerting."
-                : "Eligible for autonomy. Enable graduated autonomy to let it run without gating."
+                ? "Evidence threshold reached. Execution still requires an exact bounded plan grant."
+                : "Evidence threshold reached; approval remains required."
               : `${trust.cleanStreak}/${target} clean executions toward earning autonomy.`)}
           </p>
           {trust.autonomy ? (
