@@ -42,25 +42,57 @@ vi.mock("@/lib/workflows/store", () => ({
   getWorkflowRunDetail: mocks.getWorkflowRunDetail,
 }));
 vi.mock("@/lib/workspaces/read-model", () => ({
-  canonicalWorkItemStatuses: vi.fn(async (
+  canonicalWorkItemSurfaces: vi.fn(async (
     _tenantId: string,
     sourceAuthority: string,
     fallbacks: Array<Record<string, unknown>>,
-  ) => new Map(fallbacks.map((fallback) => [fallback.sourceId, {
-    schemaVersion: 1,
-    authority: "canonical_work_item_v1",
-    persistence: "postgres",
-    workspaceId: "workspace-a",
-    projectId: fallback.projectId,
-    workItemId: fallback.workItemId,
-    kind: fallback.kind,
-    sourceAuthority,
-    sourceId: fallback.sourceId,
-    status: fallback.status,
-    sourceStatus: fallback.sourceStatus,
-    statusRevision: 1,
-    updatedAt: fallback.updatedAt,
-  }]))),
+  ) => new Map(fallbacks.map((fallback) => {
+    const status = {
+      schemaVersion: 1,
+      authority: "canonical_work_item_v1",
+      persistence: "postgres",
+      workspaceId: "workspace-a",
+      projectId: fallback.projectId,
+      workItemId: fallback.workItemId,
+      kind: fallback.kind,
+      sourceAuthority,
+      sourceId: fallback.sourceId,
+      status: fallback.status,
+      sourceStatus: fallback.sourceStatus,
+      statusRevision: 1,
+      updatedAt: fallback.updatedAt,
+    };
+    return [fallback.sourceId, {
+      version: "p11.4-work-item-surface:1",
+      projection: {
+        authority: "canonical_work_item_v1",
+        sha256: "a".repeat(64),
+        sourceRevisionSha256: "b".repeat(64),
+      },
+      status,
+      assignment: { authority: "canonical_work_item_v1", agents: [] },
+      artifacts: { authority: "canonical_work_item_v1", count: 0, items: [] },
+      execution: {
+        authority: "governed_workflow_v1",
+        availability: "not_started",
+        workflowRunId: null,
+        sourceStatus: null,
+        currentStep: null,
+        completedSteps: 0,
+        totalSteps: 0,
+        progressPercent: null,
+        updatedAt: null,
+      },
+      cost: {
+        authority: "ai_usage_ledger_v1",
+        state: "not_recorded",
+        usageReceiptCount: 0,
+        unknownCostReceiptCount: 0,
+        totalTokens: 0,
+        knownEstimatedCostMicrousd: 0,
+      },
+    }];
+  }))),
 }));
 
 import { createAppServiceCaller } from "@/lib/app-services/contracts";

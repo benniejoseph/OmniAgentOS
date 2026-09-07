@@ -42,7 +42,7 @@ import {
   missionProjectId,
   missionRootWorkItemId,
 } from "@/lib/workspaces/legacy-projection";
-import { canonicalWorkItemStatuses } from "@/lib/workspaces/read-model";
+import { canonicalWorkItemSurfaces } from "@/lib/workspaces/read-model";
 
 const missionStatusSchema = z.enum([
   "draft",
@@ -463,8 +463,12 @@ async function withCanonicalMissionSummaries<T extends {
   status: string;
   canonicalStatus: { status: CanonicalStatus; sourceStatus: string };
   updatedAt: string;
-}>(tenantId: string, missions: readonly T[]) {
-  const statuses = await canonicalWorkItemStatuses(
+}>(
+  tenantId: string,
+  missions: readonly T[],
+  artifacts: readonly { id: string; missionId: string; taskId?: string; kind: string }[] = [],
+) {
+  const surfaces = await canonicalWorkItemSurfaces(
     tenantId,
     "legacy_mission",
     missions.map((mission) => ({
@@ -475,12 +479,15 @@ async function withCanonicalMissionSummaries<T extends {
       status: mission.canonicalStatus.status,
       sourceStatus: mission.canonicalStatus.sourceStatus,
       updatedAt: mission.updatedAt,
+      artifacts: artifacts
+        .filter((artifact) => artifact.missionId === mission.id && !artifact.taskId)
+        .map((artifact) => ({ artifactId: artifact.id, kind: artifact.kind })),
     })),
   );
-  return missions.map((mission) => ({
-    ...mission,
-    workItemStatus: statuses.get(mission.id)!,
-  }));
+  return missions.map((mission) => {
+    const workItem = surfaces.get(mission.id)!;
+    return { ...mission, workItemStatus: workItem.status, workItem };
+  });
 }
 
 async function withCanonicalMissionTasks<T extends {
@@ -488,8 +495,14 @@ async function withCanonicalMissionTasks<T extends {
   missionId: string;
   canonicalStatus: { status: CanonicalStatus; sourceStatus: string };
   updatedAt: string;
-}>(tenantId: string, tasks: readonly T[]) {
-  const statuses = await canonicalWorkItemStatuses(
+  metadata?: Record<string, unknown>;
+  execution?: { workflowRunId?: string; sourceStatus: string };
+}>(
+  tenantId: string,
+  tasks: readonly T[],
+  artifacts: readonly { id: string; taskId?: string; kind: string }[] = [],
+) {
+  const surfaces = await canonicalWorkItemSurfaces(
     tenantId,
     "legacy_mission_task",
     tasks.map((task) => ({
@@ -500,12 +513,29 @@ async function withCanonicalMissionTasks<T extends {
       status: task.canonicalStatus.status,
       sourceStatus: task.canonicalStatus.sourceStatus,
       updatedAt: task.updatedAt,
+      assignedAgents: typeof task.metadata?.assigneeKey === "string" &&
+          task.metadata.assigneeKey.trim()
+        ? [{ agentId: task.metadata.assigneeKey.trim() }]
+        : [],
+      artifacts: artifacts
+        .filter((artifact) => artifact.taskId === task.id)
+        .map((artifact) => ({ artifactId: artifact.id, kind: artifact.kind })),
+      workflowRunId: task.execution?.workflowRunId,
+      workflowSourceStatus: task.execution?.sourceStatus === "waiting"
+        ? "waiting_approval" as const
+        : task.execution?.sourceStatus as
+            | "queued"
+            | "running"
+            | "completed"
+            | "failed"
+            | "canceled"
+            | undefined,
     })),
   );
-  return tasks.map((task) => ({
-    ...task,
-    workItemStatus: statuses.get(task.id)!,
-  }));
+  return tasks.map((task) => {
+    const workItem = surfaces.get(task.id)!;
+    return { ...task, workItemStatus: workItem.status, workItem };
+  });
 }
 
 async function withCanonicalMissionDetail(
@@ -513,8 +543,8 @@ async function withCanonicalMissionDetail(
   detail: ReturnType<typeof toMissionDetailView>,
 ) {
   const [missions, tasks] = await Promise.all([
-    withCanonicalMissionSummaries(tenantId, [detail.mission]),
-    withCanonicalMissionTasks(tenantId, detail.tasks),
+    withCanonicalMissionSummaries(tenantId, [detail.mission], detail.artifacts),
+    withCanonicalMissionTasks(tenantId, detail.tasks, detail.artifacts),
   ]);
   return { ...detail, mission: missions[0], tasks };
 }
