@@ -131,6 +131,18 @@ canceling the canonical task before its deadline or expiring it at the deadline.
   unknown cost never means free. Raw cursors, credentials, provider content,
   and private owner coordinates are excluded. The same governed read is
   exposed as `app.integrations.overview.show`.
+- `GET /api/source-coverage` returns the authenticated caller's private,
+  no-store `p11.9-source-coverage:1` projection. Optional `workspaceId`
+  selects Workspace-scoped integration health. The response combines the
+  truthful integration inventory, safe per-source OAuth checkpoints, and
+  actor-owned canonical source/index aggregates into connected-domain,
+  backfill, freshness, last-verification, knowledge-index, and blind-spot
+  states. Each inventory may fail independently and then remains unavailable;
+  an absent connection or conflicting inventory remains unknown rather than
+  proving that the underlying data is empty. Raw cursors, provider content,
+  credentials, metadata, provider identifiers, and actor coordinates are
+  excluded. The same governed read is exposed as
+  `app.sources.coverage.show`.
 - `GET|POST /api/capabilities/rollouts` exposes the tenant-bound capability rollout control plane. Authorized security readers may inspect a current generation by capability ID; trusted system automation may register or compare-and-swap a generation transition as a risk-3 operation. Responses expose opaque identifiers and hashes, never private capability payloads.
 
 Connector API records never contain credential plaintext or sealed payloads. App-managed bearer credentials are decrypted only immediately before the exact-origin MCP request; deployer-managed connector records reference environment-variable names instead of values. Registration does not make an endpoint safe by itself; discovery/import and execution remain subject to network, role, risk, and approval policy.

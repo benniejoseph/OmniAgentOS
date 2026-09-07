@@ -2140,6 +2140,33 @@ snapshot exposes only receipts matching the assignment's current exact
 revision under `p11.8-functional-model-routing:1`; deployment-managed calls
 never claim tenant-assignment provenance.
 
+## Knowledge and source coverage projection
+
+P11.9 adds the strict `p11.9-source-coverage:1` projection shared by Today,
+Memory, and Integrations. It composes three independently optional sources:
+the truthful integration overview, request-bound OAuth grant metadata, and an
+actor-owned aggregate over current canonical source heads, knowledge indexing,
+and Capture processing. Failure of one source makes only that inventory
+unavailable and makes the aggregate partial; it cannot imply disconnected,
+empty, complete, or current state.
+
+Google mail, calendar, and Drive store separate safe source checkpoints with
+backfill state, last attempted/successful time, and an allowlisted failure
+code. Initial history is complete only after that source reaches its delta
+boundary; provider-level sync history is never treated as per-source proof.
+Salesforce reuses the exact object-scope cursor and freshness contract. Native
+Capture and direct imports report only actor-owned submitted/current records.
+If Capture submission totals disagree with canonical source heads, the source
+is explicitly unknown and actionable instead of inferred empty.
+
+The aggregate store selects counts, adapter IDs, and verification timestamps
+only. Source content, provider locators, metadata, credentials, raw cursors,
+actor coordinates, and private receipt identifiers never enter the projection.
+Unsupported life-data domains remain named blind spots. The governed
+`app.sources.coverage.show` service and private/no-store
+`/api/source-coverage` route install the canonical/current-email actor scope
+and expose the same contract to first-party tools and browser surfaces.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
