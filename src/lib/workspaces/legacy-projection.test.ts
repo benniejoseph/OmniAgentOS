@@ -56,7 +56,7 @@ describe("legacy canonical work projections", () => {
 
   it("projects Mission as one Project plus a root milestone and child WorkItems", () => {
     const canonicalProject = missionProjectCanonicalProjection(mission, authority, 1);
-    const root = missionRootCanonicalProjection(mission, authority, 1);
+    const root = missionRootCanonicalProjection(mission, [], authority, 1);
     const child = missionTaskCanonicalProjection(mission, missionTask, [], authority, 1);
     expect(canonicalProject.projection.projectId).toBe("mission_project:mission-a");
     expect(root.projection.workItemId).toBe("mission_root:mission-a");

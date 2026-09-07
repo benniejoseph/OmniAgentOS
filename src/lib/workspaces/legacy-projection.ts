@@ -47,7 +47,7 @@ export function projectCanonicalProjection(
 export function projectTaskCanonicalProjection(
   project: PersonalProject,
   task: ProjectTask,
-  artifacts: readonly ProjectArtifact[],
+  artifacts: readonly Pick<ProjectArtifact, "id" | "taskId" | "status" | "evidenceRefs" | "updatedAt">[],
   authority: ProjectionAuthority,
   revision: number,
 ) {
@@ -130,6 +130,7 @@ export function missionProjectCanonicalProjection(
 
 export function missionRootCanonicalProjection(
   mission: Mission,
+  artifacts: readonly Pick<MissionArtifact, "id" | "taskId" | "kind" | "updatedAt">[],
   authority: ProjectionAuthority,
   revision: number,
 ) {
@@ -159,18 +160,31 @@ export function missionRootCanonicalProjection(
     recurrence: null,
     risks: [],
     decisions: [],
-    artifacts: [],
+    artifacts: artifacts
+      .filter((artifact) => !artifact.taskId)
+      .map((artifact) => ({
+        artifactId: artifact.id,
+        kind: boundedId(artifact.kind) || "result",
+        evidenceRefIds: [],
+      }))
+      .sort((left, right) => left.artifactId.localeCompare(right.artifactId)),
     createdAt: mission.createdAt,
     updatedAt: mission.updatedAt,
     terminalAt,
   });
-  return withDigests(projection, missionSourceRevision(mission));
+  return withDigests(projection, canonicalJsonSha256({
+    mission: missionSourceRevision(mission),
+    artifacts: artifacts
+      .filter((artifact) => !artifact.taskId)
+      .map((artifact) => ({ id: artifact.id, kind: artifact.kind, updatedAt: artifact.updatedAt }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+  }));
 }
 
 export function missionTaskCanonicalProjection(
   mission: Mission,
   task: MissionTask,
-  artifacts: readonly MissionArtifact[],
+  artifacts: readonly Pick<MissionArtifact, "id" | "taskId" | "kind" | "updatedAt">[],
   authority: ProjectionAuthority,
   revision: number,
 ) {
@@ -284,7 +298,7 @@ function projectSourceRevision(project: PersonalProject) {
 
 function projectTaskSourceRevision(
   task: ProjectTask,
-  artifacts: readonly ProjectArtifact[],
+  artifacts: readonly Pick<ProjectArtifact, "id" | "taskId" | "status" | "evidenceRefs" | "updatedAt">[],
 ) {
   return canonicalJsonSha256({
     id: task.id,
@@ -327,7 +341,7 @@ function missionSourceRevision(mission: Mission) {
 
 function missionTaskSourceRevision(
   task: MissionTask,
-  artifacts: readonly MissionArtifact[],
+  artifacts: readonly Pick<MissionArtifact, "id" | "taskId" | "kind" | "updatedAt">[],
 ) {
   return canonicalJsonSha256({
     id: task.id,
