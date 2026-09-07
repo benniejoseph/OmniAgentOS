@@ -31,6 +31,8 @@ function parentScope() {
     executingPrincipalType: "agent",
     executingPrincipalId: "principal:atlas:1",
     correlationId: "run-one",
+    contextGrantIds: ["grant:context:one"],
+    capabilityGrantIds: ["grant:capability:one"],
     purpose: "agent.run",
   });
 }
@@ -69,6 +71,18 @@ describe("delegation task store", () => {
           delegationId: contract.delegationId,
           delegateAgentId: "sentinel",
           toolExecutionIds: [],
+          authority: expect.objectContaining({
+            version: "p11.5-delegation-authority:1",
+            grants: expect.objectContaining({
+              contextGrantIds: ["grant:context:one"],
+              capabilityGrantIds: ["grant:capability:one"],
+              governedToolIds: ["knowledge.search"],
+            }),
+          }),
+        }),
+        executionScope: expect.objectContaining({
+          contextGrantIds: ["grant:context:one"],
+          capabilityGrantIds: ["grant:capability:one"],
         }),
       }),
       { sql },
