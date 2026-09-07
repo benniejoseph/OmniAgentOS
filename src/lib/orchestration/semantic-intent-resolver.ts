@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { listInternalAgentCardsV1 } from "@/lib/agents/discovery-card";
 import { buildCapabilitySearchQuery } from "@/lib/capabilities/autonomy";
 import { searchCapabilities } from "@/lib/capabilities/catalog";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
@@ -212,6 +213,10 @@ export function createSemanticIntentResolver(
       mode: input.mode,
       preferredAgentId: input.preferredAgentId,
       capabilityCandidates,
+      agentCards: listInternalAgentCardsV1({
+        tenantId: input.tenantId,
+        controllerActorId: input.actorId,
+      }),
     });
     const semanticCatalogCandidates = initialResolution.capabilitySearchQuery
       ? await dependencies.searchCapabilities({
@@ -240,6 +245,10 @@ export function createSemanticIntentResolver(
         capabilityCandidates,
         semanticCatalogCandidates,
       ),
+      agentCards: listInternalAgentCardsV1({
+        tenantId: input.tenantId,
+        controllerActorId: input.actorId,
+      }),
     });
     return attachSemanticModelReceipt(resolution, {
       provider: generated.provider,

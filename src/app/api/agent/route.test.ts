@@ -135,7 +135,7 @@ beforeEach(() => {
       capabilitySearchQuery: "",
       receipt: {
         schemaVersion: 1,
-        policyVersion: "semantic-intent-policy-v1",
+        policyVersion: "semantic-intent-policy-v2",
         source: "deterministic_fallback",
         intent: "not_evaluated",
         executionShape: "not_evaluated",
@@ -387,7 +387,7 @@ describe("agent semantic intent routing", () => {
       capabilitySearchQuery: "list github issues",
       receipt: {
         schemaVersion: 1,
-        policyVersion: "semantic-intent-policy-v1",
+        policyVersion: "semantic-intent-policy-v2",
         source: "model",
         intent: "retrieve",
         executionShape: "single_action",
@@ -448,7 +448,7 @@ describe("agent semantic intent routing", () => {
         semanticRouting: {
           capabilitySearchQuery: "list github issues",
           matchedCapabilityIds: ["github.issues.list"],
-          policyVersion: "semantic-intent-policy-v1",
+          policyVersion: "semantic-intent-policy-v2",
         },
       }),
       expect.any(AbortSignal),
