@@ -1991,6 +1991,31 @@ reference; participant email and source content remain outside this read model.
 Today consumes the same bounded portfolio response used by Account 360, so its
 customer-attention section cannot drift into a separate ranking policy.
 
+## Cohesive Today projection
+
+P11.1 replaces the dashboard's independent browser fan-out with the pinned
+`p11.1-cohesive-today:1` read projection. One actor-scoped application service
+combines the personal Today snapshot, canonical Meetings and confirmed
+commitments, customer-success portfolio, approvals, real Agent-run identities,
+workflow and Project state, and the complete consumption ledger. Each domain
+retains its own authority and reports `ready`, `restricted`, `error`, or
+user-selected `hidden` state plus observed and last-changed timestamps; an
+unavailable read is never projected as an empty fact.
+
+The projection is read-only and digest-bound. Customer next actions remain
+suggestions, Meeting commitments remain bound to their confirmed revision, and
+approval rows do not grant execution authority. The service establishes the
+canonical/current-email actor set itself, so server rendering, the private API,
+and governed Agent-tool dispatch cannot depend on ambient caller scope. Today
+section visibility is actor-owned and persisted in
+`omni_today_preferences.visible_sections`; migration 142 is additive and keeps
+all sections visible for existing users.
+
+The PostgreSQL Today snapshot validates daily-brief content against its physical
+row, including exact `memoryIds` lineage. Vercel's one-slot runtime serializes
+the bounded Workspace Summary reads so cold dashboard requests do not exhaust
+the admission queue; runtimes with larger pools retain parallel reads.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
