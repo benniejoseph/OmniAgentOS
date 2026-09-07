@@ -172,8 +172,7 @@ export function resolveSharedAgentPromptMemoryAccess(
   };
   if (
     !input.contextScope ||
-    !["project", "workspace"].includes(input.contextScope) ||
-    input.contextScope !== value.authority.scope ||
+    !["mission", "project", "workspace"].includes(input.contextScope) ||
     input.memoryMode !== "all"
   ) {
     return fail();
@@ -192,6 +191,12 @@ export function resolveSharedAgentPromptMemoryAccess(
     },
   );
   const authority = sharedContextAuthorityV1Schema.parse(value.authority);
+  const expectedAuthorityScope = input.contextScope === "mission"
+    ? "project"
+    : input.contextScope;
+  const expectedMissionId = input.contextScope === "mission"
+    ? authority.requestedProjectId
+    : null;
   const actorBinding = value.actorBinding;
   const canonicalActorId = `actor:${actorBinding.authUserId}`;
   const agentScope = input.agentExecutionScope;
@@ -199,6 +204,8 @@ export function resolveSharedAgentPromptMemoryAccess(
     actorBinding.version !== 1 ||
     actorBinding.kind !== "auth_user" ||
     actorBinding.canonicalActorId !== canonicalActorId ||
+    authority.scope !== expectedAuthorityScope ||
+    (input.contextScope === "mission" && !expectedMissionId) ||
     authority.tenantId !== promptScope.tenantId ||
     authority.initiatingActorId !== canonicalActorId ||
     promptScope.initiatingActorId !== canonicalActorId ||
@@ -215,7 +222,7 @@ export function resolveSharedAgentPromptMemoryAccess(
     !actorBinding.readableOwnerActorIds.includes(agentScope.initiatingActorId || "") ||
     agentScope.workspaceId !== authority.workspaceId ||
     agentScope.projectId !== authority.projectId ||
-    agentScope.missionId !== null ||
+    agentScope.missionId !== expectedMissionId ||
     agentScope.correlationId !== promptScope.correlationId ||
     serializeDatabaseMemoryAccessScope(databaseScope) !==
       serializeDatabaseMemoryAccessScope(expectedDatabaseScope)

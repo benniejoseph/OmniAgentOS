@@ -5415,6 +5415,11 @@ function contextRationaleForRun(input: {
       "Only durable knowledge from the explicitly selected project was eligible.",
     ];
   }
+  if (input.contextScope === "mission") {
+    return [
+      "Only durable knowledge from the Mission's canonical Project membership was eligible.",
+    ];
+  }
   if (input.contextScope === "workspace") {
     return [
       "Only durable knowledge from the explicitly selected workspace was eligible.",

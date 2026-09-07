@@ -81,6 +81,44 @@ describe("shared context authority", () => {
     });
   });
 
+  it("maps Mission context to its exact canonical Project authority", async () => {
+    const access = await requestSharedMemoryAccessFromSecurityContext(context, {
+      scope: "project",
+      projectId: "mission-a",
+      correlationId: "mission-context-request",
+    });
+    const agentScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "owner@example.test",
+      executingPrincipalType: "agent",
+      executingPrincipalId: "agent:atlas",
+      workspaceId,
+      projectId: "project:launch",
+      missionId: "mission-a",
+      correlationId: "mission-context-request",
+      purpose: "agent.run",
+    });
+
+    expect(access.authority).toMatchObject({
+      scope: "project",
+      projectId: "project:launch",
+      requestedProjectId: "mission-a",
+    });
+    expect(resolveSharedAgentPromptMemoryAccess(access, {
+      agentExecutionScope: agentScope,
+      contextScope: "mission",
+      memoryMode: "all",
+    })).toEqual(access.databaseAccessScope);
+    expect(() => resolveSharedAgentPromptMemoryAccess(access, {
+      agentExecutionScope: createExecutionScope({
+        ...agentScope,
+        missionId: "mission-b",
+      }),
+      contextScope: "mission",
+      memoryMode: "all",
+    })).toThrow("Shared-memory prompt access is invalid.");
+  });
+
   it("keeps workspace context outside every project coordinate", async () => {
     const access = await requestSharedMemoryAccessFromSecurityContext(context, {
       scope: "workspace",

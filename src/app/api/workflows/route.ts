@@ -152,6 +152,13 @@ async function POSTHandler(request: Request) {
       );
     }
     if (contextScope) {
+      if (contextScope === "mission") {
+        return Response.json({
+          error: "Workflow context boundary is unavailable.",
+          message:
+            "Mission context is currently available only for a direct Conversation run.",
+        }, { status: 409 });
+      }
       try {
         assertContextScopeRequest(
           contextScope,

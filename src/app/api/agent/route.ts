@@ -162,6 +162,14 @@ const requestSchema = z.object({
     message: "A project is required for project context.",
     path: ["projectId"],
   })
+  .refine((value) => value.contextScope !== "mission" || Boolean(value.missionId), {
+    message: "A mission is required for mission context.",
+    path: ["missionId"],
+  })
+  .refine((value) => value.contextScope !== "mission" || !value.projectId, {
+    message: "Mission context resolves its canonical project on the server.",
+    path: ["projectId"],
+  })
   .refine((value) => !["project", "workspace"].includes(value.contextScope || "") || !value.missionId, {
     message: "Shared context cannot be combined with mission context.",
     path: ["missionId"],
@@ -278,14 +286,19 @@ async function POSTHandler(request: Request) {
   }
   let promptSharedMemoryAccess: RequestSharedMemoryAccessV1 | undefined;
   if (
+    parsed.data.contextScope === "mission" ||
     parsed.data.contextScope === "project" ||
     parsed.data.contextScope === "workspace"
   ) {
     try {
       promptSharedMemoryAccess =
         await requestSharedMemoryAccessFromSecurityContext(context, {
-          scope: parsed.data.contextScope,
-          projectId: parsed.data.projectId,
+          scope: parsed.data.contextScope === "mission"
+            ? "project"
+            : parsed.data.contextScope,
+          projectId: parsed.data.contextScope === "mission"
+            ? parsed.data.missionId
+            : parsed.data.projectId,
           correlationId: requestId,
         });
     } catch (error) {

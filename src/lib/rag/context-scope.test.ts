@@ -17,14 +17,9 @@ describe("context scope policy", () => {
     expect(new Set(CONTEXT_SCOPE_IDS).size).toBe(CONTEXT_SCOPE_IDS.length);
   });
 
-  it("keeps automatic personal and mission scopes authority-held", () => {
-    for (const scopeId of [
-      "mission",
-      "personal",
-    ] as const) {
-      expect(getContextScopePolicy(scopeId).state).toBe("authority_held");
-      expect(() => assertContextScopeRequest(scopeId, false)).toThrow(/held/i);
-    }
+  it("keeps automatic personal scope authority-held", () => {
+    expect(getContextScopePolicy("personal").state).toBe("authority_held");
+    expect(() => assertContextScopeRequest("personal", false)).toThrow(/held/i);
   });
 
   it("maps active scopes without widening durable context", () => {
@@ -32,6 +27,7 @@ describe("context scope policy", () => {
     expect(contextScopeMemoryMode("current_turn")).toBe("session");
     expect(contextScopeMemoryMode("session")).toBe("session");
     expect(contextScopeMemoryMode("agent_private")).toBe("all");
+    expect(contextScopeMemoryMode("mission")).toBe("all");
     expect(contextScopeMemoryMode("project")).toBe("all");
     expect(contextScopeMemoryMode("workspace")).toBe("all");
     expect(contextScopeMemoryMode("explicit_selection")).toBe("all");
@@ -39,12 +35,18 @@ describe("context scope policy", () => {
     expect(contextScopeUsesThreadHistory("current_turn")).toBe(false);
     expect(contextScopeUsesThreadHistory("session")).toBe(true);
     expect(contextScopeUsesThreadHistory("agent_private")).toBe(true);
+    expect(contextScopeUsesThreadHistory("mission")).toBe(true);
     expect(contextScopeUsesThreadHistory("project")).toBe(true);
     expect(contextScopeUsesThreadHistory("workspace")).toBe(true);
     expect(contextScopeUsesThreadHistory("explicit_selection")).toBe(true);
   });
 
   it("activates only explicitly selected canonical shared scopes", () => {
+    expect(assertContextScopeRequest("mission", false)).toMatchObject({
+      state: "active",
+      durableContext: "project",
+      requiresSelection: false,
+    });
     expect(assertContextScopeRequest("project", false)).toMatchObject({
       state: "active",
       durableContext: "project",

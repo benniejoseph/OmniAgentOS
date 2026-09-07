@@ -5,9 +5,13 @@ const routeMocks = vi.hoisted(() => ({
   appendThreadTurn: vi.fn(),
   authorizeRequest: vi.fn(),
   checkSharedRateLimit: vi.fn(),
+  attachMissionExecutor: vi.fn(),
   createThread: vi.fn(),
+  createMission: vi.fn(),
+  ensureMissionTask: vi.fn(),
   getAgentPerformance: vi.fn(),
   getOwnedProject: vi.fn(),
+  getMission: vi.fn(),
   getThread: vi.fn(),
   resolveAgentIdentityForExecution: vi.fn(),
   listConversationSummaries: vi.fn(),
@@ -19,6 +23,8 @@ const routeMocks = vi.hoisted(() => ({
   runAgent: vi.fn(),
   runLoopV2ModelText: vi.fn(),
   runLoopV2ReadOnlyCanary: vi.fn(),
+  syncMissionExecutor: vi.fn(),
+  transitionMission: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -49,6 +55,18 @@ vi.mock("@/lib/agents/identity-store", () => ({
 
 vi.mock("@/lib/projects/store", () => ({
   getOwnedProject: routeMocks.getOwnedProject,
+}));
+
+vi.mock("@/lib/missions/store", () => ({
+  createMission: routeMocks.createMission,
+  ensureMissionTask: routeMocks.ensureMissionTask,
+  getMission: routeMocks.getMission,
+  transitionMission: routeMocks.transitionMission,
+}));
+
+vi.mock("@/lib/missions/runtime", () => ({
+  attachMissionExecutor: routeMocks.attachMissionExecutor,
+  syncMissionExecutor: routeMocks.syncMissionExecutor,
 }));
 
 vi.mock("@/lib/events/store", () => ({
@@ -112,12 +130,25 @@ beforeEach(() => {
     .mockResolvedValueOnce({ id: "turn-assistant" });
   routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
   routeMocks.checkSharedRateLimit.mockReset().mockResolvedValue({ allowed: true });
+  routeMocks.attachMissionExecutor.mockReset().mockResolvedValue(undefined);
+  routeMocks.createMission.mockReset();
   routeMocks.createThread.mockReset().mockResolvedValue({
     id: "thread-a",
     tenantId: context.tenantId,
     actorId: context.actorId,
   });
   routeMocks.getAgentPerformance.mockReset().mockResolvedValue([]);
+  routeMocks.ensureMissionTask.mockReset().mockResolvedValue({
+    id: "mission-task-a",
+    status: "pending",
+  });
+  routeMocks.getMission.mockReset().mockResolvedValue({
+    id: "11111111-1111-4111-8111-111111111111",
+    title: "Launch mission",
+    objective: "Ship the launch",
+    priority: "normal",
+    status: "queued",
+  });
   routeMocks.getOwnedProject.mockReset().mockResolvedValue({
     id: "project-a",
     tenantId: context.tenantId,
@@ -184,6 +215,8 @@ beforeEach(() => {
         fallbackReasonCode: "model_unavailable",
       },
     }));
+  routeMocks.syncMissionExecutor.mockReset().mockResolvedValue(undefined);
+  routeMocks.transitionMission.mockReset();
   routeMocks.runAgent.mockReset();
   routeMocks.runLoopV2ModelText.mockReset();
   routeMocks.runLoopV2ReadOnlyCanary.mockReset();
@@ -418,6 +451,48 @@ describe("agent semantic intent routing", () => {
           workspaceId: "workspace:team-a",
           projectId: "project:launch",
           correlationId: "project-context-a",
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("binds Mission context through its canonical Project membership", async () => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-mission-context" };
+      yield { type: "done", response: "Mission context used." };
+    });
+    const missionId = "11111111-1111-4111-8111-111111111111";
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Continue the attached Mission.",
+        requestId: "mission-context-a",
+        missionId,
+        strategy: "direct",
+        contextScope: "mission",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.requestSharedMemoryAccessFromSecurityContext)
+      .toHaveBeenCalledWith(context, {
+        scope: "project",
+        projectId: missionId,
+        correlationId: "mission-context-a",
+      });
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextScope: "mission",
+        promptSharedMemoryAccess: expect.any(Object),
+        executionScope: expect.objectContaining({
+          workspaceId: "workspace:team-a",
+          projectId: "project:launch",
+          missionId,
+          correlationId: "mission-context-a",
         }),
       }),
       expect.any(AbortSignal),

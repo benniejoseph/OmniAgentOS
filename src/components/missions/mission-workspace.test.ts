@@ -18,6 +18,7 @@ import {
   missionRouteSelection,
   missionSelectionMode,
   missionTaskActionBlocked,
+  talkHref,
   normalizeMissionDetail,
   normalizeMissionSummaries,
 } from "@/components/missions/mission-workspace";
@@ -125,6 +126,12 @@ const retainedMission: MissionSummaryView = {
 };
 
 describe("Mission request-readable and canonical WorkItem UI", () => {
+  it("opens Command with explicit canonical Mission context", () => {
+    expect(talkHref(exactMission)).toContain(
+      "/app/command?mission=mission-exact&context=mission&prompt=",
+    );
+  });
+
   it("selects exact, retained, and unverified surfaces independently", () => {
     expect(missionSelectionMode(exactMission, "readable_v1")).toBe("exact");
     expect(missionSelectionMode(retainedMission, "readable_v1")).toBe("retained");

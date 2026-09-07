@@ -76,7 +76,7 @@ type AgentPresentation = {
 };
 type ActiveContextScopeId = Extract<
   ContextScopeId,
-  "none" | "current_turn" | "session" | "agent_private" | "project" | "workspace" | "explicit_selection"
+  "none" | "current_turn" | "session" | "agent_private" | "mission" | "project" | "workspace" | "explicit_selection"
 >;
 
 const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
@@ -121,7 +121,12 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
     description: "Use only this task and governing instructions.",
   },
   { id: "personal", label: "Personal automatic — held", description: "Requires standing personal-memory authority.", disabled: true },
-  { id: "mission", label: "Mission — held", description: "Requires mission membership and context grants.", disabled: true },
+  {
+    id: "mission",
+    label: "Attached mission",
+    description:
+      "Use shared knowledge from the attached Mission's canonical Project membership.",
+  },
 ];
 
 function contextScopeOption(scopeId: ContextScopeId) {
@@ -397,7 +402,7 @@ export function AgentRunsWorkspace({
   initialThreadId?: string;
   initialMissionId?: string;
   initialProjectId?: string;
-  initialContextScope?: Extract<ActiveContextScopeId, "project" | "workspace">;
+  initialContextScope?: Extract<ActiveContextScopeId, "mission" | "project" | "workspace">;
   initialGoal?: string;
 }) {
   const {
@@ -1468,6 +1473,10 @@ export function AgentRunsWorkspace({
     if (nextScope === contextScope || workflowInProgress || loading === "agent") {
       return;
     }
+    if (nextScope === "mission" && !initialMissionId) {
+      setError("Open Command from a Mission before using Mission context.");
+      return;
+    }
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setContextScope(nextScope);
@@ -1860,6 +1869,11 @@ export function AgentRunsWorkspace({
     }
     if (contextScope === "project" && !selectedProjectId) {
       setError("Choose a project before using project context.");
+      openTaskDetails("context");
+      return;
+    }
+    if (contextScope === "mission" && !initialMissionId) {
+      setError("Open Command from a Mission before using Mission context.");
       openTaskDetails("context");
       return;
     }
@@ -2870,6 +2884,7 @@ export function AgentRunsWorkspace({
               loading={loading}
               contextLoading={contextLoading}
               contextScope={contextScope}
+              missionContextAvailable={Boolean(initialMissionId)}
               projectId={selectedProjectId}
               projects={projects}
               projectSelectionLocked={Boolean(threadId || conversationLocked)}
@@ -2881,7 +2896,9 @@ export function AgentRunsWorkspace({
               readDisabledReason={readPermission}
               runDisabledReason={runPermission}
               voiceDisabledReason={runPermission || voicePermission}
-              workflowDisabledReason={workflowActionPermission}
+              workflowDisabledReason={contextScope === "mission"
+                ? "Mission context is currently available only for a direct Conversation run."
+                : workflowActionPermission}
               workflowReady={reviewedPlanReady}
               workflowStarted={Boolean(activeWorkflowId)}
               workflowInProgress={conversationLocked}
@@ -3071,7 +3088,12 @@ export function AgentRunsWorkspace({
                     className="mt-2 min-h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm font-medium text-foreground outline-none focus:border-primary"
                   >
                     {CONTEXT_SCOPE_OPTIONS.map((option) => (
-                      <option key={option.id} value={option.id} disabled={option.disabled}>
+                      <option
+                        key={option.id}
+                        value={option.id}
+                        disabled={option.disabled ||
+                          (option.id === "mission" && !initialMissionId)}
+                      >
                         {option.label}
                       </option>
                     ))}
@@ -3186,10 +3208,14 @@ export function AgentRunsWorkspace({
                     disabled={workflowInProgress || loading === "agent"}
                     onChange={updateContextSelection}
                   />
-                ) : contextScope === "project" || contextScope === "workspace" ? (
+                ) : contextScope === "mission" ||
+                    contextScope === "project" ||
+                    contextScope === "workspace" ? (
                   <div className="rounded-xl border border-primary/25 bg-primary/5 p-4 text-sm leading-6 text-muted">
                     <strong className="text-foreground">
-                      {contextScope === "project"
+                      {contextScope === "mission"
+                        ? "Attached Mission's canonical Project"
+                        : contextScope === "project"
                         ? projects.find((project) => project.id === selectedProjectId)?.title || "Choose a project"
                         : selectedProjectId
                           ? `Workspace containing ${projects.find((project) => project.id === selectedProjectId)?.title || "the selected project"}`
@@ -5052,6 +5078,7 @@ function GoalStage({
   loading,
   contextLoading,
   contextScope,
+  missionContextAvailable,
   projectId,
   projects,
   projectSelectionLocked,
@@ -5091,6 +5118,7 @@ function GoalStage({
   loading?: string;
   contextLoading: boolean;
   contextScope: ActiveContextScopeId;
+  missionContextAvailable: boolean;
   projectId: string;
   projects: CommandProject[];
   projectSelectionLocked: boolean;
@@ -5238,7 +5266,12 @@ function GoalStage({
                 className="min-h-8 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-[11px] font-semibold text-muted outline-none hover:text-foreground"
               >
                 {CONTEXT_SCOPE_OPTIONS.map((option) => (
-                  <option key={option.id} value={option.id} disabled={option.disabled}>
+                  <option
+                    key={option.id}
+                    value={option.id}
+                    disabled={option.disabled ||
+                      (option.id === "mission" && !missionContextAvailable)}
+                  >
                     {option.label}
                   </option>
                 ))}

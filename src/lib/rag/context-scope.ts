@@ -64,11 +64,12 @@ export const CONTEXT_SCOPE_POLICIES: readonly ContextScopePolicy[] = Object.free
   },
   {
     id: "mission",
-    state: "authority_held",
+    state: "active",
     conversationHistory: "session",
-    durableContext: "authority_held",
+    durableContext: "project",
     requiresSelection: false,
-    reason: "Mission membership and context grants are not active.",
+    reason:
+      "The selected Mission resolves through its canonical Project membership; no separate Mission memory store is created.",
   },
   {
     id: "project",
