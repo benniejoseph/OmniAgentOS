@@ -81,6 +81,11 @@ export type RequestSharedMemoryAccessV1 = Readonly<{
   databaseAccessScope: DatabaseMemoryAccessScope;
 }>;
 
+type SharedMemoryAccessPurposeId =
+  | typeof MEMORY_PURPOSE_IDS.read
+  | typeof MEMORY_PURPOSE_IDS.retrieve
+  | typeof MEMORY_PURPOSE_IDS.write;
+
 export class SharedContextAuthorityError extends Error {
   readonly code: "postgres_required" | "canonical_actor_required" | "scope_not_found";
 
@@ -101,6 +106,8 @@ export async function requestSharedMemoryAccessFromSecurityContext(
     projectId?: string;
     workspaceId?: string;
     correlationId: string;
+    purposeId?: SharedMemoryAccessPurposeId;
+    auditPurpose?: string;
   },
 ): Promise<RequestSharedMemoryAccessV1> {
   const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
@@ -117,6 +124,9 @@ export async function requestSharedMemoryAccessFromSecurityContext(
     projectId: input.projectId,
     workspaceId: input.workspaceId,
   });
+  const purposeId = input.purposeId || MEMORY_PURPOSE_IDS.retrieve;
+  const auditPurpose = input.auditPurpose ||
+    "Retrieve explicitly selected shared workspace context.";
   const executionScope = createExecutionScope({
     tenantId: context.tenantId,
     initiatingActorId: actorBinding.canonicalActorId,
@@ -125,13 +135,13 @@ export async function requestSharedMemoryAccessFromSecurityContext(
     workspaceId: authority.workspaceId,
     projectId: authority.projectId,
     correlationId: input.correlationId,
-    purpose: "agent.context.shared.retrieve",
+    purpose: sharedMemoryExecutionPurpose(purposeId),
   });
   const databaseAccessScope = databaseMemoryAccessScopeFromExecutionScope(
     executionScope,
     {
-      purposeId: MEMORY_PURPOSE_IDS.retrieve,
-      auditPurpose: "Retrieve explicitly selected shared workspace context.",
+      purposeId,
+      auditPurpose,
     },
   );
   return Object.freeze({
@@ -140,6 +150,12 @@ export async function requestSharedMemoryAccessFromSecurityContext(
     executionScope,
     databaseAccessScope,
   });
+}
+
+function sharedMemoryExecutionPurpose(purposeId: SharedMemoryAccessPurposeId) {
+  if (purposeId === MEMORY_PURPOSE_IDS.read) return "app.memory.shared.read";
+  if (purposeId === MEMORY_PURPOSE_IDS.write) return "app.memory.shared.write";
+  return "agent.context.shared.retrieve";
 }
 
 export function resolveSharedAgentPromptMemoryAccess(
