@@ -1844,6 +1844,36 @@ the Account boundary. External CRM effects remain structurally disabled until
 the separately governed P10.11 write slice; P10.9 creates no provider mutation
 tool or credential path.
 
+## Salesforce read synchronization
+
+P10.10 adds a read-only Salesforce adapter on the existing actor-owned OAuth
+grant boundary. Authorization resolves the canonical actor and exact Workspace
+before a connection is bound; the returned Salesforce organization and instance
+origin are fixed to that connection. Salesforce IDs, replay IDs, and revisions
+remain external references, and global organization/object uniqueness prevents
+one provider account or record from crossing Workspace or tenant boundaries.
+
+The reviewed scope is Account, Contact, Opportunity, Case, Task, Event, Asset,
+and Contract with an explicit per-object field allowlist. Initial backfill is
+fenced at an upper-bound timestamp. Each object advances an independent durable
+cursor, and delta reads intentionally re-read the timestamp boundary so delayed
+or duplicate observations converge through immutable revisions and a
+deterministic monotonic head. A generation-fenced lease prevents stale workers
+from advancing state. Webhook observations enter through a five-minute raw-body
+HMAC boundary; replay and event identifiers are digested before storage, and a
+complete provider record is hydrated before projection whenever it still exists.
+
+Only the winning immutable revision projects into Account 360. Account creates
+the canonical customer account link; the remaining object types become sourced
+organization, contact, opportunity, case, interaction, product, or renewal
+facts. Deletions retract facts without erasing history. The adapter exposes no
+Salesforce mutation method, and reconciliation only compares exact remote reads
+with stored revisions and records findings. Private health reports connection
+state, exact object/purpose scope, per-object cursors, lag, webhook readiness,
+and actionable errors. Manual sync/reconciliation require `manage.connector`;
+the existing secured workflow tick advances due connections under an explicit
+owner-and-Workspace-bound system execution scope.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
