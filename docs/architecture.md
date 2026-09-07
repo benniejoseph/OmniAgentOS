@@ -1114,8 +1114,23 @@ Meetings remains an actor-visible read projection. Flutter keeps old data
 visible when a refresh source fails, reports partial sources independently,
 and requires explicit retry or user action. Short microphone audio is used
 only to obtain editable transcript text and does not itself authorize or send
-an Agent command. P12.4 owns encrypted offline capture/outbox behavior and
-P12.5 owns APNs/FCM registration and delivery.
+an Agent command. P12.5 owns APNs/FCM registration and delivery.
+
+P12.4 adds a device Capture outbox, not a general offline command queue. Flutter
+stores the 256-bit encryption key only in Keychain/Keystore and atomically
+writes one AES-256-GCM envelope per bounded draft under the key generation's
+application-support directory. The authenticated plaintext binds schema,
+tenant, actor, creation time, stable idempotency key, Capture kind, text/tags,
+and optional bytes. Listing and deletion revalidate the exact owner after
+decryption; a mismatched owner or authentication tag fails closed. Plaintext
+controller state is cleared on background lock, and remote wipe destroys the
+key so old ciphertext cannot enter a later installation/session. On reconnect,
+the current client recomputes a content-free owner digest and sends it with the
+same idempotency and correlation value. The server compares that digest to its
+fresh bearer context before deriving execution scope; deterministic correlation
+then reuses the same asset identity and the existing ingest queue deduplicates
+the same request. Only Capture participates. Agent commands and other
+consequential mutations still require a live request and fresh authorization.
 
 The thirteenth request-bound slice extends only the public Capture asset byte
 GET. PostgreSQL selects the globally unique, non-internal asset and its bytes
