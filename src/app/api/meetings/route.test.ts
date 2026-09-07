@@ -6,6 +6,9 @@ const mocks = vi.hoisted(() => ({
   show: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  listCommitments: vi.fn(),
+  proposeCommitment: vi.fn(),
+  resolveCommitment: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -24,9 +27,17 @@ vi.mock("@/lib/app-services/meetings", async (importOriginal) => ({
   showMeetingService: mocks.show,
   createMeetingService: mocks.create,
   updateMeetingService: mocks.update,
+  listMeetingCommitmentsService: mocks.listCommitments,
+  proposeMeetingCommitmentService: mocks.proposeCommitment,
+  resolveMeetingCommitmentService: mocks.resolveCommitment,
 }));
 
 import { GET as GETMeeting, PATCH as PATCHMeeting } from "@/app/api/meetings/[id]/route";
+import {
+  GET as GETCommitments,
+  PATCH as PATCHCommitment,
+  POST as POSTCommitment,
+} from "@/app/api/meetings/[id]/commitments/route";
 import { GET as GETMeetings, POST as POSTMeeting } from "@/app/api/meetings/route";
 
 const context = {
@@ -74,6 +85,18 @@ beforeEach(() => {
   mocks.update.mockReset().mockResolvedValue({
     data: { context: {}, meeting: { ...meeting, revision: 2 } },
     receipt: { operation: "app.meetings.update" },
+  });
+  mocks.listCommitments.mockReset().mockResolvedValue({
+    data: { context: {}, meeting, commitments: [], eligiblePolicies: [] },
+    receipt: { operation: "app.meetings.commitments.list" },
+  });
+  mocks.proposeCommitment.mockReset().mockResolvedValue({
+    data: { context: {}, commitment: { proposal: { proposalId: "proposal-1" } } },
+    receipt: { operation: "app.meetings.commitments.propose" },
+  });
+  mocks.resolveCommitment.mockReset().mockResolvedValue({
+    data: { context: {}, commitment: { resolution: { decision: "dismissed" } } },
+    receipt: { operation: "app.meetings.commitments.resolve" },
   });
 });
 
@@ -148,5 +171,46 @@ describe("meeting routes", () => {
     ));
     expect(response.status).toBe(400);
     expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it("lists, proposes, and resolves exact commitment evidence privately", async () => {
+    const routeContext = { params: Promise.resolve({ id: encodeURIComponent(meetingId) }) };
+    const actionItemId = `media-action:${"a".repeat(64)}`;
+    const proposalId = `meeting-commitment-proposal:${"b".repeat(64)}`;
+    const list = await GETCommitments(
+      new Request(`http://localhost/api/meetings/${encodeURIComponent(meetingId)}/commitments`),
+      routeContext,
+    );
+    const propose = await POSTCommitment(
+      new Request(`http://localhost/api/meetings/${encodeURIComponent(meetingId)}/commitments`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": "proposal-1" },
+        body: JSON.stringify({ mediaRevisionId: "recording-1:media:v1", actionItemId }),
+      }),
+      routeContext,
+    );
+    const resolve = await PATCHCommitment(
+      new Request(`http://localhost/api/meetings/${encodeURIComponent(meetingId)}/commitments`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "idempotency-key": "resolution-1" },
+        body: JSON.stringify({
+          proposalId,
+          expectedProposalSha256: "c".repeat(64),
+          decision: "dismissed",
+        }),
+      }),
+      routeContext,
+    );
+
+    expect([list.status, propose.status, resolve.status]).toEqual([200, 201, 200]);
+    expect(list.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.proposeCommitment).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "proposal-1" }),
+      expect.objectContaining({ meetingId, actionItemId }),
+    );
+    expect(mocks.resolveCommitment).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "resolution-1" }),
+      expect.objectContaining({ meetingId, proposalId, decision: "dismissed" }),
+    );
   });
 });
