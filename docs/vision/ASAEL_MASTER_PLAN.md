@@ -774,8 +774,8 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 through P9.11 and P9.14 are complete; P9.12 and P9.13 are intentionally deferred,
-so P9.15 is the next actionable slice. Product phases 12 and 13 also remain
+P9.1 through P9.11 and P9.14 through P9.15 are complete; P9.12 and P9.13 are
+intentionally deferred, so P9.16 is the next actionable slice. Product phases 12 and 13 also remain
 deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -793,8 +793,8 @@ deferred.
 | P9.3 | Add reversible trash, undo, compensation, and two-step destructive action UX. | Modify domain deletes; create trash/compensation contracts. | Irreversible/high-impact deletes remain approval-gated and never graduate automatically. | Edit/archive/delete actions have clear preview, effect receipt, undo/compensation where possible, and final deletion receipt. |
 | P9.4 | Add plan/domain/action-class approval grants. | Modify trust policy. | Grants bind actor, agent, tool contract, target, plan digest, budget, and expiry; replanning invalidates them. | Repetitive safe operations avoid per-click approval without permitting new targets or action classes. |
 
-**Implementation status:** P9.1 through P9.11 and P9.14 are complete. The governed catalog
-now contains 114 active `app.*` operations, including actor-private Trash list,
+**Implementation status:** P9.1 through P9.11 and P9.14 through P9.15 are complete. The governed catalog
+now contains 115 active `app.*` operations, including actor-private Trash list,
 detail, receipt, restore-preview, restore, purge-preview, and purge tools. Custom
 Agent, custom Skill, MCP, and OpenAPI removal first requires an exact expiring
 preview and moves the resource into a 30-day reversible ledger. The ledger keeps
@@ -939,7 +939,28 @@ checks, affected lint, TypeScript, and the 100-page production build pass.
 Vercel deployment `dpl_6Z5NVCaoWwK8oQjuR3KEgXxR2RN2` is Ready and the
 canonical alias serves exact revision
 `1f0ec50921a0e734ac01a78a9c93dddad8675b15`; Supabase and both compatible Fly
-gateways are healthy. P9.15 is next. Product phases 12 and 13 remain deferred.
+gateways are healthy. P9.15 pins the official AP2 `v0.2.0` specification and
+reviewed commit, defines digest-verified participant, external-adapter, public
+key-authority, credential, verification, and per-transaction boundary
+contracts, and requires every AP2 role to carry its exact verification
+responsibilities. Asael agents can claim only Shopping Agent; the first-party
+Trusted Surface is deterministic and cannot reuse an agent principal; external
+Credential Provider, Merchant, and Merchant Payment Processor roles require
+separately authenticated, release-and-artifact-digest-bound adapters.
+Multi-role participants require an explicit digest-bound review and never
+collapse checks. The authenticated private/no-store readiness API and governed
+read tool expose all five role contracts, the exact mandate `vct` allowlist,
+accepted adapters, public key authorities, credential boundary, and activation
+gates. The current projection contains no configured participant, accepted
+adapter, or key authority, registers zero payment-effect tools, and keeps both
+direct and autonomous payments disabled. Twenty-two focused contract,
+readiness, service, route, and registry checks pass with affected lint,
+TypeScript, and the production build. Vercel deployment
+`dpl_CAugG2CTvyMidfgHVCFgqWiD41Kx` is Ready and the canonical alias serves exact
+revision `756213f999a622562280c7cefec8dd8fd30c6613`; anonymous AP2 readiness
+access fails closed with 401. No database migration or Fly rebuild was
+required. P9.16 human-present signed mandates is next. Product phases 12 and 13
+remain deferred.
 
 #### Browser and computer use
 
@@ -2880,7 +2901,7 @@ production build pass. Vercel rejected the complete-feature promotion at
 still reports an overdue balance; Fly was intentionally left unchanged. This
 closes Phase 8.
 
-P9.1 through P9.11 and P9.14 are complete. The shared registry and dispatcher expose 114
+P9.1 through P9.11 and P9.14 through P9.15 are complete. The shared registry and dispatcher expose 115
 active `app.*` tools across all thirteen required product families with
 tenant/actor/RBAC revalidation, exact mutation scope and idempotency,
 content-free service receipts, governed typed domain events, risk-based
@@ -2967,7 +2988,16 @@ policies, drafts, exact visible approval binding, verified/reconciled Gmail
 delivery, and safe untrusted reply mapping. Migration 124 is installed and
 Vercel deployment `dpl_6Z5NVCaoWwK8oQjuR3KEgXxR2RN2` serves exact revision
 `1f0ec50921a0e734ac01a78a9c93dddad8675b15`; all deployed services are healthy.
-P9.12/P9.13 and product phases 12/13 remain deferred; P9.15 is next.
+P9.15 then pinned the official AP2 `v0.2.0` release and reviewed commit and
+installed fail-closed contracts for its five roles, explicit role combinations,
+external adapter release/digest reviews, public key-authority metadata,
+credential isolation, deterministic verification, and disabled per-transaction
+boundaries. One authenticated governed read tool and private/no-store API make
+the full readiness projection inspectable. No participants, adapters, key
+authorities, payment-effect tools, or transactions are enabled. Vercel
+deployment `dpl_CAugG2CTvyMidfgHVCFgqWiD41Kx` serves exact revision
+`756213f999a622562280c7cefec8dd8fd30c6613`; no database or Fly release changed.
+P9.12/P9.13 and product phases 12/13 remain deferred; P9.16 is next.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 

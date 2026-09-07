@@ -446,6 +446,25 @@ always require per-action approval and a governed effect receipt; page labels
 and remote metadata never downgrade them. Code execution, file transfer, and
 direct network operations remain risk three.
 
+## AP2 payment boundary
+
+The deployed `p9.15-ap2-boundary:1` contract is configuration-only. It pins
+the official AP2 `v0.2.0` release and reviewed commit, requires exact mandate
+`vct` values, keeps the Trusted Surface deterministic and non-agentic, and
+requires separately authenticated and digest-reviewed external adapters.
+`GET /api/payments/ap2/readiness` is authenticated and private/no-store; the
+same projection is available to the Main Agent only through the governed
+`app.payments.ap2.readiness` read tool.
+
+The readiness projection must report zero payment-effect tools, zero accepted
+adapter releases, and `transactionsPermitted: false` until the P9.16 direct
+mandate, P9.17 credential isolation, and P9.18 receipt/reconciliation gates are
+implemented and separately reviewed. Never place raw payment credentials or
+private signing keys in Vercel environment variables, model context, general
+application storage, events, logs, browser state, MCP output, or memory. A
+future provider rollout requires isolated credential/key infrastructure and a
+new deployment procedure; P9.15 alone authorizes no purchase or payment.
+
 ## Required checks and branch protection
 
 Configure branch protection externally to require these exact checks:
