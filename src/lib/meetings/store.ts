@@ -42,6 +42,27 @@ export type MeetingMutationAuthority = MeetingReadAuthority & Readonly<{
   idempotencyKey: string;
 }>;
 
+export type MeetingLinkedSourceView = Readonly<{
+  linkId: string;
+  kind: MeetingSourceLink["kind"];
+  sourceId: string;
+  mediaRole: MeetingSourceLink["mediaRole"];
+  label: string;
+  revisionState: "exact" | "changed" | "unavailable";
+  status: string | null;
+  mediaType: string | null;
+  durationMs: number | null;
+  byteCount: number | null;
+  updatedAt: string | null;
+  transcript: string | null;
+  transcriptTruncated: boolean;
+  segments: readonly Readonly<{
+    segmentIndex: number;
+    mimeType: string;
+    durationMs: number;
+  }>[];
+}>;
+
 export class MeetingConflictError extends Error {
   readonly code = "meeting_conflict";
 
@@ -117,6 +138,46 @@ export async function getMeeting(
       LIMIT 1
     `;
     return rows[0] ? meetingFromRow(rows[0]) : undefined;
+  });
+}
+
+export async function readMeetingLinkedSources(
+  authority: MeetingReadAuthority,
+  meeting: MeetingRevision,
+): Promise<readonly MeetingLinkedSourceView[]> {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  const valid = validateReadAuthority(authority);
+  if (meeting.tenantId !== valid.tenantId || meeting.workspaceId !== valid.workspaceId) {
+    throw new MeetingConflictError("Meeting source scope is invalid.");
+  }
+  return runWithDatabaseActorScope(valid.tenantId, valid.readableActorIds, async () => {
+    const views: MeetingLinkedSourceView[] = [];
+    for (const link of meeting.sourceLinks) {
+      if (link.kind === "capture_recording") {
+        views.push(await readCaptureRecordingView(getSql(), valid, link));
+      } else if (link.kind === "capture_asset") {
+        views.push(await readCaptureAssetView(getSql(), valid, link));
+      } else {
+        views.push(Object.freeze({
+          linkId: link.linkId,
+          kind: link.kind,
+          sourceId: link.sourceId,
+          mediaRole: link.mediaRole,
+          label: link.label,
+          revisionState: "exact" as const,
+          status: null,
+          mediaType: null,
+          durationMs: null,
+          byteCount: null,
+          updatedAt: null,
+          transcript: null,
+          transcriptTruncated: false,
+          segments: Object.freeze([]),
+        }));
+      }
+    }
+    return Object.freeze(views);
   });
 }
 
@@ -414,24 +475,7 @@ async function resolveCaptureRecordingLink(
   `;
   const row = rows[0];
   if (!row) throw new MeetingConflictError("The linked recording is unavailable.");
-  const body = {
-    kind: "capture_recording",
-    tenantId: authority.tenantId,
-    recordingId: row.id,
-    ownerActorId: row.actor_id,
-    status: row.status,
-    language: row.language,
-    startedAt: timestamp(row.started_at),
-    completedAt: nullableTimestamp(row.completed_at),
-    durationMs: Number(row.duration_ms),
-    byteCount: Number(row.byte_count),
-    segmentCount: Number(row.segment_count),
-    transcriptSha256: canonicalJsonSha256(String(row.transcript || "")),
-    source: row.source,
-    knowledgeDocumentId: nullableString(row.knowledge_document_id),
-    ingestJobId: nullableString(row.ingest_job_id),
-    updatedAt: timestamp(row.updated_at),
-  };
+  const body = captureRecordingRevisionBody(authority.tenantId, row);
   return resolvedCaptureLink(request, body, "capture-recording-revision");
 }
 
@@ -451,9 +495,149 @@ async function resolveCaptureAssetLink(
   `;
   const row = rows[0];
   if (!row) throw new MeetingConflictError("The linked capture asset is unavailable.");
-  const body = {
+  const body = captureAssetRevisionBody(authority.tenantId, row);
+  return resolvedCaptureLink(request, body, "capture-asset-revision");
+}
+
+async function readCaptureRecordingView(
+  sql: MeetingSql,
+  authority: MeetingReadAuthority,
+  link: MeetingSourceLink,
+): Promise<MeetingLinkedSourceView> {
+  const rows = await sql`
+    SELECT id, actor_id, status, language, started_at, completed_at,
+      duration_ms, byte_count, segment_count, transcript, source,
+      knowledge_document_id, ingest_job_id, updated_at
+    FROM omni_capture_recordings
+    WHERE tenant_id = ${authority.tenantId}
+      AND id = ${link.sourceId}
+      AND actor_id = ANY(${authority.readableActorIds})
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return unavailableLinkedSource(link);
+  const body = captureRecordingRevisionBody(authority.tenantId, row);
+  const revisionState = canonicalJsonSha256(body) === link.sourceRevisionSha256
+    ? "exact" as const
+    : "changed" as const;
+  const segmentRows = revisionState === "exact"
+    ? await sql`
+        SELECT segment_index, mime_type, duration_ms
+        FROM omni_capture_segments
+        WHERE tenant_id = ${authority.tenantId}
+          AND recording_id = ${link.sourceId}
+          AND actor_id = ANY(${authority.readableActorIds})
+        ORDER BY segment_index ASC
+        LIMIT 1440
+      `
+    : [];
+  const transcript = String(row.transcript || "");
+  const boundedTranscript = transcript.slice(0, 500_000);
+  return Object.freeze({
+    linkId: link.linkId,
+    kind: link.kind,
+    sourceId: link.sourceId,
+    mediaRole: link.mediaRole,
+    label: link.label,
+    revisionState,
+    status: String(row.status),
+    mediaType: segmentRows[0] ? String(segmentRows[0].mime_type) : "audio/*",
+    durationMs: Number(row.duration_ms),
+    byteCount: Number(row.byte_count),
+    updatedAt: timestamp(row.updated_at),
+    transcript: revisionState === "exact" ? boundedTranscript : null,
+    transcriptTruncated: revisionState === "exact" && boundedTranscript.length < transcript.length,
+    segments: Object.freeze(segmentRows.map((segment) => Object.freeze({
+      segmentIndex: Number(segment.segment_index),
+      mimeType: String(segment.mime_type),
+      durationMs: Number(segment.duration_ms),
+    }))),
+  });
+}
+
+async function readCaptureAssetView(
+  sql: MeetingSql,
+  authority: MeetingReadAuthority,
+  link: MeetingSourceLink,
+): Promise<MeetingLinkedSourceView> {
+  const rows = await sql`
+    SELECT id, actor_id, filename, media_type, byte_count, content_sha256,
+      status, extraction_status, knowledge_document_id, updated_at
+    FROM omni_capture_assets
+    WHERE tenant_id = ${authority.tenantId}
+      AND id = ${link.sourceId}
+      AND actor_id = ANY(${authority.readableActorIds})
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return unavailableLinkedSource(link);
+  const revisionState = canonicalJsonSha256(
+    captureAssetRevisionBody(authority.tenantId, row),
+  ) === link.sourceRevisionSha256
+    ? "exact" as const
+    : "changed" as const;
+  return Object.freeze({
+    linkId: link.linkId,
+    kind: link.kind,
+    sourceId: link.sourceId,
+    mediaRole: link.mediaRole,
+    label: link.label,
+    revisionState,
+    status: String(row.status),
+    mediaType: String(row.media_type),
+    durationMs: null,
+    byteCount: Number(row.byte_count),
+    updatedAt: timestamp(row.updated_at),
+    transcript: null,
+    transcriptTruncated: false,
+    segments: Object.freeze([]),
+  });
+}
+
+function unavailableLinkedSource(link: MeetingSourceLink): MeetingLinkedSourceView {
+  return Object.freeze({
+    linkId: link.linkId,
+    kind: link.kind,
+    sourceId: link.sourceId,
+    mediaRole: link.mediaRole,
+    label: link.label,
+    revisionState: "unavailable",
+    status: null,
+    mediaType: null,
+    durationMs: null,
+    byteCount: null,
+    updatedAt: null,
+    transcript: null,
+    transcriptTruncated: false,
+    segments: Object.freeze([]),
+  });
+}
+
+function captureRecordingRevisionBody(tenantId: string, row: SqlRow) {
+  return {
+    kind: "capture_recording",
+    tenantId,
+    recordingId: row.id,
+    ownerActorId: row.actor_id,
+    status: row.status,
+    language: row.language,
+    startedAt: timestamp(row.started_at),
+    completedAt: nullableTimestamp(row.completed_at),
+    durationMs: Number(row.duration_ms),
+    byteCount: Number(row.byte_count),
+    segmentCount: Number(row.segment_count),
+    transcriptSha256: canonicalJsonSha256(String(row.transcript || "")),
+    source: row.source,
+    knowledgeDocumentId: nullableString(row.knowledge_document_id),
+    ingestJobId: nullableString(row.ingest_job_id),
+    updatedAt: timestamp(row.updated_at),
+  };
+}
+
+function captureAssetRevisionBody(tenantId: string, row: SqlRow) {
+  return {
     kind: "capture_asset",
-    tenantId: authority.tenantId,
+    tenantId,
     assetId: row.id,
     ownerActorId: row.actor_id,
     filename: row.filename,
@@ -465,7 +649,6 @@ async function resolveCaptureAssetLink(
     knowledgeDocumentId: nullableString(row.knowledge_document_id),
     updatedAt: timestamp(row.updated_at),
   };
-  return resolvedCaptureLink(request, body, "capture-asset-revision");
 }
 
 function resolvedCaptureLink(
@@ -564,7 +747,8 @@ function validateMutationAuthority(authority: MeetingMutationAuthority) {
   if (
     !scope || scope.tenantId !== authority.tenantId ||
     scope.initiatingActorId !== authority.canonicalActorId ||
-    scope.workspaceId !== authority.workspaceId || scope.missionId !== null ||
+    scope.workspaceId !== authority.workspaceId || scope.projectId !== null ||
+    scope.missionId !== null ||
     scope.purpose !== "meeting.write"
   ) {
     throw new MeetingConflictError("Meeting mutation scope is invalid.");

@@ -36,7 +36,8 @@ vi.mock("@/lib/db/client", () => {
 
 vi.mock("@/lib/events/store", () => ({ appendScopedDomainEvent: mocks.event }));
 
-import { saveMeeting } from "@/lib/meetings/store";
+import { buildMeetingRevision } from "@/lib/meetings/contracts";
+import { readMeetingLinkedSources, saveMeeting } from "@/lib/meetings/store";
 
 function authority(idempotencyKey = "meeting-write-1") {
   return {
@@ -203,6 +204,71 @@ describe("meeting store", () => {
       draft: value,
     })).rejects.toThrow(/changed/);
     expect(mocks.queries.some((query) => query.text.includes("INSERT INTO omni_meeting_revisions")))
+      .toBe(false);
+  });
+
+  it("never substitutes a changed recording transcript for the linked revision", async () => {
+    const linkedMeeting = buildMeetingRevision({
+      tenantId: "tenant-a",
+      workspaceId,
+      ownerActorId: actorId,
+      meetingId: "meeting:33333333-3333-4333-8333-333333333333",
+      revision: 1,
+      revisedAt: timestamp,
+      definition: {
+        ...draft(),
+        participants: [{
+          participantId: "participant:owner",
+          displayName: "Owner",
+          email: null,
+          entityId: null,
+          role: "organizer",
+          response: "accepted",
+          attendeeConsent: "granted",
+          recordingConsent: "granted",
+          consentCapturedAt: timestamp,
+          source: "manual",
+        }],
+        sourceLinks: [{
+          linkId: "link:recording",
+          kind: "capture_recording",
+          sourceId: "recording-1",
+          sourceRevisionId: `capture-recording-revision:${"f".repeat(64)}`,
+          sourceRevisionSha256: "f".repeat(64),
+          sourceAuthoritySha256: "e".repeat(64),
+          accessClass: "owner_private",
+          mediaRole: "recording",
+          label: "Recording",
+        }],
+      },
+    });
+    mocks.responses.push([{
+      id: "recording-1",
+      actor_id: actorId,
+      status: "ready",
+      language: "en-US",
+      started_at: timestamp,
+      completed_at: "2026-09-08T11:00:00.000Z",
+      duration_ms: 3_600_000,
+      byte_count: 100,
+      segment_count: 1,
+      transcript: "New content that was not linked",
+      source: "capture:recording:recording-1",
+      knowledge_document_id: null,
+      ingest_job_id: null,
+      updated_at: "2026-09-08T11:00:01.000Z",
+    }]);
+
+    const [view] = await readMeetingLinkedSources({
+      tenantId: "tenant-a",
+      workspaceId,
+      canonicalActorId: actorId,
+      readableActorIds: [actorId],
+    }, linkedMeeting);
+
+    expect(view.revisionState).toBe("changed");
+    expect(view.transcript).toBeNull();
+    expect(mocks.queries.some((query) => query.text.includes("FROM omni_capture_segments")))
       .toBe(false);
   });
 });

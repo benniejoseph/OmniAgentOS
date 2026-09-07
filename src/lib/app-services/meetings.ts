@@ -13,6 +13,7 @@ import {
 import {
   getMeeting,
   listMeetings,
+  readMeetingLinkedSources,
   saveMeeting,
   type MeetingMutationAuthority,
 } from "@/lib/meetings/store";
@@ -84,10 +85,15 @@ export async function showMeetingService(
     getAppServiceOperationContract("app.meetings.show"),
   );
   const access = await meetingAccess(caller, value.workspaceId, "read");
-  const meeting = await getMeeting(readAuthority(caller, access), value.meetingId);
+  const authority = readAuthority(caller, access);
+  const meeting = await getMeeting(authority, value.meetingId);
+  const linkedSources = meeting
+    ? await readMeetingLinkedSources(authority, meeting)
+    : [];
   return completeAppServiceCall(authorized, {
     context: publicMeetingContext(access),
     meeting: meeting || null,
+    linkedSources,
   }, { resourceCount: meeting ? 1 : 0 });
 }
 
@@ -106,13 +112,16 @@ export async function createMeetingService(
   requireMeetingWrite(access);
   const { workspaceId: _workspaceId, ...draft } = value;
   void _workspaceId;
+  const authority = mutationAuthority(caller, access);
   const meeting = await saveMeeting({
-    authority: mutationAuthority(caller, access),
+    authority,
     draft,
   });
+  const linkedSources = await readMeetingLinkedSources(authority, meeting);
   return completeAppServiceCall(authorized, {
     context: publicMeetingContext(access),
     meeting,
+    linkedSources,
   });
 }
 
@@ -136,15 +145,18 @@ export async function updateMeetingService(
     ...draft
   } = value;
   void _workspaceId;
+  const authority = mutationAuthority(caller, access);
   const meeting = await saveMeeting({
-    authority: mutationAuthority(caller, access),
+    authority,
     draft,
     meetingId,
     expectedRevision,
   });
+  const linkedSources = await readMeetingLinkedSources(authority, meeting);
   return completeAppServiceCall(authorized, {
     context: publicMeetingContext(access),
     meeting,
+    linkedSources,
   });
 }
 

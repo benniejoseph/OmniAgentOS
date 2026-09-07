@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   requestAccess: vi.fn(),
   listMeetings: vi.fn(),
   getMeeting: vi.fn(),
+  readLinkedSources: vi.fn(),
   saveMeeting: vi.fn(),
 }));
 
@@ -16,6 +17,7 @@ vi.mock("@/lib/meetings/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/meetings/store")>()),
   listMeetings: mocks.listMeetings,
   getMeeting: mocks.getMeeting,
+  readMeetingLinkedSources: mocks.readLinkedSources,
   saveMeeting: mocks.saveMeeting,
 }));
 
@@ -112,6 +114,7 @@ beforeEach(() => {
   mocks.requestAccess.mockReset().mockResolvedValue(access());
   mocks.listMeetings.mockReset().mockResolvedValue([meeting]);
   mocks.getMeeting.mockReset().mockResolvedValue(meeting);
+  mocks.readLinkedSources.mockReset().mockResolvedValue([]);
   mocks.saveMeeting.mockReset().mockResolvedValue(meeting);
 });
 
