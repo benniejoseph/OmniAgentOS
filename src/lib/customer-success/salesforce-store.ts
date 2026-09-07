@@ -31,6 +31,12 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import {
+  salesforceWriteCommitSchema,
+  type SalesforceRecordWriteToolId,
+  type SalesforceWriteCommit,
+  type SalesforceWriteObject,
+} from "@/lib/customer-success/salesforce-write-contracts";
 
 type SalesforceSql = ReturnType<typeof getSql>;
 
@@ -88,6 +94,27 @@ export class SalesforceConnectionNotFoundError extends Error {
     this.name = "SalesforceConnectionNotFoundError";
   }
 }
+
+export type SalesforceWriteOperation = Readonly<{
+  operationId: string;
+  toolExecutionId: string;
+  toolId: SalesforceRecordWriteToolId;
+  objectType: SalesforceWriteObject;
+  action: "create" | "update";
+  customerAccountId: string;
+  providerRecordIdSha256: string | null;
+  requestSha256: string;
+  expectedTargetStateSha256: string;
+  state: "prepared" | "verified" | "failed";
+  providerAcknowledgementSha256: string | null;
+  observedTargetStateSha256: string | null;
+  verificationReasonCode: "state_matched" | "target_missing" | "state_mismatch" | null;
+  attemptCount: number;
+  lastAttemptAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}>;
 
 export async function bindSalesforceConnection(input: {
   authority: SalesforceMutationAuthority;
@@ -664,6 +691,261 @@ export async function getSalesforceAccountLink(
   );
 }
 
+export async function getSalesforceAccountLinkByCustomerAccount(
+  authority: SalesforceReadAuthority,
+  customerAccountId: string,
+) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertReadAuthority(authority);
+  if (!/^customer-account:[a-f0-9]{64}$/.test(customerAccountId)) {
+    throw new Error("Customer account identity is invalid.");
+  }
+  return runWithDatabaseActorScope(
+    authority.tenantId,
+    authority.readableActorIds,
+    async () => {
+      const rows = await getSql()`
+        SELECT connection_id, salesforce_account_id,
+          provider_object_id_sha256, linked_at
+        FROM omni_salesforce_account_links
+        WHERE tenant_id = ${authority.tenantId}
+          AND workspace_id = ${authority.workspaceId}
+          AND customer_account_id = ${customerAccountId}
+        LIMIT 1
+      `;
+      return rows[0] ? Object.freeze({
+        connectionId: String(rows[0].connection_id),
+        salesforceAccountId: String(rows[0].salesforce_account_id),
+        providerObjectIdSha256: String(rows[0].provider_object_id_sha256),
+        linkedAt: timestamp(rows[0].linked_at),
+      }) : undefined;
+    },
+  );
+}
+
+export async function prepareSalesforceWriteOperation(input: {
+  authority: SalesforceMutationAuthority;
+  connection: SalesforceConnection;
+  customerAccountId: string;
+  operationId: string;
+  toolExecutionId: string;
+  toolId: SalesforceRecordWriteToolId;
+  objectType: SalesforceWriteObject;
+  action: "create" | "update";
+  providerRecordIdSha256: string | null;
+  providerIdempotencyKeySha256: string | null;
+  requestSha256: string;
+  expectedTargetStateSha256: string;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertMutationAuthority(input.authority);
+  return runWithDatabaseActorScope(
+    input.authority.tenantId,
+    input.authority.readableActorIds,
+    () => getSql().transaction(async (sql: SalesforceSql) => {
+      const inserted = await sql`
+        INSERT INTO omni_salesforce_write_operations (
+          tenant_id, workspace_id, connection_id, owner_actor_id,
+          customer_account_id, organization_id_sha256, operation_id,
+          tool_execution_id, tool_id, object_type, operation_kind,
+          provider_record_id_sha256, provider_idempotency_key_sha256,
+          request_sha256, expected_target_state_sha256, operation_state,
+          created_at, updated_at
+        ) VALUES (
+          ${input.authority.tenantId}, ${input.authority.workspaceId},
+          ${input.connection.connectionId}, ${input.authority.canonicalActorId},
+          ${input.customerAccountId}, ${input.connection.organizationIdSha256},
+          ${input.operationId}, ${input.toolExecutionId}, ${input.toolId},
+          ${input.objectType}, ${input.action}, ${input.providerRecordIdSha256},
+          ${input.providerIdempotencyKeySha256}, ${input.requestSha256},
+          ${input.expectedTargetStateSha256}, 'prepared', clock_timestamp(),
+          clock_timestamp()
+        ) ON CONFLICT DO NOTHING
+        RETURNING *
+      `;
+      const rows = inserted[0] ? inserted : await sql`
+        SELECT * FROM omni_salesforce_write_operations
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND workspace_id = ${input.authority.workspaceId}
+          AND connection_id = ${input.connection.connectionId}
+          AND operation_id = ${input.operationId}
+        LIMIT 1
+      `;
+      if (!rows[0]) {
+        throw new SalesforceConnectionConflictError(
+          "Salesforce write idempotency key belongs to another operation.",
+        );
+      }
+      const operation = salesforceWriteOperationFromRow(rows[0]);
+      if (operation.toolExecutionId !== input.toolExecutionId ||
+          operation.toolId !== input.toolId ||
+          operation.customerAccountId !== input.customerAccountId ||
+          operation.requestSha256 !== input.requestSha256 ||
+          operation.expectedTargetStateSha256 !== input.expectedTargetStateSha256) {
+        throw new SalesforceConnectionConflictError(
+          "Salesforce write idempotency key was reused for different content.",
+        );
+      }
+      if (inserted[0]) {
+        await appendScopedDomainEvent({
+          id: `salesforce-write-prepared:${input.operationId}`,
+          streamId: input.connection.connectionId,
+          type: "customer.salesforce.write.prepared",
+          executionScope: input.authority.executionScope,
+          payload: {
+            schemaVersion: 1,
+            operationId: input.operationId,
+            toolId: input.toolId,
+            customerAccountId: input.customerAccountId,
+            objectType: input.objectType,
+            action: input.action,
+            requestSha256: input.requestSha256,
+            expectedTargetStateSha256: input.expectedTargetStateSha256,
+          },
+        }, { sql });
+      }
+      return operation;
+    }) as Promise<SalesforceWriteOperation>,
+  );
+}
+
+export async function beginSalesforceWriteAttempt(input: {
+  authority: SalesforceMutationAuthority;
+  connectionId: string;
+  operationId: string;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertMutationAuthority(input.authority);
+  return runWithDatabaseActorScope(
+    input.authority.tenantId,
+    input.authority.readableActorIds,
+    async () => {
+      const rows = await getSql()`
+        UPDATE omni_salesforce_write_operations
+        SET attempt_count = attempt_count + 1,
+            last_attempt_at = clock_timestamp(),
+            updated_at = clock_timestamp()
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND workspace_id = ${input.authority.workspaceId}
+          AND connection_id = ${input.connectionId}
+          AND operation_id = ${input.operationId}
+          AND operation_state = 'prepared'
+        RETURNING *
+      `;
+      return rows[0] ? salesforceWriteOperationFromRow(rows[0]) : undefined;
+    },
+  );
+}
+
+export async function settleSalesforceWriteOperation(input: {
+  authority: SalesforceMutationAuthority;
+  connectionId: string;
+  commit: SalesforceWriteCommit;
+}) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertMutationAuthority(input.authority);
+  const commit = salesforceWriteCommitSchema.parse(input.commit);
+  return runWithDatabaseActorScope(
+    input.authority.tenantId,
+    input.authority.readableActorIds,
+    () => getSql().transaction(async (sql: SalesforceSql) => {
+      const currentRows = await sql`
+        SELECT * FROM omni_salesforce_write_operations
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND workspace_id = ${input.authority.workspaceId}
+          AND connection_id = ${input.connectionId}
+          AND operation_id = ${commit.operationId}
+        FOR UPDATE
+      `;
+      if (!currentRows[0]) {
+        throw new SalesforceConnectionConflictError(
+          "Salesforce write operation was not prepared.",
+        );
+      }
+      const current = salesforceWriteOperationFromRow(currentRows[0]);
+      if (current.expectedTargetStateSha256 !== commit.expectedTargetStateSha256 ||
+          current.toolId !== commit.toolId ||
+          current.objectType !== commit.objectType ||
+          current.action !== commit.action) {
+        throw new SalesforceConnectionConflictError(
+          "Salesforce write receipt does not match its prepared operation.",
+        );
+      }
+      if (current.state !== "prepared") return current;
+      const rows = await sql`
+        UPDATE omni_salesforce_write_operations
+        SET provider_record_id_sha256 = ${commit.providerRecordIdSha256},
+            operation_state = ${commit.verificationState === "verified" ? "verified" : "failed"},
+            provider_acknowledgement_sha256 = ${commit.providerAcknowledgementSha256},
+            observed_target_state_sha256 = ${commit.observedTargetStateSha256},
+            verification_reason_code = ${commit.verificationReasonCode},
+            completed_at = clock_timestamp(), updated_at = clock_timestamp()
+        WHERE tenant_id = ${input.authority.tenantId}
+          AND workspace_id = ${input.authority.workspaceId}
+          AND connection_id = ${input.connectionId}
+          AND operation_id = ${commit.operationId}
+          AND operation_state = 'prepared'
+        RETURNING *
+      `;
+      if (!rows[0]) {
+        throw new SalesforceConnectionConflictError(
+          "Salesforce write operation changed before its receipt settled.",
+        );
+      }
+      const settled = salesforceWriteOperationFromRow(rows[0]);
+      await appendScopedDomainEvent({
+        id: `salesforce-write-${settled.state}:${commit.operationId}`,
+        streamId: input.connectionId,
+        type: `customer.salesforce.write.${settled.state}`,
+        executionScope: input.authority.executionScope,
+        payload: {
+          schemaVersion: 1,
+          operationId: commit.operationId,
+          toolId: commit.toolId,
+          objectType: commit.objectType,
+          action: commit.action,
+          providerRecordIdSha256: commit.providerRecordIdSha256,
+          providerAcknowledgementSha256: commit.providerAcknowledgementSha256,
+          expectedTargetStateSha256: commit.expectedTargetStateSha256,
+          observedTargetStateSha256: commit.observedTargetStateSha256,
+          verificationReasonCode: commit.verificationReasonCode,
+        },
+      }, { sql });
+      return settled;
+    }) as Promise<SalesforceWriteOperation>,
+  );
+}
+
+export async function listSalesforceWriteOperations(
+  authority: SalesforceReadAuthority,
+  customerAccountId?: string,
+  limit = 50,
+) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  assertReadAuthority(authority);
+  return runWithDatabaseActorScope(
+    authority.tenantId,
+    authority.readableActorIds,
+    async () => {
+      const rows = await getSql()`
+        SELECT * FROM omni_salesforce_write_operations
+        WHERE tenant_id = ${authority.tenantId}
+          AND workspace_id = ${authority.workspaceId}
+          AND (${customerAccountId || null}::TEXT IS NULL
+            OR customer_account_id = ${customerAccountId || null})
+        ORDER BY created_at DESC, operation_id
+        LIMIT ${Math.max(1, Math.min(200, limit))}
+      `;
+      return Object.freeze(rows.map(salesforceWriteOperationFromRow));
+    },
+  );
+}
+
 export async function linkSalesforceAccount(input: {
   authority: SalesforceMutationAuthority;
   connection: SalesforceConnection;
@@ -1098,6 +1380,39 @@ function connectionFromRow(row: Record<string, unknown>): SalesforceConnection {
     lastReplayIdSha256: row.last_replay_id_sha256
       ? String(row.last_replay_id_sha256)
       : null,
+    createdAt: timestamp(row.created_at),
+    updatedAt: timestamp(row.updated_at),
+  });
+}
+
+function salesforceWriteOperationFromRow(
+  row: Record<string, unknown>,
+): SalesforceWriteOperation {
+  return Object.freeze({
+    operationId: String(row.operation_id),
+    toolExecutionId: String(row.tool_execution_id),
+    toolId: String(row.tool_id) as SalesforceRecordWriteToolId,
+    objectType: String(row.object_type) as SalesforceWriteObject,
+    action: String(row.operation_kind) as "create" | "update",
+    customerAccountId: String(row.customer_account_id),
+    providerRecordIdSha256: row.provider_record_id_sha256
+      ? String(row.provider_record_id_sha256)
+      : null,
+    requestSha256: String(row.request_sha256),
+    expectedTargetStateSha256: String(row.expected_target_state_sha256),
+    state: String(row.operation_state) as SalesforceWriteOperation["state"],
+    providerAcknowledgementSha256: row.provider_acknowledgement_sha256
+      ? String(row.provider_acknowledgement_sha256)
+      : null,
+    observedTargetStateSha256: row.observed_target_state_sha256
+      ? String(row.observed_target_state_sha256)
+      : null,
+    verificationReasonCode: row.verification_reason_code
+      ? String(row.verification_reason_code) as SalesforceWriteOperation["verificationReasonCode"]
+      : null,
+    attemptCount: Number(row.attempt_count),
+    lastAttemptAt: row.last_attempt_at ? timestamp(row.last_attempt_at) : null,
+    completedAt: row.completed_at ? timestamp(row.completed_at) : null,
     createdAt: timestamp(row.created_at),
     updatedAt: timestamp(row.updated_at),
   });
