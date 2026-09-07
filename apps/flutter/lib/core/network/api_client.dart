@@ -9,7 +9,7 @@ import '../storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
 import 'api_exception.dart';
 
-final dioProvider = Provider<Dio>((ref) {
+final apiClientProvider = Provider<ApiClient>((ref) {
   final store = ref.watch(secureSessionStoreProvider);
   final dio = Dio(_baseOptions());
   final refreshDio = Dio(_baseOptions());
@@ -36,15 +36,15 @@ final dioProvider = Provider<Dio>((ref) {
         if (error.response?.statusCode != 400) rethrow;
         response = await refreshDio.post<Object?>(
           NativePaths.authRefresh,
-          data: {
-            'refreshToken': refreshToken,
-            'deviceId': deviceId,
-          },
+          data: {'refreshToken': refreshToken, 'deviceId': deviceId},
         );
       }
       await _persistNativeTokens(store, response.data);
     } on DioException catch (error) {
-      if (error.response?.statusCode == 401) await store.clear();
+      if (error.response?.statusCode == 401) {
+        final wiped = await _clearAndAcknowledgeRemoteWipe(refreshDio, store);
+        if (!wiped) await store.clear();
+      }
       rethrow;
     }
   }
@@ -102,7 +102,7 @@ final dioProvider = Provider<Dio>((ref) {
       },
     ),
   );
-  return dio;
+  return ApiClient(dio, refreshDio, store);
 });
 
 BaseOptions _baseOptions() => BaseOptions(
@@ -144,8 +144,13 @@ Future<void> _persistNativeTokens(
 }
 
 class ApiClient {
-  const ApiClient(this._dio);
+  const ApiClient(this._dio, this._rawDio, this._store);
   final Dio _dio;
+  final Dio _rawDio;
+  final SecureSessionStore _store;
+
+  Future<bool> clearAndAcknowledgeRemoteWipe() =>
+      _clearAndAcknowledgeRemoteWipe(_rawDio, _store);
 
   Future<Map<String, dynamic>> getJson(
     String path, {
@@ -246,6 +251,58 @@ class ApiClient {
   }
 }
 
-final apiClientProvider = Provider<ApiClient>(
-  (ref) => ApiClient(ref.watch(dioProvider)),
-);
+Future<bool> _clearAndAcknowledgeRemoteWipe(
+  Dio dio,
+  SecureSessionStore store,
+) async {
+  final accessToken = await store.readTokenForRemoteWipe();
+  final expectedDeviceId = await store.readExistingDeviceId();
+  if (accessToken == null || expectedDeviceId == null) return false;
+
+  Map<String, dynamic> challenge;
+  try {
+    final response = await dio.get<Object?>(
+      NativePaths.wipeChallenge,
+      options: Options(
+        headers: {
+          ...NativeClientInfo.attestationHeaders(),
+          'Authorization': 'Bearer $accessToken',
+        },
+        receiveTimeout: const Duration(seconds: 5),
+      ),
+    );
+    if (response.data is! Map) return false;
+    challenge = Map<String, dynamic>.from(response.data as Map);
+  } on DioException {
+    return false;
+  }
+
+  final deviceId = challenge['deviceId']?.toString();
+  final acknowledgementToken = challenge['acknowledgementToken']?.toString();
+  if (challenge['wipeRequired'] != true ||
+      deviceId != expectedDeviceId ||
+      acknowledgementToken == null ||
+      acknowledgementToken.length < 32) {
+    return false;
+  }
+
+  // Local erasure is the security boundary. Acknowledgement is best effort and
+  // never restores credentials if the follow-up request cannot be delivered.
+  await store.clearForRemoteWipe();
+  try {
+    await dio.post<Object?>(
+      NativePaths.wipeAcknowledge,
+      data: {
+        'acknowledgementToken': acknowledgementToken,
+        'deviceId': deviceId,
+      },
+      options: Options(
+        headers: NativeClientInfo.attestationHeaders(),
+        receiveTimeout: const Duration(seconds: 5),
+      ),
+    );
+  } on DioException {
+    // The server truthfully remains wipe_pending until a later acknowledgement.
+  }
+  return true;
+}

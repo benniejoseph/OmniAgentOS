@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/auth/biometric_gate.dart';
 import '../application/session_controller.dart';
 
 class SessionBootstrapScreen extends ConsumerWidget {
@@ -9,6 +10,7 @@ class SessionBootstrapScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final session = ref.watch(sessionControllerProvider);
+    final biometricLocked = session.error is BiometricGateException;
     return Scaffold(
       body: Center(
         child: AnimatedSwitcher(
@@ -23,13 +25,17 @@ class SessionBootstrapScreen extends ConsumerWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          Icons.cloud_off_rounded,
+                          biometricLocked
+                              ? Icons.fingerprint_rounded
+                              : Icons.cloud_off_rounded,
                           size: 38,
                           color: Theme.of(context).colorScheme.error,
                         ),
                         const SizedBox(height: 18),
                         Text(
-                          'Unable to verify this session',
+                          biometricLocked
+                              ? 'Unlock Asael'
+                              : 'Unable to verify this session',
                           style: Theme.of(context).textTheme.titleLarge,
                           textAlign: TextAlign.center,
                         ),
@@ -43,8 +49,12 @@ class SessionBootstrapScreen extends ConsumerWidget {
                           onPressed: () => ref
                               .read(sessionControllerProvider.notifier)
                               .retry(),
-                          icon: const Icon(Icons.refresh_rounded),
-                          label: const Text('Try again'),
+                          icon: Icon(
+                            biometricLocked
+                                ? Icons.fingerprint_rounded
+                                : Icons.refresh_rounded,
+                          ),
+                          label: Text(biometricLocked ? 'Unlock' : 'Try again'),
                         ),
                         TextButton(
                           onPressed: () => ref
