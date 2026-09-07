@@ -1,15 +1,15 @@
 import '../../core/network/api_client.dart';
+import '../../generated/native_contract.g.dart';
 import 'projects.dart';
 
 class ApiProjectsRepository implements ProjectsRepository {
   const ApiProjectsRepository(this.api);
   final ApiClient api;
-  String _id(String value) => Uri.encodeComponent(value);
   Project _project(Json json) =>
       Project.fromJson(Map<String, dynamic>.from(json['project'] as Map));
   @override
   Future<List<Project>> list() async {
-    final j = await api.getJson('/api/projects');
+    final j = await api.getJson(NativePaths.workspacesList);
     return ((j['projects'] as List?) ?? const [])
         .whereType<Map>()
         .map((e) => Project.fromJson(Map<String, dynamic>.from(e)))
@@ -18,7 +18,7 @@ class ApiProjectsRepository implements ProjectsRepository {
 
   @override
   Future<Project> detail(String id) async =>
-      _project(await api.getJson('/api/projects/${_id(id)}'));
+      _project(await api.getJson(NativePaths.workspacesGet(id)));
   @override
   Future<Project> create({
     required String title,
@@ -26,7 +26,7 @@ class ApiProjectsRepository implements ProjectsRepository {
     DateTime? targetDate,
   }) async => _project(
     await api.postJson(
-      '/api/projects',
+      NativePaths.workspacesCreate,
       data: {
         'title': title,
         'objective': objective,
@@ -38,11 +38,11 @@ class ApiProjectsRepository implements ProjectsRepository {
   );
   @override
   Future<Project> update(String id, Json changes) async =>
-      _project(await api.patchJson('/api/projects/${_id(id)}', data: changes));
+      _project(await api.patchJson(NativePaths.workspacesUpdate(id), data: changes));
   @override
   Future<ProjectPlan> plan(String id, {String? context}) async {
     final j = await api.postJson(
-      '/api/projects/${_id(id)}/plan',
+      NativePaths.workspacesPlan(id),
       data: {
         if (context?.trim().isNotEmpty ?? false) 'context': context!.trim(),
       },
@@ -66,7 +66,7 @@ class ApiProjectsRepository implements ProjectsRepository {
     String agentId = 'atlas',
   }) async {
     final j = await api.postJson(
-      '/api/projects/${_id(id)}/tasks',
+      NativePaths.workspacesTasksCreate(id),
       data: {
         'title': title,
         'detail': detail,
@@ -80,7 +80,7 @@ class ApiProjectsRepository implements ProjectsRepository {
   @override
   Future<ProjectTask> updateTask(String id, String taskId, Json changes) async {
     final j = await api.patchJson(
-      '/api/projects/${_id(id)}/tasks/${_id(taskId)}',
+      NativePaths.workspacesTasksUpdate(id, taskId),
       data: changes,
     );
     return ProjectTask.fromJson(Map<String, dynamic>.from(j['task'] as Map));
@@ -105,7 +105,7 @@ class ApiProjectsRepository implements ProjectsRepository {
     }
     if (taskId != null) body['taskId'] = taskId;
     final j = await api.postJson(
-      '/api/projects/${_id(id)}/execution',
+      NativePaths.workspacesExecute(id),
       data: body,
     );
     if (j['tasks'] is! List || j['artifacts'] is! List) return detail(id);
@@ -124,7 +124,7 @@ class ApiProjectsRepository implements ProjectsRepository {
     required String lesson,
   }) async {
     final j = await api.postJson(
-      '/api/projects/${_id(id)}/artifacts/${_id(artifactId)}/feedback',
+      NativePaths.workspacesArtifactsFeedback(id, artifactId),
       data: {'verdict': verdict, 'lesson': lesson},
     );
     return ProjectArtifact.fromJson(

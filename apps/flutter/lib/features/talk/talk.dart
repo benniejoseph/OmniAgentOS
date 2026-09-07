@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../../generated/native_contract.g.dart';
+
 typedef Json = Map<String, dynamic>;
 
 class SseEvent {
@@ -27,9 +29,10 @@ Stream<SseEvent> parseSse(Stream<List<int>> bytes) async* {
     final name = eventName;
     eventName = 'message';
     final decoded = jsonDecode(raw);
-    return decoded is Json
-        ? SseEvent(event: name, data: decoded)
-        : SseEvent(event: name, data: {'value': decoded});
+    return SseEvent(
+      event: name,
+      data: NativeConversationEvents.parse(name, decoded),
+    );
   }
 
   await for (final chunk in bytes.transform(utf8.decoder)) {

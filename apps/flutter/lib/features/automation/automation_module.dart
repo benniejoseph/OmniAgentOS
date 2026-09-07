@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../generated/native_contract.g.dart';
 import '../settings/admin_models.dart';
 
 const automationModule = AdminModule(
@@ -10,19 +11,19 @@ const automationModule = AdminModule(
   endpoints: [
     AdminEndpoint(
       'Workflows',
-      '/api/workflows',
+      NativePaths.adminWorkflows,
       description: 'Versioned automation plans',
     ),
     AdminEndpoint(
       'Triggers',
-      '/api/triggers',
+      NativePaths.adminTriggers,
       description: 'Schedules and event rules',
     ),
     AdminEndpoint(
       'Operations',
-      '/api/operations',
+      NativePaths.adminOperations,
       description: 'Background execution health',
     ),
   ],
-  actions: [AdminAction('Process due workflows', '/api/workflows/tick')],
+  actions: [AdminAction('Process due workflows', NativePaths.adminWorkflowsTick)],
 );

@@ -22,7 +22,9 @@ void main() {
 
   test('flushes final event without trailing newline', () async {
     final events = await parseSse(
-      Stream.value(utf8.encode('event: done\ndata: {"response":"Ready"}')),
+      Stream.value(
+        utf8.encode('event: done\ndata: {"type":"done","response":"Ready"}'),
+      ),
     ).toList();
     expect(events.single.data['response'], 'Ready');
   });

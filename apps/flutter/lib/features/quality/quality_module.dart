@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../generated/native_contract.g.dart';
 import '../settings/admin_models.dart';
 
 const qualityModule = AdminModule(
@@ -8,7 +9,7 @@ const qualityModule = AdminModule(
   icon: Icons.fact_check_outlined,
   description: 'Evaluation results and production release evidence.',
   endpoints: [
-    AdminEndpoint('Evaluations', '/api/evaluations'),
-    AdminEndpoint('Release evidence', '/api/release/evidence'),
+    AdminEndpoint('Evaluations', NativePaths.evaluationsList),
+    AdminEndpoint('Release evidence', NativePaths.adminReleaseEvidence),
   ],
 );

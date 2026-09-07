@@ -1,4 +1,5 @@
 import '../../core/network/api_client.dart';
+import '../../generated/native_contract.g.dart';
 import 'capture.dart';
 
 class ApiCaptureRepository implements CaptureRepository {
@@ -10,7 +11,7 @@ class ApiCaptureRepository implements CaptureRepository {
     required String idempotencyKey,
   }) async {
     final json = await api.postMultipart(
-      '/api/capture',
+      NativePaths.captureCreate,
       fields: {
         'content': draft.content,
         'title': draft.title,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../generated/native_contract.g.dart';
 import '../settings/admin_models.dart';
 
 const securityModule = AdminModule(
@@ -8,9 +9,9 @@ const securityModule = AdminModule(
   icon: Icons.security_rounded,
   description: 'Audit trails, tenant isolation, retention, and access context.',
   endpoints: [
-    AdminEndpoint('Audit trail', '/api/security/audits'),
-    AdminEndpoint('Isolation report', '/api/security/isolation-report'),
-    AdminEndpoint('Retention', '/api/security/retention'),
-    AdminEndpoint('Security context', '/api/security/context'),
+    AdminEndpoint('Audit trail', NativePaths.adminSecurityAudits),
+    AdminEndpoint('Isolation report', NativePaths.adminSecurityIsolation),
+    AdminEndpoint('Retention', NativePaths.adminSecurityRetention),
+    AdminEndpoint('Security context', NativePaths.adminSecurityContext),
   ],
 );

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../config/app_config.dart';
+import '../../generated/native_contract.g.dart';
 
 class NativeClientInfo {
   const NativeClientInfo._();
@@ -19,7 +20,7 @@ class NativeClientInfo {
     'platform': platform,
     'appVersion': AppConfig.appVersion,
     'buildNumber': AppConfig.appBuildNumber,
-    'clientContractVersion': AppConfig.nativeClientContractVersion,
+    'clientContractVersion': NativeContract.currentVersion,
   };
 
   static Map<String, String> attestationHeaders() => {
@@ -27,7 +28,7 @@ class NativeClientInfo {
     'x-asael-native-app-version': AppConfig.appVersion,
     'x-asael-native-build-number': AppConfig.appBuildNumber.toString(),
     'x-asael-native-contract-version':
-        AppConfig.nativeClientContractVersion.toString(),
+        NativeContract.currentVersion.toString(),
   };
 
   static Map<String, dynamic> legacyDevice(String deviceId) => {

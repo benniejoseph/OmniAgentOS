@@ -1,4 +1,5 @@
 import '../../core/network/api_client.dart';
+import '../../generated/native_contract.g.dart';
 import 'knowledge.dart';
 
 class ApiKnowledgeRepository implements KnowledgeRepository {
@@ -10,15 +11,15 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
   Future<KnowledgeState> load({String query = '', String type = 'all'}) async {
     final responses = await Future.wait([
       api.getJson(
-        '/api/memory',
+        NativePaths.memoryList,
         query: {if (query.isNotEmpty) 'q': query, 'limit': 100},
       ),
       api.getJson(
-        '/api/knowledge',
+        NativePaths.knowledgeList,
         query: {if (query.isNotEmpty) 'q': query, 'limit': 100},
       ),
       api.getJson(
-        '/api/memory/graph',
+        NativePaths.memoryGraphGet,
         query: {if (query.isNotEmpty) 'q': query, 'limit': 50},
       ),
     ]);
@@ -77,17 +78,17 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
 
   @override
   Future<void> addMemory(Json input) async =>
-      api.postJson('/api/memory', data: input);
+      api.postJson(NativePaths.memoryCreate, data: input);
   @override
   Future<void> correctMemory(String id, Json input) async =>
-      api.patchJson('/api/memory/$id', data: input);
+      api.patchJson(NativePaths.memoryUpdate(id), data: input);
   @override
   Future<void> forgetMemory(String id) async =>
-      api.deleteJson('/api/memory/$id');
+      api.deleteJson(NativePaths.memoryDelete(id));
   @override
   Future<void> rebuildGraph() async =>
-      api.postJson('/api/memory/graph', data: {'source': 'flutter'});
+      api.postJson(NativePaths.memoryGraphRebuild, data: {'source': 'flutter'});
   @override
   Future<void> deleteConnectedSource(String source) async =>
-      api.deleteJson('/api/knowledge', query: {'source': source});
+      api.deleteJson(NativePaths.knowledgeSourceDelete, query: {'source': source});
 }

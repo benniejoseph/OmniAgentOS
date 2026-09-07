@@ -1,3 +1,5 @@
+import '../../../generated/native_contract.g.dart';
+
 class AppSession {
   const AppSession({
     required this.userId,
@@ -8,6 +10,7 @@ class AppSession {
   });
 
   factory AppSession.fromJson(Map<String, dynamic> json) {
+    NativeContract.verifyBootstrap(json);
     final user = json['user'] is Map
         ? Map<String, dynamic>.from(json['user'] as Map)
         : json;
