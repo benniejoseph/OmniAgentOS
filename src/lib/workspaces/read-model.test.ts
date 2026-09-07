@@ -193,4 +193,27 @@ describe("canonical WorkItem status reads", () => {
       [fallback],
     )).rejects.toThrow("projection is missing");
   });
+
+  it("keeps an explicitly readable legacy URL available without inventing persistence", async () => {
+    db.hasDatabaseUrl.mockReturnValue(true);
+    db.getSql.mockReturnValue(async () => []);
+    const surfaces = await canonicalWorkItemSurfaces(
+      "tenant-a",
+      "legacy_mission",
+      [{
+        ...fallback,
+        projectId: "mission_project:mission-a",
+        workItemId: "mission_root:mission-a",
+        sourceId: "mission-a",
+        kind: "milestone",
+        allowCompatibilityFallback: true,
+      }],
+    );
+    expect(surfaces.get("mission-a")).toMatchObject({
+      projection: { sha256: null, sourceRevisionSha256: null },
+      status: { persistence: "local_projection", sourceAuthority: "legacy_mission" },
+      execution: { availability: "not_started" },
+      cost: { state: "not_recorded" },
+    });
+  });
 });
