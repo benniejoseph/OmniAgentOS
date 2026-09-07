@@ -3,6 +3,10 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { captureActorReadOrder } from "@/lib/capture/actor-scope";
 import {
+  captureSegmentMediaTranscriptSchema,
+  type CaptureSegmentMediaTranscript,
+} from "@/lib/capture/media-contracts";
+import {
   ensureDatabaseSchema,
   getSql,
   hasDatabaseUrl,
@@ -119,7 +123,7 @@ const CAPTURE_EVENT_SCHEMA_VERSION = 1 as const;
 export class CaptureRecordingError extends Error {
   constructor(
     message: string,
-    public readonly status: 400 | 404 | 409 | 413 = 400,
+    public readonly status: 400 | 404 | 409 | 410 | 413 = 400,
     public readonly code = "capture_recording_error",
   ) {
     super(message);
@@ -523,7 +527,7 @@ export async function getCaptureRecording(id: string, owner: Owner): Promise<Cap
     await ensureDatabaseSchema();
     const [recordingRows, segmentRows] = await Promise.all([
       getSql()`SELECT * FROM omni_capture_recordings WHERE id = ${recordingId} AND tenant_id = ${tenantId} AND actor_id = ${actorId} LIMIT 1`,
-      getSql()`SELECT id, tenant_id, actor_id, recording_id, segment_index, mime_type, byte_count, duration_ms, audio_sha256, transcript, transcription_status, transcription_model, transcription_error, metadata, created_at, updated_at FROM omni_capture_segments WHERE recording_id = ${recordingId} AND tenant_id = ${tenantId} AND actor_id = ${actorId} ORDER BY segment_index ASC`,
+      getSql()`SELECT id, tenant_id, actor_id, recording_id, segment_index, mime_type, byte_count, duration_ms, audio_sha256, transcript, transcription_status, transcription_model, transcription_error, media_transcript, media_transcript_sha256, detected_language_tags, media_transcribed_at, raw_audio_deleted_at, metadata, created_at, updated_at FROM omni_capture_segments WHERE recording_id = ${recordingId} AND tenant_id = ${tenantId} AND actor_id = ${actorId} ORDER BY segment_index ASC`,
     ]);
     if (!recordingRows[0]) return undefined;
     return { ...recordingFromRow(recordingRows[0]), segments: segmentRows.map(segmentFromRow) };
@@ -781,6 +785,7 @@ export async function updateCaptureSegmentTranscription(input: ScopedOwner & {
   transcript?: string;
   model?: string;
   error?: string;
+  mediaTranscript?: CaptureSegmentMediaTranscript;
 }) {
   const executionScope = requireCaptureRecordingMutationScope(input);
   const recording = await requireCaptureRecording(input.recordingId, input);
@@ -790,20 +795,54 @@ export async function updateCaptureSegmentTranscription(input: ScopedOwner & {
   const transcript = safeTranscript(input.transcript || "");
   const model = safeShort(input.model, 160);
   const error = safeShort(input.error, 1_000);
+  const mediaTranscript = input.mediaTranscript
+    ? captureSegmentMediaTranscriptSchema.parse(input.mediaTranscript)
+    : undefined;
+  if (
+    mediaTranscript &&
+    (
+      mediaTranscript.recordingId !== recording.id ||
+      mediaTranscript.segmentId !== previous.id ||
+      mediaTranscript.segmentIndex !== previous.segmentIndex ||
+      mediaTranscript.sourceAudioSha256 !== previous.audioSha256 ||
+      transcript !== mediaTranscript.turns.map((turn) => turn.text).join("\n")
+    )
+  ) {
+    throw new CaptureRecordingError(
+      "Structured transcription does not match its stored audio segment.",
+      409,
+      "segment_transcript_conflict",
+    );
+  }
   if (hasDatabaseUrl()) {
     return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
       const rows = await sql`
         UPDATE omni_capture_segments
         SET transcript = ${transcript}, transcription_status = ${input.status},
             transcription_model = ${model || null}, transcription_error = ${error || null},
+            media_transcript = COALESCE(${mediaTranscript || null}::jsonb, media_transcript),
+            media_transcript_sha256 = COALESCE(${mediaTranscript?.transcriptSha256 || null}, media_transcript_sha256),
+            detected_language_tags = COALESCE(${mediaTranscript?.languageTags || null}, detected_language_tags),
+            media_transcribed_at = COALESCE(${mediaTranscript?.transcribedAt || null}, media_transcribed_at),
             updated_at = ${now}
         WHERE tenant_id = ${recording.tenantId} AND actor_id = ${recording.actorId}
           AND recording_id = ${recording.id} AND segment_index = ${input.segmentIndex}
+          AND (
+            ${mediaTranscript?.transcriptSha256 || null}::text IS NULL
+            OR media_transcript_sha256 IS NULL
+            OR media_transcript_sha256 = ${mediaTranscript?.transcriptSha256 || null}
+          )
         RETURNING id, tenant_id, actor_id, recording_id, segment_index, mime_type,
           byte_count, duration_ms, audio_sha256, transcript, transcription_status,
-          transcription_model, transcription_error, metadata, created_at, updated_at
+          transcription_model, transcription_error, media_transcript,
+          media_transcript_sha256, detected_language_tags, media_transcribed_at,
+          raw_audio_deleted_at, metadata, created_at, updated_at
       `;
-      if (!rows[0]) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
+      if (!rows[0]) throw new CaptureRecordingError(
+        "Recording segment is missing or already has a different media transcript.",
+        409,
+        "segment_transcript_conflict",
+      );
       const updated = segmentFromRow(rows[0]);
       await updateAssetObjectExtractionState({
         tenantId: updated.tenantId,
@@ -822,7 +861,25 @@ export async function updateCaptureSegmentTranscription(input: ScopedOwner & {
     ...ledger,
     segments: ledger.segments.map((item) => {
       if (item.recordingId !== recording.id || item.segmentIndex !== input.segmentIndex || item.actorId !== recording.actorId) return item;
-      const next = { ...item, transcript, transcriptionStatus: input.status, transcriptionModel: model, transcriptionError: error, updatedAt: now };
+      if (
+        mediaTranscript && item.mediaTranscript &&
+        item.mediaTranscript.transcriptSha256 !== mediaTranscript.transcriptSha256
+      ) {
+        throw new CaptureRecordingError(
+          "Recording segment already has a different media transcript.",
+          409,
+          "segment_transcript_conflict",
+        );
+      }
+      const next = {
+        ...item,
+        transcript,
+        transcriptionStatus: input.status,
+        transcriptionModel: model,
+        transcriptionError: error,
+        mediaTranscript: mediaTranscript || item.mediaTranscript,
+        updatedAt: now,
+      };
       updated = withoutAudioPath(next);
       return next;
     }),
@@ -836,13 +893,20 @@ export async function getCaptureSegmentAudio(recordingId: string, segmentIndex: 
   const recording = await requireCaptureRecording(recordingId, owner);
   if (hasDatabaseUrl()) {
     const rows = await getSql()`
-      SELECT id, mime_type, byte_count, audio_sha256
+      SELECT id, mime_type, byte_count, audio_sha256, raw_audio_deleted_at
       FROM omni_capture_segments
       WHERE tenant_id = ${recording.tenantId} AND actor_id = ${recording.actorId}
         AND recording_id = ${recording.id} AND segment_index = ${segmentIndex}
       LIMIT 1
     `;
     if (!rows[0]) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
+    if (rows[0].raw_audio_deleted_at) {
+      throw new CaptureRecordingError(
+        "Raw audio was deleted under this recording's retention policy.",
+        410,
+        "segment_audio_deleted",
+      );
+    }
     const sourceId = String(rows[0].id);
     const mimeType = String(rows[0].mime_type);
     const byteCount = Number(rows[0].byte_count || 0);
@@ -878,6 +942,13 @@ export async function getCaptureSegmentAudio(recordingId: string, segmentIndex: 
       LIMIT 1
     `;
     if (!legacyRows[0]) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
+    if (!legacyRows[0].audio_data) {
+      throw new CaptureRecordingError(
+        "Raw audio was deleted under this recording's retention policy.",
+        410,
+        "segment_audio_deleted",
+      );
+    }
     const bytes = Buffer.from(legacyRows[0].audio_data as Uint8Array);
     if (
       bytes.byteLength !== byteCount ||
@@ -907,6 +978,13 @@ export async function getCaptureSegmentAudio(recordingId: string, segmentIndex: 
   const ledger = await readCaptureLedger();
   const segment = ledger.segments.find((item) => item.recordingId === recording.id && item.segmentIndex === segmentIndex && item.actorId === recording.actorId);
   if (!segment) throw new CaptureRecordingError("Recording segment not found.", 404, "segment_not_found");
+  if (segment.rawAudioDeletedAt) {
+    throw new CaptureRecordingError(
+      "Raw audio was deleted under this recording's retention policy.",
+      410,
+      "segment_audio_deleted",
+    );
+  }
   return { bytes: await readFile(segment.audioPath), mimeType: segment.mimeType, byteCount: segment.byteCount, sha256: segment.audioSha256 };
 }
 
@@ -973,6 +1051,216 @@ export async function prepareCaptureRecordingCompletion(id: string, owner: Scope
   }));
   await appendCaptureRecordingStatusEvent(detail, next, executionScope);
   return { ...next, segments: detail.segments };
+}
+
+export async function prepareCaptureRecordingMediaProcessing(
+  id: string,
+  owner: ScopedOwner,
+) {
+  const executionScope = requireCaptureRecordingMutationScope(owner);
+  const detail = await requireCaptureRecording(id, owner);
+  if (!detail.segments.length) {
+    throw new CaptureRecordingError(
+      "Record at least one durable audio segment before processing.",
+      409,
+      "recording_empty",
+    );
+  }
+  if (detail.segments.some((segment) => segment.rawAudioDeletedAt)) {
+    throw new CaptureRecordingError(
+      "Raw audio has already been deleted for this recording.",
+      410,
+      "recording_audio_deleted",
+    );
+  }
+  if (detail.status !== "recording") return detail;
+  const completedAt = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_capture_recordings
+        SET status = 'processing', completed_at = ${completedAt},
+            updated_at = ${completedAt}
+        WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId}
+          AND actor_id = ${detail.actorId} AND status = 'recording'
+        RETURNING *
+      `;
+      if (!rows[0]) return requireCaptureRecording(id, owner);
+      const updated = recordingFromRow(rows[0]);
+      await appendCaptureRecordingStatusEvent(
+        detail,
+        updated,
+        executionScope,
+        undefined,
+        { sql },
+      );
+      return { ...updated, segments: detail.segments };
+    }) as Promise<CaptureRecordingDetail>;
+  }
+  const next: CaptureRecording = {
+    ...stripSegments(detail),
+    status: "processing",
+    completedAt,
+    updatedAt: completedAt,
+  };
+  await updateJsonFile<CaptureLedger>(
+    getCaptureLedgerFile(),
+    emptyLedger(),
+    (ledger) => ({
+      ...ledger,
+      recordings: ledger.recordings.map((item) =>
+        item.id === detail.id && item.actorId === detail.actorId ? next : item
+      ),
+    }),
+  );
+  await appendCaptureRecordingStatusEvent(detail, next, executionScope);
+  return { ...next, segments: detail.segments };
+}
+
+export async function saveCaptureRecordingProcessedTranscript(
+  id: string,
+  owner: ScopedOwner,
+  transcriptInput: string,
+) {
+  const executionScope = requireCaptureRecordingMutationScope(owner);
+  const detail = await requireCaptureRecording(id, owner);
+  const transcript = safeTranscript(transcriptInput);
+  if (!transcript) {
+    throw new CaptureRecordingError(
+      "No transcribed speech is ready to save yet.",
+      409,
+      "transcript_not_ready",
+    );
+  }
+  const updatedAt = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      const rows = await sql`
+        UPDATE omni_capture_recordings
+        SET transcript = ${transcript}, status = 'processing',
+            updated_at = ${updatedAt}
+        WHERE id = ${detail.id} AND tenant_id = ${detail.tenantId}
+          AND actor_id = ${detail.actorId}
+        RETURNING *
+      `;
+      const updated = recordingFromRow(rows[0]);
+      await appendCaptureRecordingStatusEvent(
+        detail,
+        updated,
+        executionScope,
+        undefined,
+        { sql },
+      );
+      return updated;
+    }) as Promise<CaptureRecording>;
+  }
+  const next = {
+    ...stripSegments(detail),
+    transcript,
+    status: "processing" as const,
+    updatedAt,
+  };
+  await updateJsonFile<CaptureLedger>(
+    getCaptureLedgerFile(),
+    emptyLedger(),
+    (ledger) => ({
+      ...ledger,
+      recordings: ledger.recordings.map((item) =>
+        item.id === detail.id && item.actorId === detail.actorId ? next : item
+      ),
+    }),
+  );
+  await appendCaptureRecordingStatusEvent(detail, next, executionScope);
+  return next;
+}
+
+export async function purgeCaptureRecordingRawAudio(
+  id: string,
+  owner: ScopedOwner,
+) {
+  const executionScope = requireCaptureRecordingMutationScope(owner);
+  const detail = await requireCaptureRecording(id, owner);
+  if (detail.segments.some((segment) => !segment.mediaTranscript)) {
+    throw new CaptureRecordingError(
+      "Raw audio cannot be deleted before every segment has a durable media transcript.",
+      409,
+      "media_transcript_incomplete",
+    );
+  }
+  const deletedAt = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    return getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+      for (const segment of detail.segments) {
+        await retireAssetObjectsForSource({
+          tenantId: detail.tenantId,
+          ownerActorId: detail.actorId,
+          sourceKind: "capture_segment",
+          sourceId: segment.id,
+          executionScope,
+        }, { sql });
+      }
+      const rows = await sql`
+        UPDATE omni_capture_segments
+        SET audio_data = NULL,
+            raw_audio_deleted_at = COALESCE(raw_audio_deleted_at, ${deletedAt}),
+            updated_at = GREATEST(updated_at, ${deletedAt})
+        WHERE tenant_id = ${detail.tenantId}
+          AND actor_id = ${detail.actorId}
+          AND recording_id = ${detail.id}
+        RETURNING id
+      `;
+      if (rows.length !== detail.segments.length) {
+        throw new CaptureRecordingError(
+          "Raw audio deletion did not cover every recording segment.",
+          409,
+          "raw_audio_delete_conflict",
+        );
+      }
+      await appendCaptureRecordingEvent(
+        detail.id,
+        executionScope,
+        "capture_recording.raw_audio_deleted",
+        captureRecordingReferencePayload(detail, {
+          detailsSha256: sha256Json({
+            deletedAt,
+            segmentIds: detail.segments.map((segment) => segment.id),
+          }),
+        }),
+        { sql },
+      );
+      return deletedAt;
+    }) as Promise<string>;
+  }
+  for (const segment of detail.segments) {
+    const stored = (await readCaptureLedger()).segments.find((item) =>
+      item.id === segment.id && item.actorId === detail.actorId
+    );
+    if (stored) await rm(stored.audioPath, { force: true });
+  }
+  await updateJsonFile<CaptureLedger>(
+    getCaptureLedgerFile(),
+    emptyLedger(),
+    (ledger) => ({
+      ...ledger,
+      segments: ledger.segments.map((segment) =>
+        segment.recordingId === detail.id && segment.actorId === detail.actorId
+          ? { ...segment, rawAudioDeletedAt: segment.rawAudioDeletedAt || deletedAt }
+          : segment
+      ),
+    }),
+  );
+  await appendCaptureRecordingEvent(
+    detail.id,
+    executionScope,
+    "capture_recording.raw_audio_deleted",
+    captureRecordingReferencePayload(detail, {
+      detailsSha256: sha256Json({
+        deletedAt,
+        segmentIds: detail.segments.map((segment) => segment.id),
+      }),
+    }),
+  );
+  return deletedAt;
 }
 
 export async function markCaptureRecordingIngestQueued(id: string, owner: ScopedOwner, ingestJobId: string) {
@@ -1181,6 +1469,7 @@ async function appendCaptureRecordingEvent(
     | "capture_recording.scope_bound"
     | "capture_recording.details_changed"
     | "capture_recording.status_changed"
+    | "capture_recording.raw_audio_deleted"
     | "capture_recording.deleted",
   payload: CaptureRecordingEventPayload,
   options: { sql?: ReturnType<typeof getSql> } = {},
@@ -1846,6 +2135,13 @@ function requestRecordingInteger(
 }
 
 function segmentFromRow(row: Record<string, unknown>): CaptureSegment {
+  const mediaTranscript = row.media_transcript
+    ? captureSegmentMediaTranscriptSchema.parse(
+        typeof row.media_transcript === "string"
+          ? JSON.parse(row.media_transcript)
+          : row.media_transcript,
+      )
+    : undefined;
   return {
     id: String(row.id),
     tenantId: String(row.tenant_id),
@@ -1860,6 +2156,8 @@ function segmentFromRow(row: Record<string, unknown>): CaptureSegment {
     transcriptionStatus: String(row.transcription_status || "pending") as CaptureTranscriptionStatus,
     transcriptionModel: optionalString(row.transcription_model),
     transcriptionError: optionalString(row.transcription_error),
+    mediaTranscript,
+    rawAudioDeletedAt: optionalIso(row.raw_audio_deleted_at),
     metadata: record(row.metadata),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
