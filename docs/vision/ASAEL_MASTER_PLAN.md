@@ -807,8 +807,12 @@ deletion receipt. Settings exposes the same two-step recovery controls. Migratio
 120 is installed with checksum
 `49c6af6f71d05afa4f10aa2d966381f2614fe8e9037347cd247d7b56a332049c`;
 readback confirms forced RLS, restrictive actor policies, lifecycle-only updates,
-and append-only receipts. Forty-eight focused checks pass. P9.4 is next. P12 and
-P13 remain deferred.
+and append-only receipts. Forty-eight focused checks, affected lint, TypeScript,
+and the 98-page production build pass. Vercel deployment
+`dpl_kguF9AgjzQvoc4w2m2tt7Q22JMWy` is Ready at the canonical alias on exact
+revision `9b1eaf446ddd576ba44a6c55a786e721eba6d370`; the compatible Fly worker/OpenAI
+gateway and Playwright gateway remain healthy. P9.4 is next. P12 and P13 remain
+deferred.
 
 #### Browser and computer use
 
@@ -2761,7 +2765,9 @@ MCP, and OpenAPI removal through an actor-private 30-day Trash ledger with exact
 previews, internal snapshots, typed lifecycle receipts, restore/compensation,
 and separately previewed approval-gated permanent purge. Migration 120 is
 installed with forced RLS and narrow lifecycle-only serving privileges. P9.4 is
-next. P12/P13 remain deferred.
+next. Vercel deployment `dpl_kguF9AgjzQvoc4w2m2tt7Q22JMWy` serves exact
+revision `9b1eaf446ddd576ba44a6c55a786e721eba6d370`; the unchanged compatible Fly
+worker/OpenAI gateway and Playwright gateway are healthy. P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
