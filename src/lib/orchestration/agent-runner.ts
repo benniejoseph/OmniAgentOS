@@ -184,6 +184,11 @@ type QueuedFunctionCall = ResponseFunctionCall & {
   skipReason?: string;
 };
 
+type PendingOpenAIBrowserObservation = Readonly<{
+  callId: string;
+  observation: ModelBrowserObservation;
+}>;
+
 type ContinuationQueueMarker = {
   type: "omni_continuation_queue";
   provenance: "model_function_calls";
@@ -1622,22 +1627,17 @@ export async function* runAgent(
       // ZDR-safe multi-turn: build a full conversation array instead of
       // relying on previous_response_id (blocked when org has Zero Data Retention).
       let conversationItems: ConversationItem[] | null = null;
-      let pendingBrowserObservations: ModelBrowserObservation[] = [];
+      let pendingBrowserObservations: PendingOpenAIBrowserObservation[] = [];
       let toolSteps = 0;
 
       // Tool loop: stream a turn; if the model called tools, execute them
       // through the governed executor and continue with the outputs.
       for (;;) {
         const durableTurnInput = conversationItems ?? initialConversationItems;
-        const turnInput: ResponseTurnInput = pendingBrowserObservations.length
-          ? [
-              ...durableTurnInput,
-              ...pendingBrowserObservations.map((observation) => ({
-                type: "ephemeral_browser_observation" as const,
-                observation,
-              })),
-            ]
-          : durableTurnInput;
+        const turnInput: ResponseTurnInput = openAITurnInputWithBrowserObservations(
+          durableTurnInput,
+          pendingBrowserObservations,
+        );
         pendingBrowserObservations = [];
         const modelBudget = await checkpointBeforeModelTurn({
           attempt: toolSteps + 1,
@@ -1876,7 +1876,10 @@ export async function* runAgent(
               result: execution.result,
             }));
             if (execution.browserObservation) {
-              pendingBrowserObservations.push(execution.browserObservation);
+              pendingBrowserObservations.push({
+                callId: item.call.callId,
+                observation: execution.browserObservation,
+              });
             }
           }
         } else for (let callIndex = 0; callIndex < callsThisTurn.length; callIndex += 1) {
@@ -2012,7 +2015,10 @@ export async function* runAgent(
             }),
           );
           if (execution.browserObservation) {
-            pendingBrowserObservations.push(execution.browserObservation);
+            pendingBrowserObservations.push({
+              callId: call.callId,
+              observation: execution.browserObservation,
+            });
           }
         }
 
@@ -3212,8 +3218,13 @@ async function resumeAgentRunAfterToolApprovalInScope({
       result: toolExecution.result,
     }),
   ];
-  let pendingBrowserObservations: ModelBrowserObservation[] =
-    approvedBrowserObservation ? [approvedBrowserObservation] : [];
+  let pendingBrowserObservations: PendingOpenAIBrowserObservation[] =
+    approvedBrowserObservation
+      ? [{
+          callId: continuation.pendingToolCall.callId,
+          observation: approvedBrowserObservation,
+        }]
+      : [];
 
   // Buffer delta writes onto a background chain — a blocking DB write per
   // delta clamps streaming to one delta per write round-trip (see runAgent).
@@ -3383,21 +3394,19 @@ async function resumeAgentRunAfterToolApprovalInScope({
         result: execution.result,
       }));
       if (execution.browserObservation) {
-        pendingBrowserObservations.push(execution.browserObservation);
+        pendingBrowserObservations.push({
+          callId: call.callId,
+          observation: execution.browserObservation,
+        });
       }
     }
     conversationItems = [...conversationItems, ...carriedOutputs];
 
     for (;;) {
-      const turnInput: ResponseTurnInput = pendingBrowserObservations.length
-        ? [
-            ...conversationItems,
-            ...pendingBrowserObservations.map((observation) => ({
-              type: "ephemeral_browser_observation" as const,
-              observation,
-            })),
-          ]
-        : conversationItems;
+      const turnInput: ResponseTurnInput = openAITurnInputWithBrowserObservations(
+        conversationItems,
+        pendingBrowserObservations,
+      );
       pendingBrowserObservations = [];
       await checkpointBeforeResumeModelTurn({
         attempt: toolSteps + 1,
@@ -3675,7 +3684,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
           result: execution.result,
         }));
         if (execution.browserObservation) {
-          pendingBrowserObservations.push(execution.browserObservation);
+          pendingBrowserObservations.push({
+            callId: call.callId,
+            observation: execution.browserObservation,
+          });
         }
       }
 
@@ -4719,6 +4731,28 @@ function filterAgentToolboxAllowed(
 
 function functionCallOutput(call: ResponseFunctionCall, payload: unknown) {
   return functionCallOutputFromCallId(call.callId, payload);
+}
+
+function openAITurnInputWithBrowserObservations(
+  items: readonly ConversationItem[],
+  pending: readonly PendingOpenAIBrowserObservation[],
+): ConversationItem[] {
+  if (!pending.length) return [...items];
+  const observations = new Map(
+    pending.map((item) => [item.callId, item.observation]),
+  );
+  return items.map((item) => {
+    if (item.type !== "function_call_output") return item;
+    const observation = observations.get(item.call_id);
+    return observation
+      ? {
+          type: "ephemeral_browser_function_output" as const,
+          call_id: item.call_id,
+          output: item.output,
+          observation,
+        }
+      : item;
+  });
 }
 
 function functionCallOutputFromCallId(callId: string, payload: unknown) {

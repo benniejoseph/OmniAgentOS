@@ -106,14 +106,20 @@ export const openAIModelAdapter: ModelProviderAdapter = {
       })),
     ];
     const input: ConversationItem[] = [
-      ...durableInput,
-      ...(request.toolResults || []).flatMap((result) =>
+      ...prior,
+      ...(request.toolResults || []).map((result) =>
         result.browserObservation
-          ? [{
-              type: "ephemeral_browser_observation" as const,
+          ? {
+              type: "ephemeral_browser_function_output" as const,
+              call_id: result.callId,
+              output: result.output,
               observation: result.browserObservation,
-            }]
-          : []
+            }
+          : {
+              type: "function_call_output" as const,
+              call_id: result.callId,
+              output: result.output,
+            }
       ),
     ];
     const turn = await streamResponseTurn({
