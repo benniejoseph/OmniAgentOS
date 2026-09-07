@@ -1,44 +1,23 @@
-import { z } from "zod";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import {
+  createMissionTaskService,
+  missionTaskCreateServiceInputSchema,
+} from "@/lib/app-services/missions";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { ensureMissionTask } from "@/lib/missions/store";
 import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
-import { toMissionTaskView } from "@/lib/missions/public";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   missionTaskMutationError,
-  missionTaskSourceKey,
   PRIVATE_NO_STORE_HEADERS,
 } from "./_shared";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
 
-const blockerSchema = z.object({
-  kind: z.enum(["dependency", "needs_input", "capability", "transient"]),
-  reason: z.string().trim().min(1).max(4_000),
-}).strict();
-
-const createTaskSchema = z.object({
-  sourceKey: z.string().trim().min(1).max(240).optional(),
-  title: z.string().trim().min(1).max(280),
-  instructions: z.string().trim().max(8_000).optional(),
-  definitionOfDone: z.string().trim().max(2_000).optional(),
-  priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
-  position: z.number().int().min(0).max(100_000).optional(),
-  parentTaskId: z.string().trim().min(1).max(240).optional(),
-  dependencyIds: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
-  status: z.enum(["triage", "pending"]).optional(),
-  assigneeId: z.string().trim().min(1).max(200).optional(),
-  assigneeKey: z.string().trim().min(1).max(200).optional(),
-  assigneeName: z.string().trim().min(1).max(160).optional(),
-  skillIds: z.array(z.string().trim().min(1).max(240)).max(50).optional(),
-  scheduledAt: z.string().datetime({ offset: true }).optional(),
-  blocker: blockerSchema.optional(),
-  reviewRequired: z.boolean().optional(),
-  reviewerKey: z.string().trim().min(1).max(200).optional(),
-  reviewerName: z.string().trim().min(1).max(160).optional(),
-}).strict();
+const createTaskSchema = missionTaskCreateServiceInputSchema.omit({
+  missionId: true,
+});
 
 async function POSTHandler(
   request: Request,
@@ -73,35 +52,22 @@ async function POSTHandler(
   }
 
   try {
-    const task = await ensureMissionTask(id, {
-      sourceKey: missionTaskSourceKey(request, parsed.data.sourceKey, "task", id),
-      title: parsed.data.title,
-      instructions: parsed.data.instructions,
-      definitionOfDone: parsed.data.definitionOfDone,
-      priority: parsed.data.priority,
-      position: parsed.data.position,
-      parentTaskId: parsed.data.parentTaskId,
-      dependencyIds: parsed.data.dependencyIds,
-      status: parsed.data.status,
-      metadata: {
-        assigneeKey: parsed.data.assigneeKey || parsed.data.assigneeId,
-        assigneeName: parsed.data.assigneeName,
-        skillIds: parsed.data.skillIds,
-        scheduledAt: parsed.data.scheduledAt,
-        blocker: parsed.data.blocker,
-        reviewRequired: parsed.data.reviewRequired,
-        reviewerKey: parsed.data.reviewerKey,
-        reviewerName: parsed.data.reviewerName,
-      },
-    }, {
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      ...missionMutationFromRequest(request, context, {
+    const mutation = missionMutationFromRequest(request, context, {
         purpose: "mission.task.create",
         missionId: id,
+      });
+    const result = await createMissionTaskService(
+      createAppServiceCaller({
+        context,
+        executionScope: mutation.executionScope,
+        idempotencyKey: mutation.idempotencyKey,
       }),
-    });
-    return Response.json({ task: toMissionTaskView(task) }, {
+      { ...parsed.data, missionId: id },
+    );
+    return Response.json({
+      ...result.data,
+      serviceReceipt: result.receipt,
+    }, {
       status: 201,
       headers: PRIVATE_NO_STORE_HEADERS,
     });

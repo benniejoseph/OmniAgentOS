@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import {
+  commentOnMissionTaskService,
+  createMissionTaskService,
+  listMissionsService,
+  showMissionService,
+} from "@/lib/app-services/missions";
+import { listRunsService } from "@/lib/app-services/runs";
 import { captureBrowserFrameAfterToolSafely } from "@/lib/browser/frames";
 import {
   createGoogleCalendarEvent,
@@ -49,20 +57,6 @@ import {
   searchMemories,
 } from "@/lib/memory/store";
 import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
-import {
-  appendMissionTaskComment,
-  ensureMissionTask,
-  getMissionDetail,
-  getMissionTask,
-  listMissions,
-} from "@/lib/missions/store";
-import type {
-  Mission,
-  MissionArtifact,
-  MissionAttempt,
-  MissionDetail,
-  MissionTask,
-} from "@/lib/missions/types";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -78,8 +72,6 @@ import { ingestTextDocument } from "@/lib/rag/retriever";
 import { embedRetrievalTexts } from "@/lib/rag/retrieval-embedding";
 import { rerankRetrievalCandidates } from "@/lib/rag/learned-reranker";
 import { searchKnowledge } from "@/lib/rag/store";
-import { listAgentRuns } from "@/lib/runs/store";
-import { publicAgentRun } from "@/lib/runs/public";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import {
   completeClaimedToolExecution,
@@ -3292,85 +3284,67 @@ async function runTool(
 
   if (tool.id === "missions.list") {
     const { limit = 20, status } = missionsListSchema.parse(parsed);
-    const owner = requireMissionToolContext(context, executionScope, idempotencyKey);
-    const missions = await listMissions(status ? 200 : limit, owner);
+    const service = await listMissionsService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { limit, status },
+    );
     return {
-      missions: missions
-        .filter((mission) => !status || mission.status === status)
-        .slice(0, limit)
-        .map(publicMissionSummary),
+      ...service.data,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "mission.show") {
     const { missionId } = missionShowSchema.parse(parsed);
-    const owner = requireMissionToolContext(context, executionScope, idempotencyKey);
-    const detail = await getMissionDetail(missionId, owner, {
-      tasks: 200,
-      attempts: 200,
-      artifacts: 200,
-    });
-    if (!detail) {
+    const service = await showMissionService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { missionId, tasks: 200, attempts: 200, artifacts: 200 },
+    );
+    if (!service.data) {
       throw new Error("Mission not found.");
     }
-    return publicMissionDetail(detail);
+    return {
+      ...service.data,
+      serviceReceipt: service.receipt,
+    };
   }
 
   if (tool.id === "mission.task.create") {
     const value = missionTaskCreateSchema.parse(parsed);
-    const owner = requireMissionToolContext(context, executionScope, idempotencyKey);
-    const safeValue = redactSensitive(value) as typeof value;
-    const task = await ensureMissionTask(
-      safeValue.missionId,
-      {
-        sourceKey: missionToolSourceKey("task", safeValue.missionId, idempotencyKey),
-        title: safeValue.title,
-        instructions: safeValue.instructions,
-        definitionOfDone: safeValue.definitionOfDone,
-        priority: safeValue.priority,
-        dependencyIds: safeValue.dependencyIds,
-        status: "triage",
-        metadata: {
-          assigneeKey: safeValue.assigneeKey,
-          skillIds: safeValue.skillIds,
-          reviewRequired: safeValue.reviewRequired ?? false,
-        },
-      },
-      owner,
+    const service = await createMissionTaskService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      value,
     );
     return {
-      task: publicMissionTask(task),
-      placement: "triage",
+      ...service.data,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "mission.task.comment") {
     const value = missionTaskCommentSchema.parse(parsed);
-    const owner = requireMissionToolContext(context);
-    const task = await getMissionTask(value.taskId, owner);
-    if (!task || task.missionId !== value.missionId) {
+    const service = await commentOnMissionTaskService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      value,
+    );
+    if (!service.data.comment) {
       throw new Error("Mission task not found.");
     }
-    const body = safeMissionText(value.body, 4_000);
-    const comment = await appendMissionTaskComment(
-      task.id,
-      {
-        body,
-        sourceKey: missionToolSourceKey("comment", task.id, idempotencyKey),
-      },
-      owner,
-    );
     return {
-      comment: publicMissionComment(comment),
+      ...service.data,
+      serviceReceipt: service.receipt,
     };
   }
 
   if (tool.id === "runs.list") {
     const { limit } = runsListSchema.parse(parsed);
+    const service = await listRunsService(
+      toolAppServiceCaller(context, executionScope, idempotencyKey),
+      { limit: limit || 5 },
+    );
     return {
-      runs: (
-        await listAgentRuns(limit || 5, { tenantId: context?.tenantId })
-      ).map(publicAgentRun),
+      ...service.data,
+      serviceReceipt: service.receipt,
     };
   }
 
@@ -3995,177 +3969,21 @@ function stripEmbedding<T extends { embedding?: number[] }>(value: T) {
   };
 }
 
-function requireMissionToolContext(
+function toolAppServiceCaller(
   context?: SecurityContext,
   executionScope?: ExecutionScope,
   idempotencyKey?: string,
 ) {
-  const tenantId = context?.tenantId?.trim();
-  const actorId = context?.actorId?.trim();
-  if (!tenantId || !actorId) {
-    throw new Error("Mission tools require an authenticated tenant and actor context.");
+  if (!context) {
+    throw new Error(
+      "First-party application tools require an authenticated tenant and actor context.",
+    );
   }
-  return {
-    tenantId,
-    actorId,
+  return createAppServiceCaller({
+    context,
     executionScope,
-    idempotencyKey: idempotencyKey?.trim(),
-  };
-}
-
-function missionToolSourceKey(
-  kind: "task" | "comment",
-  scopeId: string,
-  idempotencyKey?: string,
-) {
-  const executionKey = idempotencyKey?.trim() || randomUUID();
-  return `tool:${kind}:${createHash("sha256")
-    .update(`${kind}\u0000${scopeId}\u0000${executionKey}`)
-    .digest("hex")}`;
-}
-
-function safeMissionText(value: unknown, maxLength: number) {
-  return String(redactSensitive(String(value ?? ""))).trim().slice(0, maxLength);
-}
-
-function safeMissionLine(value: unknown, maxLength: number) {
-  return safeMissionText(value, maxLength).replace(/\s+/g, " ");
-}
-
-function publicMissionSummary(mission: Mission) {
-  return {
-    id: mission.id,
-    title: safeMissionLine(mission.title, 240),
-    objective: safeMissionLine(mission.objective, 600),
-    status: mission.status,
-    priority: mission.priority,
-    startedAt: mission.startedAt,
-    terminalAt: mission.terminalAt,
-    createdAt: mission.createdAt,
-    updatedAt: mission.updatedAt,
-  };
-}
-
-function publicMissionDetail(detail: MissionDetail) {
-  const commentArtifacts = detail.artifacts.filter(isMissionCommentArtifact);
-  return {
-    mission: {
-      ...publicMissionSummary(detail.mission),
-      objective: safeMissionText(detail.mission.objective, 4_000),
-    },
-    tasks: detail.tasks.map(publicMissionTask),
-    attempts: detail.attempts.map(publicMissionAttempt),
-    artifacts: detail.artifacts
-      .filter((artifact) => !isMissionCommentArtifact(artifact))
-      .map(publicMissionArtifact),
-    comments: commentArtifacts.map(publicMissionComment),
-  };
-}
-
-function publicMissionTask(task: MissionTask) {
-  const metadata = task.metadata && typeof task.metadata === "object"
-    ? task.metadata
-    : {};
-  const blocker = metadata.blocker && typeof metadata.blocker === "object" && !Array.isArray(metadata.blocker)
-    ? metadata.blocker as Record<string, unknown>
-    : undefined;
-  const skillIds = Array.isArray(metadata.skillIds)
-    ? [...new Set(metadata.skillIds
-      .filter((value): value is string => typeof value === "string")
-      .map((value) => safeMissionLine(value, 120))
-      .filter(Boolean))].slice(0, 30)
-    : [];
-  return {
-    id: task.id,
-    missionId: task.missionId,
-    parentTaskId: task.parentTaskId,
-    title: safeMissionLine(task.title, 280),
-    instructions: safeMissionText(task.instructions, 8_000),
-    definitionOfDone: safeMissionText(task.definitionOfDone, 2_000),
-    status: task.status,
-    priority: task.priority,
-    position: task.position,
-    dependencyIds: task.dependencyIds.slice(0, 50),
-    assignment: {
-      assigned: Boolean(metadata.assigneeKey || metadata.assigneeName),
-      name: metadata.assigneeName
-        ? safeMissionLine(metadata.assigneeName, 160)
-        : undefined,
-    },
-    skillIds,
-    scheduledAt: typeof metadata.scheduledAt === "string"
-      ? safeMissionLine(metadata.scheduledAt, 80)
-      : undefined,
-    blocker: blocker
-      ? {
-          kind: safeMissionLine(blocker.kind, 40),
-          reason: safeMissionText(blocker.reason, 2_000),
-        }
-      : undefined,
-    review: {
-      required: metadata.reviewRequired === true,
-      reviewerName: metadata.reviewerName
-        ? safeMissionLine(metadata.reviewerName, 160)
-        : undefined,
-      requestedAt: typeof metadata.reviewRequestedAt === "string"
-        ? safeMissionLine(metadata.reviewRequestedAt, 80)
-        : undefined,
-      summary: metadata.reviewSummary
-        ? safeMissionText(metadata.reviewSummary, 2_000)
-        : undefined,
-      changesRequestedReason: metadata.changesRequestedReason
-        ? safeMissionText(metadata.changesRequestedReason, 2_000)
-        : undefined,
-    },
-    startedAt: task.startedAt,
-    terminalAt: task.terminalAt,
-    createdAt: task.createdAt,
-    updatedAt: task.updatedAt,
-  };
-}
-
-function publicMissionAttempt(attempt: MissionAttempt) {
-  return {
-    id: attempt.id,
-    taskId: attempt.taskId,
-    executorType: safeMissionLine(attempt.executorType, 80),
-    status: attempt.status,
-    hasResult: Boolean(attempt.output),
-    hasError: Boolean(attempt.error),
-    startedAt: attempt.startedAt,
-    terminalAt: attempt.terminalAt,
-    createdAt: attempt.createdAt,
-    updatedAt: attempt.updatedAt,
-  };
-}
-
-function isMissionCommentArtifact(artifact: MissionArtifact) {
-  return artifact.kind === "task_comment" || artifact.kind === "comment";
-}
-
-function publicMissionArtifact(artifact: MissionArtifact) {
-  return {
-    id: artifact.id,
-    taskId: artifact.taskId,
-    attemptId: artifact.attemptId,
-    kind: safeMissionLine(artifact.kind, 80),
-    title: safeMissionLine(artifact.title, 280),
-    mimeType: artifact.mimeType
-      ? safeMissionLine(artifact.mimeType, 160)
-      : undefined,
-    createdAt: artifact.createdAt,
-    updatedAt: artifact.updatedAt,
-  };
-}
-
-function publicMissionComment(comment: MissionArtifact) {
-  return {
-    id: comment.id,
-    taskId: comment.taskId,
-    body: safeMissionText(comment.data?.body, 4_000),
-    createdAt: comment.createdAt,
-    updatedAt: comment.updatedAt,
-  };
+    idempotencyKey,
+  });
 }
 
 function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {

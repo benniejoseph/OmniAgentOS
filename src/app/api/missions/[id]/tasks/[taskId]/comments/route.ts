@@ -1,23 +1,24 @@
-import { z } from "zod";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import {
+  commentOnMissionTaskService,
+  missionTaskCommentServiceInputSchema,
+} from "@/lib/app-services/missions";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { toMissionArtifactView } from "@/lib/missions/public";
-import { appendMissionTaskComment, getMissionTask } from "@/lib/missions/store";
 import { missionMutationFromRequest } from "@/lib/missions/request-mutation";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   missionTaskMutationError,
-  missionTaskSourceKey,
   PRIVATE_NO_STORE_HEADERS,
 } from "../../_shared";
 
 export const runtime = "nodejs";
 export const POST = withDatabaseRequestScope(POSTHandler);
 
-const commentSchema = z.object({
-  body: z.string().trim().min(1).max(8_000),
-  sourceKey: z.string().trim().min(1).max(240).optional(),
-}).strict();
+const commentSchema = missionTaskCommentServiceInputSchema.omit({
+  missionId: true,
+  taskId: true,
+});
 
 async function POSTHandler(
   request: Request,
@@ -52,27 +53,29 @@ async function POSTHandler(
   }
 
   try {
-    const owner = {
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      ...missionMutationFromRequest(request, context, {
+    const mutation = missionMutationFromRequest(request, context, {
         purpose: "mission.task.comment.create",
         missionId: id,
         causationId: taskId,
+      });
+    const result = await commentOnMissionTaskService(
+      createAppServiceCaller({
+        context,
+        executionScope: mutation.executionScope,
+        idempotencyKey: mutation.idempotencyKey,
       }),
-    };
-    const task = await getMissionTask(taskId, owner);
-    if (!task || task.missionId !== id) {
+      { ...parsed.data, missionId: id, taskId },
+    );
+    if (!result.data.comment) {
       return Response.json({ error: "Mission task not found." }, {
         status: 404,
         headers: PRIVATE_NO_STORE_HEADERS,
       });
     }
-    const comment = await appendMissionTaskComment(task.id, {
-      body: parsed.data.body,
-      sourceKey: missionTaskSourceKey(request, parsed.data.sourceKey, "comment", task.id),
-    }, owner);
-    return Response.json({ comment: toMissionArtifactView(comment) }, {
+    return Response.json({
+      ...result.data,
+      serviceReceipt: result.receipt,
+    }, {
       status: 201,
       headers: PRIVATE_NO_STORE_HEADERS,
     });

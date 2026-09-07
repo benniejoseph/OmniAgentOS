@@ -1,7 +1,7 @@
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
+import { listRunsService } from "@/lib/app-services/runs";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
-import { publicAgentRun } from "@/lib/runs/public";
-import { getRunStats, listAgentRuns } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -24,21 +24,12 @@ async function GETHandler(request: Request) {
     max: 100,
   });
   const includeStats = url.searchParams.get("stats") === "true";
-  const runs = (await listAgentRuns(limit, {
-    tenantId: context.tenantId,
-  })).map(publicAgentRun);
-  const stats = includeStats
-    ? await getRunStats({ tenantId: context.tenantId })
-    : undefined;
+  const result = await listRunsService(
+    createAppServiceCaller({ context }),
+    { limit, includeStats },
+  );
   return Response.json({
-    runs,
-    ...(stats
-      ? {
-          stats: {
-            ...stats,
-            latest: stats.latest.map(publicAgentRun),
-          },
-        }
-      : {}),
+    ...result.data,
+    serviceReceipt: result.receipt,
   });
 }
