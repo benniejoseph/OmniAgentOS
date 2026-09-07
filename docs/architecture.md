@@ -1962,6 +1962,35 @@ declared `draft_only_until_governed_delivery`, and CRM changes are
 but delivery and Salesforce mutation can happen only through their existing
 approval-bound governed tools and effect receipts.
 
+## Customer-success portfolio intelligence
+
+P10.14 adds a read-only decision projection over Account 360, deterministic
+health, governed customer-success runs, Account-linked Meetings and confirmed
+commitments, and the existing approval queue. It creates no competing customer
+record and grants no action authority. Both the portfolio and account detail are
+assembled under the exact tenant, canonical Workspace, readable actor set, and
+`customer_success.account.read` purpose; approval metadata is included only for
+a caller who independently holds workflow-management permission and only when
+its reviewed input contains an exact account, Project, WorkItem, or run identity
+from that Account 360.
+
+The pinned `p10.14-customer-success-intelligence:1` policy ranks a current
+approval before cited risk and commitment signals, then requests a deterministic
+health evaluation or evidence refresh before suggesting a typed CSM workflow.
+Every next-best action is `suggested: true` and `authoritative: false`, carries a
+digest, confidence, uncertainty, evidence freshness, and exact revision/digest
+references, and never executes from the projection itself. Customer risk rows
+preserve their originating fact, health, workflow, commitment, lifecycle, or
+data-quality class instead of silently collapsing different evidence.
+
+The account timeline orders immutable Account and fact revisions, health
+evaluations, customer-success run revisions, and Account-linked Meeting
+commitments. Commitment rows expose only the current Meeting projection,
+participant display owner, due date, follow-up state, and canonical WorkItem
+reference; participant email and source content remain outside this read model.
+Today consumes the same bounded portfolio response used by Account 360, so its
+customer-attention section cannot drift into a separate ranking policy.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
