@@ -50,6 +50,13 @@ describe("canonical work transactional shadow writer", () => {
       attribution: { changedFieldIds: ["status", "title"] },
     });
     expect(statements.some((statement) => statement.includes("INSERT INTO omni_work_projects"))).toBe(true);
+    const projectInsert = statements.find((statement) =>
+      statement.includes("INSERT INTO omni_work_projects")
+    );
+    expect(projectInsert).not.toContain("ON CONFLICT");
+    expect(statements.some((statement) =>
+      statement.includes("pg_advisory_xact_lock")
+    )).toBe(true);
     expect(statements.some((statement) => statement.includes("INSERT INTO omni_work_items"))).toBe(true);
     expect(statements.some((statement) => statement.includes("INSERT INTO omni_work_compatibility_mappings"))).toBe(true);
     expect(statements.some((statement) => statement.includes("INSERT INTO omni_work_item_status_history"))).toBe(true);
