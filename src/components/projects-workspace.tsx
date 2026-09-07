@@ -33,6 +33,7 @@ import { clsx } from "clsx";
 import { arsenalAgents } from "@/lib/agents/arsenal";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { WorkspaceLibrary } from "@/components/workspace-library";
+import { ProjectSharedMemory } from "@/components/project-shared-memory";
 import styles from "./daybook-workspaces.module.css";
 
 const PROJECT_LIBRARY_KINDS = [
@@ -479,6 +480,10 @@ export function ProjectsWorkspace() {
               refreshKey={`${selected.updatedAt}:${selected.artifacts?.length || 0}`}
               className="project-artifact-ledger"
             />
+            <ProjectSharedMemory
+              projectId={selected.id}
+              projectTitle={selected.title}
+            />
           </> : <div className="project-canvas-empty"><FolderKanban size={30} aria-hidden="true" /><h2>Create your first project</h2><p>Give an outcome a durable home, then let your agent team turn it into executable work.</p><button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> New project</button></div>}
         </section>
       </div>
@@ -487,7 +492,7 @@ export function ProjectsWorkspace() {
 }
 
 function agentFor(id: AgentId) { return arsenalAgents.find((agent) => agent.id === id) || arsenalAgents[0]; }
-function commandHref(project: Project, task: ProjectTask) { const prompt = `Project: ${project.title}\nObjective: ${project.objective}\nAssigned task: ${task.title}\n${task.detail}\nComplete this bounded task, verify the outcome, and report evidence plus the next recommended project state.`; return `/app/command?agent=${task.agentId}&prompt=${encodeURIComponent(prompt)}`; }
+function commandHref(project: Project, task: ProjectTask) { const prompt = `Project: ${project.title}\nObjective: ${project.objective}\nAssigned task: ${task.title}\n${task.detail}\nComplete this bounded task, verify the outcome, and report evidence plus the next recommended project state.`; return `/app/command?agent=${task.agentId}&project=${encodeURIComponent(project.id)}&context=project&prompt=${encodeURIComponent(prompt)}`; }
 function executionTitle(status: Project["executionStatus"]) {
   return ({ idle: "Ready for deployment", running: "Agents are advancing this project", paused: "Execution is safely paused", waiting_approval: "Your approval is needed", completed: "Execution plan completed", failed: "An agent needs intervention" })[status];
 }

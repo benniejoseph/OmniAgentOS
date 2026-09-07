@@ -62,6 +62,7 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
+type CommandProject = { id: string; title: string; status: string };
 type ThreadTurn = { id: string; role: "user" | "assistant"; content: string; createdAt: string; runId?: string };
 type AgentMode = "orchestrate" | "research" | "execute" | "learn";
 type AgentId = string;
@@ -75,7 +76,7 @@ type AgentPresentation = {
 };
 type ActiveContextScopeId = Extract<
   ContextScopeId,
-  "none" | "current_turn" | "session" | "agent_private" | "explicit_selection"
+  "none" | "current_turn" | "session" | "agent_private" | "project" | "workspace" | "explicit_selection"
 >;
 
 const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
@@ -95,6 +96,16 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
     description: "Use only memory owned by you and the assigned agent.",
   },
   {
+    id: "project",
+    label: "Selected project",
+    description: "Use durable knowledge shared within one selected project.",
+  },
+  {
+    id: "workspace",
+    label: "Selected workspace",
+    description: "Use durable knowledge shared within the selected workspace.",
+  },
+  {
     id: "session",
     label: "Conversation only",
     description: "Use this conversation without saved memory or knowledge.",
@@ -111,8 +122,6 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
   },
   { id: "personal", label: "Personal automatic — held", description: "Requires standing personal-memory authority.", disabled: true },
   { id: "mission", label: "Mission — held", description: "Requires mission membership and context grants.", disabled: true },
-  { id: "project", label: "Project — held", description: "Requires project membership, consent, and grants.", disabled: true },
-  { id: "workspace", label: "Workspace — held", description: "Requires workspace membership, consent, and grants.", disabled: true },
 ];
 
 function contextScopeOption(scopeId: ContextScopeId) {
@@ -378,11 +387,15 @@ export function AgentRunsWorkspace({
   initialAgentId,
   initialThreadId,
   initialMissionId,
+  initialProjectId,
+  initialContextScope,
   initialGoal,
 }: {
   initialAgentId?: AgentId;
   initialThreadId?: string;
   initialMissionId?: string;
+  initialProjectId?: string;
+  initialContextScope?: Extract<ActiveContextScopeId, "project" | "workspace">;
   initialGoal?: string;
 }) {
   const {
@@ -406,7 +419,11 @@ export function AgentRunsWorkspace({
   const [error, setError] = useState<string>();
   const [contextPack, setContextPack] = useState<JsonRecord>();
   const [contextScope, setContextScope] = useState<ActiveContextScopeId>(
-    "explicit_selection",
+    initialContextScope || "explicit_selection",
+  );
+  const [projects, setProjects] = useState<CommandProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    initialProjectId || "",
   );
   const [contextQuery, setContextQuery] = useState("");
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
@@ -508,6 +525,33 @@ export function AgentRunsWorkspace({
     };
   }, [initialAgentId]);
 
+  useEffect(() => {
+    if (sessionStatus !== "ready") return;
+    const controller = new AbortController();
+    void readJson("/api/projects", { signal: controller.signal })
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        const rows = arrayPath(asRecord(payload), "projects")
+          .map((value) => asRecord(value))
+          .map((value) => ({
+            id: stringValue(value.id),
+            title: stringValue(value.title),
+            status: stringValue(value.status),
+          }))
+          .filter((value) => value.id && value.title && value.status !== "archived");
+        setProjects(rows);
+        setSelectedProjectId((current) =>
+          current && rows.some((project) => project.id === current)
+            ? current
+            : initialProjectId && rows.some((project) => project.id === initialProjectId)
+              ? initialProjectId
+              : ""
+        );
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [initialProjectId, sessionStatus]);
+
   const planNodes = arrayPath(workflowPlan, "plan.plan.nodes");
   const contextResults = arrayPath(contextPack, "pack.results");
   const contextResultIds = contextResults
@@ -543,6 +587,11 @@ export function AgentRunsWorkspace({
   const runPermission = permissionMessage(session, sessionStatus, "run.agent");
   const voicePermission = permissionMessage(session, sessionStatus, "write.memory");
   const workflowPermission = permissionMessage(session, sessionStatus, "manage.workflow");
+  const sharedContextWorkflowReason =
+    contextScope === "project" || contextScope === "workspace"
+      ? "Shared project and workspace context currently runs through the direct governed agent path."
+      : undefined;
+  const workflowActionPermission = workflowPermission || sharedContextWorkflowReason;
   const activeWorkflowId = stringPath(workflowRun, "run.id", "");
   const activeWorkflowStatus = stringPath(workflowRun, "run.status", "");
   const workflowInProgress = Boolean(
@@ -1404,6 +1453,9 @@ export function AgentRunsWorkspace({
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setContextScope(nextScope);
+    if (nextScope === "project" && !selectedProjectId) {
+      setSelectedProjectId(projects[0]?.id || "");
+    }
     setContextPack(undefined);
     setContextQuery("");
     setSelectedContextIds([]);
@@ -1414,6 +1466,15 @@ export function AgentRunsWorkspace({
     contextSelectionReviewedRef.current = nextScope !== "explicit_selection";
     agentRequestIdRef.current = "";
     setRunAnnouncement(contextScopeOption(nextScope).description);
+  }
+
+  function changeProject(nextProjectId: string) {
+    if (threadId || conversationLocked) return;
+    setSelectedProjectId(nextProjectId);
+    setContextPack(undefined);
+    setWorkflowPlan(undefined);
+    agentRequestIdRef.current = "";
+    setRunAnnouncement("Project context changed. The next run will verify its exact membership scope.");
   }
 
   function changeMode(nextMode: AgentMode) {
@@ -1610,8 +1671,8 @@ export function AgentRunsWorkspace({
   }
 
   async function buildPlan() {
-    if (workflowPermission) {
-      setError(workflowPermission);
+    if (workflowActionPermission) {
+      setError(workflowActionPermission);
       return;
     }
     if (workflowInProgress) {
@@ -1675,8 +1736,8 @@ export function AgentRunsWorkspace({
   }
 
   async function startWorkflow() {
-    if (workflowPermission) {
-      setError(workflowPermission);
+    if (workflowActionPermission) {
+      setError(workflowActionPermission);
       return;
     }
     if (!reviewedPlanReady) {
@@ -1779,6 +1840,11 @@ export function AgentRunsWorkspace({
       setError("Write a message before asking Asael.");
       return;
     }
+    if (contextScope === "project" && !selectedProjectId) {
+      setError("Choose a project before using project context.");
+      openTaskDetails("context");
+      return;
+    }
     if (
       contextScope === "explicit_selection" &&
       contextLoading &&
@@ -1852,6 +1918,7 @@ export function AgentRunsWorkspace({
           threadId: options?.submittedThreadId || threadId || undefined,
           resumeRunId,
           missionId: initialMissionId || undefined,
+          projectId: selectedProjectId || undefined,
           message: submittedGoal,
           requestId,
           strategy: resumeRunId ? "auto" : "direct",
@@ -2143,6 +2210,8 @@ export function AgentRunsWorkspace({
         }
       }
       setThreadId(stringValue(thread.id));
+      const loadedProjectId = stringValue(thread.projectId);
+      if (loadedProjectId) setSelectedProjectId(loadedProjectId);
       setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
       setTurns(loadedTurns);
       setAgentResponse(waitingClarification?.message || "");
@@ -2698,6 +2767,9 @@ export function AgentRunsWorkspace({
               loading={loading}
               contextLoading={contextLoading}
               contextScope={contextScope}
+              projectId={selectedProjectId}
+              projects={projects}
+              projectSelectionLocked={Boolean(threadId || conversationLocked)}
               contextReady={contextPreparedForGoal}
               contextLocked={contextLockedForGoal}
               contextSelectedCount={selectedContextIds.length}
@@ -2706,7 +2778,7 @@ export function AgentRunsWorkspace({
               readDisabledReason={readPermission}
               runDisabledReason={runPermission}
               voiceDisabledReason={runPermission || voicePermission}
-              workflowDisabledReason={workflowPermission}
+              workflowDisabledReason={workflowActionPermission}
               workflowReady={reviewedPlanReady}
               workflowStarted={Boolean(activeWorkflowId)}
               workflowInProgress={conversationLocked}
@@ -2718,6 +2790,7 @@ export function AgentRunsWorkspace({
               onClearPreferredAgent={() => setPreferredAgent(undefined)}
               onContext={() => void buildContext()}
               onContextScopeChange={changeContextScope}
+              onProjectChange={changeProject}
               onReviewContext={() => {
                 contextSelectionReviewedRef.current = true;
                 openTaskDetails("context");
@@ -2903,6 +2976,23 @@ export function AgentRunsWorkspace({
                   <p className="mt-2 text-xs leading-5 text-muted">
                     {contextScopeOption(contextScope).description}
                   </p>
+                  {contextScope === "project" ? (
+                    <label className="mt-3 grid gap-1 text-xs font-semibold text-foreground" htmlFor="context-project">
+                      Project
+                      <select
+                        id="context-project"
+                        value={selectedProjectId}
+                        disabled={Boolean(loading) || workflowInProgress || Boolean(threadId)}
+                        onChange={(event) => changeProject(event.currentTarget.value)}
+                        className="min-h-10 w-full rounded-lg border border-line bg-surface px-3 text-sm font-medium text-foreground outline-none focus:border-primary"
+                      >
+                        <option value="">Choose a project</option>
+                        {projects.map((project) => (
+                          <option key={project.id} value={project.id}>{project.title}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                 </div>
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                   <button
@@ -2993,6 +3083,17 @@ export function AgentRunsWorkspace({
                     disabled={workflowInProgress || loading === "agent"}
                     onChange={updateContextSelection}
                   />
+                ) : contextScope === "project" || contextScope === "workspace" ? (
+                  <div className="rounded-xl border border-primary/25 bg-primary/5 p-4 text-sm leading-6 text-muted">
+                    <strong className="text-foreground">
+                      {contextScope === "project"
+                        ? projects.find((project) => project.id === selectedProjectId)?.title || "Choose a project"
+                        : selectedProjectId
+                          ? `Workspace containing ${projects.find((project) => project.id === selectedProjectId)?.title || "the selected project"}`
+                          : "Your personal workspace"}
+                    </strong>
+                    <p className="mt-1">Membership is checked when the run starts. Only shared durable knowledge from this exact scope is eligible; personal and agent-private memory stays excluded.</p>
+                  </div>
                 ) : (
                   <div className="rounded-xl border border-dashed border-line bg-background p-4 text-sm leading-6 text-muted">
                     Saved memory, knowledge, graph results, and automatic personal context are excluded for this run.
@@ -3009,11 +3110,11 @@ export function AgentRunsWorkspace({
                     onClick={() => void buildPlan()}
                     disabled={
                       Boolean(loading) ||
-                      Boolean(workflowPermission) ||
+                      Boolean(workflowActionPermission) ||
                       workflowInProgress
                     }
                     title={
-                      workflowPermission ||
+                      workflowActionPermission ||
                       (workflowInProgress
                         ? "Wait for the active workflow to finish or cancel it first."
                         : undefined)
@@ -3028,12 +3129,12 @@ export function AgentRunsWorkspace({
                     onClick={() => void startWorkflow()}
                     disabled={
                       Boolean(loading) ||
-                      Boolean(workflowPermission) ||
+                      Boolean(workflowActionPermission) ||
                       !reviewedPlanReady ||
                       Boolean(activeWorkflowId)
                     }
                     title={
-                      workflowPermission ||
+                      workflowActionPermission ||
                       (activeWorkflowId
                         ? "This plan has already started."
                         : !reviewedPlanReady
@@ -4825,6 +4926,9 @@ function GoalStage({
   loading,
   contextLoading,
   contextScope,
+  projectId,
+  projects,
+  projectSelectionLocked,
   contextReady,
   contextLocked,
   contextSelectedCount,
@@ -4845,6 +4949,7 @@ function GoalStage({
   onClearPreferredAgent,
   onContext,
   onContextScopeChange,
+  onProjectChange,
   onReviewContext,
   onPlan,
   onAgent,
@@ -4860,6 +4965,9 @@ function GoalStage({
   loading?: string;
   contextLoading: boolean;
   contextScope: ActiveContextScopeId;
+  projectId: string;
+  projects: CommandProject[];
+  projectSelectionLocked: boolean;
   contextReady: boolean;
   contextLocked: boolean;
   contextSelectedCount: number;
@@ -4880,6 +4988,7 @@ function GoalStage({
   onClearPreferredAgent: () => void;
   onContext: () => void;
   onContextScopeChange: (scope: ActiveContextScopeId) => void;
+  onProjectChange: (projectId: string) => void;
   onReviewContext: () => void;
   onPlan: () => void;
   onAgent: () => void;
@@ -4894,17 +5003,17 @@ function GoalStage({
 }) {
   const goalMissing = !goal.trim();
   const draftLocked = Boolean(loading) || workflowInProgress;
-  const contextLabel = contextLoading
-    ? "Finding context"
-    : contextError
-      ? "No saved context"
-      : contextReady
-        ? contextScope === "explicit_selection"
+  const contextLabel = contextScope !== "explicit_selection"
+    ? contextScopeOption(contextScope).label
+    : contextLoading
+      ? "Finding context"
+      : contextError
+        ? "No saved context"
+        : contextReady
           ? contextLocked
             ? `Locked ${contextSelectedCount}/${contextTotalCount}`
             : `Review ${contextSelectedCount}/${contextTotalCount}`
-          : contextScopeOption(contextScope).label
-        : "Context";
+          : "Context";
   return (
     <section className={clsx("border-t border-line/70 bg-background/95 px-3 py-2 backdrop-blur sm:px-5", workspaceStyles.composerDock)} aria-labelledby="command-composer-title">
       <div className={clsx("mx-auto max-w-3xl", workspaceStyles.composerWidth)}>
@@ -4961,6 +5070,23 @@ function GoalStage({
                 <option value="execute">Tools</option>
                 <option value="learn">Knowledge</option>
               </select>
+              {contextScope === "project" ? (
+                <>
+                  <label className="sr-only" htmlFor="command-project-scope">Project context</label>
+                  <select
+                    id="command-project-scope"
+                    value={projectId}
+                    disabled={draftLocked || projectSelectionLocked}
+                    onChange={(event) => onProjectChange(event.currentTarget.value)}
+                    className="min-h-8 max-w-44 shrink-0 rounded-full border-0 bg-surface-raised px-2.5 text-[11px] font-semibold text-muted outline-none hover:text-foreground"
+                  >
+                    <option value="">Choose project</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>{project.title}</option>
+                    ))}
+                  </select>
+                </>
+              ) : null}
               <button
                 type="button"
                 onClick={() => onApprovalChange(!approvalRequired)}
