@@ -44,7 +44,7 @@ import {
   useWorkspaceSession,
 } from "@/components/app-shell/session-context";
 import { ConversationCanvas } from "@/components/conversation-canvas";
-import { CouncilExecutionMap } from "@/components/agents/council-execution-map";
+import { ConversationProgressPanel } from "@/components/conversation-progress-panel";
 import { VoiceMode } from "@/components/voice/voice-mode";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import { arsenalAgents } from "@/lib/agents/arsenal";
@@ -1145,12 +1145,10 @@ export function AgentRunsWorkspace({
 
   async function stopAgent() {
     const controller = abortControllerRef.current;
-    if (!controller) {
-      return;
-    }
     const runId = activeAgentRunId;
+    if (!controller && !runId) return;
     setRunAnnouncement("Stopping the agent run.");
-    controller.abort();
+    controller?.abort();
     if (!runId) {
       return;
     }
@@ -1213,8 +1211,9 @@ export function AgentRunsWorkspace({
   async function forkRunFromCheckpoint(
     checkpointId: string,
     correction: string,
+    sourceRunIdOverride?: string,
   ) {
-    const sourceRunId = activeAgentRunId;
+    const sourceRunId = sourceRunIdOverride || activeAgentRunId;
     if (!sourceRunId || !correction.trim()) return;
     setLoading("agent");
     setError(undefined);
@@ -2733,16 +2732,7 @@ export function AgentRunsWorkspace({
                       </p>
                     ) : null}
                     {agentResponse && activeAgentRunId && agentRunCompleted ? (
-                      <>
-                        <RunFeedbackPanel feedback={runFeedback} saving={feedbackSaving} onSave={saveRunFeedback} />
-                        <RunCheckpointForkPanel
-                          key={activeAgentRunId}
-                          runId={activeAgentRunId}
-                          disabled={Boolean(runPermission || loading === "agent")}
-                          disabledReason={runPermission}
-                          onFork={forkRunFromCheckpoint}
-                        />
-                      </>
+                      <RunFeedbackPanel feedback={runFeedback} saving={feedbackSaving} onSave={saveRunFeedback} />
                     ) : null}
                   </div>
                 </article>
@@ -3279,13 +3269,20 @@ export function AgentRunsWorkspace({
                     </Link>
                   </div>
                 ) : null}
-                {activeWorkflowId || selectedActivityRunId || activeAgentRunId ? (
+                {activeWorkflowId ? (
                   <RunTraceJourney
-                    runId={activeWorkflowId || selectedActivityRunId || activeAgentRunId}
-                    kind={activeWorkflowId ? "workflow" : "run"}
-                    live={activeWorkflowId
-                      ? !["completed", "failed", "canceled"].includes(activeWorkflowStatus)
-                      : loading === "agent" && (!selectedActivityRunId || selectedActivityRunId === activeAgentRunId)}
+                    runId={activeWorkflowId}
+                    kind="workflow"
+                    live={!["completed", "failed", "canceled"].includes(activeWorkflowStatus)}
+                  />
+                ) : null}
+                {!activeWorkflowId && (selectedActivityRunId || activeAgentRunId) ? (
+                  <ConversationProgressPanel
+                    runId={selectedActivityRunId || activeAgentRunId}
+                    live={loading === "agent" && (!selectedActivityRunId || selectedActivityRunId === activeAgentRunId)}
+                    canCancel={Boolean(activeAgentRunId && (selectedActivityRunId || activeAgentRunId) === activeAgentRunId)}
+                    onCancel={() => void stopAgent()}
+                    onOpenBrowser={() => document.getElementById("conversation-browser-evidence")?.scrollIntoView({ behavior: "smooth", block: "start" })}
                   />
                 ) : null}
                 <BrowserActivityTimeline
@@ -3301,17 +3298,33 @@ export function AgentRunsWorkspace({
                   )}
                   onRefresh={() => void refreshBrowserActivity(selectedActivityRunId)}
                 />
-                {!selectedActivityRunId || selectedActivityRunId === activeAgentRunId ? (
+                {workflowRun ? (
                   <>
                     <TaskProgressTimeline
                       events={streamEvents}
                       workflowRun={workflowRun}
                       running={loading === "agent"}
                     />
-                    <CouncilExecutionMap events={streamEvents} />
                   </>
                 ) : null}
-                {!selectedActivityRunId || selectedActivityRunId === activeAgentRunId ? (
+                {!activeWorkflowId && (selectedActivityRunId || activeAgentRunId) ? (
+                  <RunCheckpointForkPanel
+                    key={selectedActivityRunId || activeAgentRunId}
+                    runId={selectedActivityRunId || activeAgentRunId}
+                    disabled={Boolean(
+                      runPermission ||
+                      loading === "agent" ||
+                      (!agentRunTerminal && (selectedActivityRunId || activeAgentRunId) === activeAgentRunId)
+                    )}
+                    disabledReason={runPermission || (loading === "agent" ? "Wait for the current run to reach a durable boundary." : undefined)}
+                    onFork={(checkpointId, correction) => forkRunFromCheckpoint(
+                      checkpointId,
+                      correction,
+                      selectedActivityRunId || activeAgentRunId,
+                    )}
+                  />
+                ) : null}
+                {workflowRun ? (
                 <details className="rounded-md border border-line bg-background">
                   <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 px-3 text-sm font-semibold">
                     <span>Technical activity</span>
@@ -4169,7 +4182,7 @@ function BrowserActivityTimeline({
   };
 
   return (
-    <section className={workspaceStyles.browserViewer} aria-label="Browser activity">
+    <section id="conversation-browser-evidence" className={workspaceStyles.browserViewer} aria-label="Browser activity">
       <header className={workspaceStyles.browserViewerHeader}>
         <div className="flex min-w-0 items-start gap-3">
           <span className={workspaceStyles.browserViewerIcon}>
