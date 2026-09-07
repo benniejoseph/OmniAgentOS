@@ -2663,8 +2663,10 @@ card, selection, and discovery digests. The authenticated private/no-store
 `GET /api/agents/cards` endpoint exposes the same cards and optional ranked
 receipt. Fifty-three focused checks across seven test files, affected lint,
 TypeScript, and the 97-page Next 16 production build pass. No migration was
-required. P8.6 external A2A client/server adapters is next; P12/P13 remain
-deferred.
+required. Vercel rejected the complete-feature promotion at
+`01960f3a9a60edb953e7007657bae0d4e051cd96` before upload because the team still
+has an overdue balance, so Fly was intentionally left unchanged. P8.6 external
+A2A client/server adapters is next; P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
