@@ -1,3 +1,5 @@
+import { indexStoredAssetService } from "@/lib/app-services/assets";
+import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
   CaptureAssetContentIntegrityError,
   CaptureAssetError,
@@ -5,32 +7,24 @@ import {
   CaptureAssetReadConflictError,
   getCaptureAsset,
   getCaptureAssetForRequest,
-  getCaptureAssetContent,
   getCaptureAssetContentForRequest,
   getCaptureAssetExtractionForRequest,
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
 import { deleteCaptureAssetWithKnowledge } from "@/lib/capture/deletion";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
-import { CaptureFileError, captureTitle, extractCaptureFile } from "@/lib/capture/files";
+import { CaptureFileError } from "@/lib/capture/files";
 import {
-  appendCaptureNote,
-  captureExtractionReceipt,
-  renderCaptureExtractionUnits,
   terminalCaptureExtractionReceipt,
-  type CaptureExtractionReceipt,
-  type CaptureStructuredExtraction,
 } from "@/lib/capture/extraction";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
   BackgroundJobIdempotencyConflictError,
-  enqueueKnowledgeIngestJob,
 } from "@/lib/operations/background-jobs";
 import {
   cancelOperationJobByDedupeKey,
   getOperationJob,
-  projectOperationJobStatus,
 } from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
@@ -151,85 +145,25 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   const parsed = indexAssetSchema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Invalid indexing details.", details: parsed.error.flatten() }, { status: 400, headers: privateNoStoreHeaders });
   try {
-    const { asset, bytes } = await getCaptureAssetContent(id, context);
-    if (asset.ingestJobId && asset.status === "queued") {
-      return Response.json({ asset, job: { id: asset.ingestJobId }, duplicate: true }, { status: 202, headers: { location: `/api/operations/jobs/${asset.ingestJobId}`, "retry-after": "2", "cache-control": "private, no-store" } });
-    }
-    const note = parsed.data.note?.trim() || "";
-    let title = parsed.data.title || captureTitle(asset.filename);
-    let content = "";
-    let contentOrigin: "extracted" | "supplied_note" = "extracted";
-    let extraction: CaptureStructuredExtraction | undefined;
-    let extractionReceipt: CaptureExtractionReceipt | undefined;
-    try {
-      const extracted = await extractCaptureFile(
-        new File([bytes], asset.filename, { type: asset.mediaType }),
-        {
-          tenantId: context.tenantId,
-          actorId: context.actorId,
-          sourceStreamId: `capture-asset:${asset.id}`,
-          operation: "ocr",
-          purpose: "capture.asset.extract",
-          correlationId: executionScope.correlationId,
-          executionScope,
-          credentialSource: "deployment_environment",
+    const result = await indexStoredAssetService(
+      createAppServiceCaller({
+        context,
+        executionScope,
+        idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || `capture-asset:${id}`,
+      }),
+      { id, ...parsed.data },
+    );
+    return Response.json(
+      { ...result.data, serviceReceipt: result.receipt },
+      {
+        status: 202,
+        headers: {
+          location: `/api/operations/jobs/${result.data.job.id}`,
+          "retry-after": "2",
+          "cache-control": "private, no-store",
         },
-      );
-      title = parsed.data.title || extracted.title;
-      content = extracted.content;
-      extraction = extracted.extraction;
-    } catch (error) {
-      if (!note || !(error instanceof CaptureFileError)) throw error;
-      contentOrigin = "supplied_note";
-      extractionReceipt = terminalCaptureExtractionReceipt({
-        format: error.format || asset.extension || "unknown",
-        state: error.status === 415 ? "unsupported" : "failed",
-        warningCode: error.code,
-      });
-    }
-    if (note) {
-      if (extraction) {
-        extraction = appendCaptureNote(extraction, note);
-        content = renderCaptureExtractionUnits(extraction.units);
-      } else {
-        content = note;
-      }
-    }
-    if (extraction) extractionReceipt = captureExtractionReceipt(extraction);
-    if (!content.trim()) throw new CaptureFileError("The stored asset has no extractable or supplied text to index.", 400, "no_readable_text", asset.extension);
-    const job = await enqueueKnowledgeIngestJob({
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      executionScope,
-      idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || `capture-asset:${asset.id}`,
-      request: {
-        title,
-        content,
-        source: `capture:asset:${asset.id}`,
-        sourceType: "file",
-        tags: ["capture", "asset", ...(parsed.data.tags || asset.tags)],
-        metadata: {
-          captureAssetId: asset.id,
-          actorId: asset.actorId,
-          filename: asset.filename,
-          mediaType: asset.mediaType,
-          byteCount: asset.byteCount,
-          contentOrigin,
-          structuredSourceKind: extraction?.sourceKind || "file",
-          extractionState: extractionReceipt?.state || "completed",
-          extractionReceiptSha256: extractionReceipt?.receiptSha256 || "",
-        },
-        evidenceRefs: [`capture-asset:${asset.id}`],
-        ...(extraction ? { structuredUnits: extraction.units } : {}),
       },
-    });
-    const updated = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
-      status: "queued",
-      extractionStatus: extractionReceipt?.state || "completed",
-      extractionReceipt,
-      ingestJobId: job.id,
-    });
-    return Response.json({ asset: updated, job: projectOperationJobStatus(job) }, { status: 202, headers: { location: `/api/operations/jobs/${job.id}`, "retry-after": "2", "cache-control": "private, no-store" } });
+    );
   } catch (error) {
     if (error instanceof BackgroundJobIdempotencyConflictError) return Response.json({ error: error.message }, { status: 409, headers: privateNoStoreHeaders });
     if (error instanceof CaptureFileError) {
