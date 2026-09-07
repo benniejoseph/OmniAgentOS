@@ -211,4 +211,68 @@ describe("native mobile authentication", () => {
       revocationReason: "membership_changed",
     });
   });
+
+  it("serves bearer-only device inventory and lifecycle routes end to end", async () => {
+    const mobile = await import("@/lib/auth/mobile");
+    const [{ GET: listDevices }, { POST: changeDevice }] = await Promise.all([
+      import("@/app/api/mobile/devices/route"),
+      import("@/app/api/mobile/devices/[id]/route"),
+    ]);
+    const manager = await mobile.authenticateMobilePassword({
+      email: "mobile@example.com",
+      password: "a secure mobile password",
+      device: {
+        id: "route-manager-device",
+        name: "Manager phone",
+        platform: "ios",
+      },
+    });
+    const target = await mobile.authenticateMobilePassword({
+      email: "mobile@example.com",
+      password: "a secure mobile password",
+      device: {
+        id: "route-target-device",
+        name: "Lost phone",
+        platform: "android",
+      },
+    });
+    expect(manager).not.toBeNull();
+    expect(target).not.toBeNull();
+
+    const listResponse = await listDevices(new Request(
+      "https://example.test/api/mobile/devices",
+      { headers: { authorization: `Bearer ${manager!.tokens.accessToken}` } },
+    ));
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject({
+      schemaVersion: 1,
+      devices: expect.arrayContaining([
+        expect.objectContaining({
+          id: target!.identity.session.id,
+          state: "active",
+        }),
+      ]),
+    });
+
+    const changeResponse = await changeDevice(
+      new Request(
+        `https://example.test/api/mobile/devices/${target!.identity.session.id}`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${manager!.tokens.accessToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ action: "remote_wipe" }),
+        },
+      ),
+      { params: Promise.resolve({ id: target!.identity.session.id }) },
+    );
+    expect(changeResponse.status).toBe(200);
+    await expect(changeResponse.json()).resolves.toMatchObject({
+      id: target!.identity.session.id,
+      state: "wipe_pending",
+      revocationReason: "remote_wipe",
+    });
+  });
 });
