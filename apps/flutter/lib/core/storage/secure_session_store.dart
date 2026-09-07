@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -13,6 +14,7 @@ class SecureSessionStore {
   static const _accessExpiresAtKey = 'asael.access_expires_at';
   static const _deviceIdKey = 'asael.device_id';
   static const _biometricEnabledKey = 'asael.biometric_enabled';
+  static const _captureOutboxSecretKey = 'asael.capture_outbox_secret_v1';
   static const _legacyTokenKey = 'omniagent.session_token';
   final FlutterSecureStorage _storage;
   bool _biometricReleaseUnlocked = false;
@@ -86,6 +88,24 @@ class SecureSessionStore {
 
   Future<String?> readExistingDeviceId() => _storage.read(key: _deviceIdKey);
 
+  Future<DeviceSecretMaterial> readOrCreateCaptureOutboxSecret() async {
+    await _requireBiometricRelease();
+    final encoded = await _storage.read(key: _captureOutboxSecretKey);
+    if (encoded != null) return DeviceSecretMaterial.decode(encoded);
+    final random = Random.secure();
+    final idBytes = List<int>.generate(18, (_) => random.nextInt(256));
+    final keyBytes = List<int>.generate(32, (_) => random.nextInt(256));
+    final material = DeviceSecretMaterial(
+      id: base64UrlEncode(idBytes).replaceAll('=', ''),
+      bytes: Uint8List.fromList(keyBytes),
+    );
+    await _storage.write(
+      key: _captureOutboxSecretKey,
+      value: material.encode(),
+    );
+    return material;
+  }
+
   Future<bool> readBiometricEnabled() async =>
       await _storage.read(key: _biometricEnabledKey) == 'true';
 
@@ -126,9 +146,54 @@ class SecureSessionStore {
       _storage.delete(key: _legacyTokenKey),
       _storage.delete(key: _deviceIdKey),
       _storage.delete(key: _biometricEnabledKey),
+      _storage.delete(key: _captureOutboxSecretKey),
     ]);
     _biometricReleaseUnlocked = false;
   }
+}
+
+class DeviceSecretMaterial {
+  const DeviceSecretMaterial({required this.id, required this.bytes});
+
+  factory DeviceSecretMaterial.decode(String encoded) {
+    Object? value;
+    try {
+      value = jsonDecode(encoded);
+    } catch (_) {
+      throw const FormatException('The device secret is unreadable.');
+    }
+    if (value is! Map ||
+        value['version'] != 1 ||
+        value['id'] is! String ||
+        value['key'] is! String) {
+      throw const FormatException('The device secret is invalid.');
+    }
+    final id = value['id'] as String;
+    Uint8List bytes;
+    try {
+      bytes = Uint8List.fromList(_decodeBase64Url(value['key'] as String));
+    } catch (_) {
+      throw const FormatException('The device secret key is invalid.');
+    }
+    if (!RegExp(r'^[A-Za-z0-9_-]{24}$').hasMatch(id) || bytes.length != 32) {
+      throw const FormatException('The device secret key is invalid.');
+    }
+    return DeviceSecretMaterial(id: id, bytes: bytes);
+  }
+
+  final String id;
+  final Uint8List bytes;
+
+  String encode() => jsonEncode({
+    'version': 1,
+    'id': id,
+    'key': base64UrlEncode(bytes).replaceAll('=', ''),
+  });
+}
+
+List<int> _decodeBase64Url(String value) {
+  final padding = (4 - value.length % 4) % 4;
+  return base64Url.decode(value.padRight(value.length + padding, '='));
 }
 
 final secureSessionStoreProvider = Provider<SecureSessionStore>(

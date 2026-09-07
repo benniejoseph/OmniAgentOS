@@ -71,4 +71,20 @@ void main() {
       expect(await store.readBiometricEnabled(), isFalse);
     },
   );
+
+  test('capture outbox secret survives logout and rotates after wipe', () async {
+    final store = SecureSessionStore(const FlutterSecureStorage());
+    final first = await store.readOrCreateCaptureOutboxSecret();
+    expect(first.bytes, hasLength(32));
+
+    await store.clear();
+    final afterLogout = await store.readOrCreateCaptureOutboxSecret();
+    expect(afterLogout.id, first.id);
+    expect(afterLogout.bytes, first.bytes);
+
+    await store.clearForRemoteWipe();
+    final afterWipe = await store.readOrCreateCaptureOutboxSecret();
+    expect(afterWipe.id, isNot(first.id));
+    expect(afterWipe.bytes, isNot(first.bytes));
+  });
 }
