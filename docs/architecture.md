@@ -2100,6 +2100,25 @@ only after the user selects that surface. The former named graph visualization
 is not part of the aggregate view, so sensitive memory cannot leak through a
 visual cluster.
 
+## Truthful Integrations projection
+
+P11.7 makes the Integrations workspace consume the strict
+`p11.7-truthful-integrations:1` projection before presenting connection health
+or capability. The projection independently reads request-bound OAuth grants,
+tenant MCP and OpenAPI contracts, canonical Workspace Salesforce health, and
+the tenant usage ledger. A failed source remains explicitly unavailable and
+cannot be interpreted as disconnected, healthy, or free.
+
+Installed integrations are separate from catalog suggestions. Each installed
+row reports actual configuration and connection state, physical-owner-derived
+manageability, declared read/write or approval requirements, sync coverage,
+freshness, safe cursor state, failures and recovery, and only cost attributable
+to recorded usage receipts. MCP write classification relies exclusively on
+the server-declared `readOnlyHint`, and OpenAPI classification relies on the
+exact HTTP method; unknown authority is never inferred from a name. Raw cursor
+values, credentials, provider content, actor coordinates, and unpriced cost
+estimates never enter the browser contract.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
