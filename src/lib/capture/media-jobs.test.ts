@@ -147,6 +147,42 @@ describe("capture media background jobs", () => {
     );
     expect(mocks.extractCaptureMediaInsights).not.toHaveBeenCalled();
   });
+
+  it("requeues a previously failed recording request without changing its identity", async () => {
+    const recording = recordingFixture(false);
+    mocks.enqueueOperationJob.mockImplementationOnce(async (input) => ({
+      ...operationJob("capture.media.recording.process", input.payload.request),
+      status: "failed",
+      dedupeKey: "capture.media.recording:retry",
+      payload: input.payload,
+    }));
+    mocks.requeueOperationJobByDedupeKey.mockResolvedValueOnce([{
+      ...operationJob("capture.media.recording.process", {}),
+      id: "media-job-requeued",
+      status: "queued",
+    }]);
+
+    await expect(import("@/lib/capture/media-jobs").then((module) =>
+      module.enqueueCaptureMediaProcessingJob({
+        tenantId: "tenant-a",
+        actorId: "actor-a",
+        recording,
+        request: {
+          schemaVersion: 1,
+          recordingId: recording.id,
+          languageHints: ["en-US"],
+          speakerMappings: [],
+          rawAudioRetention: { mode: "retain" },
+        },
+        executionScope,
+      })
+    )).resolves.toMatchObject({ id: "media-job-requeued", status: "queued" });
+    expect(mocks.requeueOperationJobByDedupeKey).toHaveBeenCalledWith(
+      "capture.media.recording:retry",
+      expect.stringMatching(/retrying/i),
+      { tenantId: "tenant-a" },
+    );
+  });
 });
 
 function recordingFixture(withCheckpoint: boolean): CaptureRecordingDetail {

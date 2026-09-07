@@ -165,6 +165,14 @@ export async function enqueueCaptureMediaProcessingJob(input: {
     dedupeMode: "idempotent",
   });
   assertQueuedRequest(job, requestHash);
+  if (job.status === "failed") {
+    const [requeued] = await requeueOperationJobByDedupeKey(
+      job.dedupeKey || `capture.media.recording:${input.recording.id}:${requestHash}`,
+      "Retrying durable recording media processing.",
+      { tenantId: input.tenantId },
+    );
+    return requeued || job;
+  }
   return job;
 }
 
