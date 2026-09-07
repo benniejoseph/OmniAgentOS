@@ -38,6 +38,7 @@ import {
 import { canonicalStatusForMission } from "@/lib/status/canonical";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import { missionCanonicalShadowWrite } from "@/lib/workspaces/canonical-store";
 
 export type MissionOwner = {
   tenantId?: string;
@@ -1633,6 +1634,48 @@ async function appendMissionLifecycleEventForOwner(
   sql?: ReturnType<typeof getSql>,
 ) {
   const compactPayload = compactEventPayload(payload);
+  if (sql) {
+    const missionRows = await sql`
+      SELECT * FROM omni_missions
+      WHERE id = ${missionId} AND tenant_id = ${owner.tenantId}
+        AND actor_id = ${owner.actorId}
+      LIMIT 1
+    `;
+    if (!missionRows[0]) {
+      throw new MissionNotFoundError("Canonical Mission source is unavailable.");
+    }
+    const mission = missionFromRow(missionRows[0]);
+    const taskId = typeof compactPayload.taskId === "string"
+      ? compactPayload.taskId
+      : undefined;
+    const taskRows = taskId
+      ? await sql`
+          SELECT * FROM omni_mission_tasks
+          WHERE id = ${taskId} AND tenant_id = ${owner.tenantId}
+            AND actor_id = ${owner.actorId} AND mission_id = ${missionId}
+          LIMIT 1
+        `
+      : [];
+    const task = taskRows[0] ? taskFromRow(taskRows[0]) : undefined;
+    await missionCanonicalShadowWrite({
+      sql,
+      mission,
+      task,
+      attribution: {
+        executionScope: owner.executionScope,
+        changedFieldIds: [
+          "event_type",
+          ...(
+            Array.isArray(compactPayload.fields)
+              ? compactPayload.fields.filter(
+                  (field): field is string => typeof field === "string",
+                )
+              : Object.keys(compactPayload)
+          ),
+        ],
+      },
+    });
+  }
   const event = {
     ...(owner.idempotencyKey
       ? {
