@@ -183,7 +183,7 @@ export const salesforceWriteCommitSchema = z.object({
   objectType: z.enum(SALESFORCE_UPDATE_OBJECTS),
   action: z.enum(["create", "update"]),
   providerRecordIdSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  providerModifiedAt: canonicalTimestampSchema,
+  providerModifiedAt: canonicalTimestampSchema.nullable(),
   providerAcknowledgement: z.enum([
     "provider_response",
     "provider_idempotency_reconciliation",
@@ -202,6 +202,14 @@ export const salesforceWriteCommitSchema = z.object({
       code: "custom",
       path: ["verificationState"],
       message: "Salesforce verification state is inconsistent with its target evidence.",
+    });
+  }
+  if ((value.verificationReasonCode === "target_missing") !==
+      (value.providerModifiedAt === null)) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerModifiedAt"],
+      message: "Only a missing Salesforce target can omit its provider revision.",
     });
   }
 });
@@ -265,6 +273,7 @@ export function salesforceWriteExpectedTargetState(input: {
     objectType: metadata.objectType,
     accountId: input.value.accountId,
     expectedAccountRevision: input.value.expectedAccountRevision,
+    accountBinding: "linked_account" as const,
     recordIdentity: metadata.action === "create"
       ? { externalKey: salesforceWriteExternalKey(input.executionId) }
       : { providerRecordIdSha256: providerRecordIdSha256(input.value.recordId || "") },
