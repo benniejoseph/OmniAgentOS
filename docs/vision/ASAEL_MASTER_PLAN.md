@@ -2725,8 +2725,10 @@ Readback confirms forced RLS on both safety ledgers, two restrictive actor
 policies, all four lifecycle/no-truncate triggers, no broad runtime mutation
 grants, and zero initial records. Ninety-three focused A2A, database, queue,
 and maintenance checks, affected lint, TypeScript, and the 97-page Next 16
-production build pass. Application promotion is pending. This closes Phase 8;
-P9.1 is next and P12/P13 remain deferred.
+production build pass. Vercel rejected the complete-feature promotion at
+`9e08e08d552d1e7222b777419b8bf33419b23178` before upload because the team
+still reports an overdue balance; Fly was intentionally left unchanged. This
+closes Phase 8; P9.1 is next and P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
