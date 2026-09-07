@@ -1,4 +1,5 @@
 import { WORKFLOW_EXECUTOR_TIMEOUT_MS } from "@/lib/config";
+import { revokeApprovalGrantsForPlan } from "@/lib/approval-grants/store";
 import { RunBudgetExceededError } from "@/lib/runs/budgets";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { formVerifiedEffectMemories } from "@/lib/memory/consolidator";
@@ -19,6 +20,7 @@ import {
 import { appendThreadTurn } from "@/lib/threads/store";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
 import { EffectReceiptFinalizationError } from "@/lib/tools/executor";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import type { ToolExecutionRecord } from "@/lib/tools/types";
 import {
   buildWorkflowSpecialistContext,
@@ -446,6 +448,25 @@ export async function tickWorkflowRun(
           return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
         }
         runFence = revoked.updatedAt;
+      }
+      if (executionAuthority?.executionScope) {
+        await revokeApprovalGrantsForPlan({
+          planId: previousPlanOutput.id,
+          planSha256: canonicalJsonSha256({
+            id: previousPlanOutput.id,
+            plan: previousPlanOutput.plan,
+          }),
+        }, {
+          executionScope: deriveExecutionScope(
+            executionAuthority.executionScope,
+            {
+              executingPrincipalType: "system",
+              executingPrincipalId: `workflow:${detail.run.id}`,
+              causationId: `workflow.replan:${previousPlanOutput.id}`,
+              purpose: "workflow.replan.revoke_approval_grants",
+            },
+          ),
+        });
       }
       await appendWorkflowEvent(detail.run.id, "workflow.replan_authority_invalidated", {
         previousPlanId: replanDirective.previousPlanId,

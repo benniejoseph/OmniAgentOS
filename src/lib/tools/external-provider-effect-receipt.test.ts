@@ -2,6 +2,14 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  approvalGrantExecutionKeySha256,
+  buildToolApprovalGrantRequest,
+} from "@/lib/approval-grants/authorization";
+import {
+  buildApprovalGrantClaimV1,
+  buildApprovalGrantV1,
+} from "@/lib/approval-grants/contracts";
 import { listStreamEvents } from "@/lib/events/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
@@ -31,7 +39,7 @@ const providers = vi.hoisted(() => {
     dryRunSupported: true,
     approvalRequired: true,
     operationClass: "mutation" as const,
-    reversible: false,
+    reversible: true,
     inputSchema: { type: "object", additionalProperties: true },
     approvalFingerprint: "reviewed-openapi-create-contact-v1",
   };
@@ -252,10 +260,54 @@ describe("external provider effect receipts", () => {
       planNodeId: "create-contact",
     };
     const executor = await import("@/lib/tools/executor");
+    const toolInput = { body: { name: "Ada" } };
+    const idempotencyKey = "workflow:provider:create-contact";
+    const request = buildToolApprovalGrantRequest({
+      tool: providers.openApiTool,
+      toolInput,
+      executionScope,
+      planId: effectBinding.planId,
+      planSha256: effectBinding.planSha256,
+    })!;
+    const issuedAt = new Date(Date.now() - 1_000).toISOString();
+    const claimedAt = new Date(Date.now() - 500).toISOString();
+    const grant = buildApprovalGrantV1({
+      version: "p9.4-approval-grant:1",
+      grantId: "grant:11111111-1111-4111-8111-111111111111",
+      ...request,
+      approvedByActorId: actorId,
+      sourceApprovalId: "workflow-approval-one",
+      issuedAt,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      maxUses: 1,
+      usedUses: 1,
+      state: "exhausted",
+      lifecycleRevision: 2,
+      lastUsedAt: claimedAt,
+      revokedAt: null,
+    });
+    const approvalGrantClaim = {
+      grant,
+      claim: buildApprovalGrantClaimV1({
+        version: "p9.4-approval-grant-claim:1",
+        claimId: "claim:22222222-2222-4222-8222-222222222222",
+        grantId: grant.grantId,
+        grantBindingSha256: grant.bindingSha256,
+        tenantId,
+        ownerActorId: actorId,
+        executionKeySha256: approvalGrantExecutionKeySha256({
+          tenantId,
+          ownerActorId: actorId,
+          executionKey: idempotencyKey,
+        }),
+        useOrdinal: 1,
+        claimedAt,
+      }),
+    };
 
     const executed = await executor.executeGovernedTool({
       toolId: providers.openApiTool.id,
-      input: { body: { name: "Ada" } },
+      input: toolInput,
       dryRun: false,
       approved: true,
       context: {
@@ -266,7 +318,8 @@ describe("external provider effect receipts", () => {
       },
       executionScope,
       effectBinding,
-      idempotencyKey: "workflow:provider:create-contact",
+      approvalGrantClaim,
+      idempotencyKey,
     });
 
     expect(providers.callOpenApiOperation).toHaveBeenCalledTimes(1);
@@ -286,6 +339,39 @@ describe("external provider effect receipts", () => {
         verificationReasonCode: "read_unavailable",
       },
     });
+  });
+
+  it("does not honor a workflow's bare approved flag without an exact grant claim", async () => {
+    const tenantId = "tenant-provider";
+    const actorId = "owner-provider";
+    const workflowRunId = "provider-workflow-unbound";
+    const executionScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "system",
+      executingPrincipalId: `workflow:${workflowRunId}`,
+      correlationId: workflowRunId,
+      purpose: "workflow.tool.execute",
+    });
+    const executor = await import("@/lib/tools/executor");
+    const result = await executor.executeGovernedTool({
+      toolId: providers.openApiTool.id,
+      input: { body: { name: "Grace" } },
+      dryRun: false,
+      approved: true,
+      context: { tenantId, actorId, role: "admin", source: "default" },
+      executionScope,
+      effectBinding: {
+        workflowRunId,
+        planId: "provider-plan-unbound",
+        planSha256: "f".repeat(64),
+        planNodeId: "create-contact",
+      },
+      idempotencyKey: "workflow:provider:create-contact:unbound",
+    });
+
+    expect(result.record.status).toBe("approval_required");
+    expect(providers.callOpenApiOperation).not.toHaveBeenCalled();
   });
 
   it("leaves an uncertain MCP delivery intent-bound and unreplayed", async () => {

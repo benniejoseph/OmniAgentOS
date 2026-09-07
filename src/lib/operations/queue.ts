@@ -250,10 +250,24 @@ function workflowApprovalToQueueItem(
           id: node.id,
           label: node.label,
           kind: node.kind,
-          toolIds: node.toolIds,
-          riskLevel: node.riskLevel,
-          dependsOn: node.dependsOn,
+        toolIds: node.toolIds,
+        riskLevel: node.riskLevel,
+        dependsOn: node.dependsOn,
+        connectorTargets: node.connectorTargets,
+        reviewedToolInputs: (node.toolInputs || []).map((input) => ({
+          toolId: input.toolId,
+          input: parseReviewedWorkflowInput(input.inputJson),
+          grantEligible: !node.inputBindings?.some(
+            (binding) => binding.targetToolId === input.toolId,
+          ),
         })),
+        hasDynamicInputBindings: Boolean(node.inputBindings?.length),
+      })),
+      approvalGrant: {
+        scope: "Only exact reviewed static inputs for reversible risk-one or risk-two tools.",
+        maxLifetimeHours: 24,
+        replanningInvalidates: true,
+      },
       }
     : { unavailable: true };
   return {
@@ -271,6 +285,17 @@ function workflowApprovalToQueueItem(
     }) as Record<string, unknown>,
     record: publicWorkflowRun(record),
   };
+}
+
+function parseReviewedWorkflowInput(inputJson: string) {
+  try {
+    const value: unknown = JSON.parse(inputJson);
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : { unavailable: "Reviewed input is not an object." };
+  } catch {
+    return { unavailable: "Reviewed input could not be parsed." };
+  }
 }
 
 function sloPolicyChangeToQueueItem(

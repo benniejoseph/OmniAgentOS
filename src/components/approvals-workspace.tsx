@@ -739,6 +739,13 @@ function ApprovalCard({
           action runs only after quorum is reached.
         </p>
       ) : null}
+      {item.kind === "workflow" ? (
+        <p className="mt-4 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm leading-5">
+          One approval covers repeated reversible actions only when their exact
+          inputs are shown below. A changed target, tool contract, action class,
+          expired budget, or replanned workflow opens a new approval gate.
+        </p>
+      ) : null}
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
         <ConsentFact label={reconciliationRequired ? "If you continue" : "If you approve"} value={whatWillHappen(item)} />
@@ -1055,7 +1062,7 @@ function whatWillHappen(item: ApprovalItem) {
     return `The ${item.title} tool executes for real with the inputs below, and the output is recorded in the tool audit ledger.`;
   }
   if (item.kind === "workflow") {
-    return "The paused workflow resumes and continues executing its remaining plan steps.";
+    return "The workflow resumes. Exact reviewed reversible actions receive short-lived, budgeted plan grants; dynamic or changed targets still pause for their own approval.";
   }
   return "The monitoring policy change is applied and starts affecting SLO evaluation, incidents, and alerts.";
 }

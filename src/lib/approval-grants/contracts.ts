@@ -205,7 +205,7 @@ export function evaluateApprovalGrant(
   now = new Date(),
 ): ApprovalGrantDecision {
   const parsed = approvalGrantV1Schema.parse(grant);
-  if (!approvalGrantMatchesRequest(parsed, request)) {
+  if (!approvalGrantBindsRequest(parsed, request)) {
     return Object.freeze({ allowed: false, reason: "binding_changed" });
   }
   if (now.getTime() < Date.parse(parsed.issuedAt)) {
@@ -223,7 +223,7 @@ export function evaluateApprovalGrant(
   return Object.freeze({ allowed: true, reason: "exact_grant" });
 }
 
-function approvalGrantMatchesRequest(
+export function approvalGrantBindsRequest(
   grant: ApprovalGrantV1,
   request: ApprovalGrantRequest,
 ) {
