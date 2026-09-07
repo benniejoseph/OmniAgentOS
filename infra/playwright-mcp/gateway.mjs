@@ -208,6 +208,7 @@ async function handleGatewayRequest(request, response) {
       region: safeRuntimeValue(process.env.FLY_REGION),
       revision: safeRuntimeValue(process.env.OMNIAGENT_RELEASE_SHA),
       protocol: "streamable-http",
+      persistentProfiles: Boolean(profileEncryptionKey),
     });
     return;
   }

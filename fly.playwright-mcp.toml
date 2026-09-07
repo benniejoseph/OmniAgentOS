@@ -7,7 +7,14 @@ kill_timeout = "30s"
   dockerfile = "Dockerfile.playwright-mcp"
 
 [deploy]
-  strategy = "bluegreen"
+  # Fly does not support blue/green replacement for Machines with attached
+  # volumes. The single browser Machine keeps its encrypted profile archive
+  # attached through an ordered replacement instead.
+  strategy = "rolling"
+
+[mounts]
+  source = "playwright_profiles"
+  destination = "/data"
 
 [env]
   OMNIAGENT_PLAYWRIGHT_MCP_PORT = "8080"
