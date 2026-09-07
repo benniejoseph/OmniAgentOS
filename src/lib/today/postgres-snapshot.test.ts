@@ -123,6 +123,7 @@ describe("Postgres Today snapshot", () => {
           focus: [{ title: "Launch", reason: "Ready for verification." }],
           watchouts: ["Watch the latency budget."],
           resurfaced: [{ title: "Release flow", context: "Verify before promotion." }],
+          memoryIds: ["memory-1"],
           generatedBy: "system",
           sourceCounts: {
             items: 2,
@@ -141,6 +142,7 @@ describe("Postgres Today snapshot", () => {
           activeWork: 0,
           projects: 1,
         },
+        memory_ids: ["memory-1"],
         generated_at: "2026-08-26T00:30:00.000Z",
       }],
       projects: [{
@@ -203,6 +205,8 @@ describe("Postgres Today snapshot", () => {
     expect(statement.text).toContain("briefs.content ->> 'generatedBy' = briefs.generated_by");
     expect(statement.text).toContain("briefs.content ->> 'model' = briefs.model");
     expect(statement.text).toContain("briefs.content -> 'sourceCounts' = briefs.source_counts");
+    expect(statement.text).toContain("briefs.content -> 'memoryIds' = to_jsonb(briefs.memory_ids)");
+    expect(statement.text).toContain("jsonb_array_length(briefs.content -> 'memoryIds') <= 12");
     expect(statement.text).toContain("briefs.source_counts ?& ARRAY[");
     expect(statement.text).toContain("FROM jsonb_each(");
     expect(statement.text).toContain("isfinite(briefs.generated_at)");
