@@ -20,6 +20,7 @@ const requiredFamilies = [
   "app.runs.",
   "app.workflows.",
   "app.connectors.",
+  "app.trash.",
   "app.settings.",
   "app.today.",
   "app.notifications.",

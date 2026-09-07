@@ -19,6 +19,15 @@ import {
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { createMcpConnectorRecord, saveMcpConnector } from "@/lib/connectors/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  listTrashReceiptsService,
+  listTrashService,
+  previewTrashPurgeService,
+  previewTrashRestoreService,
+  purgeTrashService,
+  restoreTrashService,
+  showTrashService,
+} from "@/lib/app-services/trash";
 
 let dataDir = "";
 let priorDatabaseUrl: string | undefined;
@@ -124,7 +133,78 @@ describe("P9.3 reversible application deletes", () => {
       data: { movedToTrash: true, trash: { resourceType: "mcp_connector" } },
     });
   });
+
+  it("lists metadata-only trash, restores safely, and emits final purge receipts", async () => {
+    const caller = appCaller("trash-lifecycle");
+    const first = await createSkillService(caller, skillInput("Restorable"));
+    const firstPreview = await previewSkillDeleteService(caller, {
+      id: first.data.skill.id,
+    });
+    const moved = await deleteSkillService(caller, {
+      id: first.data.skill.id,
+      preview: firstPreview.data.preview!,
+    });
+    const listed = await listTrashService(caller, {});
+    expect(listed.data.items).toEqual([
+      expect.objectContaining({ trashId: moved.data.trash.trashId }),
+    ]);
+    expect(JSON.stringify(listed.data)).not.toContain("instructions");
+    await expect(showTrashService(caller, {
+      trashId: moved.data.trash.trashId,
+    })).resolves.toMatchObject({
+      data: { item: { state: "retained", compensation: { kind: "exact_restore" } } },
+    });
+    const restorePreview = await previewTrashRestoreService(caller, {
+      trashId: moved.data.trash.trashId,
+    });
+    await expect(restoreTrashService(caller, {
+      preview: restorePreview.data.preview!,
+    })).resolves.toMatchObject({
+      data: { trash: { state: "restored" }, effectReceipt: { action: "restore" } },
+    });
+
+    const second = await createSkillService(caller, skillInput("Purgeable"));
+    const secondPreview = await previewSkillDeleteService(caller, {
+      id: second.data.skill.id,
+    });
+    const secondMoved = await deleteSkillService(caller, {
+      id: second.data.skill.id,
+      preview: secondPreview.data.preview!,
+    });
+    const purgePreview = await previewTrashPurgeService(caller, {
+      trashId: secondMoved.data.trash.trashId,
+    });
+    expect(purgePreview.data).toMatchObject({
+      permanent: true,
+      preview: { reversible: false, action: "purge" },
+    });
+    const purged = await purgeTrashService(caller, {
+      preview: purgePreview.data.preview!,
+    });
+    expect(purged.data).toMatchObject({
+      trash: { state: "purged" },
+      finalDeletionReceipt: { action: "purge", outcome: "applied" },
+    });
+    const receipts = await listTrashReceiptsService(caller, {
+      trashId: secondMoved.data.trash.trashId,
+    });
+    expect(receipts.data.receipts.map((receipt) => receipt.action).sort())
+      .toEqual(["purge", "trash"]);
+  });
 });
+
+function skillInput(name: string) {
+  return {
+    name,
+    description: `${name} description.`,
+    instructions: `${name} instructions with enough detail.`,
+    category: "analysis" as const,
+    status: "active" as const,
+    toolIds: [],
+    tags: [],
+    knowledgeTags: [],
+  };
+}
 
 function appCaller(correlation: string) {
   const context = {

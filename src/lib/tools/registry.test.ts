@@ -177,6 +177,30 @@ describe("governed native tool schemas", () => {
     expect(getGovernedTool("app.connectors.delete")).toMatchObject({ reversible: true });
   });
 
+  it("exposes actor-private trash with approval-gated restore and permanent purge", () => {
+    for (const id of ["app.trash.list", "app.trash.show", "app.trash.receipts.list"]) {
+      expect(getGovernedTool(id)).toMatchObject({
+        category: "app",
+        riskLevel: 0,
+        operationClass: "read_only",
+      });
+    }
+    expect(getGovernedTool("app.trash.restore")).toMatchObject({
+      riskLevel: 2,
+      approvalRequired: true,
+      reversible: true,
+    });
+    expect(getGovernedTool("app.trash.purge")).toMatchObject({
+      riskLevel: 3,
+      approvalRequired: true,
+      reversible: false,
+    });
+    expect(getGovernedTool("app.trash.purge")?.inputSchema).toMatchObject({
+      required: ["preview"],
+      properties: { preview: { properties: { action: { enum: ["purge"] } } } },
+    });
+  });
+
   it("keeps settings secrets out of agent tools", () => {
     expect(MAIN_AGENT_EXCLUDED_APP_OPERATIONS.map((entry) => entry.operation)).toEqual(
       expect.arrayContaining([
