@@ -2119,6 +2119,27 @@ exact HTTP method; unknown authority is never inferred from a name. Raw cursor
 values, credentials, provider content, actor coordinates, and unpriced cost
 estimates never enter the browser contract.
 
+## Functional Settings model assignments
+
+P11.8 replaces configuration-only model selectors with the versioned
+`p11.8-model-assignment:1` activation contract. Main Agent, Orchestrator,
+Planner, Verifier, Council, Memory, embeddings, vision, and audio
+transcription each resolve an exact actor-owned assignment at their real model
+call boundary. Generic roles may expose fallback only when the adapter executes
+and receipts that fallback; specialized runtimes expose one validated primary
+route. Asael speech remains pinned to its separate immutable voice contract.
+
+Saving an assignment validates the exact enabled tenant-vault provider,
+catalog model lifecycle, and required runtime capability before serializing a
+monotonic assignment revision and configuration SHA-256. Legacy rows and
+unsupported provider/model combinations remain visible as configuration-only
+and cannot route traffic until explicitly revalidated. Every consumed route
+binds its assignment ID, role, revision, configuration digest, and
+`tenant_vault` credential source to the AI-usage receipt. The private Settings
+snapshot exposes only receipts matching the assignment's current exact
+revision under `p11.8-functional-model-routing:1`; deployment-managed calls
+never claim tenant-assignment provenance.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing
