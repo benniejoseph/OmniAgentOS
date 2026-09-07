@@ -239,26 +239,108 @@ class TalkController extends ChangeNotifier {
   }
 }
 
+abstract interface class VoiceDraftRecorder {
+  Future<bool> hasPermission();
+  Future<void> start(String outputPath);
+  Future<String?> stop();
+  Future<void> cancel();
+  Future<void> dispose();
+}
+
+class RecordVoiceDraftRecorder implements VoiceDraftRecorder {
+  RecordVoiceDraftRecorder() : _recorder = AudioRecorder();
+
+  final AudioRecorder _recorder;
+
+  @override
+  Future<bool> hasPermission() => _recorder.hasPermission();
+
+  @override
+  Future<void> start(String outputPath) => _recorder.start(
+    const RecordConfig(
+      encoder: AudioEncoder.aacLc,
+      bitRate: 64000,
+      sampleRate: 24000,
+      numChannels: 1,
+    ),
+    path: outputPath,
+  );
+
+  @override
+  Future<String?> stop() => _recorder.stop();
+
+  @override
+  Future<void> cancel() => _recorder.cancel();
+
+  @override
+  Future<void> dispose() => _recorder.dispose();
+}
+
 class TalkView extends StatefulWidget {
-  const TalkView({super.key, required this.controller});
+  const TalkView({super.key, required this.controller, this.voiceRecorder});
   final TalkController controller;
+  final VoiceDraftRecorder? voiceRecorder;
   @override
   State<TalkView> createState() => _TalkViewState();
 }
 
-class _TalkViewState extends State<TalkView> {
+class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   final input = TextEditingController();
   final scroll = ScrollController();
-  final recorder = AudioRecorder();
+  late final VoiceDraftRecorder recorder;
   String strategy = 'auto';
   bool recording = false;
   String? recordingError;
+  int voiceDraftGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    recorder = widget.voiceRecorder ?? RecordVoiceDraftRecorder();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      unawaited(interruptVoiceDraft());
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    voiceDraftGeneration += 1;
     input.dispose();
     scroll.dispose();
-    unawaited(recorder.dispose());
+    unawaited(_disposeRecorder());
     super.dispose();
+  }
+
+  Future<void> _disposeRecorder() async {
+    try {
+      await recorder.cancel();
+    } catch (_) {
+      // The platform may already have ended the interrupted recording.
+    }
+    try {
+      await recorder.dispose();
+    } catch (_) {
+      // Disposal must not surface after the owning widget has gone away.
+    }
+  }
+
+  Future<void> interruptVoiceDraft() async {
+    voiceDraftGeneration += 1;
+    if (mounted && recording) setState(() => recording = false);
+    try {
+      await recorder.cancel();
+    } catch (_) {
+      // Lifecycle interruption is fail-closed even if the OS ended first.
+    }
   }
 
   void submit() {
@@ -271,6 +353,7 @@ class _TalkViewState extends State<TalkView> {
     if (widget.controller.transcribing || widget.controller.sending) return;
     setState(() => recordingError = null);
     if (recording) {
+      final generation = voiceDraftGeneration;
       setState(() => recording = false);
       try {
         final path = await recorder.stop();
@@ -283,14 +366,19 @@ class _TalkViewState extends State<TalkView> {
           // The OS may have already cleared the temporary recording.
         }
         final transcript = await widget.controller.transcribeVoice(bytes);
-        if (!mounted || transcript == null || transcript.trim().isEmpty) return;
+        if (!mounted ||
+            generation != voiceDraftGeneration ||
+            transcript == null ||
+            transcript.trim().isEmpty) {
+          return;
+        }
         final existing = input.text.trim();
         input.text = existing.isEmpty
             ? transcript.trim()
             : '$existing\n${transcript.trim()}';
         input.selection = TextSelection.collapsed(offset: input.text.length);
       } catch (_) {
-        if (mounted) {
+        if (mounted && generation == voiceDraftGeneration) {
           setState(() {
             recordingError = 'Voice draft could not be transcribed. Your typed draft is unchanged.';
           });
@@ -299,24 +387,22 @@ class _TalkViewState extends State<TalkView> {
       return;
     }
 
+    final generation = ++voiceDraftGeneration;
     try {
       if (!await recorder.hasPermission()) {
         throw StateError('Microphone permission was not granted.');
       }
+      if (!mounted || generation != voiceDraftGeneration) return;
       final path =
           '${Directory.systemTemp.path}/asael-voice-${DateTime.now().microsecondsSinceEpoch}.m4a';
-      await recorder.start(
-        const RecordConfig(
-          encoder: AudioEncoder.aacLc,
-          bitRate: 64000,
-          sampleRate: 24000,
-          numChannels: 1,
-        ),
-        path: path,
-      );
-      if (mounted) setState(() => recording = true);
+      await recorder.start(path);
+      if (!mounted || generation != voiceDraftGeneration) {
+        await recorder.cancel();
+        return;
+      }
+      setState(() => recording = true);
     } catch (_) {
-      if (mounted) {
+      if (mounted && generation == voiceDraftGeneration) {
         setState(() {
           recordingError =
               'Microphone access is required to create a voice draft.';

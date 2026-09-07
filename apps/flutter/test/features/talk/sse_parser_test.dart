@@ -1,15 +1,20 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter_test/flutter_test.dart';
 import 'package:asael/features/talk/talk.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 class _TalkRepository implements TalkRepository {
   final calls = <({String message, String mode, String strategy})>[];
   var failNext = false;
+  var transcriptions = 0;
 
   @override
-  Future<String> transcribeVoice(Uint8List bytes) async => 'Reviewed voice';
+  Future<String> transcribeVoice(Uint8List bytes) async {
+    transcriptions += 1;
+    return 'Reviewed voice';
+  }
 
   @override
   Stream<SseEvent> send({
@@ -92,4 +97,52 @@ void main() {
       expect(repository.calls, isEmpty);
     },
   );
+
+  testWidgets(
+    'interrupts a backgrounded voice draft without transcription or send',
+    (tester) async {
+      final repository = _TalkRepository();
+      final recorder = _VoiceDraftRecorder();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TalkView(
+            controller: TalkController(repository),
+            voiceRecorder: recorder,
+          ),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Record voice draft'));
+      await tester.pump();
+      expect(recorder.starts, 1);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pumpAndSettle();
+
+      expect(recorder.cancels, greaterThanOrEqualTo(1));
+      expect(repository.transcriptions, 0);
+      expect(repository.calls, isEmpty);
+      expect(find.text('Recording voice draft…'), findsNothing);
+    },
+  );
+}
+
+class _VoiceDraftRecorder implements VoiceDraftRecorder {
+  var starts = 0;
+  var cancels = 0;
+
+  @override
+  Future<void> cancel() async => cancels += 1;
+
+  @override
+  Future<void> dispose() async {}
+
+  @override
+  Future<bool> hasPermission() async => true;
+
+  @override
+  Future<void> start(String outputPath) async => starts += 1;
+
+  @override
+  Future<String?> stop() async => null;
 }
