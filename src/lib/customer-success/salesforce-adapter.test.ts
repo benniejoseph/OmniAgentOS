@@ -292,4 +292,43 @@ describe("Salesforce guarded-write adapter", () => {
       reconcileOnly: true,
     })).resolves.toEqual({ status: "retryable" });
   });
+
+  it("reports a write target deleted during the conditional update as a conflict", async () => {
+    authorize();
+    enableWrites();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json([{ version: "67.0" }]))
+      .mockResolvedValueOnce(Response.json({
+        fields: [{ name: "Name", updateable: true }],
+      }))
+      .mockResolvedValueOnce(Response.json({ done: true, records: [{
+        Id: "001000000000001AAA",
+        Name: "Current name",
+        SystemModstamp: "2026-09-07T12:00:00.000Z",
+        LastModifiedDate: "2026-09-07T12:00:00.000Z",
+      }] }))
+      .mockResolvedValueOnce(Response.json([{
+        errorCode: "ENTITY_IS_DELETED",
+        message: "provider detail",
+      }], { status: 404 }));
+    const promise = executeSalesforceWrite({
+      connection,
+      toolId: "app.customer_accounts.salesforce.account.update",
+      value: {
+        accountId: `customer-account:${"c".repeat(64)}`,
+        expectedAccountRevision: 2,
+        recordId: "001000000000001AAA",
+        expectedProviderModifiedAt: "2026-09-07T12:00:00.000Z",
+        fields: { Name: "Approved name" },
+      },
+      executionId: "idem_deleted_account_update",
+      salesforceAccountId: "001000000000001AAA",
+    });
+    await expect(promise).rejects.toMatchObject({
+      actionableError: {
+        code: "record_conflict",
+        action: "review_conflict",
+      },
+    });
+  });
 });
