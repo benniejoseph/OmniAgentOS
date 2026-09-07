@@ -76,10 +76,7 @@ CREATE TABLE IF NOT EXISTS omni_trash_items (
     OR (state IN ('purged', 'expired')
       AND item->'restoredAt' = 'null'::JSONB
       AND (item->>'purgedAt')::TIMESTAMPTZ = terminal_at)
-  ),
-  FOREIGN KEY (owner_actor_id)
-    REFERENCES omni_auth_users (actor_id)
-    ON UPDATE RESTRICT ON DELETE RESTRICT
+  )
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS omni_trash_retained_resource_idx
@@ -268,7 +265,7 @@ INSERT INTO omni_schema_version (version, name, checksum, applied_at)
 VALUES (
   120,
   'trash_lifecycle_v1',
-  'fadd7e5f0dd81375f49a4d1ddf641efb586a9094884cbee426ec4aa6c22ca44e',
+  '49c6af6f71d05afa4f10aa2d966381f2614fe8e9037347cd247d7b56a332049c',
   NOW()
 );
 
