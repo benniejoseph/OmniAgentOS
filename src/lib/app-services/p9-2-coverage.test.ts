@@ -25,6 +25,7 @@ const requiredFamilies = [
   "app.today.",
   "app.notifications.",
   "app.communications.",
+  "app.payments.",
 ] as const;
 
 describe("P9.2 complete governed application control", () => {

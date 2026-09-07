@@ -341,6 +341,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     expectedDraftSha256: sha256("Immutable digest returned with the draft."),
     reviewedRecipient: text(3, 500), reviewedSubject: text(1, 998), reviewedBody: text(1, 50_000),
   }, ["draftId", "expectedDraftSha256", "reviewedRecipient", "reviewedSubject", "reviewedBody"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.payments.ap2.readiness", "Show AP2 readiness", "Inspect the pinned AP2 protocol, all five role and verification boundaries, accepted adapters and key authorities, credential isolation policy, and disabled payment-capability gates. This cannot initiate a purchase or payment.", objectSchema({})),
   readTool("app.assets.list", "List captured assets", "List actor-readable uploaded assets and recording metadata without copying stored binary content into the transcript.", objectSchema({
     kind: assetKind(), limit: integer(1, 100, 50),
   })),
