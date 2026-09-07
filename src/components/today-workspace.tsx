@@ -30,6 +30,7 @@ import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefet
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { useWorkspaceReadiness } from "@/components/app-shell/use-workspace-readiness";
 import { WorkspaceReadinessCard } from "@/components/app-shell/workspace-readiness-card";
+import { SourceCoveragePanel } from "@/components/source-coverage/source-coverage-panel";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import {
   formatTodayDue,
@@ -524,6 +525,8 @@ export function TodayWorkspace({
           ))}
         </div>
       </section>
+
+      <SourceCoveragePanel surface="today" />
 
       <section className="today-generated-brief" aria-labelledby="daily-brief-title">
         <div className="today-brief-lead">
