@@ -48,7 +48,7 @@ function agentTimelineItem(item: ResultRecord): ResultTimelineItem {
     status,
     body: fullText(item.response || item.error, finalState(status) ? "No result text was stored." : "This run has not produced a final result yet."),
     meta: `${agentIdentitySummary(item)} / ${stringValue(item.mode, "agent")} / ${groundingSummary(item.grounding)} / ${formatResultTime(timestampValue)}`,
-    href: `/app/results?run=${encodeURIComponent(key)}`,
+    href: `/app/command?run=${encodeURIComponent(stringValue(item.id))}`,
     tone: toneForResultStatus(status),
     timestamp: parsedTime(timestampValue),
   };

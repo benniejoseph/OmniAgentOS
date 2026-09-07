@@ -59,6 +59,7 @@ describe("result timeline", () => {
     expect(timeline).toHaveLength(1);
     expect(timeline[0].status).toBe("completed");
     expect(timeline[0].body).toBe("Done");
+    expect(timeline[0].href).toBe("/app/command?run=agent-1");
   });
 
   it("does not treat unknown state as healthy", () => {
