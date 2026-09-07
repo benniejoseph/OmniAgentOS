@@ -46,6 +46,56 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     agentId: { type: "string", enum: ["atlas", "scout", "forge", "sentinel", "mnemosyne"] },
     dueAt: { type: ["string", "null"], format: "date-time" },
   }, ["projectId", "workItemId"]), { reversible: true }),
+  readTool("app.memory.list", "List memory", "List durable memories visible to the current actor, optionally for one owned thread.", objectSchema({
+    limit: integer(1, 100, 20),
+    threadId: text(1, 200),
+  })),
+  readTool("app.memory.search", "Search memory", "Search durable memory visible to the current actor.", requiredObjectSchema({
+    query: text(1, 4_000),
+    limit: integer(1, 100, 20),
+  }, ["query"])),
+  readTool("app.memory.inspect", "Inspect memory", "Inspect one exact memory and its provenance without exposing its embedding.", requiredObjectSchema({
+    id: text(1, 200),
+  }, ["id"])),
+  mutationTool("app.memory.write", "Write memory", "Write one actor-scoped durable memory through the governed memory service.", requiredObjectSchema({
+    title: text(1, 240), content: text(1, 200_000),
+    type: { type: "string", enum: ["preference", "fact", "episode", "procedure", "knowledge", "decision", "task"] },
+    tier: { type: "string", enum: ["working", "episodic", "semantic", "procedural", "preference", "decision", "commitment", "summary"] },
+    tags: { type: "array", maxItems: 50, items: text(1, 80) },
+    importance: { type: "number", minimum: 0, maximum: 1 },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    evidenceRefs: { type: "array", maxItems: 50, items: text(1, 500) },
+    validFrom: { type: "string", format: "date-time" }, validTo: { type: "string", format: "date-time" },
+  }, ["title", "content"]), { reversible: true }),
+  mutationTool("app.memory.correct", "Correct memory", "Create a corrected successor for one exact memory while preserving history.", requiredObjectSchema({
+    id: text(1, 200), title: text(1, 240), content: text(1, 200_000),
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    validTo: { type: "string", format: "date-time" }, contradiction: { type: "boolean" },
+  }, ["id"]), { reversible: true }),
+  mutationTool("app.memory.lifecycle", "Change memory lifecycle", "Pin, unpin, archive, or restore one exact memory.", requiredObjectSchema({
+    id: text(1, 200), action: { type: "string", enum: ["pin", "unpin", "archive", "restore"] },
+  }, ["id", "action"]), { reversible: true }),
+  readTool("app.memory.forget.preview", "Preview memory deletion", "Preview the exact records and projections affected by permanently forgetting one memory.", requiredObjectSchema({
+    id: text(1, 200),
+  }, ["id"])),
+  mutationTool("app.memory.forget", "Forget memory", "Permanently scrub one exact memory only when its deletion-preview digest still matches.", requiredObjectSchema({
+    id: text(1, 200),
+    expectedReceiptManifestSha256: { type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" },
+  }, ["id", "expectedReceiptManifestSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.memory.export", "Export memory", "Return the authenticated owner-only portable memory archive route without copying archive contents into the transcript.", objectSchema({})),
+  readTool("app.knowledge.list", "List knowledge", "List tenant-scoped knowledge sources without chunk bodies.", objectSchema({ limit: integer(1, 100, 20) })),
+  readTool("app.knowledge.search", "Search knowledge", "Search tenant-scoped knowledge chunks.", requiredObjectSchema({ query: text(1, 4_000), limit: integer(1, 100, 20) }, ["query"])),
+  mutationTool("app.knowledge.ingest", "Ingest knowledge", "Chunk, embed, and store one bounded knowledge source.", requiredObjectSchema({
+    title: text(1, 240), content: text(1, 20_000), source: text(0, 2_000),
+    tags: { type: "array", maxItems: 50, items: text(1, 80) },
+  }, ["title", "content"]), { reversible: true }),
+  readTool("app.knowledge.delete.preview", "Preview knowledge-source deletion", "List the exact knowledge documents currently matched by a supported connected-source prefix and return their digest.", requiredObjectSchema({
+    source: { type: "string", enum: ["google:", "google:mail:", "google:calendar:", "google:drive:"] },
+  }, ["source"])),
+  mutationTool("app.knowledge.delete", "Delete knowledge source", "Delete the exact knowledge-source target set only when its current digest matches the prior preview.", requiredObjectSchema({
+    source: { type: "string", enum: ["google:", "google:mail:", "google:calendar:", "google:drive:"] },
+    expectedTargetsSha256: { type: "string", minLength: 64, maxLength: 64, pattern: "^[a-f0-9]{64}$" },
+  }, ["source", "expectedTargetsSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
 ] satisfies readonly ToolDefinition[]);
 
 function readTool(id: string, name: string, description: string, inputSchema: Record<string, unknown>): ToolDefinition {
