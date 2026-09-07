@@ -172,11 +172,11 @@ export const salesforceObjectCursorSchema = z.object({
   pagesSettled: z.number().int().nonnegative(),
   recordsSettled: z.number().int().nonnegative(),
 }).strict().superRefine((value, context) => {
-  if ((value.watermarkAt === null) !== (value.watermarkExternalId === null)) {
+  if (value.watermarkExternalId !== null && value.watermarkAt === null) {
     context.addIssue({
       code: "custom",
       path: ["watermarkAt"],
-      message: "Salesforce watermark coordinates must be complete or absent.",
+      message: "A Salesforce watermark record requires its provider timestamp.",
     });
   }
 });
@@ -249,6 +249,13 @@ export function salesforceConnectionId(input: {
   organizationIdSha256: string;
 }) {
   return `salesforce-connection:${canonicalJsonSha256(input)}`;
+}
+
+export function salesforceOrganizationIdSha256(organizationId: string) {
+  if (!/^[A-Za-z0-9]{15,18}$/.test(organizationId)) {
+    throw new Error("Salesforce organization identity is invalid.");
+  }
+  return canonicalJsonSha256({ provider: "salesforce", organizationId });
 }
 
 export function initialSalesforceSyncCursor(): SalesforceSyncCursor {
