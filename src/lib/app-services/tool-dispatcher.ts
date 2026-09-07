@@ -47,7 +47,14 @@ import {
   readAllNotificationsService,
   updateNotificationService,
 } from "@/lib/app-services/notifications";
-import { cancelRunService, listRunsService, recordRunFeedbackService, showRunService } from "@/lib/app-services/runs";
+import {
+  cancelRunService,
+  inspectRunActivityService,
+  inspectRunTrajectoryService,
+  listRunsService,
+  recordRunFeedbackService,
+  showRunService,
+} from "@/lib/app-services/runs";
 import {
   createAgentService,
   createSkillService,
@@ -176,6 +183,8 @@ export async function executeFirstPartyAppTool(input: {
     "app.notifications.read_all": () => readAllNotificationsService(caller, input.toolInput as never),
     "app.runs.list": () => listRunsService(caller, input.toolInput as never),
     "app.runs.show": () => showRunService(caller, input.toolInput as never),
+    "app.runs.activity": () => inspectRunActivityService(caller, input.toolInput as never),
+    "app.runs.trajectory": () => inspectRunTrajectoryService(caller, input.toolInput as never),
     "app.runs.feedback": () => recordRunFeedbackService(caller, input.toolInput as never),
     "app.runs.cancel": () => cancelRunService(caller, input.toolInput as never),
     "app.agents.list": () => listAgentsService(caller, input.toolInput as never),

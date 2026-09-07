@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getAgentIdentityCardForRun } from "@/lib/agents/card-store";
 import {
   authorizeAppServiceCall,
   completeAppServiceCall,
@@ -7,7 +8,7 @@ import {
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { publicAgentRun } from "@/lib/runs/public";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
-import { listStreamEvents } from "@/lib/events/store";
+import { listCorrelatedEvents, listStreamEvents } from "@/lib/events/store";
 import { applyRunMemoryFeedback } from "@/lib/memory/store";
 import { syncMissionExecutorSafely } from "@/lib/missions/runtime";
 import { cancelOperationJobByDedupeKey, getAgentExecuteJobDedupeKey, getAgentResumeJobDedupeKey } from "@/lib/operations/job-queue";
@@ -20,7 +21,15 @@ import {
   listAgentRuns,
   recordAgentRunFeedback,
 } from "@/lib/runs/store";
+import { listRunBrowserActivity } from "@/lib/runs/activity";
+import { listRunForkLineage } from "@/lib/runs/fork-store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import { getOwnedThread } from "@/lib/threads/store";
 import { getGovernedTool } from "@/lib/tools/registry";
+import { buildRunTrajectory } from "@/lib/trajectories/builder";
+import { evaluateTrajectoryOutcome } from "@/lib/trajectories/evaluate";
+import { buildRunTraceHierarchy, resolveRunCorrelationId } from "@/lib/trajectories/hierarchy";
+import { verifyRunTrajectory } from "@/lib/trajectories/verify";
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 
 export const runListServiceInputSchema = z.object({
@@ -29,6 +38,7 @@ export const runListServiceInputSchema = z.object({
 }).strict();
 
 export const runShowServiceInputSchema = z.object({ runId: z.string().trim().min(1).max(200) }).strict();
+export const runInspectionServiceInputSchema = runShowServiceInputSchema;
 export const runFeedbackServiceInputSchema = z.object({
   runId: z.string().trim().min(1).max(200), verdict: z.enum(["useful", "needs_work"]),
   correction: z.string().trim().max(2_000).optional(),
@@ -71,14 +81,59 @@ export async function showRunService(
 ) {
   const value = runShowServiceInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.runs.show"));
-  const [run, contextReceipt] = await Promise.all([
+  const [run, contextReceipt, agentIdentity] = await Promise.all([
     getAgentRun(value.runId, { tenantId: caller.context.tenantId }),
     getRunContextUseReceipt(value.runId, { tenantId: caller.context.tenantId }),
+    getAgentIdentityCardForRun(value.runId, { tenantId: caller.context.tenantId }),
   ]);
+  await assertRunReadable(run, caller);
   return completeAppServiceCall(authorized, {
     run: run ? publicAgentRun(run) : null,
     contextReceipt: run ? contextReceipt : null,
+    agentIdentity: run ? agentIdentity : null,
   }, { resourceCount: run ? 1 : 0 });
+}
+
+export async function inspectRunActivityService(
+  caller: AppServiceCaller,
+  input: z.input<typeof runInspectionServiceInputSchema>,
+) {
+  const value = runInspectionServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.runs.activity"));
+  const run = await getAgentRun(value.runId, { tenantId: caller.context.tenantId });
+  await assertRunReadable(run, caller);
+  const browserActivity = run
+    ? await listRunBrowserActivity(run.id, { tenantId: caller.context.tenantId, actorId: caller.context.actorId })
+    : [];
+  return completeAppServiceCall(authorized, {
+    runId: run?.id || value.runId,
+    status: run?.status || null,
+    browserActivity,
+  }, { resourceCount: browserActivity.length });
+}
+
+export async function inspectRunTrajectoryService(
+  caller: AppServiceCaller,
+  input: z.input<typeof runInspectionServiceInputSchema>,
+) {
+  const value = runInspectionServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.runs.trajectory"));
+  const run = await getAgentRun(value.runId, { tenantId: caller.context.tenantId });
+  await assertRunReadable(run, caller);
+  if (!run) return completeAppServiceCall(authorized, { trajectory: null }, { resourceCount: 0 });
+  const runEvents = await listStreamEvents(`run:${run.id}`, { tenantId: caller.context.tenantId, actorId: run.ownerActorId, limit: 2_000 });
+  const correlationId = resolveRunCorrelationId(run, runEvents);
+  const correlatedEvents = await listCorrelatedEvents(correlationId, { tenantId: caller.context.tenantId, actorId: run.ownerActorId, limit: 2_000 });
+  const traceEvents = [...new Map([...runEvents, ...correlatedEvents].map((event) => [event.id, event])).values()];
+  const trajectory = buildRunTrajectory(run, runEvents);
+  const verification = verifyRunTrajectory(trajectory, run);
+  return completeAppServiceCall(authorized, {
+    trajectory,
+    verification,
+    traceHierarchy: buildRunTraceHierarchy(run, traceEvents, correlationId),
+    lineage: await listRunForkLineage(run.id, { tenantId: caller.context.tenantId }),
+    outcomeEvaluation: evaluateTrajectoryOutcome(trajectory, verification),
+  }, { resourceCount: 1 });
 }
 
 export async function recordRunFeedbackService(
@@ -181,4 +236,24 @@ async function demoteRunCapabilities(runId: string, tenantId: string) {
     demoted.push(tool.id);
   }
   return demoted;
+}
+
+async function assertRunReadable(
+  run: Awaited<ReturnType<typeof getAgentRun>>,
+  caller: AppServiceCaller,
+) {
+  if (!run) return;
+  if (run.threadId) {
+    const thread = await getOwnedThread(run.threadId, {
+      tenantId: caller.context.tenantId,
+      actorId: caller.context.actorId,
+      requestActorBinding: canonicalRequestActorBindingFromSecurityContext(caller.context),
+    });
+    if (!thread) throw new Error("Run not found.");
+    return;
+  }
+  const binding = canonicalRequestActorBindingFromSecurityContext(caller.context);
+  if (run.ownerActorId !== caller.context.actorId && run.ownerActorId !== binding?.canonicalActorId) {
+    throw new Error("Run not found.");
+  }
 }

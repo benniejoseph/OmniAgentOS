@@ -30,6 +30,8 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("app.notifications.update", "run.agent", "personal_notification", "notifications.atomic-events.v1"),
   mutation("app.notifications.read_all", "run.agent", "personal_notifications", "notifications.atomic-events.v1"),
   read("app.runs.show", "read", "agent_run"),
+  read("app.runs.activity", "read", "agent_run_activity"),
+  read("app.runs.trajectory", "read", "run_trajectory"),
   read("app.agents.list", "read", "custom_agent"),
   read("app.agents.show", "read", "custom_agent"),
   mutation("app.agents.create", "manage.workflow", "custom_agent", "agent-identity-events.v1"),
@@ -152,6 +154,8 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   { toolId: "app.notifications.read_all", operation: "app.notifications.read_all" },
   { toolId: "app.runs.list", operation: "runs.list" },
   { toolId: "app.runs.show", operation: "app.runs.show" },
+  { toolId: "app.runs.activity", operation: "app.runs.activity" },
+  { toolId: "app.runs.trajectory", operation: "app.runs.trajectory" },
   { toolId: "app.agents.list", operation: "app.agents.list" },
   { toolId: "app.agents.show", operation: "app.agents.show" },
   { toolId: "app.agents.create", operation: "app.agents.create" },
@@ -239,6 +243,7 @@ export const MAIN_AGENT_EXCLUDED_APP_OPERATIONS = Object.freeze([
   { operation: "app.settings.api_keys.create", reason: "One-time bearer tokens must never enter an agent transcript or tool ledger." },
   { operation: "app.assets.upload", reason: "Raw binary uploads must use the direct user-to-storage capture surface." },
   { operation: "app.assets.recordings.segment.write", reason: "Raw recording audio must use the direct user-to-storage capture surface." },
+  { operation: "app.runs.activity.frame.read", reason: "Raw browser frame image bytes use the authenticated frame-delivery surface and must not be copied into tool transcripts." },
   { operation: "app.runs.fork", reason: "Checkpoint correction forks launch a new Main Agent execution and remain an explicit user action to prevent recursive self-forking." },
 ] as const);
 
