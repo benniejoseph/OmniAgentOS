@@ -136,6 +136,12 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.runs.show", "Show agent run", "Read one exact tenant-scoped agent run and its context-use receipt.", requiredObjectSchema({
     runId: opaqueId("Exact agent-run ID."),
   }, ["runId"])),
+  readTool("app.runs.activity", "Show run activity", "Read bounded browser activity metadata for one exact actor-readable run without returning raw frame image bytes.", requiredObjectSchema({
+    runId: opaqueId("Exact agent-run ID."),
+  }, ["runId"])),
+  readTool("app.runs.trajectory", "Show run trajectory", "Build and verify the event trajectory, trace hierarchy, fork lineage, and outcome evaluation for one exact actor-readable run.", requiredObjectSchema({
+    runId: opaqueId("Exact agent-run ID."),
+  }, ["runId"])),
   mutationTool("app.runs.feedback", "Rate agent run", "Record explicit useful or needs-work feedback for one completed run and apply its governed trust and memory consequences.", requiredObjectSchema({
     runId: opaqueId("Exact completed agent-run ID."), verdict: { type: "string", enum: ["useful", "needs_work"] }, correction: text(0, 2_000),
   }, ["runId", "verdict"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
