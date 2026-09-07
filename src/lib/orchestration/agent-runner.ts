@@ -46,6 +46,7 @@ import {
 } from "@/lib/memory/access-context";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { resolveAgentPromptMemoryAccess } from "@/lib/memory/request-access";
+import { resolveSharedAgentPromptMemoryAccess } from "@/lib/memory/shared-context";
 import type {
   ModelAttemptReceipt,
   ModelToolCall,
@@ -438,9 +439,18 @@ export async function* runAgent(
     ? databaseMemoryAccessScopeFromExecutionScope(executionScope, {
         purposeId: MEMORY_PURPOSE_IDS.retrieve,
         auditPurpose: "Retrieve memory owned by the assigned agent.",
-      })
+    })
     : undefined;
+  const sharedPromptMemoryAccessScope = resolveSharedAgentPromptMemoryAccess(
+    request.promptSharedMemoryAccess,
+    {
+      agentExecutionScope: executionScope,
+      contextScope: request.contextScope,
+      memoryMode: memoryAccessContext.mode,
+    },
+  );
   const databaseMemoryAccessScope = promptMemoryAccessScope ||
+    sharedPromptMemoryAccessScope ||
     agentPrivateMemoryAccessScope;
   const isolatedMemoryContext = Boolean(databaseMemoryAccessScope);
   let pendingDeltaText = "";
@@ -741,7 +751,14 @@ export async function* runAgent(
         ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
         : "Primary specialist selected by Atlas.",
     });
-    if (durableMemoryEnabled) {
+    if (sharedPromptMemoryAccessScope) {
+      yield await emit({
+        type: "status",
+        label: `retrieving shared ${request.contextScope} context`,
+        detail:
+          `Only durable knowledge from the selected ${request.contextScope} membership scope is eligible.`,
+      });
+    } else if (durableMemoryEnabled) {
       yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
     } else if (memoryAccessContext.mode === "project") {
       yield await emit({
@@ -773,8 +790,12 @@ export async function* runAgent(
             ? undefined
             : memoryAccessContext,
           databaseMemoryAccessScope,
-          scopedMemoryOnly: Boolean(agentPrivateMemoryAccessScope),
-          ...(agentPrivateMemoryAccessScope ? { persistTrace: false } : {}),
+          scopedMemoryOnly: Boolean(
+            agentPrivateMemoryAccessScope || sharedPromptMemoryAccessScope,
+          ),
+          ...(agentPrivateMemoryAccessScope || sharedPromptMemoryAccessScope
+            ? { persistTrace: false }
+            : {}),
           entityGraphAccess: request.promptEntityGraphAccess,
           ...(request.threadId
             ? { workingMemoryReference: `thread:${request.threadId}` as const }
@@ -808,7 +829,8 @@ export async function* runAgent(
               },
             },
           } : {}),
-          ...(promptMemoryAccessScope && request.contextSelection?.evidenceIds.length
+          ...((promptMemoryAccessScope && request.contextSelection?.evidenceIds.length) ||
+              sharedPromptMemoryAccessScope
             ? {
                 contextCompilerV2Canary: {
                   runId,
@@ -852,7 +874,7 @@ export async function* runAgent(
           WORKSPACE_ACCESS_CONTEXT_TIMEOUT_MS,
         )
       : Promise.resolve(undefined);
-    const adaptationGuidancePromise = !agentPrivateMemoryAccessScope &&
+    const adaptationGuidancePromise = !isolatedMemoryContext &&
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
       hasModelProviderFeature("text", modelRoute.tier)
@@ -1218,9 +1240,12 @@ export async function* runAgent(
     if (councilRequested && isolatedMemoryContext) {
       yield await emit({
         type: "status",
-        label: "private context isolated",
-        detail:
-          "Private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
+        label: sharedPromptMemoryAccessScope
+          ? "shared context bounded"
+          : "private context isolated",
+        detail: sharedPromptMemoryAccessScope
+          ? "Selected shared knowledge stays within this governed run; sibling council delegation requires separate authority."
+          : "Private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
       });
     }
     const councilCheckpointHooks: CouncilCheckpointHooks =
@@ -2164,7 +2189,9 @@ export async function* runAgent(
       runId: run.id,
       response,
     });
-    const consolidation = durableMemoryEnabled && !promptMemoryAccessScope
+    const consolidation = durableMemoryEnabled &&
+        !promptMemoryAccessScope &&
+        !sharedPromptMemoryAccessScope
       ? enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: request.tenantId,
@@ -5383,6 +5410,16 @@ function contextRationaleForRun(input: {
   }
   if (input.contextScope === "session") {
     return ["The user limited this run to the current conversation."];
+  }
+  if (input.contextScope === "project") {
+    return [
+      "Only durable knowledge from the explicitly selected project was eligible.",
+    ];
+  }
+  if (input.contextScope === "workspace") {
+    return [
+      "Only durable knowledge from the explicitly selected workspace was eligible.",
+    ];
   }
   if (input.memoryMode === "project") {
     return [

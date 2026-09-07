@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
+import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
 
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
@@ -101,6 +103,7 @@ vi.mock("@/lib/runs/store", () => ({
   failAgentRun: vi.fn(),
   findAgentRunWaitingForToolApproval: vi.fn(),
   getAgentRun: vi.fn(),
+  listAgentRunSummaries: vi.fn(),
   markAgentRunResuming: vi.fn(),
   markAgentRunWaitingForApproval: vi.fn(),
   updateRunContextCount: mocks.updateRunContextCount,
@@ -394,6 +397,58 @@ describe("agent memory scope", () => {
     }));
   });
 
+  it("compiles only the explicitly selected project scope without private consolidation", async () => {
+    const scopedRequest = request("all");
+    scopedRequest.actorId = privateOwnerContext.actorId;
+    scopedRequest.contextScope = "project";
+    scopedRequest.executionScope = createExecutionScope({
+      tenantId: privateOwnerContext.tenantId,
+      initiatingActorId: privateOwnerContext.actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "paid-test-agent",
+      workspaceId: "workspace:team-a",
+      projectId: "project:launch",
+      correlationId: "project-context-request",
+      purpose: "agent.run",
+    });
+    scopedRequest.promptSharedMemoryAccess = sharedProjectAccess();
+    scopedRequest.specialistIds = ["scout"];
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.buildContextPack).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        accessContext: undefined,
+        databaseMemoryAccessScope:
+          scopedRequest.promptSharedMemoryAccess.databaseAccessScope,
+        scopedMemoryOnly: true,
+        persistTrace: false,
+        contextCompilerV2Canary: expect.objectContaining({
+          runId: "run-memory-scope",
+        }),
+      }),
+    );
+    expect(mocks.runCouncilRound).not.toHaveBeenCalled();
+    expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "retrieving shared project context",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "shared context bounded",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      contextScope: "project",
+      contextDecision: "retrieved",
+      contextRationale: [
+        "Only durable knowledge from the explicitly selected project was eligible.",
+      ],
+    }));
+  });
+
   it("compiles explicitly selected owner-private memory into a direct run", async () => {
     const promptAccess = agentPromptMemoryAccessFromSecurityContext(
       privateOwnerContext,
@@ -595,6 +650,63 @@ function request(
       memoryScope,
       toolIds: [],
       skills: [],
+    },
+  };
+}
+
+function sharedProjectAccess(): RequestSharedMemoryAccessV1 {
+  const authorityBody = {
+    schemaVersion: 1 as const,
+    policyVersion: "workspace-context-policy-v1" as const,
+    tenantId: privateOwnerContext.tenantId,
+    scope: "project" as const,
+    initiatingActorId: `actor:${privateOwnerContext.auth.userId}`,
+    workspaceId: "workspace:team-a",
+    projectId: "project:launch",
+    requestedProjectId: "legacy-project-a",
+    accessLevel: "manager" as const,
+    canWrite: true,
+  };
+  const executionScope = createExecutionScope({
+    tenantId: privateOwnerContext.tenantId,
+    initiatingActorId: authorityBody.initiatingActorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: authorityBody.initiatingActorId,
+    workspaceId: authorityBody.workspaceId,
+    projectId: authorityBody.projectId,
+    correlationId: "project-context-request",
+    purpose: "agent.context.shared.retrieve",
+  });
+  return {
+    actorBinding: {
+      version: 1,
+      kind: "auth_user",
+      authUserId: privateOwnerContext.auth.userId,
+      canonicalActorId: authorityBody.initiatingActorId,
+      legacyOwnerActorIds: [privateOwnerContext.actorId],
+      readableOwnerActorIds: [
+        authorityBody.initiatingActorId,
+        privateOwnerContext.actorId,
+      ],
+    },
+    authority: {
+      ...authorityBody,
+      authoritySha256: sourceContractSha256(authorityBody),
+    },
+    executionScope,
+    databaseAccessScope: {
+      version: 1,
+      tenantId: privateOwnerContext.tenantId,
+      initiatingActorId: authorityBody.initiatingActorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: authorityBody.initiatingActorId,
+      workspaceId: authorityBody.workspaceId,
+      projectId: authorityBody.projectId,
+      missionId: null,
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purposeId: "memory.retrieve.v1",
+      purpose: "Retrieve explicitly selected shared workspace context.",
     },
   };
 }

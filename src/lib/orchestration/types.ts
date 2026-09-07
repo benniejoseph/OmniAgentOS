@@ -1,4 +1,5 @@
 import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
+import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
 import type { RequestEntityAccessV1 } from "@/lib/entities/request-access";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
@@ -174,6 +175,8 @@ export type AgentRunRequest = {
   contextScope?: ContextScopeId;
   /** Trusted request-bound access for an explicit owner-reviewed selection. */
   promptMemoryAccess?: RequestMemoryAccessV1;
+  /** Exact membership authority for explicitly selected project/workspace context. */
+  promptSharedMemoryAccess?: RequestSharedMemoryAccessV1;
   /** Exact user-principal authority for a reviewed temporal graph path. */
   promptEntityGraphAccess?: RequestEntityAccessV1;
   /** Server-validated effective limits; delegated callers may only narrow them. */
