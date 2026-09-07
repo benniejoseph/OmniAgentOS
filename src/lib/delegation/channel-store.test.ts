@@ -22,9 +22,11 @@ vi.mock("@/lib/delegation/store", () => ({
 
 import {
   listDelegationChannelForTask,
+  listDelegationChannelForParent,
   sendDelegationMessage,
   shareDelegationMissionArtifact,
 } from "@/lib/delegation/channel-store";
+import { buildSharedMissionArtifactV1 } from "@/lib/delegation/channel";
 import {
   buildDelegationTaskV1,
   transitionDelegationTaskV1,
@@ -202,4 +204,47 @@ describe("delegation Mission channel store", () => {
       payload: expect.objectContaining({ recipientParent: false }),
     }));
   });
+
+  it("lets only the exact parent scope read parent-addressed records", async () => {
+    const sender = task();
+    mocks.listMissionArtifacts.mockResolvedValue([buildSharedRecord(sender)]);
+    await expect(listDelegationChannelForParent({
+      parentExecutionScope: parentScope(),
+      parentExecutionId: sender.parentExecutionId,
+      missionId: "mission:one",
+    })).resolves.toHaveLength(1);
+    await expect(listDelegationChannelForParent({
+      parentExecutionScope: {
+        ...parentScope(),
+        executingPrincipalId: "principal:other:1",
+      },
+      parentExecutionId: sender.parentExecutionId,
+      missionId: "mission:one",
+    })).resolves.toHaveLength(0);
+  });
 });
+
+function buildSharedRecord(sender: ReturnType<typeof task>) {
+  const protocol = buildSharedMissionArtifactV1({
+    task: sender,
+    missionId: "mission:one",
+    recipients: { parent: true, delegationTaskIds: [] },
+    kind: "analysis",
+    title: "Findings",
+    mediaType: "text/plain",
+    content: "Bounded findings.",
+    createdAt: "2026-09-07T06:00:30.000Z",
+  });
+  return {
+    id: "stored",
+    tenantId: sender.tenantId,
+    actorId: sender.ownerActorId,
+    missionId: "mission:one",
+    sourceKey: protocol.artifactId,
+    kind: "delegation_shared_artifact",
+    title: protocol.title,
+    data: { protocol },
+    createdAt: protocol.createdAt,
+    updatedAt: protocol.createdAt,
+  };
+}
