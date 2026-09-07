@@ -1,7 +1,12 @@
 import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { listMcpConnectors, parseMcpToolId } from "@/lib/connectors/store";
 import { listStreamEvents } from "@/lib/events/store";
-import { listRunBrowserFrames, type BrowserFrameSummary } from "@/lib/browser/frames";
+import {
+  listRunBrowserAccessibilitySnapshots,
+  listRunBrowserFrames,
+  type BrowserAccessibilitySnapshotSummary,
+  type BrowserFrameSummary,
+} from "@/lib/browser/frames";
 import { getToolExecutionsByIds } from "@/lib/tools/audit-store";
 import type { ToolExecutionRecord, ToolExecutionStatus } from "@/lib/tools/types";
 
@@ -39,7 +44,9 @@ export type BrowserActivityItem = {
   summary: string;
   error?: string;
   frame?: BrowserFrameSummary & { contentUrl: string };
+  accessibilitySnapshot?: BrowserAccessibilitySnapshotSummary & { contentUrl: string };
   frameStatus?: "captured" | "suppressed" | "unavailable";
+  accessibilitySnapshotStatus?: "captured" | "suppressed" | "unavailable";
 };
 
 export async function listRunBrowserActivity(
@@ -52,6 +59,7 @@ export async function listRunBrowserActivity(
   });
   const eventByExecutionId = new Map<string, (typeof events)[number]>();
   const frameStatusByExecutionId = new Map<string, "suppressed" | "unavailable">();
+  const snapshotStatusByExecutionId = new Map<string, "suppressed" | "unavailable">();
   for (const event of events) {
     const executionId = stringField(event.payload, "executionId");
     if (!executionId) continue;
@@ -61,19 +69,27 @@ export async function listRunBrowserActivity(
       frameStatusByExecutionId.set(executionId, "suppressed");
     } else if (event.type === "browser.frame.failed") {
       frameStatusByExecutionId.set(executionId, "unavailable");
+    } else if (event.type === "browser.snapshot.suppressed") {
+      snapshotStatusByExecutionId.set(executionId, "suppressed");
+    } else if (event.type === "browser.snapshot.failed") {
+      snapshotStatusByExecutionId.set(executionId, "unavailable");
     }
   }
   if (!eventByExecutionId.size) return [];
 
-  const [executions, connectors, frames] = await Promise.all([
+  const [executions, connectors, frames, snapshots] = await Promise.all([
     getToolExecutionsByIds([...eventByExecutionId.keys()], {
       tenantId: options.tenantId,
     }),
     listMcpConnectors(100, { tenantId: options.tenantId }),
     listRunBrowserFrames(runId, options),
+    listRunBrowserAccessibilitySnapshots(runId, options),
   ]);
   const frameByExecutionId = new Map(
     frames.map((frame) => [frame.executionId, frame] as const),
+  );
+  const snapshotByExecutionId = new Map(
+    snapshots.map((snapshot) => [snapshot.executionId, snapshot] as const),
   );
   const playwrightConnectorIds = new Set(
     connectors
@@ -97,9 +113,14 @@ export async function listRunBrowserActivity(
     const durationMs = executionDurationMs(execution);
     const failure = browserFailure(execution);
     const frame = frameByExecutionId.get(execution.id);
+    const accessibilitySnapshot = snapshotByExecutionId.get(execution.id);
     const frameStatus: BrowserActivityItem["frameStatus"] = frame
       ? "captured"
       : frameStatusByExecutionId.get(execution.id);
+    const accessibilitySnapshotStatus: BrowserActivityItem["accessibilitySnapshotStatus"] =
+      accessibilitySnapshot
+        ? "captured"
+        : snapshotStatusByExecutionId.get(execution.id);
     return [{
       id: execution.id,
       sequence: event.seq,
@@ -117,7 +138,14 @@ export async function listRunBrowserActivity(
             contentUrl: `/api/runs/${encodeURIComponent(runId)}/activity/frames/${encodeURIComponent(frame.id)}`,
           }
         : undefined,
+      accessibilitySnapshot: accessibilitySnapshot
+        ? {
+            ...accessibilitySnapshot,
+            contentUrl: `/api/runs/${encodeURIComponent(runId)}/activity/snapshots/${encodeURIComponent(accessibilitySnapshot.id)}`,
+          }
+        : undefined,
       frameStatus,
+      accessibilitySnapshotStatus,
     }];
   }).sort((left, right) => left.sequence - right.sequence);
 }
