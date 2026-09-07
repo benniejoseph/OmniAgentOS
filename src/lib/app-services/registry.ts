@@ -32,6 +32,27 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
 export type AppServiceOperation =
   (typeof APP_SERVICE_OPERATION_CONTRACTS)[number]["operation"];
 
+export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
+  { toolId: "memory.search", operation: "memory.search" },
+  { toolId: "memory.inspect", operation: "memory.inspect" },
+  { toolId: "memory.forget.preview", operation: "memory.forget.preview" },
+  { toolId: "memory.write", operation: "memory.write" },
+  { toolId: "memory.correct", operation: "memory.correct" },
+  { toolId: "memory.lifecycle", operation: "memory.lifecycle" },
+  { toolId: "memory.forget", operation: "memory.forget" },
+  { toolId: "memory.export", operation: "memory.export" },
+  { toolId: "knowledge.search", operation: "knowledge.search" },
+  { toolId: "knowledge.ingest", operation: "knowledge.ingest" },
+  { toolId: "missions.list", operation: "missions.list" },
+  { toolId: "mission.show", operation: "missions.show" },
+  { toolId: "mission.task.create", operation: "mission.task.create" },
+  { toolId: "mission.task.comment", operation: "mission.task.comment" },
+  { toolId: "runs.list", operation: "runs.list" },
+] satisfies ReadonlyArray<{
+  toolId: string;
+  operation: AppServiceOperation;
+}>);
+
 const byOperation = new Map(
   APP_SERVICE_OPERATION_CONTRACTS.map((contract) => [contract.operation, contract]),
 );
@@ -57,18 +78,24 @@ export function validateAppServiceRegistry() {
   const invalidMutationContracts = mutationContracts
     .filter((entry) => entry.eventContract === readOnlyEventContract)
     .map((entry) => entry.operation);
+  const missingAgentOperations = MAIN_AGENT_APP_SERVICE_BINDINGS
+    .filter((binding) => !byOperation.has(binding.operation))
+    .map((binding) => binding.toolId);
   return {
     version: APP_SERVICE_REGISTRY_VERSION,
     operationCount: operations.length,
     mutationCount: mutationContracts.length,
     duplicateOperations: [...new Set(duplicateOperations)],
     invalidMutationContracts,
+    mainAgentOperationCount: MAIN_AGENT_APP_SERVICE_BINDINGS.length,
+    missingAgentOperations,
     agentAccessPaths: ["governed_tool_executor", "application_service"] as const,
     forbiddenAgentAccessPaths: [] as readonly string[],
     registrySha256: canonicalJsonSha256(APP_SERVICE_OPERATION_CONTRACTS),
     passed:
       duplicateOperations.length === 0 &&
-      invalidMutationContracts.length === 0,
+      invalidMutationContracts.length === 0 &&
+      missingAgentOperations.length === 0,
   };
 }
 
