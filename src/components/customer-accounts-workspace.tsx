@@ -682,6 +682,7 @@ function AccountDetail({
 
       <CustomerHealthPanel
         value={health}
+        currentAccountRevisionId={account.revisionId}
         canEvaluate={canWrite}
         evaluating={healthEvaluating}
         onEvaluate={onEvaluateHealth}
@@ -698,16 +699,19 @@ function AccountDetail({
 
 function CustomerHealthPanel({
   value,
+  currentAccountRevisionId,
   canEvaluate,
   evaluating,
   onEvaluate,
 }: {
   value?: CustomerHealthPayload;
+  currentAccountRevisionId: string;
   canEvaluate: boolean;
   evaluating: boolean;
   onEvaluate: () => void;
 }) {
   const score = value?.score;
+  const outdated = Boolean(score && score.accountRevisionId !== currentAccountRevisionId);
   return (
     <section className={styles.healthPanel} aria-label="Explainable customer health" aria-busy={evaluating}>
       <header className={styles.healthHeader}>
@@ -730,6 +734,11 @@ function CustomerHealthPanel({
       </header>
       {score ? (
         <>
+          {outdated ? (
+            <p className={styles.healthOutdated} role="status">
+              This score is bound to {shortId(score.accountRevisionId)}; the account is now {shortId(currentAccountRevisionId)}. Re-evaluate before relying on it.
+            </p>
+          ) : null}
           <div className={styles.healthSummary}>
             <div data-status={score.status}>
               <small>Authoritative score</small>

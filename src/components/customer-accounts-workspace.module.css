@@ -86,6 +86,7 @@
 .healthIdentity > span { display: grid; width: 2.35rem; height: 2.35rem; flex: 0 0 auto; place-items: center; border-radius: .75rem; color: var(--primary); background: oklch(from var(--primary) l c h / .1); }
 .healthIdentity h3 { margin-top: .12rem; font-size: .82rem; }
 .healthIdentity p:last-child { margin-top: .2rem; color: var(--muted); font-size: .54rem; line-height: 1.55; }
+.healthOutdated { border-bottom: 1px solid oklch(from var(--warning) l c h / .24); padding: .55rem 1rem; color: var(--warning); background: oklch(from var(--warning) l c h / .055); font-size: .53rem; line-height: 1.5; }
 .healthSummary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
 .healthSummary > div { min-width: 0; border-right: 1px solid var(--line); padding: .85rem 1rem; }
 .healthSummary > div:last-child { border-right: 0; }

@@ -1901,6 +1901,34 @@ repeats a create or overwrites a changed update target. Notes are update-only
 because the standard Note create surface has no deployment-independent unique
 idempotency identity.
 
+## Explainable customer health
+
+P10.12 derives customer health from the current Account 360 evidence projection
+through a pinned deterministic policy. Adoption, support, engagement, and
+commercial factors carry explicit weights totaling 10,000 basis points. Each
+factor retains the exact fact revision, fact digest, source revision and digest,
+value digest, raw score, source confidence, freshness state and multiplier, and
+conflict multiplier that contributed to its result. Missing and unscorable
+factors contribute no score or confidence; stale and conflicting evidence stays
+visible but receives the policy's deterministic confidence penalty.
+
+The overall score normalizes only across factors with scorable evidence, while
+coverage reports the missing factor weight and confidence retains that missing
+weight as zero. This prevents absence from becoming a negative customer fact.
+The policy snapshot, account revision/digest, evaluated input digest, factor
+results, score, confidence, coverage, and status are sealed into an immutable
+score revision. A monotonic projection points to the current revision, and an
+account change makes the previous score visibly outdated until it is evaluated
+again.
+
+Model output may supply bounded next-action, factor-review, or input-gap
+suggestions only when each statement cites current fact revision IDs and
+digests. Suggestions are stored as `authoritative: false`, do not enter any
+factor calculation, and cannot change the deterministic score. Evaluation is an
+idempotent owner-controlled application-service mutation that locks the exact
+Account 360 revision, persists policy and score evidence under forced Workspace
+RLS, and emits the metadata-only `customer.account.health.evaluated` event.
+
 ## Unified workspace library read model
 
 The workspace library is an additive actor-scoped projection over existing

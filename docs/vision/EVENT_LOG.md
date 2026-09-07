@@ -1775,3 +1775,18 @@ their event contracts are named in the service receipt. Read-only service calls
 declare `read_only:no_domain_mutation`. The governed executor reaches those
 domains only through the service boundary, so UI and Agent paths cannot drift
 into separate event or idempotency semantics.
+
+## Customer health evaluation
+
+P10.12 adds `customer.account.health.evaluated` after the immutable score
+revision and monotonic current projection commit atomically. Its payload contains
+only the account and score revision IDs, policy/input/score digests, numeric
+score, status, coverage and confidence, factor and suggestion counts, and the
+`deterministic_policy` authority declaration. It contains no factor content,
+customer fact values, model suggestion text, source labels, provider IDs,
+tenant/actor coordinates, or private reasoning.
+
+The event observes a versioned deterministic decision; it does not authorize a
+CRM write or customer communication. Exact fact and source evidence remains in
+the owner/Workspace-scoped score ledger. Model suggestions remain untrusted,
+explicitly non-authoritative annotations and never become event authority.
