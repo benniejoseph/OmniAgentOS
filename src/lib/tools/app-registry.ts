@@ -266,6 +266,28 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.connectors.delete", "Move connector to trash", "Move one connector and its exact contract set to retained trash only while its complete expiring preview still matches.", requiredObjectSchema({
     kind: connectorKind(), connectorId: opaqueId("Exact connector ID."), preview: trashPreviewContract(),
   }, ["kind", "connectorId", "preview"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.trash.list", "List trash", "List actor-private trash item metadata without returning internal restore snapshots.", objectSchema({
+    state: { type: "string", enum: ["retained", "restored", "purged", "expired"] },
+    limit: integer(1, 200, 50),
+  })),
+  readTool("app.trash.show", "Show trash item", "Inspect one exact actor-private trash item and its compensation limitation without returning its internal snapshot.", requiredObjectSchema({
+    trashId: trashId(),
+  }, ["trashId"])),
+  readTool("app.trash.receipts.list", "List trash receipts", "List immutable effect and final-deletion receipts for one exact actor-private trash item.", requiredObjectSchema({
+    trashId: trashId(), limit: integer(1, 200, 50),
+  }, ["trashId"])),
+  readTool("app.trash.restore.preview", "Preview trash restore", "Create a complete expiring revision-fenced preview for restoring or compensating one retained trash item.", requiredObjectSchema({
+    trashId: trashId(),
+  }, ["trashId"])),
+  mutationTool("app.trash.restore", "Restore trash item", "Restore or compensate one retained item only while its complete expiring preview and lifecycle revision still match.", requiredObjectSchema({
+    preview: trashLifecyclePreviewContract("restore"),
+  }, ["preview"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.trash.purge.preview", "Preview permanent trash purge", "Create a complete expiring revision-fenced preview that clearly marks permanent snapshot deletion as irreversible.", requiredObjectSchema({
+    trashId: trashId(),
+  }, ["trashId"])),
+  mutationTool("app.trash.purge", "Permanently purge trash item", "Permanently destroy one retained restore snapshot only while its complete expiring preview and lifecycle revision still match; retain the immutable final deletion receipt.", requiredObjectSchema({
+    preview: trashLifecyclePreviewContract("purge"),
+  }, ["preview"]), { riskLevel: 3, approvalRequired: true, reversible: false }),
   readTool("app.settings.show", "Show settings", "Read the current actor's redacted provider, model, assignment, API-key metadata, MCP exposure, vault readiness, and platform settings.", objectSchema({})),
   readTool("app.settings.models.list", "List models", "List the current actor's selectable model catalog without credentials.", objectSchema({})),
   mutationTool("app.settings.assignments.update", "Update model assignment", "Update one model routing assignment; cross-provider fallback requires explicit disclosure consent.", requiredObjectSchema({
@@ -385,6 +407,41 @@ function trashPreviewContract(resourceType?: string) {
     "lifecycleRevision", "targetSha256", "effectSummary", "reversible",
     "issuedAt", "expiresAt", "previewSha256",
   ]);
+}
+
+function trashLifecyclePreviewContract(action: "restore" | "purge") {
+  return requiredObjectSchema({
+    version: { type: "string", enum: ["p9.3-trash-preview:1"] },
+    action: { type: "string", enum: [action] },
+    trashId: trashId(),
+    resourceType: {
+      type: "string",
+      enum: [
+        "custom_agent", "agent_skill", "mcp_connector", "openapi_connector",
+      ],
+    },
+    resourceId: opaqueId("Exact resource ID."),
+    lifecycleRevision: integer(1, Number.MAX_SAFE_INTEGER),
+    targetSha256: sha256("Digest of the exact trashed target."),
+    effectSummary: text(1, 500),
+    reversible: { type: "boolean", enum: [action === "restore"] },
+    issuedAt: { type: "string", format: "date-time" },
+    expiresAt: { type: "string", format: "date-time" },
+    previewSha256: sha256("Self-verifying digest returned by the lifecycle preview operation."),
+  }, [
+    "version", "action", "trashId", "resourceType", "resourceId",
+    "lifecycleRevision", "targetSha256", "effectSummary", "reversible",
+    "issuedAt", "expiresAt", "previewSha256",
+  ]);
+}
+
+function trashId() {
+  return {
+    type: "string",
+    pattern: "^trash:[0-9a-f-]{36}$",
+    maxLength: 42,
+    description: "Exact trash item ID.",
+  };
 }
 
 function idList(maxItems = 50) {

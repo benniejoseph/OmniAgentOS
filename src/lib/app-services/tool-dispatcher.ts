@@ -129,6 +129,15 @@ import {
   showAgentReleaseService,
   transitionAgentReleaseService,
 } from "@/lib/app-services/agent-governance";
+import {
+  listTrashReceiptsService,
+  listTrashService,
+  previewTrashPurgeService,
+  previewTrashRestoreService,
+  purgeTrashService,
+  restoreTrashService,
+  showTrashService,
+} from "@/lib/app-services/trash";
 
 export type FirstPartyAppToolDispatch =
   | { handled: false }
@@ -234,6 +243,13 @@ export async function executeFirstPartyAppTool(input: {
     "app.connectors.review": () => reviewConnectorService(caller, input.toolInput as never),
     "app.connectors.delete.preview": () => previewConnectorDeleteService(caller, input.toolInput as never),
     "app.connectors.delete": () => deleteConnectorService(caller, input.toolInput as never),
+    "app.trash.list": () => listTrashService(caller, input.toolInput as never),
+    "app.trash.show": () => showTrashService(caller, input.toolInput as never),
+    "app.trash.receipts.list": () => listTrashReceiptsService(caller, input.toolInput as never),
+    "app.trash.restore.preview": () => previewTrashRestoreService(caller, input.toolInput as never),
+    "app.trash.restore": () => restoreTrashService(caller, input.toolInput as never),
+    "app.trash.purge.preview": () => previewTrashPurgeService(caller, input.toolInput as never),
+    "app.trash.purge": () => purgeTrashService(caller, input.toolInput as never),
     "app.settings.show": () => showSettingsService(caller, input.toolInput as never),
     "app.settings.models.list": () => listModelsService(caller, input.toolInput as never),
     "app.settings.assignments.update": () => updateModelAssignmentService(caller, input.toolInput as never),

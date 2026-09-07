@@ -270,6 +270,50 @@ export async function getTrashLifecycleResultByPreview(
   );
 }
 
+export async function listTrashEffectReceipts(
+  options: TrashMutationScope & { trashId?: string; limit?: number },
+): Promise<TrashEffectReceiptV1[]> {
+  const scope = requireTrashScope(options.executionScope);
+  const limit = Math.min(Math.max(options.limit || 50, 1), 200);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = options.trashId
+      ? await getSql()`
+          SELECT receipt FROM omni_trash_effect_receipts
+          WHERE tenant_id = ${scope.tenantId}
+            AND owner_actor_id = ${scope.initiatingActorId}
+            AND trash_id = ${options.trashId}
+          ORDER BY occurred_at DESC, receipt_sha256 ASC LIMIT ${limit}
+        `
+      : await getSql()`
+          SELECT receipt FROM omni_trash_effect_receipts
+          WHERE tenant_id = ${scope.tenantId}
+            AND owner_actor_id = ${scope.initiatingActorId}
+          ORDER BY occurred_at DESC, receipt_sha256 ASC LIMIT ${limit}
+        `;
+    return rows.map((row) => trashEffectReceiptV1Schema.parse(row.receipt));
+  }
+  const ledger = await readTrashLedger();
+  const ownedTrashIds = new Set(
+    ledger.records
+      .filter(({ item }) =>
+        item.tenantId === scope.tenantId &&
+        item.ownerActorId === scope.initiatingActorId
+      )
+      .map(({ item }) => item.trashId),
+  );
+  return ledger.receipts
+    .filter((receipt) =>
+      ownedTrashIds.has(receipt.trashId) &&
+      (!options.trashId || receipt.trashId === options.trashId)
+    )
+    .sort((left, right) =>
+      right.occurredAt.localeCompare(left.occurredAt) ||
+      left.receiptSha256.localeCompare(right.receiptSha256)
+    )
+    .slice(0, limit);
+}
+
 /** Internal-only snapshot read. Application transports must never return it. */
 export async function getTrashSnapshot(
   trashId: string,
