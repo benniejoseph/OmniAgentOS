@@ -146,6 +146,7 @@ export const tenantRootPolicyTables = [
   "omni_agent_release_evaluations",
   "omni_agent_adaptations",
   "omni_delegation_tasks",
+  "omni_a2a_peer_rollouts",
   "omni_agent_loop_v2_checkpoints",
   "omni_workflow_triggers",
   "omni_operation_jobs",
@@ -1187,6 +1188,13 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[115],
       up: async (sql) => {
         await ensureDelegationTaskLifecycleV1(sql);
+        await ensureTenantIsolationPolicies(sql);
+      },
+    },
+    {
+      ...databaseSchemaMigrations[116],
+      up: async (sql) => {
+        await ensureA2APeerRolloutsV1(sql);
         await ensureTenantIsolationPolicies(sql);
       },
     },
@@ -11091,6 +11099,329 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
           )
       ) THEN
         RAISE EXCEPTION 'Delegation task lifecycle boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureA2APeerRolloutsV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 116
+          AND name = 'delegation_task_lifecycle_v1'
+          AND checksum =
+            '8b60665b57c9d7d1e4c31c3d17a6b57fbd50d4c9f0fecbe3d2ffaa2a7eee4ccc'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'A2A peer rollout predecessor is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_service_api_keys
+    DROP CONSTRAINT IF EXISTS omni_service_api_keys_scopes_check
+  `;
+  await sql`
+    ALTER TABLE omni_service_api_keys
+    ADD CONSTRAINT omni_service_api_keys_scopes_check CHECK (scopes <@ ARRAY[
+      'mcp:discover', 'mcp:tools:list', 'mcp:tools:execute',
+      'a2a:discover', 'a2a:tasks:read', 'a2a:tasks:write',
+      'missions:read', 'missions:write', 'memory:read', 'memory:write',
+      'runs:read', 'settings:read'
+    ]::TEXT[])
+  `;
+  await sql`
+    ALTER TABLE omni_mcp_export_configurations
+    DROP CONSTRAINT IF EXISTS omni_mcp_export_configurations_allowed_scopes_check
+  `;
+  await sql`
+    ALTER TABLE omni_mcp_export_configurations
+    ADD CONSTRAINT omni_mcp_export_configurations_allowed_scopes_check
+    CHECK (allowed_scopes <@ ARRAY[
+      'mcp:discover', 'mcp:tools:list', 'mcp:tools:execute',
+      'a2a:discover', 'a2a:tasks:read', 'a2a:tasks:write',
+      'missions:read', 'missions:write', 'memory:read', 'memory:write',
+      'runs:read', 'settings:read'
+    ]::TEXT[])
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS omni_a2a_peer_rollouts (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      peer_id TEXT NOT NULL,
+      generation BIGINT NOT NULL,
+      rollout_id TEXT NOT NULL,
+      rollout_sha256 TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'registered',
+      lifecycle_revision BIGINT NOT NULL DEFAULT 0,
+      interface_url TEXT NOT NULL,
+      interface_origin TEXT NOT NULL,
+      agent_card_sha256 TEXT NOT NULL,
+      protocol_version TEXT NOT NULL,
+      protocol_binding TEXT NOT NULL,
+      adapter_release TEXT NOT NULL,
+      adapter_artifact_sha256 TEXT NOT NULL,
+      inbound_service_api_key_id TEXT,
+      outbound_credential_configured BOOLEAN NOT NULL,
+      credential_version INTEGER,
+      credential_origin TEXT,
+      credential_fingerprint TEXT,
+      sealed_credential JSONB,
+      allowed_skill_ids TEXT[] NOT NULL,
+      max_task_duration_ms INTEGER NOT NULL,
+      max_input_bytes INTEGER NOT NULL,
+      max_output_bytes INTEGER NOT NULL,
+      rollout JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (tenant_id, rollout_id),
+      UNIQUE (tenant_id, owner_actor_id, peer_id, generation),
+      CHECK (schema_version = 1),
+      CHECK (char_length(owner_actor_id) BETWEEN 1 AND 320),
+      CHECK (char_length(peer_id) BETWEEN 1 AND 240),
+      CHECK (generation BETWEEN 1 AND 9007199254740991),
+      CHECK (char_length(rollout_id) BETWEEN 1 AND 240),
+      CHECK (rollout_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (direction IN ('inbound', 'outbound', 'bidirectional')),
+      CHECK (mode IN ('shadow', 'enabled')),
+      CHECK (status IN ('registered', 'active', 'paused', 'revoked')),
+      CHECK (lifecycle_revision BETWEEN 0 AND 9007199254740991),
+      CHECK ((status = 'registered') = (lifecycle_revision = 0)),
+      CHECK (interface_url ~ '^https://'),
+      CHECK (interface_origin ~ '^https://'),
+      CHECK (agent_card_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (protocol_version = '1.0'),
+      CHECK (protocol_binding = 'HTTP+JSON'),
+      CHECK (adapter_release = 'p8.6-a2a-adapter:1'),
+      CHECK (adapter_artifact_sha256 ~ '^[a-f0-9]{64}$'),
+      CHECK (
+        (direction = 'outbound' AND inbound_service_api_key_id IS NULL)
+        OR (direction IN ('inbound', 'bidirectional') AND inbound_service_api_key_id IS NOT NULL)
+      ),
+      CHECK (
+        (direction = 'inbound' AND NOT outbound_credential_configured)
+        OR (direction IN ('outbound', 'bidirectional') AND outbound_credential_configured)
+      ),
+      CHECK (
+        outbound_credential_configured = (
+          credential_version IS NOT NULL
+          AND credential_origin IS NOT NULL
+          AND credential_fingerprint IS NOT NULL
+          AND sealed_credential IS NOT NULL
+        )
+      ),
+      CHECK (credential_version IS NULL OR credential_version BETWEEN 1 AND 2147483647),
+      CHECK (credential_fingerprint IS NULL OR credential_fingerprint ~ '^[a-f0-9]{64}$'),
+      CHECK (cardinality(allowed_skill_ids) BETWEEN 1 AND 64),
+      CHECK (max_task_duration_ms BETWEEN 1000 AND 3600000),
+      CHECK (max_input_bytes BETWEEN 1 AND 1000000),
+      CHECK (max_output_bytes BETWEEN 1 AND 2000000),
+      CHECK (jsonb_typeof(rollout) = 'object'),
+      CHECK (rollout->>'version' = 'p8.6-a2a-peer-rollout:1'),
+      CHECK (rollout->>'tenantId' = tenant_id),
+      CHECK (rollout->>'ownerActorId' = owner_actor_id),
+      CHECK (rollout->>'peerId' = peer_id),
+      CHECK ((rollout->>'generation')::BIGINT = generation),
+      CHECK (rollout->>'rolloutId' = rollout_id),
+      CHECK (rollout->>'rolloutSha256' = rollout_sha256),
+      CHECK (rollout->>'direction' = direction),
+      CHECK (rollout->>'mode' = mode),
+      CHECK (rollout->>'status' = status),
+      CHECK ((rollout->>'lifecycleRevision')::BIGINT = lifecycle_revision),
+      CHECK (rollout->>'interfaceUrl' = interface_url),
+      CHECK (rollout->>'agentCardSha256' = agent_card_sha256),
+      CHECK (rollout->>'protocolVersion' = protocol_version),
+      CHECK (rollout->>'protocolBinding' = protocol_binding),
+      CHECK (rollout->>'adapterRelease' = adapter_release),
+      CHECK (rollout->>'adapterArtifactSha256' = adapter_artifact_sha256),
+      CHECK ((rollout->>'inboundServiceApiKeyId') IS NOT DISTINCT FROM inbound_service_api_key_id),
+      CHECK ((rollout->>'outboundCredentialConfigured')::BOOLEAN = outbound_credential_configured),
+      CHECK ((rollout->>'createdAt')::TIMESTAMPTZ = created_at),
+      CHECK ((rollout->>'updatedAt')::TIMESTAMPTZ = updated_at),
+      CHECK (created_at <= updated_at),
+      FOREIGN KEY (owner_actor_id)
+        REFERENCES omni_auth_users (actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      FOREIGN KEY (inbound_service_api_key_id)
+        REFERENCES omni_service_api_keys (id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_a2a_peer_rollouts_current_idx
+    ON omni_a2a_peer_rollouts (tenant_id, owner_actor_id, peer_id)
+    WHERE status <> 'revoked'
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS omni_a2a_peer_rollouts_inbound_key_idx
+    ON omni_a2a_peer_rollouts (tenant_id, inbound_service_api_key_id)
+    WHERE status = 'active' AND mode = 'enabled'
+      AND inbound_service_api_key_id IS NOT NULL
+  `;
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_protect_a2a_peer_rollout_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION 'A2A peer rollouts cannot be removed'
+          USING ERRCODE = '55000';
+      END IF;
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.status <> 'registered' OR NEW.lifecycle_revision <> 0
+          OR NEW.updated_at IS DISTINCT FROM NEW.created_at
+        THEN
+          RAISE EXCEPTION 'Initial A2A peer rollout is invalid'
+            USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF ROW(
+        NEW.schema_version, NEW.tenant_id, NEW.owner_actor_id, NEW.peer_id,
+        NEW.generation, NEW.rollout_id, NEW.direction, NEW.mode,
+        NEW.interface_url, NEW.interface_origin, NEW.agent_card_sha256,
+        NEW.protocol_version, NEW.protocol_binding, NEW.adapter_release,
+        NEW.adapter_artifact_sha256, NEW.inbound_service_api_key_id,
+        NEW.outbound_credential_configured, NEW.credential_version,
+        NEW.credential_origin, NEW.credential_fingerprint,
+        NEW.sealed_credential, NEW.allowed_skill_ids,
+        NEW.max_task_duration_ms, NEW.max_input_bytes, NEW.max_output_bytes,
+        NEW.created_at
+      ) IS DISTINCT FROM ROW(
+        OLD.schema_version, OLD.tenant_id, OLD.owner_actor_id, OLD.peer_id,
+        OLD.generation, OLD.rollout_id, OLD.direction, OLD.mode,
+        OLD.interface_url, OLD.interface_origin, OLD.agent_card_sha256,
+        OLD.protocol_version, OLD.protocol_binding, OLD.adapter_release,
+        OLD.adapter_artifact_sha256, OLD.inbound_service_api_key_id,
+        OLD.outbound_credential_configured, OLD.credential_version,
+        OLD.credential_origin, OLD.credential_fingerprint,
+        OLD.sealed_credential, OLD.allowed_skill_ids,
+        OLD.max_task_duration_ms, OLD.max_input_bytes, OLD.max_output_bytes,
+        OLD.created_at
+      ) OR NEW.lifecycle_revision IS DISTINCT FROM OLD.lifecycle_revision + 1
+        OR NEW.updated_at < OLD.updated_at
+      THEN
+        RAISE EXCEPTION 'A2A peer rollout identity or revision is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      IF NOT (
+        (OLD.status = 'registered' AND NEW.status IN ('active', 'revoked'))
+        OR (OLD.status = 'active' AND NEW.status IN ('paused', 'revoked'))
+        OR (OLD.status = 'paused' AND NEW.status IN ('active', 'revoked'))
+      ) THEN
+        RAISE EXCEPTION 'A2A peer rollout transition is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      DROP TRIGGER IF EXISTS omni_a2a_peer_rollout_protect
+        ON omni_a2a_peer_rollouts;
+      CREATE TRIGGER omni_a2a_peer_rollout_protect
+      BEFORE INSERT OR UPDATE OR DELETE ON omni_a2a_peer_rollouts
+      FOR EACH ROW EXECUTE FUNCTION omni_protect_a2a_peer_rollout_v1();
+      DROP TRIGGER IF EXISTS omni_a2a_peer_rollout_no_truncate
+        ON omni_a2a_peer_rollouts;
+      CREATE TRIGGER omni_a2a_peer_rollout_no_truncate
+      BEFORE TRUNCATE ON omni_a2a_peer_rollouts
+      FOR EACH STATEMENT EXECUTE FUNCTION omni_protect_a2a_peer_rollout_v1();
+      ALTER TABLE omni_a2a_peer_rollouts ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE omni_a2a_peer_rollouts FORCE ROW LEVEL SECURITY;
+      DROP POLICY IF EXISTS omni_a2a_peer_rollouts_actor
+        ON omni_a2a_peer_rollouts;
+      CREATE POLICY omni_a2a_peer_rollouts_actor
+      ON omni_a2a_peer_rollouts AS RESTRICTIVE FOR ALL
+      USING (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      )
+      WITH CHECK (
+        omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      );
+    END
+    $migration$
+  `;
+  await sql`REVOKE ALL ON TABLE omni_a2a_peer_rollouts FROM PUBLIC`;
+  await sql`REVOKE ALL ON FUNCTION omni_protect_a2a_peer_rollout_v1() FROM PUBLIC`;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_a2a_peer_rollouts FROM omni_runtime';
+        GRANT SELECT, INSERT ON omni_a2a_peer_rollouts TO omni_runtime;
+        GRANT UPDATE (
+          status, lifecycle_revision, rollout_sha256, rollout, updated_at
+        ) ON omni_a2a_peer_rollouts TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        EXECUTE 'REVOKE ALL ON TABLE omni_a2a_peer_rollouts FROM omni_maintenance';
+        GRANT SELECT, INSERT ON omni_a2a_peer_rollouts TO omni_maintenance;
+        GRANT UPDATE (
+          status, lifecycle_revision, rollout_sha256, rollout, updated_at
+        ) ON omni_a2a_peer_rollouts TO omni_maintenance;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_a2a_peer_rollouts'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_a2a_peer_rollouts'::regclass
+          AND tgname = 'omni_a2a_peer_rollout_protect'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'omni_a2a_peer_rollouts'::regclass
+          AND tgname = 'omni_a2a_peer_rollout_no_truncate'
+          AND NOT tgisinternal AND tgenabled = 'O'
+      ) OR NOT EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polrelid = 'omni_a2a_peer_rollouts'::regclass
+          AND polname = 'omni_a2a_peer_rollouts_actor'
+          AND NOT polpermissive AND polcmd = '*'
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_table_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_a2a_peer_rollouts'
+          AND grantee IN ('omni_runtime', 'omni_maintenance')
+          AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE')
+      ) OR EXISTS (
+        SELECT 1 FROM information_schema.role_column_grants
+        WHERE table_schema = current_schema()
+          AND table_name = 'omni_a2a_peer_rollouts'
+          AND grantee IN ('omni_runtime', 'omni_maintenance')
+          AND privilege_type = 'UPDATE'
+          AND column_name NOT IN (
+            'status', 'lifecycle_revision', 'rollout_sha256',
+            'rollout', 'updated_at'
+          )
+      ) THEN
+        RAISE EXCEPTION 'A2A peer rollout boundary is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

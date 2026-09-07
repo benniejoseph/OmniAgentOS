@@ -59,7 +59,12 @@ export const a2aPeerRolloutV1Schema = z.object({
 }).strict().superRefine((value, context) => {
   const { rolloutId, rolloutSha256, ...body } = value;
   if (
-    rolloutId !== `a2a-rollout:${rolloutSha256}` ||
+    rolloutId !== a2aPeerRolloutId({
+      tenantId: value.tenantId,
+      ownerActorId: value.ownerActorId,
+      peerId: value.peerId,
+      generation: value.generation,
+    }) ||
     rolloutSha256 !== canonicalJsonSha256(body)
   ) {
     context.addIssue({
@@ -160,7 +165,7 @@ export function buildA2APeerRolloutV1(input: {
   const rolloutSha256 = canonicalJsonSha256(body);
   return parseA2APeerRolloutV1({
     ...body,
-    rolloutId: `a2a-rollout:${rolloutSha256}`,
+    rolloutId: a2aPeerRolloutId(input),
     rolloutSha256,
   });
 }
@@ -194,7 +199,7 @@ export function transitionA2APeerRolloutV1(input: {
   const rolloutSha256 = canonicalJsonSha256(body);
   return parseA2APeerRolloutV1({
     ...body,
-    rolloutId: `a2a-rollout:${rolloutSha256}`,
+    rolloutId: current.rolloutId,
     rolloutSha256,
   });
 }
@@ -225,6 +230,20 @@ export function assertA2APeerRolloutActive(input: {
 
 export function parseA2APeerRolloutV1(value: unknown) {
   return deepFreeze(a2aPeerRolloutV1Schema.parse(value));
+}
+
+export function a2aPeerRolloutId(input: {
+  tenantId: string;
+  ownerActorId: string;
+  peerId: string;
+  generation: number;
+}) {
+  return `a2a-rollout:${canonicalJsonSha256({
+    tenantId: input.tenantId,
+    ownerActorId: input.ownerActorId,
+    peerId: input.peerId,
+    generation: input.generation,
+  })}`;
 }
 
 function normalizeInterfaceUrl(value: string) {

@@ -731,6 +731,11 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 117,
+      name: "a2a_peer_rollouts_v1",
+      checksum: "0ddc785b4b7bbf2f35335857adcbfdc3b097d35c09b18fd9ff5de2697790eca9",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 116)).toEqual({
       version: 116,
       name: "delegation_task_lifecycle_v1",
       checksum: "8b60665b57c9d7d1e4c31c3d17a6b57fbd50d4c9f0fecbe3d2ffaa2a7eee4ccc",
