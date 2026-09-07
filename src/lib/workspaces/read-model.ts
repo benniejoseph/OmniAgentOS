@@ -47,6 +47,7 @@ export type CanonicalWorkItemSurfaceFallback =
     }>[];
     workflowRunId?: string;
     workflowSourceStatus?: RuntimeFacts["sourceStatus"];
+    allowCompatibilityFallback?: boolean;
   }>;
 
 type RuntimeFacts = Readonly<{
@@ -160,16 +161,28 @@ export async function canonicalWorkItemSurfaces(
       sourceRevisionSha256: String(row.source_revision_sha256 || ""),
     });
   }
-  const missing = sourceIds.filter((sourceId) => !projections.has(sourceId));
-  if (missing.length) {
+  const missing = unique.filter((fallback) => !projections.has(fallback.sourceId));
+  const hardMissing = missing.filter((fallback) => !fallback.allowCompatibilityFallback);
+  if (hardMissing.length) {
     throw new Error(
-      `Canonical WorkItem projection is missing for ${sourceAuthority}:${missing.join(",")}.`,
+      `Canonical WorkItem projection is missing for ${sourceAuthority}:${hardMissing.map((item) => item.sourceId).join(",")}.`,
     );
   }
 
   const runtimeBySourceId = await loadRuntimeFacts(tenantId, unique);
   return new Map(unique.map((fallback) => {
-    const stored = projections.get(fallback.sourceId)!;
+    const stored = projections.get(fallback.sourceId);
+    if (!stored) {
+      return [fallback.sourceId, buildSurface({
+        sourceAuthority,
+        fallback,
+        projection: localProjection(sourceAuthority, fallback),
+        persistence: "local_projection",
+        projectionSha256: null,
+        sourceRevisionSha256: null,
+        runtime: localRuntime(fallback, true),
+      })];
+    }
     return [fallback.sourceId, buildSurface({
       sourceAuthority,
       fallback,

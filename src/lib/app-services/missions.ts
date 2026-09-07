@@ -139,6 +139,8 @@ export async function listMissionsService(
   const canonicalMissions = await withCanonicalMissionSummaries(
     caller.context.tenantId,
     filtered,
+    [],
+    value.ownerScope === "readable",
   );
   return completeAppServiceCall(authorized, {
     missions: canonicalMissions,
@@ -164,7 +166,7 @@ export async function showMissionService(
         canonicalRequestActorBindingFromSecurityContext(caller.context),
     });
     const [canonicalMission] = mission
-      ? await withCanonicalMissionSummaries(caller.context.tenantId, [mission])
+      ? await withCanonicalMissionSummaries(caller.context.tenantId, [mission], [], true)
       : [];
     return completeAppServiceCall(authorized, {
       mission: canonicalMission || null,
@@ -467,6 +469,7 @@ async function withCanonicalMissionSummaries<T extends {
   tenantId: string,
   missions: readonly T[],
   artifacts: readonly { id: string; missionId: string; taskId?: string; kind: string }[] = [],
+  allowCompatibilityFallback = false,
 ) {
   const surfaces = await canonicalWorkItemSurfaces(
     tenantId,
@@ -479,6 +482,7 @@ async function withCanonicalMissionSummaries<T extends {
       status: mission.canonicalStatus.status,
       sourceStatus: mission.canonicalStatus.sourceStatus,
       updatedAt: mission.updatedAt,
+      allowCompatibilityFallback,
       artifacts: artifacts
         .filter((artifact) => artifact.missionId === mission.id && !artifact.taskId)
         .map((artifact) => ({ artifactId: artifact.id, kind: artifact.kind })),
