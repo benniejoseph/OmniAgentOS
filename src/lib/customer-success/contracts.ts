@@ -52,7 +52,7 @@ export const customerFactKindSchema = z.enum(CUSTOMER_FACT_KINDS);
 export const customerCrmPermissionsSchema = z.object({
   readScope: z.literal("workspace_members"),
   writeScope: z.literal("account_owner"),
-  externalWriteState: z.literal("disabled"),
+  externalWriteState: z.enum(["disabled", "approval_required"]),
   customerDataPurposeIds: z.array(customerDataPurposeIdSchema).min(2).max(5),
 }).strict().superRefine((value, context) => {
   assertCanonicalUnique(value.customerDataPurposeIds, context, "customerDataPurposeIds");
