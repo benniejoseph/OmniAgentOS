@@ -28,6 +28,8 @@ export default async function CommandPage({
     : undefined;
   const initialContextScope = query.context === "project" && initialProjectId
     ? "project" as const
+    : query.context === "mission" && initialMissionId
+      ? "mission" as const
     : query.context === "workspace"
       ? "workspace" as const
       : undefined;

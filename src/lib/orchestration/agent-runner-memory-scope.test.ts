@@ -455,6 +455,47 @@ describe("agent memory scope", () => {
     }));
   });
 
+  it("compiles Mission context only through its canonical Project authority", async () => {
+    const scopedRequest = request("all");
+    scopedRequest.actorId = privateOwnerContext.actorId;
+    scopedRequest.contextScope = "mission";
+    scopedRequest.executionScope = createExecutionScope({
+      tenantId: privateOwnerContext.tenantId,
+      initiatingActorId: privateOwnerContext.actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "paid-test-agent",
+      workspaceId: "workspace:team-a",
+      projectId: "project:launch",
+      missionId: "legacy-project-a",
+      correlationId: "project-context-request",
+      purpose: "agent.run",
+    });
+    scopedRequest.promptSharedMemoryAccess = sharedProjectAccess();
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.buildContextPack).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        databaseMemoryAccessScope:
+          scopedRequest.promptSharedMemoryAccess.databaseAccessScope,
+        scopedMemoryOnly: true,
+      }),
+    );
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "retrieving shared mission context",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      contextScope: "mission",
+      contextDecision: "retrieved",
+      contextRationale: [
+        "Only durable knowledge from the Mission's canonical Project membership was eligible.",
+      ],
+    }));
+  });
+
   it("compiles explicitly selected owner-private memory into a direct run", async () => {
     const promptAccess = agentPromptMemoryAccessFromSecurityContext(
       privateOwnerContext,

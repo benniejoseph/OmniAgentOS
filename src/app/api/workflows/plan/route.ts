@@ -86,6 +86,13 @@ async function POSTHandler(request: Request) {
     );
   }
   if (parsed.data.contextScope) {
+    if (parsed.data.contextScope === "mission") {
+      return Response.json({
+        error: "Context scope unavailable",
+        message:
+          "Mission context is currently available only for a direct Conversation run.",
+      }, { status: 409 });
+    }
     try {
       assertContextScopeRequest(
         parsed.data.contextScope,

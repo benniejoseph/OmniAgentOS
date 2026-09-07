@@ -78,6 +78,20 @@ describe("workflow plan context lock", () => {
     );
   });
 
+  it("keeps Mission context on the direct Conversation boundary", async () => {
+    const response = await POST(workflowPlanRequest({
+      contextScope: "mission",
+    }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Context scope unavailable",
+      message: expect.stringMatching(/direct Conversation/i),
+    });
+    expect(mocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(mocks.buildDynamicWorkflowPlan).not.toHaveBeenCalled();
+  });
+
   it("rejects a changed selection after lock", async () => {
     const selection = { ...lockedSelection(), evidenceIds: [] };
     const response = await POST(workflowPlanRequest({
