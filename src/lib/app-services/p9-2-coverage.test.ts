@@ -27,7 +27,7 @@ const requiredFamilies = [
 
 describe("P9.2 complete governed application control", () => {
   it("registers every required first-party app family with complete tool metadata", () => {
-    expect(FIRST_PARTY_APP_TOOLS.length).toBeGreaterThanOrEqual(80);
+    expect(FIRST_PARTY_APP_TOOLS.length).toBeGreaterThanOrEqual(100);
     for (const prefix of requiredFamilies) {
       expect(FIRST_PARTY_APP_TOOLS.some((tool) => tool.id.startsWith(prefix)), prefix).toBe(true);
     }
