@@ -477,12 +477,24 @@ encrypted token before processor dispatch. Expiry or revocation also clears it.
 Do not add provider tokens to environment variables, request logs, general
 connector vault entries, APIs, or Agent tools.
 
-The readiness projection reports the human-present mandate and credential
-isolation code gates as implemented while retaining zero payment-effect tools
-and `transactionsPermitted: false`. Payment remains disabled until P9.18 signed
-receipt/reconciliation plus a reviewed credential provider, merchant payment
-processor, and WebAuthn trust policy are independently configured and verified.
-This web-and-database slice does not require either Fly image to be rebuilt.
+P9.18 adds migration 127 with actor-private payment projections, raw signed
+receipt evidence, append-only signed reconciliation observations, and bounded
+idempotent reconciliation jobs. `GET /api/payments/ap2/transactions` and its
+exact-ID child route are authenticated and private/no-store; the corresponding
+Agent tools are read-only and return only the evidence-derived projection. Never
+return the raw JWT, reconciliation signature, provider credential, or sealed
+authorization from those surfaces. “Paid” requires accepted signed Checkout and
+Payment Receipts plus the processor's independently signed exact-total
+authorization and capture. Merchant UI state, browser success, and model output
+are never payment authority; contradictions remain visible as discrepancies.
+
+The readiness projection reports the human-present mandate, credential isolation,
+and receipt/reconciliation code gates as implemented while retaining zero
+payment-effect tools and `transactionsPermitted: false`. Payment remains disabled
+until a reviewed credential provider, merchant, merchant payment processor, and
+WebAuthn trust policy are independently configured and the direct flow is proven.
+P9.19 human-not-present authority must remain disabled until that production gate
+passes. This web-and-database slice does not require either Fly image to be rebuilt.
 
 ## Required checks and branch protection
 
