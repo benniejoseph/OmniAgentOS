@@ -97,6 +97,14 @@ export function captureRecordingCollectionIsReadable(contract: unknown) {
   return contract === "readable_v1";
 }
 
+export function captureRawAudioRetentionPreference(deleteAfterProcessing: boolean) {
+  return {
+    mode: deleteAfterProcessing
+      ? "delete_after_processing" as const
+      : "retain" as const,
+  };
+}
+
 export function disableCaptureRecordingCapabilities(
   recordings: RecordingSummary[],
 ) {
@@ -156,6 +164,8 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
   const [recordingId, setRecordingId] = useState<string>();
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
+  const [deleteRawAudioAfterProcessing, setDeleteRawAudioAfterProcessing] =
+    useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [level, setLevel] = useState(0);
   const [uploadedSegments, setUploadedSegments] = useState(0);
@@ -478,7 +488,15 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
     try {
       const response = await fetch(`/api/capture/recordings/${encodeURIComponent(id)}/complete`, {
         method: "POST",
-        headers: { "idempotency-key": crypto.randomUUID() },
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({
+          rawAudioRetention: captureRawAudioRetentionPreference(
+            deleteRawAudioAfterProcessing,
+          ),
+        }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
         job?: {
@@ -650,6 +668,7 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
     setLiveTranscript("");
     setTitle("");
     setTags("");
+    setDeleteRawAudioAfterProcessing(false);
     setError(undefined);
   }
 
@@ -699,6 +718,20 @@ export function LongRecordingStudio({ disabledReason, onJob, onIndexed }: Props)
             />
           </label>
         </div>
+
+        <label className="mt-4 flex items-start gap-3 rounded-lg border border-line bg-background p-3 text-sm">
+          <input
+            type="checkbox"
+            checked={deleteRawAudioAfterProcessing}
+            onChange={(event) => setDeleteRawAudioAfterProcessing(event.currentTarget.checked)}
+            disabled={active}
+            className="mt-0.5 size-4 accent-primary"
+          />
+          <span>
+            <strong className="block text-xs">Delete raw audio after processing</strong>
+            <small className="mt-1 block text-xs leading-5 text-muted">The timestamped transcript and cited outputs remain durable; original audio segments are deleted only after every transcript checkpoint succeeds.</small>
+          </span>
+        </label>
 
         <div className="mt-5 overflow-hidden rounded-xl border border-line bg-background">
           <div className="flex min-h-48 flex-col items-center justify-center px-5 py-7 text-center">

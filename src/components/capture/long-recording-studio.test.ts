@@ -8,6 +8,7 @@ import {
   captureRecordingMetadataDetailIsSafe,
   captureRecordingOpenMode,
   captureRecordingRequestIsCurrent,
+  captureRawAudioRetentionPreference,
   disableCaptureRecordingCapabilities,
 } from "@/components/capture/long-recording-studio";
 import type {
@@ -60,6 +61,13 @@ const retainedDetail: RequestCaptureRecordingMetadataDetail = {
 };
 
 describe("Capture recording request-read UI", () => {
+  it("maps the explicit privacy preference to the processing contract", () => {
+    expect(captureRawAudioRetentionPreference(false)).toEqual({ mode: "retain" });
+    expect(captureRawAudioRetentionPreference(true)).toEqual({
+      mode: "delete_after_processing",
+    });
+  });
+
   it("chooses full and retained detail only from current list capabilities", () => {
     expect(captureRecordingOpenMode(exactSummary)).toBe("full");
     expect(captureRecordingOpenMode({

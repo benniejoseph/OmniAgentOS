@@ -141,6 +141,19 @@ export type ProcessedMeetingMediaView = {
     warnings: string[];
   };
 };
+export function meetingRecordingCanProcess(
+  canWrite: boolean,
+  participants: Pick<Participant, "recordingConsent">[],
+  source: Pick<LinkedSource, "kind" | "media">,
+) {
+  return canWrite &&
+    source.kind === "capture_recording" &&
+    (!source.media || source.media.processingStatus === "failed") &&
+    participants.length > 0 &&
+    participants.every((participant) =>
+      ["granted", "not_required"].includes(participant.recordingConsent)
+    );
+}
 type LinkedSource = {
   linkId: string;
   kind: SourceLink["kind"];
@@ -192,6 +205,7 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
   const [editor, setEditor] = useState<MeetingDraft>();
   const [editingMeetingId, setEditingMeetingId] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [processingRecordingId, setProcessingRecordingId] = useState<string>();
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Meetings are ready.");
   const controllerRef = useRef<AbortController | null>(null);
@@ -245,15 +259,19 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
     }
   }
 
-  async function loadDetail(meetingId: string, signal?: AbortSignal) {
-    setDetailLoading(true);
+  async function loadDetail(
+    meetingId: string,
+    signal?: AbortSignal,
+    silent = false,
+  ) {
+    if (!silent) setDetailLoading(true);
     try {
       const payload = await readJson(`/api/meetings/${encodeURIComponent(meetingId)}`, { signal });
       setSelected(payload.meeting as Meeting);
       setLinkedSources((payload.linkedSources || []) as LinkedSource[]);
       setWorkspaceContext(payload.context as WorkspaceContext);
     } finally {
-      setDetailLoading(false);
+      if (!silent) setDetailLoading(false);
     }
   }
 
@@ -266,6 +284,26 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
     // The authenticated session and requested route own the read boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionStatus, session, initialMeetingId]);
+
+  const mediaPollingKey = linkedSources.map((source) =>
+    source.media && ["queued", "processing", "waiting"].includes(
+      source.media.processingStatus,
+    )
+      ? `${source.sourceId}:${source.media.processingStatus}:${source.media.updatedAt}`
+      : ""
+  ).filter(Boolean).join("|");
+
+  useEffect(() => {
+    if (!selected || !mediaPollingKey) return;
+    const timer = window.setTimeout(() => {
+      void loadDetail(selected.meetingId, undefined, true).catch((pollError) =>
+        setError(message(pollError))
+      );
+    }, 3_000);
+    return () => window.clearTimeout(timer);
+    // Polling is owned by the selected meeting and its durable media status.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.meetingId, mediaPollingKey]);
 
   function openCreate() {
     mutationKeyRef.current = `meeting-create:${crypto.randomUUID()}`;
@@ -322,6 +360,43 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
       setError(message(saveError));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function processLinkedRecording(source: LinkedSource) {
+    if (!selected || !workspaceContext) return;
+    setProcessingRecordingId(source.sourceId);
+    setError(undefined);
+    try {
+      const payload = await readJson(
+        `/api/capture/recordings/${encodeURIComponent(source.sourceId)}/complete`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": `meeting-media:${selected.meetingId}:${source.sourceId}`,
+          },
+          body: JSON.stringify({
+            meetingId: selected.meetingId,
+            workspaceId: workspaceContext.workspaceId,
+            rawAudioRetention: { mode: "retain" },
+          }),
+        },
+      );
+      if (payload.media) {
+        setLinkedSources((current) => current.map((candidate) =>
+          candidate.sourceId === source.sourceId
+            ? { ...candidate, media: payload.media as ProcessedMeetingMediaView }
+            : candidate
+        ));
+      } else {
+        await loadDetail(selected.meetingId, undefined, true);
+      }
+      setAnnouncement(`Background processing started for ${source.label}.`);
+    } catch (processError) {
+      setError(message(processError));
+    } finally {
+      setProcessingRecordingId(undefined);
     }
   }
 
@@ -400,7 +475,9 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
                 linkedSources={linkedSources}
                 project={projects.find((project) => project.id === selected.projectId)}
                 canWrite={workspaceContext?.canWrite ?? false}
+                processingRecordingId={processingRecordingId}
                 onEdit={openEdit}
+                onProcessRecording={(source) => void processLinkedRecording(source)}
               />
             ) : (
               <div className={styles.emptyCanvas}>
@@ -422,13 +499,17 @@ function MeetingDetail({
   linkedSources,
   project,
   canWrite,
+  processingRecordingId,
   onEdit,
+  onProcessRecording,
 }: {
   meeting: Meeting;
   linkedSources: LinkedSource[];
   project?: ProjectOption;
   canWrite: boolean;
+  processingRecordingId?: string;
   onEdit: () => void;
+  onProcessRecording: (source: LinkedSource) => void;
 }) {
   const transcriptSources = linkedSources.filter((source) =>
     source.transcript && !source.media?.output
@@ -473,6 +554,19 @@ function MeetingDetail({
             <div className={styles.sourceIcon}>{source.kind === "calendar_event" ? <CalendarDays size={18} /> : source.mediaRole === "transcript" ? <FileText size={18} /> : <FileAudio size={18} />}</div>
             <div><strong>{source.label}</strong><p>{source.kind.replaceAll("_", " ")} · {source.mediaType || source.mediaRole}</p><small>{source.durationMs ? formatDuration(source.durationMs) : source.byteCount ? formatBytes(source.byteCount) : "Exact source authority retained"}</small></div>
             <span className={styles.revisionState} data-state={source.revisionState}>{source.revisionState === "exact" ? <Check size={12} /> : <AlertTriangle size={12} />}{source.revisionState}</span>
+            {meetingRecordingCanProcess(canWrite, meeting.participants, source) ? (
+              <button
+                type="button"
+                className={styles.processMediaButton}
+                disabled={processingRecordingId === source.sourceId}
+                onClick={() => onProcessRecording(source)}
+              >
+                {processingRecordingId === source.sourceId
+                  ? <Loader2 className="animate-spin" size={13} />
+                  : <Sparkles size={13} />}
+                Process recording
+              </button>
+            ) : null}
           </article>
         ))}</div> : <EmptyLine>No calendar, recording, transcript, or asset is linked.</EmptyLine>}
       </section>
