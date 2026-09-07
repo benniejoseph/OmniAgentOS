@@ -1085,7 +1085,13 @@ export async function prepareCaptureRecordingMediaProcessing(
           AND actor_id = ${detail.actorId} AND status = 'recording'
         RETURNING *
       `;
-      if (!rows[0]) return requireCaptureRecording(id, owner);
+      if (!rows[0]) {
+        throw new CaptureRecordingError(
+          "Recording state changed while media processing was starting.",
+          409,
+          "recording_state_conflict",
+        );
+      }
       const updated = recordingFromRow(rows[0]);
       await appendCaptureRecordingStatusEvent(
         detail,

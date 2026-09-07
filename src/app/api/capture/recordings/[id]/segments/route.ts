@@ -1,6 +1,5 @@
 import {
   CAPTURE_AUDIO_TYPES,
-  transcribeCaptureAudio,
 } from "@/lib/capture/transcription";
 import {
   CaptureRecordingError,
@@ -8,11 +7,11 @@ import {
   getCaptureSegmentAudio,
   MAX_CAPTURE_SEGMENT_BYTES,
   saveCaptureSegment,
-  updateCaptureSegmentTranscription,
 } from "@/lib/capture/recordings";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
+import { enqueueCaptureSegmentTranscriptionJob } from "@/lib/capture/media-jobs";
 import { withDatabaseRequestScope } from "@/lib/db/client";
-import { recordRuntimeEventSafely } from "@/lib/observability/store";
+import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -68,7 +67,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   const executionScope = captureExecutionScopeFromSecurityContext(
     context,
     request,
-    "capture.recording.segment.append_and_transcribe",
+    "capture.recording.segment.append_and_queue",
   );
   let form: FormData;
   try {
@@ -85,7 +84,6 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
   if (typeof rawSegmentIndex !== "string" || !rawSegmentIndex.trim()) return Response.json({ error: "A segment index is required." }, { status: 400 });
   const segmentIndex = Number(rawSegmentIndex);
   const durationMs = Number(form.get("durationMs") || 0);
-  const startedAt = Date.now();
   try {
     const saved = await saveCaptureSegment({
       ...context,
@@ -97,56 +95,47 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
       audio: new Uint8Array(await audio.arrayBuffer()),
       metadata: { originalName: audio.name.slice(0, 240) },
     });
-    if (!saved.created && saved.segment.transcriptionStatus === "completed") {
+    if (!saved.created && saved.segment.mediaTranscript) {
       return Response.json({ segment: saved.segment, duplicate: true }, { headers: { "cache-control": "private, no-store" } });
     }
     try {
-      const transcription = await transcribeCaptureAudio(audio, request.signal, {
+      const recording = await getCaptureRecording(id, context);
+      if (!recording) {
+        throw new CaptureRecordingError(
+          "Recording not found.",
+          404,
+          "recording_not_found",
+        );
+      }
+      const job = await enqueueCaptureSegmentTranscriptionJob({
         tenantId: context.tenantId,
         actorId: context.actorId,
-        sourceStreamId: `capture-recording:${id}`,
-        operation: "transcription",
-        purpose: "capture.recording.segment.transcribe",
-        correlationId: executionScope.correlationId,
-        executionScope,
-        credentialSource: "deployment_environment",
-      });
-      const segment = await updateCaptureSegmentTranscription({
-        ...context,
-        executionScope,
         recordingId: id,
-        segmentIndex,
-        status: "completed",
-        transcript: transcription.text,
-        model: transcription.model,
-      });
-      await recordRuntimeEventSafely({
-        category: "api",
-        action: "capture.segment.transcribed",
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        correlationId: executionScope.correlationId,
-        resourceType: "capture_recording",
-        resourceId: id,
-        durationMs: Date.now() - startedAt,
-        message: "A durable recording segment was stored and transcribed.",
-        metadata: { segmentIndex, bytes: audio.size, model: transcription.model, fallbackUsed: transcription.fallbackUsed },
-      });
-      return Response.json({ segment, duplicate: !saved.created }, { status: saved.created ? 201 : 200, headers: { "cache-control": "private, no-store" } });
-    } catch (error) {
-      const segment = await updateCaptureSegmentTranscription({
-        ...context,
+        segment: saved.segment,
+        languageHints: recording.language ? [recording.language] : [],
         executionScope,
-        recordingId: id,
-        segmentIndex,
-        status: "failed",
-        error: error instanceof Error ? error.message : "Transcription failed.",
       });
       return Response.json({
-        segment,
+        segment: saved.segment,
+        job: projectOperationJobStatus(job),
+        duplicate: !saved.created,
+      }, {
+        status: 202,
+        headers: {
+          location: `/api/operations/jobs/${job.id}`,
+          "retry-after": "2",
+          "cache-control": "private, no-store",
+        },
+      });
+    } catch (error) {
+      return Response.json({
+        segment: saved.segment,
         stored: true,
-        warning: "The audio is safely stored, but this segment still needs transcription.",
-      }, { status: 202, headers: { "cache-control": "private, no-store" } });
+        error: error instanceof Error
+          ? error.message
+          : "The stored segment could not be queued for processing.",
+        retryable: true,
+      }, { status: 503, headers: { "cache-control": "private, no-store" } });
     }
   } catch (error) {
     return captureErrorResponse(error);

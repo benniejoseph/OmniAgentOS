@@ -4,22 +4,23 @@ const routeMocks = vi.hoisted(() => {
   class CaptureRecordingError extends Error {
     constructor(
       message: string,
-      readonly status: 400 | 404 | 409 | 413 = 400,
+      readonly status: 400 | 404 | 409 | 410 | 413 = 400,
       readonly code = "capture_recording_error",
     ) {
       super(message);
       this.name = "CaptureRecordingError";
     }
   }
-  class BackgroundJobIdempotencyConflictError extends Error {}
   return {
     CaptureRecordingError,
-    BackgroundJobIdempotencyConflictError,
     authorizeRequest: vi.fn(),
     captureExecutionScopeFromSecurityContext: vi.fn(),
-    prepareCaptureRecordingCompletion: vi.fn(),
-    enqueueKnowledgeIngestJob: vi.fn(),
-    markCaptureRecordingIngestQueued: vi.fn(),
+    createAppServiceCaller: vi.fn(),
+    showMeetingService: vi.fn(),
+    prepareCaptureRecordingMediaProcessing: vi.fn(),
+    enqueueCaptureMediaProcessingJob: vi.fn(),
+    getCaptureMediaHead: vi.fn(),
+    queueCaptureMediaProcessing: vi.fn(),
     projectOperationJobStatus: vi.fn(),
   };
 });
@@ -29,31 +30,33 @@ vi.mock("@/lib/db/client", async (importOriginal) => ({
   withDatabaseRequestScope:
     (handler: (...args: never[]) => Promise<Response>) => handler,
 }));
-
 vi.mock("@/lib/security/guard", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/security/guard")>()),
   authorizeRequest: routeMocks.authorizeRequest,
 }));
-
 vi.mock("@/lib/capture/execution-scope", () => ({
   captureExecutionScopeFromSecurityContext:
     routeMocks.captureExecutionScopeFromSecurityContext,
 }));
-
+vi.mock("@/lib/app-services/contracts", () => ({
+  createAppServiceCaller: routeMocks.createAppServiceCaller,
+}));
+vi.mock("@/lib/app-services/meetings", () => ({
+  showMeetingService: routeMocks.showMeetingService,
+}));
 vi.mock("@/lib/capture/recordings", () => ({
   CaptureRecordingError: routeMocks.CaptureRecordingError,
-  prepareCaptureRecordingCompletion:
-    routeMocks.prepareCaptureRecordingCompletion,
-  markCaptureRecordingIngestQueued:
-    routeMocks.markCaptureRecordingIngestQueued,
+  prepareCaptureRecordingMediaProcessing:
+    routeMocks.prepareCaptureRecordingMediaProcessing,
 }));
-
-vi.mock("@/lib/operations/background-jobs", () => ({
-  BackgroundJobIdempotencyConflictError:
-    routeMocks.BackgroundJobIdempotencyConflictError,
-  enqueueKnowledgeIngestJob: routeMocks.enqueueKnowledgeIngestJob,
+vi.mock("@/lib/capture/media-jobs", () => ({
+  enqueueCaptureMediaProcessingJob:
+    routeMocks.enqueueCaptureMediaProcessingJob,
 }));
-
+vi.mock("@/lib/capture/media-store", () => ({
+  getCaptureMediaHead: routeMocks.getCaptureMediaHead,
+  queueCaptureMediaProcessing: routeMocks.queueCaptureMediaProcessing,
+}));
 vi.mock("@/lib/operations/job-queue", () => ({
   projectOperationJobStatus: routeMocks.projectOperationJobStatus,
 }));
@@ -66,7 +69,7 @@ const context = {
   role: "admin" as const,
   source: "session" as const,
 };
-const executionScope = { version: 1, purpose: "capture.recording.complete_and_index" };
+const executionScope = { version: 1, purpose: "capture.recording.media.queue" };
 const recording = {
   id: "recording-a",
   tenantId: context.tenantId,
@@ -79,71 +82,143 @@ const recording = {
   completedAt: "2026-09-06T10:00:03.000Z",
   durationMs: 3_000,
   byteCount: 24,
-  segmentCount: 2,
-  transcript: "Opening\n\nClosing",
+  segmentCount: 1,
+  transcript: "",
   source: "capture:recording:recording-a",
   metadata: {},
   createdAt: "2026-09-06T10:00:00.000Z",
   updatedAt: "2026-09-06T10:00:03.000Z",
-  segments: [
-    {
-      segmentIndex: 0,
-      durationMs: 1_000,
-      transcript: "Opening",
-      transcriptionStatus: "completed" as const,
-    },
-    {
-      segmentIndex: 1,
-      durationMs: 2_000,
-      transcript: "Closing",
-      transcriptionStatus: "completed" as const,
-    },
-  ],
+  segments: [{
+    id: "segment-a",
+    segmentIndex: 0,
+    durationMs: 3_000,
+    transcript: "",
+    transcriptionStatus: "pending" as const,
+    audioSha256: "a".repeat(64),
+    byteCount: 24,
+  }],
 };
 
 beforeEach(() => {
-  routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
-  routeMocks.captureExecutionScopeFromSecurityContext
-    .mockReset()
-    .mockReturnValue(executionScope);
-  routeMocks.prepareCaptureRecordingCompletion
-    .mockReset()
-    .mockResolvedValue(recording);
-  routeMocks.enqueueKnowledgeIngestJob.mockReset().mockResolvedValue({ id: "job-a" });
-  routeMocks.markCaptureRecordingIngestQueued
-    .mockReset()
-    .mockResolvedValue({ ...recording, ingestJobId: "job-a" });
-  routeMocks.projectOperationJobStatus.mockReset().mockReturnValue({ id: "job-a", status: "queued" });
+  vi.clearAllMocks();
+  routeMocks.authorizeRequest.mockResolvedValue(context);
+  routeMocks.captureExecutionScopeFromSecurityContext.mockReturnValue(executionScope);
+  routeMocks.createAppServiceCaller.mockReturnValue({ context });
+  routeMocks.prepareCaptureRecordingMediaProcessing.mockResolvedValue(recording);
+  routeMocks.getCaptureMediaHead.mockResolvedValue(undefined);
+  routeMocks.enqueueCaptureMediaProcessingJob.mockResolvedValue({
+    id: "media-job-a",
+    status: "queued",
+  });
+  routeMocks.queueCaptureMediaProcessing.mockResolvedValue({
+    recordingId: recording.id,
+    processingStatus: "queued",
+    operationJobId: "media-job-a",
+  });
+  routeMocks.projectOperationJobStatus.mockReturnValue({
+    id: "media-job-a",
+    status: "queued",
+  });
 });
 
-describe("capture recording completion", () => {
-  it("queues timestamped structured evidence with a verifiable receipt", async () => {
+describe("capture recording media completion", () => {
+  it("queues resumable processing without waiting for a segment transcript", async () => {
     const response = await POST(
-      new Request("http://localhost/api/capture/recordings/recording-a/complete", { method: "POST" }),
+      new Request("http://localhost/api/capture/recordings/recording-a/complete", {
+        method: "POST",
+      }),
       { params: Promise.resolve({ id: recording.id }) },
     );
 
     expect(response.status).toBe(202);
-    const queued = routeMocks.enqueueKnowledgeIngestJob.mock.calls[0]?.[0];
-    expect(queued.request.content).toBe("Opening\n\nClosing");
-    expect(queued.request.metadata).toMatchObject({
-      structuredSourceKind: "audio",
-      extractionState: "completed",
-    });
-    expect(queued.request.structuredUnits).toHaveLength(2);
-    expect(queued.request.structuredUnits[1].locator).toMatchObject({
-      kind: "media_time_range",
-      startMilliseconds: 1_000,
-      endMillisecondsExclusive: 3_000,
-    });
-    expect(queued.request.metadata.extractionReceiptSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(response.headers.get("location")).toBe(
+      "/api/operations/jobs/media-job-a",
+    );
+    expect(routeMocks.enqueueCaptureMediaProcessingJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        recording,
+        request: expect.objectContaining({
+          recordingId: recording.id,
+          languageHints: ["en-US"],
+          rawAudioRetention: { mode: "retain" },
+        }),
+      }),
+    );
     await expect(response.json()).resolves.toMatchObject({
-      extractionReceipt: {
-        state: "completed",
-        unitCount: 2,
-        locatorKinds: ["media_time_range"],
+      media: { processingStatus: "queued" },
+      job: { id: "media-job-a", status: "queued" },
+    });
+  });
+
+  it("accepts only consented meeting participants as confirmed speakers", async () => {
+    const meetingId = "meeting:11111111-1111-4111-8111-111111111111";
+    routeMocks.showMeetingService.mockResolvedValue({
+      data: {
+        meeting: {
+          meetingId,
+          sourceLinks: [{ kind: "capture_recording", sourceId: recording.id }],
+          participants: [{
+            participantId: "participant:customer",
+            displayName: "Customer",
+            recordingConsent: "granted",
+          }],
+        },
       },
-      warnings: [],
+    });
+    const response = await POST(
+      new Request("http://localhost/api/capture/recordings/recording-a/complete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          meetingId,
+          speakerMappings: [{
+            speakerLabel: "A",
+            participantId: "participant:customer",
+            displayName: "Customer",
+            confirmation: "user_confirmed",
+          }],
+          rawAudioRetention: { mode: "delete_after_processing" },
+        }),
+      }),
+      { params: Promise.resolve({ id: recording.id }) },
+    );
+
+    expect(response.status).toBe(202);
+    expect(routeMocks.showMeetingService).toHaveBeenCalledOnce();
+    expect(routeMocks.enqueueCaptureMediaProcessingJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          meetingId,
+          speakerMappings: [expect.objectContaining({ displayName: "Customer" })],
+          rawAudioRetention: { mode: "delete_after_processing" },
+        }),
+      }),
+    );
+  });
+
+  it("rejects confirmed speaker names without meeting authority", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/capture/recordings/recording-a/complete", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          speakerMappings: [{
+            speakerLabel: "A",
+            participantId: "participant:customer",
+            displayName: "Customer",
+            confirmation: "user_confirmed",
+          }],
+        }),
+      }),
+      { params: Promise.resolve({ id: recording.id }) },
+    );
+
+    expect(response.status).toBe(409);
+    expect(routeMocks.prepareCaptureRecordingMediaProcessing).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      code: "meeting_media_authority",
     });
   });
 });
