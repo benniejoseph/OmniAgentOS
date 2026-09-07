@@ -603,5 +603,10 @@
     "version": 121,
     "name": "approval_grants_v1",
     "checksum": "74a51bdd87e583b6380533d34571455ba717829e390de8ef0806b2a818f37bd6"
+  },
+  {
+    "version": 122,
+    "name": "browser_takeover_profiles_v1",
+    "checksum": "ee32a9191756e79b13799f8e5bbf0768a962f7501194c222bb481ef9fa2e47d4"
   }
 ]
