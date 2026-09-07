@@ -658,5 +658,10 @@
     "version": 132,
     "name": "workspace_templates_v1",
     "checksum": "f750197534c0c4854c424130fe566c34c431481bbe561526361067baaaeb0643"
+  },
+  {
+    "version": 133,
+    "name": "canonical_actor_scope_repair_v1",
+    "checksum": "f700debf165e44134b59e46fdfc258a4fb9e51a7158adfb26760c77acff45678"
   }
 ]
