@@ -158,6 +158,8 @@ function settledSource<T, U>(
 function projectAgentRun(run: AgentRunRecord) {
   return {
     id: run.id,
+    agentId: run.agentId || "atlas",
+    specialistIds: run.specialistIds || [run.agentId || "atlas"],
     mode: run.mode,
     status: run.status,
     prompt: run.prompt,
