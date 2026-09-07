@@ -1559,6 +1559,37 @@ evidence of selection, never grants. `/api/agents/cards` exposes the same
 authenticated, private/no-store projections and optional deterministic
 discovery receipt.
 
+P8.6 adds the external A2A boundary without making the wire protocol an
+authority source. Each actor-private `p8.6-a2a-peer-rollout:1` pins the exact
+tenant, owner, peer, direction, mode, lifecycle generation, normalized HTTPS
+interface, reviewed Agent Card digest, A2A HTTP+JSON `1.0`, adapter release and
+artifact digest, service-key identity, endpoint-bound outbound credential,
+skill/Agent allowlists, and hard input/output/time limits. Public discovery
+returns a minimal card; authenticated extended discovery reveals only the
+local Agents allowed for that exact inbound peer. Live outbound discovery must
+continue matching the reviewed card and interface before every operation.
+
+External IDs are references into immutable actor-private
+`p8.6-a2a-task-mapping:1` records, never replacements for the canonical P8.3
+task/delegation/contract. `p8.6-a2a-exchange:1` stores bounded peer messages,
+artifacts, and status as append-only untrusted observations with
+`authorityImpact: none`; events contain only identities, coordinates, digests,
+states, and rollout bindings. Remote completion can advance the internal task
+only to `completed_proposed`. Parent verification remains the sole path to
+`result_accepted`.
+
+Outbound Agents receive an opaque AES-GCM-sealed
+`p8.6-a2a-delegated-token:1`, capped for transport and expiring at the earlier
+contract or peer deadline. Its authenticated envelope binds the original
+attenuated delegated principal, tenant/actor, parent execution, canonical task,
+exact rollout generation/digest, audience, and workspace/project/Mission
+coordinates. Pausing/revoking the rollout or leaving canonical `working` state
+revokes use immediately. The callback gateway exposes no provider credential;
+it re-enters `executeGovernedTool` as a viewer service principal with the exact
+context/capability/tool grants and idempotency binding, forces approval for
+mutations, and returns only a bounded redacted execution projection. Inbound
+peers currently receive no ambient tool grants.
+
 P4.3 inserts a schema-closed query-plan step before retrieval. The semantic
 provider sees the redacted query and planning time, not authorization coordinates. Its
 `p4.3-query-plan:1` output contains only bounded domain enums, search rewrites,
