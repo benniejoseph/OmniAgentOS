@@ -467,13 +467,22 @@ secrets, or payment signing keys in Vercel environment variables, model
 context, general application storage, events, logs, browser state, MCP output,
 or memory.
 
-The readiness projection reports the direct human-present mandate gate as
-implemented while retaining zero payment-effect tools and
-`transactionsPermitted: false`. Payment remains disabled until P9.17 credential
-isolation, P9.18 signed receipt/reconciliation, a reviewed credential provider,
-merchant payment processor, and WebAuthn trust policy are independently
-configured and verified. This web-and-database slice does not require either
-Fly image to be rebuilt.
+P9.17 reuses `OMNIAGENT_CREDENTIAL_KEYRING` only to seal a provider-issued,
+single-transaction scoped token. It never stores a card, account credential, or
+private signing key. Grant metadata and provider proof contain digests and a
+public signature but no token; the encrypted token is bound to actor, grant,
+provider contract, scope, and token digest. Migration 126 creates the forced-RLS
+grant and append-only claim ledgers. A successful one-time claim clears the
+encrypted token before processor dispatch. Expiry or revocation also clears it.
+Do not add provider tokens to environment variables, request logs, general
+connector vault entries, APIs, or Agent tools.
+
+The readiness projection reports the human-present mandate and credential
+isolation code gates as implemented while retaining zero payment-effect tools
+and `transactionsPermitted: false`. Payment remains disabled until P9.18 signed
+receipt/reconciliation plus a reviewed credential provider, merchant payment
+processor, and WebAuthn trust policy are independently configured and verified.
+This web-and-database slice does not require either Fly image to be rebuilt.
 
 ## Required checks and branch protection
 
