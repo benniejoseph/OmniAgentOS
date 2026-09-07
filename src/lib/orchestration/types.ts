@@ -39,6 +39,20 @@ export type AgentCouncilEvent = {
   summary?: string;
   confidence?: number;
   durationMs?: number;
+  taskId?: string;
+  delegationId?: string;
+  lifecycleState?:
+    | "proposed"
+    | "accepted"
+    | "working"
+    | "waiting"
+    | "challenged"
+    | "completed_proposed"
+    | "result_accepted"
+    | "rejected"
+    | "canceled"
+    | "expired";
+  lifecycleRevision?: number;
 };
 
 export type AgentHarnessEvent = {
