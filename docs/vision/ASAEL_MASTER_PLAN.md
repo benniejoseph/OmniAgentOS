@@ -774,7 +774,7 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 through P9.5 are complete; P9.6 is the next actionable slice, while P12
+P9.1 through P9.6 are complete; P9.7 is the next actionable slice, while P12
 and P13 remain deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -792,7 +792,7 @@ and P13 remain deferred.
 | P9.3 | Add reversible trash, undo, compensation, and two-step destructive action UX. | Modify domain deletes; create trash/compensation contracts. | Irreversible/high-impact deletes remain approval-gated and never graduate automatically. | Edit/archive/delete actions have clear preview, effect receipt, undo/compensation where possible, and final deletion receipt. |
 | P9.4 | Add plan/domain/action-class approval grants. | Modify trust policy. | Grants bind actor, agent, tool contract, target, plan digest, budget, and expiry; replanning invalidates them. | Repetitive safe operations avoid per-click approval without permitting new targets or action classes. |
 
-**Implementation status:** P9.1 through P9.5 are complete. The governed catalog
+**Implementation status:** P9.1 through P9.6 are complete. The governed catalog
 now contains 109 active `app.*` operations, including actor-private Trash list,
 detail, receipt, restore-preview, restore, purge-preview, and purge tools. Custom
 Agent, custom Skill, MCP, and OpenAPI removal first requires an exact expiring
@@ -838,8 +838,22 @@ migration or Fly image change was required. Fifteen focused checks, affected
 lint, TypeScript, and the 98-page production build pass. Vercel deployment
 `dpl_GJHaqt1of1RN8P6K6qEZAzsQSKgt` is Ready at exact revision
 `508cb3847c4a1516e03c3418ba060b12aa55a04b`; the canonical web, worker/OpenAI
-gateway, and Playwright gateway all return HTTP 200 health. P9.6 is next. P12
-and P13 remain deferred.
+gateway, and Playwright gateway all return HTTP 200 health. P9.6 now returns a
+separate one-turn browser observation from the governed executor after safe
+Playwright actions. It binds the exact execution, redacted accessibility
+snapshot, safe page state, and bounded screenshot while the persisted tool
+record and canonical continuation retain only the ordinary redacted action
+result. The gateway validates and bounds the observation and discloses image
+bytes only when the selected provider target advertises vision; OpenAI,
+Gemini, and Anthropic receive native multimodal tool-result content, while a
+non-vision Bedrock target receives only the untrusted structured text. Approval
+resumes rehydrate the same actor/run/execution-owned internal evidence and again
+discard it after one turn. Forty-one focused browser, gateway, provider, continuation,
+and loop checks, affected lint, TypeScript, and the 98-page production build
+pass. No migration or Fly rebuild was required. Vercel deployment
+`dpl_CxCua4tWiZ4S7YKV4bBrMic7N5qQ` is Ready at exact revision
+`a0742721ebb927f6537c5e877b170f686008a3a7`; all three production health
+surfaces return HTTP 200. P9.7 is next. P12 and P13 remain deferred.
 
 #### Browser and computer use
 
@@ -2780,7 +2794,7 @@ production build pass. Vercel rejected the complete-feature promotion at
 still reports an overdue balance; Fly was intentionally left unchanged. This
 closes Phase 8.
 
-P9.1 through P9.5 are complete. The shared registry and dispatcher expose 109
+P9.1 through P9.6 are complete. The shared registry and dispatcher expose 109
 active `app.*` tools across all thirteen required product families with
 tenant/actor/RBAC revalidation, exact mutation scope and idempotency,
 content-free service receipts, governed typed domain events, risk-based
@@ -2809,7 +2823,16 @@ The reconnecting viewer advances automatically and labels active state `Live`
 and terminal state `Replay`. No migration or Fly rebuild was required. Vercel
 deployment `dpl_GJHaqt1of1RN8P6K6qEZAzsQSKgt` serves exact revision
 `508cb3847c4a1516e03c3418ba060b12aa55a04b`; all three production health
-surfaces return HTTP 200. P9.6 is next. P12/P13 remain deferred.
+surfaces return HTTP 200. P9.6 supplies the next model turn with the exact
+governed action result plus redacted accessibility structure, safe page state,
+and, only for vision-capable provider targets, the bounded screenshot. Browser
+content remains explicitly untrusted. The observation is one-turn only and is
+stripped from durable execution records, events, canonical transcripts, and
+approval continuations; approval resumes rehydrate only exact actor/run/execution
+evidence. No migration or Fly rebuild was required. Vercel deployment
+`dpl_CxCua4tWiZ4S7YKV4bBrMic7N5qQ` serves exact revision
+`a0742721ebb927f6537c5e877b170f686008a3a7`; all three production health
+surfaces return HTTP 200. P9.7 is next. P12/P13 remain deferred.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 

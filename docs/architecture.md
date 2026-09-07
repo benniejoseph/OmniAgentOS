@@ -188,6 +188,18 @@ and recognizable credentials are removed before structured text is stored. Raw
 image and snapshot bytes require a separately authorized owner/run request,
 use private/no-store delivery, and are excluded from Agent tool transcripts.
 
+P9.6 adds a private in-memory observation beside the ordinary governed tool
+result. It binds one browser action's execution ID to safe page state, the
+redacted accessibility structure, and the bounded screenshot. The model gateway
+validates the bundle and includes image bytes only for a selected target that
+advertises vision. Every provider receives the content as untrusted tool data;
+OpenAI, Gemini, and Anthropic use native multimodal tool-result blocks, while a
+non-vision Bedrock target receives text only. The observation is consumed by the
+next model turn and never enters tool records, domain events, canonical
+conversations, or persisted approval continuations. Approval resumes rehydrate
+only exact actor/run/execution-owned internal evidence and retain the same
+one-turn rule.
+
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped
 agent principal, intent and outcome contracts, resolved context and harness
