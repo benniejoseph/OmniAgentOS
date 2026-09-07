@@ -25,8 +25,11 @@ import {
   updateProjectExecution,
   updateProjectTask,
 } from "@/lib/projects/store";
+import type { ProjectTask } from "@/lib/projects/types";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import { canonicalStatusForProjectTask } from "@/lib/status/canonical";
+import { canonicalWorkItemStatuses } from "@/lib/workspaces/read-model";
 
 const projectStatusSchema = z.enum(["draft", "active", "completed", "archived"]);
 const projectTaskStatusSchema = z.enum(["open", "doing", "done"]);
@@ -117,9 +120,14 @@ export async function listProjectsService(
   const collections = await listProjectCollections(filtered.map((project) => project.id), {
     tenantId: caller.context.tenantId,
   });
+  const allTasks = filtered.flatMap((project) => collections.tasksByProject.get(project.id) || []);
+  const canonicalTasks = await withCanonicalProjectTasks(caller.context.tenantId, allTasks);
+  const canonicalTasksById = new Map(canonicalTasks.map((task) => [task.id, task]));
   const data = filtered.map((project) => ({
     ...project,
-    tasks: collections.tasksByProject.get(project.id) || [],
+    tasks: (collections.tasksByProject.get(project.id) || []).map(
+      (task) => canonicalTasksById.get(task.id) || task,
+    ),
     artifacts: collections.artifactsByProject.get(project.id) || [],
   }));
   return completeAppServiceCall(authorized, { projects: data }, { resourceCount: data.length });
@@ -137,7 +145,13 @@ export async function showProjectService(
     listProjectTasks(project.id, { tenantId: caller.context.tenantId, limit: value.taskLimit }),
     listProjectArtifacts(project.id, { tenantId: caller.context.tenantId, limit: value.artifactLimit }),
   ]);
-  return completeAppServiceCall(authorized, { project: { ...project, tasks, artifacts } });
+  return completeAppServiceCall(authorized, {
+    project: {
+      ...project,
+      tasks: await withCanonicalProjectTasks(caller.context.tenantId, tasks),
+      artifacts,
+    },
+  });
 }
 
 export async function createProjectService(
@@ -172,7 +186,10 @@ export async function createWorkItemService(
     ...exactOwner(caller),
     mutation: mutationContext(caller),
   });
-  return completeAppServiceCall(authorized, { workItem: created || null }, { resourceCount: created ? 1 : 0 });
+  const [canonical] = created
+    ? await withCanonicalProjectTasks(caller.context.tenantId, [created])
+    : [];
+  return completeAppServiceCall(authorized, { workItem: canonical || null }, { resourceCount: created ? 1 : 0 });
 }
 
 export async function updateWorkItemService(
@@ -186,7 +203,10 @@ export async function updateWorkItemService(
     ...exactOwner(caller),
     mutation: mutationContext(caller),
   });
-  return completeAppServiceCall(authorized, { workItem: workItem || null }, { resourceCount: workItem ? 1 : 0 });
+  const [canonical] = workItem
+    ? await withCanonicalProjectTasks(caller.context.tenantId, [workItem])
+    : [];
+  return completeAppServiceCall(authorized, { workItem: canonical || null }, { resourceCount: workItem ? 1 : 0 });
 }
 
 export async function planProjectService(
@@ -201,7 +221,11 @@ export async function planProjectService(
     context: value.context,
     mutation: mutationContext(caller),
   });
-  return completeAppServiceCall(authorized, { plan: plan || null }, { resourceCount: plan ? 1 : 0 });
+  const canonicalPlan = plan ? {
+    ...plan,
+    tasks: await withCanonicalProjectTasks(caller.context.tenantId, plan.tasks),
+  } : null;
+  return completeAppServiceCall(authorized, { plan: canonicalPlan }, { resourceCount: plan ? 1 : 0 });
 }
 
 export async function controlProjectExecutionService(
@@ -232,12 +256,20 @@ export async function controlProjectExecutionService(
     const snapshot = value.action === "resume"
       ? await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true })
       : await projectSnapshot(value.projectId, scope);
-    return completeAppServiceCall(authorized, { snapshot });
+    return completeAppServiceCall(authorized, {
+      snapshot: await withCanonicalProjectSnapshot(caller.context.tenantId, snapshot),
+    });
   }
   if (value.action === "approve" || value.action === "retry") {
     const workflow = await signalProjectTask({ projectId: value.projectId, taskId: value.workItemId, signal: value.action, ...scope });
     if (!workflow) return completeAppServiceCall(authorized, { snapshot: null, workItemFound: false }, { resourceCount: 0 });
-    return completeAppServiceCall(authorized, { snapshot: await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true }), workItemFound: true });
+    return completeAppServiceCall(authorized, {
+      snapshot: await withCanonicalProjectSnapshot(
+        caller.context.tenantId,
+        await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true }),
+      ),
+      workItemFound: true,
+    });
   }
   if (value.action === "start") {
     const tasks = await listProjectTasks(value.projectId, scope);
@@ -247,7 +279,12 @@ export async function controlProjectExecutionService(
       maxParallelTasks: value.maxParallelTasks, requireApproval: value.autonomyMode === "supervised" ? true : value.requireApproval,
     }, { ...exactOwner(caller), mutation: mutationContext(caller) });
   }
-  return completeAppServiceCall(authorized, { snapshot: await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true }) });
+  return completeAppServiceCall(authorized, {
+    snapshot: await withCanonicalProjectSnapshot(
+      caller.context.tenantId,
+      await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true }),
+    ),
+  });
 }
 
 export async function recordProjectArtifactFeedbackService(
@@ -264,7 +301,49 @@ async function projectSnapshot(projectId: string, scope: { tenantId: string; act
   const [project, tasks, artifacts] = await Promise.all([
     getProject(projectId, scope), listProjectTasks(projectId, scope), listProjectArtifacts(projectId, scope),
   ]);
-  return { project, tasks, artifacts, dispatchedTaskIds: [] as string[] };
+  return {
+    project,
+    tasks: await withCanonicalProjectTasks(scope.tenantId, tasks),
+    artifacts,
+    dispatchedTaskIds: [] as string[],
+  };
+}
+
+async function withCanonicalProjectSnapshot<T extends { tasks: ProjectTask[] }>(
+  tenantId: string,
+  snapshot: T | undefined,
+) {
+  if (!snapshot) return undefined;
+  return {
+    ...snapshot,
+    tasks: await withCanonicalProjectTasks(tenantId, snapshot.tasks),
+  };
+}
+
+async function withCanonicalProjectTasks(
+  tenantId: string,
+  tasks: readonly ProjectTask[],
+) {
+  const statuses = await canonicalWorkItemStatuses(
+    tenantId,
+    "legacy_project_task",
+    tasks.map((task) => {
+      const status = canonicalStatusForProjectTask(task);
+      return {
+        projectId: task.projectId,
+        workItemId: task.id,
+        kind: "task" as const,
+        sourceId: task.id,
+        status: status.status,
+        sourceStatus: status.sourceStatus,
+        updatedAt: task.updatedAt,
+      };
+    }),
+  );
+  return tasks.map((task) => ({
+    ...task,
+    workItemStatus: statuses.get(task.id)!,
+  }));
 }
 
 function exactOwner(caller: AppServiceCaller) {

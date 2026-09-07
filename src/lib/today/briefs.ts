@@ -14,6 +14,7 @@ import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-ac
 import { redactSensitive } from "@/lib/security/context";
 import { listAgentRunSummaries } from "@/lib/runs/store";
 import { listProjects, listProjectTasks } from "@/lib/projects/store";
+import { canonicalStatusForProjectTask } from "@/lib/status/canonical";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import { listThreads } from "@/lib/threads/store";
@@ -548,14 +549,27 @@ export async function generateDailyBrief(options: {
     })),
     recentThreads: threads.map((thread) => ({ title: thread.title, updatedAt: thread.updatedAt })),
     activeWork,
-    projects: activeProjects.map((project, index) => ({
-      title: project.title,
-      objective: project.objective,
-      targetDate: project.targetDate,
-      nextTask: projectTasks[index].find((task) => task.status !== "done")?.title,
-      completedTasks: projectTasks[index].filter((task) => task.status === "done").length,
-      totalTasks: projectTasks[index].length,
-    })),
+    projects: activeProjects.map((project, index) => {
+      const tasks = projectTasks[index].map((task) => ({
+        task,
+        status: canonicalStatusForProjectTask(task).status,
+      }));
+      const nextTask = tasks.find(({ status }) =>
+        !["unverified", "failed", "canceled", "succeeded"].includes(status)
+      );
+      return {
+        title: project.title,
+        objective: project.objective,
+        targetDate: project.targetDate,
+        nextTask: nextTask?.task.title,
+        nextTaskStatus: nextTask?.status,
+        closedTasks: tasks.filter(({ status }) =>
+          ["unverified", "failed", "canceled", "succeeded"].includes(status)
+        ).length,
+        unverifiedTasks: tasks.filter(({ status }) => status === "unverified").length,
+        totalTasks: tasks.length,
+      };
+    }),
   };
 
   let content = fallbackBrief(evidence);

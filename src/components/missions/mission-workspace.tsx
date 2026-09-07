@@ -1333,9 +1333,9 @@ export function MissionWorkspace({
           </div>
           <div className={styles.railList}>
             {workspaceLoading ? (showLoading ? <MissionListSkeleton /> : <div className={styles.loadingReserve} aria-hidden="true" />) : visibleMissions.length ? visibleMissions.map((mission) => (
-              <button key={mission.id} type="button" aria-pressed={selectedId === mission.id} aria-label={railCollapsed ? `${mission.title}, ${missionStatusLabel(mission.status)}` : undefined} title={railCollapsed ? mission.title : undefined} className={clsx(styles.missionItem, selectedId === mission.id && styles.missionItemSelected)} onClick={() => selectMission(mission.id)}>
-                <span className={clsx(styles.statusDot, statusToneClass(mission.status))} aria-hidden="true" />
-                <span className={styles.missionItemCopy}><strong>{mission.title}</strong><small>{missionStatusLabel(mission.status)} · {relativeTime(mission.updatedAt, asOf)}</small></span>
+              <button key={mission.id} type="button" aria-pressed={selectedId === mission.id} aria-label={railCollapsed ? `${mission.title}, ${missionWorkItemStatusLabel(mission)}` : undefined} title={railCollapsed ? mission.title : undefined} className={clsx(styles.missionItem, selectedId === mission.id && styles.missionItemSelected)} onClick={() => selectMission(mission.id)}>
+                <span className={clsx(styles.statusDot, statusToneClass(missionWorkItemStatus(mission)))} aria-hidden="true" />
+                <span className={styles.missionItemCopy}><strong>{mission.title}</strong><small>{missionWorkItemStatusLabel(mission)} · {relativeTime(mission.updatedAt, asOf)}</small></span>
                 <ChevronRight className={styles.missionChevron} size={14} aria-hidden="true" />
               </button>
             )) : <div className={styles.emptyRail}><Inbox size={18} aria-hidden="true" />{!railCollapsed ? <><p>No missions yet.</p><button type="button" onClick={() => setShowCreate(true)} disabled={Boolean(createActionBlocked)} title={createActionBlocked}>Create one</button></> : null}</div>}
@@ -1347,7 +1347,7 @@ export function MissionWorkspace({
           {selectedMission && selectionMode === "exact" ? <>
             <section className={styles.missionHeader} aria-labelledby="mission-title">
               <div className={styles.missionIdentity}>
-                <div className={styles.missionMeta}><span className={clsx(styles.missionStatus, statusToneClass(selectedMission.status))}>{missionStatusLabel(selectedMission.status)}</span><span>{selectedMission.priority} priority</span><span>Updated {relativeTime(selectedMission.updatedAt, asOf)}</span></div>
+                <div className={styles.missionMeta}><span className={clsx(styles.missionStatus, statusToneClass(missionWorkItemStatus(selectedMission)))}>{missionWorkItemStatusLabel(selectedMission)}</span><span>{selectedMission.priority} priority</span><span>Updated {relativeTime(selectedMission.updatedAt, asOf)}</span></div>
                 <h2 id="mission-title">{selectedMission.title}</h2><p>{selectedMission.objective}</p>
               </div>
               <div className={styles.missionLinks}>{!commandActionBlocked ? <Link href={talkHref(selectedMission)} onClick={(event) => { const blockedReason = currentCommandActionBlocked(selectedMission.id); if (blockedReason) { event.preventDefault(); setError(blockedReason); } }}><Bot size={14} aria-hidden="true" /> Continue in Command</Link> : null}<Link href="/app/approvals"><ShieldCheck size={14} aria-hidden="true" /> Approvals</Link></div>
@@ -1389,7 +1389,7 @@ export function MissionSummaryOnly({
   return <section aria-labelledby="mission-title" data-mission-surface="summary-only">
     <section className={styles.missionHeader}>
       <div className={styles.missionIdentity}>
-        <div className={styles.missionMeta}><span className={clsx(styles.missionStatus, statusToneClass(mission.status))}>{missionStatusLabel(mission.status)}</span><span>{mission.priority} priority</span><span>Updated {relativeTime(mission.updatedAt, asOf)}</span></div>
+        <div className={styles.missionMeta}><span className={clsx(styles.missionStatus, statusToneClass(missionWorkItemStatus(mission)))}>{missionWorkItemStatusLabel(mission)}</span><span>{mission.priority} priority</span><span>Updated {relativeTime(mission.updatedAt, asOf)}</span></div>
         <h2 id="mission-title">{mission.title}</h2><p>{mission.objective}</p>
       </div>
     </section>
@@ -1631,7 +1631,11 @@ function CanvasSkeleton() { return <div className={styles.canvasSkeleton} aria-h
 function missionIdFromPath(pathname: string) { const match = pathname.match(/^\/app\/missions\/([^/]+)\/?$/); if (!match) return ""; try { return decodeURIComponent(match[1]); } catch { return ""; } }
 function pushMissionHistory(id: string) { const nextPath = `/app/missions/${encodeURIComponent(id)}`; if (window.location.pathname !== nextPath) window.history.pushState(null, "", nextPath); }
 function replaceMissionHistory(path: string) { if (window.location.pathname !== path) window.history.replaceState(null, "", path); }
-function missionStatusLabel(status: MissionStatus) { return ({ draft: "Draft", queued: "Queued", running: "Running", waiting: "Needs attention", succeeded: "Completed", failed: "Failed", canceled: "Canceled", archived: "Archived" })[status]; }
+function missionWorkItemStatus(mission: MissionSummaryView) { return mission.workItemStatus?.status || mission.canonicalStatus.status; }
+function missionWorkItemStatusLabel(mission: MissionSummaryView) {
+  return canonicalWorkItemStatusLabel(missionWorkItemStatus(mission));
+}
+function canonicalWorkItemStatusLabel(status: string) { return ({ preview: "Draft", waiting: "Waiting", running: "Running", blocked: "Blocked", partial: "Partial", unverified: "Closed · unverified", failed: "Failed", canceled: "Canceled", succeeded: "Verified success" } as Record<string, string>)[status] || "Unknown"; }
 function statusToneClass(status: string) { if (["running", "succeeded", "completed", "approved"].includes(status)) return styles.toneGood; if (["waiting", "blocked", "queued", "review"].includes(status)) return styles.toneAttention; if (["failed", "canceled"].includes(status)) return styles.toneDanger; return styles.toneNeutral; }
 function columnToneClass(column: BoardColumnId) { if (["working", "done"].includes(column)) return styles.toneGood; if (["waiting", "needs-you", "review"].includes(column)) return styles.toneAttention; if (column === "ready") return styles.toneReady; return styles.toneNeutral; }
 function priorityClass(priority: string) { if (priority === "urgent") return styles.priorityUrgent; if (priority === "high") return styles.priorityHigh; if (priority === "low") return styles.priorityLow; return styles.priorityNormal; }
@@ -1655,7 +1659,7 @@ function boardColumnForTask(task: BoardTask, allTasks: BoardTask[]): BoardColumn
   return "ready";
 }
 
-function taskCue(task: BoardTask, column: BoardColumnId) { const changesRequested = stringValue(taskMeta(task).changesRequestedReason); if (column === "needs-you") return taskBlockerReason(task) || "Input required"; if (column === "review") return "Review requested"; if (changesRequested && !["review", "done"].includes(column)) return "Changes requested"; if (column === "waiting" && isFutureTask(task)) return "Scheduled"; if (column === "waiting") return "Waiting on dependencies"; if (column === "done" && task.status !== "succeeded") return task.status === "failed" ? "Failed" : "Canceled"; return ""; }
+function taskCue(task: BoardTask, column: BoardColumnId) { const changesRequested = stringValue(taskMeta(task).changesRequestedReason); if (column === "needs-you") return taskBlockerReason(task) || "Input required"; if (column === "review") return "Review requested"; if (changesRequested && !["review", "done"].includes(column)) return "Changes requested"; if (column === "waiting" && isFutureTask(task)) return "Scheduled"; if (column === "waiting") return "Waiting on dependencies"; if (column === "done") return canonicalWorkItemStatusLabel(task.workItemStatus?.status || task.canonicalStatus.status); return ""; }
 function taskMeta(task: BoardTask) { const direct = record(task.metadata); const input = record((task as unknown as Record<string, unknown>).input); const board = record(direct.board); return { ...input, ...direct, ...board }; }
 function taskAssigneeId(task: BoardTask) { const meta = taskMeta(task); const direct = task as unknown as Record<string, unknown>; const assignee = record(meta.assignee); return stringValue(task.assigneeId, direct.assigneeId, meta.assigneeId, meta.assigneeKey, meta.agentId, assignee.id) || "unassigned"; }
 function taskAssigneeLabel(task: BoardTask, agents: Map<string, string>) { const meta = taskMeta(task); const assignee = record(meta.assignee); const id = taskAssigneeId(task); return agents.get(id) || task.assigneeName || stringValue(meta.assigneeName, meta.agentName, assignee.name) || "Unassigned"; }
@@ -1664,7 +1668,7 @@ function taskBlockerReason(task: BoardTask) { const meta = taskMeta(task); const
 function taskRetryCount(task: BoardTask, attemptCount: number) { const meta = taskMeta(task); return numberValue(task.retryCount, meta.retryCount, meta.retries) ?? Math.max(0, attemptCount - 1); }
 function taskScheduledFor(task: BoardTask) { const meta = taskMeta(task); return task.scheduledFor || stringValue(meta.scheduledFor, meta.scheduledAt, meta.runAt, meta.scheduleAt); }
 function isFutureTask(task: BoardTask) { const scheduledFor = taskScheduledFor(task); if (!scheduledFor) return false; const timestamp = Date.parse(scheduledFor); return Number.isFinite(timestamp) && timestamp > Date.now(); }
-function dependencyProgress(task: BoardTask, tasks: BoardTask[]) { const dependencies = task.dependencyIds || []; const done = dependencies.filter((id) => tasks.find((candidate) => candidate.id === id)?.status === "succeeded").length; return { done, total: dependencies.length }; }
+function dependencyProgress(task: BoardTask, tasks: BoardTask[]) { const dependencies = task.dependencyIds || []; const done = dependencies.filter((id) => { const candidate = tasks.find((item) => item.id === id); return candidate ? ["unverified", "succeeded"].includes(candidate.workItemStatus?.status || candidate.canonicalStatus.status) : false; }).length; return { done, total: dependencies.length }; }
 function attemptsForTask(detail: BoardMissionDetail | undefined, taskId: string) { return (detail?.attempts || []).filter((attempt) => attempt.taskId === taskId).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)); }
 function artifactsForTask(detail: BoardMissionDetail | undefined, taskId: string) { return (detail?.artifacts || []).filter((artifact) => artifact.taskId === taskId).sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)); }
 
@@ -1694,6 +1698,7 @@ export function normalizeMissionSummary(value: unknown): MissionSummaryView | un
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const mission = value as Record<string, unknown>;
   const canonicalStatus = record(mission.canonicalStatus);
+  const workItemStatus = normalizeCanonicalWorkItemStatus(mission.workItemStatus);
   if (
     !isMissionIdentifier(mission.id) ||
     !isBoundedMissionLine(mission.title, 240) ||
@@ -1708,6 +1713,8 @@ export function normalizeMissionSummary(value: unknown): MissionSummaryView | un
     typeof mission.detailAvailable !== "boolean" ||
     typeof mission.manageable !== "boolean" ||
     typeof mission.runnable !== "boolean" ||
+    (mission.workItemStatus !== undefined && !workItemStatus) ||
+    (workItemStatus && workItemStatus.sourceAuthority !== "legacy_mission") ||
     (mission.detailAvailable !== true &&
       (mission.manageable === true || mission.runnable === true))
   ) return undefined;
@@ -1759,6 +1766,7 @@ export function normalizeMissionSummary(value: unknown): MissionSummaryView | un
     detailAvailable: mission.detailAvailable as boolean,
     manageable: mission.manageable as boolean,
     runnable: mission.runnable as boolean,
+    ...(workItemStatus ? { workItemStatus } : {}),
   };
 }
 
@@ -1801,6 +1809,12 @@ export function missionDetailHasExpectedId(
       if (!isMissionIdentifier(candidate.id) || candidate.missionId !== expectedId) {
         return false;
       }
+      if (candidate.workItemStatus !== undefined) {
+        const workItemStatus = normalizeCanonicalWorkItemStatus(candidate.workItemStatus);
+        if (!workItemStatus || workItemStatus.sourceAuthority !== "legacy_mission_task") {
+          return false;
+        }
+      }
       if (ids.has(candidate.id)) return false;
       ids.add(candidate.id);
       return true;
@@ -1809,6 +1823,32 @@ export function missionDetailHasExpectedId(
   return scopedItemsAreValid(detail.tasks) &&
     scopedItemsAreValid(detail.attempts) &&
     scopedItemsAreValid(detail.artifacts);
+}
+
+function normalizeCanonicalWorkItemStatus(
+  value: unknown,
+): NonNullable<MissionSummaryView["workItemStatus"]> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<string, unknown>;
+  const statuses = ["preview", "running", "waiting", "blocked", "partial", "unverified", "failed", "canceled", "succeeded"];
+  const authorities = ["legacy_project_task", "legacy_mission", "legacy_mission_task"];
+  if (
+    item.schemaVersion !== 1 ||
+    item.authority !== "canonical_work_item_v1" ||
+    !["postgres", "local_projection"].includes(String(item.persistence)) ||
+    !(item.workspaceId === null || isMissionIdentifier(item.workspaceId)) ||
+    !isMissionIdentifier(item.projectId) ||
+    !isMissionIdentifier(item.workItemId) ||
+    !["task", "milestone"].includes(String(item.kind)) ||
+    !authorities.includes(String(item.sourceAuthority)) ||
+    !isMissionIdentifier(item.sourceId) ||
+    !statuses.includes(String(item.status)) ||
+    typeof item.sourceStatus !== "string" ||
+    !Number.isSafeInteger(item.statusRevision) ||
+    Number(item.statusRevision) < 1 ||
+    !isIsoTimestamp(item.updatedAt)
+  ) return undefined;
+  return item as NonNullable<MissionSummaryView["workItemStatus"]>;
 }
 
 function isMissionStatus(value: unknown): value is MissionStatus {

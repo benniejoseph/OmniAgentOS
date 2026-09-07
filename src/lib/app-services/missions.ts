@@ -24,6 +24,12 @@ import {
 } from "@/lib/missions/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import type { CanonicalStatus } from "@/lib/status/canonical";
+import {
+  missionProjectId,
+  missionRootWorkItemId,
+} from "@/lib/workspaces/legacy-projection";
+import { canonicalWorkItemStatuses } from "@/lib/workspaces/read-model";
 
 const missionStatusSchema = z.enum([
   "draft",
@@ -111,8 +117,12 @@ export async function listMissionsService(
   const filtered = missions
     .filter((mission) => !value.status || mission.status === value.status)
     .slice(0, value.limit);
+  const canonicalMissions = await withCanonicalMissionSummaries(
+    caller.context.tenantId,
+    filtered,
+  );
   return completeAppServiceCall(authorized, {
-    missions: filtered,
+    missions: canonicalMissions,
     requestReadContracts: {
       missions: value.ownerScope === "readable" ? "readable_v1" : "exact_v1",
     },
@@ -134,8 +144,11 @@ export async function showMissionService(
       requestActorBinding:
         canonicalRequestActorBindingFromSecurityContext(caller.context),
     });
+    const [canonicalMission] = mission
+      ? await withCanonicalMissionSummaries(caller.context.tenantId, [mission])
+      : [];
     return completeAppServiceCall(authorized, {
-      mission: mission || null,
+      mission: canonicalMission || null,
       requestReadContracts: { missionSummary: "readable_v1" as const },
     }, { resourceCount: mission ? 1 : 0 });
   }
@@ -148,11 +161,12 @@ export async function showMissionService(
       artifacts: value.artifacts,
     },
   );
-  return completeAppServiceCall(
-    authorized,
-    detail ? toMissionDetailView(detail) : null,
-    { resourceCount: detail ? 1 : 0 },
-  );
+  return completeAppServiceCall(authorized, detail
+    ? await withCanonicalMissionDetail(
+        caller.context.tenantId,
+        toMissionDetailView(detail),
+      )
+    : null, { resourceCount: detail ? 1 : 0 });
 }
 
 export async function createMissionService(
@@ -171,9 +185,11 @@ export async function createMissionService(
     ...mutationOwner(caller),
     source: "user",
   });
-  return completeAppServiceCall(authorized, {
-    mission: toMissionSummaryView(mission),
-  });
+  const [canonicalMission] = await withCanonicalMissionSummaries(
+    caller.context.tenantId,
+    [toMissionSummaryView(mission)],
+  );
+  return completeAppServiceCall(authorized, { mission: canonicalMission });
 }
 
 export async function createMissionTaskService(
@@ -212,8 +228,12 @@ export async function createMissionTaskService(
       reviewerName: value.reviewerName,
     },
   }, mutationOwner(caller));
+  const [canonicalTask] = await withCanonicalMissionTasks(
+    caller.context.tenantId,
+    [toMissionTaskView(task)],
+  );
   return completeAppServiceCall(authorized, {
-    task: toMissionTaskView(task),
+    task: canonicalTask,
     placement: value.status,
   });
 }
@@ -254,6 +274,67 @@ function exactOwner(caller: AppServiceCaller) {
     tenantId: caller.context.tenantId,
     actorId: caller.context.actorId,
   };
+}
+
+async function withCanonicalMissionSummaries<T extends {
+  id: string;
+  status: string;
+  canonicalStatus: { status: CanonicalStatus; sourceStatus: string };
+  updatedAt: string;
+}>(tenantId: string, missions: readonly T[]) {
+  const statuses = await canonicalWorkItemStatuses(
+    tenantId,
+    "legacy_mission",
+    missions.map((mission) => ({
+      projectId: missionProjectId(mission.id),
+      workItemId: missionRootWorkItemId(mission.id),
+      kind: "milestone" as const,
+      sourceId: mission.id,
+      status: mission.canonicalStatus.status,
+      sourceStatus: mission.canonicalStatus.sourceStatus,
+      updatedAt: mission.updatedAt,
+    })),
+  );
+  return missions.map((mission) => ({
+    ...mission,
+    workItemStatus: statuses.get(mission.id)!,
+  }));
+}
+
+async function withCanonicalMissionTasks<T extends {
+  id: string;
+  missionId: string;
+  canonicalStatus: { status: CanonicalStatus; sourceStatus: string };
+  updatedAt: string;
+}>(tenantId: string, tasks: readonly T[]) {
+  const statuses = await canonicalWorkItemStatuses(
+    tenantId,
+    "legacy_mission_task",
+    tasks.map((task) => ({
+      projectId: missionProjectId(task.missionId),
+      workItemId: task.id,
+      kind: "task" as const,
+      sourceId: task.id,
+      status: task.canonicalStatus.status,
+      sourceStatus: task.canonicalStatus.sourceStatus,
+      updatedAt: task.updatedAt,
+    })),
+  );
+  return tasks.map((task) => ({
+    ...task,
+    workItemStatus: statuses.get(task.id)!,
+  }));
+}
+
+async function withCanonicalMissionDetail(
+  tenantId: string,
+  detail: ReturnType<typeof toMissionDetailView>,
+) {
+  const [missions, tasks] = await Promise.all([
+    withCanonicalMissionSummaries(tenantId, [detail.mission]),
+    withCanonicalMissionTasks(tenantId, detail.tasks),
+  ]);
+  return { ...detail, mission: missions[0], tasks };
 }
 
 function mutationOwner(caller: AppServiceCaller) {

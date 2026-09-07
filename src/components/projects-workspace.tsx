@@ -51,6 +51,13 @@ type ProjectTask = {
   workflowStatus?: "dispatching" | "queued" | "running" | "waiting_approval" | "paused" | "completed" | "failed" | "canceled";
   executionError?: string;
   dispatchAttempt: number;
+  workItemStatus: {
+    authority: "canonical_work_item_v1";
+    persistence: "postgres" | "local_projection";
+    status: "preview" | "running" | "waiting" | "blocked" | "partial" | "unverified" | "failed" | "canceled" | "succeeded";
+    sourceStatus: string;
+    statusRevision: number;
+  };
 };
 type ProjectArtifact = {
   id: string;
@@ -124,7 +131,7 @@ export function ProjectsWorkspace() {
   const requireApproval = hasExecutionDraft ? executionDraft!.requireApproval : selected?.requireApproval ?? true;
   const activeProjects = projects.filter((project) => project.status === "active");
   const allTasks = projects.flatMap((project) => project.tasks);
-  const completedTasks = allTasks.filter((task) => task.status === "done").length;
+  const closedTasks = allTasks.filter(taskIsClosed).length;
 
   async function load() {
     if (!available || sessionStatus !== "ready") return;
@@ -304,8 +311,8 @@ export function ProjectsWorkspace() {
     }
   }
 
-  const selectedDone = selected?.tasks.filter((task) => task.status === "done").length || 0;
-  const selectedProgress = selected?.tasks.length ? selectedDone / selected.tasks.length : 0;
+  const selectedClosed = selected?.tasks.filter(taskIsClosed).length || 0;
+  const selectedProgress = selected?.tasks.length ? selectedClosed / selected.tasks.length : 0;
   const selectedArtifact = selected?.artifacts?.find((artifact) => artifact.id === selectedArtifactId) || selected?.artifacts?.[0];
   const selectedReflectionDraft = reflectionDraft?.artifactId === selectedArtifact?.id ? reflectionDraft : undefined;
   const selectedVerdict = selectedReflectionDraft?.verdict || selectedArtifact?.verdict;
@@ -327,7 +334,7 @@ export function ProjectsWorkspace() {
       <div className="projects-stats" aria-label="Project overview" data-daybook="metrics">
         <div><strong>{activeProjects.length}</strong><span>active projects</span></div>
         <div><strong>{allTasks.length}</strong><span>planned tasks</span></div>
-        <div><strong>{allTasks.length ? `${Math.round(completedTasks / allTasks.length * 100)}%` : "—"}</strong><span>overall progress</span></div>
+        <div><strong>{allTasks.length ? `${Math.round(closedTasks / allTasks.length * 100)}%` : "—"}</strong><span>work closed</span></div>
       </div>
 
       {showCreate ? <form className="projects-create-form" onSubmit={create}>
@@ -343,11 +350,11 @@ export function ProjectsWorkspace() {
         <aside className="projects-rail" aria-label="Project list">
           <div className="projects-rail-heading"><span>Portfolio</span><strong>{projects.length}</strong></div>
           {projects.length ? projects.map((project) => {
-            const done = project.tasks.filter((task) => task.status === "done").length;
-            const progress = project.tasks.length ? done / project.tasks.length : 0;
+            const closed = project.tasks.filter(taskIsClosed).length;
+            const progress = project.tasks.length ? closed / project.tasks.length : 0;
             return <button key={project.id} type="button" onClick={() => { setSelectedId(project.id); setPlanRationale(""); }} className={clsx("projects-rail-item", selected?.id === project.id && "is-selected")}>
               <span className={clsx("projects-status-mark", `is-${project.status}`)} />
-              <span><strong>{project.title}</strong><small>{project.status} · {done}/{project.tasks.length} tasks</small><i><b style={{ width: `${progress * 100}%` }} /></i></span>
+              <span><strong>{project.title}</strong><small>{project.status} · {closed}/{project.tasks.length} closed</small><i><b style={{ width: `${progress * 100}%` }} /></i></span>
               <ChevronRight size={14} aria-hidden="true" />
             </button>;
           }) : <div className="projects-rail-empty"><FolderKanban size={20} aria-hidden="true" /><p>Your project portfolio is empty.</p></div>}
@@ -361,12 +368,12 @@ export function ProjectsWorkspace() {
                 <h2>{selected.title}</h2>
                 <p>{selected.objective}</p>
               </div>
-              <div className="project-progress-orbit" aria-label={`${selectedDone} of ${selected.tasks.length} tasks completed`} style={{ "--project-progress": `${selectedProgress * 360}deg` } as React.CSSProperties}><div><strong>{selected.tasks.length ? `${Math.round(selectedProgress * 100)}%` : "—"}</strong><span>complete</span></div></div>
+              <div className="project-progress-orbit" aria-label={`${selectedClosed} of ${selected.tasks.length} work items closed`} style={{ "--project-progress": `${selectedProgress * 360}deg` } as React.CSSProperties}><div><strong>{selected.tasks.length ? `${Math.round(selectedProgress * 100)}%` : "—"}</strong><span>closed</span></div></div>
             </div>
 
             <div className="project-toolbar">
               {selected.status === "active" ? <button type="button" className="project-plan-button" onClick={() => void generatePlan()} disabled={planning}><Sparkles size={14} aria-hidden="true" />{planning ? "Atlas is planning…" : selected.tasks.length ? "Extend plan" : "Plan with Atlas"}</button> : null}
-              {selected.status === "active" ? <button type="button" onClick={() => void transitionProject("completed")} disabled={actingId === selected.id || (selected.tasks.length > 0 && selectedDone !== selected.tasks.length)} title={selected.tasks.length > 0 && selectedDone !== selected.tasks.length ? "Complete every task first" : undefined}><Check size={14} aria-hidden="true" /> Complete project</button> : <button type="button" onClick={() => void transitionProject("active")} disabled={actingId === selected.id}><Play size={14} aria-hidden="true" /> Reopen project</button>}
+              {selected.status === "active" ? <button type="button" onClick={() => void transitionProject("completed")} disabled={actingId === selected.id || (selected.tasks.length > 0 && selected.tasks.some((task) => task.status !== "done"))} title={selected.tasks.length > 0 && selected.tasks.some((task) => task.status !== "done") ? "Close every task first" : undefined}><Check size={14} aria-hidden="true" /> Complete project</button> : <button type="button" onClick={() => void transitionProject("active")} disabled={actingId === selected.id}><Play size={14} aria-hidden="true" /> Reopen project</button>}
               {selected.status !== "archived" ? <button type="button" onClick={() => void transitionProject("archived")} disabled={actingId === selected.id}><Archive size={14} aria-hidden="true" /> Archive</button> : null}
             </div>
 
@@ -394,7 +401,7 @@ export function ProjectsWorkspace() {
 
             {planRationale ? <div className="project-plan-note"><Sparkles size={15} aria-hidden="true" /><div><strong>Atlas added a plan</strong><p>{planRationale}</p></div></div> : null}
 
-            <div className="project-task-heading"><div><p className="projects-kicker">Execution plan</p><h3>Next moves</h3></div><span>{selected.tasks.filter((task) => task.status !== "done").length} remaining</span></div>
+            <div className="project-task-heading"><div><p className="projects-kicker">Execution plan</p><h3>Next moves</h3></div><span>{selected.tasks.filter((task) => !taskIsClosed(task)).length} open</span></div>
             <div className="project-task-list">
               {selected.tasks.length ? selected.tasks.map((task, index) => {
                 const agent = agentFor(task.agentId);
@@ -404,7 +411,7 @@ export function ProjectsWorkspace() {
                     {task.status === "done" ? <Check size={14} aria-hidden="true" /> : task.status === "doing" ? <Pause size={13} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}
                   </button>
                   <span className="project-task-index">{String(index + 1).padStart(2, "0")}</span>
-                  <div className="project-task-copy"><div><strong>{task.title}</strong><span className={clsx("project-task-priority", `is-${task.priority}`)}>{task.priority}</span>{task.workflowStatus ? <span className={clsx("project-workflow-badge", `is-${task.workflowStatus}`)}>{workflowLabel(task.workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{task.status === "doing" ? "In progress" : task.status === "done" ? "Completed" : dependencyNames.length ? `After ${dependencyNames.join(", ")}` : "Ready"}{task.dueAt ? ` · due ${formatDate(task.dueAt)}` : ""}</small>{task.executionError ? <em className="project-task-error"><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
+                  <div className="project-task-copy"><div><strong>{task.title}</strong><span className={clsx("project-task-priority", `is-${task.priority}`)}>{task.priority}</span>{task.workflowStatus ? <span className={clsx("project-workflow-badge", `is-${task.workflowStatus}`)}>{workflowLabel(task.workflowStatus)}</span> : null}</div>{task.detail ? <p>{task.detail}</p> : null}<small>{workItemStatusLabel(task, dependencyNames)}{task.dueAt ? ` · due ${formatDate(task.dueAt)}` : ""}</small>{task.executionError ? <em className="project-task-error"><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}</div>
                   <div className={clsx("project-agent", `agent-${agent.accent}`)}><span>{agent.name.slice(0, 1)}</span><div><strong>{agent.name}</strong><small>{agent.role}</small></div></div>
                   {task.workflowStatus === "waiting_approval" ? <button type="button" className="project-task-action" onClick={() => void executeProject("approve", task.id)} disabled={Boolean(executionBusy)}>Approve</button> : task.workflowStatus === "failed" ? <button type="button" className="project-task-action is-danger" onClick={() => void executeProject("retry", task.id)} disabled={Boolean(executionBusy)}>Retry</button> : task.workflowRunId ? <span className="project-task-live"><i /> {workflowLabel(task.workflowStatus || "queued")}</span> : <Link href={commandHref(selected, task)} aria-label={`Assign ${task.title} to ${agent.name}`}>Run <ArrowRight size={13} aria-hidden="true" /></Link>}
                 </article>;
@@ -454,6 +461,21 @@ function executionDescription(status: Project["executionStatus"], mode: Project[
   return "Choose the operating envelope, then dispatch dependency-ready work into governed workflows.";
 }
 function workflowLabel(status: NonNullable<ProjectTask["workflowStatus"]>) { return status.replace("_", " "); }
+function taskIsClosed(task: ProjectTask) {
+  return ["unverified", "failed", "canceled", "succeeded"].includes(task.workItemStatus.status);
+}
+function workItemStatusLabel(task: ProjectTask, dependencyNames: (string | undefined)[]) {
+  const status = task.workItemStatus.status;
+  if (status === "succeeded") return "Verified success";
+  if (status === "unverified") return "Closed · outcome unverified";
+  if (status === "failed") return "Failed";
+  if (status === "canceled") return "Canceled";
+  if (status === "running") return "In progress";
+  if (status === "blocked") return "Blocked";
+  if (status === "partial") return "Partially complete";
+  if (status === "preview") return "Draft";
+  return dependencyNames.length ? `After ${dependencyNames.join(", ")}` : "Ready";
+}
 function executionAnnouncement(action: string, dispatched?: string[]) {
   if (action === "start") return dispatched?.length ? `${dispatched.length} agent task${dispatched.length === 1 ? "" : "s"} dispatched.` : "Project execution started.";
   if (action === "pause") return "Project execution and active workflows paused.";

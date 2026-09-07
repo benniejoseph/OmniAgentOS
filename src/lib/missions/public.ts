@@ -14,6 +14,7 @@ import {
   canonicalStatusForMissionAttempt,
   canonicalStatusForMissionTask,
 } from "@/lib/status/canonical";
+import type { CanonicalWorkItemStatusView } from "@/lib/workspaces/read-model";
 
 export function toMissionSummaryView(mission: Mission): RequestMissionSummary {
   return {
@@ -34,7 +35,9 @@ export function toMissionSummaryView(mission: Mission): RequestMissionSummary {
   };
 }
 
-export type MissionSummaryView = RequestMissionSummary;
+export type MissionSummaryView = RequestMissionSummary & {
+  workItemStatus?: CanonicalWorkItemStatusView;
+};
 
 export function toMissionTaskView(task: MissionTask) {
   return {
@@ -57,7 +60,9 @@ export function toMissionTaskView(task: MissionTask) {
   };
 }
 
-export type MissionTaskView = ReturnType<typeof toMissionTaskView>;
+export type MissionTaskView = ReturnType<typeof toMissionTaskView> & {
+  workItemStatus?: CanonicalWorkItemStatusView;
+};
 
 export function toMissionArtifactView(artifact: MissionArtifact) {
   const publicData = publicArtifactData(artifact.kind, artifact.data);
@@ -107,7 +112,11 @@ export function toMissionDetailView(detail: MissionDetail) {
   };
 }
 
-export type MissionDetailView = ReturnType<typeof toMissionDetailView>;
+type BaseMissionDetailView = ReturnType<typeof toMissionDetailView>;
+export type MissionDetailView = Omit<BaseMissionDetailView, "mission" | "tasks"> & {
+  mission: MissionSummaryView;
+  tasks: MissionTaskView[];
+};
 
 function publicTaskMetadata(metadata: Record<string, unknown>) {
   const view: Record<string, unknown> = {};
