@@ -1,4 +1,5 @@
 import { oauthConfigured } from "@/lib/connectors/oauth-providers";
+import { getSalesforceWriteConfiguration } from "@/lib/customer-success/salesforce-write-contracts";
 import {
   publicSalesforceWorkspaceContext,
   resolveSalesforceRequestAccess,
@@ -6,6 +7,7 @@ import {
 import {
   getSalesforceSyncHealth,
   listSalesforceReconciliationFindings,
+  listSalesforceWriteOperations,
 } from "@/lib/customer-success/salesforce-store";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -30,17 +32,27 @@ async function GETHandler(request: Request) {
       mode: "read",
       correlationId: crypto.randomUUID(),
     });
-    const [health, findings] = await Promise.all([
+    const writeConfiguration = getSalesforceWriteConfiguration();
+    const [health, findings, writeOperations] = await Promise.all([
       getSalesforceSyncHealth(
         access.readAuthority,
         oauthConfigured("salesforce"),
       ),
       listSalesforceReconciliationFindings(access.readAuthority, 50),
+      listSalesforceWriteOperations(access.readAuthority, undefined, 25),
     ]);
     return Response.json({
       context: publicSalesforceWorkspaceContext(access.access),
       health,
       findings,
+      writes: {
+        configured: writeConfiguration.configured,
+        enabled: writeConfiguration.enabled,
+        mode: writeConfiguration.mode,
+        createObjects: writeConfiguration.createObjects,
+        updateObjects: writeConfiguration.updateObjects,
+        operations: writeOperations,
+      },
       authorizeUrl: `/api/oauth/salesforce/authorize?returnTo=${encodeURIComponent("/app/accounts")}&workspaceId=${encodeURIComponent(access.readAuthority.workspaceId)}`,
       webhook: {
         endpoint: "/api/webhooks/salesforce",
