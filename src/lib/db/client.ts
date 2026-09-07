@@ -7,6 +7,7 @@ import {
   runWithRequestTiming,
 } from "@/lib/observability/request-timing";
 import { CUSTOMER_HEALTH_SCORING_SCHEMA_SQL } from "@/lib/db/customer-health-schema";
+import { CUSTOMER_SUCCESS_WORKFLOW_SCHEMA_SQL } from "@/lib/db/customer-success-workflow-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -236,6 +237,8 @@ export const tenantRootPolicyTables = [
   "omni_customer_health_policies",
   "omni_customer_health_score_revisions",
   "omni_customer_health_scores",
+  "omni_customer_success_workflow_run_revisions",
+  "omni_customer_success_workflow_runs",
 ] as const;
 
 export const tenantChildPolicyTables = [
@@ -1380,6 +1383,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[139],
       up: ensureCustomerHealthScoringV1,
+    },
+    {
+      ...databaseSchemaMigrations[140],
+      up: ensureCustomerSuccessWorkflowsV1,
     },
   ];
 }
@@ -17739,6 +17746,10 @@ async function ensureSalesforceGuardedWritesV1(sql: SqlClient) {
 
 async function ensureCustomerHealthScoringV1(sql: SqlClient) {
   await sql.query(CUSTOMER_HEALTH_SCORING_SCHEMA_SQL);
+}
+
+async function ensureCustomerSuccessWorkflowsV1(sql: SqlClient) {
+  await sql.query(CUSTOMER_SUCCESS_WORKFLOW_SCHEMA_SQL);
 }
 
 async function ensureCanonicalActorScopeRepairV1(sql: SqlClient) {
