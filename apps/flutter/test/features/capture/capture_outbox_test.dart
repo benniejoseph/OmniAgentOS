@@ -39,6 +39,21 @@ void main() {
     );
   });
 
+  test('round-trips every offline capture kind', () async {
+    final outbox = createOutbox();
+    for (final kind in CaptureKind.values) {
+      await outbox.enqueue(
+        owner,
+        CaptureDraft(kind: kind, content: 'capture-${kind.name}'),
+      );
+    }
+
+    expect(
+      (await outbox.list(owner)).map((entry) => entry.draft.kind),
+      containsAll(CaptureKind.values),
+    );
+  });
+
   test(
     'encrypts a scoped capture and restores its stable retry identity',
     () async {

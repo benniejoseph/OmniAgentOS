@@ -70,6 +70,8 @@ async function POSTHandler(request: Request) {
   try {
     assertOfflineCaptureOwnerBinding({
       idempotencyKey: request.headers.get("idempotency-key") || undefined,
+      correlationId:
+        request.headers.get("x-omni-correlation-id") || undefined,
       ownerSha256:
         request.headers.get("x-asael-capture-owner-sha256") || undefined,
       tenantId: context.tenantId,

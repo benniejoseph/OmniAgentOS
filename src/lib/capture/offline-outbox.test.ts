@@ -14,6 +14,7 @@ describe("offline capture owner binding", () => {
   it("accepts only the exact tenant and actor for an offline retry key", () => {
     const input = {
       idempotencyKey: "capture-offline-abcdefghijklmnopqrstuvwx",
+      correlationId: "capture-offline-abcdefghijklmnopqrstuvwx",
       tenantId: "tenant-one",
       actorId: "actor:one",
     };
@@ -34,5 +35,15 @@ describe("offline capture owner binding", () => {
       tenantId: "tenant-one",
       actorId: "actor:one",
     })).not.toThrow();
+  });
+
+  it("requires the stable retry key to bind the asset correlation", () => {
+    expect(() => assertOfflineCaptureOwnerBinding({
+      idempotencyKey: "capture-offline-abcdefghijklmnopqrstuvwx",
+      correlationId: "capture-offline-zyxwvutsrqponmlkjihgfedc",
+      ownerSha256: offlineCaptureOwnerSha256("tenant-one", "actor:one"),
+      tenantId: "tenant-one",
+      actorId: "actor:one",
+    })).toThrow(/correlation binding/i);
   });
 });
