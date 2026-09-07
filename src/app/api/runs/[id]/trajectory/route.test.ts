@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   listStreamEvents: vi.fn(),
   listCorrelatedEvents: vi.fn(),
   listRunForkLineage: vi.fn(),
+  getAgentIdentityCardForRun: vi.fn(),
+  getOwnedThread: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -25,6 +27,12 @@ vi.mock("@/lib/runs/store", () => ({ getAgentRun: mocks.getAgentRun }));
 vi.mock("@/lib/runs/fork-store", () => ({
   listRunForkLineage: mocks.listRunForkLineage,
 }));
+vi.mock("@/lib/agents/card-store", () => ({
+  getAgentIdentityCardForRun: mocks.getAgentIdentityCardForRun,
+}));
+vi.mock("@/lib/threads/store", () => ({
+  getOwnedThread: mocks.getOwnedThread,
+}));
 vi.mock("@/lib/events/store", () => ({
   listStreamEvents: mocks.listStreamEvents,
   listCorrelatedEvents: mocks.listCorrelatedEvents,
@@ -36,6 +44,7 @@ const run: AgentRunRecord = {
   id: "run-one",
   tenantId: "tenant-one",
   ownerActorId: "actor-one",
+  threadId: "00000000-0000-4000-8000-000000000001",
   mode: "execute",
   status: "completed",
   prompt: "private prompt",
@@ -84,6 +93,20 @@ beforeEach(() => {
     event("run-plan", 2, "run:run-one", "run.harness"),
   ]);
   mocks.listRunForkLineage.mockResolvedValue({ parent: undefined, children: [] });
+  mocks.getAgentIdentityCardForRun.mockResolvedValue({
+    state: "ready",
+    card: {
+      logicalAgentId: "forge",
+      definitionVersion: 3,
+      name: "Forge",
+      role: "Builder",
+      status: "ready",
+    },
+  });
+  mocks.getOwnedThread.mockImplementation(async (
+    _threadId: string,
+    options: { actorId: string },
+  ) => options.actorId === "actor-one" ? { id: run.threadId } : null);
 });
 
 describe("run trajectory route", () => {
@@ -99,6 +122,20 @@ describe("run trajectory route", () => {
       trajectory: { version: 3, outcomeEvidence: expect.any(Object) },
       outcomeEvaluation: {
         retentionEligible: false,
+      },
+      conversationProgress: {
+        version: "p11.2-conversation-progress:1",
+        runId: "run-one",
+        terminal: true,
+        agent: {
+          state: "ready",
+          name: "Forge",
+          role: "Builder",
+        },
+        result: {
+          state: "completed",
+          responseLength: "private response".length,
+        },
       },
     });
     expect(body).not.toHaveProperty("learningEvaluation");
@@ -123,6 +160,14 @@ describe("run trajectory route", () => {
       actorId: "actor-one",
       limit: 2_000,
     });
+    expect(mocks.listStreamEvents).toHaveBeenCalledWith(
+      "thread:00000000-0000-4000-8000-000000000001",
+      {
+        tenantId: "tenant-one",
+        actorId: "actor-one",
+        limit: 2_000,
+      },
+    );
     expect(JSON.stringify(body)).not.toContain("private prompt");
     expect(JSON.stringify(body)).not.toContain("private response");
   });
