@@ -5,13 +5,24 @@ import {
   type AppServiceCaller,
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
-import { getCaptureAsset, getCaptureAssetForRequest, listCaptureAssets } from "@/lib/capture/assets";
+import {
+  getCaptureAsset,
+  getCaptureAssetContent,
+  getCaptureAssetForRequest,
+  listCaptureAssets,
+  updateCaptureAssetStatus,
+} from "@/lib/capture/assets";
 import { deleteCaptureAssetWithKnowledge, deleteCaptureRecordingWithKnowledge } from "@/lib/capture/deletion";
 import {
+  appendCaptureNote,
   captureExtractionReceipt,
   captureRecordingExtraction,
   renderCaptureExtractionUnits,
+  terminalCaptureExtractionReceipt,
+  type CaptureExtractionReceipt,
+  type CaptureStructuredExtraction,
 } from "@/lib/capture/extraction";
+import { CaptureFileError, captureTitle, extractCaptureFile } from "@/lib/capture/files";
 import {
   createCaptureRecording,
   getCaptureRecording,
@@ -42,6 +53,12 @@ const recordingStartSchema = z.object({
 const recordingUpdateSchema = z.object({ id: z.string().trim().min(1).max(200), ...recordingFields }).strict()
   .refine(({ id: _id, ...change }) => Object.values(change).some((value) => value !== undefined), { message: "A recording change is required." });
 const recordingCompleteSchema = z.object({ id: z.string().trim().min(1).max(200) }).strict();
+const assetIndexSchema = z.object({
+  id: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(240).optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
+  note: z.string().trim().max(20_000).optional(),
+}).strict();
 
 export async function listAssetsService(caller: AppServiceCaller, input: z.input<typeof listSchema>) {
   const value = listSchema.parse(input);
@@ -103,6 +120,86 @@ export async function completeRecordingService(caller: AppServiceCaller, input: 
   });
   const updated = await markCaptureRecordingIngestQueued(recording.id, owner, job.id);
   return completeAppServiceCall(authorized, { recording: updated, job: projectOperationJobStatus(job), extractionReceipt });
+}
+
+export async function indexStoredAssetService(caller: AppServiceCaller, input: z.input<typeof assetIndexSchema>) {
+  const value = redactSensitive(assetIndexSchema.parse(input)) as z.output<typeof assetIndexSchema>;
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.assets.index"));
+  const owner = { ...exactOwner(caller), executionScope: caller.executionScope! };
+  const { asset, bytes } = await getCaptureAssetContent(value.id, owner);
+  if (asset.ingestJobId && asset.status === "queued") {
+    return completeAppServiceCall(authorized, { asset, job: { id: asset.ingestJobId }, duplicate: true });
+  }
+  const note = value.note?.trim() || "";
+  let title = value.title || captureTitle(asset.filename);
+  let content = "";
+  let contentOrigin: "extracted" | "supplied_note" = "extracted";
+  let extraction: CaptureStructuredExtraction | undefined;
+  let extractionReceipt: CaptureExtractionReceipt | undefined;
+  try {
+    const extracted = await extractCaptureFile(
+      new File([bytes], asset.filename, { type: asset.mediaType }),
+      {
+        tenantId: caller.context.tenantId,
+        actorId: caller.context.actorId,
+        sourceStreamId: `capture-asset:${asset.id}`,
+        operation: "ocr",
+        purpose: "capture.asset.extract",
+        correlationId: caller.executionScope!.correlationId,
+        executionScope: caller.executionScope!,
+        credentialSource: "deployment_environment",
+      },
+    );
+    title = value.title || extracted.title;
+    content = extracted.content;
+    extraction = extracted.extraction;
+  } catch (error) {
+    if (!note || !(error instanceof CaptureFileError)) throw error;
+    contentOrigin = "supplied_note";
+    extractionReceipt = terminalCaptureExtractionReceipt({
+      format: error.format || asset.extension || "unknown",
+      state: error.status === 415 ? "unsupported" : "failed",
+      warningCode: error.code,
+    });
+  }
+  if (note) {
+    if (extraction) {
+      extraction = appendCaptureNote(extraction, note);
+      content = renderCaptureExtractionUnits(extraction.units);
+    } else {
+      content = note;
+    }
+  }
+  if (extraction) extractionReceipt = captureExtractionReceipt(extraction);
+  if (!content.trim()) throw new CaptureFileError("The stored asset has no extractable or supplied text to index.", 400, "no_readable_text", asset.extension);
+  const job = await enqueueKnowledgeIngestJob({
+    ...exactOwner(caller),
+    executionScope: caller.executionScope!,
+    idempotencyKey: caller.idempotencyKey || `capture-asset:${asset.id}`,
+    request: {
+      title,
+      content,
+      source: `capture:asset:${asset.id}`,
+      sourceType: "file",
+      tags: ["capture", "asset", ...(value.tags || asset.tags)],
+      metadata: {
+        captureAssetId: asset.id, actorId: asset.actorId, filename: asset.filename,
+        mediaType: asset.mediaType, byteCount: asset.byteCount, contentOrigin,
+        structuredSourceKind: extraction?.sourceKind || "file",
+        extractionState: extractionReceipt?.state || "completed",
+        extractionReceiptSha256: extractionReceipt?.receiptSha256 || "",
+      },
+      evidenceRefs: [`capture-asset:${asset.id}`],
+      ...(extraction ? { structuredUnits: extraction.units } : {}),
+    },
+  });
+  const updated = await updateCaptureAssetStatus(asset.id, owner, {
+    status: "queued",
+    extractionStatus: extractionReceipt?.state || "completed",
+    extractionReceipt,
+    ingestJobId: job.id,
+  });
+  return completeAppServiceCall(authorized, { asset: updated, job: projectOperationJobStatus(job), extractionReceipt });
 }
 
 export async function previewAssetDeleteService(caller: AppServiceCaller, input: z.input<typeof targetSchema>) {

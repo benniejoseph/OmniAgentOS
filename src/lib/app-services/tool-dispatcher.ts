@@ -105,6 +105,7 @@ import {
 import {
   completeRecordingService,
   deleteAssetService,
+  indexStoredAssetService,
   listAssetsService,
   previewAssetDeleteService,
   showAssetService,
@@ -240,6 +241,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.settings.api_keys.revoke": () => revokeApiKeyService(caller, input.toolInput as never),
     "app.assets.list": () => listAssetsService(caller, input.toolInput as never),
     "app.assets.show": () => showAssetService(caller, input.toolInput as never),
+    "app.assets.index": () => indexStoredAssetService(caller, input.toolInput as never),
     "app.assets.recordings.start": () => startRecordingService(caller, input.toolInput as never),
     "app.assets.recordings.update": () => updateRecordingService(caller, input.toolInput as never),
     "app.assets.recordings.complete": () => completeRecordingService(caller, input.toolInput as never),

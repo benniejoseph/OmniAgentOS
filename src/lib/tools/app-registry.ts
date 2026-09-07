@@ -292,6 +292,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.assets.show", "Show captured asset", "Read metadata for one exact uploaded asset or recording without returning stored binary content.", requiredObjectSchema({
     kind: assetKind(), id: opaqueId("Exact capture asset or recording ID."),
   }, ["kind", "id"])),
+  mutationTool("app.assets.index", "Index captured asset", "Extract or accept a supplied note for one already stored asset, then enqueue it for governed knowledge ingestion without returning binary content.", requiredObjectSchema({
+    id: opaqueId("Exact capture-asset ID."), title: text(1, 240), note: text(0, 20_000),
+    tags: { type: "array", maxItems: 50, uniqueItems: true, items: text(1, 80) },
+  }, ["id"]), { reversible: true }),
   mutationTool("app.assets.recordings.start", "Start recording record", "Create a governed recording record that direct user-to-storage audio segments can attach to.", objectSchema(recordingProperties()), { reversible: true }),
   mutationTool("app.assets.recordings.update", "Update recording", "Update the title, language, or tags for one exact recording.", requiredObjectSchema({
     id: opaqueId("Exact recording ID."), ...recordingProperties(),

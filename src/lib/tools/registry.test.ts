@@ -198,6 +198,10 @@ describe("governed native tool schemas", () => {
     expect(getGovernedTool("app.assets.show")?.description).toContain(
       "without returning stored binary content",
     );
+    expect(getGovernedTool("app.assets.index")).toMatchObject({
+      riskLevel: 1,
+      operationClass: "mutation",
+    });
     expect(getGovernedTool("app.assets.delete")).toMatchObject({
       riskLevel: 3,
       approvalRequired: true,
