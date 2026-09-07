@@ -42,6 +42,11 @@ import type {
   CustomerHealthPolicy,
   CustomerHealthScore,
 } from "@/lib/customer-success/health-contracts";
+import type {
+  CustomerSuccessAccountIntelligence,
+  CustomerSuccessPortfolio,
+  CustomerSuccessPortfolioItem,
+} from "@/lib/customer-success/intelligence-contracts";
 import type { SalesforceSyncHealth } from "@/lib/customer-success/salesforce-contracts";
 import type {
   CustomerSuccessWorkflowDefinition,
@@ -108,6 +113,14 @@ type CustomerSuccessWorkflowPayload = {
   runs: CustomerSuccessWorkflowRunRevision[];
 };
 
+type CustomerSuccessPortfolioPayload = {
+  portfolio: CustomerSuccessPortfolio;
+};
+
+type CustomerSuccessIntelligencePayload = {
+  intelligence: CustomerSuccessAccountIntelligence;
+};
+
 export function CustomerAccountsWorkspace({
   initialAccountId,
 }: {
@@ -119,6 +132,8 @@ export function CustomerAccountsWorkspace({
   const [selected, setSelected] = useState<CustomerAccount360>();
   const [customerHealth, setCustomerHealth] = useState<CustomerHealthPayload>();
   const [customerWorkflows, setCustomerWorkflows] = useState<CustomerSuccessWorkflowPayload>();
+  const [customerPortfolio, setCustomerPortfolio] = useState<CustomerSuccessPortfolio>();
+  const [customerIntelligence, setCustomerIntelligence] = useState<CustomerSuccessAccountIntelligence>();
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>();
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -151,6 +166,9 @@ export function CustomerAccountsWorkspace({
     ["active", "onboarding"].includes(account.lifecycle)
   ).length;
   const riskCount = accounts.filter((account) => account.lifecycle === "at_risk").length;
+  const portfolioByAccountId = new Map(
+    (customerPortfolio?.accounts || []).map((item) => [item.accountId, item]),
+  );
 
   async function load() {
     if (!available || sessionStatus !== "ready") return;
@@ -159,12 +177,14 @@ export function CustomerAccountsWorkspace({
     controllerRef.current = controller;
     setLoading(true);
     try {
-      const payload = await readJson("/api/customer-accounts?limit=200", {
-        signal: controller.signal,
-      });
+      const [payload, portfolioPayload] = await Promise.all([
+        readJson("/api/customer-accounts?limit=200", { signal: controller.signal }),
+        readJson("/api/customer-accounts/portfolio?limit=200", { signal: controller.signal }),
+      ]);
       if (controller.signal.aborted) return;
       const nextAccounts = (payload.accounts || []) as CustomerAccountRevision[];
       setAccounts(nextAccounts);
+      setCustomerPortfolio((portfolioPayload as CustomerSuccessPortfolioPayload).portfolio);
       setWorkspaceContext(payload.context as WorkspaceContext);
       await loadSalesforce(controller.signal);
       const targetId = initialAccountId || nextAccounts[0]?.accountId;
@@ -173,6 +193,7 @@ export function CustomerAccountsWorkspace({
         setSelected(undefined);
         setCustomerHealth(undefined);
         setCustomerWorkflows(undefined);
+        setCustomerIntelligence(undefined);
       }
       setError(undefined);
     } catch (loadError) {
@@ -224,14 +245,16 @@ export function CustomerAccountsWorkspace({
     setDetailLoading(true);
     try {
       const encodedAccountId = encodeURIComponent(accountId);
-      const [accountPayload, healthPayload, workflowPayload] = await Promise.all([
+      const [accountPayload, healthPayload, workflowPayload, intelligencePayload] = await Promise.all([
         readJson(`/api/customer-accounts/${encodedAccountId}`, { signal }),
         readJson(`/api/customer-accounts/${encodedAccountId}/health?historyLimit=20`, { signal }),
         readJson(`/api/customer-accounts/${encodedAccountId}/workflows?limit=50`, { signal }),
+        readJson(`/api/customer-accounts/${encodedAccountId}/intelligence?historyLimit=100&timelineLimit=100`, { signal }),
       ]);
       setSelected(accountPayload.account as CustomerAccount360);
       setCustomerHealth(healthPayload as CustomerHealthPayload);
       setCustomerWorkflows(workflowPayload as CustomerSuccessWorkflowPayload);
+      setCustomerIntelligence((intelligencePayload as CustomerSuccessIntelligencePayload).intelligence);
       setWorkspaceContext(accountPayload.context as WorkspaceContext);
     } finally {
       setDetailLoading(false);
@@ -267,6 +290,7 @@ export function CustomerAccountsWorkspace({
       setAnnouncement(
         `${selected.account.name} health evaluated as ${formatLabel(score.status)} with ${percent(score.confidenceBasisPoints)} confidence.`,
       );
+      await loadCustomerIntelligence(selected.account.accountId);
       setError(undefined);
     } catch (evaluationError) {
       setError(message(evaluationError));
@@ -303,11 +327,22 @@ export function CustomerAccountsWorkspace({
       } : current);
       setWorkflowEditor(undefined);
       setAnnouncement(`${workflowEditor.name} started for ${selected.account.name}.`);
+      await loadCustomerIntelligence(selected.account.accountId);
       setError(undefined);
     } catch (workflowError) {
       setError(message(workflowError));
     } finally {
       setWorkflowLaunching(false);
+    }
+  }
+
+  async function loadCustomerIntelligence(accountId: string, signal?: AbortSignal) {
+    const payload = await readJson(
+      `/api/customer-accounts/${encodeURIComponent(accountId)}/intelligence?historyLimit=100&timelineLimit=100`,
+      { signal },
+    );
+    if (!signal?.aborted) {
+      setCustomerIntelligence((payload as CustomerSuccessIntelligencePayload).intelligence);
     }
   }
 
@@ -429,8 +464,8 @@ export function CustomerAccountsWorkspace({
       <section className={styles.metrics} aria-label="Customer account overview">
         <Metric value={accounts.length} label="Accounts" detail="readable in this workspace" />
         <Metric value={activeCount} label="In motion" detail="active or onboarding" />
-        <Metric value={riskCount} label="At risk" detail="explicit lifecycle state" warning={riskCount > 0} />
-        <Metric value={selected?.conflictCount || 0} label="Conflicts" detail="visible on selected account" warning={Boolean(selected?.conflictCount)} />
+        <Metric value={customerPortfolio?.counts.urgent ?? riskCount} label="Needs attention" detail="approvals, critical risk, or overdue" warning={Boolean(customerPortfolio?.counts.urgent ?? riskCount)} />
+        <Metric value={customerPortfolio?.counts.pendingApprovals || 0} label="Approvals" detail="customer actions waiting" warning={Boolean(customerPortfolio?.counts.pendingApprovals)} />
       </section>
 
       <SalesforcePanel
@@ -456,7 +491,9 @@ export function CustomerAccountsWorkspace({
             <span>Portfolio</span>
             <strong>{accounts.length}</strong>
           </div>
-          {accounts.length ? accounts.map((account) => (
+          {accounts.length ? accounts.map((account) => {
+            const intelligence = portfolioByAccountId.get(account.accountId);
+            return (
             <button
               type="button"
               className={selected?.account.accountId === account.accountId
@@ -471,11 +508,12 @@ export function CustomerAccountsWorkspace({
               <span className={styles.statusDot} data-status={account.lifecycle} />
               <span>
                 <strong>{account.name}</strong>
-                <small>{formatLabel(account.lifecycle)} · rev {account.revision}</small>
+                <small>{portfolioRailLabel(account, intelligence)}</small>
               </span>
               <Building2 size={15} aria-hidden="true" />
             </button>
-          )) : (
+            );
+          }) : (
             <div className={styles.emptyRail}>
               <Building2 size={24} aria-hidden="true" />
               <p>No customer accounts yet.</p>
@@ -489,6 +527,7 @@ export function CustomerAccountsWorkspace({
               value={selected}
               health={customerHealth}
               workflows={customerWorkflows}
+              intelligence={customerIntelligence}
               canWrite={canWrite}
               canRunWorkflow={canRunWorkflow}
               healthEvaluating={healthEvaluating}
@@ -668,6 +707,7 @@ function AccountDetail({
   value,
   health,
   workflows,
+  intelligence,
   canWrite,
   canRunWorkflow,
   healthEvaluating,
@@ -682,6 +722,7 @@ function AccountDetail({
   value: CustomerAccount360;
   health?: CustomerHealthPayload;
   workflows?: CustomerSuccessWorkflowPayload;
+  intelligence?: CustomerSuccessAccountIntelligence;
   canWrite: boolean;
   canRunWorkflow: boolean;
   healthEvaluating: boolean;
@@ -757,6 +798,15 @@ function AccountDetail({
         <span>{formatLabel(account.crmPermissions.externalWriteState)} CRM writes</span>
       </section>
 
+      <CustomerIntelligencePanel
+        value={intelligence}
+        workflows={workflows}
+        canWrite={canWrite}
+        canRunWorkflow={canRunWorkflow}
+        onEvaluateHealth={onEvaluateHealth}
+        onStartWorkflow={onStartWorkflow}
+      />
+
       <CustomerHealthPanel
         value={health}
         currentAccountRevisionId={account.revisionId}
@@ -778,6 +828,164 @@ function AccountDetail({
         ))}
       </div>
     </div>
+  );
+}
+
+function CustomerIntelligencePanel({
+  value,
+  workflows,
+  canWrite,
+  canRunWorkflow,
+  onEvaluateHealth,
+  onStartWorkflow,
+}: {
+  value?: CustomerSuccessAccountIntelligence;
+  workflows?: CustomerSuccessWorkflowPayload;
+  canWrite: boolean;
+  canRunWorkflow: boolean;
+  onEvaluateHealth: () => void;
+  onStartWorkflow: (definition: CustomerSuccessWorkflowDefinition) => void;
+}) {
+  if (!value) {
+    return (
+      <section className={styles.intelligencePanel} aria-label="Customer-success decision view" aria-busy="true">
+        <div className={styles.intelligenceLoading}>Assembling current risks, commitments, approvals, and timeline…</div>
+      </section>
+    );
+  }
+  const recommendation = value.nextBestAction;
+  const recommendedWorkflow = recommendation.workflowId
+    ? workflows?.pack.find((item) => item.workflowId === recommendation.workflowId)
+    : recommendation.action === "resolve_risk"
+      ? workflows?.pack.find((item) => item.workflowId === "risk_escalation")
+      : undefined;
+  const openCommitments = value.commitments.filter((item) =>
+    !["completed", "dismissed"].includes(item.status)
+  );
+  return (
+    <section className={styles.intelligencePanel} aria-label="Customer-success decision view">
+      <header className={styles.intelligenceHeader}>
+        <div className={styles.healthIdentity}>
+          <span><Lightbulb size={19} aria-hidden="true" /></span>
+          <div>
+            <p className={styles.eyebrow}>Customer portfolio intelligence · suggested only</p>
+            <h3>What needs attention now</h3>
+            <p>Deterministic ranking over exact account, health, workflow, meeting, and approval evidence.</p>
+          </div>
+        </div>
+        <span className={styles.attentionBadge} data-attention={value.portfolio.attention}>
+          {formatLabel(value.portfolio.attention)}
+        </span>
+      </header>
+
+      <div className={styles.recommendation}>
+        <div>
+          <span className={styles.suggestionBadge}>Non-authoritative recommendation</span>
+          <h4>{recommendation.title}</h4>
+          <p>{recommendation.reason}</p>
+          <div className={styles.recommendationMeta}>
+            <span>{percent(recommendation.confidenceBasisPoints)} confidence</span>
+            <span>{formatLabel(recommendation.freshness.status)} evidence</span>
+            <span>{recommendation.evidence.length} cited source{recommendation.evidence.length === 1 ? "" : "s"}</span>
+          </div>
+          {recommendation.uncertainty.length ? (
+            <ul className={styles.uncertaintyList}>
+              {recommendation.uncertainty.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          ) : null}
+        </div>
+        <div className={styles.recommendationAction}>
+          {recommendation.action === "review_approval" ? (
+            <Link href="/app/approvals" className={styles.primaryButton}>Open approvals</Link>
+          ) : recommendation.action === "evaluate_health" ? (
+            <button className={styles.primaryButton} type="button" onClick={onEvaluateHealth} disabled={!canWrite}>Evaluate health</button>
+          ) : recommendedWorkflow ? (
+            <button className={styles.primaryButton} type="button" onClick={() => onStartWorkflow(recommendedWorkflow)} disabled={!canRunWorkflow}>
+              <Play size={13} aria-hidden="true" /> Open workflow
+            </button>
+          ) : recommendation.action === "advance_commitment" ? (
+            <Link href="/app/meetings" className={styles.primaryButton}>Open meetings</Link>
+          ) : null}
+          <small>No action runs from this recommendation itself.</small>
+        </div>
+      </div>
+
+      <div className={styles.intelligenceGrid}>
+        <IntelligenceList
+          title="Risks"
+          count={value.risks.length}
+          empty="No current risk signal."
+          items={value.risks.slice(0, 5).map((item) => ({
+            id: item.riskId,
+            title: item.title,
+            detail: `${formatLabel(item.severity)} · ${formatLabel(item.freshness.status)} · ${item.reason}`,
+            tone: item.severity,
+          }))}
+        />
+        <IntelligenceList
+          title="Commitments"
+          count={openCommitments.length}
+          empty="No open customer commitment."
+          items={openCommitments.slice(0, 5).map((item) => ({
+            id: item.commitmentSha256,
+            title: item.summary,
+            detail: [item.owner || "Owner unconfirmed", item.dueAt ? formatDateTime(item.dueAt) : "No due date", formatLabel(item.status)].join(" · "),
+            tone: item.dueAt && item.dueAt < value.generatedAt ? "high" : undefined,
+          }))}
+        />
+        <IntelligenceList
+          title="Approval queue"
+          count={value.approvals.length}
+          empty="No customer action is waiting for approval."
+          footer={value.approvals.length ? <Link href="/app/approvals">Review approvals</Link> : undefined}
+          items={value.approvals.slice(0, 5).map((item) => ({
+            id: item.approvalId,
+            title: item.title,
+            detail: `${formatLabel(item.status)} · risk ${item.riskLevel} · ${formatDateTime(item.createdAt)}`,
+            tone: "high",
+          }))}
+        />
+        <IntelligenceList
+          title="Account timeline"
+          count={value.timeline.length}
+          empty="No account history yet."
+          items={value.timeline.slice(0, 8).map((item) => ({
+            id: item.eventId,
+            title: item.title,
+            detail: `${formatDateTime(item.occurredAt)} · ${item.summary}`,
+          }))}
+        />
+      </div>
+    </section>
+  );
+}
+
+function IntelligenceList({
+  title,
+  count,
+  empty,
+  items,
+  footer,
+}: {
+  title: string;
+  count: number;
+  empty: string;
+  items: Array<{ id: string; title: string; detail: string; tone?: string }>;
+  footer?: React.ReactNode;
+}) {
+  return (
+    <article className={styles.intelligenceList}>
+      <header><strong>{title}</strong><span>{count}</span></header>
+      {items.length ? (
+        <ul>{items.map((item) => (
+          <li key={item.id} data-tone={item.tone}>
+            <strong>{item.title}</strong>
+            <small>{item.detail}</small>
+          </li>
+        ))}</ul>
+      ) : <p>{empty}</p>}
+      {footer ? <footer>{footer}</footer> : null}
+    </article>
   );
 }
 
@@ -1342,6 +1550,21 @@ function formatLag(value: number | null | undefined) {
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function portfolioRailLabel(
+  account: CustomerAccountRevision,
+  intelligence?: CustomerSuccessPortfolioItem,
+) {
+  if (!intelligence) return `${formatLabel(account.lifecycle)} · rev ${account.revision}`;
+  return `${formatLabel(intelligence.attention)} · ${formatLabel(account.lifecycle)} · ${formatLabel(intelligence.nextBestAction.action)}`;
 }
 
 function percent(basisPoints: number) {

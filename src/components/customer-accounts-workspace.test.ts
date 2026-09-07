@@ -38,5 +38,13 @@ describe("Account 360 workspace", () => {
     expect(source).toContain("Create workflow project");
     expect(source).toContain("expectedAccountRevision");
     expect(source).toContain("Open project");
+    expect(source).toContain("What needs attention now");
+    expect(source).toContain("Non-authoritative recommendation");
+    expect(source).toContain("No action runs from this recommendation itself");
+    expect(source).toContain("Approval queue");
+    expect(source).toContain("Account timeline");
+    expect(source).toContain("confidence");
+    expect(source).toContain("uncertainty");
+    expect(source).toContain("freshness");
   });
 });

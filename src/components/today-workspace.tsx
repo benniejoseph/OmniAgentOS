@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Bell,
   BrainCircuit,
+  Building2,
   Check,
   Circle,
   Coins,
@@ -35,6 +36,7 @@ import {
   formatTodayTime,
 } from "@/lib/today/presentation";
 import type { TodaySnapshot } from "@/lib/today/snapshot";
+import type { CustomerSuccessPortfolio } from "@/lib/customer-success/intelligence-contracts";
 import type {
   UsagePeriodKey,
   UsagePeriodSummary,
@@ -92,6 +94,8 @@ export function TodayWorkspace({
   const [usageError, setUsageError] = useState<string>();
   const [todayError, setTodayError] = useState<string>();
   const [summaryError, setSummaryError] = useState<string>();
+  const [customerPortfolio, setCustomerPortfolio] = useState<CustomerSuccessPortfolio>();
+  const [customerPortfolioError, setCustomerPortfolioError] = useState<string>();
   const [loading, setLoading] = useState(!hasInitialWorkspace);
   const [saving, setSaving] = useState(false);
   const [generatingBrief, setGeneratingBrief] = useState(false);
@@ -106,6 +110,7 @@ export function TodayWorkspace({
   const todayRequestRef = useRef<AbortController | null>(null);
   const summaryRequestRef = useRef<AbortController | null>(null);
   const usageRequestRef = useRef<AbortController | null>(null);
+  const customerPortfolioRequestRef = useRef<AbortController | null>(null);
   const summaryRefreshRef = useRef<() => Promise<void>>(async () => undefined);
   const lastFullRefreshAtRef = useRef(
     initialToday?.generatedAt ? Date.parse(initialToday.generatedAt) : 0,
@@ -211,6 +216,23 @@ export function TodayWorkspace({
     }
   }
 
+  async function refreshCustomerPortfolio() {
+    if (sessionStatus !== "ready" || !workspaceAvailable) return;
+    customerPortfolioRequestRef.current?.abort();
+    const controller = new AbortController();
+    customerPortfolioRequestRef.current = controller;
+    try {
+      const payload = await readJson("/api/customer-accounts/portfolio?limit=20", {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setCustomerPortfolio(payload.portfolio as CustomerSuccessPortfolio);
+      setCustomerPortfolioError(undefined);
+    } catch (error) {
+      if (!controller.signal.aborted) setCustomerPortfolioError(errorMessage(error));
+    }
+  }
+
   async function load({
     force = false,
     showLoading = false,
@@ -233,7 +255,7 @@ export function TodayWorkspace({
     if (showLoading) setLoading(true);
     void refreshUsage();
     try {
-      await Promise.all([refreshToday(), refreshSummary()]);
+      await Promise.all([refreshToday(), refreshSummary(), refreshCustomerPortfolio()]);
       if (announce) setAnnouncement("Today refreshed.");
     } finally {
       if (showLoading) setLoading(false);
@@ -252,6 +274,7 @@ export function TodayWorkspace({
       todayRequestRef.current?.abort();
       summaryRequestRef.current?.abort();
       usageRequestRef.current?.abort();
+      customerPortfolioRequestRef.current?.abort();
     };
   }, []);
 
@@ -276,6 +299,14 @@ export function TodayWorkspace({
     // Session identity is the automatic usage-load boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialUsage, hasInitialWorkspace, sessionStatus, session]);
+
+  useEffect(() => {
+    if (sessionStatus !== "ready" || !workspaceAvailable) return;
+    const portfolioTimer = window.setTimeout(() => void refreshCustomerPortfolio(), 0);
+    return () => window.clearTimeout(portfolioTimer);
+    // Session identity is the customer-portfolio authority boundary.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionStatus, session, workspaceAvailable]);
 
   useEffect(() => {
     summaryRefreshRef.current = refreshSummary;
@@ -461,10 +492,10 @@ export function TodayWorkspace({
         />
       ) : null}
 
-      {todayError || summaryError ? (
+      {todayError || summaryError || customerPortfolioError ? (
         <div className="today-error" role="alert">
           <strong>Some context is unavailable.</strong>
-          <span>{[todayError, summaryError].filter(Boolean).join(" ")}</span>
+          <span>{[todayError, summaryError, customerPortfolioError].filter(Boolean).join(" ")}</span>
         </div>
       ) : null}
 
@@ -510,6 +541,14 @@ export function TodayWorkspace({
             value={today.projects?.length || 0}
             detail="Active projects in view"
             href="/app/projects"
+          />
+          <TodayOverviewLink
+            icon={Building2}
+            label="Customer attention"
+            value={(customerPortfolio?.counts.urgent || 0) + (customerPortfolio?.counts.attention || 0)}
+            detail={`${customerPortfolio?.counts.pendingApprovals || 0} approvals · ${customerPortfolio?.counts.overdueCommitments || 0} overdue`}
+            href="/app/accounts"
+            attention={Boolean(customerPortfolio?.counts.urgent || customerPortfolio?.counts.attention)}
           />
           <TodayOverviewLink
             icon={BrainCircuit}
@@ -662,6 +701,19 @@ export function TodayWorkspace({
       </section>
 
       <section className="today-context-grid">
+        <TodayContextSection icon={Building2} title="Customer attention" description="Evidence-bound next actions across your customer portfolio." href="/app/accounts">
+          {customerPortfolio?.accounts.length ? customerPortfolio.accounts.slice(0, 5).map((account) => (
+            <Link key={account.accountId} href={`/app/accounts/${encodeURIComponent(account.accountId)}`} className="today-context-row">
+              <span className={clsx("today-live-dot", ["urgent", "attention"].includes(account.attention) && "is-active")} />
+              <div>
+                <strong>{account.name}</strong>
+                <small>{account.nextBestAction.title} · {account.nextBestAction.confidenceBasisPoints / 100}% confidence · suggested</small>
+              </div>
+              <ArrowRight size={14} aria-hidden="true" />
+            </Link>
+          )) : <ContextEmpty>No customer account currently needs attention.</ContextEmpty>}
+        </TodayContextSection>
+
         <TodayContextSection icon={Workflow} title="Work in progress" description="Agents and workflows currently active." href="/app/workflows">
           {visibleWork.length ? visibleWork.slice(0, 5).map((item, index) => (
             <Link key={text(item.id) || index} href={item.goal ? "/app/workflows" : "/app/command"} className="today-context-row">
