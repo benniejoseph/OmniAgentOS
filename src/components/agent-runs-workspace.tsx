@@ -454,6 +454,9 @@ export function AgentRunsWorkspace({
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [turns, setTurns] = useState<ThreadTurn[]>([]);
   const [conversationView, setConversationView] = useState<"chat" | "map">("chat");
+  const [conversationCanvas, setConversationCanvas] = useState<unknown>();
+  const [conversationCanvasState, setConversationCanvasState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [conversationCanvasError, setConversationCanvasError] = useState<string>();
   const [conversationsCollapsed, setConversationsCollapsed] = useState(false);
   const [mobileConversationsOpen, setMobileConversationsOpen] = useState(false);
   const [conversationMemories, setConversationMemories] = useState<ConversationMemory[]>([]);
@@ -477,6 +480,7 @@ export function AgentRunsWorkspace({
   const browserActivityControllerRef = useRef<AbortController | null>(null);
   const browserActivityVersionRef = useRef(0);
   const browserActivityStreamControllerRef = useRef<AbortController | null>(null);
+  const conversationCanvasControllerRef = useRef<AbortController | null>(null);
   const browserActivityModeRef = useRef<BrowserActivityMode | undefined>(undefined);
   const browserActivityRunIdRef = useRef("");
   const pendingDeltasRef = useRef<string[]>([]);
@@ -769,6 +773,7 @@ export function AgentRunsWorkspace({
       evidenceControllerRef.current?.abort();
       browserActivityControllerRef.current?.abort();
       browserActivityStreamControllerRef.current?.abort();
+      conversationCanvasControllerRef.current?.abort();
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
       }
@@ -778,6 +783,14 @@ export function AgentRunsWorkspace({
     // Session changes are the only automatic evidence refresh trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionStatus, session, role]);
+
+  useEffect(() => {
+    if (conversationView !== "map" || sessionStatus !== "ready" || readPermission) return;
+    void refreshConversationCanvas(threadId);
+    return () => conversationCanvasControllerRef.current?.abort();
+    // The selected Conversation and view own this bounded read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationView, threadId, sessionStatus, readPermission]);
 
   useEffect(() => {
     if (!detailsOpen) return;
@@ -2120,6 +2133,36 @@ export function AgentRunsWorkspace({
     }
   }
 
+  async function refreshConversationCanvas(id = threadId) {
+    conversationCanvasControllerRef.current?.abort();
+    const controller = new AbortController();
+    conversationCanvasControllerRef.current = controller;
+    setConversationCanvas(undefined);
+    setConversationCanvasState("loading");
+    setConversationCanvasError(undefined);
+    try {
+      const query = id ? `?threadId=${encodeURIComponent(id)}` : "";
+      const result = asRecord(await readJson(`/api/conversations/canvas${query}`, {
+        signal: controller.signal,
+      }));
+      if (controller.signal.aborted) return;
+      setConversationCanvas(result.projection);
+      setConversationCanvasState("ready");
+    } catch (canvasError) {
+      if (controller.signal.aborted) return;
+      setConversationCanvasError(
+        canvasError instanceof Error
+          ? canvasError.message
+          : "The Conversation map could not be loaded.",
+      );
+      setConversationCanvasState("error");
+    } finally {
+      if (conversationCanvasControllerRef.current === controller) {
+        conversationCanvasControllerRef.current = null;
+      }
+    }
+  }
+
   async function refreshRunContextReceipt(runId: string) {
     try {
       const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(runId)}`));
@@ -2569,9 +2612,9 @@ export function AgentRunsWorkspace({
                 </span>
                 <div className="min-w-0">
                   <h2 className="truncate text-sm font-semibold">
-                    {conversationView === "map" ? "Conversation map" : threads.find((thread) => thread.id === threadId)?.title || "New conversation"}
+                    {conversationView === "map" ? "Canonical Conversation map" : threads.find((thread) => thread.id === threadId)?.title || "New conversation"}
                   </h2>
-                  <p className="hidden truncate text-xs text-muted sm:block">{conversationView === "map" ? "See how your conversations connect." : "Ask, refine, and continue in the same thread."}</p>
+                  <p className="hidden truncate text-xs text-muted sm:block">{conversationView === "map" ? "Real runs, forks, delegations, Projects, and shared artifacts." : "Ask, refine, and continue in the same thread."}</p>
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -2608,10 +2651,17 @@ export function AgentRunsWorkspace({
 
             {conversationView === "map" ? (
               <ConversationCanvas
-                threads={threads}
+                projection={conversationCanvas}
+                state={conversationCanvasState}
+                error={conversationCanvasError}
                 activeThreadId={threadId}
                 onNew={newThread}
-                onSelect={(id) => void loadThread(id)}
+                onRefresh={() => void refreshConversationCanvas(threadId)}
+                onSelectRun={(id) => openTaskDetails("execute", id)}
+                onSelectThread={(id) => {
+                  setConversationView("chat");
+                  void loadThread(id);
+                }}
               />
             ) : (
             <>

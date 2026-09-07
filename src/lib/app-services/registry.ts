@@ -69,6 +69,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.runs.show", "read", "agent_run"),
   read("app.runs.activity", "read", "agent_run_activity"),
   read("app.runs.trajectory", "read", "run_trajectory"),
+  read("app.conversations.canvas.show", "read", "conversation_canvas"),
   read("app.agents.list", "read", "custom_agent"),
   read("app.agents.show", "read", "custom_agent"),
   read("app.agents.cards", "read", "agent_card"),
