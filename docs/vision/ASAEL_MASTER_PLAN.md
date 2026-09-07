@@ -774,8 +774,8 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 through P9.11 and P9.14 through P9.15 are complete; P9.12 and P9.13 are
-intentionally deferred, so P9.16 is the next actionable slice. Product phases 12 and 13 also remain
+P9.1 through P9.11 and P9.14 through P9.16 are complete; P9.12 and P9.13 are
+intentionally deferred, so P9.17 is the next actionable slice. Product phases 12 and 13 also remain
 deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
@@ -793,8 +793,8 @@ deferred.
 | P9.3 | Add reversible trash, undo, compensation, and two-step destructive action UX. | Modify domain deletes; create trash/compensation contracts. | Irreversible/high-impact deletes remain approval-gated and never graduate automatically. | Edit/archive/delete actions have clear preview, effect receipt, undo/compensation where possible, and final deletion receipt. |
 | P9.4 | Add plan/domain/action-class approval grants. | Modify trust policy. | Grants bind actor, agent, tool contract, target, plan digest, budget, and expiry; replanning invalidates them. | Repetitive safe operations avoid per-click approval without permitting new targets or action classes. |
 
-**Implementation status:** P9.1 through P9.11 and P9.14 through P9.15 are complete. The governed catalog
-now contains 115 active `app.*` operations, including actor-private Trash list,
+**Implementation status:** P9.1 through P9.11 and P9.14 through P9.16 are complete. The governed catalog
+now contains 117 active `app.*` operations, including actor-private Trash list,
 detail, receipt, restore-preview, restore, purge-preview, and purge tools. Custom
 Agent, custom Skill, MCP, and OpenAPI removal first requires an exact expiring
 preview and moves the resource into a 30-day reversible ledger. The ledger keeps
@@ -959,7 +959,25 @@ TypeScript, and the production build. Vercel deployment
 `dpl_CAugG2CTvyMidfgHVCFgqWiD41Kx` is Ready and the canonical alias serves exact
 revision `756213f999a622562280c7cefec8dd8fd30c6613`; anonymous AP2 readiness
 access fails closed with 401. No database migration or Fly rebuild was
-required. P9.16 human-present signed mandates is next. Product phases 12 and 13
+required. P9.16 then adds exact Checkout and Payment Mandate builders, a
+deterministic user-only Trusted Surface, and hardware-backed WebAuthn
+registration and authorization. Every signature binds merchant, order, line
+items, quantities, price, currency, tax, shipping, discount, delivery terms,
+instrument summary, constraints, expiry, owner, Agent, intent, and the checkout
+digest; changed terms supersede prior consent. Persisted signatures, counters,
+credential trust, mandate content, and expiry are independently reverified.
+The Agent receives read and prepare tools only and cannot register a signer,
+sign, authorize, checkout, or pay. Migration 125 installs three forced-RLS,
+actor-private ledgers with lifecycle-only credentials/reviews and append-only
+authorization proofs. Thirty-one focused contract, WebAuthn, store, service,
+route, registry, and migration checks pass with affected lint, TypeScript, and
+the 104-page production build. Vercel deployment
+`dpl_7DN1xgDYZyNNJfDjneu3aQwGNEXE` is Ready and the canonical alias serves exact
+revision `ec4cac32e589cec81b343ce3df00349b0db00a9a`; anonymous mandate access
+fails closed with 401, and Supabase plus both compatible Fly gateways are
+healthy. No signer can be activated until an operator-reviewed WebAuthn trust
+policy is configured, and no transaction is possible. P9.17 credential
+isolation and deterministic authorization is next. Product phases 12 and 13
 remain deferred.
 
 #### Browser and computer use
@@ -2997,7 +3015,15 @@ the full readiness projection inspectable. No participants, adapters, key
 authorities, payment-effect tools, or transactions are enabled. Vercel
 deployment `dpl_CAugG2CTvyMidfgHVCFgqWiD41Kx` serves exact revision
 `756213f999a622562280c7cefec8dd8fd30c6613`; no database or Fly release changed.
-P9.12/P9.13 and product phases 12/13 remain deferred; P9.16 is next.
+P9.16 then added exact user-reviewed Checkout and Payment Mandates, a
+deterministic non-agentic Trusted Surface, hardware-backed WebAuthn signing,
+independent persisted-proof reverification, and actor-private ledgers under
+migration 125. The Agent can prepare and inspect a review but cannot register,
+sign, authorize, checkout, or pay. Vercel deployment
+`dpl_7DN1xgDYZyNNJfDjneu3aQwGNEXE` serves exact revision
+`ec4cac32e589cec81b343ce3df00349b0db00a9a`; Supabase and both compatible Fly
+gateways are healthy. P9.12/P9.13 and product phases 12/13 remain deferred;
+P9.17 is next.
 
 Only after these slices satisfy their gates should the plan proceed into writable subagents, browser autonomy, A2A, voice actions, AP2 payments, Salesforce writes, or native clients.
 
