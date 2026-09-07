@@ -1,5 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import {
+  approvalGrantClaimAuthorizes,
+  buildToolApprovalGrantRequest,
+  type ApprovalGrantClaimEvidence,
+} from "@/lib/approval-grants/authorization";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
   ingestKnowledgeService,
@@ -45,7 +50,6 @@ import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { readResponseTextLimited } from "@/lib/http/body";
-import { checkSharedRateLimit } from "@/lib/http/rate-limit";
 import {
   publicMemoryDeletionReceiptV1,
   type MemoryDeletionReceiptV1,
@@ -103,8 +107,7 @@ import {
 } from "@/lib/tools/effect-intent-v2";
 import { getGovernedTool } from "@/lib/tools/registry";
 import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/lib/tools/types";
-import { actionClassFor, recordActionOutcome, resolveAutonomy } from "@/lib/trust/ledger";
-import { isGraduatedAutonomyEnabled } from "@/lib/trust/policy";
+import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { runLiveWebSearch } from "@/lib/web-search/search";
 import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
 
@@ -316,6 +319,7 @@ export async function executeGovernedTool({
   mcpSessionScope,
   executionScope,
   effectBinding,
+  approvalGrantClaim,
   checkpointBeforeEffect,
 }: {
   toolId: string;
@@ -336,6 +340,8 @@ export async function executeGovernedTool({
   executionScope?: ExecutionScope;
   /** Exact persisted execution-plan binding for the P1.4 memory-write canary. */
   effectBinding?: GovernedToolEffectBinding;
+  /** Consumed P9.4 authority for a non-user principal executing a plan. */
+  approvalGrantClaim?: ApprovalGrantClaimEvidence;
   /** Dormant checkpoint shadow hook invoked after intent persistence. */
   checkpointBeforeEffect?: (
     input: GovernedToolCheckpointInput,
@@ -803,6 +809,7 @@ export async function executeGovernedTool({
             mcpSessionScope,
             executionScope,
             effectBinding,
+            approvalGrantClaim,
             checkpointBeforeEffect,
           });
         }
@@ -843,53 +850,50 @@ export async function executeGovernedTool({
   const durableApprovalClaim =
     !existingRecord ||
     (existingRecord.status === "executing" && Boolean(executionClaimToken));
+  const persistedSingleApproval = Boolean(
+    existingRecord?.status === "executing" && executionClaimToken,
+  );
+  const directUserApproval = Boolean(
+    scopedRequest.executionScope?.executingPrincipalType === "user" &&
+    scopedRequest.executionScope.executingPrincipalId ===
+      scopedRequest.executionScope.initiatingActorId,
+  );
+  let boundPlanGrantApproval = false;
+  if (
+    approved &&
+    !persistedSingleApproval &&
+    !directUserApproval &&
+    approvalGrantClaim &&
+    effectBinding &&
+    idempotencyKey &&
+    scopedRequest.executionScope
+  ) {
+    const request = buildToolApprovalGrantRequest({
+      tool,
+      toolInput: preparedInput,
+      executionScope: scopedRequest.executionScope,
+      planId: effectBinding.planId,
+      planSha256: effectBinding.planSha256,
+    });
+    boundPlanGrantApproval = Boolean(
+      request &&
+      approvalGrantClaimAuthorizes({
+        evidence: approvalGrantClaim,
+        request,
+        executionKey: idempotencyKey,
+      }),
+    );
+  }
   const effectiveApproved =
     approved &&
     durableApprovalClaim &&
+    (persistedSingleApproval || directUserApproval || boundPlanGrantApproval) &&
     (tool.riskLevel < 3 || hasRisk3Quorum(existingRecord));
 
-  // Graduated autonomy: an action class that has earned trust (clean track
-  // record, reversible, risk < 3) may auto-approve instead of gating. Opt-in
-  // and conservative — resolveAutonomy re-checks reversibility and risk tier.
-  const reversible = tool.reversible ?? false;
-  let autonomy: Awaited<ReturnType<typeof resolveAutonomy>> | undefined;
-  let autonomyApproved = false;
-  if (!dryRun && !effectiveApproved && isGraduatedAutonomyEnabled() && tool.riskLevel < 3) {
-    autonomy = await resolveAutonomy({
-      toolId: tool.id,
-      tenantId: normalizeTenantId(context?.tenantId),
-      riskLevel: tool.riskLevel,
-      reversible,
-    });
-    if (autonomy.mode === "auto_with_alert") {
-      try {
-        const budget = await checkSharedRateLimit({
-          key: `autonomy:${normalizeTenantId(context?.tenantId)}:${actionClassFor(tool.id)}`,
-          limit: autonomy.budget.maxActions,
-          windowMs: autonomy.budget.windowSeconds * 1_000,
-        });
-        autonomyApproved = budget.allowed;
-        if (!budget.allowed) {
-          autonomy = {
-            ...autonomy,
-            mode: "approve_each",
-            stage: "supervised",
-            reason: `The earned-autonomy budget is exhausted. Approval is required for ${budget.retryAfterSeconds} more seconds.`,
-          };
-        }
-      } catch {
-        // A missing shared budget ledger must never widen authority.
-        autonomy = {
-          ...autonomy,
-          mode: "approve_each",
-          stage: "supervised",
-          reason: "The autonomy budget could not be verified, so approval remains required.",
-        };
-      }
-    }
-  }
-
-  const decision = evaluateToolPolicy({ tool, approved: effectiveApproved || autonomyApproved });
+  // Trust profiles remain advisory evidence. Automatic execution now requires
+  // a consumed grant with an exact plan, principal, contract, target, budget,
+  // and expiry binding; a tenant + action-class streak cannot confer authority.
+  const decision = evaluateToolPolicy({ tool, approved: effectiveApproved });
   const baseRecord = {
     tenantId: existingRecord?.tenantId || context?.tenantId,
     actorId: existingRecord?.actorId || context?.actorId,
@@ -1456,27 +1460,6 @@ export async function executeGovernedTool({
           abortSignal,
         });
       }
-    }
-    if (autonomyApproved) {
-      await recordRuntimeEventSafely({
-        level: "warn",
-        category: "security",
-        action: "autonomy.auto_approved",
-        tenantId: scopedRequest.executionScope?.tenantId || context?.tenantId,
-        actorId:
-          scopedRequest.executionScope?.initiatingActorId || context?.actorId,
-        resourceType: "tool_execution",
-        resourceId: saved.id,
-        message: `${tool.name} executed on earned autonomy without a fresh human approval.`,
-        metadata: {
-          toolId: tool.id,
-          toolName: tool.name,
-          riskLevel: tool.riskLevel,
-          autonomyReason: autonomy?.reason,
-          cleanStreak: autonomy?.cleanStreak,
-        },
-        correlationId: scopedRequest.executionScope?.correlationId,
-      });
     }
     await recordTrustOutcomeSafely(
       tool,

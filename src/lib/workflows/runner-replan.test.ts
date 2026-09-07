@@ -4,6 +4,7 @@ import type { WorkflowRunDetail } from "@/lib/workflows/types";
 
 const mocks = vi.hoisted(() => ({
   appendWorkflowEvent: vi.fn(),
+  revokeApprovalGrantsForPlan: vi.fn(),
   buildContextPack: vi.fn(),
   generateModelStructured: vi.fn(),
   getWorkflowRunDetail: vi.fn(),
@@ -19,11 +20,17 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/models/gateway", () => ({
   generateModelStructured: mocks.generateModelStructured,
 }));
+vi.mock("@/lib/approval-grants/store", () => ({
+  revokeApprovalGrantsForPlan: mocks.revokeApprovalGrantsForPlan,
+}));
 vi.mock("@/lib/rag/context-engine", () => ({
   buildContextPack: mocks.buildContextPack,
 }));
 vi.mock("@/lib/settings/runtime-models", () => ({
   resolveRuntimeModelAssignment: mocks.resolveRuntimeModelAssignment,
+}));
+vi.mock("@/lib/tools/executor", () => ({
+  EffectReceiptFinalizationError: class EffectReceiptFinalizationError extends Error {},
 }));
 vi.mock("@/lib/subagents/context", () => ({
   buildWorkflowSpecialistContext: vi.fn(async () => ({
@@ -227,6 +234,19 @@ describe("workflow runner bounded replan", () => {
     expect(replanning.events.some(
       (event) => event.type === "workflow.approval_revoked_on_replan",
     )).toBe(true);
+    expect(mocks.revokeApprovalGrantsForPlan).toHaveBeenCalledTimes(1);
+    expect(mocks.revokeApprovalGrantsForPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planId: "plan-old",
+        planSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+      expect.objectContaining({
+        executionScope: expect.objectContaining({
+          executingPrincipalId: `workflow:${detail.run.id}`,
+          purpose: "workflow.replan.revoke_approval_grants",
+        }),
+      }),
+    );
 
     const retrieved = await tickWorkflowRun(detail.run.id, {
       tenantId: "tenant-1",

@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  buildToolApprovalGrantRequest,
+  type ApprovalGrantClaimEvidence,
+} from "@/lib/approval-grants/authorization";
+import {
+  claimApprovalGrant,
+  issueApprovalGrant,
+} from "@/lib/approval-grants/store";
+import {
   WORKFLOW_EXECUTOR_TIMEOUT_MS,
   WORKFLOW_PLAN_MAX_COST_UNITS,
   WORKFLOW_PLAN_MAX_TOOL_CALLS,
@@ -48,6 +56,7 @@ import {
   type GovernedToolEffectBinding,
 } from "@/lib/tools/executor";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { toolInputSha256 } from "@/lib/tools/execution-scope";
 import { getGovernedTool } from "@/lib/tools/registry";
 import type { ToolDefinition, ToolExecutionRecord } from "@/lib/tools/types";
 import { isBrowserActionTool } from "@/lib/runs/budgets";
@@ -887,6 +896,29 @@ async function executePlanNode({
         ? executionScope.executingPrincipalId?.trim() || "omniagent-system"
         : "workflow");
     const toolInput = buildToolInput({ detail, plan, planId, node, nodeInput, toolId });
+    const idempotencyKey =
+      `workflow:${detail.run.id}:plan:${planId}:node:${node.id}:tool:${toolId}`;
+    const toolExecutionScope = executionScope
+      ? workflowToolExecutionScope(executionScope, {
+          workflowRunId: detail.run.id,
+          planId,
+          nodeId: node.id,
+          toolId,
+        })
+      : undefined;
+    const approvalGrantClaim =
+      workflowApproved && !dryRun && tool && toolExecutionScope
+        ? await authorizeWorkflowToolWithGrant({
+            detail,
+            plan,
+            planId,
+            node,
+            tool,
+            toolInput,
+            executionScope: toolExecutionScope,
+            executionKey: idempotencyKey,
+          })
+        : undefined;
     const effectBinding = workflowToolEffectBinding({
       workflowRunId: detail.run.id,
       plan,
@@ -895,7 +927,7 @@ async function executePlanNode({
       toolId,
       tool,
       toolInput,
-      workflowApproved,
+      workflowApproved: Boolean(approvalGrantClaim),
       dryRun,
       initiatingActorId: executionScope?.initiatingActorId,
     });
@@ -903,32 +935,26 @@ async function executePlanNode({
       toolId,
       input: toolInput,
       dryRun,
-      approved: workflowApproved && !dryRun,
+      approved: Boolean(approvalGrantClaim),
       context: {
         tenantId: normalizeTenantId(detail.run.tenantId),
         actorId: workflowActorId,
         role: executionAuthority?.requesterRole || "system",
         source: "default",
       },
-      approvalReason: detail.run.approvedAt
-        ? `Workflow ${detail.run.id} was approved before plan-node execution.`
+      approvalReason: approvalGrantClaim
+        ? `Bounded approval grant ${approvalGrantClaim.grant.grantId} authorized this exact plan action.`
         : undefined,
       abortSignal: executionSignal,
-      idempotencyKey: `workflow:${detail.run.id}:plan:${planId}:node:${node.id}:tool:${toolId}`,
+      idempotencyKey,
       mcpSessionScope: {
         tenantId: normalizeTenantId(detail.run.tenantId),
         actorId: workflowActorId,
         executionId: `workflow:${detail.run.id}`,
       },
-      executionScope: executionScope
-        ? workflowToolExecutionScope(executionScope, {
-            workflowRunId: detail.run.id,
-            planId,
-            nodeId: node.id,
-            toolId,
-          })
-        : undefined,
+      executionScope: toolExecutionScope,
       effectBinding,
+      approvalGrantClaim,
     });
     return {
       id: execution.record.id,
@@ -1390,16 +1416,12 @@ export function workflowToolEffectBinding(input: {
   dryRun: boolean;
   initiatingActorId?: string | null;
 }): GovernedToolEffectBinding | undefined {
-  const providerMutation = Boolean(
+  const governedMutation = Boolean(
     input.tool &&
-    governedToolOperationClass(input.tool, input.toolInput) === "mutation" &&
-    ["connector", "mcp", "openapi"].includes(input.tool.category),
+    governedToolOperationClass(input.tool, input.toolInput) === "mutation",
   );
-  const receiptEligible =
-    (input.toolId === "memory.write" && input.node.toolIds.length === 1) ||
-    providerMutation;
   if (
-    !receiptEligible ||
+    !governedMutation ||
     !input.workflowApproved ||
     input.dryRun ||
     !input.initiatingActorId?.trim()
@@ -1410,6 +1432,101 @@ export function workflowToolEffectBinding(input: {
     planSha256: canonicalJsonSha256({ id: input.planId, plan: input.plan }),
     planNodeId: input.node.id,
   });
+}
+
+export async function authorizeWorkflowToolWithGrant(input: {
+  detail: WorkflowRunDetail;
+  plan: WorkflowDynamicPlan;
+  planId: string;
+  node: WorkflowPlanNode;
+  tool: ToolDefinition;
+  toolInput: Record<string, unknown>;
+  executionScope: ExecutionScope;
+  executionKey: string;
+}): Promise<ApprovalGrantClaimEvidence | undefined> {
+  const approval = workflowApprovalEvidence(input.detail);
+  if (!approval) return undefined;
+  const reviewedInput = input.node.toolInputs?.find(
+    (candidate) => candidate.toolId === input.tool.id,
+  );
+  if (
+    !reviewedInput ||
+    input.node.inputBindings?.some(
+      (binding) => binding.targetToolId === input.tool.id,
+    )
+  ) {
+    return undefined;
+  }
+  let parsedReviewedInput: unknown;
+  try {
+    parsedReviewedInput = JSON.parse(reviewedInput.inputJson);
+  } catch {
+    return undefined;
+  }
+  if (
+    !parsedReviewedInput ||
+    typeof parsedReviewedInput !== "object" ||
+    Array.isArray(parsedReviewedInput) ||
+    toolInputSha256(parsedReviewedInput as Record<string, unknown>) !==
+      toolInputSha256(input.toolInput)
+  ) {
+    return undefined;
+  }
+  const planSha256 = canonicalJsonSha256({
+    id: input.planId,
+    plan: input.plan,
+  });
+  const request = buildToolApprovalGrantRequest({
+    tool: input.tool,
+    toolInput: input.toolInput,
+    executionScope: input.executionScope,
+    planId: input.planId,
+    planSha256,
+  });
+  if (!request) return undefined;
+  const maxUses = Math.min(
+    100,
+    Math.max(
+      1,
+      input.plan.nodes.reduce(
+        (total, node) =>
+          total + node.toolIds.filter((toolId) => toolId === input.tool.id).length,
+        0,
+      ),
+    ),
+  );
+  const issued = await issueApprovalGrant({
+    ...request,
+    approvedByActorId: approval.approvedByActorId,
+    sourceApprovalId: approval.sourceApprovalId,
+    approvedAt: approval.approvedAt,
+    lifetimeMs: 24 * 60 * 60 * 1_000,
+    maxUses,
+  }, { executionScope: input.executionScope });
+  const claimed = await claimApprovalGrant({
+    grantId: issued.grant.grantId,
+    request,
+    executionKey: input.executionKey,
+  }, { executionScope: input.executionScope });
+  return claimed.outcome === "claimed" || claimed.outcome === "existing"
+    ? { grant: claimed.grant, claim: claimed.claim }
+    : undefined;
+}
+
+function workflowApprovalEvidence(detail: WorkflowRunDetail) {
+  if (!detail.run.approvedAt) return undefined;
+  const event = [...detail.events]
+    .reverse()
+    .find((candidate) => candidate.type === "workflow.approved");
+  const approvedByActorId = typeof event?.payload.actorId === "string"
+    ? event.payload.actorId.trim()
+    : "";
+  if (!event || !approvedByActorId) return undefined;
+  return {
+    sourceApprovalId: event.id,
+    approvedByActorId,
+    approvedAt: detail.run.approvedAt,
+  };
 }
 
 function workflowToolExecutionScope(

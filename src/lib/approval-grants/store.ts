@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
+  approvalGrantExecutionKeySha256,
+} from "@/lib/approval-grants/authorization";
+import {
   buildApprovalGrantClaimV1,
   buildApprovalGrantV1,
   evaluateApprovalGrant,
@@ -168,10 +171,10 @@ export async function claimApprovalGrant(
   const scope = requireGrantScope(options.executionScope);
   assertGrantRequestScope(input.request, scope);
   const claimedAt = timestamp(input.now);
-  const executionKeySha256 = canonicalJsonSha256({
+  const executionKeySha256 = approvalGrantExecutionKeySha256({
     tenantId: input.request.tenantId,
     ownerActorId: input.request.ownerActorId,
-    executionKey: required(input.executionKey, "execution key"),
+    executionKey: input.executionKey,
   });
 
   if (hasDatabaseUrl()) {
