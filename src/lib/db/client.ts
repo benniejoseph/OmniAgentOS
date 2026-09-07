@@ -15906,7 +15906,6 @@ async function ensureMeetingDomainV1(sql: SqlClient) {
             WHERE membership.tenant_id = row_tenant_id
               AND membership.workspace_id = row_workspace_id
               AND membership.project_id = row_project_id
-              AND membership.subject_kind = 'user'
               AND membership.state = 'active'
               AND public.omni_actor_scope_v1_allows_canonical(
                 membership.tenant_id, membership.subject_actor_id
@@ -15955,7 +15954,6 @@ async function ensureMeetingDomainV1(sql: SqlClient) {
               WHERE membership.tenant_id = row_tenant_id
                 AND membership.workspace_id = row_workspace_id
                 AND membership.project_id = row_project_id
-                AND membership.subject_kind = 'user'
                 AND membership.subject_actor_id = row_owner_actor_id
                 AND membership.access_level IN ('contributor', 'manager')
                 AND membership.state = 'active'
