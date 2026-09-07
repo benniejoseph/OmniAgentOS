@@ -1,4 +1,13 @@
 import { describe, expect, it } from "vitest";
+import {
+  buildDelegationMessageV1,
+  buildSharedMissionArtifactV1,
+} from "@/lib/delegation/channel";
+import {
+  buildDelegationTaskV1,
+  transitionDelegationTaskV1,
+} from "@/lib/delegation/lifecycle";
+import { buildContract } from "@/lib/delegation/test-fixtures";
 import { toMissionDetailView } from "@/lib/missions/public";
 import type { MissionDetail } from "@/lib/missions/types";
 
@@ -18,7 +27,88 @@ describe("browser-safe mission projections", () => {
     expect(serialized).not.toContain("private executor input");
     expect(serialized).not.toContain("private artifact body");
   });
+
+  it("exposes only explicitly shared channel content without principal authority", () => {
+    const detail = fixture();
+    const task = workingDelegationTask();
+    const shared = buildSharedMissionArtifactV1({
+      task,
+      missionId: detail.mission.id,
+      recipients: { parent: true, delegationTaskIds: [] },
+      kind: "analysis",
+      title: "Bounded findings",
+      mediaType: "text/plain",
+      content: "Explicitly shared findings.",
+      createdAt: "2026-09-07T06:00:30.000Z",
+    });
+    const message = buildDelegationMessageV1({
+      task,
+      missionId: detail.mission.id,
+      recipients: { parent: true, delegationTaskIds: [] },
+      kind: "handoff",
+      body: "Proposal ready for review.",
+      artifactReferences: [{
+        artifactId: shared.artifactId,
+        artifactSha256: shared.artifactSha256,
+      }],
+      createdAt: "2026-09-07T06:00:40.000Z",
+    });
+    detail.artifacts.push(
+      {
+        id: "artifact-shared",
+        tenantId: detail.mission.tenantId,
+        actorId: detail.mission.actorId,
+        missionId: detail.mission.id,
+        sourceKey: shared.artifactId,
+        kind: "delegation_shared_artifact",
+        title: shared.title,
+        data: { protocol: shared },
+        createdAt: shared.createdAt,
+        updatedAt: shared.createdAt,
+      },
+      {
+        id: "artifact-message",
+        tenantId: detail.mission.tenantId,
+        actorId: detail.mission.actorId,
+        missionId: detail.mission.id,
+        sourceKey: message.messageId,
+        kind: "delegation_message",
+        title: "Scout handoff",
+        data: { protocol: message },
+        createdAt: message.createdAt,
+        updatedAt: message.createdAt,
+      },
+    );
+
+    const view = toMissionDetailView(detail);
+    expect(view.artifacts[1].data).toMatchObject({
+      content: "Explicitly shared findings.",
+      sender: { agentId: task.delegateAgentId },
+      boundary: { contentIsUntrusted: true, authorityImpact: "none" },
+    });
+    expect(view.artifacts[2].data).toMatchObject({
+      body: "Proposal ready for review.",
+      sender: { agentId: task.delegateAgentId },
+    });
+    expect(JSON.stringify(view.artifacts.slice(1))).not.toContain(
+      task.delegatePrincipalId,
+    );
+  });
 });
+
+function workingDelegationTask() {
+  let task = buildDelegationTaskV1(buildContract({ missionId: "mission-1" }));
+  task = transitionDelegationTaskV1({
+    task,
+    transition: { to: "accepted" },
+    at: "2026-09-07T06:00:10.000Z",
+  }).task;
+  return transitionDelegationTaskV1({
+    task,
+    transition: { to: "working" },
+    at: "2026-09-07T06:00:20.000Z",
+  }).task;
+}
 
 function fixture(): MissionDetail {
   const now = "2026-08-26T00:00:00.000Z";

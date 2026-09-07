@@ -6,6 +6,10 @@ import type {
   RequestMissionSummary,
 } from "@/lib/missions/types";
 import {
+  parseDelegationMessageV1,
+  parseSharedMissionArtifactV1,
+} from "@/lib/delegation/channel";
+import {
   canonicalStatusForMission,
   canonicalStatusForMissionAttempt,
   canonicalStatusForMissionTask,
@@ -157,10 +161,81 @@ function publicArtifactData(kind: string, data: Record<string, unknown>) {
     copyText(view, data, "reviewerKey", 200);
     copyText(view, data, "reviewerName", 160);
     copyText(view, data, "requestedAt", 80);
+  } else if (kind === "delegation_message") {
+    return publicDelegationMessage(data.protocol);
+  } else if (kind === "delegation_shared_artifact") {
+    return publicDelegationArtifact(data.protocol);
   } else {
     return undefined;
   }
   return view;
+}
+
+function publicDelegationMessage(protocol: unknown) {
+  try {
+    const message = parseDelegationMessageV1(protocol);
+    return {
+      schemaVersion: message.schemaVersion,
+      version: message.version,
+      messageId: message.messageId,
+      messageSha256: message.messageSha256,
+      parentExecutionId: message.parentExecutionId,
+      parentDelegationId: message.parentDelegationId,
+      sender: publicChannelSender(message.sender),
+      recipients: message.recipients,
+      kind: message.kind,
+      body: message.body,
+      bodySha256: message.bodySha256,
+      artifactReferences: message.artifactReferences,
+      inReplyToMessageId: message.inReplyToMessageId,
+      createdAt: message.createdAt,
+      boundary: message.boundary,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function publicDelegationArtifact(protocol: unknown) {
+  try {
+    const artifact = parseSharedMissionArtifactV1(protocol);
+    return {
+      schemaVersion: artifact.schemaVersion,
+      version: artifact.version,
+      artifactId: artifact.artifactId,
+      artifactSha256: artifact.artifactSha256,
+      parentExecutionId: artifact.parentExecutionId,
+      parentDelegationId: artifact.parentDelegationId,
+      sender: publicChannelSender(artifact.sender),
+      recipients: artifact.recipients,
+      kind: artifact.kind,
+      title: artifact.title,
+      mediaType: artifact.mediaType,
+      content: artifact.content,
+      contentSha256: artifact.contentSha256,
+      byteCount: artifact.byteCount,
+      evidenceIds: artifact.evidenceIds,
+      toolExecutionIds: artifact.toolExecutionIds,
+      createdAt: artifact.createdAt,
+      boundary: artifact.boundary,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function publicChannelSender(sender: {
+  taskId: string;
+  delegationId: string;
+  agentId: string;
+  definitionVersion: number;
+}) {
+  return {
+    taskId: sender.taskId,
+    delegationId: sender.delegationId,
+    agentId: sender.agentId,
+    definitionVersion: sender.definitionVersion,
+  };
 }
 
 function copyText(
