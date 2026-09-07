@@ -46,6 +46,14 @@ const routeDefinitions = [
     timeoutMs: 120_000,
     contentType: "multipart/form-data",
   },
+  {
+    id: "realtime_client_secrets",
+    method: "POST",
+    path: "/v1/realtime/client_secrets",
+    maxBodyBytes: 32 * 1024,
+    timeoutMs: 30_000,
+    contentType: "application/json",
+  },
 ];
 
 class BodyLimitError extends Error {

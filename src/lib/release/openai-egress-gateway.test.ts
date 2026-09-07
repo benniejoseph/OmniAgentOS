@@ -123,6 +123,49 @@ describe("Fly OpenAI egress gateway", () => {
     expect(receivedBody).toContain("private prompt");
   });
 
+  it("mints only bounded transcription client secrets through the exact realtime route", async () => {
+    const observations: RequestOptions[] = [];
+    let receivedBody = "";
+    const upstream = await startServer(async (request, response) => {
+      for await (const chunk of request) receivedBody += chunk.toString();
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        value: "ek_test_ephemeral",
+        expires_at: 1_800_000_000,
+        session: { id: "sess_test", object: "realtime.transcription_session", type: "transcription" },
+      }));
+    });
+    const gateway = await startGateway(upstream.baseUrl, { observations });
+    const body = JSON.stringify({
+      expires_after: { anchor: "created_at", seconds: 60 },
+      session: { type: "transcription" },
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/v1/realtime/client_secrets`, {
+      method: "POST",
+      headers: gatewayHeaders(),
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      value: "ek_test_ephemeral",
+      session: { type: "transcription" },
+    });
+    expect(observations[0]).toMatchObject({
+      method: "POST",
+      path: "/v1/realtime/client_secrets",
+    });
+    expect(receivedBody).toBe(body);
+
+    const wrongMethod = await fetch(`${gateway.baseUrl}/v1/realtime/client_secrets`, {
+      method: "GET",
+      headers: gatewayHeaders({ "content-type": undefined }),
+    });
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("allow")).toBe("POST");
+  });
+
   it("supports the allowlisted US OpenAI origin", async () => {
     const observations: RequestOptions[] = [];
     const upstream = await startServer(async (request, response) => {
