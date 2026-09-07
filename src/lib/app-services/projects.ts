@@ -6,14 +6,23 @@ import {
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import {
+  signalProjectTask,
+  signalProjectWorkflows,
+  syncProjectExecution,
+} from "@/lib/projects/execution";
+import { decomposeProject } from "@/lib/projects/planner";
+import { reflectOnProjectArtifact } from "@/lib/projects/reflection";
+import {
   createProject,
   createProjectTasks,
+  getProject,
   getOwnedProject,
   listProjectArtifacts,
   listProjectCollections,
   listProjects,
   listProjectTasks,
   updateProject,
+  updateProjectExecution,
   updateProjectTask,
 } from "@/lib/projects/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -73,6 +82,29 @@ export const workItemUpdateServiceInputSchema = z.object({
 }).strict().refine(({ projectId: _projectId, workItemId: _workItemId, ...change }) => Object.keys(change).length > 0, {
   message: "A work-item change is required.",
 });
+
+export const projectPlanServiceInputSchema = z.object({
+  projectId: z.string().uuid(),
+  context: z.string().trim().max(4_000).optional(),
+}).strict();
+
+const projectExecutionConfigurationFields = {
+  autonomyMode: z.enum(["manual", "supervised", "autonomous"]),
+  taskBudget: z.number().int().min(1).max(50),
+  maxParallelTasks: z.number().int().min(1).max(3),
+  requireApproval: z.boolean(),
+};
+export const projectExecutionServiceInputSchema = z.discriminatedUnion("action", [
+  z.object({ projectId: z.string().uuid(), action: z.literal("configure"), ...projectExecutionConfigurationFields }).strict(),
+  z.object({ projectId: z.string().uuid(), action: z.literal("start"), ...projectExecutionConfigurationFields, autonomyMode: z.enum(["supervised", "autonomous"]) }).strict(),
+  z.object({ projectId: z.string().uuid(), action: z.enum(["pause", "resume", "sync"]) }).strict(),
+  z.object({ projectId: z.string().uuid(), action: z.enum(["approve", "retry"]), workItemId: z.string().uuid() }).strict(),
+]);
+
+export const projectArtifactFeedbackServiceInputSchema = z.object({
+  projectId: z.string().uuid(), artifactId: z.string().uuid(),
+  verdict: z.enum(["useful", "needs_work"]), lesson: z.string().trim().min(3).max(1_200),
+}).strict();
 
 export async function listProjectsService(
   caller: AppServiceCaller,
@@ -155,6 +187,84 @@ export async function updateWorkItemService(
     mutation: mutationContext(caller),
   });
   return completeAppServiceCall(authorized, { workItem: workItem || null }, { resourceCount: workItem ? 1 : 0 });
+}
+
+export async function planProjectService(
+  caller: AppServiceCaller,
+  input: z.input<typeof projectPlanServiceInputSchema>,
+) {
+  const value = redactSensitive(projectPlanServiceInputSchema.parse(input)) as z.output<typeof projectPlanServiceInputSchema>;
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.plan"));
+  const plan = await decomposeProject({
+    projectId: value.projectId,
+    ...exactOwner(caller),
+    context: value.context,
+    mutation: mutationContext(caller),
+  });
+  return completeAppServiceCall(authorized, { plan: plan || null }, { resourceCount: plan ? 1 : 0 });
+}
+
+export async function controlProjectExecutionService(
+  caller: AppServiceCaller,
+  input: z.input<typeof projectExecutionServiceInputSchema>,
+) {
+  const value = projectExecutionServiceInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.execution.control"));
+  const scope = { ...exactOwner(caller), executionScope: caller.executionScope!, idempotencyKey: caller.idempotencyKey! };
+  const current = await getProject(value.projectId, scope);
+  if (!current) return completeAppServiceCall(authorized, { snapshot: null }, { resourceCount: 0 });
+  if (current.status !== "active") throw new Error("Only active projects can execute.");
+
+  if (value.action === "configure") {
+    await updateProjectExecution(value.projectId, {
+      autonomyMode: value.autonomyMode,
+      taskBudget: value.taskBudget,
+      maxParallelTasks: value.maxParallelTasks,
+      requireApproval: value.autonomyMode === "supervised" ? true : value.requireApproval,
+    }, { ...exactOwner(caller), mutation: mutationContext(caller) });
+    return completeAppServiceCall(authorized, { snapshot: await projectSnapshot(value.projectId, scope) });
+  }
+  if (value.action === "pause" || value.action === "resume") {
+    await signalProjectWorkflows({ projectId: value.projectId, signal: value.action, ...scope });
+    await updateProjectExecution(value.projectId, { executionStatus: value.action === "pause" ? "paused" : "running" }, {
+      ...exactOwner(caller), mutation: mutationContext(caller),
+    });
+    const snapshot = value.action === "resume"
+      ? await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true })
+      : await projectSnapshot(value.projectId, scope);
+    return completeAppServiceCall(authorized, { snapshot });
+  }
+  if (value.action === "approve" || value.action === "retry") {
+    const workflow = await signalProjectTask({ projectId: value.projectId, taskId: value.workItemId, signal: value.action, ...scope });
+    if (!workflow) return completeAppServiceCall(authorized, { snapshot: null, workItemFound: false }, { resourceCount: 0 });
+    return completeAppServiceCall(authorized, { snapshot: await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true }), workItemFound: true });
+  }
+  if (value.action === "start") {
+    const tasks = await listProjectTasks(value.projectId, scope);
+    if (!tasks.length) throw new Error("Create or generate a project plan before starting execution.");
+    await updateProjectExecution(value.projectId, {
+      autonomyMode: value.autonomyMode, executionStatus: "running", taskBudget: value.taskBudget,
+      maxParallelTasks: value.maxParallelTasks, requireApproval: value.autonomyMode === "supervised" ? true : value.requireApproval,
+    }, { ...exactOwner(caller), mutation: mutationContext(caller) });
+  }
+  return completeAppServiceCall(authorized, { snapshot: await syncProjectExecution({ projectId: value.projectId, ...scope, drain: true }) });
+}
+
+export async function recordProjectArtifactFeedbackService(
+  caller: AppServiceCaller,
+  input: z.input<typeof projectArtifactFeedbackServiceInputSchema>,
+) {
+  const value = redactSensitive(projectArtifactFeedbackServiceInputSchema.parse(input)) as z.output<typeof projectArtifactFeedbackServiceInputSchema>;
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.artifacts.feedback"));
+  const artifact = await reflectOnProjectArtifact({ ...value, ...exactOwner(caller), mutation: mutationContext(caller) });
+  return completeAppServiceCall(authorized, { artifact: artifact || null }, { resourceCount: artifact ? 1 : 0 });
+}
+
+async function projectSnapshot(projectId: string, scope: { tenantId: string; actorId: string }) {
+  const [project, tasks, artifacts] = await Promise.all([
+    getProject(projectId, scope), listProjectTasks(projectId, scope), listProjectArtifacts(projectId, scope),
+  ]);
+  return { project, tasks, artifacts, dispatchedTaskIds: [] as string[] };
 }
 
 function exactOwner(caller: AppServiceCaller) {
