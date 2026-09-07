@@ -698,5 +698,10 @@
     "version": 140,
     "name": "customer_health_scoring_v1",
     "checksum": "91f12ad0fdae25496f14bf21751491470f4572bcb58c587360373dc038b063e2"
+  },
+  {
+    "version": 141,
+    "name": "customer_success_workflows_v1",
+    "checksum": "6ed4f5625107af151e49cf1fe094b9637af2053f5f1c85e31f6984cc1b4e7f38"
   }
 ]
