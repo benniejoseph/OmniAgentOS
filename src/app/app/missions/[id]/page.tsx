@@ -57,7 +57,7 @@ export default async function MissionPage({
         missionId: id,
         view: "detail",
         tasks: 100,
-        attempts: 250,
+        attempts: 200,
         artifacts: 150,
       });
       detail = detailResult.data && "tasks" in detailResult.data
