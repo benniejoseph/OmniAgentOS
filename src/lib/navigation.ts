@@ -3,6 +3,7 @@ import {
   Inbox,
   Brain,
   Bot,
+  Building2,
   CalendarDays,
   Cable,
   CheckCircle2,
@@ -63,6 +64,13 @@ export const appNav: AppNavItem[] = [
     shortLabel: "Meetings",
     description: "Calendar context, participants, consent, media, and follow-through.",
     icon: CalendarDays,
+  },
+  {
+    href: "/app/accounts",
+    label: "Accounts",
+    shortLabel: "Accounts",
+    description: "Customer context, evidence, health, risks, and renewal.",
+    icon: Building2,
   },
   {
     href: "/app/agents",
@@ -181,6 +189,7 @@ export const appNavGroups: AppNavGroup[] = [
       ...primaryNavItems,
       appNav.find((item) => item.href === "/app/agents")!,
       appNav.find((item) => item.href === "/app/meetings")!,
+      appNav.find((item) => item.href === "/app/accounts")!,
     ],
   },
   {
