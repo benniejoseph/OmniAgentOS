@@ -184,6 +184,17 @@ Do not place either gateway token in `.env`, a command argument, shell history, 
 
 Do not set `OPENAI_API_KEY` on Fly. `/healthz` is the intentionally minimal, non-sensitive Fly liveness route and returns only status, service, Fly region, release revision, and gateway protocol. `/v1/*` proxy requests require `x-asael-gateway-token` plus the OpenAI `Authorization` header supplied by Vercel. Gateway readiness also calls the allowlisted model-readiness path without an OpenAI Authorization header: HTTP 400 proves that the supplied gateway token reached the authorization boundary without making an upstream or paid request.
 
+P9.9 adds one exact gateway route: `POST /v1/realtime/client_secrets` with a
+32 KiB JSON limit and a 30-second upstream deadline. The authenticated web tier
+uses it only to mint a 60-second transcription-session credential configured
+for `gpt-4o-mini-transcribe`, near-field noise reduction, and server VAD. The
+ephemeral credential—not `OPENAI_API_KEY` or the gateway token—is returned to
+the browser and used only against OpenAI's fixed WebRTC calls origin. Asael does
+not proxy or retain microphone audio. The browser must show provider and
+retention disclosure before every session, and only reviewed transcript text
+may enter the existing Command API. Keep `/v1/realtime/calls` absent from the
+Fly allowlist: browser audio goes directly to the provider after consent.
+
 ## Self-hosted Playwright browser service
 
 The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](https://github.com/microsoft/playwright-mcp), not a paid browser API. `Dockerfile.playwright-mcp` pins the official browser image by version and digest, while `fly.playwright-mcp.toml` keeps Chromium in a separate 1 GB Singapore machine. The gateway accepts only its bearer token, converts Asael's opaque tenant+actor+run scope into one private browser process, and removes the bearer secret before starting Playwright. A DNS-validating outbound proxy permits public web ports only and blocks loopback, private, link-local, metadata, and internal Fly destinations.
