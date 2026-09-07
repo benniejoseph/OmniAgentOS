@@ -39,7 +39,7 @@ export const projectListServiceInputSchema = z.object({
 }).strict();
 
 export const projectShowServiceInputSchema = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().trim().min(1).max(200),
   taskLimit: z.number().int().min(1).max(200).default(100),
   artifactLimit: z.number().int().min(1).max(200).default(100),
 }).strict();
@@ -47,12 +47,12 @@ export const projectShowServiceInputSchema = z.object({
 export const projectCreateServiceInputSchema = z.object({
   title: z.string().trim().min(1).max(180),
   objective: z.string().trim().min(1).max(2_000),
-  status: z.enum(["draft", "active"]).default("active"),
+  status: z.enum(["draft", "active"]).optional(),
   targetDate: z.string().datetime({ offset: true }).optional(),
 }).strict();
 
 export const projectUpdateServiceInputSchema = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().trim().min(1).max(200),
   title: z.string().trim().min(1).max(180).optional(),
   objective: z.string().trim().min(1).max(2_000).optional(),
   status: projectStatusSchema.optional(),
@@ -62,7 +62,7 @@ export const projectUpdateServiceInputSchema = z.object({
 });
 
 export const workItemCreateServiceInputSchema = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().trim().min(1).max(200),
   title: z.string().trim().min(1).max(240),
   detail: z.string().trim().max(1_000).optional(),
   priority: projectTaskPrioritySchema.default("medium"),
@@ -71,8 +71,8 @@ export const workItemCreateServiceInputSchema = z.object({
 }).strict();
 
 export const workItemUpdateServiceInputSchema = z.object({
-  projectId: z.string().uuid(),
-  workItemId: z.string().uuid(),
+  projectId: z.string().trim().min(1).max(200),
+  workItemId: z.string().trim().min(1).max(200),
   title: z.string().trim().min(1).max(240).optional(),
   detail: z.string().trim().max(1_000).optional(),
   status: projectTaskStatusSchema.optional(),
@@ -84,7 +84,7 @@ export const workItemUpdateServiceInputSchema = z.object({
 });
 
 export const projectPlanServiceInputSchema = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().trim().min(1).max(200),
   context: z.string().trim().max(4_000).optional(),
 }).strict();
 
@@ -95,14 +95,14 @@ const projectExecutionConfigurationFields = {
   requireApproval: z.boolean(),
 };
 export const projectExecutionServiceInputSchema = z.discriminatedUnion("action", [
-  z.object({ projectId: z.string().uuid(), action: z.literal("configure"), ...projectExecutionConfigurationFields }).strict(),
-  z.object({ projectId: z.string().uuid(), action: z.literal("start"), ...projectExecutionConfigurationFields, autonomyMode: z.enum(["supervised", "autonomous"]) }).strict(),
-  z.object({ projectId: z.string().uuid(), action: z.enum(["pause", "resume", "sync"]) }).strict(),
-  z.object({ projectId: z.string().uuid(), action: z.enum(["approve", "retry"]), workItemId: z.string().uuid() }).strict(),
+  z.object({ projectId: z.string().trim().min(1).max(200), action: z.literal("configure"), ...projectExecutionConfigurationFields }).strict(),
+  z.object({ projectId: z.string().trim().min(1).max(200), action: z.literal("start"), ...projectExecutionConfigurationFields, autonomyMode: z.enum(["supervised", "autonomous"]) }).strict(),
+  z.object({ projectId: z.string().trim().min(1).max(200), action: z.enum(["pause", "resume", "sync"]) }).strict(),
+  z.object({ projectId: z.string().trim().min(1).max(200), action: z.enum(["approve", "retry"]), workItemId: z.string().trim().min(1).max(200) }).strict(),
 ]);
 
 export const projectArtifactFeedbackServiceInputSchema = z.object({
-  projectId: z.string().uuid(), artifactId: z.string().uuid(),
+  projectId: z.string().trim().min(1).max(200), artifactId: z.string().trim().min(1).max(200),
   verdict: z.enum(["useful", "needs_work"]), lesson: z.string().trim().min(3).max(1_200),
 }).strict();
 

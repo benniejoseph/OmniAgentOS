@@ -1,15 +1,11 @@
 import { z } from "zod";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { showProjectService, updateProjectService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
-  getOwnedProject,
-  listProjectArtifacts,
-  listProjectTasks,
   ProjectTransitionError,
-  updateProject,
 } from "@/lib/projects/store";
-import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
-import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -38,22 +34,15 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
   } catch (error) {
     return forbiddenResponse(error);
   }
-  const project = await getOwnedProject(id, {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    requestActorBinding: canonicalRequestActorBindingFromSecurityContext(context),
-  });
+  const result = await showProjectService(createAppServiceCaller({ context }), { projectId: id, taskLimit: 30, artifactLimit: 100 });
+  const project = result.data.project;
   if (!project) {
     return Response.json(
       { error: "Project not found." },
       { status: 404, headers: privateNoStoreHeaders },
     );
   }
-  const [tasks, artifacts] = await Promise.all([
-    listProjectTasks(project.id, { tenantId: context.tenantId, limit: 30 }),
-    listProjectArtifacts(project.id, { tenantId: context.tenantId, limit: 100 }),
-  ]);
-  return Response.json({ project: { ...project, tasks, artifacts } }, {
+  return Response.json({ project, serviceReceipt: result.receipt }, {
     headers: privateNoStoreHeaders,
   });
 }
@@ -68,14 +57,11 @@ async function PATCHHandler(request: Request, route: { params: Promise<{ id: str
   try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "project", resourceId: id }); }
   catch (error) { return forbiddenResponse(error); }
   try {
-    const project = await updateProject(id, parsed.data, {
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      mutation: projectMutationFromRequest(request, context, {
-        projectId: id,
-        purpose: "project.update",
-      }),
-    });
+    const result = await updateProjectService(
+      createRequestMutationAppServiceCaller(request, context, { projectId: id, purpose: "project.update" }),
+      { projectId: id, ...parsed.data },
+    );
+    const project = result.data.project;
     return project ? Response.json({ project }) : Response.json({ error: "Project not found." }, { status: 404 });
   } catch (error) {
     return error instanceof ProjectTransitionError

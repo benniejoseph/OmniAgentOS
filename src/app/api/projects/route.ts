@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { createProjectService, listProjectsService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
-import { createProject, listProjectCollections, listProjects, listProjectSummaries } from "@/lib/projects/store";
-import { projectMutationFromRequest } from "@/lib/projects/request-mutation";
+import { listProjectSummaries } from "@/lib/projects/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -38,20 +39,8 @@ async function GETHandler(request: Request) {
       generatedAt: new Date().toISOString(),
     }, { headers: { "cache-control": "private, no-store" } });
   }
-  const projects = await listProjects(80, {
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    requestActorBinding,
-  });
-  const collections = await listProjectCollections(projects.map((project) => project.id), { tenantId: context.tenantId });
-  return Response.json({
-    projects: projects.map((project) => ({
-      ...project,
-      tasks: collections.tasksByProject.get(project.id) || [],
-      artifacts: collections.artifactsByProject.get(project.id) || [],
-    })),
-    generatedAt: new Date().toISOString(),
-  }, { headers: { "cache-control": "private, no-store" } });
+  const result = await listProjectsService(createAppServiceCaller({ context }), { limit: 80 });
+  return Response.json({ ...result.data, generatedAt: new Date().toISOString(), serviceReceipt: result.receipt }, { headers: { "cache-control": "private, no-store" } });
 }
 
 async function POSTHandler(request: Request) {
@@ -64,16 +53,12 @@ async function POSTHandler(request: Request) {
     return forbiddenResponse(error);
   }
   try {
-    const project = await createProject({
-      ...parsed,
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      mutation: projectMutationFromRequest(request, context, {
-        purpose: "project.create",
-      }),
-    });
+    const result = await createProjectService(
+      createRequestMutationAppServiceCaller(request, context, { purpose: "project.create" }),
+      parsed,
+    );
     return Response.json(
-      { project: { ...project, tasks: [], artifacts: [] } },
+      { ...result.data, serviceReceipt: result.receipt },
       { status: 201 },
     );
   } catch (error) {
