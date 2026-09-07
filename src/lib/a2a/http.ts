@@ -16,6 +16,7 @@ import {
 import { A2ATaskStoreError } from "@/lib/a2a/task-store";
 import { A2ADelegatedToolError } from "@/lib/a2a/delegated-tools";
 import { checkSharedRateLimit } from "@/lib/http/rate-limit";
+import { JsonBodyError } from "@/lib/http/body";
 import type { ServiceApiScope } from "@/lib/settings/service-api-keys";
 import { runWithDatabaseTenantScope } from "@/lib/db/client";
 
@@ -67,12 +68,20 @@ export function a2aErrorResponse(error: unknown, allowedOrigin?: string) {
   const protocol = error instanceof A2AProtocolError ? error : undefined;
   const task = error instanceof A2ATaskStoreError ? error : undefined;
   const delegatedTool = error instanceof A2ADelegatedToolError ? error : undefined;
+  const jsonBody = error instanceof JsonBodyError ? error : undefined;
   const validation = error instanceof ZodError;
-  const status = access?.status || protocol?.status || task?.status || delegatedTool?.status ||
+  const status = access?.status || protocol?.status || task?.status || delegatedTool?.status || jsonBody?.status ||
     (validation ? 400 : 500);
   const code = protocol?.code || delegatedTool?.code ||
+    (jsonBody?.status === 413
+      ? "payload_too_large"
+      : jsonBody?.status === 415
+        ? "unsupported_media_type"
+        : jsonBody
+          ? "invalid_request"
+          : undefined) ||
     (validation ? "invalid_request" : status === 401 ? "unauthenticated" : status === 403 ? "forbidden" : "internal_error");
-  const message = access?.message || protocol?.message || task?.message || delegatedTool?.message ||
+  const message = access?.message || protocol?.message || task?.message || delegatedTool?.message || jsonBody?.message ||
     (validation ? "The A2A request payload is invalid." : "The A2A request could not be completed.");
   const headers = new Headers();
   if (status === 401) {
