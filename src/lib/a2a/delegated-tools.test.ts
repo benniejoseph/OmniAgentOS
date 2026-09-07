@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getDelegationTask: vi.fn(),
   checkSharedRateLimit: vi.fn(),
   executeGovernedTool: vi.fn(),
+  claimExternalA2AToolCall: vi.fn(),
 }));
 
 vi.mock("@/lib/a2a/store", () => ({ getA2APeer: mocks.getA2APeer }));
@@ -12,6 +13,9 @@ vi.mock("@/lib/delegation/store", () => ({ getDelegationTask: mocks.getDelegatio
 vi.mock("@/lib/http/rate-limit", () => ({ checkSharedRateLimit: mocks.checkSharedRateLimit }));
 vi.mock("@/lib/tools/executor", () => ({ executeGovernedTool: mocks.executeGovernedTool }));
 vi.mock("@/lib/tools/audit-store", () => ({ publicToolExecution: (value: unknown) => value }));
+vi.mock("@/lib/a2a/safety-store", () => ({
+  claimExternalA2AToolCall: mocks.claimExternalA2AToolCall,
+}));
 
 import {
   A2ADelegatedToolError,
@@ -43,6 +47,10 @@ describe("delegated A2A governed tool gateway", () => {
         completedAt: "2026-09-07T06:01:01.000Z",
       },
       result: { matches: [] },
+    });
+    mocks.claimExternalA2AToolCall.mockResolvedValue({
+      charged: true,
+      state: { reservation: { forceMutationApproval: true } },
     });
   });
 
@@ -77,6 +85,13 @@ describe("delegated A2A governed tool gateway", () => {
       }),
       idempotencyKey: "a2a-delegated-token:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:remote-call:one",
     }));
+    expect(mocks.claimExternalA2AToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        internalTaskId: "delegation-task:one",
+        toolId: "knowledge.search",
+        idempotencyKey: "remote-call:one",
+      }),
+    );
     expect(result.execution).toMatchObject({ status: "executed", output: { matches: [] } });
   });
 

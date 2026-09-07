@@ -22,6 +22,7 @@ import {
 import { runCouncilRound, type CouncilAgentId } from "@/lib/orchestration/council";
 import { createExecutionScope, type ExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { externalA2ABudgetLimits } from "@/lib/a2a/safety";
 
 const terminalStates = new Set([
   "result_accepted",
@@ -65,6 +66,7 @@ export async function sendInboundA2AMessageV1(input: {
     externalTaskId,
     contextId,
   });
+  const externalBudgets = externalA2ABudgetLimits(input.principal.peer);
   await input.onStatus?.({
     taskId: externalTaskId,
     contextId,
@@ -89,18 +91,11 @@ export async function sendInboundA2AMessageV1(input: {
         definitionVersion: input.principal.peer.generation,
       },
       parentBudgets: {
-        modelTurns: 2,
-        tokens: 12_000,
-        costMicrousd: 500_000,
-        wallTimeMs: input.principal.peer.maxTaskDurationMs,
+        ...externalBudgets,
         toolCalls: 0,
-        browserActions: 0,
-        agents: 1,
-        fanOut: 0,
         retries: 0,
-        replans: 0,
       },
-      remainingWallTimeMs: input.principal.peer.maxTaskDurationMs,
+      remainingWallTimeMs: externalBudgets.wallTimeMs,
       governedToolIds: [],
       connectorTargets: [],
     },

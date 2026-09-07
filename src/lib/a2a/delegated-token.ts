@@ -201,7 +201,7 @@ function assertTaskBinding(
     task.delegationId !== contract.delegationId ||
     task.contractSha256 !== contract.contractSha256 ||
     task.delegatePrincipalId !== contract.delegate.principalId ||
-    !["accepted", "working", "waiting"].includes(task.state)
+    task.state !== "working"
   ) {
     throw new Error("The delegated A2A token does not match an active canonical task.");
   }
