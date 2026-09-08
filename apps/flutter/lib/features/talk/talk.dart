@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:record/record.dart';
 
+import '../../app/brand/asael_mark.dart';
 import '../../generated/native_contract.g.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -414,15 +415,15 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('Talk'),
+      title: const Text('Conversation'),
       actions: [
         Padding(
           padding: const EdgeInsets.only(right: 12),
           child: Center(
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer,
+                color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 borderRadius: BorderRadius.circular(99),
               ),
               child: const Row(
@@ -430,7 +431,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 children: [
                   Icon(Icons.shield_outlined, size: 15),
                   SizedBox(width: 5),
-                  Text('Supervised'),
+                  Text('Governed'),
                 ],
               ),
             ),
@@ -483,9 +484,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                             ? Alignment.centerRight
                             : Alignment.centerLeft,
                         child: Container(
-                          constraints: const BoxConstraints(maxWidth: 640),
+                          constraints: const BoxConstraints(maxWidth: 680),
                           margin: const EdgeInsets.only(bottom: 14),
-                          padding: const EdgeInsets.all(14),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 14,
+                          ),
                           decoration: BoxDecoration(
                             color: m.role == TalkRole.user
                                 ? Theme.of(context).colorScheme.primaryContainer
@@ -493,13 +497,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                       .colorScheme
                                       .surfaceContainerHigh,
                             borderRadius: BorderRadius.only(
-                              topLeft: const Radius.circular(14),
-                              topRight: const Radius.circular(14),
+                              topLeft: const Radius.circular(20),
+                              topRight: const Radius.circular(20),
                               bottomLeft: Radius.circular(
-                                m.role == TalkRole.user ? 14 : 4,
+                                m.role == TalkRole.user ? 20 : 6,
                               ),
                               bottomRight: Radius.circular(
-                                m.role == TalkRole.user ? 4 : 14,
+                                m.role == TalkRole.user ? 6 : 20,
                               ),
                             ),
                             border: m.failed
@@ -543,12 +547,18 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           SafeArea(
             top: false,
             child: Container(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+              margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surface,
-                border: Border(
-                  top: BorderSide(color: Theme.of(context).dividerColor),
-                ),
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: .07),
+                    blurRadius: 24,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
               ),
               child: Center(
                 child: ConstrainedBox(
@@ -556,20 +566,29 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Row(
-                        children: [
-                          _ModeChip(
-                            label: 'Orchestrate',
-                            selected: strategy == 'auto',
-                            onTap: () => setState(() => strategy = 'auto'),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(
+                              value: 'auto',
+                              label: Text('Orchestrate'),
+                              icon: Icon(Icons.account_tree_outlined, size: 16),
+                            ),
+                            ButtonSegment(
+                              value: 'direct',
+                              label: Text('Direct'),
+                              icon: Icon(Icons.arrow_forward_rounded, size: 16),
+                            ),
+                          ],
+                          selected: {strategy},
+                          showSelectedIcon: false,
+                          style: const ButtonStyle(
+                            visualDensity: VisualDensity.compact,
                           ),
-                          const SizedBox(width: 8),
-                          _ModeChip(
-                            label: 'Direct',
-                            selected: strategy == 'direct',
-                            onTap: () => setState(() => strategy = 'direct'),
-                          ),
-                        ],
+                          onSelectionChanged: (value) =>
+                              setState(() => strategy = value.first),
+                        ),
                       ),
                       const SizedBox(height: 8),
                       if (recording || widget.controller.transcribing)
@@ -667,25 +686,6 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   );
 }
 
-class _ModeChip extends StatelessWidget {
-  const _ModeChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  @override
-  Widget build(BuildContext context) => ChoiceChip(
-    label: Text(label),
-    selected: selected,
-    onSelected: (_) => onTap(),
-    showCheckmark: false,
-    visualDensity: VisualDensity.compact,
-  );
-}
-
 class _TalkEmpty extends StatelessWidget {
   const _TalkEmpty();
   @override
@@ -695,19 +695,15 @@ class _TalkEmpty extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.hub_outlined,
-            size: 48,
-            color: Theme.of(context).colorScheme.primary,
-          ),
+          const AsaelMark(size: 52),
           const SizedBox(height: 20),
           Text(
-            'What should we work on?',
+            'What needs to move?',
             style: Theme.of(context).textTheme.headlineSmall,
           ),
           const SizedBox(height: 8),
           const Text(
-            'Ask a question, investigate a topic, or describe an outcome. Complex work can become a durable mission.',
+            'Ask a question or describe an outcome. Asael will keep plans, evidence, and approvals connected.',
             textAlign: TextAlign.center,
           ),
         ],
