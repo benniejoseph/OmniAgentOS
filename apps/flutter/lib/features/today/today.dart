@@ -223,26 +223,17 @@ class TodayView extends StatelessWidget {
           return 0;
         });
       final pending = data.items.where((item) => !item.isDone).length;
+      final completed = data.items.where((item) => item.isDone).length;
       return RefreshIndicator(
         onRefresh: controller.refresh,
         child: CustomScrollView(
           slivers: [
-            SliverAppBar.large(
-              title: const Text('Today'),
-              actions: [
-                IconButton(
-                  onPressed: controller.acting
-                      ? null
-                      : controller.generateBrief,
-                  tooltip: 'Refresh daily brief',
-                  icon: const Icon(Icons.auto_awesome_rounded),
-                ),
-                IconButton(
-                  onPressed: controller.acting ? null : () => _addItem(context),
-                  tooltip: 'Add focus item',
-                  icon: const Icon(Icons.add_task_rounded),
-                ),
-              ],
+            SliverToBoxAdapter(
+              child: _TodayHero(
+                acting: controller.acting,
+                onBrief: controller.generateBrief,
+                onAdd: () => _addItem(context),
+              ),
             ),
             if (controller.error != null)
               SliverToBoxAdapter(
@@ -273,38 +264,22 @@ class TodayView extends StatelessWidget {
             SliverToBoxAdapter(
               child: _TodayPulse(
                 pending: pending,
+                completed: completed,
                 projects: data.projects.length,
                 conversations: data.threads.length,
               ),
             ),
             if (data.brief case final brief?)
               SliverToBoxAdapter(child: _DailyBriefPanel(brief: brief)),
-            if (data.items.isNotEmpty)
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
-                  child: Row(
-                    children: [
-                      Text(
-                        'Focus',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const Spacer(),
-                      Text(
-                        '$pending remaining',
-                        style: Theme.of(context).textTheme.labelMedium
-                            ?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                      ),
-                    ],
-                  ),
-                ),
+            SliverToBoxAdapter(
+              child: _SectionHeading(
+                eyebrow: 'PRIORITIES',
+                title: 'Focus',
+                detail: '$pending remaining · $completed complete',
               ),
+            ),
             if (data.items.isEmpty)
-              SliverFillRemaining(
+              SliverToBoxAdapter(
                 child: _EmptyToday(onRefresh: controller.refresh),
               )
             else
@@ -326,6 +301,7 @@ class TodayView extends StatelessWidget {
                   },
                 ),
               ),
+            SliverToBoxAdapter(child: _TodayContext(snapshot: data)),
             const SliverPadding(padding: EdgeInsets.only(bottom: 96)),
           ],
         ),
@@ -363,79 +339,164 @@ class TodayView extends StatelessWidget {
   }
 }
 
-class _TodayPulse extends StatelessWidget {
-  const _TodayPulse({
-    required this.pending,
-    required this.projects,
-    required this.conversations,
+class _TodayHero extends StatelessWidget {
+  const _TodayHero({
+    required this.acting,
+    required this.onBrief,
+    required this.onAdd,
   });
 
-  final int pending;
-  final int projects;
-  final int conversations;
+  final bool acting;
+  final VoidCallback onBrief;
+  final VoidCallback onAdd;
 
   @override
   Widget build(BuildContext context) {
+    final now = DateTime.now();
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: scheme.surface,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: .045),
-            blurRadius: 22,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    final greeting = switch (now.hour) {
+      < 12 => 'Good morning.',
+      < 17 => 'Good afternoon.',
+      _ => 'Good evening.',
+    };
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 22, 20, 14),
+      child: Stack(
+        clipBehavior: Clip.none,
         children: [
-          Text(
-            'TODAY PULSE',
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: scheme.primary,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.2,
+          Positioned(
+            right: -42,
+            top: -55,
+            child: IgnorePointer(
+              child: Container(
+                width: 176,
+                height: 176,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: scheme.secondary.withValues(alpha: .2),
+                  ),
+                ),
+                child: Center(
+                  child: Container(
+                    width: 116,
+                    height: 116,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: RadialGradient(
+                        colors: [
+                          scheme.secondary.withValues(alpha: .28),
+                          scheme.secondary.withValues(alpha: .06),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
-          const SizedBox(height: 12),
-          Row(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '$pending',
-                      style: Theme.of(context).textTheme.displaySmall
-                          ?.copyWith(color: scheme.primary, fontSize: 42),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  SizedBox(
+                    width: 72,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${now.day}',
+                          style: Theme.of(context).textTheme.displaySmall
+                              ?.copyWith(
+                                fontFamily: 'serif',
+                                fontSize: 57,
+                                fontWeight: FontWeight.w400,
+                                height: .8,
+                              ),
+                        ),
+                        const SizedBox(height: 9),
+                        Container(
+                          width: 38,
+                          height: 3,
+                          decoration: BoxDecoration(
+                            color: scheme.primary,
+                            borderRadius: BorderRadius.circular(99),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '${_weekdays[now.weekday - 1]}\n${_months[now.month - 1]}',
+                          style: TextStyle(
+                            color: scheme.onSurfaceVariant,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700,
+                            height: 1.35,
+                            letterSpacing: .8,
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      pending == 1 ? 'open priority' : 'open priorities',
-                      style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'YOUR DAYBOOK',
+                          style: TextStyle(
+                            color: scheme.primary,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.25,
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          greeting,
+                          style: Theme.of(context).textTheme.displaySmall
+                              ?.copyWith(
+                                fontFamily: 'serif',
+                                fontSize: 38,
+                                fontWeight: FontWeight.w400,
+                                height: .96,
+                              ),
+                        ),
+                        const SizedBox(height: 9),
+                        Text(
+                          'One view of your work, decisions, and recent evidence.',
+                          style: TextStyle(
+                            color: scheme.onSurfaceVariant,
+                            fontSize: 13,
+                            height: 1.45,
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              Container(
-                width: 1,
-                height: 50,
-                color: Theme.of(context).dividerColor,
-              ),
-              const SizedBox(width: 20),
-              Expanded(
-                child: Column(
-                  children: [
-                    _PulseLine(label: 'Projects', value: projects),
-                    const SizedBox(height: 9),
-                    _PulseLine(label: 'Conversations', value: conversations),
-                  ],
-                ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: acting ? null : onBrief,
+                      icon: const Icon(Icons.auto_awesome_outlined, size: 17),
+                      label: const Text('Refresh brief'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: acting ? null : onAdd,
+                      icon: const Icon(Icons.add_rounded, size: 18),
+                      label: const Text('Add focus'),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
@@ -445,24 +506,164 @@ class _TodayPulse extends StatelessWidget {
   }
 }
 
-class _PulseLine extends StatelessWidget {
-  const _PulseLine({required this.label, required this.value});
+const _weekdays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+const _months = [
+  'JAN',
+  'FEB',
+  'MAR',
+  'APR',
+  'MAY',
+  'JUN',
+  'JUL',
+  'AUG',
+  'SEP',
+  'OCT',
+  'NOV',
+  'DEC',
+];
 
-  final String label;
-  final int value;
+class _TodayPulse extends StatelessWidget {
+  const _TodayPulse({
+    required this.pending,
+    required this.completed,
+    required this.projects,
+    required this.conversations,
+  });
+
+  final int pending;
+  final int completed;
+  final int projects;
+  final int conversations;
 
   @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Expanded(
-        child: Text(
-          label,
-          style: Theme.of(context).textTheme.bodySmall
-              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 8, 20, 22),
+      padding: const EdgeInsets.symmetric(vertical: 15),
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(color: scheme.outlineVariant),
+          bottom: BorderSide(color: scheme.outlineVariant),
         ),
       ),
-      Text('$value', style: Theme.of(context).textTheme.titleMedium),
-    ],
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'OPERATING LINE',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: scheme.primary,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 11),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              _PulsePill(
+                label: '$pending open',
+                color: pending > 0 ? scheme.secondary : scheme.tertiary,
+              ),
+              _PulsePill(label: '$completed complete', color: scheme.tertiary),
+              _PulsePill(label: '$projects projects', color: scheme.primary),
+              _PulsePill(
+                label: '$conversations conversations',
+                color: scheme.primary,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PulsePill extends StatelessWidget {
+  const _PulsePill({required this.label, required this.color});
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surface.withValues(alpha: .72),
+      border: Border.all(color: color.withValues(alpha: .35)),
+      borderRadius: BorderRadius.circular(99),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 7),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+        ),
+      ],
+    ),
+  );
+}
+
+class _SectionHeading extends StatelessWidget {
+  const _SectionHeading({
+    required this.eyebrow,
+    required this.title,
+    required this.detail,
+  });
+
+  final String eyebrow;
+  final String title;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(20, 6, 20, 10),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Expanded(
+          flex: 3,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                eyebrow,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.15,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(title, style: Theme.of(context).textTheme.titleLarge),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        Flexible(
+          flex: 2,
+          child: Text(
+            detail,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.end,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              fontSize: 11,
+            ),
+          ),
+        ),
+      ],
+    ),
   );
 }
 
@@ -476,10 +677,11 @@ class _DailyBriefPanel extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
       decoration: BoxDecoration(
-        color: scheme.primaryContainer,
-        borderRadius: BorderRadius.circular(24),
+        color: scheme.primaryContainer.withValues(alpha: .78),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.primary.withValues(alpha: .24)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -492,7 +694,7 @@ class _DailyBriefPanel extends StatelessWidget {
                 'DAILY BRIEF',
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                   color: scheme.primary,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w700,
                   letterSpacing: 1.2,
                 ),
               ),
@@ -500,6 +702,73 @@ class _DailyBriefPanel extends StatelessWidget {
           ),
           const SizedBox(height: 13),
           Text(brief.summary, style: Theme.of(context).textTheme.titleMedium),
+          if (brief.focus.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            for (var index = 0; index < brief.focus.take(3).length; index++)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 9),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${index + 1}'.padLeft(2, '0'),
+                      style: TextStyle(
+                        color: scheme.primary,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            brief.focus[index].title,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          if (brief.focus[index].reason.isNotEmpty)
+                            Text(
+                              brief.focus[index].reason,
+                              style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 11,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+          if (brief.watchouts.isNotEmpty) ...[
+            const Divider(height: 22),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  Icons.warning_amber_rounded,
+                  size: 16,
+                  color: scheme.secondary,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    brief.watchouts.take(2).join(' · '),
+                    style: TextStyle(
+                      color: scheme.onSurfaceVariant,
+                      fontSize: 11,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -559,14 +828,20 @@ class _TodayRow extends StatelessWidget {
           : 1,
       child: InkWell(
         onTap: busy ? null : onToggle,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(8),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+          padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 4),
           decoration: BoxDecoration(
-            color: focused ? scheme.primaryContainer : null,
-            borderRadius: BorderRadius.circular(12),
-            border: focused ? Border.all(color: scheme.primary) : null,
+            color: focused
+                ? scheme.primaryContainer.withValues(alpha: .72)
+                : null,
+            borderRadius: BorderRadius.circular(8),
+            border: Border(
+              bottom: BorderSide(
+                color: focused ? scheme.primary : scheme.outlineVariant,
+              ),
+            ),
           ),
           child: Row(
             children: [
@@ -574,7 +849,7 @@ class _TodayRow extends StatelessWidget {
                 value: item.isDone,
                 onChanged: busy ? null : (_) => onToggle(),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -588,13 +863,31 @@ class _TodayRow extends StatelessWidget {
                             : null,
                       ),
                     ),
-                    if (item.dueAt != null) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        _shortDate(item.dueAt!),
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
+                    const SizedBox(height: 5),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 3,
+                      children: [
+                        _RowMeta(
+                          label: item.kind,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        _RowMeta(
+                          label: item.priority.name,
+                          color: priorityColor,
+                        ),
+                        if (item.dueAt != null)
+                          _RowMeta(
+                            label: _shortDate(item.dueAt!),
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        if (item.reminderState != 'none')
+                          _RowMeta(
+                            label: item.reminderState.replaceAll('_', ' '),
+                            color: scheme.secondary,
+                          ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -616,6 +909,170 @@ class _TodayRow extends StatelessWidget {
     final local = value.toLocal();
     return '${local.day}/${local.month} at ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
+}
+
+class _RowMeta extends StatelessWidget {
+  const _RowMeta({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Text(
+    label.toUpperCase(),
+    style: TextStyle(
+      color: color,
+      fontSize: 9.5,
+      fontWeight: FontWeight.w600,
+      letterSpacing: .45,
+    ),
+  );
+}
+
+class _TodayContext extends StatelessWidget {
+  const _TodayContext({required this.snapshot});
+
+  final TodaySnapshot snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    if (snapshot.projects.isEmpty && snapshot.threads.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 28, 20, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SectionHeading(
+            eyebrow: 'ACTIVE CONTEXT',
+            title: 'Around your work',
+            detail:
+                '${snapshot.projects.length} projects · ${snapshot.threads.length} conversations',
+          ),
+          if (snapshot.projects.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _ContextLabel(icon: Icons.folder_open_outlined, label: 'Projects'),
+            for (final project in snapshot.projects.take(4))
+              _ProjectContextRow(project: project),
+          ],
+          if (snapshot.threads.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            _ContextLabel(
+              icon: Icons.forum_outlined,
+              label: 'Recent conversations',
+            ),
+            for (final thread in snapshot.threads.take(4))
+              _ThreadContextRow(thread: thread),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ContextLabel extends StatelessWidget {
+  const _ContextLabel({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 4),
+    child: Row(
+      children: [
+        Icon(icon, size: 16, color: Theme.of(context).colorScheme.primary),
+        const SizedBox(width: 8),
+        Text(label, style: Theme.of(context).textTheme.titleSmall),
+      ],
+    ),
+  );
+}
+
+class _ProjectContextRow extends StatelessWidget {
+  const _ProjectContextRow({required this.project});
+
+  final ({int completed, String id, String title, int total}) project;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final progress = project.total == 0
+        ? 0.0
+        : (project.completed / project.total).clamp(0.0, 1.0);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  project.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 7),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(99),
+                  child: LinearProgressIndicator(value: progress, minHeight: 3),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 14),
+          Text(
+            '${project.completed}/${project.total}',
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 10.5),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ThreadContextRow extends StatelessWidget {
+  const _ThreadContextRow({required this.thread});
+
+  final ({String id, String title}) thread;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(vertical: 10),
+    decoration: BoxDecoration(
+      border: Border(
+        bottom: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+    ),
+    child: Row(
+      children: [
+        Container(
+          width: 6,
+          height: 6,
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.tertiary,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            thread.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _TodaySkeleton extends StatelessWidget {

@@ -95,8 +95,10 @@ void main() {
         ],
         brief: DailyBrief(
           summary: 'Protect the launch window and close the evidence gap.',
-          focus: const [],
-          watchouts: const [],
+          focus: const [
+            (title: 'Verify Android build', reason: 'Keep release proof exact'),
+          ],
+          watchouts: const ['Notification receipt is still pending'],
           generatedAt: DateTime(2026, 9, 8),
         ),
         threads: const [(id: 'thread-1', title: 'Launch room')],
@@ -107,10 +109,11 @@ void main() {
 
     await pumpPhone(tester, TodayView(controller: controller));
 
-    expect(find.text('TODAY PULSE'), findsOneWidget);
-    expect(find.text('1 open priority'), findsNothing);
-    expect(find.text('open priority'), findsOneWidget);
+    expect(find.text('YOUR DAYBOOK'), findsOneWidget);
+    expect(find.text('OPERATING LINE'), findsOneWidget);
+    expect(find.text('1 open'), findsOneWidget);
     expect(find.text('DAILY BRIEF'), findsOneWidget);
+    expect(find.text('Verify Android build'), findsOneWidget);
     await tester.drag(find.byType(CustomScrollView), const Offset(0, -400));
     await tester.pump();
     expect(find.text('Review launch evidence'), findsOneWidget);
