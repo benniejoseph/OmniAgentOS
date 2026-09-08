@@ -39,6 +39,7 @@ import {
   updateRunContextCount,
 } from "@/lib/runs/store";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import {
@@ -352,13 +353,16 @@ async function resolveContextAccess(
 function assertAgentIdentityMatchesScope(request: LoopV2ContextRuntimeRequest) {
   const identity = request.agentIdentity;
   const principal = identity.principal;
+  const controllerActorId =
+    canonicalRequestActorBindingFromSecurityContext(request.securityContext)
+      ?.canonicalActorId || request.securityContext.actorId;
   if (
     identity.definition.tenantId !== request.securityContext.tenantId ||
     identity.definition.logicalAgentId !== request.agentId ||
     principal.tenantId !== request.securityContext.tenantId ||
     principal.logicalAgentId !== identity.definition.logicalAgentId ||
     principal.principalId !== request.executionScope.executingPrincipalId ||
-    principal.controllerActorId !== request.securityContext.actorId ||
+    principal.controllerActorId !== controllerActorId ||
     principal.state !== "active" ||
     (principal.expiresAt !== null &&
       Date.parse(principal.expiresAt) <= Date.now()) ||
