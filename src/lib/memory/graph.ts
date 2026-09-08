@@ -244,12 +244,13 @@ async function rebuildMemoryGraphForTenant(
         completedBuild = build;
         await sql`DELETE FROM omni_memory_graph_edges WHERE tenant_id = ${tenantId}`;
         await sql`DELETE FROM omni_memory_graph_nodes WHERE tenant_id = ${tenantId}`;
-        for (const node of aggregate.nodes.values()) {
-          await insertGraphNode(node, sql);
-        }
-        for (const edge of aggregate.edges.values()) {
-          await insertGraphEdge(edge, sql);
-        }
+        // A rebuild can contain thousands of graph records. Persist each
+        // collection as one set-based statement so the maintenance worker
+        // does not hold its scoped database connection across thousands of
+        // pooler round-trips. The bulk writers also preserve actor-private
+        // access bindings that the former compatibility inserts omitted.
+        await upsertGraphNodes([...aggregate.nodes.values()], sql);
+        await upsertGraphEdges([...aggregate.edges.values()], sql);
         await insertGraphBuild(build, sql);
       });
     } else {
@@ -1238,36 +1239,6 @@ async function upsertGraphEdges(
       memory_ids = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_edges.memory_ids || EXCLUDED.memory_ids)),
       trace_ids = ARRAY(SELECT DISTINCT unnest(omni_memory_graph_edges.trace_ids || EXCLUDED.trace_ids)),
       updated_at = EXCLUDED.updated_at
-  `;
-}
-
-async function insertGraphNode(node: MemoryGraphNode, sql: GraphSqlClient = getSql()) {
-  await sql`
-    INSERT INTO omni_memory_graph_nodes (
-      id, tenant_id, kind, label, slug, aliases, summary, weight, source_count,
-      memory_ids, trace_ids, tags, metadata, created_at, updated_at
-    )
-    VALUES (
-      ${node.id}, ${node.tenantId}, ${node.kind}, ${node.label},
-      ${storageGraphSlug(node.tenantId, node.slug, node.accessBinding)}, ${node.aliases},
-      ${node.summary}, ${node.weight}, ${node.sourceCount}, ${node.memoryIds},
-      ${node.traceIds}, ${node.tags}, ${jsonbSafeStringify(node.metadata)}::text::jsonb,
-      ${node.createdAt}, ${node.updatedAt}
-    )
-  `;
-}
-
-async function insertGraphEdge(edge: MemoryGraphEdge, sql: GraphSqlClient = getSql()) {
-  await sql`
-    INSERT INTO omni_memory_graph_edges (
-      id, tenant_id, source_node_id, target_node_id, relation, weight, evidence_count,
-      memory_ids, trace_ids, metadata, created_at, updated_at
-    )
-    VALUES (
-      ${edge.id}, ${edge.tenantId}, ${edge.sourceNodeId}, ${edge.targetNodeId}, ${edge.relation},
-      ${edge.weight}, ${edge.evidenceCount}, ${edge.memoryIds}, ${edge.traceIds},
-      ${jsonbSafeStringify(edge.metadata)}::text::jsonb, ${edge.createdAt}, ${edge.updatedAt}
-    )
   `;
 }
 

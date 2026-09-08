@@ -7,6 +7,7 @@ const routeMocks = vi.hoisted(() => ({
   processAllTenantWorkflowQueues: vi.fn(),
   processPendingMemoryDeletionScrubs: vi.fn(),
   processPendingMemoryGraphRebuilds: vi.fn(),
+  processPendingTemporalRelationProjections: vi.fn(),
   runTenantMemoryMaintenance: vi.fn(),
   listMaintenanceTenantIds: vi.fn(),
   recoverInterruptedLoopV2Runs: vi.fn(),
@@ -81,6 +82,14 @@ vi.mock("@/lib/memory/deletion-scrub", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/memory/deletion-scrub")>()),
   processPendingMemoryDeletionScrubs:
     routeMocks.processPendingMemoryDeletionScrubs,
+}));
+
+vi.mock("@/lib/entities/relation-projection-queue", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/entities/relation-projection-queue")
+  >()),
+  processPendingTemporalRelationProjections:
+    routeMocks.processPendingTemporalRelationProjections,
 }));
 
 vi.mock("@/lib/memory/maintenance-store", async (importOriginal) => ({
@@ -215,6 +224,9 @@ beforeEach(() => {
   routeMocks.processPendingMemoryGraphRebuilds
     .mockReset()
     .mockResolvedValue({ processed: 0 });
+  routeMocks.processPendingTemporalRelationProjections
+    .mockReset()
+    .mockResolvedValue({ processed: 0, completed: 0, failed: 0 });
   routeMocks.processPendingMemoryDeletionScrubs
     .mockReset()
     .mockResolvedValue({ scrubbedMemories: 0, overdueReceiptIds: [] });
@@ -420,6 +432,57 @@ describe("dedicated worker heartbeat timing", () => {
       tenantId: "tenant-a",
       limit: 5,
     });
+  });
+
+  it("serializes system-scope maintenance work before listing tenants", async () => {
+    const graphGate = createGate();
+    const order: string[] = [];
+    routeMocks.processPendingMemoryGraphRebuilds.mockImplementation(async () => {
+      order.push("graph-started");
+      await graphGate.promise;
+      order.push("graph-completed");
+      return { processed: 0, completed: 0, failed: 0 };
+    });
+    routeMocks.processPendingTemporalRelationProjections.mockImplementation(
+      async () => {
+        order.push("relations");
+        return { processed: 0, completed: 0, failed: 0 };
+      },
+    );
+    routeMocks.processPendingMemoryDeletionScrubs.mockImplementation(async () => {
+      order.push("deletion-scrubs");
+      return { scrubbedMemories: 0, overdueReceiptIds: [] };
+    });
+    routeMocks.listMaintenanceTenantIds.mockImplementation(async () => {
+      order.push("tenant-list");
+      return [];
+    });
+
+    const responsePromise = POST(workerRequest({
+      startup: false,
+      lane: "maintenance",
+    }));
+
+    await vi.waitFor(() => {
+      expect(order).toEqual(["graph-started"]);
+    });
+    expect(
+      routeMocks.processPendingTemporalRelationProjections,
+    ).not.toHaveBeenCalled();
+    expect(routeMocks.processPendingMemoryDeletionScrubs).not.toHaveBeenCalled();
+    expect(routeMocks.listMaintenanceTenantIds).not.toHaveBeenCalled();
+
+    graphGate.release();
+    const response = await responsePromise;
+
+    expect(response.status).toBe(200);
+    expect(order).toEqual([
+      "graph-started",
+      "graph-completed",
+      "relations",
+      "deletion-scrubs",
+      "tenant-list",
+    ]);
   });
 });
 
