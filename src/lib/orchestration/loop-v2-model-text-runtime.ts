@@ -352,6 +352,7 @@ export async function* runLoopV2ModelText(
       agentId: request.agentId,
       agentIdentityPin,
       contextManifest: preparedContext?.contextManifest,
+      contextBinding: preparedContext?.contextBinding,
     });
     await dependencies.persistCheckpoint(root, executionScope, runContract);
     current = root;

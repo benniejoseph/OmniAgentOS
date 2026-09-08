@@ -59,6 +59,7 @@ import {
   runLoopV2ReadOnlyCanary,
 } from "@/lib/orchestration/loop-v2-runtime";
 import {
+  resolveLoopV2ContextTextEnrollment,
   resolveLoopV2ModelTextEnrollment,
   runLoopV2ModelText,
 } from "@/lib/orchestration/loop-v2-model-text-runtime";
@@ -633,6 +634,7 @@ async function POSTHandler(request: Request) {
         };
         let loopV2CanaryEnrollment;
         let loopV2ModelTextEnrollment;
+        let loopV2ContextTextEnrollment;
         try {
           loopV2CanaryEnrollment = parsed.data.budgets || parsed.data.contextScope || parsed.data.voiceInput
             ? undefined
@@ -655,11 +657,29 @@ async function POSTHandler(request: Request) {
           if (
             !loopV2CanaryEnrollment &&
             !parsed.data.budgets &&
-            !parsed.data.contextScope &&
             !parsed.data.voiceInput
           ) {
-            loopV2ModelTextEnrollment =
-              await resolveLoopV2ModelTextEnrollment({
+            if (parsed.data.contextScope) {
+              loopV2ContextTextEnrollment =
+                await resolveLoopV2ContextTextEnrollment({
+                  tenantId: context.tenantId,
+                  message: safeRequestMessage,
+                  mode,
+                  route: decision.route,
+                  requiresApproval: decision.requiresApproval,
+                  requestUsesMessageField: Boolean(
+                    parsed.data.message && !parsed.data.messages?.length,
+                  ),
+                  requestedAgentId: executingAgentId,
+                  requestedSpecialistIds: parsed.data.specialistIds,
+                  missionId: parsed.data.missionId,
+                  contextEvidenceIds: contextSelection?.evidenceIds,
+                  contextScope: parsed.data.contextScope,
+                  resumeRunId: parsed.data.resumeRunId,
+                });
+            } else {
+              loopV2ModelTextEnrollment =
+                await resolveLoopV2ModelTextEnrollment({
                 tenantId: context.tenantId,
                 message: safeRequestMessage,
                 mode,
@@ -674,6 +694,7 @@ async function POSTHandler(request: Request) {
                 contextEvidenceIds: contextSelection?.evidenceIds,
                 resumeRunId: parsed.data.resumeRunId,
               });
+            }
           }
         } catch (error) {
           console.warn(
@@ -688,7 +709,8 @@ async function POSTHandler(request: Request) {
           );
         }
         const loopV2Enrollment =
-          loopV2CanaryEnrollment || loopV2ModelTextEnrollment;
+          loopV2CanaryEnrollment || loopV2ContextTextEnrollment ||
+          loopV2ModelTextEnrollment;
         let missionOwner = {
           tenantId: context.tenantId,
           actorId: context.actorId,
@@ -1098,12 +1120,19 @@ async function POSTHandler(request: Request) {
           {
             ...agentPrincipalExecution,
             workspaceId: promptSharedMemoryAccess?.authority.workspaceId,
-            projectId:
-              promptSharedMemoryAccess?.authority.projectId || threadProjectId,
-            missionId: mission?.id,
+            projectId: loopV2ContextTextEnrollment
+              ? promptSharedMemoryAccess?.authority.projectId
+              : promptSharedMemoryAccess?.authority.projectId || threadProjectId,
+            missionId: loopV2ContextTextEnrollment
+              ? parsed.data.contextScope === "mission"
+                ? mission?.id
+                : undefined
+              : mission?.id,
             correlationId: requestId,
             purpose: loopV2CanaryEnrollment
               ? "agent.loop.v2.read_only_canary"
+              : loopV2ContextTextEnrollment
+                ? "agent.loop.v2.context_text_canary"
               : loopV2ModelTextEnrollment
                 ? "agent.loop.v2.model_text_canary"
                 : "agent.run",
@@ -1136,6 +1165,26 @@ async function POSTHandler(request: Request) {
                   executionScope: directExecutionScope,
                   agentIdentity,
                   enrollment: loopV2ModelTextEnrollment,
+                },
+                request.signal,
+              )
+          : loopV2ContextTextEnrollment
+            ? runLoopV2ModelText(
+                {
+                  message: safeRequestMessage,
+                  messages: safeMessages,
+                  mode,
+                  threadId,
+                  agentId: executingAgentId,
+                  securityContext: context,
+                  executionScope: directExecutionScope,
+                  agentIdentity,
+                  enrollment: loopV2ContextTextEnrollment,
+                  contextScope: parsed.data.contextScope,
+                  contextSelection,
+                  promptMemoryAccess,
+                  promptSharedMemoryAccess,
+                  promptEntityGraphAccess,
                 },
                 request.signal,
               )

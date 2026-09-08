@@ -19,8 +19,10 @@ import {
   buildLoopV2ContextManifest,
   buildLoopV2PreExecutionRunContract,
   buildLoopV2TerminalRunContract,
+  loopV2ContextManifestSha256,
   loopV2RunContractComponentsMatch,
 } from "@/lib/orchestration/loop-v2-outcome";
+import { buildLoopV2ContextBindingV1 } from "@/lib/orchestration/loop-v2-context-contract";
 import type { TenantCapabilityRollout } from "@/lib/rollouts/tenant-capability-rollouts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
@@ -119,9 +121,8 @@ describe("Loop v2 exact outcome contracts", () => {
   });
 
   it("pre-binds the authorized context manifest for the context-text engine", () => {
-    const root = initial("context");
     const contextManifest = buildLoopV2ContextManifest({
-      runId: root.runId,
+      runId: "run-a",
       querySha256: sourceContractSha256("query"),
       contextScope: "session",
       selectedContext: [],
@@ -132,6 +133,22 @@ describe("Loop v2 exact outcome contracts", () => {
       providerId: "openai",
       compilerVersionId: "context-compiler:v1",
     });
+    const contextBinding = buildLoopV2ContextBindingV1({
+      tenantId: "tenant-a",
+      runId: "run-a",
+      ownerActorId: "actor-a",
+      agentPrincipalId: "atlas",
+      contextScope: "session",
+      authoritySha256: sourceContractSha256("session"),
+      executionScope: scope("context"),
+      querySha256: sourceContractSha256("query"),
+      conversationSha256: sourceContractSha256("conversation"),
+      contextManifestSha256: loopV2ContextManifestSha256(contextManifest),
+      compiledContextSha256: sourceContractSha256("conversation"),
+      selectedEvidenceIds: [],
+      boundAt: NOW,
+    });
+    const root = initial("context", contextBinding.bindingSha256);
     const preExecution = buildLoopV2PreExecutionRunContract({
       rootCheckpoint: root,
       executionScope: scope("context"),
@@ -139,6 +156,7 @@ describe("Loop v2 exact outcome contracts", () => {
       requestedOutcomeSha256: sourceContractSha256("private outcome"),
       agentId: "atlas",
       contextManifest,
+      contextBinding,
     });
 
     expect(preExecution).toMatchObject({
@@ -204,7 +222,10 @@ describe("Loop v2 exact outcome contracts", () => {
   });
 });
 
-function initial(kind: "read" | "model" | "context") {
+function initial(
+  kind: "read" | "model" | "context",
+  contextBindingSha256 = sourceContractSha256("context-binding"),
+) {
   return createInitialLoopV2Checkpoint({
     tenantId: "tenant-a",
     runId: "run-a",
@@ -214,7 +235,7 @@ function initial(kind: "read" | "model" | "context") {
     ...(kind === "context"
       ? {
           contextScope: "session" as const,
-          contextBindingSha256: sourceContractSha256("context-binding"),
+          contextBindingSha256,
         }
       : {}),
     transitionedAt: NOW,

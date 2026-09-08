@@ -12,6 +12,10 @@ import {
   type LoopV2Checkpoint,
 } from "@/lib/orchestration/loop-v2";
 import {
+  parseLoopV2ContextBindingV1,
+  type LoopV2ContextBindingV1,
+} from "@/lib/orchestration/loop-v2-context-contract";
+import {
   buildHarnessManifestV1,
   buildContextManifestV1,
   buildOutcomeContractV1,
@@ -134,6 +138,12 @@ export function buildLoopV2ContextManifest(input: {
   });
 }
 
+export function loopV2ContextManifestSha256(
+  manifest: ContextManifestV1,
+) {
+  return sha256Json(manifest);
+}
+
 /**
  * Builds the declared contract. The store only admits its binding alongside a
  * root checkpoint; later checkpoints may reconstruct the same value after an
@@ -147,6 +157,7 @@ export function buildLoopV2PreExecutionRunContract(input: {
   agentId: string;
   agentIdentityPin?: AgentRunIdentityPinV1;
   contextManifest?: ContextManifestV1;
+  contextBinding?: LoopV2ContextBindingV1;
 }): LoopV2RunContractSnapshot {
   const root = parseLoopV2Checkpoint(input.rootCheckpoint);
   if (root.lifecycleState === "terminal" || root.terminalDisposition !== null) {
@@ -155,10 +166,20 @@ export function buildLoopV2PreExecutionRunContract(input: {
   const taskKind = taskKindFor(root);
   const readOnly = taskKind === "read_only_recent_runs";
   const contextManifest = input.contextManifest;
+  const contextBinding = input.contextBinding
+    ? parseLoopV2ContextBindingV1(input.contextBinding)
+    : undefined;
   const expectsContext = taskKind === "model_context_summary";
   if (
-    expectsContext !== Boolean(contextManifest) ||
-    (contextManifest && contextManifest.runId !== root.runId)
+    expectsContext !== Boolean(contextManifest && contextBinding) ||
+    (contextManifest && contextManifest.runId !== root.runId) ||
+    (contextBinding && (
+      contextBinding.runId !== root.runId ||
+      contextBinding.contextScope !== root.contextScope ||
+      contextBinding.bindingSha256 !== root.contextBindingSha256 ||
+      contextBinding.contextManifestSha256 !==
+        loopV2ContextManifestSha256(contextManifest!)
+    ))
   ) {
     throw new Error("Loop v2 context manifest does not match its engine.");
   }
