@@ -11,6 +11,10 @@ import {
 } from "@/lib/http/body";
 import { redactSensitive } from "@/lib/security/context";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
+import {
+  requestSharedMemoryAccessFromSecurityContext,
+  SharedContextAuthorityError,
+} from "@/lib/memory/shared-context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   narrowRunBudgetLimits,
@@ -41,6 +45,13 @@ import {
   CONTEXT_SCOPE_IDS,
   type ContextScopeId,
 } from "@/lib/rag/context-scope";
+import {
+  createWorkflowSharedContextBinding,
+  isWorkflowSharedContextScope,
+  workflowPlanContextBoundariesEqual,
+  workflowPlanContextBoundary,
+  WORKFLOW_SHARED_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/shared-context";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -140,7 +151,14 @@ async function POSTHandler(request: Request) {
         metadataKeys: Object.keys(parsed.data.metadata || {}).slice(0, 50),
       },
     });
-    const rawContextScope = parsed.data.metadata?.contextScope;
+    const {
+      [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]: _untrustedSharedContext,
+      contextSelection: _untrustedContextSelection,
+      ...clientMetadata
+    } = parsed.data.metadata || {};
+    void _untrustedSharedContext;
+    void _untrustedContextSelection;
+    const rawContextScope = clientMetadata.contextScope;
     const contextScope = typeof rawContextScope === "string" &&
         CONTEXT_SCOPE_IDS.includes(rawContextScope as ContextScopeId)
       ? rawContextScope as ContextScopeId
@@ -152,13 +170,6 @@ async function POSTHandler(request: Request) {
       );
     }
     if (contextScope) {
-      if (contextScope === "mission") {
-        return Response.json({
-          error: "Workflow context boundary is unavailable.",
-          message:
-            "Mission context is currently available only for a direct Conversation run.",
-        }, { status: 409 });
-      }
       try {
         assertContextScopeRequest(
           contextScope,
@@ -206,18 +217,7 @@ async function POSTHandler(request: Request) {
         }, { status: 409 });
       }
     }
-    const workflowStart = {
-      ...requestedWorkflowStart,
-      metadata: {
-        ...(parsed.data.metadata || {}),
-        ...(verifiedContextSelection
-          ? { contextSelection: verifiedContextSelection }
-          : contextScope
-            ? { contextSelection: { query: parsed.data.goal, evidenceIds: [] } }
-            : {}),
-      },
-    };
-    const requestedThreadId = parsed.data.metadata?.threadId;
+    const requestedThreadId = clientMetadata.threadId;
     if (requestedThreadId !== undefined) {
       if (typeof requestedThreadId !== "string" || !requestedThreadId.trim()) {
         return Response.json(
@@ -281,17 +281,122 @@ async function POSTHandler(request: Request) {
         );
       }
     }
+    let sharedContextAccess;
+    const workflowCorrelationId = selectedPlan
+      ? `workflow-plan:${selectedPlan.id}`
+      : idempotencyKey
+        ? `workflow-request:${idempotencyKey}`
+        : `workflow-request:${randomUUID()}`;
+    if (isWorkflowSharedContextScope(contextScope)) {
+      const projectId = metadataString(clientMetadata.projectId);
+      const missionId = metadataString(clientMetadata.missionId);
+      const workspaceId = metadataString(clientMetadata.workspaceId);
+      if (contextScope === "project" && !projectId) {
+        return Response.json(
+          { error: "Workflow project context requires a project." },
+          { status: 400 },
+        );
+      }
+      if (
+        contextScope === "mission" &&
+        (!missionId || !z.string().uuid().safeParse(missionId).success)
+      ) {
+        return Response.json(
+          { error: "Workflow Mission context requires a valid Mission." },
+          { status: 400 },
+        );
+      }
+      if (contextScope === "mission" && projectId) {
+        return Response.json(
+          { error: "Mission context resolves its canonical Project on the server." },
+          { status: 400 },
+        );
+      }
+      if (
+        (contextScope === "mission" && workspaceId) ||
+        (contextScope === "project" && (missionId || workspaceId)) ||
+        (contextScope === "workspace" && missionId)
+      ) {
+        return Response.json(
+          { error: "Workflow shared-context coordinates are inconsistent." },
+          { status: 400 },
+        );
+      }
+      try {
+        sharedContextAccess = await requestSharedMemoryAccessFromSecurityContext(
+          context,
+          {
+            scope: contextScope === "workspace" ? "workspace" : "project",
+            projectId: contextScope === "mission" ? missionId : projectId,
+            workspaceId,
+            correlationId: workflowCorrelationId,
+          },
+        );
+      } catch (error) {
+        if (!(error instanceof SharedContextAuthorityError)) throw error;
+        return Response.json({
+          error: error.code === "scope_not_found"
+            ? "Shared context not found"
+            : "Shared context unavailable",
+          message: error.code === "scope_not_found"
+            ? "The selected shared context is unavailable to this account."
+            : "Shared context authority could not be verified.",
+        }, {
+          status: error.code === "scope_not_found" ? 404 : 503,
+          headers: { "cache-control": "private, no-store" },
+        });
+      }
+    }
     const executionAuthority = {
       executionScope: executionScopeFromSecurityContext(context, {
-        correlationId: selectedPlan
-          ? `workflow-plan:${selectedPlan.id}`
-          : idempotencyKey
-            ? `workflow-request:${idempotencyKey}`
-            : `workflow-request:${randomUUID()}`,
+        workspaceId: sharedContextAccess?.authority.workspaceId,
+        projectId: sharedContextAccess?.authority.projectId,
+        missionId: contextScope === "mission"
+          ? metadataString(clientMetadata.missionId)
+          : undefined,
+        correlationId: workflowCorrelationId,
         purpose: "workflow.run",
       }),
       requesterRole: context.role,
     } as const;
+    const sharedContextBinding = sharedContextAccess &&
+        isWorkflowSharedContextScope(contextScope)
+      ? createWorkflowSharedContextBinding({
+          access: sharedContextAccess,
+          contextScope,
+          workflowExecutionScope: executionAuthority.executionScope,
+        })
+      : undefined;
+    const requestedPlanContextBoundary = sharedContextAccess &&
+        isWorkflowSharedContextScope(contextScope)
+      ? workflowPlanContextBoundary(sharedContextAccess, contextScope)
+      : undefined;
+    if (
+      selectedPlan &&
+      !workflowPlanContextBoundariesEqual(
+        selectedPlan.contextBoundary,
+        requestedPlanContextBoundary,
+      )
+    ) {
+      return Response.json({
+        error: "The selected workflow plan has a different context boundary.",
+        message: "Generate a fresh plan for the selected context before starting.",
+      }, { status: 409 });
+    }
+    const workflowStart = {
+      ...requestedWorkflowStart,
+      metadata: {
+        ...clientMetadata,
+        ...(verifiedContextSelection
+          ? { contextSelection: verifiedContextSelection }
+          : contextScope && !isWorkflowSharedContextScope(contextScope)
+            ? { contextSelection: { query: parsed.data.goal, evidenceIds: [] } }
+            : {}),
+        ...(sharedContextBinding
+          ? { [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]: sharedContextBinding }
+          : {}),
+      },
+    };
     if (selectedPlan?.workflowRunId) {
       const existing = await getWorkflowRunDetail(selectedPlan.workflowRunId, {
         tenantId: context.tenantId,
@@ -351,7 +456,7 @@ async function POSTHandler(request: Request) {
       budgetLimits,
       executionAuthority,
       metadata: {
-        ...(parsed.data.metadata || {}),
+        ...(workflowStart.metadata || {}),
         actorId: context.actorId,
       },
       idempotencyKey: selectedPlan
@@ -369,7 +474,7 @@ async function POSTHandler(request: Request) {
         ...workflowStart,
         budgetLimits,
         metadata: {
-          ...(parsed.data.metadata || {}),
+          ...(workflowStart.metadata || {}),
           actorId: context.actorId,
         },
       })
@@ -508,4 +613,12 @@ function stableJson(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
+}
+
+function metadataString(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized && normalized.length <= 240
+    ? normalized
+    : undefined;
 }

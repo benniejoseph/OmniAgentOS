@@ -93,6 +93,11 @@ import {
   savedProceduresFromWorkspaceTemplates,
   toSupervisorKnownProcedures,
 } from "@/lib/workflows/saved-procedures";
+import {
+  createWorkflowSharedContextBinding,
+  isWorkflowSharedContextScope,
+  WORKFLOW_SHARED_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/shared-context";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 
@@ -917,17 +922,31 @@ async function POSTHandler(request: Request) {
               ? savedProcedure.mode
               : mode;
             const { createWorkflowRun } = await import("@/lib/workflows/store");
+            const workflowExecutionScope = executionScopeFromSecurityContext(
+              context,
+              {
+                ...agentPrincipalExecution,
+                workspaceId: promptSharedMemoryAccess?.authority.workspaceId,
+                projectId: promptSharedMemoryAccess?.authority.projectId ||
+                  threadProjectId,
+                missionId: mission.id,
+                correlationId: requestId,
+                causationId: missionTask.id,
+                purpose: "workflow.run",
+              },
+            );
+            const workflowSharedContext = promptSharedMemoryAccess &&
+                isWorkflowSharedContextScope(parsed.data.contextScope)
+              ? createWorkflowSharedContextBinding({
+                  access: promptSharedMemoryAccess,
+                  contextScope: parsed.data.contextScope,
+                  workflowExecutionScope,
+                })
+              : undefined;
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
               executionAuthority: {
-                executionScope: executionScopeFromSecurityContext(context, {
-                  ...agentPrincipalExecution,
-                  projectId: threadProjectId,
-                  missionId: mission.id,
-                  correlationId: requestId,
-                  causationId: missionTask.id,
-                  purpose: "workflow.run",
-                }),
+                executionScope: workflowExecutionScope,
                 requesterRole: context.role,
               },
               goal: executionMessage,
@@ -956,6 +975,12 @@ async function POSTHandler(request: Request) {
                   ? { contextScope: parsed.data.contextScope }
                   : {}),
                 ...(contextSelection ? { contextSelection } : {}),
+                ...(workflowSharedContext
+                  ? {
+                      [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]:
+                        workflowSharedContext,
+                    }
+                  : {}),
               },
               idempotencyKey: `supervisor:${context.actorId}:${requestId}`,
             });
@@ -964,6 +989,18 @@ async function POSTHandler(request: Request) {
             }
             if (!sameContextSelection(detail.run.input.metadata?.contextSelection, contextSelection)) {
               throw new Error("requestId was already used with a different context selection. Submit this work with a new requestId.");
+            }
+            if (
+              detail.run.input.metadata?.contextScope !==
+                parsed.data.contextScope ||
+              (detail.run.input.metadata?.[WORKFLOW_SHARED_CONTEXT_METADATA_KEY] !==
+                undefined && !workflowSharedContext) ||
+              (workflowSharedContext &&
+                asBindingSha256(
+                  detail.run.input.metadata?.[WORKFLOW_SHARED_CONTEXT_METADATA_KEY],
+                ) !== workflowSharedContext.bindingSha256)
+            ) {
+              throw new Error("requestId was already used with a different context boundary. Submit this work with a new requestId.");
             }
             if (!sameSavedProcedure(detail.run.input.metadata?.savedProcedure, savedProcedure)) {
               throw new Error("requestId was already used with a different saved procedure. Submit this work with a new requestId.");
@@ -1274,6 +1311,14 @@ function sameContextSelection(
     && storedIds.length === expectedIds.length
     && storedIds.every((id, index) => id === expectedIds[index])
     && value.selectionSha256 === expected.selectionSha256;
+}
+
+function asBindingSha256(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const bindingSha256 = (value as Record<string, unknown>).bindingSha256;
+  return typeof bindingSha256 === "string" ? bindingSha256 : undefined;
 }
 
 function sameSavedProcedure(

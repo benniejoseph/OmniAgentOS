@@ -5,9 +5,13 @@ const mocks = vi.hoisted(() => ({
   buildDynamicWorkflowPlan: vi.fn(),
   getWorkflowPlanStats: vi.fn(),
   listWorkflowPlans: vi.fn(),
+  sql: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
+  ensureDatabaseSchema: vi.fn(async () => undefined),
+  getSql: () => mocks.sql,
+  hasDatabaseUrl: () => true,
   withDatabaseRequestScope: <TArgs extends unknown[], TResult>(
     handler: (...args: TArgs) => TResult,
   ) => handler,
@@ -30,9 +34,15 @@ import {
 
 const context = {
   tenantId: "tenant-a",
-  actorId: "actor-a",
+  actorId: "owner@example.test",
   role: "admin" as const,
   source: "session" as const,
+  auth: {
+    userId: "a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+    email: "owner@example.test",
+    sessionId: "session-a",
+    tenantName: "Tenant A",
+  },
 };
 
 describe("workflow plan context lock", () => {
@@ -42,6 +52,23 @@ describe("workflow plan context lock", () => {
     mocks.authorizeRequest.mockResolvedValue(context);
     mocks.buildDynamicWorkflowPlan.mockResolvedValue({ id: "plan-a", status: "planned" });
     mocks.getWorkflowPlanStats.mockResolvedValue({ plans: 1 });
+    mocks.sql.mockImplementation((parts: TemplateStringsArray) => {
+      const query = parts.join(" ");
+      if (query.includes("FROM omni_work_projects")) {
+        return [{
+          workspace_id: "workspace:personal:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+          project_id: "project:launch",
+          access_level: "manager",
+        }];
+      }
+      if (query.includes("FROM omni_tenant_workspaces")) {
+        return [{
+          workspace_id: "workspace:personal:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+          access_level: "manager",
+        }];
+      }
+      return [];
+    });
   });
 
   it("plans only with the authenticated locked selection", async () => {
@@ -78,18 +105,30 @@ describe("workflow plan context lock", () => {
     );
   });
 
-  it("keeps Mission context on the direct Conversation boundary", async () => {
+  it("plans Mission context through its canonical Project authority", async () => {
     const response = await POST(workflowPlanRequest({
       contextScope: "mission",
+      missionId: "b30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
     }));
 
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({
-      error: "Context scope unavailable",
-      message: expect.stringMatching(/direct Conversation/i),
-    });
-    expect(mocks.authorizeRequest).not.toHaveBeenCalled();
-    expect(mocks.buildDynamicWorkflowPlan).not.toHaveBeenCalled();
+    expect(response.status).toBe(201);
+    expect(mocks.buildDynamicWorkflowPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextSelection: undefined,
+        databaseMemoryAccessScope: expect.objectContaining({
+          projectId: "project:launch",
+          purposeId: "memory.retrieve.v1",
+        }),
+        contextBoundary: expect.objectContaining({
+          contextScope: "mission",
+          authoritySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+        executionScope: expect.objectContaining({
+          projectId: "project:launch",
+          missionId: "b30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        }),
+      }),
+    );
   });
 
   it("rejects a changed selection after lock", async () => {

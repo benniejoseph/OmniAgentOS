@@ -232,7 +232,7 @@ export function resolveSharedAgentPromptMemoryAccess(
   return databaseScope;
 }
 
-async function resolveSharedContextAuthority(input: {
+export async function resolveSharedContextAuthority(input: {
   tenantId: string;
   canonicalActorId: string;
   scope: "project" | "workspace";

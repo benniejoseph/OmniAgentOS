@@ -52,6 +52,12 @@ import {
   createWorkflowReplanDirective,
   parseWorkflowReplanDirective,
 } from "@/lib/workflows/replan";
+import {
+  isWorkflowSharedContextScope,
+  resolveWorkflowSharedContextAccess,
+  workflowPlanContextBoundariesEqual,
+  WORKFLOW_SHARED_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/shared-context";
 import { parseWorkflowProcedureSnapshot } from "@/lib/workflows/saved-procedures";
 import {
   approveWorkflowRun,
@@ -949,7 +955,8 @@ async function executeStep(
     );
     const profile = workflowAgentProfile(detail);
     const specialistContext = await buildWorkflowSpecialistContext(detail);
-    if (profile?.memoryScope === "session") {
+    const sharedContext = await workflowSharedContextForRun(detail);
+    if (profile?.memoryScope === "session" && !sharedContext) {
       return {
         contextCount: specialistContext.count,
         memoryCount: 0,
@@ -973,6 +980,11 @@ async function executeStep(
       limit: 6,
       tenantId: detail.run.tenantId,
       evidenceIds: contextSelection?.evidenceIds,
+      ...(sharedContext ? {
+        databaseMemoryAccessScope: sharedContext.databaseAccessScope,
+        scopedMemoryOnly: true,
+        persistTrace: false,
+      } : {}),
       contextBudget: {
         taskContextTokenLimit: WORKFLOW_CONTEXT_TASK_TOKEN_LIMIT,
       },
@@ -1003,6 +1015,8 @@ async function executeStep(
       mode: retrieval.profile.mode,
       intent: retrieval.profile.intent,
       traceId: retrieval.trace?.id,
+      contextAuthoritySha256:
+        sharedContext?.contextBoundary.authoritySha256,
       evidence: [
         ...specialistContext.evidence,
         ...retrieval.results.map((item) => ({
@@ -1270,6 +1284,7 @@ async function buildPlan(
 ) {
   const profile = workflowAgentProfile(detail);
   const contextSelection = workflowContextSelection(detail);
+  const sharedContext = await workflowSharedContextForRun(detail);
   const savedProcedure = workflowSavedProcedure(detail);
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const replanEvent = [...detail.events]
@@ -1298,6 +1313,17 @@ async function buildPlan(
           tenantId: detail.run.tenantId,
         })
       : undefined;
+  if (
+    selectedPlan &&
+    !workflowPlanContextBoundariesEqual(
+      selectedPlan.contextBoundary,
+      sharedContext?.contextBoundary,
+    )
+  ) {
+    throw new Error(
+      "The reviewed workflow plan no longer matches its shared context authority.",
+    );
+  }
   const usageAttribution = await workflowUsageScope(
     detail,
     "structured_generation",
@@ -1344,6 +1370,8 @@ async function buildPlan(
       workflowRunId: detail.run.id,
       requireApproval: detail.run.approvalRequired,
       contextSelection,
+      databaseMemoryAccessScope: sharedContext?.databaseAccessScope,
+      contextBoundary: sharedContext?.contextBoundary,
       requiredToolBindings: savedProcedure?.toolBindings,
       requiredAcceptanceCriteria: savedProcedure?.schemaVersion === 2
         ? savedProcedure.acceptanceCriteria
@@ -1724,6 +1752,13 @@ function workflowAgentProfile(detail: WorkflowRunDetail): AgentRunRequest["agent
 function workflowContextSelection(
   detail: WorkflowRunDetail,
 ): { query: string; evidenceIds: string[] } | undefined {
+  if (isWorkflowSharedContextScope(
+    typeof detail.run.input.metadata?.contextScope === "string"
+      ? detail.run.input.metadata.contextScope
+      : undefined,
+  )) {
+    return undefined;
+  }
   const value = detail.run.input.metadata?.contextSelection;
   const noSavedContext = { query: detail.run.goal, evidenceIds: [] };
   if (value === undefined) {
@@ -1749,6 +1784,32 @@ function workflowContextSelection(
       ? { query: legacy.query.trim(), evidenceIds: [] }
       : noSavedContext;
   }
+}
+
+async function workflowSharedContextForRun(detail: WorkflowRunDetail) {
+  const contextScope = typeof detail.run.input.metadata?.contextScope === "string"
+    ? detail.run.input.metadata.contextScope
+    : undefined;
+  const binding = detail.run.input.metadata?.[WORKFLOW_SHARED_CONTEXT_METADATA_KEY];
+  if (!isWorkflowSharedContextScope(contextScope)) {
+    if (binding !== undefined) {
+      throw new Error("Workflow contains an unrequested shared-context binding.");
+    }
+    return undefined;
+  }
+  if (binding === undefined) {
+    throw new Error("Workflow shared-context authority is missing.");
+  }
+  const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+    tenantId: detail.run.tenantId,
+  });
+  if (!authority) {
+    throw new Error("Workflow shared-context root authority is missing.");
+  }
+  return resolveWorkflowSharedContextAccess({
+    binding,
+    workflowExecutionScope: authority.executionScope,
+  });
 }
 
 function workflowSavedProcedure(detail: WorkflowRunDetail) {

@@ -12,6 +12,10 @@ import { buildDynamicWorkflowPlan, getWorkflowPlanStats } from "@/lib/workflows/
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import {
+  requestSharedMemoryAccessFromSecurityContext,
+  SharedContextAuthorityError,
+} from "@/lib/memory/shared-context";
+import {
   contextSelectionRequestSchema,
   verifyContextSelectionLock,
 } from "@/lib/rag/context-selection-lock";
@@ -20,6 +24,10 @@ import {
   CONTEXT_SCOPE_IDS,
   getContextScopePolicy,
 } from "@/lib/rag/context-scope";
+import {
+  isWorkflowSharedContextScope,
+  workflowPlanContextBoundary,
+} from "@/lib/workflows/shared-context";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -30,11 +38,55 @@ const workflowPlanSchema = z.object({
   goal: z.string().min(1).max(4000),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
+  projectId: z.string().trim().min(1).max(200)
+    .regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
+  missionId: z.string().uuid().optional(),
+  workspaceId: z.string().trim().min(1).max(240)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/).optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   workflowRunId: z.string().min(1).optional(),
   requireApproval: z.boolean().optional(),
   reuseExisting: z.boolean().optional(),
-}).strict();
+}).strict()
+  .refine((value) => value.contextScope !== "project" || Boolean(value.projectId), {
+    message: "A project is required for project context.",
+    path: ["projectId"],
+  })
+  .refine((value) => value.contextScope !== "mission" || Boolean(value.missionId), {
+    message: "A mission is required for Mission context.",
+    path: ["missionId"],
+  })
+  .refine((value) => value.contextScope !== "mission" || !value.projectId, {
+    message: "Mission context resolves its canonical Project on the server.",
+    path: ["projectId"],
+  })
+  .refine(
+    (value) => value.contextScope !== "mission" || !value.workspaceId,
+    {
+      message: "Mission context cannot be combined with a Workspace coordinate.",
+      path: ["workspaceId"],
+    },
+  )
+  .refine(
+    (value) => value.contextScope !== "project" ||
+      (!value.missionId && !value.workspaceId),
+    {
+      message: "Project context accepts only its Project coordinate.",
+      path: ["projectId"],
+    },
+  )
+  .refine((value) => value.contextScope !== "workspace" || !value.missionId, {
+    message: "Workspace context cannot be combined with a Mission coordinate.",
+    path: ["missionId"],
+  })
+  .refine(
+    (value) => isWorkflowSharedContextScope(value.contextScope) ||
+      (!value.projectId && !value.missionId && !value.workspaceId),
+    {
+      message: "Shared-context coordinates require a shared context scope.",
+      path: ["contextScope"],
+    },
+  );
 
 async function GETHandler(request: Request) {
   const url = new URL(request.url);
@@ -86,13 +138,6 @@ async function POSTHandler(request: Request) {
     );
   }
   if (parsed.data.contextScope) {
-    if (parsed.data.contextScope === "mission") {
-      return Response.json({
-        error: "Context scope unavailable",
-        message:
-          "Mission context is currently available only for a direct Conversation run.",
-      }, { status: 409 });
-    }
     try {
       assertContextScopeRequest(
         parsed.data.contextScope,
@@ -145,25 +190,73 @@ async function POSTHandler(request: Request) {
     }
   }
 
+  const planCorrelationId =
+    request.headers.get("x-idempotency-key")?.trim().slice(0, 240) ||
+    request.headers.get("x-request-id")?.trim().slice(0, 240) ||
+    `workflow-plan:${randomUUID()}`;
+  let sharedContextAccess;
+  if (isWorkflowSharedContextScope(parsed.data.contextScope)) {
+    try {
+      sharedContextAccess = await requestSharedMemoryAccessFromSecurityContext(
+        context,
+        {
+          scope: parsed.data.contextScope === "workspace"
+            ? "workspace"
+            : "project",
+          projectId: parsed.data.contextScope === "mission"
+            ? parsed.data.missionId
+            : parsed.data.projectId,
+          workspaceId: parsed.data.workspaceId,
+          correlationId: planCorrelationId,
+        },
+      );
+    } catch (error) {
+      if (!(error instanceof SharedContextAuthorityError)) throw error;
+      return Response.json({
+        error: error.code === "scope_not_found"
+          ? "Shared context not found"
+          : "Shared context unavailable",
+        message: error.code === "scope_not_found"
+          ? "The selected shared context is unavailable to this account."
+          : "Shared context authority could not be verified.",
+      }, {
+        status: error.code === "scope_not_found" ? 404 : 503,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+  }
+  const executionScope = executionScopeFromSecurityContext(context, {
+    workspaceId: sharedContextAccess?.authority.workspaceId,
+    projectId: sharedContextAccess?.authority.projectId,
+    missionId: parsed.data.contextScope === "mission"
+      ? parsed.data.missionId
+      : undefined,
+    correlationId: planCorrelationId,
+    purpose: "workflow.plan.create",
+  });
+
   const plan = await buildDynamicWorkflowPlan({
     tenantId: context.tenantId,
     actorId: context.actorId,
     goal: parsed.data.goal,
-    contextSelection: contextSelection || (parsed.data.contextScope
+    contextSelection: contextSelection || (parsed.data.contextScope &&
+        !isWorkflowSharedContextScope(parsed.data.contextScope)
       ? { query: parsed.data.goal, evidenceIds: [] }
       : undefined),
+    databaseMemoryAccessScope: sharedContextAccess?.databaseAccessScope,
+    contextBoundary: sharedContextAccess &&
+        isWorkflowSharedContextScope(parsed.data.contextScope)
+      ? workflowPlanContextBoundary(
+          sharedContextAccess,
+          parsed.data.contextScope,
+        )
+      : undefined,
     mode: parsed.data.mode,
     workflowRunId: parsed.data.workflowRunId,
     requireApproval: parsed.data.requireApproval,
     source: "api",
     reuseExisting: parsed.data.reuseExisting,
-    executionScope: executionScopeFromSecurityContext(context, {
-      correlationId:
-        request.headers.get("x-idempotency-key")?.trim().slice(0, 240) ||
-        request.headers.get("x-request-id")?.trim().slice(0, 240) ||
-        `workflow-plan:${randomUUID()}`,
-      purpose: "workflow.plan.create",
-    }),
+    executionScope,
   });
 
   return Response.json({ plan, stats: await getWorkflowPlanStats({ tenantId: context.tenantId }) }, { status: 201 });
