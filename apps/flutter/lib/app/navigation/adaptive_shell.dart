@@ -2,294 +2,539 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../brand/asael_mark.dart';
+import '../theme/daybook_backdrop.dart';
 import 'app_destination.dart';
 
 class AdaptiveShell extends StatelessWidget {
   const AdaptiveShell({super.key, required this.navigationShell});
+
   final StatefulNavigationShell navigationShell;
 
-  static const _phoneBranches = [0, 1, 2, 7];
+  // Mirrors the web app's five-item everyday loop.
+  static const _everydayBranches = [0, 1, 2, 3, 9];
+  static const _reviewBranches = [4, 5, 6, 7, 8];
 
   void _select(int index) => navigationShell.goBranch(
     index,
     initialLocation: index == navigationShell.currentIndex,
   );
 
-  int get _phoneIndex {
-    final current = navigationShell.currentIndex;
-    final index = _phoneBranches.indexOf(current);
-    return index < 0 ? _phoneBranches.length : index;
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+    return width < 840 ? _phone(context) : _wide(context, width);
   }
 
-  void _openLauncher(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      builder: (sheetContext) => _WorkspaceLauncher(
+  Widget _phone(BuildContext context) {
+    final active = appDestinations[navigationShell.currentIndex];
+    final colors = Theme.of(context).colorScheme;
+    return Scaffold(
+      drawerEdgeDragWidth: 32,
+      drawer: _WorkspaceDrawer(
         currentIndex: navigationShell.currentIndex,
-        onSelect: (index) {
-          Navigator.pop(sheetContext);
-          _select(index);
-        },
-        onAdministration: () {
-          Navigator.pop(sheetContext);
-          context.push('/administration');
-        },
-        onDevices: () {
-          Navigator.pop(sheetContext);
-          context.push('/devices');
-        },
+        onSelect: _select,
+      ),
+      appBar: AppBar(
+        toolbarHeight: 68,
+        leadingWidth: 62,
+        leading: Builder(
+          builder: (context) => Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 6, 10),
+            child: IconButton.outlined(
+              tooltip: 'Open workspace menu',
+              onPressed: Scaffold.of(context).openDrawer,
+              icon: const Icon(Icons.menu_rounded, size: 20),
+            ),
+          ),
+        ),
+        titleSpacing: 4,
+        title: Row(
+          children: [
+            const AsaelMark(size: 34),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    active.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 14.5),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    active.description,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: colors.onSurfaceVariant,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          IconButton(
+            tooltip: 'Attention inbox',
+            onPressed: () => _select(7),
+            icon: const Icon(Icons.notifications_none_rounded, size: 21),
+          ),
+          const SizedBox(width: 4),
+        ],
+        shape: Border(
+          bottom: BorderSide(
+            color: colors.outlineVariant.withValues(alpha: .7),
+          ),
+        ),
+      ),
+      body: DaybookBackdrop(child: navigationShell),
+      bottomNavigationBar: _EverydayDock(
+        currentIndex: navigationShell.currentIndex,
+        onSelect: _select,
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final width = MediaQuery.sizeOf(context).width;
-    if (width < 840) {
-      final phoneDestinations = <NavigationDestination>[
-        ..._phoneBranches
-            .map((index) => appDestinations[index])
-            .map(
-              (item) => NavigationDestination(
-                icon: Icon(item.icon),
-                selectedIcon: Icon(item.selectedIcon),
-                label: item.label,
-              ),
-            ),
-        const NavigationDestination(
-          icon: Icon(Icons.grid_view_outlined),
-          selectedIcon: Icon(Icons.grid_view_rounded),
-          label: 'More',
-        ),
-      ];
-      return Scaffold(
-        body: navigationShell,
-        bottomNavigationBar: SafeArea(
-          top: false,
-          minimum: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surface,
-              borderRadius: BorderRadius.circular(24),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: .08),
-                  blurRadius: 26,
-                  offset: const Offset(0, 9),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(24),
-              child: NavigationBar(
-                selectedIndex: _phoneIndex,
-                onDestinationSelected: (index) {
-                  if (index == _phoneBranches.length) {
-                    _openLauncher(context);
-                  } else {
-                    _select(_phoneBranches[index]);
-                  }
-                },
-                destinations: phoneDestinations,
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
+  Widget _wide(BuildContext context, double width) {
     final extended = width >= 1180;
     return Scaffold(
       body: Row(
         children: [
-          SafeArea(
-            child: NavigationRail(
-              selectedIndex: navigationShell.currentIndex,
-              onDestinationSelected: _select,
-              extended: extended,
-              leading: Padding(
-                padding: const EdgeInsets.only(top: 14, bottom: 22),
-                child: _BrandMark(extended: extended),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface
+                  .withValues(alpha: .95),
+              border: Border(
+                right: BorderSide(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
               ),
-              trailing: Expanded(
-                child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (extended)
-                          FilledButton.tonalIcon(
-                            onPressed: () => context.push('/devices'),
-                            icon: const Icon(Icons.devices_rounded),
-                            label: const Text('Devices & security'),
-                          )
-                        else
-                          IconButton.filledTonal(
-                            tooltip: 'Devices & security',
-                            onPressed: () => context.push('/devices'),
-                            icon: const Icon(Icons.devices_rounded),
-                          ),
-                        const SizedBox(height: 8),
-                        if (extended)
-                          FilledButton.tonalIcon(
-                            onPressed: () => context.push('/administration'),
-                            icon: const Icon(
-                              Icons.admin_panel_settings_outlined,
+            ),
+            child: SafeArea(
+              child: NavigationRail(
+                selectedIndex: navigationShell.currentIndex,
+                onDestinationSelected: _select,
+                extended: extended,
+                leading: Padding(
+                  padding: const EdgeInsets.only(top: 14, bottom: 22),
+                  child: _BrandMark(extended: extended),
+                ),
+                trailing: Expanded(
+                  child: Align(
+                    alignment: Alignment.bottomCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (extended)
+                            FilledButton.tonalIcon(
+                              onPressed: () => context.push('/devices'),
+                              icon: const Icon(Icons.devices_rounded),
+                              label: const Text('Devices & security'),
+                            )
+                          else
+                            IconButton.filledTonal(
+                              tooltip: 'Devices & security',
+                              onPressed: () => context.push('/devices'),
+                              icon: const Icon(Icons.devices_rounded),
                             ),
-                            label: const Text('Control plane'),
-                          )
-                        else
-                          IconButton.filledTonal(
-                            tooltip: 'Control plane',
-                            onPressed: () => context.push('/administration'),
-                            icon: const Icon(
-                              Icons.admin_panel_settings_outlined,
+                          const SizedBox(height: 8),
+                          if (extended)
+                            FilledButton.tonalIcon(
+                              onPressed: () => context.push('/administration'),
+                              icon: const Icon(
+                                Icons.admin_panel_settings_outlined,
+                              ),
+                              label: const Text('Control plane'),
+                            )
+                          else
+                            IconButton.filledTonal(
+                              tooltip: 'Control plane',
+                              onPressed: () => context.push('/administration'),
+                              icon: const Icon(
+                                Icons.admin_panel_settings_outlined,
+                              ),
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
+                destinations: appDestinations
+                    .map(
+                      (item) => NavigationRailDestination(
+                        icon: Icon(item.icon),
+                        selectedIcon: Icon(item.selectedIcon),
+                        label: Text(item.label),
+                      ),
+                    )
+                    .toList(),
               ),
-              destinations: appDestinations
-                  .map(
-                    (item) => NavigationRailDestination(
-                      icon: Icon(item.icon),
-                      selectedIcon: Icon(item.selectedIcon),
-                      label: Text(item.label),
-                    ),
-                  )
-                  .toList(),
             ),
           ),
-          const VerticalDivider(width: 1),
-          Expanded(child: navigationShell),
+          Expanded(child: DaybookBackdrop(child: navigationShell)),
         ],
       ),
     );
   }
 }
 
-class _WorkspaceLauncher extends StatelessWidget {
-  const _WorkspaceLauncher({
-    required this.currentIndex,
-    required this.onSelect,
-    required this.onAdministration,
-    required this.onDevices,
-  });
+class _EverydayDock extends StatelessWidget {
+  const _EverydayDock({required this.currentIndex, required this.onSelect});
+
   final int currentIndex;
   final ValueChanged<int> onSelect;
-  final VoidCallback onAdministration;
-  final VoidCallback onDevices;
 
   @override
-  Widget build(BuildContext context) => ConstrainedBox(
-    constraints: const BoxConstraints(maxHeight: 720),
-    child: CustomScrollView(
-      slivers: [
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(20, 8, 12, 18),
-          sliver: SliverToBoxAdapter(
-            child: Row(
-              children: [
-                const AsaelMark(size: 38),
-                const SizedBox(width: 13),
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      AsaelWordmark(compact: true),
-                      SizedBox(height: 4),
-                      Text(
-                        'Choose a workspace',
-                        style: TextStyle(fontSize: 13),
-                      ),
-                    ],
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surface.withValues(alpha: .97),
+        border: Border(top: BorderSide(color: scheme.outlineVariant)),
+        boxShadow: [
+          BoxShadow(
+            color: scheme.shadow.withValues(alpha: .16),
+            blurRadius: 28,
+            offset: const Offset(0, -8),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        top: false,
+        minimum: const EdgeInsets.fromLTRB(4, 4, 4, 5),
+        child: SizedBox(
+          height: 58,
+          child: Row(
+            children: [
+              for (final index in AdaptiveShell._everydayBranches)
+                Expanded(
+                  child: _DockDestination(
+                    destination: appDestinations[index],
+                    selected: currentIndex == index,
+                    onTap: () => onSelect(index),
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Close',
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close_rounded),
-                ),
-              ],
-            ),
-          ),
-        ),
-        SliverPadding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          sliver: SliverList.builder(
-            itemCount: appDestinations.length,
-            itemBuilder: (context, index) {
-              final destination = appDestinations[index];
-              return ListTile(
-                selected: currentIndex == index,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                leading: Icon(
-                  currentIndex == index
-                      ? destination.selectedIcon
-                      : destination.icon,
-                ),
-                title: Text(destination.label),
-                subtitle: Text(
-                  destination.description,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                trailing: currentIndex == index
-                    ? Icon(
-                        Icons.circle,
-                        size: 8,
-                        color: Theme.of(context).colorScheme.primary,
-                      )
-                    : const Icon(Icons.chevron_right_rounded),
-                onTap: () => onSelect(index),
-              );
-            },
-          ),
-        ),
-        SliverPadding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
-          sliver: SliverList.list(
-            children: [
-              ListTile(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                leading: const Icon(Icons.devices_rounded),
-                title: const Text('Devices & security'),
-                subtitle: const Text('Sessions, biometrics, and remote wipe'),
-                trailing: const Icon(Icons.arrow_outward_rounded),
-                onTap: onDevices,
-              ),
-              ListTile(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                leading: const Icon(Icons.admin_panel_settings_outlined),
-                title: const Text('Control plane'),
-                subtitle: const Text(
-                  'Automation, tools, security, and settings',
-                ),
-                trailing: const Icon(Icons.arrow_outward_rounded),
-                onTap: onAdministration,
-              ),
             ],
           ),
         ),
-      ],
+      ),
+    );
+  }
+}
+
+class _DockDestination extends StatelessWidget {
+  const _DockDestination({
+    required this.destination,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final AppDestination destination;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = selected ? scheme.primary : scheme.onSurfaceVariant;
+    return Semantics(
+      selected: selected,
+      button: true,
+      label: destination.label,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              width: selected ? 22 : 0,
+              height: 2,
+              margin: const EdgeInsets.only(bottom: 5),
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(99),
+              ),
+            ),
+            Icon(
+              selected ? destination.selectedIcon : destination.icon,
+              color: color,
+              size: 20,
+            ),
+            const SizedBox(height: 2),
+            Text(
+              destination.label,
+              maxLines: 1,
+              style: TextStyle(
+                color: color,
+                fontSize: 10.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkspaceDrawer extends StatelessWidget {
+  const _WorkspaceDrawer({required this.currentIndex, required this.onSelect});
+
+  final int currentIndex;
+  final ValueChanged<int> onSelect;
+
+  void _select(BuildContext context, int index) {
+    Navigator.pop(context);
+    onSelect(index);
+  }
+
+  @override
+  Widget build(BuildContext context) => Drawer(
+    width: MediaQuery.sizeOf(context).width.clamp(280, 360),
+    shape: const RoundedRectangleBorder(),
+    child: DaybookBackdrop(
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 12, 10, 14),
+              child: Row(
+                children: [
+                  const AsaelMark(size: 42),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        AsaelWordmark(),
+                        SizedBox(height: 4),
+                        Text(
+                          'Your second brain',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close workspace menu',
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(10, 12, 10, 20),
+                children: [
+                  _DrawerGroup(
+                    label: 'Everyday',
+                    indices: AdaptiveShell._everydayBranches,
+                    currentIndex: currentIndex,
+                    onSelect: (index) => _select(context, index),
+                  ),
+                  const SizedBox(height: 16),
+                  _DrawerGroup(
+                    label: 'Plan and review',
+                    indices: AdaptiveShell._reviewBranches,
+                    currentIndex: currentIndex,
+                    onSelect: (index) => _select(context, index),
+                  ),
+                  const SizedBox(height: 18),
+                  const Divider(),
+                  const SizedBox(height: 6),
+                  _UtilityTile(
+                    icon: Icons.devices_rounded,
+                    label: 'Devices & security',
+                    description: 'Sessions, biometrics, and notifications',
+                    onTap: () {
+                      Navigator.pop(context);
+                      context.push('/devices');
+                    },
+                  ),
+                  _UtilityTile(
+                    icon: Icons.admin_panel_settings_outlined,
+                    label: 'Control plane',
+                    description: 'Automation, tools, quality, and settings',
+                    onTap: () {
+                      Navigator.pop(context);
+                      context.push('/administration');
+                    },
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(18, 12, 18, 14),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface
+                    .withValues(alpha: .72),
+                border: Border(
+                  top: BorderSide(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.lock_outline_rounded,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Private workspace · This Android device',
+                      style: TextStyle(fontSize: 11.5),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     ),
+  );
+}
+
+class _DrawerGroup extends StatelessWidget {
+  const _DrawerGroup({
+    required this.label,
+    required this.indices,
+    required this.currentIndex,
+    required this.onSelect,
+  });
+
+  final String label;
+  final List<int> indices;
+  final int currentIndex;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+      for (final index in indices)
+        _WorkspaceTile(
+          destination: appDestinations[index],
+          selected: currentIndex == index,
+          onTap: () => onSelect(index),
+        ),
+    ],
+  );
+}
+
+class _WorkspaceTile extends StatelessWidget {
+  const _WorkspaceTile({
+    required this.destination,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final AppDestination destination;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: ListTile(
+        selected: selected,
+        minTileHeight: 54,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        selectedTileColor: scheme.primary,
+        selectedColor: scheme.onPrimary,
+        leading: Icon(
+          selected ? destination.selectedIcon : destination.icon,
+          size: 19,
+        ),
+        title: Text(
+          destination.label,
+          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+        ),
+        subtitle: Text(
+          destination.description,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: selected
+                ? scheme.onPrimary.withValues(alpha: .76)
+                : scheme.onSurfaceVariant,
+            fontSize: 10.5,
+          ),
+        ),
+        trailing: selected
+            ? const Icon(Icons.arrow_forward_rounded, size: 15)
+            : null,
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _UtilityTile extends StatelessWidget {
+  const _UtilityTile({
+    required this.icon,
+    required this.label,
+    required this.description,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final String description;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    minTileHeight: 54,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    leading: Icon(icon, size: 19),
+    title: Text(
+      label,
+      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+    ),
+    subtitle: Text(
+      description,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(fontSize: 10.5),
+    ),
+    trailing: const Icon(Icons.arrow_outward_rounded, size: 16),
+    onTap: onTap,
   );
 }
 
 class _BrandMark extends StatelessWidget {
   const _BrandMark({required this.extended});
+
   final bool extended;
 
   @override
@@ -304,7 +549,7 @@ class _BrandMark extends StatelessWidget {
           children: [
             AsaelWordmark(compact: true),
             SizedBox(height: 4),
-            Text('Private workspace', style: TextStyle(fontSize: 11)),
+            Text('Your second brain', style: TextStyle(fontSize: 11)),
           ],
         ),
       ],
