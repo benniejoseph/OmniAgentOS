@@ -9,6 +9,7 @@ import {
 import { CUSTOMER_HEALTH_SCORING_SCHEMA_SQL } from "@/lib/db/customer-health-schema";
 import { CUSTOMER_SUCCESS_WORKFLOW_SCHEMA_SQL } from "@/lib/db/customer-success-workflow-schema";
 import { COHESIVE_TODAY_PREFERENCES_SCHEMA_SQL } from "@/lib/db/cohesive-today-schema";
+import { PERSONAL_CONTEXT_CONSENT_SCHEMA_SQL } from "@/lib/db/personal-context-consent-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -88,6 +89,7 @@ export const tenantRootPolicyTables = [
   "omni_tenant_memory_purpose_entitlements",
   "omni_tenant_actor_memory_purpose_consents",
   "omni_tenant_actor_memory_notice_receipts",
+  "omni_personal_context_consents",
   "omni_tenant_actor_membership_epochs",
   "omni_tenant_actor_membership_management_authorities",
   "omni_membership_management_bootstrap_decisions",
@@ -1414,6 +1416,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[146],
       up: ensureLoopV2ContextTextEngine,
+    },
+    {
+      ...databaseSchemaMigrations[147],
+      up: ensurePersonalContextConsentV1,
     },
   ];
 }
@@ -20166,6 +20172,10 @@ async function ensureLoopV2ContextTextEngine(sql: SqlClient) {
     END
     $migration$
   `;
+}
+
+async function ensurePersonalContextConsentV1(sql: SqlClient) {
+  await sql.query(PERSONAL_CONTEXT_CONSENT_SCHEMA_SQL);
 }
 
 async function ensureLoopV2TransitionCheckpoints(sql: SqlClient) {
