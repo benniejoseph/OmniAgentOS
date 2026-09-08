@@ -1545,8 +1545,11 @@ legacy-selected set to evidence that independently passes the v2 gates; it can
 never widen selection. The resulting `run.context_compiler_v2.canary` receipt
 uses the same content-free hashing boundary and is appended strictly before the
 provider call. Receipt validation or persistence failure aborts the run before
-model disclosure. Automatic retrieval, shared scopes, and authorization before
-candidate retrieval remain outside this canary and keep P4.1 open.
+model disclosure. Automatic actor-private retrieval remains outside this
+canary. Shared scopes use their canonical database authority before candidate
+retrieval and ranking, but do not reuse the direct explicit-selection canary
+because no individual evidence list was reviewed. Automatic promotion
+therefore keeps P4.1 open.
 
 P4.2 adds a request-bound context-scope policy above those compiler paths. A
 direct run can select no extra context, the current turn, the current session,
@@ -1566,8 +1569,17 @@ canonical Project, and the handoff rejects any mismatch. This avoids a second
 Mission truth store. Automatic personal context remains authority-held. The
 selected scope is persisted as an enum in the content-free harness event.
 Legacy requests without the new field retain their prior behavior. Durable
-workflow and Loop v2 adoption require their own pinned contract changes and
-are not silently enrolled by this direct-run slice.
+workflows now adopt Mission, Project, and Workspace context through a distinct
+server-created binding. A reviewed plan persists only the selected scope and
+authority digest. The run's private envelope binds that authority to the exact
+root execution scope and is removed from every public projection. Before
+retrieval and again before planning or replanning, the worker resolves current
+canonical membership, compares the complete authority digest, and passes only
+the resulting database memory scope to scoped-only context compilation.
+Revocation, access-level drift, plan/run mismatch, root-scope changes, missing
+bindings, and caller-supplied binding metadata fail closed. Agent-private
+workflow context and Loop v2 adoption still require their own authority-aware
+contract changes and are not silently enrolled.
 
 P7.3 forms a durable episodic memory only from an exact verified effect receipt
 and binds it immutably to both the initiating actor and executing logical Agent.
