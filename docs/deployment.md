@@ -61,10 +61,30 @@ deduplicating delivery outbox under forced RLS. FCM delivery requires
 group above. The Flutter build separately requires its real Firebase
 `google-services.json` and `GoogleService-Info.plist`, Firebase-console APNs
 configuration, and normal Android/iOS signing. Those native application files
-are not Vercel secrets and must not be committed from placeholders. Provider
-configuration is reported truthfully to the registered device without exposing
-credentials. The existing worker calls the Vercel workflow tick, so this change
-does not require a Fly image release.
+are not Vercel secrets; commit only the real registered-app configuration and
+never a Firebase service-account key. Provider configuration is reported
+truthfully to the registered device without exposing credentials. The existing
+worker calls the Vercel workflow tick, so this change does not require a Fly
+image release.
+
+Production uses Firebase only as notification transport for the existing Asael
+backend. Firebase is enabled on the existing `asael-private-ai` Google Cloud
+project, and both native apps retain the compatibility package/bundle identity
+`app.omniagent.omniagent`. The FCM sender service account has only
+`roles/firebasecloudmessaging.admin`; its JSON key is stored as the sensitive
+Vercel production variable above and must never be copied into the repository
+or native application. iOS delivery additionally requires an Apple APNs token
+key to be configured in Firebase before a device receipt can pass.
+
+Android release builds fail closed when a production signing identity is not
+available. On the release Mac, `apps/flutter/tool/build_android_release.sh`
+loads the dedicated upload-key password from the `Asael Android Upload
+Keystore` macOS Keychain item and uses the keystore at
+`~/Library/Application Support/Asael/signing/asael-upload-keystore.jks` by
+default. Back up that keystore and Keychain secret before Play enrollment. CI
+may instead provide `ASAEL_ANDROID_KEYSTORE_PATH`,
+`ASAEL_ANDROID_KEYSTORE_PASSWORD`, `ASAEL_ANDROID_KEY_ALIAS`, and
+`ASAEL_ANDROID_KEY_PASSWORD`. Debug signing is never a release fallback.
 
 Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it, and it must never be stored on Fly. The paired release runs its paid verification through Asael, so the deployed server supplies the upstream OpenAI authorization while the gateway validates `x-asael-gateway-token` and forwards that header unchanged. Production always enables auth even when `OMNIAGENT_AUTH_ENABLED=false`. Vercel forwarding headers are trusted automatically; other reverse proxies must overwrite client forwarding headers before `OMNIAGENT_TRUST_PROXY_HEADERS=true` is enabled. Do not enable `OMNIAGENT_TRUST_UNSIGNED_IDENTITY_HEADERS`, `OMNIAGENT_CONNECTOR_ALLOW_HTTP`, or `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS` in production.
 
