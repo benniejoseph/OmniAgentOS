@@ -105,4 +105,47 @@ describe("OAuth source synchronization lease", () => {
       lease: { generation: second.lease.generation + 1 },
     });
   });
+
+  it("persists a validated source checkpoint without treating its discriminator as payload", async () => {
+    const store = await import("@/lib/connectors/oauth-store");
+    const owner = {
+      tenantId: "tenant-source-coverage",
+      actorId: "actor-source-coverage",
+      provider: "google" as const,
+    };
+    await store.saveOAuthGrant({
+      ...owner,
+      tokens: {
+        access_token: "test-access-token",
+        scope: "drive.readonly",
+        expires_in: 3_600,
+      },
+    });
+
+    const attemptedAt = "2026-09-08T03:58:40.000Z";
+    await expect(store.updateOAuthSyncState({
+      ...owner,
+      status: "syncing",
+      sourceSettlements: [{
+        source: "drive",
+        schemaVersion: 1,
+        status: "syncing",
+        backfillState: "in_progress",
+        lastAttemptedAt: attemptedAt,
+        lastSuccessfulAt: attemptedAt,
+        failureCode: "none",
+      }],
+    })).resolves.toMatchObject({
+      sourceCoverage: {
+        drive: {
+          schemaVersion: 1,
+          status: "syncing",
+          backfillState: "in_progress",
+          lastAttemptedAt: attemptedAt,
+          lastSuccessfulAt: attemptedAt,
+          failureCode: "none",
+        },
+      },
+    });
+  });
 });

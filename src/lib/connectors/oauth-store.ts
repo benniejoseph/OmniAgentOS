@@ -685,7 +685,10 @@ function normalizeSourceSettlements(
       throw new Error("OAuth source coverage settlements must name each supported source at most once.");
     }
     seen.add(value.source);
-    return { source: value.source, ...parseSourceCoverageCheckpoint(value) };
+    return {
+      source: value.source,
+      ...parseSourceCoverageCheckpoint(withoutSource(value)),
+    };
   });
 }
 
