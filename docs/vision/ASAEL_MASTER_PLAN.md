@@ -718,7 +718,7 @@ sibling actor, Agent, Project, Workspace, tenant, and access-binding scopes.
 
 **Phase gate:** override compliance 100%; scope violations zero; context stays within budget; retrieval relevance, freshness, latency, and cost are measurable per successful task.
 
-**Current status:** the release candidate implements all nine direct scopes:
+**Current status:** the production release implements all nine direct scopes:
 `none`, `current_turn`, `session`, `agent_private`, `mission`, `project`,
 `workspace`, `personal`, and `explicit_selection`. Shared
 Mission/Project/Workspace candidates are filtered
@@ -733,9 +733,16 @@ canonical owner's coordinate-free private lane, and is shrink-only through
 Context Compiler v2. Durable workflows bind that exact consent generation to
 the reviewed plan and immutable root and revalidate it before planning,
 retrieval, every later step, and replanning. The separately pinned Loop v2
-context-text engine binds the same authority and compiler receipt. P4.1 and
-P4.2 implementation is complete; production proof remains pending ordered
-migrations v147-v148 and promotion of this release candidate.
+context-text engine binds the same authority and compiler receipt. Migrations
+v147-v148 are installed and the exact generation-1 rollout is active. An
+authenticated `current_turn` production canary completed through
+`agent_loop_v2_context_text_canary_1` with one model call, zero retrieved
+memories, the typed context/contract/transition chain, and a valid trajectory.
+The result remains truthfully `unverified` because the bounded summary lane has
+no semantic adjudicator. Owner standing consent remains inactive by choice;
+personal scope returns 409 before retrieval. P4.1 through P4.7 and the Phase 4
+gate are production-complete at revision
+`306fe61a8235afdb14452cb3111c76325c61c3d4`.
 
 ### Phase 5 — Graph Engineering
 
@@ -2421,7 +2428,7 @@ TypeScript, and the Next 16 production build. No migration was required.
 Canonical Vercel deployment `dpl_EapYKVX52jW2aJNnRCBwVGQauoB6`, Fly release
 289 image `sha256:b1d49a519f7b1c5853aaacf8c6407dd72ac7855f0ce07100e406b2553ed23d01`,
 protocol 1, the exact activation marker, and all worker lanes are healthy.
-P4.1/P4.2 retain only their separately recorded release-candidate promotion;
+P4.1/P4.2 are production-complete in the separately recorded promotion;
 P12/P13 remain deferred. P5.2 is already complete in the later recorded slices
 below; the next actionable master-plan slice is P5.3 bitemporal claims and typed
 relations.
@@ -2435,9 +2442,10 @@ digest-bound envelope. Retrieval and every plan or replan re-resolve that
 identity and fail closed on definition, principal, grant, expiry, root, or plan
 drift. The database scope contains only the authenticated actor and Agent
 principal with null Workspace, Project, and Mission coordinates. The automatic
-personal and Loop v2 context release candidate closes the remaining
-implementation gaps under owner standing consent; its production migration and
-promotion are tracked separately.
+personal and Loop v2 context production release closes the remaining
+implementation gaps under owner standing consent; its installed migrations,
+active rollout, fail-closed consent proof, and live canary are tracked
+separately.
 
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
@@ -3154,7 +3162,7 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 1 — truthful events and outcomes:** P1.1–P1.7 complete.
 - [ ] **Phase 2 — sources, assets, and privacy lifecycle:** P2.1–P2.8 complete.
 - [x] **Phase 3 — persistent memory:** P3.1–P3.7 complete.
-- [ ] **Phase 4 — Context Management:** P4.1–P4.7 complete.
+- [x] **Phase 4 — Context Management:** P4.1–P4.7 complete.
 - [x] **Phase 5 — Graph Engineering:** P5.1–P5.6 and the scale/parity phase gate complete.
 - [x] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
 - [x] **Phase 7 — agent identity and lifecycle:** P7.1–P7.6 complete.
