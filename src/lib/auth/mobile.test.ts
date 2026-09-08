@@ -12,6 +12,19 @@ beforeAll(async () => {
 });
 
 describe("native mobile authentication", () => {
+  it("locks only the authoritative session row during Postgres refresh", async () => {
+    const source = await readFile(
+      path.resolve(process.cwd(), "src/lib/auth/mobile.ts"),
+      "utf8",
+    );
+    const refreshSource = source.slice(
+      source.indexOf("export async function rotateMobileRefreshToken"),
+      source.indexOf("export async function recordMobileSessionSeen"),
+    );
+    expect(refreshSource).toContain("LIMIT 1\n          FOR UPDATE OF session");
+    expect(refreshSource).not.toMatch(/FOR UPDATE(?! OF session)/);
+  });
+
   it("binds hashed tokens to the user, tenant, and device and resolves bearer RBAC context", async () => {
     const auth = await import("@/lib/auth/store");
     const mobile = await import("@/lib/auth/mobile");
