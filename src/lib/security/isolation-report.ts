@@ -19,6 +19,68 @@ type IsolationTableReport = {
   status: "pass" | "fail";
 };
 
+type IsolationPolicyEvidence = {
+  tableName: string;
+  policyName: string;
+  permissive: boolean;
+  command: string;
+};
+
+const ACTOR_POLICY_TABLES = new Set([
+  "omni_a2a_peer_rollouts",
+  "omni_a2a_task_mappings",
+  "omni_a2a_exchanges",
+  "omni_a2a_safety_reservations",
+  "omni_a2a_tool_call_claims",
+  "omni_trash_items",
+  "omni_trash_effect_receipts",
+  "omni_approval_grants",
+  "omni_approval_grant_claims",
+  "omni_browser_profiles",
+  "omni_browser_profile_bindings",
+  "omni_browser_takeovers",
+  "omni_mobile_push_registrations",
+  "omni_mobile_push_deliveries",
+  "omni_person_contact_policies",
+  "omni_communication_intents",
+  "omni_message_drafts",
+  "omni_delivery_receipts",
+  "omni_conversation_links",
+  "omni_inbound_communications",
+  "omni_ap2_signing_credentials",
+  "omni_ap2_mandate_reviews",
+  "omni_ap2_mandate_authorizations",
+  "omni_ap2_credential_grants",
+  "omni_ap2_credential_claims",
+  "omni_ap2_payment_transactions",
+  "omni_ap2_payment_receipts",
+  "omni_ap2_reconciliation_observations",
+  "omni_ap2_reconciliation_jobs",
+]);
+
+export function expectedTenantIsolationPolicyName(tableName: string) {
+  if (tableName === "omni_personal_context_consents") {
+    return "omni_personal_context_consents_actor_scope";
+  }
+  if (ACTOR_POLICY_TABLES.has(tableName)) {
+    return `${tableName}_actor`;
+  }
+  return "omni_tenant_isolation";
+}
+
+export function hasExpectedTenantIsolationPolicy(
+  tableName: string,
+  policies: IsolationPolicyEvidence[],
+) {
+  const expectedPolicyName = expectedTenantIsolationPolicyName(tableName);
+  return policies.some((policy) =>
+    policy.tableName === tableName
+    && policy.policyName === expectedPolicyName
+    && policy.permissive
+    && policy.command === "*"
+  );
+}
+
 type LatestTenantIsolationEval = {
   runId: string;
   runStatus: string;
@@ -129,11 +191,15 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
     );
     const policyRows = await sql.query(
       `
-        SELECT tablename AS table_name
-        FROM pg_policies
-        WHERE schemaname = current_schema()
-          AND policyname = 'omni_tenant_isolation'
-          AND tablename IN (${placeholders})
+        SELECT relation.relname AS table_name,
+               policy.polname AS policy_name,
+               policy.polpermissive AS permissive,
+               policy.polcmd AS command
+        FROM pg_policy policy
+        INNER JOIN pg_class relation ON relation.oid = policy.polrelid
+        INNER JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = current_schema()
+          AND relation.relname IN (${placeholders})
       `,
       expectedTables,
     );
@@ -154,7 +220,12 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
 
   const catalogByTable = new Map(catalogRows.map((row) => [String(row.table_name), row]));
   const tenantColumnTables = new Set(columnRows.map((row) => String(row.table_name)));
-  const policyTables = new Set(policyRows.map((row) => String(row.table_name)));
+  const policies = policyRows.map<IsolationPolicyEvidence>((row) => ({
+    tableName: String(row.table_name),
+    policyName: String(row.policy_name),
+    permissive: Boolean(row.permissive),
+    command: String(row.command),
+  }));
 
   const tables = expectedTables.map<IsolationTableReport>((tableName) => {
     const row = catalogByTable.get(tableName);
@@ -166,7 +237,7 @@ export async function getTenantIsolationReport(tenantId: string): Promise<Tenant
       tenantColumn: tenantColumnTables.has(tableName),
       rlsEnabled: Boolean(row?.relrowsecurity ?? row?.rls_enabled),
       forceRls: Boolean(row?.relforcerowsecurity ?? row?.force_rls),
-      policyPresent: policyTables.has(tableName),
+      policyPresent: hasExpectedTenantIsolationPolicy(tableName, policies),
     };
     return {
       ...report,
