@@ -45,6 +45,14 @@ import {
 import { requestEntityAccessFromSecurityContext } from "@/lib/entities/request-access";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import {
+  personalContextMemoryAccessFromSecurityContext,
+  type RequestPersonalContextMemoryAccessV1,
+} from "@/lib/memory/personal-context-access";
+import {
+  PersonalContextConsentError,
+  requireActivePersonalContextConsent,
+} from "@/lib/memory/personal-context-consent-store";
+import {
   requestSharedMemoryAccessFromSecurityContext,
   SharedContextAuthorityError,
   type RequestSharedMemoryAccessV1,
@@ -322,6 +330,50 @@ async function POSTHandler(request: Request) {
           : "Shared context authority could not be verified.",
       }, {
         status: error.code === "scope_not_found" ? 404 : 503,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+  }
+  let promptPersonalMemoryAccess: RequestPersonalContextMemoryAccessV1 | undefined;
+  if (parsed.data.contextScope === "personal") {
+    const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
+    if (!actorBinding) {
+      return Response.json({
+        error: "Personal context unavailable",
+        message: "Personal automatic context requires an authenticated account.",
+      }, {
+        status: 403,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+    try {
+      const consentAuthority = await requireActivePersonalContextConsent({
+        tenantId: context.tenantId,
+        actorBinding,
+      });
+      promptPersonalMemoryAccess =
+        personalContextMemoryAccessFromSecurityContext(context, {
+          correlationId: requestId,
+          consentAuthority,
+        });
+      if (!promptPersonalMemoryAccess) {
+        throw new PersonalContextConsentError(
+          "invalid_authority",
+          "Personal-context request authority is invalid.",
+        );
+      }
+    } catch (error) {
+      const inactive = error instanceof PersonalContextConsentError &&
+        error.code === "inactive";
+      return Response.json({
+        error: inactive
+          ? "Personal context not authorized"
+          : "Personal context unavailable",
+        message: inactive
+          ? "Turn on Personal automatic context before using this scope."
+          : "Personal automatic context authority could not be verified.",
+      }, {
+        status: inactive ? 409 : 503,
         headers: { "cache-control": "private, no-store" },
       });
     }
@@ -1120,10 +1172,14 @@ async function POSTHandler(request: Request) {
           {
             ...agentPrincipalExecution,
             workspaceId: promptSharedMemoryAccess?.authority.workspaceId,
-            projectId: loopV2ContextTextEnrollment
+            projectId: parsed.data.contextScope === "personal"
+              ? undefined
+              : loopV2ContextTextEnrollment
               ? promptSharedMemoryAccess?.authority.projectId
               : promptSharedMemoryAccess?.authority.projectId || threadProjectId,
-            missionId: loopV2ContextTextEnrollment
+            missionId: parsed.data.contextScope === "personal"
+              ? undefined
+              : loopV2ContextTextEnrollment
               ? parsed.data.contextScope === "mission"
                 ? mission?.id
                 : undefined
@@ -1205,6 +1261,7 @@ async function POSTHandler(request: Request) {
                 contextSelection,
                 promptMemoryAccess,
                 promptSharedMemoryAccess,
+                promptPersonalMemoryAccess,
                 promptEntityGraphAccess,
                 executionScope: directExecutionScope,
                 agentIdentity,

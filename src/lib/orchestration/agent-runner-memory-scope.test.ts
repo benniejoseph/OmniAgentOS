@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
+import { personalContextMemoryAccessFromSecurityContext } from "@/lib/memory/personal-context-access";
+import { buildPersonalContextConsentAuthorityV1 } from "@/lib/memory/personal-context-consent";
 import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
@@ -10,6 +12,7 @@ import { sourceContractSha256 } from "@/lib/sources/contracts";
 
 const mocks = vi.hoisted(() => ({
   appendContextCompilerV2CanaryEvent: vi.fn(),
+  appendContextCompilerV2AutomaticEvent: vi.fn(),
   appendContextCompilerV2ShadowEventSafely: vi.fn(),
   appendContextUseReceiptEvent: vi.fn(),
   appendAgentRunIdentityPin: vi.fn(),
@@ -23,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   getActiveAgentAdaptationGuidance: vi.fn(),
   loadProgressiveAgentTools: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
+  resolvePersonalContextMemoryAccess: vi.fn(),
   runCouncilRound: vi.fn(),
   streamResponseTurn: vi.fn(),
   updateRunContextCount: vi.fn(),
@@ -76,6 +80,12 @@ vi.mock("@/lib/operations/background-jobs", () => ({
   enqueueMemoryConsolidationJob: mocks.enqueueMemoryConsolidationJob,
 }));
 
+vi.mock("@/lib/memory/personal-context-access", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/personal-context-access")>()),
+  resolvePersonalContextMemoryAccess:
+    mocks.resolvePersonalContextMemoryAccess,
+}));
+
 vi.mock("@/lib/orchestration/council", () => ({
   formatCouncilContributions: () => "",
   reviewCouncilResponse: vi.fn(),
@@ -88,6 +98,8 @@ vi.mock("@/lib/rag/context-engine", () => ({
 }));
 
 vi.mock("@/lib/runs/store", () => ({
+  appendContextCompilerV2AutomaticEvent:
+    mocks.appendContextCompilerV2AutomaticEvent,
   appendContextCompilerV2CanaryEvent:
     mocks.appendContextCompilerV2CanaryEvent,
   appendContextCompilerV2ShadowEventSafely:
@@ -128,6 +140,7 @@ describe("agent memory scope", () => {
       createdAt: "2026-09-06T00:00:00.000Z",
     });
     mocks.appendContextCompilerV2CanaryEvent.mockResolvedValue(undefined);
+    mocks.appendContextCompilerV2AutomaticEvent.mockResolvedValue(undefined);
     mocks.appendContextCompilerV2ShadowEventSafely.mockResolvedValue(undefined);
     mocks.appendContextUseReceiptEvent.mockResolvedValue(undefined);
     mocks.appendAgentRunIdentityPin.mockResolvedValue(undefined);
@@ -139,9 +152,15 @@ describe("agent memory scope", () => {
     mocks.getActiveAgentAdaptationGuidance.mockResolvedValue([]);
     mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [] });
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
+    mocks.resolvePersonalContextMemoryAccess.mockImplementation(async (value) =>
+      value?.databaseAccessScope
+    );
     mocks.buildContextPack.mockImplementation(async (
       _query: string,
-      options: { contextCompilerV2Canary?: unknown },
+      options: {
+        contextCompilerV2Automatic?: unknown;
+        contextCompilerV2Canary?: unknown;
+      },
     ) => ({
       query: "hello",
       profile: {
@@ -159,7 +178,14 @@ describe("agent memory scope", () => {
       graphResults: [],
       contextBlock: "DURABLE_MEMORY_CONTEXT",
       budget: {},
-      ...(options.contextCompilerV2Canary
+      ...(options.contextCompilerV2Automatic
+        ? {
+            compilerV2Automatic: {
+              selectedEvidenceIds: ["memory:private-memory"],
+              receipt: { receiptId: "context-automatic-receipt-a" },
+            },
+          }
+        : options.contextCompilerV2Canary
         ? {
             compilerV2Canary: {
               selectedEvidenceIds: ["memory:private-memory"],
@@ -394,6 +420,78 @@ describe("agent memory scope", () => {
       type: "harness",
       contextScope: "agent_private",
       contextDecision: "retrieved",
+    }));
+  });
+
+  it("revalidates standing consent and isolates automatic personal context", async () => {
+    const authority = buildPersonalContextConsentAuthorityV1({
+      tenantId: privateOwnerContext.tenantId,
+      actorId: `actor:${privateOwnerContext.auth.userId}`,
+      consentGeneration: 1,
+      activatedAt: "2026-09-06T00:00:00.000Z",
+    });
+    const promptAccess = personalContextMemoryAccessFromSecurityContext(
+      privateOwnerContext,
+      { correlationId: "personal-context-request", consentAuthority: authority },
+    );
+    const scopedRequest = request("all");
+    scopedRequest.actorId = privateOwnerContext.actorId;
+    scopedRequest.contextScope = "personal";
+    scopedRequest.executionScope = createExecutionScope({
+      tenantId: privateOwnerContext.tenantId,
+      initiatingActorId: `actor:${privateOwnerContext.auth.userId}`,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "paid-test-agent",
+      correlationId: "personal-context-request",
+      purpose: "agent.run",
+    });
+    scopedRequest.promptPersonalMemoryAccess = promptAccess;
+    scopedRequest.specialistIds = ["scout"];
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.resolvePersonalContextMemoryAccess).toHaveBeenCalledWith(
+      promptAccess,
+      expect.objectContaining({
+        agentExecutionScope: scopedRequest.executionScope,
+        memoryMode: "all",
+      }),
+    );
+    expect(mocks.buildContextPack).toHaveBeenCalledWith(
+      "hello",
+      expect.objectContaining({
+        databaseMemoryAccessScope: promptAccess?.databaseAccessScope,
+        scopedMemoryOnly: true,
+        persistTrace: false,
+        contextCompilerV2Automatic: expect.objectContaining({
+          runId: "run-memory-scope",
+        }),
+      }),
+    );
+    expect(mocks.appendContextCompilerV2AutomaticEvent).toHaveBeenCalledWith(
+      "run-memory-scope",
+      { receiptId: "context-automatic-receipt-a" },
+      expect.objectContaining({ tenantId: "paid-test-tenant" }),
+    );
+    expect(mocks.loadProgressiveAgentTools).not.toHaveBeenCalled();
+    expect(mocks.runCouncilRound).not.toHaveBeenCalled();
+    expect(mocks.enqueueMemoryConsolidationJob).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "retrieving personal context",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "personal context isolated",
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      contextScope: "personal",
+      contextDecision: "retrieved",
+      toolCount: 0,
+      contextRationale: [
+        "Only relevant owner-private memory covered by active standing consent was eligible.",
+      ],
     }));
   });
 

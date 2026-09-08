@@ -20,6 +20,8 @@ const routeMocks = vi.hoisted(() => ({
   resolveLoopV2ModelTextEnrollment: vi.fn(),
   resolveLoopV2ReadOnlyCanaryEnrollment: vi.fn(),
   requestSharedMemoryAccessFromSecurityContext: vi.fn(),
+  personalContextMemoryAccessFromSecurityContext: vi.fn(),
+  requireActivePersonalContextConsent: vi.fn(),
   resolveSemanticIntent: vi.fn(),
   runAgent: vi.fn(),
   runLoopV2ModelText: vi.fn(),
@@ -110,6 +112,18 @@ vi.mock("@/lib/memory/shared-context", async (importOriginal) => ({
     routeMocks.requestSharedMemoryAccessFromSecurityContext,
 }));
 
+vi.mock("@/lib/memory/personal-context-access", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/personal-context-access")>()),
+  personalContextMemoryAccessFromSecurityContext:
+    routeMocks.personalContextMemoryAccessFromSecurityContext,
+}));
+
+vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/personal-context-consent-store")>()),
+  requireActivePersonalContextConsent:
+    routeMocks.requireActivePersonalContextConsent,
+}));
+
 import { POST } from "@/app/api/agent/route";
 
 const context = {
@@ -195,6 +209,11 @@ beforeEach(() => {
       executionScope: {},
       databaseAccessScope: {},
     });
+  routeMocks.requireActivePersonalContextConsent.mockReset().mockResolvedValue({
+    authoritySha256: "a".repeat(64),
+  });
+  routeMocks.personalContextMemoryAccessFromSecurityContext.mockReset()
+    .mockReturnValue({ schemaVersion: 1, authority: "personal" });
   routeMocks.resolveLoopV2ModelTextEnrollment.mockReset()
     .mockResolvedValue(null);
   routeMocks.resolveLoopV2ContextTextEnrollment.mockReset()
@@ -398,7 +417,20 @@ describe("agent semantic intent routing", () => {
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 
-  it("rejects authority-held context scopes before execution", async () => {
+  it("rejects personal context when standing consent is inactive", async () => {
+    routeMocks.authorizeRequest.mockResolvedValue({
+      ...context,
+      actorId: context.auth.email,
+    });
+    const { PersonalContextConsentError } = await import(
+      "@/lib/memory/personal-context-consent-store"
+    );
+    routeMocks.requireActivePersonalContextConsent.mockRejectedValue(
+      new PersonalContextConsentError(
+        "inactive",
+        "Personal automatic context is not currently authorized.",
+      ),
+    );
     const response = await POST(new Request("http://asael.test/api/agent", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -410,11 +442,61 @@ describe("agent semantic intent routing", () => {
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
-      error: "Context scope unavailable",
-      message: expect.stringMatching(/held/i),
+      error: "Personal context not authorized",
     });
-    expect(routeMocks.authorizeRequest).not.toHaveBeenCalled();
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(routeMocks.authorizeRequest).toHaveBeenCalledOnce();
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("binds active personal consent to a direct agent run", async () => {
+    const personalContext = { ...context, actorId: context.auth.email };
+    routeMocks.authorizeRequest.mockResolvedValue(personalContext);
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-personal-context" };
+      yield { type: "done", response: "Personal context used." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Use relevant saved personal preferences.",
+        requestId: "personal-context-a",
+        strategy: "direct",
+        contextScope: "personal",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.requireActivePersonalContextConsent).toHaveBeenCalledWith({
+      tenantId: context.tenantId,
+      actorBinding: expect.objectContaining({
+        canonicalActorId: `actor:${context.auth.userId}`,
+      }),
+    });
+    expect(routeMocks.personalContextMemoryAccessFromSecurityContext)
+      .toHaveBeenCalledWith(personalContext, {
+        correlationId: "personal-context-a",
+        consentAuthority: { authoritySha256: "a".repeat(64) },
+      });
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextScope: "personal",
+        promptPersonalMemoryAccess: {
+          schemaVersion: 1,
+          authority: "personal",
+        },
+        executionScope: expect.objectContaining({
+          correlationId: "personal-context-a",
+          workspaceId: null,
+          projectId: null,
+          missionId: null,
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
   });
 
   it("binds project context authority to the direct agent execution scope", async () => {

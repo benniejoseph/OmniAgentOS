@@ -46,6 +46,7 @@ import {
 } from "@/lib/memory/access-context";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { resolveAgentPromptMemoryAccess } from "@/lib/memory/request-access";
+import { resolvePersonalContextMemoryAccess } from "@/lib/memory/personal-context-access";
 import { resolveSharedAgentPromptMemoryAccess } from "@/lib/memory/shared-context";
 import type {
   ModelAttemptReceipt,
@@ -101,6 +102,7 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
+  appendContextCompilerV2AutomaticEvent,
   appendContextCompilerV2CanaryEvent,
   appendContextCompilerV2ShadowEventSafely,
   appendContextUseReceiptEvent,
@@ -449,9 +451,19 @@ export async function* runAgent(
       memoryMode: memoryAccessContext.mode,
     },
   );
+  const personalPromptMemoryAccessScope = request.contextScope === "personal"
+    ? await resolvePersonalContextMemoryAccess(
+        request.promptPersonalMemoryAccess,
+        {
+          agentExecutionScope: executionScope,
+          memoryMode: memoryAccessContext.mode,
+        },
+      )
+    : undefined;
   const databaseMemoryAccessScope = promptMemoryAccessScope ||
     sharedPromptMemoryAccessScope ||
-    agentPrivateMemoryAccessScope;
+    agentPrivateMemoryAccessScope ||
+    personalPromptMemoryAccessScope;
   const isolatedMemoryContext = Boolean(databaseMemoryAccessScope);
   let pendingDeltaText = "";
   let lastDeltaFlush = Date.now();
@@ -758,6 +770,12 @@ export async function* runAgent(
         detail:
           `Only durable knowledge from the selected ${request.contextScope} membership scope is eligible.`,
       });
+    } else if (personalPromptMemoryAccessScope) {
+      yield await emit({
+        type: "status",
+        label: "retrieving personal context",
+        detail: "Only relevant owner-private memory covered by active standing consent is eligible.",
+      });
     } else if (durableMemoryEnabled) {
       yield await emit({ type: "status", label: "retrieving memory", detail: "Building an adaptive evidence pack from memory, RAG, and graph context." });
     } else if (memoryAccessContext.mode === "project") {
@@ -768,7 +786,8 @@ export async function* runAgent(
           "Project memory is not loaded until a canonical project authority is bound; this run remains session-only.",
       });
     }
-    const useLiveWeb = !browserCapabilityIntent.excludeWebSearch &&
+    const useLiveWeb = !personalPromptMemoryAccessScope &&
+      !browserCapabilityIntent.excludeWebSearch &&
       shouldUseLiveWebSearch(query) &&
       hasOpenAIKey();
     if (durableMemoryEnabled) {
@@ -791,9 +810,11 @@ export async function* runAgent(
             : memoryAccessContext,
           databaseMemoryAccessScope,
           scopedMemoryOnly: Boolean(
-            agentPrivateMemoryAccessScope || sharedPromptMemoryAccessScope,
+            agentPrivateMemoryAccessScope || sharedPromptMemoryAccessScope ||
+              personalPromptMemoryAccessScope,
           ),
-          ...(agentPrivateMemoryAccessScope || sharedPromptMemoryAccessScope
+          ...(agentPrivateMemoryAccessScope || sharedPromptMemoryAccessScope ||
+              personalPromptMemoryAccessScope
             ? { persistTrace: false }
             : {}),
           entityGraphAccess: request.promptEntityGraphAccess,
@@ -829,7 +850,14 @@ export async function* runAgent(
               },
             },
           } : {}),
-          ...(promptMemoryAccessScope && request.contextSelection?.evidenceIds.length
+          ...(personalPromptMemoryAccessScope
+            ? {
+                contextCompilerV2Automatic: {
+                  runId,
+                  executionScope,
+                },
+              }
+            : promptMemoryAccessScope && request.contextSelection?.evidenceIds.length
             ? {
                 contextCompilerV2Canary: {
                   runId,
@@ -852,7 +880,8 @@ export async function* runAgent(
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
       isShortOrReferentialRequest(query);
-    const toolboxPromise = promptMemoryAccessScope || !providerConfigured
+    const toolboxPromise = promptMemoryAccessScope ||
+        personalPromptMemoryAccessScope || !providerConfigured
       ? Promise.resolve(emptyAgentToolbox())
       : groundToolDiscoveryInMemory
         ? undefined
@@ -919,6 +948,13 @@ export async function* runAgent(
       await appendContextCompilerV2CanaryEvent(
         runId,
         retrieval.compilerV2Canary.receipt,
+        { tenantId: runTenantId, executionScope },
+      );
+    }
+    if (retrieval.compilerV2Automatic) {
+      await appendContextCompilerV2AutomaticEvent(
+        runId,
+        retrieval.compilerV2Automatic.receipt,
         { tenantId: runTenantId, executionScope },
       );
     }
@@ -1014,7 +1050,7 @@ export async function* runAgent(
         forceApprovalAboveRisk: 0,
       };
     }
-    if (promptMemoryAccessScope) {
+    if (promptMemoryAccessScope || personalPromptMemoryAccessScope) {
       agentToolPolicy = {
         allowedToolIds: [],
         readOnly: true,
@@ -1241,10 +1277,14 @@ export async function* runAgent(
         type: "status",
         label: sharedPromptMemoryAccessScope
           ? "shared context bounded"
-          : "private context isolated",
+          : personalPromptMemoryAccessScope
+            ? "personal context isolated"
+            : "private context isolated",
         detail: sharedPromptMemoryAccessScope
           ? "Selected shared knowledge stays within this governed run; sibling council delegation requires separate authority."
-          : "Private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
+          : personalPromptMemoryAccessScope
+            ? "Personal memory stays with the assigned agent; tools and sibling council delegation are disabled for this run."
+            : "Private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
       });
     }
     const councilCheckpointHooks: CouncilCheckpointHooks =
@@ -2190,7 +2230,8 @@ export async function* runAgent(
     });
     const consolidation = durableMemoryEnabled &&
         !promptMemoryAccessScope &&
-        !sharedPromptMemoryAccessScope
+        !sharedPromptMemoryAccessScope &&
+        !personalPromptMemoryAccessScope
       ? enqueueMemoryConsolidationSafely({
           runId: run.id,
           tenantId: request.tenantId,
@@ -5423,6 +5464,11 @@ function contextRationaleForRun(input: {
   if (input.contextScope === "workspace") {
     return [
       "Only durable knowledge from the explicitly selected workspace was eligible.",
+    ];
+  }
+  if (input.contextScope === "personal") {
+    return [
+      "Only relevant owner-private memory covered by active standing consent was eligible.",
     ];
   }
   if (input.memoryMode === "project") {
