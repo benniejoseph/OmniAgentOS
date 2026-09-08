@@ -315,6 +315,9 @@ test("capture inbox queues a bulk transcript set", async ({ page }) => {
   await expect(page.getByText(/Queued for RAG and memory|Building RAG and memory|Indexed and ready in Command/).first()).toBeVisible();
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByText("2 files in this batch")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("memory studio creates, inspects, corrects, and forgets a claim", async ({ page }) => {
