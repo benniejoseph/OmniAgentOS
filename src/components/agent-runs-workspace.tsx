@@ -76,14 +76,17 @@ type AgentPresentation = {
 };
 type ActiveContextScopeId = Extract<
   ContextScopeId,
-  "none" | "current_turn" | "session" | "agent_private" | "mission" | "project" | "workspace" | "explicit_selection"
+  "none" | "current_turn" | "session" | "agent_private" | "mission" | "project" | "workspace" | "personal" | "explicit_selection"
 >;
+type PersonalContextConsentView = {
+  state: "inactive" | "active";
+  notice: { text: string; sha256: string };
+};
 
 const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
   id: ContextScopeId;
   label: string;
   description: string;
-  disabled?: boolean;
 }>[] = [
   {
     id: "explicit_selection",
@@ -120,7 +123,12 @@ const CONTEXT_SCOPE_OPTIONS: readonly Readonly<{
     label: "No extra context",
     description: "Use only this task and governing instructions.",
   },
-  { id: "personal", label: "Personal automatic — held", description: "Requires standing personal-memory authority.", disabled: true },
+  {
+    id: "personal",
+    label: "Personal automatic",
+    description:
+      "Automatically select relevant owner-private memory under your active consent.",
+  },
   {
     id: "mission",
     label: "Attached mission",
@@ -440,6 +448,14 @@ export function AgentRunsWorkspace({
   const [contextUseReceipt, setContextUseReceipt] = useState<ContextUseReceipt>();
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState<string>();
+  const [personalContextConsent, setPersonalContextConsent] =
+    useState<PersonalContextConsentView>();
+  const [personalContextConsentState, setPersonalContextConsentState] =
+    useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [personalContextConsentError, setPersonalContextConsentError] =
+    useState<string>();
+  const [personalContextConsentUpdating, setPersonalContextConsentUpdating] =
+    useState(false);
   const [workflowPlan, setWorkflowPlan] = useState<JsonRecord>();
   const [workflowRun, setWorkflowRun] = useState<JsonRecord>();
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
@@ -564,6 +580,32 @@ export function AgentRunsWorkspace({
     return () => controller.abort();
   }, [initialProjectId, sessionStatus]);
 
+  useEffect(() => {
+    if (sessionStatus !== "ready") return;
+    const controller = new AbortController();
+    queueMicrotask(() => {
+      if (!controller.signal.aborted) {
+        setPersonalContextConsentState("loading");
+        setPersonalContextConsentError(undefined);
+      }
+    });
+    void readJson("/api/memory/personal-context-consent", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then((payload) => {
+        if (controller.signal.aborted) return;
+        setPersonalContextConsent(personalContextConsentView(payload));
+        setPersonalContextConsentState("ready");
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setPersonalContextConsentState("error");
+        setPersonalContextConsentError(refreshMessage(error));
+      });
+    return () => controller.abort();
+  }, [sessionStatus]);
+
   const planNodes = arrayPath(workflowPlan, "plan.plan.nodes");
   const contextResults = arrayPath(contextPack, "pack.results");
   const contextResultIds = contextResults
@@ -598,6 +640,7 @@ export function AgentRunsWorkspace({
   const readPermission = permissionMessage(session, sessionStatus, "read");
   const runPermission = permissionMessage(session, sessionStatus, "run.agent");
   const voicePermission = permissionMessage(session, sessionStatus, "write.memory");
+  const personalContextActive = personalContextConsent?.state === "active";
   const workflowPermission = permissionMessage(session, sessionStatus, "manage.workflow");
   const workflowActionPermission = workflowPermission;
   const activeWorkflowId = stringPath(workflowRun, "run.id", "");
@@ -1469,6 +1512,13 @@ export function AgentRunsWorkspace({
     if (nextScope === contextScope || workflowInProgress || loading === "agent") {
       return;
     }
+    if (nextScope === "personal" && !personalContextActive) {
+      setError(
+        "Turn on Personal automatic context before selecting this scope.",
+      );
+      openTaskDetails("context");
+      return;
+    }
     if (nextScope === "mission" && !initialMissionId) {
       setError("Open Command from a Mission before using Mission context.");
       return;
@@ -1489,6 +1539,50 @@ export function AgentRunsWorkspace({
     contextSelectionReviewedRef.current = nextScope !== "explicit_selection";
     agentRequestIdRef.current = "";
     setRunAnnouncement(contextScopeOption(nextScope).description);
+  }
+
+  async function updatePersonalContextConsent(
+    operation: "activate" | "revoke",
+  ) {
+    if (voicePermission) {
+      setPersonalContextConsentError(voicePermission);
+      return;
+    }
+    const noticeSha256 = personalContextConsent?.notice.sha256;
+    if (operation === "activate" && !noticeSha256) {
+      setPersonalContextConsentError(
+        "The consent notice is not ready. Refresh this page and try again.",
+      );
+      return;
+    }
+    setPersonalContextConsentUpdating(true);
+    setPersonalContextConsentError(undefined);
+    try {
+      const payload = await readJson("/api/memory/personal-context-consent", {
+        method: operation === "activate" ? "POST" : "DELETE",
+        headers: operation === "activate"
+          ? { "content-type": "application/json" }
+          : undefined,
+        body: operation === "activate"
+          ? JSON.stringify({ noticeSha256 })
+          : undefined,
+      });
+      const nextConsent = personalContextConsentView(payload);
+      setPersonalContextConsent(nextConsent);
+      setPersonalContextConsentState("ready");
+      if (operation === "revoke" && contextScope === "personal") {
+        changeContextScope("session");
+      }
+      setRunAnnouncement(
+        operation === "activate"
+          ? "Personal automatic context is available for tasks where you select it."
+          : "Personal automatic context is off and no longer available to new runs.",
+      );
+    } catch (error) {
+      setPersonalContextConsentError(refreshMessage(error));
+    } finally {
+      setPersonalContextConsentUpdating(false);
+    }
   }
 
   function changeProject(nextProjectId: string) {
@@ -2913,6 +3007,7 @@ export function AgentRunsWorkspace({
               loading={loading}
               contextLoading={contextLoading}
               contextScope={contextScope}
+              personalContextAvailable={personalContextActive}
               missionContextAvailable={Boolean(initialMissionId)}
               projectId={selectedProjectId}
               projects={projects}
@@ -3118,7 +3213,7 @@ export function AgentRunsWorkspace({
                       <option
                         key={option.id}
                         value={option.id}
-                        disabled={option.disabled ||
+                        disabled={(option.id === "personal" && !personalContextActive) ||
                           (option.id === "mission" && !initialMissionId)}
                       >
                         {option.label}
@@ -3128,6 +3223,54 @@ export function AgentRunsWorkspace({
                   <p className="mt-2 text-xs leading-5 text-muted">
                     {contextScopeOption(contextScope).description}
                   </p>
+                  <div className="mt-3 rounded-lg border border-line bg-surface p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <strong className="text-xs text-foreground">
+                        Personal automatic context
+                      </strong>
+                      <StatusPill
+                        label={personalContextActive ? "On" : "Off"}
+                        tone={personalContextActive ? "success" : "neutral"}
+                      />
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-muted">
+                      {personalContextConsent?.notice.text ||
+                        (personalContextConsentState === "loading"
+                          ? "Loading the consent notice…"
+                          : "The consent notice is currently unavailable.")}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void updatePersonalContextConsent(
+                        personalContextActive ? "revoke" : "activate",
+                      )}
+                      disabled={
+                        personalContextConsentUpdating ||
+                        personalContextConsentState === "loading" ||
+                        workflowInProgress ||
+                        Boolean(loading) ||
+                        Boolean(voicePermission) ||
+                        !personalContextConsent?.notice.sha256
+                      }
+                      title={voicePermission}
+                      className={personalContextActive
+                        ? "mt-3 min-h-9 rounded-md border border-line px-3 text-xs font-semibold text-foreground hover:bg-surface-raised disabled:opacity-50"
+                        : "primary-button mt-3"}
+                    >
+                      {personalContextConsentUpdating ? (
+                        <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                      ) : personalContextActive ? (
+                        "Turn off"
+                      ) : (
+                        "Turn on"
+                      )}
+                    </button>
+                    {personalContextConsentError ? (
+                      <p className="mt-2 text-xs leading-5 text-danger" role="status">
+                        {personalContextConsentError}
+                      </p>
+                    ) : null}
+                  </div>
                   {contextScope === "project" ? (
                     <label className="mt-3 grid gap-1 text-xs font-semibold text-foreground" htmlFor="context-project">
                       Project
@@ -3235,6 +3378,11 @@ export function AgentRunsWorkspace({
                     disabled={workflowInProgress || loading === "agent"}
                     onChange={updateContextSelection}
                   />
+                ) : contextScope === "personal" ? (
+                  <div className="rounded-xl border border-primary/25 bg-primary/5 p-4 text-sm leading-6 text-muted">
+                    <strong className="text-foreground">Personal automatic context is on for this task.</strong>
+                    <p className="mt-1">Consent is checked again when the run starts. Only relevant owner-private memory is eligible, and the scope does not authorize tools or memory changes.</p>
+                  </div>
                 ) : contextScope === "mission" ||
                     contextScope === "project" ||
                     contextScope === "workspace" ? (
@@ -5105,6 +5253,7 @@ function GoalStage({
   loading,
   contextLoading,
   contextScope,
+  personalContextAvailable,
   missionContextAvailable,
   projectId,
   projects,
@@ -5145,6 +5294,7 @@ function GoalStage({
   loading?: string;
   contextLoading: boolean;
   contextScope: ActiveContextScopeId;
+  personalContextAvailable: boolean;
   missionContextAvailable: boolean;
   projectId: string;
   projects: CommandProject[];
@@ -5296,7 +5446,7 @@ function GoalStage({
                   <option
                     key={option.id}
                     value={option.id}
-                    disabled={option.disabled ||
+                    disabled={(option.id === "personal" && !personalContextAvailable) ||
                       (option.id === "mission" && !missionContextAvailable)}
                   >
                     {option.label}
@@ -5830,6 +5980,22 @@ async function readJson(path: string, init?: RequestInit) {
     throw new Error(stringValue(record.message || record.error, `${path} returned ${response.status}`));
   }
   return body;
+}
+
+function personalContextConsentView(value: unknown): PersonalContextConsentView {
+  const record = asRecord(value);
+  const notice = asRecord(record.notice);
+  const state = stringValue(record.state);
+  const text = stringValue(notice.text);
+  const sha256 = stringValue(notice.sha256);
+  if (
+    (state !== "active" && state !== "inactive") ||
+    !text ||
+    !/^[a-f0-9]{64}$/.test(sha256)
+  ) {
+    throw new Error("The personal-context consent response is invalid.");
+  }
+  return { state, notice: { text, sha256 } };
 }
 
 function refreshMessage(error: unknown) {
