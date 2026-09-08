@@ -504,6 +504,12 @@ its bounded page has completed, with the exact lease owner and generation in
 the update predicate. A failed page therefore retries idempotently without
 cursor overrun, healthy sibling sources continue, concurrent workers cannot
 clobber progress, and reauthorization clears both the old cursor and lease.
+On the one-slot Vercel database pool, the optional Drive ledgers run only after
+that authoritative cursor and lease have settled: the active canonical canary
+runs first, followed by the hash-only shadow. Their failures stay isolated from
+legacy sync health. Source coverage settlements use `source` only as a routing
+discriminator; it is removed before the schema-closed checkpoint payload is
+validated and persisted.
 
 Migration v42 begins P2.7 at the existing live `memory.forget` boundary. A
 tenant-and-memory-scoped deletion receipt is a permanent database barrier, not

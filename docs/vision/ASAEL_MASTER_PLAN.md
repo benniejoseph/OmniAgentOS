@@ -674,12 +674,19 @@ declared exclusion without credential material. An isolated encrypted-asset
 restore matched its declared byte count and content hash, became readable only
 after the owner-scoped private object reached ready, then was deleted and
 physically scrubbed with zero job failures. No database migration was required.
-The P2.3 implementation is complete, but the configured production Google
-grant is expired. Gmail, Calendar, Drive, and Photos truthfully report
-`action_required`; the first three retain partial historical sync with last
-success at `2026-09-06T02:56:10.000Z`, while current coverage is unknown and
-not started. The aggregate Phase 2 gate remains open only for an owner-completed
-Google reconnect and fresh live convergence proof.
+P2.3 and the aggregate Phase 2 gate are complete at production release
+`f49fff4e4d6a98b360b63c5637143a81ed430379`. The owner reauthorized Google at
+authorization generation 2. The active generation-3 canonical Drive canary
+then committed eight bounded pages containing 80 distinct live items; every
+observation is applied to the exact current revision and ordered head, with
+zero dead letters, item errors, invalid live heads, or duplicate provider
+heads. The live proof was read-only and did not alter provider files; bounded
+fixtures remain the evidence for create, edit, delete, move, retry, restore,
+and delayed concurrent convergence. Source settlements now persist after the
+legacy cursor and lease settle, while pre-existing legacy RAG replay conflicts
+remain truthfully reported rather than being promoted as canonical success.
+Legacy RAG stays authoritative under the canary contract; no read cutover is
+inferred from completing the phase gate.
 
 ### Phase 3 — Long-lasting, persistent, readable memory
 
@@ -1386,14 +1393,16 @@ non-canonical outcomes fail closed. The schema still enrolls no tenant and the
 legacy connector remains the production read/write path until a later,
 separately measured read cutover.
 
-The Drive P2.3 convergence pilot is implemented for its registered metadata
-surface. Adapter contract v2 observes creates, content/version edits, hashed
-parent-set moves, provider deletes, and restores; the five-field canonical
-order makes retries and delayed concurrent observations settle to one head.
-All provider identifiers and parent coordinates remain hash-only. The bounded
-rollout, checkpoint, and convergence fixtures pass. Production has migration
-v41 but no enrolled tenant or Google grant, so live-provider canary evidence
-and any read-authority promotion remain pending rather than inferred.
+The Drive P2.3 convergence pilot is production-proven for its registered
+metadata surface. Adapter contract v2 observes creates, content/version edits,
+hashed parent-set moves, provider deletes, and restores; the five-field
+canonical order makes retries and delayed concurrent observations settle to
+one head. All provider identifiers and parent coordinates remain hash-only.
+The bounded rollout, checkpoint, and convergence fixtures pass. The active
+generation-3 canary at authorization generation 2 committed eight live pages
+covering 80 distinct items, with exact current revisions and heads and zero
+duplicate heads or item errors. This closes the live-provider gate without
+promoting canonical data to read authority.
 
 The first P2.7 slice hardens the already-live `memory.forget` path before
 expanding deletion to every source. A permanent Postgres receipt, canonical
@@ -3172,7 +3181,7 @@ The task tables above are the source of truth. A phase is checked only after eve
 
 - [x] **Phase 0 — contracts and compatibility:** P0.1–P0.6 complete.
 - [x] **Phase 1 — truthful events and outcomes:** P1.1–P1.7 complete.
-- [ ] **Phase 2 — sources, assets, and privacy lifecycle:** P2.1–P2.8 complete.
+- [x] **Phase 2 — sources, assets, and privacy lifecycle:** P2.1–P2.8 complete.
 - [x] **Phase 3 — persistent memory:** P3.1–P3.7 complete.
 - [x] **Phase 4 — Context Management:** P4.1–P4.7 complete.
 - [x] **Phase 5 — Graph Engineering:** P5.1–P5.6 and the scale/parity phase gate complete.
