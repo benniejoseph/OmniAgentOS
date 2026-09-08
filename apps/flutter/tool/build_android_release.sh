@@ -6,6 +6,12 @@ task_flutter_dir="$(cd "$task_script_dir/.." && pwd)"
 task_keychain_service="${ASAEL_ANDROID_KEYCHAIN_SERVICE:-Asael Android Upload Keystore}"
 task_keystore_path="${ASAEL_ANDROID_KEYSTORE_PATH:-$HOME/Library/Application Support/Asael/signing/asael-upload-keystore.jks}"
 task_android_sdk_root="${ASAEL_ANDROID_SDK_ROOT:-$HOME/.asael/android-sdk}"
+task_build_target="${ASAEL_ANDROID_BUILD_TARGET:-appbundle}"
+
+if [[ "$task_build_target" != "appbundle" && "$task_build_target" != "apk" ]]; then
+  echo "ASAEL_ANDROID_BUILD_TARGET must be appbundle or apk." >&2
+  exit 1
+fi
 
 if [[ ! -f "$task_keystore_path" ]]; then
   echo "Android upload keystore not found: $task_keystore_path" >&2
@@ -24,4 +30,4 @@ if [[ -d "$task_android_sdk_root" ]]; then
 fi
 
 cd "$task_flutter_dir"
-flutter build appbundle --release "$@"
+flutter build "$task_build_target" --release "$@"
