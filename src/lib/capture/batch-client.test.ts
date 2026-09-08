@@ -57,4 +57,17 @@ describe("Capture batch client", () => {
       "ICT 2026 lesson 01",
     );
   });
+
+  it("caps a browser batch at fifty files", () => {
+    const current = Array.from({ length: 49 }, (_, index) =>
+      file(`lesson-${index}.txt`, 100, index + 1)
+    );
+    const result = mergeCaptureBatchFiles(current, [
+      file("lesson-50.txt", 100, 50),
+      file("lesson-51.txt", 100, 51),
+    ]);
+
+    expect(result.accepted).toHaveLength(1);
+    expect(result.rejected).toMatchObject([{ reason: "batch_full" }]);
+  });
 });

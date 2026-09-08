@@ -288,24 +288,31 @@ test("public and mobile application navigation stay usable", async ({ page }) =>
   await expect(page).toHaveURL(/\/app\/command$/);
 });
 
-test("capture inbox queues a note and a text file", async ({ page }) => {
+test("capture inbox queues a bulk transcript set", async ({ page }) => {
+  test.slow();
   await signIn(page);
-  await page.goto("/app/capture", { waitUntil: "networkidle" });
+  await page.goto("/app/capture");
   await expect(page.getByRole("heading", { name: "Turn anything worth keeping into usable context." })).toBeVisible();
 
-  await page.getByLabel("Note", { exact: true }).fill("The weekly review happens every Friday afternoon.");
-  await page.getByLabel("Title").fill("Weekly review cadence");
-  await page.getByRole("button", { name: "Store and index" }).click();
-  await expect(page.getByText(/Weekly review cadence.*stored and queued for indexing/)).toBeVisible({ timeout: 20_000 });
-
-  await page.getByTestId("capture-file-input").setInputFiles({
-    name: "project-notes.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from("# Project notes\n\nUse source-backed answers."),
-  });
-  await expect(page.getByText("project-notes.md")).toBeVisible();
-  await page.getByRole("button", { name: "Store and index" }).click();
-  await expect(page.getByText(/project notes.*stored and queued for indexing/i)).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("capture-file-input").setInputFiles([
+    {
+      name: "ict-lesson-01.vtt",
+      mimeType: "text/vtt",
+      buffer: Buffer.from("WEBVTT\n\n00:00.000 --> 00:02.000\nUse source-backed answers."),
+    },
+    {
+      name: "ict-lesson-02.srt",
+      mimeType: "application/x-subrip",
+      buffer: Buffer.from("1\n00:00:00,000 --> 00:00:02,000\nRespect the daily bias."),
+    },
+  ]);
+  await expect(page.getByText("2 files in this batch")).toBeVisible();
+  await expect(page.getByText("ict-lesson-01.vtt")).toBeVisible();
+  await expect(page.getByText("ict-lesson-02.srt")).toBeVisible();
+  await page.getByLabel("Tags").fill("ict-course, transcript");
+  await page.getByRole("button", { name: "Process 2 files" }).click();
+  await expect(page.getByText(/2 files are safely stored or queued/i)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText(/Queued for RAG and memory|Building RAG and memory|Indexed and ready in Command/).first()).toBeVisible();
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
