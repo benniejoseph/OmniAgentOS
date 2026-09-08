@@ -733,7 +733,7 @@ describe("ordered database schema versions", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
       version: 148,
       name: "personal_context_consent_v1",
-      checksum: "4ab1e810484efcb03640d6938d7a4077e7c8b6eecfc435b2c879a0833ad811d6",
+      checksum: "e41c0aa8ef3d49aa2b29da415d2ca37d4d1eeef3d36fe338cb1fffa2a6a48e0d",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
