@@ -14,12 +14,21 @@ import {
   advanceLoopV2Checkpoint,
   buildLoopV2EnginePin,
   createInitialLoopV2Checkpoint,
+  LOOP_V2_CONTEXT_SCOPES,
+  LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+  LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
+  LOOP_V2_CONTEXT_TEXT_INSTRUCTIONS,
   LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
   LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
   LOOP_V2_MODEL_TEXT_INSTRUCTIONS,
   type LoopV2Checkpoint,
   type LoopV2EnginePin,
 } from "@/lib/orchestration/loop-v2";
+import {
+  loopV2ContextRuntimeDependencies,
+  prepareLoopV2Context,
+  type LoopV2ContextRuntimeDependencies,
+} from "@/lib/orchestration/loop-v2-context-runtime";
 import {
   finalizeLoopV2Run,
   recordLoopV2Checkpoint,
@@ -30,7 +39,12 @@ import {
   buildLoopV2TerminalRunContract,
   type LoopV2RunContractSnapshot,
 } from "@/lib/orchestration/loop-v2-outcome";
-import type { AgentEvent, AgentMode } from "@/lib/orchestration/types";
+import type { RequestEntityAccessV1 } from "@/lib/entities/request-access";
+import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
+import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
+import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
+import type { ContextScopeId } from "@/lib/rag/context-scope";
+import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import {
   getCurrentTenantCapabilityRollout,
 } from "@/lib/rollouts/tenant-capability-rollouts";
@@ -46,6 +60,7 @@ import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import {
   resolveRuntimeModelAssignment,
+  type RuntimeModelResolution,
 } from "@/lib/settings/runtime-models";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { appendThreadTurn } from "@/lib/threads/store";
@@ -55,6 +70,12 @@ const MODEL_TEXT_MAX_INPUT_CHARS = 4_000;
 const MODEL_TEXT_MAX_OUTPUT_CHARS = 4_000;
 const MODEL_TEXT_MAX_OUTPUT_TOKENS = 256;
 const MODEL_TEXT_MAX_PROVIDER_ATTEMPTS = 4;
+
+type ConfiguredRuntimeModelResolution = RuntimeModelResolution & Readonly<{
+  configured: true;
+  provider: NonNullable<RuntimeModelResolution["provider"]>;
+  model: string;
+}>;
 
 export type LoopV2ModelTextEnrollment = Readonly<{
   enginePin: LoopV2EnginePin;
@@ -71,6 +92,7 @@ export type LoopV2ModelTextCandidate = Readonly<{
   requestedSpecialistIds?: readonly string[];
   missionId?: string;
   contextEvidenceIds?: readonly string[];
+  contextScope?: ContextScopeId;
   resumeRunId?: string;
 }>;
 
@@ -83,6 +105,12 @@ export type LoopV2ModelTextRequest = Readonly<{
   executionScope: ExecutionScope;
   enrollment: LoopV2ModelTextEnrollment;
   agentIdentity?: ResolvedAgentIdentityV1;
+  messages?: readonly ChatMessage[];
+  contextScope?: ContextScopeId;
+  contextSelection?: ContextSelectionLockBinding;
+  promptMemoryAccess?: RequestMemoryAccessV1;
+  promptSharedMemoryAccess?: RequestSharedMemoryAccessV1;
+  promptEntityGraphAccess?: RequestEntityAccessV1;
 }>;
 
 export type LoopV2ModelTextDependencies = Readonly<{
@@ -96,6 +124,8 @@ export type LoopV2ModelTextDependencies = Readonly<{
   finalizeRun: typeof persistTerminalCheckpoint;
   failUncheckpointedRun: typeof failAgentRun;
   appendIdentityPin?: typeof appendAgentRunIdentityPin;
+  prepareContext?: typeof prepareLoopV2Context;
+  contextDependencies?: LoopV2ContextRuntimeDependencies;
 }>;
 
 const runtimeDependencies: LoopV2ModelTextDependencies = Object.freeze({
@@ -109,6 +139,8 @@ const runtimeDependencies: LoopV2ModelTextDependencies = Object.freeze({
   finalizeRun: persistTerminalCheckpoint,
   failUncheckpointedRun: failAgentRun,
   appendIdentityPin: appendAgentRunIdentityPin,
+  prepareContext: prepareLoopV2Context,
+  contextDependencies: loopV2ContextRuntimeDependencies,
 });
 
 export function isLoopV2ModelTextCandidate(
@@ -125,6 +157,7 @@ export function isLoopV2ModelTextCandidate(
       !input.requestedSpecialistIds?.length &&
       !input.missionId &&
       !input.contextEvidenceIds?.length &&
+      !input.contextScope &&
       !input.resumeRunId &&
       Boolean(parseSummaryRequest(input.message)),
   );
@@ -151,6 +184,53 @@ export async function resolveLoopV2ModelTextEnrollment(
   }
 }
 
+export function isLoopV2ContextTextCandidate(
+  input: LoopV2ModelTextCandidate,
+) {
+  const contextScope = input.contextScope;
+  const evidenceCount = input.contextEvidenceIds?.length || 0;
+  return Boolean(
+    hasDatabaseUrl() &&
+      input.tenantId.trim() &&
+      input.mode === "orchestrate" &&
+      input.route === "direct" &&
+      !input.requiresApproval &&
+      input.requestUsesMessageField &&
+      !input.requestedSpecialistIds?.length &&
+      !input.resumeRunId &&
+      contextScope &&
+      LOOP_V2_CONTEXT_SCOPES.includes(
+        contextScope as (typeof LOOP_V2_CONTEXT_SCOPES)[number],
+      ) &&
+      (contextScope === "mission" ? Boolean(input.missionId) : !input.missionId) &&
+      (contextScope === "explicit_selection"
+        ? evidenceCount >= 1 && evidenceCount <= 8
+        : evidenceCount === 0) &&
+      Boolean(parseSummaryRequest(input.message)),
+  );
+}
+
+export async function resolveLoopV2ContextTextEnrollment(
+  input: LoopV2ModelTextCandidate,
+  getRollout: typeof getCurrentTenantCapabilityRollout =
+    getCurrentTenantCapabilityRollout,
+): Promise<LoopV2ModelTextEnrollment | null> {
+  if (!isLoopV2ContextTextCandidate(input)) return null;
+  const rollout = await getRollout({
+    tenantId: input.tenantId,
+    capabilityId: LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+  });
+  if (!rollout) return null;
+  try {
+    const enginePin = buildLoopV2EnginePin(rollout);
+    return enginePin.capabilityId === LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID
+      ? Object.freeze({ enginePin })
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function* runLoopV2ModelText(
   request: LoopV2ModelTextRequest,
   abortSignal?: AbortSignal,
@@ -161,6 +241,9 @@ export async function* runLoopV2ModelText(
   let runId: string | undefined;
   let current: LoopV2Checkpoint | undefined;
   let runContract: LoopV2RunContractSnapshot | undefined;
+  let runtimeModel: ConfiguredRuntimeModelResolution | undefined;
+  const contextCanary = request.enrollment.enginePin.capabilityId ===
+    LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID;
 
   const emit = async (event: AgentEvent) => {
     if (!runId) throw new Error("Loop v2 cannot emit before creating its run.");
@@ -198,7 +281,9 @@ export async function* runLoopV2ModelText(
       mode: request.mode,
       prompt: request.message,
       messages: [{ role: "user", content: request.message }],
-      model: LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
+      model: contextCanary
+        ? LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID
+        : LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
       agentId: request.agentId,
       specialistIds: [request.agentId],
     });
@@ -218,23 +303,55 @@ export async function* runLoopV2ModelText(
         executionScope,
       });
     }
+    if (contextCanary) {
+      runtimeModel = await resolveConfiguredRuntimeModel(context, dependencies);
+    }
+    const preparedContext = contextCanary
+      ? await (dependencies.prepareContext || prepareLoopV2Context)({
+          message: request.message,
+          summaryInput,
+          messages: request.messages || [{ role: "user", content: request.message }],
+          contextScope: request.contextScope as Exclude<ContextScopeId, "personal">,
+          contextSelection: request.contextSelection,
+          promptMemoryAccess: request.promptMemoryAccess,
+          promptSharedMemoryAccess: request.promptSharedMemoryAccess,
+          promptEntityGraphAccess: request.promptEntityGraphAccess,
+          securityContext: context,
+          executionScope,
+          agentId: request.agentId,
+          agentIdentity: identity,
+          runId,
+          providerId: runtimeModel!.provider,
+        }, dependencies.contextDependencies)
+      : undefined;
     const root = createInitialLoopV2Checkpoint({
       tenantId: context.tenantId,
       runId,
       ownerActorId: context.actorId,
       executionScope,
       enginePin: request.enrollment.enginePin,
+      ...(preparedContext
+        ? {
+            contextScope: request.contextScope as
+              (typeof LOOP_V2_CONTEXT_SCOPES)[number],
+            contextBindingSha256:
+              preparedContext.contextBinding.bindingSha256,
+          }
+        : {}),
     });
     runContract = buildLoopV2PreExecutionRunContract({
       rootCheckpoint: root,
       executionScope,
       requestSha256: sourceContractSha256(request.message),
       requestedOutcomeSha256: sourceContractSha256({
-        taskClass: "bounded_user_text_summary",
+        taskClass: contextCanary
+          ? "bounded_contextual_user_text_summary"
+          : "bounded_user_text_summary",
         semanticCorrectness: "model_assertion",
       }),
       agentId: request.agentId,
       agentIdentityPin,
+      contextManifest: preparedContext?.contextManifest,
     });
     await dependencies.persistCheckpoint(root, executionScope, runContract);
     current = root;
@@ -242,30 +359,29 @@ export async function* runLoopV2ModelText(
     yield await emit({ type: "run", runId, threadId: request.threadId });
     yield await emit({
       type: "status",
-      label: "Loop v2 model canary",
-      detail: "Running one bounded, tool-free summary through persisted checkpoints.",
+      label: contextCanary
+        ? "Loop v2 context canary"
+        : "Loop v2 model canary",
+      detail: contextCanary
+        ? "Running one bounded, tool-free summary with the reviewed context boundary."
+        : "Running one bounded, tool-free summary through persisted checkpoints.",
     });
 
-    const runtimeModel = await dependencies.resolveModelAssignment({
-      tenantId: context.tenantId,
-      actorId: context.actorId,
-      scope: "main_agent",
-      tier: "fast",
-      requiredFeature: "text",
-    });
-    if (!runtimeModel.configured || !runtimeModel.provider || !runtimeModel.model) {
-      throw new Error("No configured text model is available for Loop v2.");
-    }
+    runtimeModel ||= await resolveConfiguredRuntimeModel(context, dependencies);
     const credentialSource = runtimeModel.source === "tenant_assignment"
       ? "tenant_vault" as const
       : "deployment_environment" as const;
+    const instructions = contextCanary
+      ? LOOP_V2_CONTEXT_TEXT_INSTRUCTIONS
+      : LOOP_V2_MODEL_TEXT_INSTRUCTIONS;
+    const modelInput = preparedContext?.modelInput || summaryInput;
     await transition("plan_bound", {
-      taskClass: "bounded_user_text_summary",
-      inputSha256: sourceContractSha256(summaryInput),
-      inputChars: summaryInput.length,
-      instructionsSha256: sourceContractSha256(
-        LOOP_V2_MODEL_TEXT_INSTRUCTIONS,
-      ),
+      taskClass: contextCanary
+        ? "bounded_contextual_user_text_summary"
+        : "bounded_user_text_summary",
+      inputSha256: sourceContractSha256(modelInput),
+      inputChars: modelInput.length,
+      instructionsSha256: sourceContractSha256(instructions),
       modelAssignmentScope: runtimeModel.scope,
       modelAssignmentSource: runtimeModel.source,
       assignmentId: runtimeModel.assignmentId || null,
@@ -274,12 +390,14 @@ export async function* runLoopV2ModelText(
       maxLogicalModelCalls: 1,
       maxProviderAttempts: MODEL_TEXT_MAX_PROVIDER_ATTEMPTS,
       maxOutputTokens: MODEL_TEXT_MAX_OUTPUT_TOKENS,
-      contextEvidenceCount: 0,
+      contextEvidenceCount: preparedContext?.selectedEvidenceCount || 0,
+      contextBindingSha256:
+        preparedContext?.contextBinding.bindingSha256 || null,
       toolCount: 0,
     });
     throwIfAborted(abortSignal);
 
-    const callId = `${runId}:model-text:1`;
+    const callId = `${runId}:${contextCanary ? "context-text" : "model-text"}:1`;
     await transition("action_started", {
       callIdSha256: sourceContractSha256(callId),
       operation: "text_generation",
@@ -289,8 +407,8 @@ export async function* runLoopV2ModelText(
     });
 
     const modelRequest = runtimeModel.bind({
-      input: summaryInput,
-      instructions: LOOP_V2_MODEL_TEXT_INSTRUCTIONS,
+      input: modelInput,
+      instructions,
       tier: "fast" as const,
       preferredProvider: runtimeModel.provider,
       allowedProviders: [runtimeModel.provider],
@@ -302,7 +420,9 @@ export async function* runLoopV2ModelText(
         actorId: context.actorId,
         sourceStreamId: `run:${runId}`,
         operation: "text_generation" as const,
-        purpose: "agent.loop.v2.model_text",
+        purpose: contextCanary
+          ? "agent.loop.v2.context_text"
+          : "agent.loop.v2.model_text",
         correlationId: executionScope.correlationId,
         causationId: callId,
         executionScope,
@@ -475,24 +595,55 @@ export async function* runLoopV2ModelText(
 
 function assertRuntimeRequest(request: LoopV2ModelTextRequest) {
   const summaryInput = parseSummaryRequest(request.message);
+  const contextCanary = request.enrollment.enginePin.capabilityId ===
+    LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID;
+  const contextScope = request.contextScope;
+  const expectedPrincipalId = request.agentIdentity?.principal.principalId ||
+    request.agentId;
   if (
     !summaryInput ||
     request.securityContext.tenantId !== request.executionScope.tenantId ||
     request.securityContext.actorId !==
       request.executionScope.initiatingActorId ||
     request.executionScope.executingPrincipalType !== "agent" ||
-    request.executionScope.executingPrincipalId !== request.agentId ||
-    request.executionScope.purpose !== "agent.loop.v2.model_text_canary" ||
-    request.executionScope.contextGrantIds.length !== 0 ||
-    request.executionScope.missionId !== null ||
+    request.executionScope.executingPrincipalId !== expectedPrincipalId ||
     request.mode !== "orchestrate" ||
-    request.agentId !== "atlas" ||
-    request.enrollment.enginePin.capabilityId !==
-      LOOP_V2_MODEL_TEXT_CAPABILITY_ID
+    (contextCanary
+      ? !request.agentIdentity ||
+        !contextScope ||
+        !LOOP_V2_CONTEXT_SCOPES.includes(
+          contextScope as (typeof LOOP_V2_CONTEXT_SCOPES)[number],
+        ) ||
+        request.executionScope.purpose !==
+          "agent.loop.v2.context_text_canary"
+      : request.executionScope.purpose !==
+          "agent.loop.v2.model_text_canary" ||
+        request.executionScope.contextGrantIds.length !== 0 ||
+        request.executionScope.missionId !== null ||
+        request.agentId !== "atlas" ||
+        request.enrollment.enginePin.capabilityId !==
+          LOOP_V2_MODEL_TEXT_CAPABILITY_ID)
   ) {
     throw new Error("Loop v2 runtime request is outside the model-text canary.");
   }
   return summaryInput;
+}
+
+async function resolveConfiguredRuntimeModel(
+  context: SecurityContext,
+  dependencies: LoopV2ModelTextDependencies,
+): Promise<ConfiguredRuntimeModelResolution> {
+  const runtimeModel = await dependencies.resolveModelAssignment({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    scope: "main_agent",
+    tier: "fast",
+    requiredFeature: "text",
+  });
+  if (!runtimeModel.configured || !runtimeModel.provider || !runtimeModel.model) {
+    throw new Error("No configured text model is available for Loop v2.");
+  }
+  return runtimeModel as ConfiguredRuntimeModelResolution;
 }
 
 function parseSummaryRequest(value: string) {

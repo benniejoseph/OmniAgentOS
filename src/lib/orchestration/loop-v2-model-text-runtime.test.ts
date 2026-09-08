@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+  LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256,
+  LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
   LOOP_V2_CONTRACT_VERSION_ID,
   LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
   LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256,
@@ -8,15 +11,21 @@ import {
   type LoopV2Checkpoint,
 } from "@/lib/orchestration/loop-v2";
 import {
+  isLoopV2ContextTextCandidate,
   isLoopV2ModelTextCandidate,
+  resolveLoopV2ContextTextEnrollment,
   resolveLoopV2ModelTextEnrollment,
   runLoopV2ModelText,
   type LoopV2ModelTextDependencies,
   type LoopV2ModelTextEnrollment,
 } from "@/lib/orchestration/loop-v2-model-text-runtime";
+import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
+import { buildLoopV2ContextBindingV1 } from "@/lib/orchestration/loop-v2-context-contract";
+import { buildLoopV2ContextManifest } from "@/lib/orchestration/loop-v2-outcome";
 import type { AgentEvent } from "@/lib/orchestration/types";
 import type { TenantCapabilityRollout } from "@/lib/rollouts/tenant-capability-rollouts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -61,6 +70,46 @@ describe("Loop v2 model-text enrollment", () => {
       ...candidate,
       message: `Please summarize: ${"a".repeat(80)}`,
     })).toBe(false);
+  });
+
+  it("uses a separate context engine only for an explicit bounded scope", async () => {
+    vi.stubEnv("DATABASE_URL", "postgres://test.invalid/db");
+    const candidate = {
+      ...modelCandidate("a".repeat(80)),
+      contextScope: "session" as const,
+    };
+    expect(isLoopV2ModelTextCandidate(candidate)).toBe(false);
+    expect(isLoopV2ContextTextCandidate(candidate)).toBe(true);
+    await expect(resolveLoopV2ContextTextEnrollment(
+      candidate,
+      vi.fn().mockResolvedValue(contextRollout()),
+    )).resolves.toMatchObject({
+      enginePin: {
+        capabilityId: LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+        engineVersionId: LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
+      },
+    });
+    expect(isLoopV2ContextTextCandidate({
+      ...candidate,
+      contextScope: "explicit_selection",
+      contextEvidenceIds: [],
+    })).toBe(false);
+    expect(isLoopV2ContextTextCandidate({
+      ...candidate,
+      contextScope: "explicit_selection",
+      contextEvidenceIds: Array.from({ length: 9 }, (_, index) =>
+        `memory:${index}`
+      ),
+    })).toBe(false);
+    expect(isLoopV2ContextTextCandidate({
+      ...candidate,
+      contextScope: "mission",
+    })).toBe(false);
+    expect(isLoopV2ContextTextCandidate({
+      ...candidate,
+      contextScope: "mission",
+      missionId: "mission-a",
+    })).toBe(true);
   });
 });
 
@@ -163,6 +212,43 @@ describe("Loop v2 model-text runtime", () => {
       type: "error",
       message: "provider unavailable",
     });
+  });
+
+  it("binds reviewed context before the context-text model call", async () => {
+    const harness = runtimeHarness();
+    const request = contextModelRequest();
+    const prepared = preparedContext(request);
+    harness.prepareContext.mockResolvedValue(prepared);
+    const events = await collect(runLoopV2ModelText(
+      request,
+      undefined,
+      harness.dependencies,
+    ));
+
+    expect(harness.prepareContext).toHaveBeenCalledTimes(1);
+    expect(harness.generateText).toHaveBeenCalledTimes(1);
+    expect(harness.generateText).toHaveBeenCalledWith(expect.objectContaining({
+      input: "context-bound model input",
+      usageScope: expect.objectContaining({
+        purpose: "agent.loop.v2.context_text",
+      }),
+    }));
+    expect(harness.checkpoints[0]).toMatchObject({
+      contextScope: "session",
+      contextBindingSha256: prepared.contextBinding.bindingSha256,
+      enginePin: {
+        capabilityId: LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+      },
+    });
+    expect(harness.checkpoints.map((checkpoint) => checkpoint.toState)).toEqual([
+      "understand",
+      "plan",
+      "act",
+      "observe",
+      "verify",
+      "finish",
+    ]);
+    expect(events.at(-1)).toMatchObject({ type: "done" });
   });
 
   it.each([
@@ -275,6 +361,72 @@ function modelRequest() {
   };
 }
 
+function contextModelRequest() {
+  const agentIdentity = buildBuiltInAgentIdentityV1({
+    agentId: "atlas",
+    tenantId: "tenant-a",
+    controllerActorId: "actor-a",
+  });
+  return {
+    ...modelRequest(),
+    messages: [
+      { role: "user" as const, content: "Earlier context." },
+      { role: "user" as const, content: `Summarize this text: ${sourceText()}` },
+    ],
+    contextScope: "session" as const,
+    agentIdentity,
+    executionScope: createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "actor-a",
+      executingPrincipalType: "agent",
+      executingPrincipalId: agentIdentity.principal.principalId,
+      correlationId: "request-a",
+      contextGrantIds: agentIdentity.principal.contextGrantIds,
+      capabilityGrantIds: agentIdentity.principal.capabilityGrantIds,
+      purpose: "agent.loop.v2.context_text_canary",
+    }),
+    enrollment: {
+      enginePin: contextEnginePin(),
+    } as LoopV2ModelTextEnrollment,
+  };
+}
+
+function preparedContext(request: ReturnType<typeof contextModelRequest>) {
+  const contextManifest = buildLoopV2ContextManifest({
+    runId: "run-model-v2",
+    querySha256: sourceContractSha256(sourceText()),
+    contextScope: "session",
+    selectedContext: [],
+    userInclusionIds: [],
+    userExclusionIds: [],
+    compiledContextSha256: sourceContractSha256("Earlier context."),
+    contextTokenCount: 16,
+    providerId: "openai",
+    compilerVersionId: "context-compiler-authorized:1",
+  });
+  const contextBinding = buildLoopV2ContextBindingV1({
+    tenantId: "tenant-a",
+    runId: "run-model-v2",
+    ownerActorId: "actor-a",
+    agentPrincipalId: request.agentIdentity.principal.principalId,
+    contextScope: "session",
+    authoritySha256: sourceContractSha256("session"),
+    executionScope: request.executionScope,
+    querySha256: sourceContractSha256(sourceText()),
+    conversationSha256: sourceContractSha256("Earlier context."),
+    contextManifestSha256: sourceContractSha256(contextManifest),
+    compiledContextSha256: sourceContractSha256("Earlier context."),
+    selectedEvidenceIds: [],
+    boundAt: "2026-09-08T00:00:00.000Z",
+  });
+  return {
+    modelInput: "context-bound model input",
+    contextManifest,
+    contextBinding,
+    selectedEvidenceCount: 0,
+  };
+}
+
 function runtimeHarness() {
   const checkpoints: LoopV2Checkpoint[] = [];
   const createRun = vi.fn().mockResolvedValue({
@@ -318,6 +470,7 @@ function runtimeHarness() {
   );
   const failUncheckpointedRun = vi.fn().mockResolvedValue(true);
   const appendIdentityPin = vi.fn().mockResolvedValue(undefined);
+  const prepareContext = vi.fn();
   const dependencies = {
     createRun,
     bindRunScope,
@@ -329,6 +482,7 @@ function runtimeHarness() {
     finalizeRun,
     failUncheckpointedRun,
     appendIdentityPin,
+    prepareContext,
   } as unknown as LoopV2ModelTextDependencies;
   return {
     dependencies,
@@ -338,6 +492,7 @@ function runtimeHarness() {
     appendAssistantTurn,
     failUncheckpointedRun,
     appendIdentityPin,
+    prepareContext,
   };
 }
 
@@ -383,6 +538,18 @@ function enginePin() {
   };
 }
 
+function contextEnginePin() {
+  return {
+    capabilityId: LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+    engineVersionId: LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
+    contractVersionId: LOOP_V2_CONTRACT_VERSION_ID,
+    configurationSha256: LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256,
+    rolloutMode: "canary" as const,
+    rolloutGeneration: 1,
+    rolloutLifecycleRevision: 1,
+  };
+}
+
 function rollout(): TenantCapabilityRollout {
   return {
     schemaVersion: 1,
@@ -400,6 +567,15 @@ function rollout(): TenantCapabilityRollout {
     activatedAt: "2026-09-06T06:00:00.000Z",
     createdAt: "2026-09-06T06:00:00.000Z",
     updatedAt: "2026-09-06T06:00:00.000Z",
+  };
+}
+
+function contextRollout(): TenantCapabilityRollout {
+  return {
+    ...rollout(),
+    capabilityId: LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+    engineVersion: LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
+    configurationSha256: LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256,
   };
 }
 
