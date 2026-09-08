@@ -20,6 +20,14 @@ import {
   SharedContextAuthorityError,
 } from "@/lib/memory/shared-context";
 import {
+  personalContextMemoryAccessFromSecurityContext,
+} from "@/lib/memory/personal-context-access";
+import {
+  PersonalContextConsentError,
+  requireActivePersonalContextConsent,
+} from "@/lib/memory/personal-context-consent-store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import {
   contextSelectionRequestSchema,
   verifyContextSelectionLock,
 } from "@/lib/rag/context-selection-lock";
@@ -36,6 +44,7 @@ import {
   workflowAgentPrivateDatabaseAccessScope,
   workflowAgentPrivatePlanContextBoundary,
 } from "@/lib/workflows/agent-private-context";
+import { workflowPersonalPlanContextBoundary } from "@/lib/workflows/personal-context";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -249,6 +258,49 @@ async function POSTHandler(request: Request) {
       });
     }
   }
+  let personalContextAccess;
+  if (parsed.data.contextScope === "personal") {
+    const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
+    if (!actorBinding) {
+      return Response.json({
+        error: "Personal context unavailable",
+        message: "Personal automatic context requires an authenticated account.",
+      }, {
+        status: 403,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+    try {
+      const consentAuthority = await requireActivePersonalContextConsent({
+        tenantId: context.tenantId,
+        actorBinding,
+      });
+      personalContextAccess = personalContextMemoryAccessFromSecurityContext(
+        context,
+        { correlationId: planCorrelationId, consentAuthority },
+      );
+      if (!personalContextAccess) {
+        throw new PersonalContextConsentError(
+          "invalid_authority",
+          "Personal-context plan authority is invalid.",
+        );
+      }
+    } catch (error) {
+      const inactive = error instanceof PersonalContextConsentError &&
+        error.code === "inactive";
+      return Response.json({
+        error: inactive
+          ? "Personal context not authorized"
+          : "Personal context unavailable",
+        message: inactive
+          ? "Turn on Personal automatic context before planning with this scope."
+          : "Personal automatic context authority could not be verified.",
+      }, {
+        status: inactive ? 409 : 503,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+  }
   let agentPrivateIdentity;
   if (parsed.data.contextScope === "agent_private" && parsed.data.agentId) {
     try {
@@ -284,10 +336,12 @@ async function POSTHandler(request: Request) {
     goal: parsed.data.goal,
     contextSelection: contextSelection || (parsed.data.contextScope &&
         !isWorkflowSharedContextScope(parsed.data.contextScope) &&
-        parsed.data.contextScope !== "agent_private"
+        parsed.data.contextScope !== "agent_private" &&
+        parsed.data.contextScope !== "personal"
       ? { query: parsed.data.goal, evidenceIds: [] }
       : undefined),
     databaseMemoryAccessScope: sharedContextAccess?.databaseAccessScope ||
+      personalContextAccess?.databaseAccessScope ||
       (agentPrivateIdentity
         ? workflowAgentPrivateDatabaseAccessScope({
             identity: agentPrivateIdentity,
@@ -303,6 +357,8 @@ async function POSTHandler(request: Request) {
         )
       : agentPrivateIdentity
         ? workflowAgentPrivatePlanContextBoundary(agentPrivateIdentity)
+        : personalContextAccess
+          ? workflowPersonalPlanContextBoundary(personalContextAccess)
         : undefined,
     mode: parsed.data.mode,
     workflowRunId: parsed.data.workflowRunId,

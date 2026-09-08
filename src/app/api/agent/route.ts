@@ -111,6 +111,10 @@ import {
   createWorkflowAgentPrivateContextBinding,
   WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY,
 } from "@/lib/workflows/agent-private-context";
+import {
+  createWorkflowPersonalContextBinding,
+  WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/personal-context";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 
@@ -1005,8 +1009,10 @@ async function POSTHandler(request: Request) {
               {
                 ...agentPrincipalExecution,
                 workspaceId: promptSharedMemoryAccess?.authority.workspaceId,
-                projectId: promptSharedMemoryAccess?.authority.projectId ||
-                  threadProjectId,
+                projectId: parsed.data.contextScope === "personal"
+                  ? undefined
+                  : promptSharedMemoryAccess?.authority.projectId ||
+                    threadProjectId,
                 missionId: mission.id,
                 correlationId: requestId,
                 causationId: missionTask.id,
@@ -1029,6 +1035,12 @@ async function POSTHandler(request: Request) {
                     workflowExecutionScope,
                   })
                 : undefined;
+            const workflowPersonalContext = promptPersonalMemoryAccess
+              ? createWorkflowPersonalContextBinding({
+                  access: promptPersonalMemoryAccess,
+                  workflowExecutionScope,
+                })
+              : undefined;
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
               executionAuthority: {
@@ -1073,6 +1085,12 @@ async function POSTHandler(request: Request) {
                         workflowAgentPrivateContext,
                     }
                   : {}),
+                ...(workflowPersonalContext
+                  ? {
+                      [WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY]:
+                        workflowPersonalContext,
+                    }
+                  : {}),
               },
               idempotencyKey: `supervisor:${context.actorId}:${requestId}`,
             });
@@ -1091,6 +1109,12 @@ async function POSTHandler(request: Request) {
                 asBindingSha256(
                   detail.run.input.metadata?.[WORKFLOW_SHARED_CONTEXT_METADATA_KEY],
                 ) !== workflowSharedContext.bindingSha256)
+              || (detail.run.input.metadata?.[WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY] !==
+                undefined && !workflowPersonalContext)
+              || (workflowPersonalContext &&
+                asBindingSha256(
+                  detail.run.input.metadata?.[WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY],
+                ) !== workflowPersonalContext.bindingSha256)
             ) {
               throw new Error("requestId was already used with a different context boundary. Submit this work with a new requestId.");
             }

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   requestSharedMemoryAccess: vi.fn(),
   resolveAgentIdentityForExecution: vi.fn(),
   enqueueWorkflowRunTick: vi.fn(),
+  requireActivePersonalContextConsent: vi.fn(),
 }));
 
 vi.mock("@/lib/agents/identity-store", () => ({
@@ -29,6 +30,23 @@ vi.mock("@/lib/workflows/agent-private-context", () => ({
     contextScope: "agent_private",
     agentId: "atlas",
     authoritySha256: "c".repeat(64),
+  })),
+}));
+vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/personal-context-consent-store")>()),
+  requireActivePersonalContextConsent:
+    mocks.requireActivePersonalContextConsent,
+}));
+vi.mock("@/lib/workflows/personal-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/workflows/personal-context")>()),
+  createWorkflowPersonalContextBinding: vi.fn(() => ({
+    bindingSha256: "personal-binding-a",
+  })),
+  workflowPersonalPlanContextBoundary: vi.fn(() => ({
+    schemaVersion: 1,
+    policyVersion: "workflow-personal-context-v1",
+    contextScope: "personal",
+    authoritySha256: "d".repeat(64),
   })),
 }));
 
@@ -105,6 +123,12 @@ const context = {
   actorId: "owner@example.test",
   role: "admin" as const,
   source: "session" as const,
+  auth: {
+    userId: "a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+    email: "owner@example.test",
+    sessionId: "session-a",
+    tenantName: "Tenant A",
+  },
 };
 
 beforeEach(() => {
@@ -126,6 +150,21 @@ beforeEach(() => {
       contextGrantIds: [],
       capabilityGrantIds: [],
     },
+  });
+  mocks.requireActivePersonalContextConsent.mockResolvedValue({
+    schemaVersion: 1,
+    contractId: "personal-context-consent:1",
+    tenantId: context.tenantId,
+    actorId: `actor:${context.auth.userId}`,
+    consentGeneration: 1,
+    lifecycleRevision: 1,
+    noticeContractId: "notice:personal-context-automatic",
+    noticeContractVersion: 1,
+    noticeSha256:
+      "443267b19d744dc16298e950b4c5c0f8543124a526488fa018668193e61f1e75",
+    activatedAt: "2026-09-08T00:00:00.000Z",
+    authoritySha256:
+      "e0fe7b722444187d3c675b38f84c575139c74f8e8393fe267cffaa3c51ee9fe5",
   });
   mocks.createWorkflowRun.mockImplementation(async (input) => ({
     run: {
@@ -239,6 +278,28 @@ describe("workflow start shared context", () => {
           }),
           _workflowAgentPrivateContext: {
             bindingSha256: "agent-binding-a",
+          },
+        }),
+      }),
+    );
+    const created = mocks.createWorkflowRun.mock.calls[0]?.[0];
+    expect(created.metadata.contextSelection).toBeUndefined();
+  });
+
+  it("replaces caller metadata with an active personal-context binding", async () => {
+    const response = await POST(workflowRequest({
+      contextScope: "personal",
+      _workflowPersonalContext: { bindingSha256: "caller-value" },
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.requireActivePersonalContextConsent).toHaveBeenCalledOnce();
+    expect(mocks.createWorkflowRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          contextScope: "personal",
+          _workflowPersonalContext: {
+            bindingSha256: "personal-binding-a",
           },
         }),
       }),

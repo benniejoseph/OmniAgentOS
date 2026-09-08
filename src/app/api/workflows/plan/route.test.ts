@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getWorkflowPlanStats: vi.fn(),
   listWorkflowPlans: vi.fn(),
   resolveAgentIdentityForExecution: vi.fn(),
+  requireActivePersonalContextConsent: vi.fn(),
   sql: vi.fn(),
 }));
 
@@ -35,6 +36,11 @@ vi.mock("@/lib/workflows/agent-private-context", () => ({
     agentId: "atlas",
     authoritySha256: "b".repeat(64),
   })),
+}));
+vi.mock("@/lib/memory/personal-context-consent-store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/memory/personal-context-consent-store")>()),
+  requireActivePersonalContextConsent:
+    mocks.requireActivePersonalContextConsent,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -84,6 +90,21 @@ describe("workflow plan context lock", () => {
     mocks.resolveAgentIdentityForExecution.mockResolvedValue({
       definition: { logicalAgentId: "atlas" },
       principal: { principalId: "agent:atlas:principal" },
+    });
+    mocks.requireActivePersonalContextConsent.mockResolvedValue({
+      schemaVersion: 1,
+      contractId: "personal-context-consent:1",
+      tenantId: context.tenantId,
+      actorId: `actor:${context.auth.userId}`,
+      consentGeneration: 1,
+      lifecycleRevision: 1,
+      noticeContractId: "notice:personal-context-automatic",
+      noticeContractVersion: 1,
+      noticeSha256:
+        "443267b19d744dc16298e950b4c5c0f8543124a526488fa018668193e61f1e75",
+      activatedAt: "2026-09-08T00:00:00.000Z",
+      authoritySha256:
+        "e0fe7b722444187d3c675b38f84c575139c74f8e8393fe267cffaa3c51ee9fe5",
     });
     mocks.sql.mockImplementation((parts: TemplateStringsArray) => {
       const query = parts.join(" ");
@@ -190,6 +211,31 @@ describe("workflow plan context lock", () => {
           contextScope: "agent_private",
           agentId: "atlas",
           authoritySha256: "b".repeat(64),
+        }),
+      }),
+    );
+  });
+
+  it("plans automatic personal context with active standing consent", async () => {
+    const response = await POST(workflowPlanRequest({
+      contextScope: "personal",
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.requireActivePersonalContextConsent).toHaveBeenCalledOnce();
+    expect(mocks.buildDynamicWorkflowPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextSelection: undefined,
+        databaseMemoryAccessScope: expect.objectContaining({
+          initiatingActorId: `actor:${context.auth.userId}`,
+          executingPrincipalType: "user",
+          workspaceId: null,
+          projectId: null,
+          missionId: null,
+        }),
+        contextBoundary: expect.objectContaining({
+          contextScope: "personal",
+          policyVersion: "workflow-personal-context-v1",
         }),
       }),
     );
