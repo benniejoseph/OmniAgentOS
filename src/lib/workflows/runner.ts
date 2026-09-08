@@ -62,6 +62,10 @@ import {
   resolveWorkflowAgentPrivateContextAccess,
   WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY,
 } from "@/lib/workflows/agent-private-context";
+import {
+  resolveWorkflowPersonalContextAccess,
+  WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/personal-context";
 import { parseWorkflowProcedureSnapshot } from "@/lib/workflows/saved-procedures";
 import {
   approveWorkflowRun,
@@ -960,6 +964,18 @@ async function executeStep(
     const profile = workflowAgentProfile(detail);
     const specialistContext = await buildWorkflowSpecialistContext(detail);
     const durableContext = await workflowDurableContextForRun(detail);
+    const personalContextExecutionScope =
+      detail.run.input.metadata?.contextScope === "personal"
+        ? (await getWorkflowRunExecutionAuthority(detail.run.id, {
+            tenantId: detail.run.tenantId,
+          }))?.executionScope
+        : undefined;
+    if (
+      detail.run.input.metadata?.contextScope === "personal" &&
+      !personalContextExecutionScope
+    ) {
+      throw new Error("Workflow personal-context root authority is missing.");
+    }
     if (profile?.memoryScope === "session" && !durableContext) {
       return {
         contextCount: specialistContext.count,
@@ -989,6 +1005,14 @@ async function executeStep(
         scopedMemoryOnly: true,
         persistTrace: false,
       } : {}),
+      ...(detail.run.input.metadata?.contextScope === "personal"
+        ? {
+            contextCompilerV2Automatic: {
+              runId: detail.run.id,
+              executionScope: personalContextExecutionScope!,
+            },
+          }
+        : {}),
       contextBudget: {
         taskContextTokenLimit: WORKFLOW_CONTEXT_TASK_TOKEN_LIMIT,
       },
@@ -1010,6 +1034,18 @@ async function executeStep(
         },
       },
     });
+    if (detail.run.input.metadata?.contextScope === "personal") {
+      if (!retrieval.compilerV2Automatic) {
+        throw new Error(
+          "Workflow personal context requires an authoritative compiler receipt.",
+        );
+      }
+      await appendWorkflowEvent(
+        detail.run.id,
+        "workflow.context_compiler_v2.automatic",
+        retrieval.compilerV2Automatic.receipt,
+      );
+    }
     return {
       contextCount: retrieval.results.length + specialistContext.count,
       memoryCount: retrieval.memoryResults.length,
@@ -1770,7 +1806,8 @@ function workflowContextSelection(
     : undefined;
   if (
     isWorkflowSharedContextScope(contextScope) ||
-    contextScope === "agent_private"
+    contextScope === "agent_private" ||
+    contextScope === "personal"
   ) {
     return undefined;
   }
@@ -1809,8 +1846,10 @@ async function workflowDurableContextForRun(detail: WorkflowRunDetail) {
     detail.run.input.metadata?.[WORKFLOW_SHARED_CONTEXT_METADATA_KEY];
   const agentPrivateBinding =
     detail.run.input.metadata?.[WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY];
+  const personalBinding =
+    detail.run.input.metadata?.[WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY];
   if (isWorkflowSharedContextScope(contextScope)) {
-    if (agentPrivateBinding !== undefined) {
+    if (agentPrivateBinding !== undefined || personalBinding !== undefined) {
       throw new Error("Workflow contains conflicting durable context bindings.");
     }
     if (sharedBinding === undefined) {
@@ -1828,7 +1867,7 @@ async function workflowDurableContextForRun(detail: WorkflowRunDetail) {
     });
   }
   if (contextScope === "agent_private") {
-    if (sharedBinding !== undefined) {
+    if (sharedBinding !== undefined || personalBinding !== undefined) {
       throw new Error("Workflow contains conflicting durable context bindings.");
     }
     if (agentPrivateBinding === undefined) {
@@ -1845,7 +1884,28 @@ async function workflowDurableContextForRun(detail: WorkflowRunDetail) {
       workflowExecutionScope: authority.executionScope,
     });
   }
-  if (sharedBinding !== undefined || agentPrivateBinding !== undefined) {
+  if (contextScope === "personal") {
+    if (sharedBinding !== undefined || agentPrivateBinding !== undefined) {
+      throw new Error("Workflow contains conflicting durable context bindings.");
+    }
+    if (personalBinding === undefined) {
+      throw new Error("Workflow personal-context authority is missing.");
+    }
+    const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+      tenantId: detail.run.tenantId,
+    });
+    if (!authority) {
+      throw new Error("Workflow personal-context root authority is missing.");
+    }
+    return resolveWorkflowPersonalContextAccess({
+      binding: personalBinding,
+      workflowExecutionScope: authority.executionScope,
+    });
+  }
+  if (
+    sharedBinding !== undefined || agentPrivateBinding !== undefined ||
+    personalBinding !== undefined
+  ) {
     throw new Error("Workflow contains an unrequested durable-context binding.");
   }
   return undefined;

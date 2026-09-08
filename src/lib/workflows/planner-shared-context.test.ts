@@ -6,11 +6,15 @@ import type { ToolDefinition } from "@/lib/tools/types";
 
 const mocks = vi.hoisted(() => ({
   buildContextPack: vi.fn(),
+  appendScopedDomainEvent: vi.fn(),
   definitions: [] as ToolDefinition[],
 }));
 
 vi.mock("@/lib/rag/context-engine", () => ({
   buildContextPack: mocks.buildContextPack,
+}));
+vi.mock("@/lib/events/store", () => ({
+  appendScopedDomainEvent: mocks.appendScopedDomainEvent,
 }));
 vi.mock("@/lib/capabilities/toolbox", () => ({
   loadProgressiveAgentTools: vi.fn(async () => ({
@@ -45,6 +49,7 @@ beforeEach(() => {
     contextBlock: "Authorized Project context",
     trace: undefined,
   });
+  mocks.appendScopedDomainEvent.mockReset().mockResolvedValue(undefined);
 });
 
 describe("workflow planner shared-context boundary", () => {
@@ -110,5 +115,82 @@ describe("workflow planner shared-context boundary", () => {
       },
     })).rejects.toThrow(/complete authority boundary/i);
     expect(mocks.buildContextPack).not.toHaveBeenCalled();
+  });
+
+  it("commits an automatic compiler barrier before personal-context planning", async () => {
+    const { buildDynamicWorkflowPlan } = await import("@/lib/workflows/planner");
+    const executionScope = {
+      version: 1 as const,
+      tenantId: "tenant-shared",
+      initiatingActorId: "owner@example.test",
+      executingPrincipalType: "user" as const,
+      executingPrincipalId: "owner@example.test",
+      workspaceId: null,
+      projectId: null,
+      missionId: null,
+      delegationId: null,
+      correlationId: "personal-plan-a",
+      causationId: null,
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purpose: "workflow.plan.create",
+    };
+    const databaseMemoryAccessScope = {
+      version: 1 as const,
+      tenantId: "tenant-shared",
+      initiatingActorId: "actor:owner",
+      executingPrincipalType: "user" as const,
+      executingPrincipalId: "actor:owner",
+      workspaceId: null,
+      projectId: null,
+      missionId: null,
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purposeId: "memory.retrieve.v1",
+      purpose: "agent.context.personal.retrieve",
+    };
+    const receipt = {
+      receiptSha256: "f".repeat(64),
+      mode: "automatic",
+    };
+    mocks.buildContextPack.mockResolvedValue({
+      contextBlock: "Authorized personal context",
+      trace: undefined,
+      compilerV2Automatic: { receipt, selectedEvidenceIds: [] },
+    });
+
+    await buildDynamicWorkflowPlan({
+      tenantId: "tenant-shared",
+      actorId: "owner@example.test",
+      goal: "List recent runs for me",
+      databaseMemoryAccessScope,
+      contextBoundary: {
+        schemaVersion: 1,
+        policyVersion: "workflow-personal-context-v1",
+        contextScope: "personal",
+        authoritySha256: "a".repeat(64),
+      },
+      executionScope,
+      requiredToolBindings: [{ toolId: "runs.list", input: { limit: 5 } }],
+    });
+
+    expect(mocks.buildContextPack).toHaveBeenCalledWith(
+      "List recent runs for me",
+      expect.objectContaining({
+        databaseMemoryAccessScope,
+        contextCompilerV2Automatic: expect.objectContaining({
+          executionScope,
+        }),
+      }),
+    );
+    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "workflow.plan.context_compiler_v2.automatic",
+        payload: receipt,
+        executionScope: expect.objectContaining({
+          purpose: "workflow.plan.context_compiler_v2.automatic",
+        }),
+      }),
+    );
   });
 });

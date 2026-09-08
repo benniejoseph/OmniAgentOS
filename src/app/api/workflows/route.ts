@@ -20,6 +20,12 @@ import {
   requestSharedMemoryAccessFromSecurityContext,
   SharedContextAuthorityError,
 } from "@/lib/memory/shared-context";
+import { personalContextMemoryAccessFromSecurityContext } from "@/lib/memory/personal-context-access";
+import {
+  PersonalContextConsentError,
+  requireActivePersonalContextConsent,
+} from "@/lib/memory/personal-context-consent-store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import {
   narrowRunBudgetLimits,
@@ -63,6 +69,11 @@ import {
   workflowAgentPrivatePlanContextBoundary,
   WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY,
 } from "@/lib/workflows/agent-private-context";
+import {
+  createWorkflowPersonalContextBinding,
+  workflowPersonalPlanContextBoundary,
+  WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/personal-context";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -166,6 +177,7 @@ async function POSTHandler(request: Request) {
       [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]: _untrustedSharedContext,
       [WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY]:
         _untrustedAgentPrivateContext,
+      [WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY]: _untrustedPersonalContext,
       contextSelection: _untrustedContextSelection,
       agentIdentity: _untrustedAgentIdentity,
       agentProfile: _untrustedAgentProfile,
@@ -174,6 +186,7 @@ async function POSTHandler(request: Request) {
     } = parsed.data.metadata || {};
     void _untrustedSharedContext;
     void _untrustedAgentPrivateContext;
+    void _untrustedPersonalContext;
     void _untrustedContextSelection;
     void _untrustedAgentIdentity;
     void _untrustedAgentProfile;
@@ -389,6 +402,49 @@ async function POSTHandler(request: Request) {
         });
       }
     }
+    let personalContextAccess;
+    if (contextScope === "personal") {
+      const actorBinding = canonicalRequestActorBindingFromSecurityContext(context);
+      if (!actorBinding) {
+        return Response.json({
+          error: "Personal context unavailable",
+          message: "Personal automatic context requires an authenticated account.",
+        }, {
+          status: 403,
+          headers: { "cache-control": "private, no-store" },
+        });
+      }
+      try {
+        const consentAuthority = await requireActivePersonalContextConsent({
+          tenantId: context.tenantId,
+          actorBinding,
+        });
+        personalContextAccess = personalContextMemoryAccessFromSecurityContext(
+          context,
+          { correlationId: workflowCorrelationId, consentAuthority },
+        );
+        if (!personalContextAccess) {
+          throw new PersonalContextConsentError(
+            "invalid_authority",
+            "Personal-context workflow authority is invalid.",
+          );
+        }
+      } catch (error) {
+        const inactive = error instanceof PersonalContextConsentError &&
+          error.code === "inactive";
+        return Response.json({
+          error: inactive
+            ? "Personal context not authorized"
+            : "Personal context unavailable",
+          message: inactive
+            ? "Turn on Personal automatic context before starting this workflow."
+            : "Personal automatic context authority could not be verified.",
+        }, {
+          status: inactive ? 409 : 503,
+          headers: { "cache-control": "private, no-store" },
+        });
+      }
+    }
     let agentPrivateSelection;
     if (contextScope === "agent_private" && requestedAgentId) {
       try {
@@ -446,6 +502,12 @@ async function POSTHandler(request: Request) {
           workflowExecutionScope: executionAuthority.executionScope,
         })
       : undefined;
+    const personalContextBinding = personalContextAccess
+      ? createWorkflowPersonalContextBinding({
+          access: personalContextAccess,
+          workflowExecutionScope: executionAuthority.executionScope,
+        })
+      : undefined;
     const requestedPlanContextBoundary = sharedContextAccess &&
         isWorkflowSharedContextScope(contextScope)
       ? workflowPlanContextBoundary(sharedContextAccess, contextScope)
@@ -453,6 +515,8 @@ async function POSTHandler(request: Request) {
         ? workflowAgentPrivatePlanContextBoundary(
             agentPrivateSelection.identity,
           )
+        : personalContextAccess
+          ? workflowPersonalPlanContextBoundary(personalContextAccess)
         : undefined;
     if (
       selectedPlan &&
@@ -473,7 +537,7 @@ async function POSTHandler(request: Request) {
         ...(verifiedContextSelection
           ? { contextSelection: verifiedContextSelection }
           : contextScope && !isWorkflowSharedContextScope(contextScope)
-              && contextScope !== "agent_private"
+              && contextScope !== "agent_private" && contextScope !== "personal"
             ? { contextSelection: { query: parsed.data.goal, evidenceIds: [] } }
             : {}),
         ...(sharedContextBinding
@@ -489,6 +553,11 @@ async function POSTHandler(request: Request) {
                 : {}),
               [WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY]:
                 agentPrivateContextBinding,
+            }
+          : {}),
+        ...(personalContextBinding
+          ? {
+              [WORKFLOW_PERSONAL_CONTEXT_METADATA_KEY]: personalContextBinding,
             }
           : {}),
       },

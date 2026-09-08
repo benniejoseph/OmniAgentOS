@@ -210,6 +210,8 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     throw new Error("Saved procedure requires a tool outside the selected agent's allowlist.");
   }
   const planId = randomUUID();
+  const contextExecutionScope = input.executionScope ||
+    input.usageAttribution?.executionScope;
   const usageActorId = effectivePlannerActorId(input.actorId, input.usageAttribution);
   const context = await buildContextPack(contextSelection?.query || goal, {
     limit: 8,
@@ -220,6 +222,18 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
       scopedMemoryOnly: true,
       persistTrace: false,
     } : {}),
+    ...(input.contextBoundary?.contextScope === "personal"
+      ? {
+          contextCompilerV2Automatic: {
+            runId: input.workflowRunId || `workflow-plan:${planId}`,
+            executionScope: contextExecutionScope || (() => {
+              throw new Error(
+                "Workflow personal-context planning requires an execution scope.",
+              );
+            })(),
+          },
+        }
+      : {}),
     contextBudget: { taskContextTokenLimit: 6_144 },
     queryPlanning: { allowSemanticModel: false },
     ...(usageActorId ? {
@@ -238,6 +252,26 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
       },
     } : {}),
   });
+  if (input.contextBoundary?.contextScope === "personal") {
+    if (!context.compilerV2Automatic || !contextExecutionScope) {
+      throw new Error(
+        "Workflow personal-context planning requires an authoritative compiler receipt.",
+      );
+    }
+    const eventScope = deriveExecutionScope(contextExecutionScope, {
+      causationId: `workflow-plan:${planId}:personal-context`,
+      purpose: "workflow.plan.context_compiler_v2.automatic",
+    });
+    await appendScopedDomainEvent({
+      id: `workflow-plan-context:${context.compilerV2Automatic.receipt.receiptSha256}`,
+      streamId: input.workflowRunId
+        ? `workflow:${input.workflowRunId}`
+        : `workflow-plan:${planId}`,
+      type: "workflow.plan.context_compiler_v2.automatic",
+      payload: context.compilerV2Automatic.receipt,
+      executionScope: eventScope,
+    });
+  }
   const availableCandidates = await getPlannerToolCandidates(goal, context.contextBlock, {
     tenantId,
     preferredToolIds: input.allowedToolIds,

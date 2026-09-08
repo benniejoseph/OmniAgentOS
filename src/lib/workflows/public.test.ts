@@ -64,4 +64,34 @@ describe("public workflow projection", () => {
       run.input.metadata?._workflowAgentPrivateContext,
     ).toBeDefined();
   });
+
+  it("never exposes the personal consent or access envelope", () => {
+    const run: WorkflowRunRecord = {
+      id: "workflow-personal-a",
+      tenantId: "tenant-a",
+      workflowType: "agent.workflow.v1",
+      status: "queued",
+      goal: "Use relevant personal context",
+      input: {
+        goal: "Use relevant personal context",
+        metadata: {
+          contextScope: "personal",
+          _workflowPersonalContext: {
+            consentAuthority: { authoritySha256: "a".repeat(64) },
+            databaseAccessScope: { initiatingActorId: "actor:private" },
+          },
+        },
+      },
+      attempt: 0,
+      maxAttempts: 3,
+      approvalRequired: false,
+      createdAt: "2026-09-08T00:00:00.000Z",
+      updatedAt: "2026-09-08T00:00:00.000Z",
+    };
+
+    expect(publicWorkflowRun(run).input.metadata).toEqual({
+      contextScope: "personal",
+    });
+    expect(run.input.metadata?._workflowPersonalContext).toBeDefined();
+  });
 });

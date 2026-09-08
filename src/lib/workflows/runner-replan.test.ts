@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   resolveRuntimeModelAssignment: vi.fn(),
   resolveWorkflowAgentPrivateContextAccess: vi.fn(),
   resolveWorkflowSharedContextAccess: vi.fn(),
+  resolveWorkflowPersonalContextAccess: vi.fn(),
   transitionWorkflowRun: vi.fn(),
   transitionWorkflowRunWithEvents: vi.fn(),
   updateWorkflowStep: vi.fn(),
@@ -74,6 +75,16 @@ vi.mock("@/lib/workflows/agent-private-context", async (importOriginal) => {
     ...actual,
     resolveWorkflowAgentPrivateContextAccess:
       mocks.resolveWorkflowAgentPrivateContextAccess,
+  };
+});
+vi.mock("@/lib/workflows/personal-context", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/workflows/personal-context")
+  >();
+  return {
+    ...actual,
+    resolveWorkflowPersonalContextAccess:
+      mocks.resolveWorkflowPersonalContextAccess,
   };
 });
 vi.mock("@/lib/workflows/store", () => ({
@@ -192,6 +203,28 @@ beforeEach(() => {
       contextScope: "agent_private",
       agentId: "atlas",
       authoritySha256: "b".repeat(64),
+    },
+  });
+  mocks.resolveWorkflowPersonalContextAccess.mockResolvedValue({
+    databaseAccessScope: {
+      version: 1,
+      tenantId: "tenant-1",
+      initiatingActorId: "actor:canonical-owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "actor:canonical-owner",
+      workspaceId: null,
+      projectId: null,
+      missionId: null,
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purposeId: "memory.retrieve.v1",
+      purpose: "agent.context.personal.retrieve",
+    },
+    contextBoundary: {
+      schemaVersion: 1,
+      policyVersion: "workflow-personal-context-v1",
+      contextScope: "personal",
+      authoritySha256: "d".repeat(64),
     },
   });
   mocks.listWorkflowPlanNodeExecutionsForRun.mockResolvedValue(
@@ -342,6 +375,61 @@ describe("workflow runner bounded replan", () => {
         scopedMemoryOnly: true,
         persistTrace: false,
       }),
+    );
+  });
+
+  it("revalidates consent and commits the personal compiler barrier", async () => {
+    detail.run.currentStep = "retrieve_context";
+    detail.run.input.metadata = {
+      actorId: "actor-1",
+      contextScope: "personal",
+      _workflowPersonalContext: { bindingSha256: "personal-binding" },
+    };
+    for (const step of detail.steps) {
+      step.status = step.stepKey === "preflight" ? "completed" : "pending";
+      step.output = {};
+    }
+    mocks.buildContextPack.mockResolvedValue({
+      results: [],
+      memoryResults: [],
+      knowledgeResults: [],
+      graphResults: [],
+      profile: { mode: "memory_first", intent: "personal" },
+      trace: undefined,
+      contextBlock: "",
+      compilerV2Automatic: {
+        receipt: { receiptSha256: "e".repeat(64), mode: "automatic" },
+        selectedEvidenceIds: [],
+      },
+    });
+
+    await tickWorkflowRun(detail.run.id, { tenantId: "tenant-1" });
+
+    expect(mocks.resolveWorkflowPersonalContextAccess).toHaveBeenCalledWith({
+      binding: { bindingSha256: "personal-binding" },
+      workflowExecutionScope: expect.objectContaining({
+        correlationId: "workflow-replan-1",
+      }),
+    });
+    expect(mocks.buildContextPack).toHaveBeenCalledWith(
+      detail.run.goal,
+      expect.objectContaining({
+        evidenceIds: undefined,
+        databaseMemoryAccessScope: expect.objectContaining({
+          initiatingActorId: "actor:canonical-owner",
+          projectId: null,
+        }),
+        scopedMemoryOnly: true,
+        persistTrace: false,
+        contextCompilerV2Automatic: expect.objectContaining({
+          runId: detail.run.id,
+        }),
+      }),
+    );
+    expect(mocks.appendWorkflowEvent).toHaveBeenCalledWith(
+      detail.run.id,
+      "workflow.context_compiler_v2.automatic",
+      expect.objectContaining({ mode: "automatic" }),
     );
   });
 

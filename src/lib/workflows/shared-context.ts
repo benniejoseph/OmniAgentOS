@@ -60,9 +60,17 @@ const workflowAgentPrivatePlanContextBoundarySchema = z.object({
   authoritySha256: sha256Schema,
 }).strict();
 
+const workflowPersonalPlanContextBoundarySchema = z.object({
+  schemaVersion: z.literal(1),
+  policyVersion: z.literal("workflow-personal-context-v1"),
+  contextScope: z.literal("personal"),
+  authoritySha256: sha256Schema,
+}).strict();
+
 const workflowPlanContextBoundarySchema = z.union([
   workflowSharedPlanContextBoundarySchema,
   workflowAgentPrivatePlanContextBoundarySchema,
+  workflowPersonalPlanContextBoundarySchema,
 ]);
 
 export type WorkflowPlanContextBoundaryV1 = Readonly<
