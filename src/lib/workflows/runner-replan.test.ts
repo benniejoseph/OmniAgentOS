@@ -298,6 +298,96 @@ beforeEach(() => {
 });
 
 describe("workflow runner bounded replan", () => {
+  it("verifies from complete approval, DAG, and artifact receipts without raw-output truncation", async () => {
+    const planStep = detail.steps.find((step) => step.stepKey === "plan");
+    const executeStep = detail.steps.find((step) => step.stepKey === "execute");
+    expect(planStep?.output).toBeDefined();
+    expect(executeStep?.output).toBeDefined();
+    executeStep!.startedAt = "2026-09-06T00:00:05.000Z";
+
+    const nodeExecutions = priorNodeExecutions();
+    nodeExecutions[0].output.nodeResult.artifacts[0] = {
+      name: "large_source_artifact",
+      kind: "analysis",
+      content: "x".repeat(6_000),
+      evidenceIds: [],
+    };
+    nodeExecutions[1].output.nodeResult.artifacts[0] = {
+      name: "verification_log",
+      kind: "verification",
+      content: "Expected MUTATION_QA_OK; actual MUTATION_QA_OK; status pass.",
+      evidenceIds: ["workflow:workflow-replan-1:approval"],
+    };
+    nodeExecutions[2].output.nodeResult.artifacts[0] = {
+      name: "run_report",
+      kind: "report",
+      content: "source -> synthesize -> report; approved; verification passed.",
+      evidenceIds: ["workflow:workflow-replan-1:approval"],
+    };
+    for (const [index, execution] of nodeExecutions.entries()) {
+      Object.assign(execution, {
+        startedAt: `2026-09-06T00:00:${String(6 + index).padStart(2, "0")}.000Z`,
+        completedAt: `2026-09-06T00:00:${String(7 + index).padStart(2, "0")}.000Z`,
+      });
+      Object.assign(execution.output, {
+        executionReceipt: {
+          schemaVersion: 1,
+          executor: "agent",
+          inputSha256: "a".repeat(64),
+          outputSha256: "b".repeat(64),
+          dependencyExecutionIds:
+            index > 0 ? [nodeExecutions[index - 1].id] : [],
+          toolExecutionIds: [],
+        },
+      });
+    }
+    executeStep!.output = {
+      ...executeStep!.output,
+      response: "MUTATION_QA_OK",
+      deliverable: "MUTATION_QA_OK",
+      planExecution: {
+        ...(executeStep!.output!.planExecution as Record<string, unknown>),
+        workflowRunId: detail.run.id,
+        planId: "plan-old",
+        nodeExecutions,
+      },
+    };
+    mocks.generateModelStructured.mockResolvedValueOnce({
+      text: JSON.stringify({
+        passed: true,
+        score: 1,
+        failures: [],
+        assessment: "All persisted receipts satisfy the criteria.",
+      }),
+    });
+
+    const verified = await tickWorkflowRun(detail.run.id, {
+      tenantId: "tenant-1",
+    });
+
+    expect(mocks.generateModelStructured).toHaveBeenCalledTimes(1);
+    expect(verified.run.error).toBeUndefined();
+    expect(verified.run).toMatchObject({
+      status: "queued",
+      currentStep: "persist_report",
+    });
+    const verifierInput = String(
+      mocks.generateModelStructured.mock.calls[0]?.[0]?.input,
+    );
+    expect(verifierInput).toContain('"recordedBeforeExecution": true');
+    expect(verifierInput).toContain('"allPlannedNodesCompleted": true');
+    expect(verifierInput).toContain('"executedNodeIds": [');
+    expect(verifierInput).toContain('"name": "verification_log"');
+    expect(verifierInput).toContain(
+      "Expected MUTATION_QA_OK; actual MUTATION_QA_OK; status pass.",
+    );
+    expect(verifierInput).toContain('"name": "run_report"');
+    expect(verifierInput).toContain(
+      "source -&gt; synthesize -&gt; report; approved; verification passed.",
+    );
+    expect(verifierInput).not.toContain("x".repeat(6_000));
+  });
+
   it("retries an unavailable verifier without replanning or revoking approval", async () => {
     mocks.generateModelStructured.mockRejectedValueOnce(
       new Error("Verification timed out."),
@@ -712,8 +802,18 @@ function priorNodeExecutions() {
     input: { schemaVersion: 1, nodeId },
     output: {
       nodeResult: {
-        artifacts: [{ name: `${nodeId} artifact`, content: `${nodeId} result` }],
-        acceptanceChecks: [{ criterion: `${nodeId} is complete.`, passed: true }],
+        artifacts: [{
+          name: `${nodeId} artifact`,
+          kind: nodeId === "report" ? "report" : "analysis",
+          content: `${nodeId} result`,
+          evidenceIds: [],
+        }],
+        acceptanceChecks: [{
+          criterion: `${nodeId} is complete.`,
+          passed: true,
+          evidenceIds: [],
+          note: `${nodeId} completed.`,
+        }],
       },
     },
     createdAt: "2026-09-06T00:00:00.000Z",
