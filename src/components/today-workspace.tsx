@@ -28,8 +28,6 @@ import {
 import { clsx } from "clsx";
 import { IntentPrefetchLink as Link } from "@/components/app-shell/intent-prefetch-link";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
-import { useWorkspaceReadiness } from "@/components/app-shell/use-workspace-readiness";
-import { WorkspaceReadinessCard } from "@/components/app-shell/workspace-readiness-card";
 import { SourceCoveragePanel } from "@/components/source-coverage/source-coverage-panel";
 import { useLiveRefresh } from "@/components/use-live-refresh";
 import {
@@ -119,7 +117,6 @@ export function TodayWorkspace({
   );
   const briefAttemptRef = useRef("");
   const workspaceAvailable = Boolean(session && (!session.authEnabled || session.authenticated));
-  const readiness = useWorkspaceReadiness({ enabled: workspaceAvailable });
 
   const runs = sourceData(summary, "runs");
   const workflows = sourceData(summary, "workflows");
@@ -376,13 +373,18 @@ export function TodayWorkspace({
       data-hydrated={hydrated}
       aria-busy={loading}
     >
+      <div className={styles.cosmicBackdrop} aria-hidden="true">
+        <span className={styles.starField} />
+        <span className={styles.distantWorld} />
+      </div>
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       <header className="today-brief">
         <div className={styles.daylightArt} aria-hidden="true">
           <span className={styles.sun} />
-          <span className={styles.sunRing} />
-          <span className={styles.cloud} />
+          <span className={clsx(styles.solarOrbit, styles.solarOrbitNear)} />
+          <span className={clsx(styles.solarOrbit, styles.solarOrbitFar)} />
+          <span className={styles.moon} />
         </div>
         <div className="today-date" aria-hidden="true">
           <strong>{now ? now.toLocaleDateString("en-US", { day: "2-digit" }) : "--"}</strong>
@@ -419,13 +421,6 @@ export function TodayWorkspace({
           </Link>
         </div>
       </header>
-
-      {workspaceAvailable ? (
-        <WorkspaceReadinessCard
-          state={readiness.state}
-          onRefresh={readiness.refresh}
-        />
-      ) : null}
 
       {todayError ? (
         <div className="today-error" role="alert">
@@ -511,15 +506,15 @@ export function TodayWorkspace({
 
       <section className={styles.projectionStatus} aria-labelledby="today-projection-status-title">
         <div>
-          <p className={styles.projectionKicker}>Canonical projection</p>
-          <h2 id="today-projection-status-title">What Today knows</h2>
-          <p>Each domain reports its own visibility and freshness. An unavailable source stays unknown instead of becoming an empty fact.</p>
+          <p className={styles.projectionKicker}>Data confidence</p>
+          <h2 id="today-projection-status-title">Trusted status</h2>
+          <p>See which parts of Asael are current enough to rely on. If a source cannot be checked, Asael says so instead of pretending it is empty.</p>
         </div>
         <div className={styles.sourceStateGrid}>
           {sourceStates.map((source) => (
             <div key={source.source} className={styles.sourceState} data-status={source.status}>
               <span>{sourceLabel(source.source)}</span>
-              <strong>{source.status === "ready" ? "Current" : source.status}</strong>
+              <strong>{sourceStatusLabel(source.status)}</strong>
               <small>{source.lastChangedAt ? `Last change ${formatTodayRelative(source.lastChangedAt, relativeAsOf)}` : source.detail}</small>
             </div>
           ))}
@@ -666,7 +661,7 @@ export function TodayWorkspace({
                   <div><strong>{item.title}</strong><small>{agendaKindLabel(item.kind)} · {item.detail}</small></div>
                 </Link>
               ))
-              : <div className="today-timeline-item"><span>Open</span><div><strong>No meetings or commitments scheduled</strong><small>Your canonical agenda is clear.</small></div></div>}
+              : <div className="today-timeline-item"><span>Open</span><div><strong>No meetings or commitments scheduled</strong><small>Your agenda is clear.</small></div></div>}
           </div>
           {visibleSections.has("approvals") ? <div className="today-attention">
             <Bell size={15} aria-hidden="true" />
@@ -1254,6 +1249,16 @@ function sourceLabel(source: TodayProjectionSourceState["source"]) {
     consumption: "AI consumption",
   };
   return labels[source];
+}
+
+function sourceStatusLabel(status: TodayProjectionSourceState["status"]) {
+  const labels: Record<TodayProjectionSourceState["status"], string> = {
+    ready: "Current",
+    restricted: "Access limited",
+    error: "Not available",
+    hidden: "Hidden",
+  };
+  return labels[status];
 }
 
 function sectionLabel(section: TodaySectionKey) {

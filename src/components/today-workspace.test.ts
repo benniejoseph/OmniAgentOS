@@ -18,8 +18,12 @@ describe("cohesive Today workspace", () => {
     expect(source).toContain("pendingApprovals");
     expect(source).toContain("overdueCommitments");
     expect(source).toContain("Meetings, confirmed commitments, and personal reminders");
-    expect(source).toContain("What Today knows");
-    expect(source).toContain("An unavailable source stays unknown instead of becoming an empty fact");
+    expect(source).toContain("Trusted status");
+    expect(source).toContain("Data confidence");
+    expect(source).toContain("instead of pretending it is empty");
+    expect(source).not.toContain("WorkspaceReadinessCard");
+    expect(source).not.toContain("useWorkspaceReadiness");
+    expect(source).toContain("cosmicBackdrop");
     expect(source).toContain("Active agents");
     expect(source).toContain("visibleSections");
   });

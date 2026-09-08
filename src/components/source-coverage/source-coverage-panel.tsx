@@ -69,9 +69,9 @@ export function SourceCoveragePanel({
     >
       <header className={styles.header}>
         <div>
-          <p>Knowledge coverage</p>
-          <h2 id={`source-coverage-title-${surface}`}>What Asael knows—and where it is blind</h2>
-          <span>Coverage is proven from source checkpoints. Missing access always stays unknown; it never becomes a negative fact.</span>
+          <p>Knowledge confidence</p>
+          <h2 id={`source-coverage-title-${surface}`}>What Asael can reliably use</h2>
+          <span>Shows how much connected knowledge has been checked and indexed. “Not measured yet” means there is no successful checkpoint—not that the source is empty.</span>
         </div>
         <button type="button" onClick={() => void load()} disabled={state === "loading"}>
           {state === "loading" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
@@ -94,7 +94,7 @@ export function SourceCoveragePanel({
             <Metric icon={CheckCircle2} label="Complete coverage" value={coverage.summary.completeDomains} tone="good" />
             <Metric icon={Clock3} label="Stale sources" value={coverage.summary.staleDomains} tone={coverage.summary.staleDomains ? "warn" : "good"} />
             <Metric icon={EyeOff} label="Blind spots" value={coverage.summary.blindSpots} tone="warn" />
-            <Metric icon={CircleHelp} label="Unknown states" value={coverage.summary.unknownDomains} />
+            <Metric icon={CircleHelp} label="Not measured" value={coverage.summary.unknownDomains} />
             <div className={styles.verifiedMetric}>
               <ShieldCheck size={14} aria-hidden="true" />
               <span><strong>{formatTimestamp(coverage.summary.lastVerifiedAt)}</strong><small>Last verified</small></span>
@@ -169,7 +169,7 @@ function DomainCard({ domain }: { domain: SourceCoverageDomain }) {
       <dl>
         <div><dt>Backfill</dt><dd>{label(domain.backfill.state)}</dd></div>
         <div><dt>Freshness</dt><dd>{freshnessLabel(domain.freshness)}</dd></div>
-        <div><dt>Observed</dt><dd>{domain.coverage.observedItems === null ? "Unknown" : domain.coverage.observedItems.toLocaleString()}</dd></div>
+        <div><dt>Observed</dt><dd>{domain.coverage.observedItems === null ? "Not measured" : domain.coverage.observedItems.toLocaleString()}</dd></div>
       </dl>
       <p>{domain.coverage.detail}</p>
       <small>{domain.limitation}</small>
@@ -210,13 +210,13 @@ function freshnessLabel(freshness: SourceCoverageDomain["freshness"]) {
   if (freshness.state === "stale") return `Stale · ${formatTimestamp(freshness.lastVerifiedAt)}`;
   if (freshness.state === "never") return "Never verified";
   if (freshness.state === "not_applicable") return "Not applicable";
-  return freshness.lastVerifiedAt ? `Unknown · last verified ${formatTimestamp(freshness.lastVerifiedAt)}` : "Unknown";
+  return freshness.lastVerifiedAt ? `Not measured · last checked ${formatTimestamp(freshness.lastVerifiedAt)}` : "Not measured yet";
 }
 
 function formatTimestamp(value: string | null) {
   if (!value) return "Never";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unknown";
+  if (Number.isNaN(date.getTime())) return "Not measured yet";
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -239,10 +239,11 @@ function coverageLabel(value: SourceCoverageDomain["coverage"]["state"]) {
     partial: "Partial",
     none: "No submitted items",
     not_applicable: "On selection",
-    unknown: "Unknown",
+    unknown: "Not measured yet",
   })[value];
 }
 
 function label(value: string) {
+  if (value === "unknown") return "Not measured yet";
   return value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 }

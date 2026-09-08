@@ -10,7 +10,8 @@ describe("P11.9 source coverage client boundary", () => {
   it("loads the private exact-version projection and preserves the absence rule", () => {
     expect(source).toContain('fetch("/api/source-coverage", { cache: "no-store" })');
     expect(source).toContain("payload.coverage.version !== COVERAGE_VERSION");
-    expect(source).toContain("Missing access always stays unknown");
+    expect(source).toContain("Not measured yet");
+    expect(source).toContain("What Asael can reliably use");
     expect(source).toContain("No provider content, raw cursors, credentials, or actor identifiers");
     expect(source).toContain("unsupported data domains");
   });
