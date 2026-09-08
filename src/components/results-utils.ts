@@ -94,7 +94,7 @@ function workflowTimelineItem(item: ResultRecord): ResultTimelineItem {
     kind: "workflow",
     title: stringValue(item.goal, "Workflow"),
     status,
-    body: fullText(readPath(item, "result.report") || item.error, finalState(status) ? "No final report was stored." : "This workflow has not produced a final report yet."),
+    body: fullText(item.report || readPath(item, "result.report") || item.error, finalState(status) ? "No final report was stored." : "This workflow has not produced a final report yet."),
     meta: `${stringValue(item.currentStep, "workflow")} / ${formatResultTime(timestampValue)}`,
     href: `/app/results?run=${encodeURIComponent(key)}`,
     tone: toneForResultStatus(status),

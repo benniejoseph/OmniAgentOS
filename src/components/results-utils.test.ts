@@ -62,6 +62,23 @@ describe("result timeline", () => {
     expect(timeline[0].href).toBe("/app/command?run=agent-1");
   });
 
+  it("shows the projected workflow report used by workspace summaries", () => {
+    const [item] = buildResultTimeline({
+      agentRuns: [],
+      workflowRuns: [{
+        id: "workflow-complete",
+        goal: "Return the exact result",
+        status: "completed",
+        report: "MUTATION_QA_OK",
+        completedAt: "2026-09-08T11:03:45.356Z",
+      }],
+      approvalItems: [],
+    });
+
+    expect(item.body).toBe("MUTATION_QA_OK");
+    expect(item.body).not.toBe("No final report was stored.");
+  });
+
   it("does not treat unknown state as healthy", () => {
     expect(toneForResultStatus("unknown")).toBe("neutral");
     expect(toneForResultStatus("canceled")).toBe("neutral");
