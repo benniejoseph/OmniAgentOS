@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { isBuiltInAgentIdentityId } from "@/lib/agents/identity-contracts";
+import {
+  AgentIdentityResolutionError,
+  resolveAgentIdentityForExecution,
+} from "@/lib/agents/identity-store";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { listWorkflowsService } from "@/lib/app-services/workflows";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
@@ -36,6 +41,7 @@ import {
   publicWorkflowRunDetail,
 } from "@/lib/workflows/public";
 import { getThread } from "@/lib/threads/store";
+import { getCustomAgent, listAgentSkills } from "@/lib/skills/store";
 import {
   contextSelectionRequestSchema,
   verifyContextSelectionLock,
@@ -52,6 +58,11 @@ import {
   workflowPlanContextBoundary,
   WORKFLOW_SHARED_CONTEXT_METADATA_KEY,
 } from "@/lib/workflows/shared-context";
+import {
+  createWorkflowAgentPrivateContextBinding,
+  workflowAgentPrivatePlanContextBoundary,
+  WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/agent-private-context";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -153,11 +164,20 @@ async function POSTHandler(request: Request) {
     });
     const {
       [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]: _untrustedSharedContext,
+      [WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY]:
+        _untrustedAgentPrivateContext,
       contextSelection: _untrustedContextSelection,
+      agentIdentity: _untrustedAgentIdentity,
+      agentProfile: _untrustedAgentProfile,
+      primaryAgentId: _untrustedPrimaryAgentId,
       ...clientMetadata
     } = parsed.data.metadata || {};
     void _untrustedSharedContext;
+    void _untrustedAgentPrivateContext;
     void _untrustedContextSelection;
+    void _untrustedAgentIdentity;
+    void _untrustedAgentProfile;
+    void _untrustedPrimaryAgentId;
     const rawContextScope = clientMetadata.contextScope;
     const contextScope = typeof rawContextScope === "string" &&
         CONTEXT_SCOPE_IDS.includes(rawContextScope as ContextScopeId)
@@ -181,6 +201,28 @@ async function POSTHandler(request: Request) {
           message: error instanceof Error ? error.message : "Invalid context scope.",
         }, { status: 409 });
       }
+    }
+    const requestedAgentId = metadataString(clientMetadata.agentId);
+    if (
+      clientMetadata.agentId !== undefined &&
+      (!requestedAgentId || !/^[a-zA-Z0-9_.:-]{1,120}$/.test(requestedAgentId))
+    ) {
+      return Response.json(
+        { error: "Workflow metadata contains an invalid Agent coordinate." },
+        { status: 400 },
+      );
+    }
+    if (contextScope === "agent_private" && !requestedAgentId) {
+      return Response.json(
+        { error: "Agent-private workflow context requires an assigned Agent." },
+        { status: 400 },
+      );
+    }
+    if (contextScope !== "agent_private" && requestedAgentId) {
+      return Response.json(
+        { error: "An Agent coordinate is only valid for Agent-private context." },
+        { status: 400 },
+      );
     }
     let verifiedContextSelection;
     if (parsed.data.metadata?.contextSelection !== undefined) {
@@ -347,8 +389,38 @@ async function POSTHandler(request: Request) {
         });
       }
     }
+    let agentPrivateSelection;
+    if (contextScope === "agent_private" && requestedAgentId) {
+      try {
+        agentPrivateSelection = await resolveWorkflowAgentSelection({
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          agentId: requestedAgentId,
+        });
+      } catch (error) {
+        if (!(error instanceof AgentIdentityResolutionError)) throw error;
+        return Response.json({
+          error: "Agent-private context unavailable",
+          message: "The assigned Agent's current identity and grants could not be verified.",
+        }, {
+          status: 409,
+          headers: { "cache-control": "private, no-store" },
+        });
+      }
+    }
     const executionAuthority = {
       executionScope: executionScopeFromSecurityContext(context, {
+        ...(agentPrivateSelection
+          ? {
+              executingPrincipalType: "agent" as const,
+              executingPrincipalId:
+                agentPrivateSelection.identity.principal.principalId,
+              contextGrantIds:
+                agentPrivateSelection.identity.principal.contextGrantIds,
+              capabilityGrantIds:
+                agentPrivateSelection.identity.principal.capabilityGrantIds,
+            }
+          : {}),
         workspaceId: sharedContextAccess?.authority.workspaceId,
         projectId: sharedContextAccess?.authority.projectId,
         missionId: contextScope === "mission"
@@ -367,10 +439,21 @@ async function POSTHandler(request: Request) {
           workflowExecutionScope: executionAuthority.executionScope,
         })
       : undefined;
+    const agentPrivateContextBinding = agentPrivateSelection
+      ? createWorkflowAgentPrivateContextBinding({
+          identity: agentPrivateSelection.identity,
+          requestingActorId: context.actorId,
+          workflowExecutionScope: executionAuthority.executionScope,
+        })
+      : undefined;
     const requestedPlanContextBoundary = sharedContextAccess &&
         isWorkflowSharedContextScope(contextScope)
       ? workflowPlanContextBoundary(sharedContextAccess, contextScope)
-      : undefined;
+      : agentPrivateSelection
+        ? workflowAgentPrivatePlanContextBoundary(
+            agentPrivateSelection.identity,
+          )
+        : undefined;
     if (
       selectedPlan &&
       !workflowPlanContextBoundariesEqual(
@@ -390,10 +473,23 @@ async function POSTHandler(request: Request) {
         ...(verifiedContextSelection
           ? { contextSelection: verifiedContextSelection }
           : contextScope && !isWorkflowSharedContextScope(contextScope)
+              && contextScope !== "agent_private"
             ? { contextSelection: { query: parsed.data.goal, evidenceIds: [] } }
             : {}),
         ...(sharedContextBinding
           ? { [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]: sharedContextBinding }
+          : {}),
+        ...(agentPrivateSelection
+          ? {
+              primaryAgentId:
+                agentPrivateSelection.identity.definition.logicalAgentId,
+              agentIdentity: agentPrivateSelection.identity,
+              ...(agentPrivateSelection.profile
+                ? { agentProfile: agentPrivateSelection.profile }
+                : {}),
+              [WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY]:
+                agentPrivateContextBinding,
+            }
           : {}),
       },
     };
@@ -553,6 +649,54 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+}
+
+async function resolveWorkflowAgentSelection(input: {
+  tenantId: string;
+  actorId: string;
+  agentId: string;
+}) {
+  const identity = await resolveAgentIdentityForExecution(input);
+  if (isBuiltInAgentIdentityId(input.agentId)) {
+    return Object.freeze({ identity, profile: undefined });
+  }
+  const customAgent = await getCustomAgent(input.agentId, {
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+  });
+  if (!customAgent || customAgent.status === "paused") {
+    throw new AgentIdentityResolutionError(
+      "The assigned custom Agent is unavailable for workflow execution.",
+    );
+  }
+  const skills = (await listAgentSkills({
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+  })).filter((skill) =>
+    customAgent.skillIds.includes(skill.id) && skill.status === "active"
+  );
+  return Object.freeze({
+    identity,
+    profile: Object.freeze({
+      name: identity.definition.name,
+      role: identity.definition.role,
+      description: identity.definition.description,
+      instructions: identity.definition.instructions,
+      persona: identity.definition.persona,
+      modelPolicy: identity.definition.modelPolicy,
+      autonomy: identity.principal.autonomy,
+      approvalPolicy: identity.principal.approvalPolicy,
+      memoryScope: identity.principal.memoryScope,
+      toolIds: [...identity.principal.toolGrantIds],
+      skills: skills.map(({ id, name, description, instructions, toolIds }) => ({
+        id,
+        name,
+        description,
+        instructions,
+        toolIds: [...toolIds],
+      })),
+    }),
+  });
 }
 
 function requestIdempotencyKey(request: Request) {

@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import {
+  AgentIdentityResolutionError,
+  resolveAgentIdentityForExecution,
+} from "@/lib/agents/identity-store";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import { listWorkflowPlansService } from "@/lib/app-services/workflows";
 import { withDatabaseRequestScope } from "@/lib/db/client";
@@ -28,6 +32,10 @@ import {
   isWorkflowSharedContextScope,
   workflowPlanContextBoundary,
 } from "@/lib/workflows/shared-context";
+import {
+  workflowAgentPrivateDatabaseAccessScope,
+  workflowAgentPrivatePlanContextBoundary,
+} from "@/lib/workflows/agent-private-context";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -38,6 +46,8 @@ const workflowPlanSchema = z.object({
   goal: z.string().min(1).max(4000),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
+  agentId: z.string().trim().min(1).max(120)
+    .regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   projectId: z.string().trim().min(1).max(200)
     .regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   missionId: z.string().uuid().optional(),
@@ -85,6 +95,20 @@ const workflowPlanSchema = z.object({
     {
       message: "Shared-context coordinates require a shared context scope.",
       path: ["contextScope"],
+    },
+  )
+  .refine(
+    (value) => value.contextScope !== "agent_private" || Boolean(value.agentId),
+    {
+      message: "Agent-private context requires an assigned Agent.",
+      path: ["agentId"],
+    },
+  )
+  .refine(
+    (value) => value.contextScope === "agent_private" || !value.agentId,
+    {
+      message: "An Agent coordinate is only valid for Agent-private context.",
+      path: ["agentId"],
     },
   );
 
@@ -225,6 +249,25 @@ async function POSTHandler(request: Request) {
       });
     }
   }
+  let agentPrivateIdentity;
+  if (parsed.data.contextScope === "agent_private" && parsed.data.agentId) {
+    try {
+      agentPrivateIdentity = await resolveAgentIdentityForExecution({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        agentId: parsed.data.agentId,
+      });
+    } catch (error) {
+      if (!(error instanceof AgentIdentityResolutionError)) throw error;
+      return Response.json({
+        error: "Agent-private context unavailable",
+        message: "The assigned Agent's current identity and grants could not be verified.",
+      }, {
+        status: 409,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+  }
   const executionScope = executionScopeFromSecurityContext(context, {
     workspaceId: sharedContextAccess?.authority.workspaceId,
     projectId: sharedContextAccess?.authority.projectId,
@@ -240,17 +283,27 @@ async function POSTHandler(request: Request) {
     actorId: context.actorId,
     goal: parsed.data.goal,
     contextSelection: contextSelection || (parsed.data.contextScope &&
-        !isWorkflowSharedContextScope(parsed.data.contextScope)
+        !isWorkflowSharedContextScope(parsed.data.contextScope) &&
+        parsed.data.contextScope !== "agent_private"
       ? { query: parsed.data.goal, evidenceIds: [] }
       : undefined),
-    databaseMemoryAccessScope: sharedContextAccess?.databaseAccessScope,
+    databaseMemoryAccessScope: sharedContextAccess?.databaseAccessScope ||
+      (agentPrivateIdentity
+        ? workflowAgentPrivateDatabaseAccessScope({
+            identity: agentPrivateIdentity,
+            requestingActorId: context.actorId,
+            correlationId: planCorrelationId,
+          })
+        : undefined),
     contextBoundary: sharedContextAccess &&
         isWorkflowSharedContextScope(parsed.data.contextScope)
       ? workflowPlanContextBoundary(
           sharedContextAccess,
           parsed.data.contextScope,
         )
-      : undefined,
+      : agentPrivateIdentity
+        ? workflowAgentPrivatePlanContextBoundary(agentPrivateIdentity)
+        : undefined,
     mode: parsed.data.mode,
     workflowRunId: parsed.data.workflowRunId,
     requireApproval: parsed.data.requireApproval,

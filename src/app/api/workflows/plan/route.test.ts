@@ -5,7 +5,36 @@ const mocks = vi.hoisted(() => ({
   buildDynamicWorkflowPlan: vi.fn(),
   getWorkflowPlanStats: vi.fn(),
   listWorkflowPlans: vi.fn(),
+  resolveAgentIdentityForExecution: vi.fn(),
   sql: vi.fn(),
+}));
+
+vi.mock("@/lib/agents/identity-store", () => ({
+  AgentIdentityResolutionError: class AgentIdentityResolutionError extends Error {},
+  resolveAgentIdentityForExecution: mocks.resolveAgentIdentityForExecution,
+}));
+vi.mock("@/lib/workflows/agent-private-context", () => ({
+  workflowAgentPrivateDatabaseAccessScope: vi.fn(() => ({
+    version: 1,
+    tenantId: "tenant-a",
+    initiatingActorId: "owner@example.test",
+    executingPrincipalType: "agent",
+    executingPrincipalId: "agent:atlas:principal",
+    workspaceId: null,
+    projectId: null,
+    missionId: null,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purposeId: "memory.retrieve.v1",
+    purpose: "Retrieve memory owned by the exact assigned agent.",
+  })),
+  workflowAgentPrivatePlanContextBoundary: vi.fn(() => ({
+    schemaVersion: 1,
+    policyVersion: "workflow-agent-private-context-v1",
+    contextScope: "agent_private",
+    agentId: "atlas",
+    authoritySha256: "b".repeat(64),
+  })),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -52,6 +81,10 @@ describe("workflow plan context lock", () => {
     mocks.authorizeRequest.mockResolvedValue(context);
     mocks.buildDynamicWorkflowPlan.mockResolvedValue({ id: "plan-a", status: "planned" });
     mocks.getWorkflowPlanStats.mockResolvedValue({ plans: 1 });
+    mocks.resolveAgentIdentityForExecution.mockResolvedValue({
+      definition: { logicalAgentId: "atlas" },
+      principal: { principalId: "agent:atlas:principal" },
+    });
     mocks.sql.mockImplementation((parts: TemplateStringsArray) => {
       const query = parts.join(" ");
       if (query.includes("FROM omni_work_projects")) {
@@ -126,6 +159,37 @@ describe("workflow plan context lock", () => {
         executionScope: expect.objectContaining({
           projectId: "project:launch",
           missionId: "b30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        }),
+      }),
+    );
+  });
+
+  it("plans Agent-private context with the exact selected Agent authority", async () => {
+    const response = await POST(workflowPlanRequest({
+      contextScope: "agent_private",
+      agentId: "atlas",
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.resolveAgentIdentityForExecution).toHaveBeenCalledWith({
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      agentId: "atlas",
+    });
+    expect(mocks.buildDynamicWorkflowPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contextSelection: undefined,
+        databaseMemoryAccessScope: expect.objectContaining({
+          executingPrincipalType: "agent",
+          executingPrincipalId: "agent:atlas:principal",
+          workspaceId: null,
+          projectId: null,
+          missionId: null,
+        }),
+        contextBoundary: expect.objectContaining({
+          contextScope: "agent_private",
+          agentId: "atlas",
+          authoritySha256: "b".repeat(64),
         }),
       }),
     );

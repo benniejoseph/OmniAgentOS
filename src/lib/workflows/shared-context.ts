@@ -54,7 +54,9 @@ const workflowAgentPrivatePlanContextBoundarySchema = z.object({
   schemaVersion: z.literal(1),
   policyVersion: z.literal("workflow-agent-private-context-v1"),
   contextScope: z.literal("agent_private"),
-  agentId: z.string().trim().min(1).max(240),
+  agentId: z.string().trim().min(1).max(240).regex(
+    /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
+  ),
   authoritySha256: sha256Schema,
 }).strict();
 

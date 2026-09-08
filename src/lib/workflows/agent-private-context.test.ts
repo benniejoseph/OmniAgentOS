@@ -11,6 +11,10 @@ vi.mock("@/lib/agents/identity-store", () => ({
 import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import {
+  parseWorkflowPlanContextBoundary,
+  workflowPlanContextBoundariesEqual,
+} from "@/lib/workflows/shared-context";
+import {
   createWorkflowAgentPrivateContextBinding,
   parseWorkflowAgentPrivateContextBinding,
   resolveWorkflowAgentPrivateContextAccess,
@@ -50,13 +54,21 @@ describe("durable workflow Agent-private context", () => {
       missionId: null,
       purposeId: "memory.retrieve.v1",
     });
-    expect(workflowAgentPrivatePlanContextBoundary(identity)).toEqual({
+    const contextBoundary = workflowAgentPrivatePlanContextBoundary(identity);
+    expect(contextBoundary).toEqual({
       schemaVersion: 1,
       policyVersion: "workflow-agent-private-context-v1",
       contextScope: "agent_private",
       agentId: "atlas",
       authoritySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
+    expect(parseWorkflowPlanContextBoundary(contextBoundary)).toEqual(
+      contextBoundary,
+    );
+    expect(workflowPlanContextBoundariesEqual(
+      contextBoundary,
+      contextBoundary,
+    )).toBe(true);
     await expect(resolveWorkflowAgentPrivateContextAccess({
       binding,
       workflowExecutionScope,

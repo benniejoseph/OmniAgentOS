@@ -31,4 +31,37 @@ describe("public workflow projection", () => {
     });
     expect(run.input.metadata?._workflowSharedContext).toBeDefined();
   });
+
+  it("never exposes the private durable Agent context envelope", () => {
+    const run: WorkflowRunRecord = {
+      id: "workflow-agent-a",
+      tenantId: "tenant-a",
+      workflowType: "agent.workflow.v1",
+      status: "queued",
+      goal: "Use the Agent's private memory",
+      input: {
+        goal: "Use the Agent's private memory",
+        metadata: {
+          contextScope: "agent_private",
+          agentId: "atlas",
+          _workflowAgentPrivateContext: {
+            agentIdentity: { principal: { contextGrantIds: ["grant-a"] } },
+          },
+        },
+      },
+      attempt: 0,
+      maxAttempts: 3,
+      approvalRequired: false,
+      createdAt: "2026-09-08T00:00:00.000Z",
+      updatedAt: "2026-09-08T00:00:00.000Z",
+    };
+
+    expect(publicWorkflowRun(run).input.metadata).toEqual({
+      contextScope: "agent_private",
+      agentId: "atlas",
+    });
+    expect(
+      run.input.metadata?._workflowAgentPrivateContext,
+    ).toBeDefined();
+  });
 });

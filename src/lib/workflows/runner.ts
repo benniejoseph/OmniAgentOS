@@ -58,6 +58,10 @@ import {
   workflowPlanContextBoundariesEqual,
   WORKFLOW_SHARED_CONTEXT_METADATA_KEY,
 } from "@/lib/workflows/shared-context";
+import {
+  resolveWorkflowAgentPrivateContextAccess,
+  WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/agent-private-context";
 import { parseWorkflowProcedureSnapshot } from "@/lib/workflows/saved-procedures";
 import {
   approveWorkflowRun,
@@ -955,8 +959,8 @@ async function executeStep(
     );
     const profile = workflowAgentProfile(detail);
     const specialistContext = await buildWorkflowSpecialistContext(detail);
-    const sharedContext = await workflowSharedContextForRun(detail);
-    if (profile?.memoryScope === "session" && !sharedContext) {
+    const durableContext = await workflowDurableContextForRun(detail);
+    if (profile?.memoryScope === "session" && !durableContext) {
       return {
         contextCount: specialistContext.count,
         memoryCount: 0,
@@ -980,8 +984,8 @@ async function executeStep(
       limit: 6,
       tenantId: detail.run.tenantId,
       evidenceIds: contextSelection?.evidenceIds,
-      ...(sharedContext ? {
-        databaseMemoryAccessScope: sharedContext.databaseAccessScope,
+      ...(durableContext ? {
+        databaseMemoryAccessScope: durableContext.databaseAccessScope,
         scopedMemoryOnly: true,
         persistTrace: false,
       } : {}),
@@ -1016,7 +1020,7 @@ async function executeStep(
       intent: retrieval.profile.intent,
       traceId: retrieval.trace?.id,
       contextAuthoritySha256:
-        sharedContext?.contextBoundary.authoritySha256,
+        durableContext?.contextBoundary.authoritySha256,
       evidence: [
         ...specialistContext.evidence,
         ...retrieval.results.map((item) => ({
@@ -1284,7 +1288,7 @@ async function buildPlan(
 ) {
   const profile = workflowAgentProfile(detail);
   const contextSelection = workflowContextSelection(detail);
-  const sharedContext = await workflowSharedContextForRun(detail);
+  const durableContext = await workflowDurableContextForRun(detail);
   const savedProcedure = workflowSavedProcedure(detail);
   const retrieveOutput = stepOutput(detail, "retrieve_context");
   const replanEvent = [...detail.events]
@@ -1317,7 +1321,7 @@ async function buildPlan(
     selectedPlan &&
     !workflowPlanContextBoundariesEqual(
       selectedPlan.contextBoundary,
-      sharedContext?.contextBoundary,
+      durableContext?.contextBoundary,
     )
   ) {
     throw new Error(
@@ -1370,8 +1374,8 @@ async function buildPlan(
       workflowRunId: detail.run.id,
       requireApproval: detail.run.approvalRequired,
       contextSelection,
-      databaseMemoryAccessScope: sharedContext?.databaseAccessScope,
-      contextBoundary: sharedContext?.contextBoundary,
+      databaseMemoryAccessScope: durableContext?.databaseAccessScope,
+      contextBoundary: durableContext?.contextBoundary,
       requiredToolBindings: savedProcedure?.toolBindings,
       requiredAcceptanceCriteria: savedProcedure?.schemaVersion === 2
         ? savedProcedure.acceptanceCriteria
@@ -1677,13 +1681,22 @@ async function completeWorkflow(
       try {
         if (authority?.executionScope) {
           const reportThreadId = detail.run.input.metadata?.threadId;
+          const memoryExecutionScope =
+            detail.run.input.metadata?.contextScope === "agent_private"
+              ? deriveExecutionScope(authority.executionScope, {
+                  workspaceId: null,
+                  projectId: null,
+                  missionId: null,
+                  purpose: "workflow.memory.agent_private.formation",
+                })
+              : authority.executionScope;
           await formVerifiedEffectMemories({
             records: authoritativeToolExecutions,
             runId: detail.run.id,
             threadId: typeof reportThreadId === "string"
               ? reportThreadId
               : undefined,
-            executionScope: authority.executionScope,
+            executionScope: memoryExecutionScope,
           });
         }
       } catch (error) {
@@ -1752,11 +1765,13 @@ function workflowAgentProfile(detail: WorkflowRunDetail): AgentRunRequest["agent
 function workflowContextSelection(
   detail: WorkflowRunDetail,
 ): { query: string; evidenceIds: string[] } | undefined {
-  if (isWorkflowSharedContextScope(
-    typeof detail.run.input.metadata?.contextScope === "string"
-      ? detail.run.input.metadata.contextScope
-      : undefined,
-  )) {
+  const contextScope = typeof detail.run.input.metadata?.contextScope === "string"
+    ? detail.run.input.metadata.contextScope
+    : undefined;
+  if (
+    isWorkflowSharedContextScope(contextScope) ||
+    contextScope === "agent_private"
+  ) {
     return undefined;
   }
   const value = detail.run.input.metadata?.contextSelection;
@@ -1786,30 +1801,54 @@ function workflowContextSelection(
   }
 }
 
-async function workflowSharedContextForRun(detail: WorkflowRunDetail) {
+async function workflowDurableContextForRun(detail: WorkflowRunDetail) {
   const contextScope = typeof detail.run.input.metadata?.contextScope === "string"
     ? detail.run.input.metadata.contextScope
     : undefined;
-  const binding = detail.run.input.metadata?.[WORKFLOW_SHARED_CONTEXT_METADATA_KEY];
-  if (!isWorkflowSharedContextScope(contextScope)) {
-    if (binding !== undefined) {
-      throw new Error("Workflow contains an unrequested shared-context binding.");
+  const sharedBinding =
+    detail.run.input.metadata?.[WORKFLOW_SHARED_CONTEXT_METADATA_KEY];
+  const agentPrivateBinding =
+    detail.run.input.metadata?.[WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY];
+  if (isWorkflowSharedContextScope(contextScope)) {
+    if (agentPrivateBinding !== undefined) {
+      throw new Error("Workflow contains conflicting durable context bindings.");
     }
-    return undefined;
+    if (sharedBinding === undefined) {
+      throw new Error("Workflow shared-context authority is missing.");
+    }
+    const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+      tenantId: detail.run.tenantId,
+    });
+    if (!authority) {
+      throw new Error("Workflow shared-context root authority is missing.");
+    }
+    return resolveWorkflowSharedContextAccess({
+      binding: sharedBinding,
+      workflowExecutionScope: authority.executionScope,
+    });
   }
-  if (binding === undefined) {
-    throw new Error("Workflow shared-context authority is missing.");
+  if (contextScope === "agent_private") {
+    if (sharedBinding !== undefined) {
+      throw new Error("Workflow contains conflicting durable context bindings.");
+    }
+    if (agentPrivateBinding === undefined) {
+      throw new Error("Workflow Agent-private context authority is missing.");
+    }
+    const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
+      tenantId: detail.run.tenantId,
+    });
+    if (!authority) {
+      throw new Error("Workflow Agent-private root authority is missing.");
+    }
+    return resolveWorkflowAgentPrivateContextAccess({
+      binding: agentPrivateBinding,
+      workflowExecutionScope: authority.executionScope,
+    });
   }
-  const authority = await getWorkflowRunExecutionAuthority(detail.run.id, {
-    tenantId: detail.run.tenantId,
-  });
-  if (!authority) {
-    throw new Error("Workflow shared-context root authority is missing.");
+  if (sharedBinding !== undefined || agentPrivateBinding !== undefined) {
+    throw new Error("Workflow contains an unrequested durable-context binding.");
   }
-  return resolveWorkflowSharedContextAccess({
-    binding,
-    workflowExecutionScope: authority.executionScope,
-  });
+  return undefined;
 }
 
 function workflowSavedProcedure(detail: WorkflowRunDetail) {
