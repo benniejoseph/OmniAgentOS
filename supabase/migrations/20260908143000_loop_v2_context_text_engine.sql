@@ -56,7 +56,7 @@ CHECK (
         'agent_loop_v2_context_text'
       AND engine_version_id = 'agent_loop_v2_context_text_canary_1'
       AND configuration_sha256 =
-        '70581030987f63fde99ded6d0c718945647c5ff5ff68aa3108a7473510135404'
+        '8e973988773ef0e9148e46cc106dfaf66d943af89db7003178746d98a060574d'
     )
   )
 ) NOT VALID;
@@ -83,7 +83,7 @@ BEGIN
     OR constraint_definition NOT LIKE '%agent_loop_v2_model_text_canary_1%'
     OR constraint_definition NOT LIKE '%agent_loop_v2_context_text_canary_1%'
     OR constraint_definition NOT LIKE
-      '%70581030987f63fde99ded6d0c718945647c5ff5ff68aa3108a7473510135404%'
+      '%8e973988773ef0e9148e46cc106dfaf66d943af89db7003178746d98a060574d%'
   THEN
     RAISE EXCEPTION 'Loop v2 context-text engine boundary is invalid'
       USING ERRCODE = '55000';
@@ -95,7 +95,7 @@ INSERT INTO omni_schema_version (version, name, checksum, applied_at)
 VALUES (
   147,
   'loop_v2_context_text_engine_v1',
-  '2baa891cc5e1a1b3440198a2001caba943d1bc9aab258276564d430972ae83a3',
+  'abe02d5cde5e23661f1407af38a6cb7db6f9491b46e48c7313341d7b8a069760',
   clock_timestamp()
 );
 

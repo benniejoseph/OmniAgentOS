@@ -1240,6 +1240,7 @@ async function POSTHandler(request: Request) {
                   contextSelection,
                   promptMemoryAccess,
                   promptSharedMemoryAccess,
+                  promptPersonalMemoryAccess,
                   promptEntityGraphAccess,
                 },
                 request.signal,

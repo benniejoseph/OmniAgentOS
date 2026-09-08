@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { agentPromptMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
+import { personalContextMemoryAccessFromSecurityContext } from "@/lib/memory/personal-context-access";
+import { buildPersonalContextConsentAuthorityV1 } from "@/lib/memory/personal-context-consent";
 import {
   prepareLoopV2Context,
   type LoopV2ContextRuntimeDependencies,
@@ -106,6 +108,58 @@ describe("Loop v2 context preparation", () => {
     }, harness)).rejects.toThrow(/authoritative compiler receipt/i);
     expect(harness.appendContextBinding).not.toHaveBeenCalled();
   });
+
+  it("revalidates consent and commits automatic authority before personal context", async () => {
+    const harness = dependencies();
+    const authority = buildPersonalContextConsentAuthorityV1({
+      tenantId: securityContext.tenantId,
+      actorId: `actor:${AUTH_USER_ID}`,
+      consentGeneration: 1,
+      activatedAt: "2026-09-08T00:00:00.000Z",
+    });
+    const promptPersonalMemoryAccess =
+      personalContextMemoryAccessFromSecurityContext(securityContext, {
+        correlationId: "request-a",
+        consentAuthority: authority,
+      });
+    harness.resolvePersonalAccess.mockResolvedValue(
+      promptPersonalMemoryAccess?.databaseAccessScope,
+    );
+    harness.buildContext.mockResolvedValue({
+      ...contextPack(),
+      compilerV2Canary: undefined,
+      compilerV2Automatic: {
+        receipt: {} as never,
+        selectedEvidenceIds: ["memory:m1"],
+      } as never,
+    });
+
+    const prepared = await prepareLoopV2Context({
+      ...baseRequest("personal"),
+      promptPersonalMemoryAccess,
+    }, harness);
+
+    expect(harness.resolvePersonalAccess).toHaveBeenCalledWith(
+      promptPersonalMemoryAccess,
+      expect.objectContaining({ memoryMode: "all" }),
+    );
+    expect(harness.buildContext).toHaveBeenCalledWith(
+      sourceText(),
+      expect.objectContaining({
+        databaseMemoryAccessScope:
+          promptPersonalMemoryAccess?.databaseAccessScope,
+        contextCompilerV2Automatic: expect.objectContaining({ runId: "run-a" }),
+      }),
+    );
+    expect(harness.appendCompilerAutomatic).toHaveBeenCalledTimes(1);
+    expect(harness.appendContextBinding).toHaveBeenCalledTimes(1);
+    expect(prepared.contextBinding).toMatchObject({
+      contextScope: "personal",
+      authorityKind: "personal_standing_consent",
+      authoritySha256: authority.authoritySha256,
+      selectedItemCount: 1,
+    });
+  });
 });
 
 function dependencies() {
@@ -113,6 +167,8 @@ function dependencies() {
     buildContext: vi.fn(),
     appendCompilerShadow: vi.fn(),
     appendCompilerCanary: vi.fn(),
+    appendCompilerAutomatic: vi.fn(),
+    resolvePersonalAccess: vi.fn(),
     appendUseReceipt: vi.fn(),
     appendContextBinding: vi.fn(),
     updateContextCount: vi.fn(),

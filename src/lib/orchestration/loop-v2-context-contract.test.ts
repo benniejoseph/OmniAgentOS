@@ -53,6 +53,22 @@ describe("Loop v2 context binding", () => {
       contextBudgetReceiptSha256: digest("budget"),
     })).toThrow(/selection digest/i);
   });
+
+  it("binds personal retrieval to standing consent authority", () => {
+    const binding = buildLoopV2ContextBindingV1({
+      ...base(),
+      contextScope: "personal",
+      authoritySha256: digest("personal-consent-authority"),
+      selectedEvidenceIds: ["memory:a"],
+      contextBudgetReceiptSha256: digest("budget"),
+    });
+
+    expect(binding).toMatchObject({
+      authorityKind: "personal_standing_consent",
+      selectedItemCount: 1,
+      selectionSha256: null,
+    });
+  });
 });
 
 function base() {

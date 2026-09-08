@@ -19,6 +19,7 @@ export const loopV2ContextAuthorityKindSchema = z.enum([
   "conversation",
   "agent_identity",
   "shared_membership",
+  "personal_standing_consent",
   "reviewed_selection",
 ]);
 
@@ -66,6 +67,7 @@ const loopV2ContextBindingBodySchema = z.object({
     "mission",
     "project",
     "workspace",
+    "personal",
     "explicit_selection",
   ].includes(binding.contextScope);
   if (durableScope !== (binding.contextBudgetReceiptSha256 !== null)) {
@@ -160,6 +162,7 @@ function authorityKindForScope(
   if (["mission", "project", "workspace"].includes(scope)) {
     return "shared_membership";
   }
+  if (scope === "personal") return "personal_standing_consent";
   if (scope === "explicit_selection") return "reviewed_selection";
   return "conversation";
 }
