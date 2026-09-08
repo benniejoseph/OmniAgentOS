@@ -12,7 +12,7 @@ BEGIN
     WHERE version = 147
       AND name = 'loop_v2_context_text_engine_v1'
       AND checksum =
-        '2baa891cc5e1a1b3440198a2001caba943d1bc9aab258276564d430972ae83a3'
+        'abe02d5cde5e23661f1407af38a6cb7db6f9491b46e48c7313341d7b8a069760'
   ) <> 1 THEN
     RAISE EXCEPTION 'Personal-context consent predecessor is invalid'
       USING ERRCODE = '55000';

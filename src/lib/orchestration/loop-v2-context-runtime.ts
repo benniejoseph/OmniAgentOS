@@ -5,6 +5,10 @@ import {
   type RequestMemoryAccessV1,
 } from "@/lib/memory/request-access";
 import {
+  resolvePersonalContextMemoryAccess,
+  type RequestPersonalContextMemoryAccessV1,
+} from "@/lib/memory/personal-context-access";
+import {
   resolveSharedAgentPromptMemoryAccess,
   type RequestSharedMemoryAccessV1,
 } from "@/lib/memory/shared-context";
@@ -21,11 +25,13 @@ import type { ChatMessage } from "@/lib/orchestration/types";
 import { estimateContextTokens } from "@/lib/rag/context-budget";
 import { buildCitationSources } from "@/lib/rag/citations";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { CONTEXT_COMPILER_V2_AUTOMATIC_VERSION_ID } from "@/lib/rag/context-compiler-v2";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
 import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import { buildContextUseReceiptV1 } from "@/lib/rag/context-use-receipt";
 import type { ContextManifestV1 } from "@/lib/runs/contracts";
 import {
+  appendContextCompilerV2AutomaticEvent,
   appendContextCompilerV2CanaryEvent,
   appendContextCompilerV2ShadowEventSafely,
   appendContextUseReceiptEvent,
@@ -47,10 +53,11 @@ export type LoopV2ContextRuntimeRequest = Readonly<{
   message: string;
   summaryInput: string;
   messages: readonly ChatMessage[];
-  contextScope: Exclude<ContextScopeId, "personal">;
+  contextScope: ContextScopeId;
   contextSelection?: ContextSelectionLockBinding;
   promptMemoryAccess?: RequestMemoryAccessV1;
   promptSharedMemoryAccess?: RequestSharedMemoryAccessV1;
+  promptPersonalMemoryAccess?: RequestPersonalContextMemoryAccessV1;
   promptEntityGraphAccess?: RequestEntityAccessV1;
   securityContext: SecurityContext;
   executionScope: ExecutionScope;
@@ -71,6 +78,8 @@ export type LoopV2ContextRuntimeDependencies = Readonly<{
   buildContext: typeof buildContextPack;
   appendCompilerShadow: typeof appendContextCompilerV2ShadowEventSafely;
   appendCompilerCanary: typeof appendContextCompilerV2CanaryEvent;
+  appendCompilerAutomatic: typeof appendContextCompilerV2AutomaticEvent;
+  resolvePersonalAccess: typeof resolvePersonalContextMemoryAccess;
   appendUseReceipt: typeof appendContextUseReceiptEvent;
   appendContextBinding: typeof appendLoopV2ContextBinding;
   updateContextCount: typeof updateRunContextCount;
@@ -81,6 +90,8 @@ export const loopV2ContextRuntimeDependencies:
     buildContext: buildContextPack,
     appendCompilerShadow: appendContextCompilerV2ShadowEventSafely,
     appendCompilerCanary: appendContextCompilerV2CanaryEvent,
+    appendCompilerAutomatic: appendContextCompilerV2AutomaticEvent,
+    resolvePersonalAccess: resolvePersonalContextMemoryAccess,
     appendUseReceipt: appendContextUseReceiptEvent,
     appendContextBinding: appendLoopV2ContextBinding,
     updateContextCount: updateRunContextCount,
@@ -97,7 +108,7 @@ export async function prepareLoopV2Context(
     request.message,
   );
   const conversationSha256 = sourceContractSha256(conversation);
-  const access = resolveContextAccess(request);
+  const access = await resolveContextAccess(request, dependencies);
   const durableScope = Boolean(access.databaseAccessScope);
   const retrieval = durableScope
     ? await dependencies.buildContext(
@@ -114,7 +125,14 @@ export async function prepareLoopV2Context(
             taskContextTokenLimit: MAX_RETRIEVED_CONTEXT_TOKENS,
           },
           queryPlanning: { allowSemanticModel: false },
-          ...(request.contextScope === "explicit_selection"
+          ...(request.contextScope === "personal"
+            ? {
+                contextCompilerV2Automatic: {
+                  runId: request.runId,
+                  executionScope: request.executionScope,
+                },
+              }
+            : request.contextScope === "explicit_selection"
             ? {
                 contextCompilerV2Canary: {
                   runId: request.runId,
@@ -141,6 +159,14 @@ export async function prepareLoopV2Context(
       "Loop v2 explicit context requires the authoritative compiler receipt.",
     );
   }
+  if (
+    request.contextScope === "personal" &&
+    !retrieval?.compilerV2Automatic
+  ) {
+    throw new Error(
+      "Loop v2 personal context requires the authoritative automatic compiler receipt.",
+    );
+  }
   const compiledContext = compileSupportingContext(
     conversation,
     retrieval?.contextBlock || "",
@@ -165,7 +191,9 @@ export async function prepareLoopV2Context(
     compiledContextSha256,
     contextTokenCount: estimateContextTokens(compiledContext),
     providerId: request.providerId,
-    compilerVersionId: retrieval?.compilerV2Canary
+    compilerVersionId: retrieval?.compilerV2Automatic
+      ? CONTEXT_COMPILER_V2_AUTOMATIC_VERSION_ID
+      : retrieval?.compilerV2Canary
       ? "context-compiler-v2-canary:1"
       : "context-compiler-authorized:1",
     retrievalTraceId: retrieval?.trace?.id,
@@ -204,6 +232,13 @@ export async function prepareLoopV2Context(
       scopeOptions(request),
     );
   }
+  if (retrieval?.compilerV2Automatic) {
+    await dependencies.appendCompilerAutomatic(
+      request.runId,
+      retrieval.compilerV2Automatic.receipt,
+      scopeOptions(request),
+    );
+  }
   if (request.contextSelection && retrieval) {
     await dependencies.appendUseReceipt(
       request.runId,
@@ -234,8 +269,26 @@ export async function prepareLoopV2Context(
   });
 }
 
-function resolveContextAccess(request: LoopV2ContextRuntimeRequest) {
+async function resolveContextAccess(
+  request: LoopV2ContextRuntimeRequest,
+  dependencies: LoopV2ContextRuntimeDependencies,
+) {
   assertAgentIdentityMatchesScope(request);
+  if (request.contextScope === "personal") {
+    const databaseAccessScope = await dependencies.resolvePersonalAccess(
+      request.promptPersonalMemoryAccess,
+      {
+        agentExecutionScope: request.executionScope,
+        memoryMode: "all",
+      },
+    );
+    const authoritySha256 = request.promptPersonalMemoryAccess
+      ?.consentAuthority.authoritySha256;
+    if (!databaseAccessScope || !authoritySha256) {
+      throw new Error("Loop v2 personal context authority is unavailable.");
+    }
+    return { databaseAccessScope, authoritySha256 };
+  }
   if (request.contextScope === "explicit_selection") {
     if (!request.contextSelection) {
       throw new Error("Loop v2 explicit context requires a reviewed selection.");
@@ -320,7 +373,7 @@ function assertAgentIdentityMatchesScope(request: LoopV2ContextRuntimeRequest) {
 }
 
 function conversationForScope(
-  scope: Exclude<ContextScopeId, "personal">,
+  scope: ContextScopeId,
   messages: readonly ChatMessage[],
   currentMessage: string,
 ) {

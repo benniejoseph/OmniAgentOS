@@ -113,6 +113,10 @@ describe("Loop v2 model-text enrollment", () => {
       contextScope: "mission",
       missionId: "mission-a",
     })).toBe(true);
+    expect(isLoopV2ContextTextCandidate({
+      ...candidate,
+      contextScope: "personal",
+    })).toBe(true);
   });
 });
 

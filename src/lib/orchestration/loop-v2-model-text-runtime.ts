@@ -41,6 +41,7 @@ import {
 } from "@/lib/orchestration/loop-v2-outcome";
 import type { RequestEntityAccessV1 } from "@/lib/entities/request-access";
 import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
+import type { RequestPersonalContextMemoryAccessV1 } from "@/lib/memory/personal-context-access";
 import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
@@ -110,6 +111,7 @@ export type LoopV2ModelTextRequest = Readonly<{
   contextSelection?: ContextSelectionLockBinding;
   promptMemoryAccess?: RequestMemoryAccessV1;
   promptSharedMemoryAccess?: RequestSharedMemoryAccessV1;
+  promptPersonalMemoryAccess?: RequestPersonalContextMemoryAccessV1;
   promptEntityGraphAccess?: RequestEntityAccessV1;
 }>;
 
@@ -311,10 +313,12 @@ export async function* runLoopV2ModelText(
           message: request.message,
           summaryInput,
           messages: request.messages || [{ role: "user", content: request.message }],
-          contextScope: request.contextScope as Exclude<ContextScopeId, "personal">,
+          contextScope: request.contextScope as
+            (typeof LOOP_V2_CONTEXT_SCOPES)[number],
           contextSelection: request.contextSelection,
           promptMemoryAccess: request.promptMemoryAccess,
           promptSharedMemoryAccess: request.promptSharedMemoryAccess,
+          promptPersonalMemoryAccess: request.promptPersonalMemoryAccess,
           promptEntityGraphAccess: request.promptEntityGraphAccess,
           securityContext: context,
           executionScope,

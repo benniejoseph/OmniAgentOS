@@ -39,6 +39,7 @@ export const LOOP_V2_CONTEXT_SCOPES = Object.freeze([
   "mission",
   "project",
   "workspace",
+  "personal",
   "explicit_selection",
 ] as const satisfies readonly ContextScopeId[]);
 const LOOP_V2_TRANSITIONS = Object.freeze([
