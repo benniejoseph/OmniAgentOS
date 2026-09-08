@@ -704,21 +704,35 @@ async function runAllTenantScheduledWork({
           jobs: [],
         }),
   ]);
-  const [memoryGraphRebuilds, temporalRelationProjections, memoryDeletionScrubs, page] =
-    runMaintenance && Date.now() < deadlineAt
-    ? await Promise.all([
-        processPendingMemoryGraphRebuilds({ limit: 1 }),
-        processPendingTemporalRelationProjections({ limit: 1 }),
-        processPendingMemoryDeletionScrubs({
-          receiptLimit: Math.min(maintenanceTenantLimit, 10),
-          memoryLimit: 100,
-        }),
-        listMaintenanceTenantIds({
-          after: tenantCursor,
-          limit: Math.min(maintenanceTenantLimit + 1, 101),
-        }),
-      ])
-    : [undefined, undefined, undefined, [] as string[]];
+  let memoryGraphRebuilds:
+    Awaited<ReturnType<typeof processPendingMemoryGraphRebuilds>> | undefined;
+  let temporalRelationProjections:
+    Awaited<ReturnType<typeof processPendingTemporalRelationProjections>> | undefined;
+  let memoryDeletionScrubs:
+    Awaited<ReturnType<typeof processPendingMemoryDeletionScrubs>> | undefined;
+  let page: string[] = [];
+  // System-scope work shares a deliberately small maintenance pool. Keep
+  // these operations ordered so a graph rebuild cannot make the other jobs
+  // wait for a connection they cannot acquire.
+  if (runMaintenance && Date.now() < deadlineAt) {
+    memoryGraphRebuilds = await processPendingMemoryGraphRebuilds({ limit: 1 });
+  }
+  if (runMaintenance && Date.now() < deadlineAt) {
+    temporalRelationProjections =
+      await processPendingTemporalRelationProjections({ limit: 1 });
+  }
+  if (runMaintenance && Date.now() < deadlineAt) {
+    memoryDeletionScrubs = await processPendingMemoryDeletionScrubs({
+      receiptLimit: Math.min(maintenanceTenantLimit, 10),
+      memoryLimit: 100,
+    });
+  }
+  if (runMaintenance && Date.now() < deadlineAt) {
+    page = await listMaintenanceTenantIds({
+      after: tenantCursor,
+      limit: Math.min(maintenanceTenantLimit + 1, 101),
+    });
+  }
   const maintenanceCandidates = page.slice(0, maintenanceTenantLimit);
   const maintenanceTenantIds: string[] = [];
   const maintenance: Array<{

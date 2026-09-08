@@ -1355,10 +1355,10 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
     deleted: RetentionSweepResult["deleted"];
   };
 
-  await processPendingMemoryGraphRebuilds({
-    tenantIds: result.affectedMemoryTenantIds,
-    limit: Math.max(result.affectedMemoryTenantIds.length, 1),
-  });
+  // The deletion transaction durably queues each affected tenant. Rebuilding
+  // synchronously here used to keep the system-scope retention request open
+  // for minutes and starve authentication reads that share the maintenance
+  // pool. The bounded maintenance lane drains this queue independently.
   return {
     deleted: result.deleted,
     batchLimit,
