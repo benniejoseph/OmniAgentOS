@@ -12,6 +12,7 @@ import type {
   WorkflowRunRecord,
   WorkflowStats,
 } from "@/lib/workflows/types";
+import { WORKFLOW_SHARED_CONTEXT_METADATA_KEY } from "@/lib/workflows/shared-context";
 
 function outcomeEvaluationFor(run: WorkflowRunRecord) {
   try {
@@ -44,8 +45,18 @@ function publicOutcome(evaluation: WorkflowOutcomeEvaluationV1 | undefined) {
  */
 export function publicWorkflowRun(run: WorkflowRunRecord) {
   const evaluation = outcomeEvaluationFor(run);
+  const metadata = run.input.metadata;
+  const {
+    [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]: _privateSharedContext,
+    ...publicMetadata
+  } = metadata || {};
+  void _privateSharedContext;
   return {
     ...run,
+    input: {
+      ...run.input,
+      ...(metadata ? { metadata: publicMetadata } : {}),
+    },
     canonicalStatus: evaluation
       ? canonicalStatusForTerminalReceipt(
           evaluation.terminalReceipt,

@@ -12,6 +12,7 @@ import {
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import type { DatabaseMemoryAccessScope } from "@/lib/db/memory-access-scope";
 import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
@@ -39,6 +40,11 @@ import type {
   WorkflowPlanValidation,
   WorkflowReplanDirectiveV1,
 } from "@/lib/workflows/types";
+import {
+  parseWorkflowPlanContextBoundary,
+  workflowPlanContextBoundariesEqual,
+  type WorkflowPlanContextBoundaryV1,
+} from "@/lib/workflows/shared-context";
 
 type BuildWorkflowPlanInput = {
   tenantId?: string;
@@ -48,6 +54,9 @@ type BuildWorkflowPlanInput = {
     query: string;
     evidenceIds: string[];
   };
+  /** Trusted, request- or worker-authorized shared-memory scope. */
+  databaseMemoryAccessScope?: DatabaseMemoryAccessScope;
+  contextBoundary?: WorkflowPlanContextBoundaryV1;
   mode?: WorkflowDynamicPlan["mode"];
   workflowRunId?: string;
   requireApproval?: boolean;
@@ -172,10 +181,19 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     throw new Error("Workflow goal is required.");
   }
   const contextSelection = validateContextSelection(input.contextSelection, goal);
+  if (Boolean(input.databaseMemoryAccessScope) !== Boolean(input.contextBoundary)) {
+    throw new Error("Workflow shared context requires one complete authority boundary.");
+  }
 
   if (input.workflowRunId && input.reuseExisting !== false && !contextSelection) {
     const existing = await getWorkflowPlanForRun(input.workflowRunId, { tenantId });
     if (existing) {
+      if (!workflowPlanContextBoundariesEqual(
+        existing.contextBoundary,
+        input.contextBoundary,
+      )) {
+        throw new Error("Stored workflow plan context no longer matches current authority.");
+      }
       return existing;
     }
   }
@@ -197,6 +215,11 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     limit: 8,
     tenantId,
     evidenceIds: contextSelection?.evidenceIds,
+    ...(input.databaseMemoryAccessScope ? {
+      databaseMemoryAccessScope: input.databaseMemoryAccessScope,
+      scopedMemoryOnly: true,
+      persistTrace: false,
+    } : {}),
     contextBudget: { taskContextTokenLimit: 6_144 },
     queryPlanning: { allowSemanticModel: false },
     ...(usageActorId ? {
@@ -275,6 +298,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     plan: safePlan,
     validation,
     contextTraceId: context.trace?.id,
+    contextBoundary: input.contextBoundary,
     highestRiskLevel: safePlan.executionPolicy.highestRiskLevel,
     approvalRequired: safePlan.executionPolicy.requiresApproval,
     confidence: safePlan.confidence,
@@ -1251,7 +1275,12 @@ async function saveWorkflowPlan(
         VALUES (
           ${planRecord.id}, ${planRecord.tenantId}, ${planRecord.workflowRunId || null}, ${planRecord.goal},
           ${planRecord.status}, ${planRecord.planner}, ${planRecord.model},
-          ${planRecord.plan}::jsonb, ${planRecord.validation}::jsonb,
+          ${planRecord.plan}::jsonb, ${{
+            ...planRecord.validation,
+            ...(planRecord.contextBoundary
+              ? { contextBoundary: planRecord.contextBoundary }
+              : {}),
+          }}::jsonb,
           ${planRecord.contextTraceId || null}, ${planRecord.highestRiskLevel},
           ${planRecord.approvalRequired}, ${planRecord.confidence}, ${planRecord.error || null},
           ${planRecord.createdAt}, ${planRecord.updatedAt}
@@ -1310,6 +1339,9 @@ async function appendWorkflowPlanMutationEvent({
     goalSha256: workflowPlanSha256(record.goal),
     planSha256: workflowPlanSha256(record.plan),
     validationSha256: workflowPlanSha256(record.validation),
+    contextScope: record.contextBoundary?.contextScope || null,
+    contextAuthoritySha256:
+      record.contextBoundary?.authoritySha256 || null,
     idempotencyKeySha256: workflowPlanSha256(idempotencyIdentity),
   };
   const mutationScope = deriveExecutionScope(executionScope, {
@@ -1348,6 +1380,7 @@ function stableWorkflowPlanJson(value: unknown): string {
 
 function workflowPlanFromRow(row: Record<string, unknown>): WorkflowPlanRecord {
   const plan = dynamicPlanSchema.safeParse(parseObject(row.plan));
+  const rawValidation = parseObject(row.validation);
   return {
     id: String(row.id),
     tenantId: String(row.tenant_id || "default"),
@@ -1365,6 +1398,9 @@ function workflowPlanFromRow(row: Record<string, unknown>): WorkflowPlanRecord {
       toolCandidates: [],
     }),
     validation: validationFromValue(row.validation),
+    contextBoundary: parseWorkflowPlanContextBoundary(
+      rawValidation?.contextBoundary,
+    ),
     contextTraceId: row.context_trace_id ? String(row.context_trace_id) : undefined,
     highestRiskLevel: clampRisk(Number(row.highest_risk_level || 0)),
     approvalRequired: Boolean(row.approval_required),

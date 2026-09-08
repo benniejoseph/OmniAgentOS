@@ -599,11 +599,7 @@ export function AgentRunsWorkspace({
   const runPermission = permissionMessage(session, sessionStatus, "run.agent");
   const voicePermission = permissionMessage(session, sessionStatus, "write.memory");
   const workflowPermission = permissionMessage(session, sessionStatus, "manage.workflow");
-  const sharedContextWorkflowReason =
-    contextScope === "project" || contextScope === "workspace"
-      ? "Shared project and workspace context currently runs through the direct governed agent path."
-      : undefined;
-  const workflowActionPermission = workflowPermission || sharedContextWorkflowReason;
+  const workflowActionPermission = workflowPermission;
   const activeWorkflowId = stringPath(workflowRun, "run.id", "");
   const activeWorkflowStatus = stringPath(workflowRun, "run.status", "");
   const workflowInProgress = Boolean(
@@ -1707,6 +1703,16 @@ export function AgentRunsWorkspace({
       return;
     }
     const taskQuery = goal.trim();
+    if (contextScope === "project" && !selectedProjectId) {
+      setError("Choose a project before using project context.");
+      openTaskDetails("context");
+      return;
+    }
+    if (contextScope === "mission" && !initialMissionId) {
+      setError("Open Command from a Mission before using Mission context.");
+      openTaskDetails("context");
+      return;
+    }
     if (contextLoading) {
       openTaskDetails("context");
       setRunAnnouncement("Wait for task context to finish loading, then preview the plan.");
@@ -1741,6 +1747,12 @@ export function AgentRunsWorkspace({
           requireApproval: approvalRequired,
           contextScope,
           contextSelection,
+          projectId: contextScope === "project"
+            ? selectedProjectId
+            : undefined,
+          missionId: contextScope === "mission"
+            ? initialMissionId
+            : undefined,
         }),
       });
       const nextPlan = asRecord(result);
@@ -1836,6 +1848,12 @@ export function AgentRunsWorkspace({
             threadId: workflowThreadId,
             contextScope,
             contextSelection,
+            projectId: contextScope === "project"
+              ? selectedProjectId
+              : undefined,
+            missionId: contextScope === "mission"
+              ? initialMissionId
+              : undefined,
           },
         }),
       });
@@ -2896,9 +2914,7 @@ export function AgentRunsWorkspace({
               readDisabledReason={readPermission}
               runDisabledReason={runPermission}
               voiceDisabledReason={runPermission || voicePermission}
-              workflowDisabledReason={contextScope === "mission"
-                ? "Mission context is currently available only for a direct Conversation run."
-                : workflowActionPermission}
+              workflowDisabledReason={workflowActionPermission}
               workflowReady={reviewedPlanReady}
               workflowStarted={Boolean(activeWorkflowId)}
               workflowInProgress={conversationLocked}

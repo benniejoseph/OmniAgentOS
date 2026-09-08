@@ -1,4 +1,5 @@
 import type { RunBudgetCountersV1 } from "@/lib/runs/budgets";
+import type { WorkflowPlanContextBoundaryV1 } from "@/lib/workflows/shared-context";
 
 export type WorkflowRunStatus =
   | "queued"
@@ -153,6 +154,8 @@ export type WorkflowPlanRecord = {
   plan: WorkflowDynamicPlan;
   validation: WorkflowPlanValidation;
   contextTraceId?: string;
+  /** Content-free server-derived shared-context authority bound at planning. */
+  contextBoundary?: WorkflowPlanContextBoundaryV1;
   highestRiskLevel: 0 | 1 | 2 | 3;
   approvalRequired: boolean;
   confidence: number;

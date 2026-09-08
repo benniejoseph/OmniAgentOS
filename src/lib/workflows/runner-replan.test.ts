@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   getWorkflowRunExecutionAuthority: vi.fn(),
   listWorkflowPlanNodeExecutionsForRun: vi.fn(),
   resolveRuntimeModelAssignment: vi.fn(),
+  resolveWorkflowSharedContextAccess: vi.fn(),
   transitionWorkflowRun: vi.fn(),
   transitionWorkflowRunWithEvents: vi.fn(),
   updateWorkflowStep: vi.fn(),
@@ -54,6 +55,16 @@ vi.mock("@/lib/workflows/executor", () => ({
         }
       : undefined,
 }));
+vi.mock("@/lib/workflows/shared-context", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/workflows/shared-context")
+  >();
+  return {
+    ...actual,
+    resolveWorkflowSharedContextAccess:
+      mocks.resolveWorkflowSharedContextAccess,
+  };
+});
 vi.mock("@/lib/workflows/store", () => ({
   approveWorkflowRun: vi.fn(),
   appendWorkflowEvent: mocks.appendWorkflowEvent,
@@ -127,6 +138,28 @@ beforeEach(() => {
     trace: { id: "trace-new" },
     contextBlock: "",
   });
+  mocks.resolveWorkflowSharedContextAccess.mockResolvedValue({
+    databaseAccessScope: {
+      version: 1,
+      tenantId: "tenant-1",
+      initiatingActorId: "actor:canonical-owner",
+      executingPrincipalType: "user",
+      executingPrincipalId: "actor:canonical-owner",
+      workspaceId: "workspace:one",
+      projectId: "project:one",
+      missionId: null,
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+      purposeId: "memory.retrieve.v1",
+      purpose: "Retrieve explicitly selected shared workspace context.",
+    },
+    contextBoundary: {
+      schemaVersion: 1,
+      policyVersion: "workflow-shared-context-v1",
+      contextScope: "project",
+      authoritySha256: "a".repeat(64),
+    },
+  });
   mocks.listWorkflowPlanNodeExecutionsForRun.mockResolvedValue(
     detail.steps.find((step) => step.stepKey === "plan")?.output
       ? priorNodeExecutions()
@@ -198,6 +231,45 @@ beforeEach(() => {
 });
 
 describe("workflow runner bounded replan", () => {
+  it("revalidates shared authority and retrieves only its database scope", async () => {
+    detail.run.currentStep = "retrieve_context";
+    detail.run.input.metadata = {
+      actorId: "actor-1",
+      contextScope: "project",
+      _workflowSharedContext: { bindingSha256: "private-binding" },
+    };
+    for (const step of detail.steps) {
+      step.status = step.stepKey === "preflight" ? "completed" : "pending";
+      step.output = {};
+    }
+
+    const retrieved = await tickWorkflowRun(detail.run.id, {
+      tenantId: "tenant-1",
+    });
+
+    expect(retrieved.run).toMatchObject({
+      status: "queued",
+      currentStep: "plan",
+    });
+    expect(mocks.resolveWorkflowSharedContextAccess).toHaveBeenCalledWith({
+      binding: { bindingSha256: "private-binding" },
+      workflowExecutionScope: expect.objectContaining({
+        correlationId: "workflow-replan-1",
+      }),
+    });
+    expect(mocks.buildContextPack).toHaveBeenCalledWith(
+      detail.run.goal,
+      expect.objectContaining({
+        evidenceIds: undefined,
+        databaseMemoryAccessScope: expect.objectContaining({
+          projectId: "project:one",
+        }),
+        scopedMemoryOnly: true,
+        persistTrace: false,
+      }),
+    );
+  });
+
   it("restarts at context retrieval, revokes approval, and narrows old grants", async () => {
     const replanning = await tickWorkflowRun(detail.run.id, {
       tenantId: "tenant-1",
