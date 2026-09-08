@@ -7,9 +7,13 @@ import {
   LOOP_V2_CAPABILITY_ID,
   LOOP_V2_CONFIGURATION_SHA256,
   LOOP_V2_CONTRACT_VERSION_ID,
+  LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+  LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256,
+  LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
   LOOP_V2_ENGINE_VERSION_ID,
   type LoopV2Checkpoint,
 } from "@/lib/orchestration/loop-v2";
+import { buildLoopV2ContextBindingV1 } from "@/lib/orchestration/loop-v2-context-contract";
 import {
   finalizeLoopV2Run,
   loopV2RecoveryClaimTokenSha256,
@@ -212,6 +216,63 @@ describe("Loop v2 checkpoint store", () => {
     }, paused.sql)).rejects.toThrow("root admission");
   });
 
+  it("admits a context-text root only after its exact context event exists", async () => {
+    const contextScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "actor-a",
+      executingPrincipalType: "agent",
+      executingPrincipalId: "atlas",
+      correlationId: "run-a",
+      purpose: "agent.loop.v2.context_text_canary",
+    });
+    const binding = buildLoopV2ContextBindingV1({
+      tenantId: "tenant-a",
+      runId: "run-a",
+      ownerActorId: "actor-a",
+      agentPrincipalId: "atlas",
+      contextScope: "session",
+      authoritySha256: sourceContractSha256("session"),
+      executionScope: contextScope,
+      querySha256: sourceContractSha256("query"),
+      conversationSha256: sourceContractSha256("conversation"),
+      contextManifestSha256: sourceContractSha256("manifest"),
+      compiledContextSha256: sourceContractSha256("compiled"),
+      selectedEvidenceIds: [],
+      boundAt: at,
+    });
+    const contextRollout = rollout({
+      capabilityId: LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+      engineVersion: LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
+      configurationSha256: LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256,
+    });
+    const root = createInitialLoopV2Checkpoint({
+      tenantId: "tenant-a",
+      runId: "run-a",
+      ownerActorId: "actor-a",
+      executionScope: contextScope,
+      enginePin: buildLoopV2EnginePin(contextRollout),
+      contextScope: "session",
+      contextBindingSha256: binding.bindingSha256,
+      transitionedAt: at,
+    });
+
+    await expect(recordLoopV2Checkpoint({
+      checkpoint: root,
+      executionScope: contextScope,
+    }, fakeStorage({
+      executionScope: contextScope,
+      rollout: contextRollout,
+    }).sql)).rejects.toThrow(/context binding/i);
+    await expect(recordLoopV2Checkpoint({
+      checkpoint: root,
+      executionScope: contextScope,
+    }, fakeStorage({
+      executionScope: contextScope,
+      rollout: contextRollout,
+      contextBinding: binding,
+    }).sql)).resolves.toMatchObject({ inserted: true });
+  });
+
   it("atomically waits and resumes one exact actor-bound clarification", async () => {
     const storage = fakeStorage();
     const root = initial();
@@ -347,6 +408,9 @@ function fakeStorage(options: {
   rolloutStatus?: string;
   checkpoints?: LoopV2Checkpoint[];
   recovery?: Record<string, unknown>;
+  executionScope?: ReturnType<typeof executionScope>;
+  rollout?: TenantCapabilityRollout;
+  contextBinding?: Record<string, unknown>;
 } = {}) {
   const checkpoints: LoopV2Checkpoint[] = [...(options.checkpoints || [])];
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
@@ -391,7 +455,15 @@ function fakeStorage(options: {
       }];
     }
     if (text.includes("type = 'run.scope_bound'")) {
-      return [{ payload: { _executionScope: executionScope() } }];
+      return [{ payload: { _executionScope: options.executionScope || executionScope() } }];
+    }
+    if (text.includes("type = 'run.loop_v2.context_bound'")) {
+      return options.contextBinding
+        ? [{ payload: {
+            ...options.contextBinding,
+            _executionScope: options.executionScope || executionScope(),
+          } }]
+        : [];
     }
     if (text.includes("type = 'run.contracts.bound'")) {
       return events
@@ -399,12 +471,13 @@ function fakeStorage(options: {
         .map((event) => ({ payload: event.payload }));
     }
     if (text.includes("FROM omni_tenant_capability_rollouts")) {
+      const activeRollout = options.rollout || rollout();
       return [{
-        rollout_generation: 1,
-        engine_version: LOOP_V2_ENGINE_VERSION_ID,
-        contract_version_id: LOOP_V2_CONTRACT_VERSION_ID,
-        configuration_sha256: LOOP_V2_CONFIGURATION_SHA256,
-        mode: "canary",
+        rollout_generation: activeRollout.rolloutGeneration,
+        engine_version: activeRollout.engineVersion,
+        contract_version_id: activeRollout.contractVersionId,
+        configuration_sha256: activeRollout.configurationSha256,
+        mode: activeRollout.mode,
         status: currentRolloutStatus,
         lifecycle_revision: 1,
       }];
@@ -501,7 +574,9 @@ function executionScope() {
   });
 }
 
-function rollout(): TenantCapabilityRollout {
+function rollout(
+  overrides: Partial<TenantCapabilityRollout> = {},
+): TenantCapabilityRollout {
   return {
     schemaVersion: 1,
     tenantId: "tenant-a",
@@ -518,5 +593,6 @@ function rollout(): TenantCapabilityRollout {
     activatedAt: at,
     createdAt: at,
     updatedAt: at,
+    ...overrides,
   };
 }

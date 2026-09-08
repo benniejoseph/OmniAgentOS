@@ -391,6 +391,80 @@ describe("agent run approval continuations (file mode)", () => {
     ).rejects.toThrow("already bound to a different event");
   });
 
+  it("binds one metadata-only Loop v2 context authority to a run", async () => {
+    const store = await import("@/lib/runs/store");
+    const { buildLoopV2ContextBindingV1 } = await import(
+      "@/lib/orchestration/loop-v2-context-contract"
+    );
+    const { createExecutionScope } = await import("@/lib/security/execution-scope");
+    const { sourceContractSha256 } = await import("@/lib/sources/contracts");
+    const tenantId = "loop-context-binding";
+    const actorId = "actor-1";
+    const run = await store.createAgentRun({
+      tenantId,
+      actorId,
+      mode: "orchestrate",
+      prompt: "summarize",
+      messages: [{ role: "user", content: "summarize" }],
+      agentId: "atlas",
+    });
+    const scope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "atlas",
+      correlationId: `run:${run.id}`,
+      purpose: "agent.loop.v2.context_text_canary",
+    });
+    await store.bindAgentRunExecutionScope(run.id, scope, { tenantId });
+    const binding = buildLoopV2ContextBindingV1({
+      tenantId,
+      runId: run.id,
+      ownerActorId: actorId,
+      agentPrincipalId: "atlas",
+      contextScope: "session",
+      authoritySha256: sourceContractSha256("session"),
+      executionScope: scope,
+      querySha256: sourceContractSha256("query"),
+      conversationSha256: sourceContractSha256("conversation"),
+      contextManifestSha256: sourceContractSha256("manifest"),
+      compiledContextSha256: sourceContractSha256("compiled"),
+      selectedEvidenceIds: [],
+      boundAt: "2026-09-08T00:00:00.000Z",
+    });
+
+    await store.appendLoopV2ContextBinding(run.id, binding, {
+      tenantId,
+      executionScope: scope,
+    });
+    await store.appendLoopV2ContextBinding(run.id, binding, {
+      tenantId,
+      executionScope: scope,
+    });
+    const events = await listStreamEvents(`run:${run.id}`, { tenantId });
+    const contextEvents = events.filter((event) =>
+      event.type === "run.loop_v2.context_bound"
+    );
+    expect(contextEvents).toHaveLength(1);
+    expect(contextEvents[0].payload).toMatchObject({
+      contextScope: "session",
+      authorityKind: "conversation",
+      selectedItemCount: 0,
+    });
+    expect(contextEvents[0].payload).not.toHaveProperty("selectedEvidenceIds");
+
+    const conflicting = buildLoopV2ContextBindingV1({
+      ...binding,
+      executionScope: scope,
+      selectedEvidenceIds: [],
+      boundAt: "2026-09-08T00:01:00.000Z",
+    });
+    await expect(store.appendLoopV2ContextBinding(run.id, conflicting, {
+      tenantId,
+      executionScope: scope,
+    })).rejects.toThrow("already bound to a different event");
+  });
+
   it("keeps non-terminal run prose out of the long-lived domain event log", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({
