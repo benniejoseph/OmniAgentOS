@@ -227,6 +227,8 @@ export type ContextPack = {
   compilerV2Shadow?: import("@/lib/rag/context-compiler-v2").ContextCompilerV2Shadow;
   /** P4.1 canary decision for explicit actor-private context. */
   compilerV2Canary?: import("@/lib/rag/context-compiler-v2").ContextCompilerV2Canary;
+  /** Strict P4.1 decision for standing-consent personal retrieval. */
+  compilerV2Automatic?: import("@/lib/rag/context-compiler-v2").ContextCompilerV2Automatic;
 };
 
 export type ContextEngineStats = {

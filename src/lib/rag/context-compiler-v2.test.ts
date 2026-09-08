@@ -24,8 +24,10 @@ import type {
   MemorySearchResult,
 } from "@/lib/memory/types";
 import {
+  buildContextCompilerV2Automatic,
   buildContextCompilerV2Canary,
   buildContextCompilerV2Shadow,
+  parseContextCompilerV2AutomaticReceipt,
   parseContextCompilerV2CanaryReceipt,
   parseContextCompilerV2ShadowReceipt,
   prepareContextCompilerV2Candidates,
@@ -55,6 +57,44 @@ beforeEach(() => {
 });
 
 describe("Context Compiler v2 shadow", () => {
+  it("makes automatic personal context authoritative without widening legacy retrieval", () => {
+    const automatic = buildContextCompilerV2Automatic({
+      runId: "run-automatic",
+      tenantId: "tenant-a",
+      query: "Use my relevant saved preferences",
+      candidates: [
+        preparedCandidate("memory:allowed", "claim", "authorized", 0.9),
+        preparedCandidate("memory:not-retrieved", "claim", "authorized", 0.99),
+        preparedCandidate(
+          "memory:rejected",
+          "claim",
+          "access_binding_missing",
+          0.8,
+        ),
+      ],
+      legacySelectedEvidenceIds: ["memory:allowed", "memory:rejected"],
+      limit: 8,
+      asOfTime,
+    });
+
+    expect(automatic.selectedEvidenceIds).toEqual(["memory:allowed"]);
+    expect(automatic.receipt).toMatchObject({
+      mode: "automatic",
+      explicitSelectionState: "automatic",
+      selectedCount: 1,
+      legacyOnlyCount: 1,
+      v2OnlyCount: 0,
+      comparisonState: "diverged",
+    });
+    expect(parseContextCompilerV2AutomaticReceipt(automatic.receipt)).toEqual(
+      automatic.receipt,
+    );
+    expect(() => parseContextCompilerV2AutomaticReceipt({
+      ...automatic.receipt,
+      selectedCount: 0,
+    })).toThrow("digest");
+  });
+
   it("pins a distinct canary contract to non-empty explicit evidence", () => {
     const canary = buildContextCompilerV2Canary({
       runId: "run-canary",
