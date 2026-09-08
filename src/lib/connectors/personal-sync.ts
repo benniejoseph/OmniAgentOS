@@ -102,9 +102,7 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
     throw new Error("Connected source synchronization is already running.");
   }
   const lease = claim.lease;
-  let shadowAccessToken: string | undefined;
-  let shadowObservation: Promise<unknown> | undefined;
-  let canonicalObservation: Promise<unknown> | undefined;
+  let driveSidecarAccessToken: string | undefined;
   const startDriveShadow = (accessToken: string) =>
     observeGoogleDriveShadow({
       accessToken,
@@ -125,15 +123,7 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
     }).catch(() => undefined);
   try {
     const accessToken = await activeAccessToken(input, secrets.tokens, secrets.grant.expiresAt);
-    shadowAccessToken = accessToken;
-    // This promise owns and suppresses all shadow failures, so the bounded
-    // metadata page can overlap the full legacy fetch without changing its
-    // health, cursor, return value, or served RAG behavior.
-    shadowObservation = startDriveShadow(accessToken);
-    // Generation 2 is a separately gated, Postgres-only metadata sidecar.
-    // Missing, paused, or mismatched rollout state fails closed inside this
-    // owned promise and cannot alter legacy sync behavior.
-    canonicalObservation = startDriveCanonical(accessToken);
+    driveSidecarAccessToken = accessToken;
     const cursor = parseCursor(secrets.syncCursor);
     const observations = await observeGoogleSources(
       accessToken,
@@ -329,10 +319,15 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
     });
     throw error;
   } finally {
-    if (shadowAccessToken) {
-      shadowObservation ||= startDriveShadow(shadowAccessToken);
-      canonicalObservation ||= startDriveCanonical(shadowAccessToken);
-      await Promise.all([shadowObservation, canonicalObservation]);
+    if (driveSidecarAccessToken) {
+      // Vercel intentionally gives this route a one-slot database pool. Run
+      // the optional Drive ledgers only after the legacy cursor and sync lease
+      // have settled so their transactions cannot starve the authoritative
+      // ingest. Prioritize the active generation-3 canonical pilot, then keep
+      // the generation-1 hash-only shadow advancing. Both helpers own and
+      // suppress their failures, so neither can change legacy sync health.
+      await startDriveCanonical(driveSidecarAccessToken);
+      await startDriveShadow(driveSidecarAccessToken);
     }
   }
 }
