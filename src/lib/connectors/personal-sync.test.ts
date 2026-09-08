@@ -348,6 +348,48 @@ describe("personal OAuth synchronization", () => {
     expect(finalCursor).not.toHaveProperty("calendar");
     expect(finalCursor).not.toHaveProperty("driveModifiedAfter");
   });
+
+  it("settles the legacy sync lease before running Drive sidecars serially", async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.endsWith("/profile")) return json({ historyId: "mail-settled" });
+      if (url.includes("calendar")) {
+        return json({ nextSyncToken: "calendar-settled", items: [] });
+      }
+      if (url.includes("/drive/v3/files")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+    let finishCanonical!: () => void;
+    mocks.observeCanonicalDrive.mockReturnValue(new Promise((resolve) => {
+      finishCanonical = () => resolve({ status: "canonical_settled" });
+    }));
+
+    const syncing = syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    });
+
+    await vi.waitFor(() => {
+      expect(mocks.observeCanonicalDrive).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.updateState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ releaseLease: true }),
+    );
+    expect(mocks.observeCanonicalDrive.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.updateState.mock.invocationCallOrder.at(-1) || 0,
+    );
+    expect(mocks.observeDrive).not.toHaveBeenCalled();
+
+    finishCanonical();
+    await syncing;
+
+    expect(mocks.observeDrive).toHaveBeenCalledTimes(1);
+    expect(mocks.observeDrive.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.observeCanonicalDrive.mock.invocationCallOrder[0],
+    );
+  });
 });
 
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }); }
