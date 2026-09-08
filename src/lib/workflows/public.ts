@@ -13,6 +13,7 @@ import type {
   WorkflowStats,
 } from "@/lib/workflows/types";
 import { WORKFLOW_SHARED_CONTEXT_METADATA_KEY } from "@/lib/workflows/shared-context";
+import { WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY } from "@/lib/workflows/agent-private-context";
 
 function outcomeEvaluationFor(run: WorkflowRunRecord) {
   try {
@@ -48,9 +49,11 @@ export function publicWorkflowRun(run: WorkflowRunRecord) {
   const metadata = run.input.metadata;
   const {
     [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]: _privateSharedContext,
+    [WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY]: _privateAgentContext,
     ...publicMetadata
   } = metadata || {};
   void _privateSharedContext;
+  void _privateAgentContext;
   return {
     ...run,
     input: {

@@ -54,7 +54,7 @@ type BuildWorkflowPlanInput = {
     query: string;
     evidenceIds: string[];
   };
-  /** Trusted, request- or worker-authorized shared-memory scope. */
+  /** Trusted, request- or worker-authorized durable-memory scope. */
   databaseMemoryAccessScope?: DatabaseMemoryAccessScope;
   contextBoundary?: WorkflowPlanContextBoundaryV1;
   mode?: WorkflowDynamicPlan["mode"];
@@ -182,7 +182,7 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
   }
   const contextSelection = validateContextSelection(input.contextSelection, goal);
   if (Boolean(input.databaseMemoryAccessScope) !== Boolean(input.contextBoundary)) {
-    throw new Error("Workflow shared context requires one complete authority boundary.");
+    throw new Error("Workflow durable context requires one complete authority boundary.");
   }
 
   if (input.workflowRunId && input.reuseExisting !== false && !contextSelection) {

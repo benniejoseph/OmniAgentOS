@@ -5,7 +5,31 @@ const mocks = vi.hoisted(() => ({
   createWorkflowRun: vi.fn(),
   getWorkflowPlanById: vi.fn(),
   requestSharedMemoryAccess: vi.fn(),
+  resolveAgentIdentityForExecution: vi.fn(),
   enqueueWorkflowRunTick: vi.fn(),
+}));
+
+vi.mock("@/lib/agents/identity-store", () => ({
+  AgentIdentityResolutionError: class AgentIdentityResolutionError extends Error {},
+  resolveAgentIdentityForExecution: mocks.resolveAgentIdentityForExecution,
+}));
+vi.mock("@/lib/skills/store", () => ({
+  getCustomAgent: vi.fn(),
+  listAgentSkills: vi.fn(),
+}));
+vi.mock("@/lib/workflows/agent-private-context", () => ({
+  WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY:
+    "_workflowAgentPrivateContext",
+  createWorkflowAgentPrivateContextBinding: vi.fn(() => ({
+    bindingSha256: "agent-binding-a",
+  })),
+  workflowAgentPrivatePlanContextBoundary: vi.fn(() => ({
+    schemaVersion: 1,
+    policyVersion: "workflow-agent-private-context-v1",
+    contextScope: "agent_private",
+    agentId: "atlas",
+    authoritySha256: "c".repeat(64),
+  })),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -95,6 +119,14 @@ beforeEach(() => {
     },
     databaseAccessScope: { projectId: "project:canonical" },
   });
+  mocks.resolveAgentIdentityForExecution.mockResolvedValue({
+    definition: { logicalAgentId: "atlas" },
+    principal: {
+      principalId: "agent:atlas:principal",
+      contextGrantIds: [],
+      capabilityGrantIds: [],
+    },
+  });
   mocks.createWorkflowRun.mockImplementation(async (input) => ({
     run: {
       id: "workflow-a",
@@ -171,6 +203,48 @@ describe("workflow start shared context", () => {
       error: expect.stringMatching(/different context boundary/i),
     });
     expect(mocks.createWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("replaces caller Agent metadata with an exact Agent-private binding", async () => {
+    const response = await POST(workflowRequest({
+      contextScope: "agent_private",
+      agentId: "atlas",
+      primaryAgentId: "caller-agent",
+      agentIdentity: { principal: { principalId: "caller-principal" } },
+      _workflowAgentPrivateContext: { bindingSha256: "caller-value" },
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.resolveAgentIdentityForExecution).toHaveBeenCalledWith({
+      tenantId: "tenant-a",
+      actorId: "owner@example.test",
+      agentId: "atlas",
+    });
+    expect(mocks.createWorkflowRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executionAuthority: expect.objectContaining({
+          executionScope: expect.objectContaining({
+            executingPrincipalType: "agent",
+            executingPrincipalId: "agent:atlas:principal",
+          }),
+        }),
+        metadata: expect.objectContaining({
+          contextScope: "agent_private",
+          agentId: "atlas",
+          primaryAgentId: "atlas",
+          agentIdentity: expect.objectContaining({
+            principal: expect.objectContaining({
+              principalId: "agent:atlas:principal",
+            }),
+          }),
+          _workflowAgentPrivateContext: {
+            bindingSha256: "agent-binding-a",
+          },
+        }),
+      }),
+    );
+    const created = mocks.createWorkflowRun.mock.calls[0]?.[0];
+    expect(created.metadata.contextSelection).toBeUndefined();
   });
 });
 

@@ -98,6 +98,10 @@ import {
   isWorkflowSharedContextScope,
   WORKFLOW_SHARED_CONTEXT_METADATA_KEY,
 } from "@/lib/workflows/shared-context";
+import {
+  createWorkflowAgentPrivateContextBinding,
+  WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY,
+} from "@/lib/workflows/agent-private-context";
 import { listWorkspaceTemplates } from "@/lib/workspace-templates/store";
 import { personalWorkspaceId } from "@/lib/workspaces/contracts";
 
@@ -943,6 +947,14 @@ async function POSTHandler(request: Request) {
                   workflowExecutionScope,
                 })
               : undefined;
+            const workflowAgentPrivateContext =
+              parsed.data.contextScope === "agent_private"
+                ? createWorkflowAgentPrivateContextBinding({
+                    identity: agentIdentity,
+                    requestingActorId: context.actorId,
+                    workflowExecutionScope,
+                  })
+                : undefined;
             const detail = await createWorkflowRun({
               tenantId: context.tenantId,
               executionAuthority: {
@@ -979,6 +991,12 @@ async function POSTHandler(request: Request) {
                   ? {
                       [WORKFLOW_SHARED_CONTEXT_METADATA_KEY]:
                         workflowSharedContext,
+                    }
+                  : {}),
+                ...(workflowAgentPrivateContext
+                  ? {
+                      [WORKFLOW_AGENT_PRIVATE_CONTEXT_METADATA_KEY]:
+                        workflowAgentPrivateContext,
                     }
                   : {}),
               },

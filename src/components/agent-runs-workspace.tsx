@@ -1713,6 +1713,11 @@ export function AgentRunsWorkspace({
       openTaskDetails("context");
       return;
     }
+    if (contextScope === "agent_private" && !preferredAgentId) {
+      setError("Choose an Agent before using Agent-private context.");
+      openTaskDetails("context");
+      return;
+    }
     if (contextLoading) {
       openTaskDetails("context");
       setRunAnnouncement("Wait for task context to finish loading, then preview the plan.");
@@ -1747,6 +1752,9 @@ export function AgentRunsWorkspace({
           requireApproval: approvalRequired,
           contextScope,
           contextSelection,
+          agentId: contextScope === "agent_private"
+            ? preferredAgentId
+            : undefined,
           projectId: contextScope === "project"
             ? selectedProjectId
             : undefined,
@@ -1848,6 +1856,9 @@ export function AgentRunsWorkspace({
             threadId: workflowThreadId,
             contextScope,
             contextSelection,
+            agentId: contextScope === "agent_private"
+              ? preferredAgentId
+              : undefined,
             projectId: contextScope === "project"
               ? selectedProjectId
               : undefined,
