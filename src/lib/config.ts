@@ -50,6 +50,10 @@ export const WORKFLOW_EXECUTOR_TIMEOUT_MS = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS,
   10000,
 );
+export const WORKFLOW_VERIFIER_TIMEOUT_MS = normalizePositiveInteger(
+  process.env.OMNIAGENT_WORKFLOW_VERIFIER_TIMEOUT_MS,
+  30000,
+);
 export const WORKFLOW_PLAN_MAX_TOOL_CALLS = normalizePositiveInteger(
   process.env.OMNIAGENT_WORKFLOW_PLAN_MAX_TOOL_CALLS,
   24,

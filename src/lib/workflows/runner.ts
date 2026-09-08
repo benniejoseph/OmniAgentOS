@@ -1,4 +1,7 @@
-import { WORKFLOW_EXECUTOR_TIMEOUT_MS } from "@/lib/config";
+import {
+  WORKFLOW_EXECUTOR_TIMEOUT_MS,
+  WORKFLOW_VERIFIER_TIMEOUT_MS,
+} from "@/lib/config";
 import { revokeApprovalGrantsForPlan } from "@/lib/approval-grants/store";
 import { RunBudgetExceededError } from "@/lib/runs/budgets";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
@@ -1238,8 +1241,16 @@ type ModelVerificationVerdict = {
   score: number;
   failures: string[];
   assessment: string;
-  error?: string;
 };
+
+export class WorkflowVerificationUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("Workflow model verification is temporarily unavailable.", {
+      cause,
+    });
+    this.name = "WorkflowVerificationUnavailableError";
+  }
+}
 
 async function verifyWithModel({
   detail,
@@ -1267,7 +1278,7 @@ async function verifyWithModel({
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new Error("Verification timed out.")),
-    WORKFLOW_EXECUTOR_TIMEOUT_MS,
+    WORKFLOW_VERIFIER_TIMEOUT_MS,
   );
   try {
     const usageScope = await workflowUsageScope(
@@ -1310,15 +1321,11 @@ async function verifyWithModel({
       assessment: String(parsed.assessment || ""),
     };
   } catch (error) {
-    // Verification is part of the production evidence gate. If the model
-    // verifier is unavailable, do not silently pass autonomous work.
-    return {
-      passed: false,
-      score: 0,
-      failures: ["Model verification unavailable; rerun verification before promoting this result."],
-      assessment: "Model verification unavailable; mechanical checks only.",
-      error: error instanceof Error ? error.message : "Verification failed.",
-    };
+    // Verification is part of the production evidence gate, but a transport
+    // outage is not evidence that the plan failed. Let the workflow's bounded
+    // retry path rerun the same verification without invalidating the plan or
+    // asking the owner to approve unrelated replanned work.
+    throw new WorkflowVerificationUnavailableError(error);
   } finally {
     clearTimeout(timer);
   }
