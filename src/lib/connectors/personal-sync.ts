@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { refreshOAuthAccess, type OAuthProvider } from "@/lib/connectors/oauth-providers";
 import {
   claimOAuthSyncLease,
@@ -16,6 +14,7 @@ import { ingestTextDocument } from "@/lib/rag/retriever";
 import { deleteKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { mapInboundCommunication } from "@/lib/communications/store";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
 
 type SyncCursor = {
   calendar?: string;
@@ -71,7 +70,12 @@ type PersonalSourceSettlement = Readonly<{
   error?: string;
 }>;
 
-export async function syncDuePersonalProviders(options: { tenantId: string; limit?: number; staleAfterMs?: number } ) {
+export async function syncDuePersonalProviders(options: {
+  tenantId: string;
+  limit?: number;
+  staleAfterMs?: number;
+  abortSignal?: AbortSignal;
+}) {
   const limit = Math.min(Math.max(options.limit || 2, 1), 5);
   const staleBefore = Date.now() - (options.staleAfterMs || 30 * 60_000);
   const grants = (await listOAuthGrantsForTenant(options.tenantId))
@@ -79,8 +83,14 @@ export async function syncDuePersonalProviders(options: { tenantId: string; limi
     .slice(0, limit);
   const results: Array<{ provider: OAuthProvider; status: "healthy" | "error"; imported?: number; error?: string }> = [];
   for (const grant of grants) {
+    if (options.abortSignal?.aborted) break;
     try {
-      const synced = await syncPersonalProvider({ tenantId: grant.tenantId, actorId: grant.actorId, provider: grant.provider });
+      const synced = await syncPersonalProvider({
+        tenantId: grant.tenantId,
+        actorId: grant.actorId,
+        provider: grant.provider,
+        abortSignal: options.abortSignal,
+      });
       results.push({
         provider: grant.provider,
         status: synced.status === "healthy" ? "healthy" : "error",
@@ -136,7 +146,12 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
       initiatingActorId: input.actorId,
       executingPrincipalType: "system",
       executingPrincipalId: "connector.google.personal_sync",
-      correlationId: `google-personal-sync:${randomUUID()}`,
+      correlationId: personalSyncCorrelationId({
+        tenantId: input.tenantId,
+        actorId: input.actorId,
+        connectionId: secrets.grant.id,
+        authorizationGeneration: secrets.grant.authorizationGeneration,
+      }),
       contextGrantIds: [secrets.grant.id],
       purpose: "connector.google.personal_sync.ingest",
     });
@@ -175,7 +190,8 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
               `Google ${item.kind} item is missing a canonical provider timestamp.`,
             );
           }
-          await ingestTextDocument({
+          const capturedAt = item.capturedAt;
+          const ingest = () => ingestTextDocument({
             idempotencyKey,
             tenantId: input.tenantId,
             title: item.title,
@@ -202,9 +218,23 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
               sourceKind: personalSourceKind(item.kind),
               sourceCreatedAt: item.sourceCreatedAt || null,
               sourceUpdatedAt: item.sourceUpdatedAt || null,
-              capturedAt: item.capturedAt,
+              capturedAt,
             },
           });
+          try {
+            await ingest();
+          } catch (error) {
+            if (!isReplaceableKnowledgeConflict(error)) throw error;
+            // Knowledge ids are stable for a provider item. If the provider
+            // publishes a new revision, retire the old derived document and
+            // retry the same governed ingest instead of binding one immutable
+            // id to two payloads.
+            await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+              tenantId: input.tenantId,
+            });
+            input.abortSignal?.throwIfAborted();
+            await ingest();
+          }
           if (item.communication) {
             await mapInboundCommunication(item.communication, {
               tenantId: input.tenantId,
@@ -319,7 +349,7 @@ export async function syncPersonalProvider(input: { tenantId: string; actorId: s
     });
     throw error;
   } finally {
-    if (driveSidecarAccessToken) {
+    if (driveSidecarAccessToken && !input.abortSignal?.aborted) {
       // Vercel intentionally gives this route a one-slot database pool. Run
       // the optional Drive ledgers only after the legacy cursor and sync lease
       // have settled so their transactions cannot starve the authoritative
@@ -547,7 +577,7 @@ async function googleCalendar(
   signal?: AbortSignal,
 ) {
   const initial = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
-  initial.searchParams.set("maxResults", "100"); initial.searchParams.set("singleEvents", "true"); initial.searchParams.set("showDeleted", "true"); initial.searchParams.set("conferenceDataVersion", "1");
+  initial.searchParams.set("maxResults", "20"); initial.searchParams.set("singleEvents", "true"); initial.searchParams.set("showDeleted", "true"); initial.searchParams.set("conferenceDataVersion", "1");
   const timeMin = cursor.calendarTimeMin || new Date(Date.now() - 30 * 86_400_000).toISOString();
   const timeMax = cursor.calendarTimeMax || new Date(Date.now() + 365 * 86_400_000).toISOString();
   if (cursor.calendar) initial.searchParams.set("syncToken", cursor.calendar);
@@ -564,7 +594,7 @@ async function googleCalendar(
   }
   const payload = first.body;
   const providerItems = array(payload.items);
-  if (providerItems.length > 100) {
+  if (providerItems.length > 20) {
     throw new Error("Google Calendar page exceeds the requested item limit.");
   }
   const items = providerItems.map((item) => googleEvent(record(item)));
@@ -766,6 +796,30 @@ function googleEvent(value: Record<string, unknown>): SyncItem {
 async function providerJson(url: string, headers: Record<string, string>, signal?: AbortSignal, accepted: number[] = []) { const response = await fetch(url, { headers, signal }); const body = await response.json().catch(() => ({})) as Record<string, unknown>; if (!response.ok && !accepted.includes(response.status)) throw new Error(`Connected source returned ${response.status}.`); return { status: response.status, body }; }
 async function providerText(url: string, headers: Record<string, string>, signal?: AbortSignal) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); const response = await fetch(url, { headers, signal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); return response.text(); }
 async function providerBytes(url: string, headers: Record<string, string>, signal: AbortSignal | undefined, maxBytes: number) { const parsed = new URL(url); if (parsed.protocol !== "https:" || parsed.hostname !== "www.googleapis.com") throw new Error("Provider returned an unsafe document URL."); const response = await fetch(url, { headers, signal }); if (!response.ok) throw new Error(`Connected source returned ${response.status}.`); const declared = Number(response.headers.get("content-length") || 0); if (declared > maxBytes) throw new Error("Connected file exceeds the extraction limit."); const bytes = new Uint8Array(await response.arrayBuffer()); if (bytes.byteLength > maxBytes) throw new Error("Connected file exceeds the extraction limit."); return bytes; }
+
+function personalSyncCorrelationId(input: {
+  tenantId: string;
+  actorId: string;
+  connectionId: string;
+  authorizationGeneration: number;
+}) {
+  return `google-personal-sync:${sourceContractSha256({
+    schemaVersion: 1,
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    connectionId: input.connectionId,
+    authorizationGeneration: input.authorizationGeneration,
+  }).slice(0, 40)}`;
+}
+
+function isReplaceableKnowledgeConflict(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return [
+    "Knowledge document idempotency key is already bound to different content.",
+    "Knowledge document idempotency key is already bound to different chunks.",
+    "Knowledge document ID is already bound to different source lineage.",
+  ].includes(error.message);
+}
 function gmailText(payload: Record<string, unknown>): string { const ownType = String(payload.mimeType || ""); const ownData = String(record(payload.body).data || ""); if (ownData && (ownType === "text/plain" || ownType === "text/html")) return ownType === "text/html" ? stripHtml(decodeBase64Url(ownData)) : decodeBase64Url(ownData); const parts = array(payload.parts).map(record); const plain = parts.flatMap((part) => gmailParts(part, "text/plain")); if (plain.length) return plain.join("\n\n"); return parts.flatMap((part) => gmailParts(part, "text/html")).map(stripHtml).join("\n\n"); }
 function gmailParts(part: Record<string, unknown>, mimeType: string): string[] { const nested = array(part.parts).map(record).flatMap((child) => gmailParts(child, mimeType)); const data = String(record(part.body).data || ""); return String(part.mimeType || "") === mimeType && data ? [decodeBase64Url(data), ...nested] : nested; }
 function gmailAttachments(payload: Record<string, unknown>): string[] { return array(payload.parts).map(record).flatMap((part) => { const nested = gmailAttachments(part); const filename = String(part.filename || "").trim(); const body = record(part.body); return filename ? [`- ${filename} · ${String(part.mimeType || "file")} · ${Number(body.size || 0)} bytes`, ...nested] : nested; }); }

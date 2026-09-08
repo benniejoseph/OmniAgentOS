@@ -912,9 +912,12 @@ async function runTenantMaintenance({
       await processActiveProjectExecutions({ tenantId, limit: 10 })
     ).length;
   }
-  if (Date.now() < deadlineAt) {
+  if (deadlineAt - Date.now() > 5_000) {
+    const abortSignal = AbortSignal.timeout(
+      Math.max(1, deadlineAt - Date.now() - 5_000),
+    );
     result.connectedSourcesSynced = (
-      await syncDuePersonalProviders({ tenantId, limit: 2 })
+      await syncDuePersonalProviders({ tenantId, limit: 1, abortSignal })
     ).filter((item) => item.status === "healthy").length;
   }
   if (Date.now() < deadlineAt) {

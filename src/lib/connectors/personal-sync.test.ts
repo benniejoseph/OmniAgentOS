@@ -158,6 +158,48 @@ describe("personal OAuth synchronization", () => {
     );
   });
 
+  it("replaces a changed provider revision after an immutable document conflict", async () => {
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.endsWith("/profile")) return json({ historyId: "h-replace" });
+      if (url.includes("calendar")) {
+        return json({
+          nextSyncToken: "calendar-replace",
+          items: [{
+            id: "event-replace",
+            etag: "event-v2",
+            created: "2026-08-25T10:00:00Z",
+            updated: "2026-08-26T09:00:00Z",
+            summary: "Changed event",
+            status: "confirmed",
+            start: { dateTime: "2026-08-26T10:00:00Z" },
+            end: { dateTime: "2026-08-26T11:00:00Z" },
+          }],
+        });
+      }
+      if (url.includes("/drive/v3/files")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+    mocks.ingest
+      .mockRejectedValueOnce(new Error(
+        "Knowledge document idempotency key is already bound to different content.",
+      ))
+      .mockResolvedValue({});
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    })).resolves.toMatchObject({ imported: 1, removed: 0 });
+
+    expect(mocks.remove).toHaveBeenCalledWith(
+      "oauth:google:calendar:event-replace",
+      { tenantId: "personal" },
+    );
+    expect(mocks.ingest).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps Drive metadata when a listed Google document cannot be exported", async () => {
     mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
       const url = String(input);

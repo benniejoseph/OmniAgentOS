@@ -30,4 +30,22 @@ describe("workflow queue budgets", () => {
       "tenant-budget",
     )).resolves.toMatchObject({ maxAttempts: 1 });
   });
+
+  it("preserves validated numeric token budgets when a run is read back", async () => {
+    const { createWorkflowRun, getWorkflowRunDetail } = await import(
+      "@/lib/workflows/store"
+    );
+    const created = await createWorkflowRun({
+      tenantId: "tenant-budget-roundtrip",
+      goal: "Keep numeric workflow budgets intact",
+      budgetLimits: { ...WORKFLOW_RUN_BUDGET_LIMITS, tokens: 12_345 },
+    });
+
+    const detail = await getWorkflowRunDetail(created.run.id, {
+      tenantId: "tenant-budget-roundtrip",
+    });
+
+    expect(detail?.run.input.budgetLimits).toMatchObject({ tokens: 12_345 });
+    expect(typeof detail?.run.input.budgetLimits?.tokens).toBe("number");
+  });
 });

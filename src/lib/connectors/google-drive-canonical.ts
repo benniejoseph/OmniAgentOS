@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   claimCanonicalSourceSyncPage,
   canonicalSourceSyncFailureStage,
@@ -639,11 +639,25 @@ function canonicalIdentity(
       initiatingActorId: input.actorId,
       executingPrincipalType: "system",
       executingPrincipalId: "connector.google.drive.canonical",
-      correlationId: `google-drive-canonical:${randomUUID()}`,
+      correlationId: canonicalDriveCorrelationId(input),
       contextGrantIds: [input.connectionId],
       purpose: GOOGLE_DRIVE_CANONICAL_PURPOSE_ID,
     }),
   };
+}
+
+export function canonicalDriveCorrelationId(
+  input: Pick<GoogleDriveCanonicalInput,
+    "tenantId" | "actorId" | "connectionId" | "authorizationGeneration">,
+) {
+  return `google-drive-canonical:${sourceContractSha256({
+    schemaVersion: 1,
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    connectionId: input.connectionId,
+    authorizationGeneration: input.authorizationGeneration,
+    rolloutGeneration: GOOGLE_DRIVE_CANONICAL_ROLLOUT_GENERATION,
+  }).slice(0, 40)}`;
 }
 
 async function googleJson(
