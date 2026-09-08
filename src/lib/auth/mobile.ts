@@ -121,7 +121,7 @@ export async function rotateMobileRefreshToken(
           WHERE session.refresh_token_hash = ${refreshHash}
              OR session.consumed_refresh_token_hashes ? ${refreshHash}
           LIMIT 1
-          FOR UPDATE
+          FOR UPDATE OF session
         ` as Record<string, unknown>[];
         const row = rows[0];
         if (!row) return { error: "invalid_refresh_token" as const };
