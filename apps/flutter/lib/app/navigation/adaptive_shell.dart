@@ -465,35 +465,52 @@ class _WorkspaceTile extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(bottom: 3),
-      child: ListTile(
-        selected: selected,
-        minTileHeight: 54,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        selectedTileColor: scheme.primary,
-        selectedColor: scheme.onPrimary,
-        leading: Icon(
-          selected ? destination.selectedIcon : destination.icon,
-          size: 19,
-        ),
-        title: Text(
-          destination.label,
-          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
-        ),
-        subtitle: Text(
-          destination.description,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: selected
+              ? scheme.primary.withValues(alpha: .12)
+              : Colors.transparent,
+          border: Border.all(
             color: selected
-                ? scheme.onPrimary.withValues(alpha: .76)
-                : scheme.onSurfaceVariant,
-            fontSize: 10.5,
+                ? scheme.primary.withValues(alpha: .42)
+                : Colors.transparent,
           ),
+          borderRadius: BorderRadius.circular(8),
         ),
-        trailing: selected
-            ? const Icon(Icons.arrow_forward_rounded, size: 15)
-            : null,
-        onTap: onTap,
+        child: ListTile(
+          selected: selected,
+          minTileHeight: 54,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          selectedTileColor: Colors.transparent,
+          selectedColor: scheme.primary,
+          leading: Icon(
+            selected ? destination.selectedIcon : destination.icon,
+            size: 19,
+          ),
+          title: Text(
+            destination.label,
+            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+          ),
+          subtitle: Text(
+            destination.description,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: selected
+                  ? scheme.onSurface.withValues(alpha: .78)
+                  : scheme.onSurfaceVariant,
+              fontSize: 10.5,
+            ),
+          ),
+          trailing: selected
+              ? Icon(
+                  Icons.arrow_forward_rounded,
+                  size: 15,
+                  color: scheme.primary,
+                )
+              : null,
+          onTap: onTap,
+        ),
       ),
     );
   }
