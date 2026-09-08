@@ -43,15 +43,31 @@ const actorBindingSchema = z.object({
   readableOwnerActorIds: z.array(z.string().min(1).max(320)).min(2).max(5),
 }).strict();
 
-const workflowPlanContextBoundarySchema = z.object({
+const workflowSharedPlanContextBoundarySchema = z.object({
   schemaVersion: z.literal(1),
   policyVersion: z.literal(WORKFLOW_SHARED_CONTEXT_POLICY_VERSION),
   contextScope: z.enum(WORKFLOW_SHARED_CONTEXT_SCOPE_IDS),
   authoritySha256: sha256Schema,
 }).strict();
 
+const workflowAgentPrivatePlanContextBoundarySchema = z.object({
+  schemaVersion: z.literal(1),
+  policyVersion: z.literal("workflow-agent-private-context-v1"),
+  contextScope: z.literal("agent_private"),
+  agentId: z.string().trim().min(1).max(240),
+  authoritySha256: sha256Schema,
+}).strict();
+
+const workflowPlanContextBoundarySchema = z.union([
+  workflowSharedPlanContextBoundarySchema,
+  workflowAgentPrivatePlanContextBoundarySchema,
+]);
+
 export type WorkflowPlanContextBoundaryV1 = Readonly<
   z.infer<typeof workflowPlanContextBoundarySchema>
+>;
+export type WorkflowSharedPlanContextBoundaryV1 = Readonly<
+  z.infer<typeof workflowSharedPlanContextBoundarySchema>
 >;
 
 const workflowSharedContextBindingBodySchema = z.object({
@@ -92,9 +108,9 @@ export function isWorkflowSharedContextScope(
 export function workflowPlanContextBoundary(
   access: RequestSharedMemoryAccessV1,
   contextScope: WorkflowSharedContextScopeId,
-): WorkflowPlanContextBoundaryV1 {
+): WorkflowSharedPlanContextBoundaryV1 {
   assertAccessMatchesContextScope(access, contextScope);
-  return Object.freeze(workflowPlanContextBoundarySchema.parse({
+  return Object.freeze(workflowSharedPlanContextBoundarySchema.parse({
     schemaVersion: 1,
     policyVersion: WORKFLOW_SHARED_CONTEXT_POLICY_VERSION,
     contextScope,
@@ -113,10 +129,9 @@ export function workflowPlanContextBoundariesEqual(
   left: WorkflowPlanContextBoundaryV1 | undefined,
   right: WorkflowPlanContextBoundaryV1 | undefined,
 ) {
-  return left?.schemaVersion === right?.schemaVersion &&
-    left?.policyVersion === right?.policyVersion &&
-    left?.contextScope === right?.contextScope &&
-    left?.authoritySha256 === right?.authoritySha256;
+  if (!left || !right) return left === right;
+  return sourceContractSha256(parseWorkflowPlanContextBoundary(left)) ===
+    sourceContractSha256(parseWorkflowPlanContextBoundary(right));
 }
 
 export function createWorkflowSharedContextBinding(input: {
