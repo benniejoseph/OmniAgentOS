@@ -721,9 +721,11 @@ sibling actor, Agent, Project, Workspace, tenant, and access-binding scopes.
 **Current status:** direct Conversation runs activate `none`, `current_turn`,
 `session`, `agent_private`, `mission`, `project`, `workspace`, and
 `explicit_selection`. Shared Mission/Project/Workspace candidates are filtered
-by canonical membership before ranking. Automatic personal context and
-authority-dependent durable workflow/Loop integration remain held, so P4.1 and
-P4.2 are not yet complete.
+by canonical membership before ranking in both direct Conversation and durable
+workflow planning, retrieval, and replanning. Durable workers revalidate that
+membership and the reviewed authority digest before every disclosure.
+Automatic personal context, durable Agent-private context, and Loop v2 context
+integration remain held, so P4.1 and P4.2 are not yet complete.
 
 ### Phase 5 — Graph Engineering
 
