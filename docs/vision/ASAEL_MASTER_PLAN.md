@@ -674,8 +674,12 @@ declared exclusion without credential material. An isolated encrypted-asset
 restore matched its declared byte count and content hash, became readable only
 after the owner-scoped private object reached ready, then was deleted and
 physically scrubbed with zero job failures. No database migration was required.
-The P2.3 live Google-provider proof still requires external enrollment, so the
-aggregate Phase 2 gate remains open for that external proof only.
+The P2.3 implementation is complete, but the configured production Google
+grant is expired. Gmail, Calendar, Drive, and Photos truthfully report
+`action_required`; the first three retain partial historical sync with last
+success at `2026-09-06T02:56:10.000Z`, while current coverage is unknown and
+not started. The aggregate Phase 2 gate remains open only for an owner-completed
+Google reconnect and fresh live convergence proof.
 
 ### Phase 3 — Long-lasting, persistent, readable memory
 
@@ -811,7 +815,9 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
 P9.1 through P9.11 and P9.14 through P9.18 are complete; P9.12 and P9.13 are
 intentionally deferred. P9.19 remains held behind live proof of the human-present
-payment flow. Product phases 12 and 13 also remain deferred.
+payment flow. Phase 12 is implemented and server-deployed but remains open for
+provider credentials, signed distribution, and real-device proof. Phase 13 is
+deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
 
@@ -1045,7 +1051,11 @@ and registry checks plus the 105-page production build pass. Vercel deployment
 revision `5151a16d336d804653ef86fbed3ee75950159556`; migration 127 and both
 compatible Fly services are healthy. P9.19 remains held until the human-present
 flow is proven against reviewed live adapters. P9.12/P9.13 and product phases
-12/13 remain deferred.
+12/13 remain deferred. The current authenticated readiness projection permits
+zero transactions and reports zero payment-effect tools, accepted adapters,
+participants, or key authorities; its four activation blockers are the reviewed
+merchant adapter, WebAuthn attestation policy, isolated credential provider,
+and merchant payment processor.
 
 #### Browser and computer use
 
@@ -1161,7 +1171,9 @@ target. The focused phase-gate suite passes 35 server and 22 Flutter checks.
 Schema v146 and native contract v4 are live, but the overall phase remains
 operationally open until owner-supplied FCM/APNs credentials, matching native
 Firebase app files, a signed binary, and an end-to-end device receipt prove
-delivery. P9.12/P9.13 and Phase 13 remain out of the current sequence.
+delivery. The authoritative production adoption projection currently reports
+zero active session families and devices, with enrollment evidence held.
+P9.12/P9.13 and Phase 13 remain out of the current sequence.
 
 **Phase gate:** revoked-device, reconnect, token rotation, offline capture, push, voice interruption, and cross-tenant isolation scenarios pass before public release.
 
