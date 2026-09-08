@@ -29,14 +29,17 @@
 > to that Mission's one canonical Project rather than creating a competing
 > Mission memory store. The focused phase gate proves inactive assistant prose,
 > correction propagation, and zero cross-scope exposure across these composed
-> boundaries. P4.1 is partially promoted: explicit private selections use
-> Context Compiler v2 as a shrink-only authorization intersection, with its
-> metadata-only receipt committed before model disclosure. Shared scope is
-> authorized before retrieval and ranking; automatic personal promotion remains
-> open. Eight direct-run scopes are active. Durable workflows now carry
-> Mission/Project/Workspace and Agent-private scope through planning, retrieval,
-> and replanning with fresh membership or exact Agent-identity/grant checks.
-> Automatic personal context and Loop integration keep P4.2 open. P4.3,
+> boundaries. The P4.1/P4.2 release candidate now covers all nine context
+> scopes. Explicit selection and automatic personal retrieval both use Context
+> Compiler v2 as shrink-only authorization intersections whose metadata-only
+> receipts commit before model disclosure. Personal context additionally
+> requires the owner's current, versioned standing consent. Durable workflows
+> bind that exact consent to the reviewed plan and immutable run root and
+> revalidate it before planning, retrieval, every later step, and replanning.
+> The separately pinned Loop v2 context-text engine carries the same consent
+> digest and compiler receipt. Migrations v147-v148 and application promotion
+> remain the release gate; production therefore still serves the prior eight-
+> scope revision until those migrations are installed. P4.3,
 > P4.4, and P4.5 are production-proven
 > and complete: retrieval uses schema-constrained semantic, temporal, entity,
 > relationship, and procedural plans with deterministic fallback and unchanged
@@ -73,6 +76,8 @@
 
 161. P4.1/P4.2 durable Agent-private workflow context: reviewed planning now requires an explicit assigned Agent and retrieves only through the exact authenticated actor plus the Agent's current immutable principal. The plan persists a content-free Agent ID and authority digest; workflow start discards caller-supplied identity, profile, principal, and private-binding metadata, resolves the current server identity/grants, binds the Agent principal to the root execution authority, and stores a digest-bound private envelope that public projections remove. The worker re-resolves the active identity before retrieval and every plan/replan, rejects definition, principal, grant, expiry, root-authority, plan-boundary, or envelope drift, and supplies a database scope with null Workspace/Project/Mission coordinates as required by the Agent-private RLS policy. The explicit-empty context filter is omitted only for this authorized durable scope, so it no longer suppresses eligible Agent memory. Verified-effect formation uses the same coordinate-free private boundary. Forty-one focused binding, planner, route, runner, public-projection, and direct-agent checks pass with affected lint and TypeScript. Vercel's production build passed TypeScript and generated all 122 routes; deployment `dpl_FWscSQGuWg82KnZ9MXngnmSkSdbm` is Ready and promoted at exact code revision `c45b3294ce47a0880b3c920408dccc21d626994c`. Canonical health is healthy with database, OpenAI, and cron configured, and anonymous Agent-private planning is denied with 401. No schema migration or Fly release was required because the reviewed plan boundary and private run envelope use existing JSON fields. Automatic personal context and Loop v2 context integration remain the P4.1/P4.2 gap.
 
+162. P4.1/P4.2 automatic personal context and Loop v2 release candidate: add an owner-visible, versioned standing-consent notice with append-only activation/revocation history, exact actor forced-RLS access, and no serving-role delete/truncate authority. A direct or durable request may select `personal` only while that exact consent generation remains active. The request-bound access scope is canonical-actor private and coordinate-free; automatic Context Compiler v2 may only shrink the already scoped legacy candidate set and must persist `run.context_compiler_v2.automatic` before disclosure. Personal direct runs disable tools, web search, sibling council delegation, private query traces, and response consolidation. Reviewed workflows persist only a consent digest in the plan, create a server-only root-bound envelope at start, remove it from public projections, and revalidate consent before planning, retrieval, every later workflow step, and replanning. The separately pinned `agent_loop_v2_context_text_canary_1` engine binds the exact execution scope, consent authority, query, conversation, manifest, compiled context, evidence set, and budget receipt before its model call. Migrations v147-v148 install the Loop checkpoint constraint and consent ledger. The complete focused gate passes 143 tests across 22 files with affected lint and TypeScript. The release candidate is committed; production promotion remains pending the ordered v147-v148 migration because the migration-owner credential is unavailable while the workstation Keychain is locked. No Fly image change is required.
+
 ## North Star
 
 Build a durable AI agentic orchestration framework that can reason with OpenAI models, retrieve project knowledge, remember durable facts, connect to external systems, run governed tools, and verify work before it is considered complete.
@@ -87,8 +92,8 @@ Build a durable AI agentic orchestration framework that can reason with OpenAI m
 - pgvector columns and HNSW indexes for semantic retrieval, using a pgvector-safe embedding dimension
 - Hybrid retrieval with semantic, keyword, recency, and memory-importance signals
 - Adaptive context engine with query profiling, retrieve/no-retrieve routing, evidence confidence, source diversification, positional context packing, and persisted retrieval traces
-- Context Compiler v2 shadow comparison for general retrieval plus a shrink-only authoritative canary for explicit actor-private selections; both use hashed actor-bound receipts, and the canary receipt must persist before model disclosure
-- Direct Conversation context-scope controls for no extra context, current message, conversation-only, and reviewed explicit selection; automatic personal and shared scopes remain visibly authority-held
+- Context Compiler v2 shadow comparison for compatibility retrieval plus shrink-only authoritative explicit-selection and automatic owner-private modes; strict hashed actor-bound receipts persist before model disclosure
+- All nine direct Conversation context scopes, including canonical shared membership, exact Agent-private identity/grants, owner-consented automatic personal context, and reviewed explicit selection; the final personal/Loop release candidate awaits migrations v147-v148 and application promotion
 - Governed P4.3 query planning with strict structured semantic hints, deterministic temporal/entity/relationship/procedural fallback, unchanged authorization scope, and a frozen measured-accuracy gate
 - P4.4 provider-neutral multilingual retrieval with explicit vector-space isolation, credential-free local embeddings, a deterministic learned reranker, and content-free embedding/reranker receipts
 - P4.5 lineage-aware context packing with tiered allocation, a 20% duplicate-token ceiling, hard model/task limits, and a persisted content-free budget receipt

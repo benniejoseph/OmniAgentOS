@@ -718,17 +718,24 @@ sibling actor, Agent, Project, Workspace, tenant, and access-binding scopes.
 
 **Phase gate:** override compliance 100%; scope violations zero; context stays within budget; retrieval relevance, freshness, latency, and cost are measurable per successful task.
 
-**Current status:** direct Conversation runs activate `none`, `current_turn`,
-`session`, `agent_private`, `mission`, `project`, `workspace`, and
-`explicit_selection`. Shared Mission/Project/Workspace candidates are filtered
+**Current status:** the release candidate implements all nine direct scopes:
+`none`, `current_turn`, `session`, `agent_private`, `mission`, `project`,
+`workspace`, `personal`, and `explicit_selection`. Shared
+Mission/Project/Workspace candidates are filtered
 by canonical membership before ranking in both direct Conversation and durable
 workflow planning, retrieval, and replanning. Durable workers revalidate that
 membership and the reviewed authority digest before every disclosure.
 Durable Agent-private plans and runs similarly bind the exact assigned Agent
 principal, re-resolve its current identity and grants before every disclosure,
 and use only the coordinate-free Agent-private database lane. Automatic
-personal context and Loop v2 context integration remain held, so P4.1 and P4.2
-are not yet complete.
+personal context requires explicit versioned standing consent, uses only the
+canonical owner's coordinate-free private lane, and is shrink-only through
+Context Compiler v2. Durable workflows bind that exact consent generation to
+the reviewed plan and immutable root and revalidate it before planning,
+retrieval, every later step, and replanning. The separately pinned Loop v2
+context-text engine binds the same authority and compiler receipt. P4.1 and
+P4.2 implementation is complete; production proof remains pending ordered
+migrations v147-v148 and promotion of this release candidate.
 
 ### Phase 5 — Graph Engineering
 
@@ -2414,9 +2421,10 @@ TypeScript, and the Next 16 production build. No migration was required.
 Canonical Vercel deployment `dpl_EapYKVX52jW2aJNnRCBwVGQauoB6`, Fly release
 289 image `sha256:b1d49a519f7b1c5853aaacf8c6407dd72ac7855f0ce07100e406b2553ed23d01`,
 protocol 1, the exact activation marker, and all worker lanes are healthy.
-P4.1/P4.2 retain their separately declared authority work; P12/P13 remain
-deferred. P5.2 is already complete in the later recorded slices below; the
-next actionable master-plan slice is P5.3 bitemporal claims and typed relations.
+P4.1/P4.2 retain only their separately recorded release-candidate promotion;
+P12/P13 remain deferred. P5.2 is already complete in the later recorded slices
+below; the next actionable master-plan slice is P5.3 bitemporal claims and typed
+relations.
 
 Durable Agent-private context is production-active at exact code revision
 `c45b3294ce47a0880b3c920408dccc21d626994c`. A reviewed plan names the assigned
@@ -2426,8 +2434,10 @@ metadata, binds the exact grants to the workflow root, and persists a private
 digest-bound envelope. Retrieval and every plan or replan re-resolve that
 identity and fail closed on definition, principal, grant, expiry, root, or plan
 drift. The database scope contains only the authenticated actor and Agent
-principal with null Workspace, Project, and Mission coordinates. Automatic
-personal context and Loop v2 context integration remain the Phase 4 gaps.
+principal with null Workspace, Project, and Mission coordinates. The automatic
+personal and Loop v2 context release candidate closes the remaining
+implementation gaps under owner standing consent; its production migration and
+promotion are tracked separately.
 
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
@@ -3145,12 +3155,12 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [ ] **Phase 2 — sources, assets, and privacy lifecycle:** P2.1–P2.8 complete.
 - [x] **Phase 3 — persistent memory:** P3.1–P3.7 complete.
 - [ ] **Phase 4 — Context Management:** P4.1–P4.7 complete.
-- [ ] **Phase 5 — Graph Engineering:** P5.1–P5.6 complete.
+- [x] **Phase 5 — Graph Engineering:** P5.1–P5.6 and the scale/parity phase gate complete.
 - [x] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
 - [x] **Phase 7 — agent identity and lifecycle:** P7.1–P7.6 complete.
 - [x] **Phase 8 — delegation and A2A:** P8.1–P8.7 complete.
 - [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.19 complete.
-- [ ] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete.
+- [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [ ] **Phase 12 — mobile application:** P12.1–P12.5 complete.
 - [ ] **Phase 13 — macOS application:** P13.1–P13.4 complete.

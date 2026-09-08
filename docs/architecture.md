@@ -1516,9 +1516,10 @@ the authenticated download route and declared inclusions/exclusions; archive
 content never enters the model transcript or tool ledger.
 
 The Memory workspace translates access bindings into readable visibility,
-boundary, and sensitivity labels. It does not reinterpret legacy scope or offer
-shared-scope mutation. Mission-, project-, and workspace-sharing remain behind
-P3.1's unresolved membership, grant, consent, and authority gates.
+boundary, and sensitivity labels. It does not reinterpret legacy scope or turn
+one private record into shared truth. Mission, Project, and Workspace reads use
+their canonical membership authority; Agent-private reads use the exact active
+Agent principal; automatic personal reads use a separate owner-consent boundary.
 
 The first P4.1 slice runs Context Compiler v2 beside, not instead of, the
 adaptive context engine. It normalizes the current candidate surfaces into
@@ -1545,11 +1546,15 @@ legacy-selected set to evidence that independently passes the v2 gates; it can
 never widen selection. The resulting `run.context_compiler_v2.canary` receipt
 uses the same content-free hashing boundary and is appended strictly before the
 provider call. Receipt validation or persistence failure aborts the run before
-model disclosure. Automatic actor-private retrieval remains outside this
-canary. Shared scopes use their canonical database authority before candidate
-retrieval and ranking, but do not reuse the direct explicit-selection canary
-because no individual evidence list was reviewed. Automatic promotion
-therefore keeps P4.1 open.
+model disclosure. Automatic actor-private retrieval uses a distinct
+authoritative compiler mode. It starts from the already owner-scoped legacy
+candidate set and may only remove candidates after independently rechecking the
+canonical actor, user-private visibility, purpose, lifecycle, temporal,
+source-currentness, and backing-memory boundaries. The strict
+`run.context_compiler_v2.automatic` receipt commits before the provider call.
+Shared scopes use their canonical database authority before candidate retrieval
+and ranking and retain content-free compiler receipts without pretending that
+an individual evidence list was reviewed.
 
 P4.2 adds a request-bound context-scope policy above those compiler paths. A
 direct run can select no extra context, the current turn, the current session,
@@ -1566,7 +1571,14 @@ Mission ID through that compatibility mapping and reuses the Project-shared
 memory lane. The Agent execution scope retains both the canonical Project and
 requested Mission ID; the user-principal database scope retains only the
 canonical Project, and the handoff rejects any mismatch. This avoids a second
-Mission truth store. Automatic personal context remains authority-held. The
+Mission truth store. Automatic personal context requires the owner's active
+`personal-context-consent:1` generation and the exact versioned notice digest.
+Consent activation and revocation are append-only actor-scoped decisions under
+forced RLS; serving roles cannot delete or truncate their history. A direct
+personal request receives a request-bound user-principal execution scope and a
+coordinate-free private-memory database scope. It disables tools, web search,
+sibling council delegation, private query traces, and response consolidation.
+Revocation or consent-generation drift fails before later disclosure. The
 selected scope is persisted as an enum in the content-free harness event.
 Legacy requests without the new field retain their prior behavior. Durable
 workflows now adopt Mission, Project, and Workspace context through a distinct
@@ -1586,8 +1598,21 @@ public projections. Before retrieval and every plan or replan, the worker
 re-resolves the active definition, principal, grants, and expiry and compares
 the reviewed digest. Only the exact actor-and-Agent database scope is passed to
 context compilation, with Workspace, Project, and Mission coordinates forced
-to null as required by Agent-private RLS. Loop v2 adoption still requires its
-own authority-aware context integration and is not silently enrolled.
+to null as required by Agent-private RLS. Personal workflows use a parallel
+server-created envelope: the reviewed plan stores only the exact consent
+authority digest, start binds that authority to the immutable workflow root,
+public projections strip the envelope, and the worker revalidates the consent
+before planning, retrieval, every later workflow step, and replanning.
+
+Loop v2 context execution is separately pinned as
+`agent_loop_v2_context_text_canary_1`; it is never inferred from the older
+read-only or model-text rollout. Its checkpoint binds the immutable execution
+scope, context authority kind and digest, query and conversation hashes,
+manifest and compiled-context hashes, selected evidence set, and context-budget
+receipt. Personal Loop runs use `personal_standing_consent` authority and
+revalidate that exact active consent before the strict automatic compiler
+receipt and model call. Migration v147 admits only the reviewed context-engine
+configuration hash; migration v148 installs the consent ledger.
 
 P7.3 forms a durable episodic memory only from an exact verified effect receipt
 and binds it immutably to both the initiating actor and executing logical Agent.

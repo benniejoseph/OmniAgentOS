@@ -1362,11 +1362,34 @@ the provider call. A malformed receipt or persistence failure terminates the run
 without model disclosure.
 
 P4.2 adds the optional closed `contextScope` enum to the existing metadata-only
-run harness event. It records one of `none`, `current_turn`, `session`, or
+run harness event. It records one of `none`, `current_turn`, `session`,
+`agent_private`, `mission`, `project`, `workspace`, `personal`, or
 `explicit_selection` for an enrolled direct run; it stores no conversation or
-evidence content. A missing field identifies a compatibility run. The five
-authority-held scope values are rejected before a run begins and therefore do
-not produce a misleading active-scope receipt.
+evidence content. A missing field identifies a compatibility run. Every active
+authority-bearing scope is resolved before the event is accepted, so an enum
+never substitutes for its membership, Agent principal, consent, or reviewed
+selection authority.
+
+`memory.personal_context_consent.activated` and
+`memory.personal_context_consent.revoked` record the owner-only lifecycle of
+`personal-context-consent:1`. Their metadata-only payloads bind the tenant,
+canonical actor, consent generation, lifecycle revision, notice contract and
+digest, decision actor, state, transition time, and authority digest; they
+contain no memory content. Activation inserts a new generation and revocation
+is the only update allowed. The ledger is forced-RLS, cannot be deleted or
+truncated by serving roles, and a revoked generation never becomes active
+again.
+
+`run.context_compiler_v2.automatic`,
+`workflow.plan.context_compiler_v2.automatic`, and
+`workflow.context_compiler_v2.automatic` use the same content-free compiler
+receipt boundary for automatic owner-private selection. Each receipt proves the
+automatic compiler selected a subset of the already actor-scoped legacy
+candidates and binds the exact consent authority without storing query text,
+memory content, titles, raw evidence IDs, or reasoning. Direct and Loop v2
+receipts persist before the model call. Durable workflow receipts persist before
+planning or step disclosure, and the worker revalidates the bound consent before
+retrieval, every later step, and replanning.
 
 ## Phase 0 aggregate evaluation
 
