@@ -34,6 +34,9 @@ import { getDataPath } from "@/lib/storage/paths";
 import { updateJsonFile } from "@/lib/storage/json";
 
 const SOURCE_SYNC_SCHEMA_VERSION = 1;
+// V2 event ids bind the now-stable execution scope. This avoids colliding
+// with V1 events produced by older releases that used a random correlation id.
+const SOURCE_SYNC_EVENT_ID_VERSION = 2;
 const LEASE_DURATION_MS = 60_000;
 const MAX_PAGE_ITEMS = 1_000;
 const MAX_PAGE_ATTEMPTS = 5;
@@ -1864,6 +1867,7 @@ async function appendPageObservedEvent(
   const deletes = items.length - upserts;
   await appendScopedDomainEvent({
     id: `source_sync_event_${sourceContractSha256({
+      eventIdVersion: SOURCE_SYNC_EVENT_ID_VERSION,
       checkpointId: page.checkpointId,
       manifestSha256,
       outcome: "shadow_observed",
@@ -1907,6 +1911,7 @@ async function appendCanonicalPageSettledEvent(
   const deleteCount = items.length - upsertCount;
   await appendScopedDomainEvent({
     id: `source_sync_event_${sourceContractSha256({
+      eventIdVersion: SOURCE_SYNC_EVENT_ID_VERSION,
       checkpointId: page.checkpointId,
       manifestSha256,
       rolloutLifecycleRevision: page.rolloutLifecycleRevision,
@@ -1987,6 +1992,7 @@ async function appendFailureEvent(
 ) {
   await appendScopedDomainEvent({
     id: `source_sync_event_${sourceContractSha256({
+      eventIdVersion: SOURCE_SYNC_EVENT_ID_VERSION,
       checkpointId: page.checkpointId,
       leaseGeneration: page.leaseGeneration,
       failureSha256,

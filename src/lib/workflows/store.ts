@@ -14,7 +14,10 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { SecurityRole } from "@/lib/security/types";
-import { narrowRunBudgetLimits } from "@/lib/runs/budgets";
+import {
+  narrowRunBudgetLimits,
+  runBudgetCountersV1Schema,
+} from "@/lib/runs/budgets";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import type {
@@ -2021,10 +2024,19 @@ function createWorkflowEventRecord(
 function sanitizeWorkflowRunRecord(
   run: WorkflowRunRecord,
 ): WorkflowRunRecord {
+  // Generic secret redaction deliberately treats token-shaped keys as secrets.
+  // Workflow budgets also contain a numeric `tokens` counter, so restore only a
+  // fully validated budget object after redaction. Never allow-list `tokens`
+  // globally: connector credentials use the same word.
+  const budgetLimits = runBudgetCountersV1Schema.safeParse(
+    run.input?.budgetLimits,
+  );
+  const safeInput = redactSensitive(run.input) as WorkflowRunInput;
+  if (budgetLimits.success) safeInput.budgetLimits = budgetLimits.data;
   return {
     ...run,
     goal: String(redactSensitive(run.goal)).slice(0, 4_000),
-    input: redactSensitive(run.input) as WorkflowRunInput,
+    input: safeInput,
     error: run.error
       ? String(redactSensitive(run.error)).slice(0, 2_000)
       : undefined,

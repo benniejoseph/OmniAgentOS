@@ -4,6 +4,7 @@ import {
   GOOGLE_DRIVE_CANONICAL_ADAPTER_VERSION,
   GOOGLE_DRIVE_CANONICAL_ENGINE_VERSION,
   GOOGLE_DRIVE_CANONICAL_ROLLOUT_GENERATION,
+  canonicalDriveCorrelationId,
   canonicalDriveMetadataSha256,
   canonicalDriveSourceTimestamps,
 } from "@/lib/connectors/google-drive-canonical";
@@ -21,6 +22,23 @@ describe("canonical Drive rollout identity", () => {
       adapterVersion: "google-drive.metadata-canonical.v2",
       adapterConfigSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
+  });
+
+  it("keeps retry correlation stable for one authorization generation", () => {
+    const input = {
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      connectionId: "connection-a",
+      authorizationGeneration: 4,
+    };
+
+    expect(canonicalDriveCorrelationId(input)).toBe(
+      canonicalDriveCorrelationId(input),
+    );
+    expect(canonicalDriveCorrelationId({
+      ...input,
+      authorizationGeneration: 5,
+    })).not.toBe(canonicalDriveCorrelationId(input));
   });
 });
 

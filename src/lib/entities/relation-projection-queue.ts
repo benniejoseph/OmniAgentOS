@@ -4,6 +4,7 @@ import {
   ensureDatabaseSchema,
   getSql,
   hasDatabaseUrl,
+  runWithDatabaseActorScope,
   runWithDatabaseSystemScope,
 } from "@/lib/db/client";
 import { rebuildTemporalRelationProjection } from "@/lib/entities/relation-projector";
@@ -78,7 +79,11 @@ export async function queueTemporalRelationProjection(input: {
     return result;
   };
   if (input.sql) return operation(input.sql);
-  return getSql().transaction(operation) as ReturnType<typeof operation>;
+  return runWithDatabaseActorScope(
+    input.tenantId,
+    [input.ownerActorId],
+    () => getSql().transaction(operation),
+  ) as ReturnType<typeof operation>;
 }
 
 export async function processPendingTemporalRelationProjections({
