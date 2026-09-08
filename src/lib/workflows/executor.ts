@@ -297,6 +297,9 @@ export async function executeDynamicWorkflowPlan(
       node,
       dependencyRecords,
     });
+    const delegationAttempt = nodeInput.executor === "agent"
+      ? nextWorkflowDelegationAttempt(existing)
+      : undefined;
     const delegationContract = nodeInput.executor === "agent"
       ? buildWorkflowNodeDelegationContractV1({
           detail,
@@ -305,6 +308,7 @@ export async function executeDynamicWorkflowPlan(
           nodeInput,
           dependencyRecords,
           parentExecutionScope: executionAuthority?.executionScope,
+          executionAttempt: delegationAttempt,
           remainingWallTimeMs: Math.max(
             0,
             budget.maxWallClockMs - (Date.now() - budget.startedAt),
@@ -320,6 +324,7 @@ export async function executeDynamicWorkflowPlan(
         existing,
         nodeInput,
         delegationContract,
+        delegationAttempt,
       }),
       status: "running",
       startedAt: new Date().toISOString(),
@@ -333,6 +338,7 @@ export async function executeDynamicWorkflowPlan(
       ...(delegationContract ? {
         delegationId: delegationContract.delegationId,
         delegationContractSha256: delegationContract.contractSha256,
+        delegationAttempt,
       } : {}),
     });
 
@@ -375,6 +381,7 @@ export async function executeDynamicWorkflowPlan(
           existing: runningRecord,
           nodeInput,
           delegationContract,
+          delegationAttempt,
         }),
         status: result.status,
         toolExecutionIds: persistedToolExecutions.map((tool) => tool.id),
@@ -404,6 +411,7 @@ export async function executeDynamicWorkflowPlan(
             existing: runningRecord,
             nodeInput,
             delegationContract,
+            delegationAttempt,
           }),
           status: "pending",
           error: undefined,
@@ -431,6 +439,7 @@ export async function executeDynamicWorkflowPlan(
               existing: runningRecord,
               nodeInput,
               delegationContract,
+              delegationAttempt,
             }),
             status: "pending",
             toolExecutionIds: [],
@@ -463,6 +472,7 @@ export async function executeDynamicWorkflowPlan(
           existing: runningRecord,
           nodeInput,
           delegationContract,
+          delegationAttempt,
         }),
         status: "failed",
         error: message,
@@ -1143,9 +1153,24 @@ export async function executeAgentPlanNode({
       }
     : undefined;
   const timeoutController = new AbortController();
+  const delegationTimeRemainingMs = Math.max(
+    1,
+    Date.parse(delegationContract.deadline.completeBy) - Date.now(),
+  );
+  const cleanupGraceMs = Math.min(
+    5_000,
+    Math.max(100, Math.floor(delegationTimeRemainingMs / 10)),
+  );
+  const modelTimeoutMs = Math.max(
+    1,
+    Math.min(
+      WORKFLOW_EXECUTOR_TIMEOUT_MS,
+      delegationTimeRemainingMs - cleanupGraceMs,
+    ),
+  );
   const timer = setTimeout(
     () => timeoutController.abort(new Error(`Workflow node ${node.id} agent execution timed out.`)),
-    WORKFLOW_EXECUTOR_TIMEOUT_MS,
+    modelTimeoutMs,
   );
   try {
     const modelSignal = AbortSignal.any([
@@ -1956,6 +1981,7 @@ function baseNodeExecutionRecord({
   existing,
   nodeInput,
   delegationContract,
+  delegationAttempt,
 }: {
   detail: WorkflowRunDetail;
   planId: string;
@@ -1963,6 +1989,7 @@ function baseNodeExecutionRecord({
   existing?: WorkflowPlanNodeExecutionRecord;
   nodeInput?: WorkflowNodeInputV1;
   delegationContract?: DelegationContractV1;
+  delegationAttempt?: number;
 }): WorkflowPlanNodeExecutionRecord {
   const now = new Date().toISOString();
   return {
@@ -1981,7 +2008,9 @@ function baseNodeExecutionRecord({
     input: nodeInput
       ? {
           ...nodeInput,
-          ...(delegationContract ? { delegationContract } : {}),
+          ...(delegationContract
+            ? { delegationContract, delegationAttempt }
+            : {}),
         } as unknown as Record<string, unknown>
       : {
           goal: detail.run.goal,
@@ -1995,6 +2024,18 @@ function baseNodeExecutionRecord({
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   };
+}
+
+function nextWorkflowDelegationAttempt(
+  existing?: WorkflowPlanNodeExecutionRecord,
+) {
+  if (!existing) return 1;
+  const prior = Number(existing.input?.delegationAttempt);
+  if (!Number.isInteger(prior) || prior < 1) return 2;
+  if (prior >= 100) {
+    throw new Error("Workflow delegation retry limit is exhausted.");
+  }
+  return prior + 1;
 }
 
 function summarizePlanExecution({

@@ -26,7 +26,7 @@ describe("P8.1 workflow delegation adapter", () => {
       nodeInput,
       dependencyRecords: [dependency],
       parentExecutionScope,
-      remainingWallTimeMs: 30_000,
+      remainingWallTimeMs: 45_000,
       createdAt: "2026-09-07T06:00:00.000Z",
     });
 
@@ -45,6 +45,7 @@ describe("P8.1 workflow delegation adapter", () => {
         toolCalls: 0,
         agents: 1,
         retries: 0,
+        wallTimeMs: 35_000,
       },
       verifier: {
         agentId: "sentinel",
@@ -64,11 +65,36 @@ describe("P8.1 workflow delegation adapter", () => {
       byteCount: Buffer.byteLength(secretFreeArtifact, "utf8"),
     });
     expect(JSON.stringify(contract)).not.toContain(secretFreeArtifact);
+    expect(contract.deadline.acceptBy).toBe("2026-09-07T06:00:05.000Z");
+    expect(contract.deadline.completeBy).toBe("2026-09-07T06:00:35.000Z");
     expect(contract.dataBoundary).toMatchObject({
       parentTranscriptIncluded: false,
       credentialMaterialIncluded: false,
       inputArtifactsByReferenceOnly: true,
     });
+  });
+
+  it("creates a stable, distinct authority boundary for each execution attempt", () => {
+    const nodeInput = buildWorkflowNodeInput({
+      objective: detail.run.goal,
+      node,
+      dependencyRecords: [dependency],
+    });
+    const build = (executionAttempt: number) => buildWorkflowNodeDelegationContractV1({
+      detail,
+      planId: "plan-one",
+      node,
+      nodeInput,
+      dependencyRecords: [dependency],
+      parentExecutionScope,
+      remainingWallTimeMs: 45_000,
+      executionAttempt,
+      createdAt: "2026-09-07T06:00:00.000Z",
+    });
+
+    expect(build(1).delegationId).toBe(build(1).delegationId);
+    expect(build(2).delegationId).not.toBe(build(1).delegationId);
+    expect(build(2).contractSha256).not.toBe(build(1).contractSha256);
   });
 
   it("fails closed when a stored Agent identity does not match the execution scope", () => {
