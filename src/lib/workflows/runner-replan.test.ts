@@ -298,6 +298,38 @@ beforeEach(() => {
 });
 
 describe("workflow runner bounded replan", () => {
+  it("retries an unavailable verifier without replanning or revoking approval", async () => {
+    mocks.generateModelStructured.mockRejectedValueOnce(
+      new Error("Verification timed out."),
+    );
+
+    const retrying = await tickWorkflowRun(detail.run.id, {
+      tenantId: "tenant-1",
+    });
+
+    expect(retrying.run).toMatchObject({
+      status: "queued",
+      currentStep: "verify",
+      approvedAt: "2026-09-06T00:00:00.000Z",
+      error: expect.stringContaining(
+        "Workflow model verification is temporarily unavailable.",
+      ),
+    });
+    expect(retrying.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "step.retry_scheduled",
+        payload: expect.objectContaining({
+          stepKey: "verify",
+          nextAttempt: 2,
+        }),
+      }),
+    ]));
+    expect(retrying.events.some((event) =>
+      event.type === "workflow.replan_triggered"
+    )).toBe(false);
+    expect(mocks.revokeApprovalGrantsForPlan).not.toHaveBeenCalled();
+  });
+
   it("revalidates shared authority and retrieves only its database scope", async () => {
     detail.run.currentStep = "retrieve_context";
     detail.run.input.metadata = {
