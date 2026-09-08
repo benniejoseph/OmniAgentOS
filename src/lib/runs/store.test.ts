@@ -453,8 +453,29 @@ describe("agent run approval continuations (file mode)", () => {
     });
     expect(contextEvents[0].payload).not.toHaveProperty("selectedEvidenceIds");
 
+    const {
+      bindingSha256: _bindingSha256,
+      authorityKind: _authorityKind,
+      contextBudgetReceiptSha256: _contextBudgetReceiptSha256,
+      selectionSha256: _selectionSha256,
+      selectedEvidenceSetSha256: _selectedEvidenceSetSha256,
+      selectedItemCount: _selectedItemCount,
+      executionScopeSha256: _executionScopeSha256,
+      schemaVersion: _schemaVersion,
+      policyVersion: _policyVersion,
+      ...bindingInput
+    } = binding;
+    void _bindingSha256;
+    void _authorityKind;
+    void _contextBudgetReceiptSha256;
+    void _selectionSha256;
+    void _selectedEvidenceSetSha256;
+    void _selectedItemCount;
+    void _executionScopeSha256;
+    void _schemaVersion;
+    void _policyVersion;
     const conflicting = buildLoopV2ContextBindingV1({
-      ...binding,
+      ...bindingInput,
       executionScope: scope,
       selectedEvidenceIds: [],
       boundAt: "2026-09-08T00:01:00.000Z",

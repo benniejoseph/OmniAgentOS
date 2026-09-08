@@ -16,6 +16,7 @@ const routeMocks = vi.hoisted(() => ({
   resolveAgentIdentityForExecution: vi.fn(),
   listConversationSummaries: vi.fn(),
   listThreadTurns: vi.fn(),
+  resolveLoopV2ContextTextEnrollment: vi.fn(),
   resolveLoopV2ModelTextEnrollment: vi.fn(),
   resolveLoopV2ReadOnlyCanaryEnrollment: vi.fn(),
   requestSharedMemoryAccessFromSecurityContext: vi.fn(),
@@ -92,6 +93,8 @@ vi.mock("@/lib/orchestration/loop-v2-runtime", () => ({
 }));
 
 vi.mock("@/lib/orchestration/loop-v2-model-text-runtime", () => ({
+  resolveLoopV2ContextTextEnrollment:
+    routeMocks.resolveLoopV2ContextTextEnrollment,
   resolveLoopV2ModelTextEnrollment:
     routeMocks.resolveLoopV2ModelTextEnrollment,
   runLoopV2ModelText: routeMocks.runLoopV2ModelText,
@@ -193,6 +196,8 @@ beforeEach(() => {
       databaseAccessScope: {},
     });
   routeMocks.resolveLoopV2ModelTextEnrollment.mockReset()
+    .mockResolvedValue(null);
+  routeMocks.resolveLoopV2ContextTextEnrollment.mockReset()
     .mockResolvedValue(null);
   routeMocks.resolveSemanticIntent.mockReset()
     .mockImplementation(async ({ baseline }) => ({
@@ -861,6 +866,62 @@ describe("agent Loop v2 canary routing", () => {
       expect.any(AbortSignal),
     );
     expect(routeMocks.runLoopV2ReadOnlyCanary).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).not.toHaveBeenCalled();
+  });
+
+  it("routes an explicit context scope through the separately pinned context canary", async () => {
+    const enrollment = { enginePin: { engineVersionId: "context-v2-test" } };
+    routeMocks.resolveLoopV2ContextTextEnrollment.mockResolvedValue(enrollment);
+    routeMocks.createThread.mockResolvedValue({
+      id: "thread-a",
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      projectId: "ambient-thread-project",
+    });
+    routeMocks.runLoopV2ModelText.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-context-v2", threadId: "thread-a" };
+      yield { type: "done", response: "A context-bound summary." };
+    });
+    const message = `Summarize: ${
+      "A governed agent action preserves explicit tenant and actor attribution. ".repeat(2)
+    }`;
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message,
+        requestId: "loop-v2-context-text-a",
+        contextScope: "session",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("A context-bound summary.");
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not
+      .toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ContextTextEnrollment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: "tenant-a",
+        message,
+        contextScope: "session",
+        requestedAgentId: "atlas",
+      }),
+    );
+    expect(routeMocks.runLoopV2ModelText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message,
+        contextScope: "session",
+        enrollment,
+        executionScope: expect.objectContaining({
+          purpose: "agent.loop.v2.context_text_canary",
+          projectId: null,
+          missionId: null,
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
     expect(routeMocks.runAgent).not.toHaveBeenCalled();
   });
 

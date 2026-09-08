@@ -14,6 +14,7 @@ import {
 } from "@/lib/orchestration/loop-v2-context-contract";
 import {
   buildLoopV2ContextManifest,
+  loopV2ContextManifestSha256,
 } from "@/lib/orchestration/loop-v2-outcome";
 import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
 import type { ChatMessage } from "@/lib/orchestration/types";
@@ -169,7 +170,7 @@ export async function prepareLoopV2Context(
       : "context-compiler-authorized:1",
     retrievalTraceId: retrieval?.trace?.id,
   });
-  const contextManifestSha256 = sourceContractSha256(contextManifest);
+  const contextManifestSha256 = loopV2ContextManifestSha256(contextManifest);
   const contextBinding = buildLoopV2ContextBindingV1({
     tenantId: request.securityContext.tenantId,
     runId: request.runId,

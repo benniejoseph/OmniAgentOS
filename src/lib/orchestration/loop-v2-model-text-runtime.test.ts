@@ -21,7 +21,10 @@ import {
 } from "@/lib/orchestration/loop-v2-model-text-runtime";
 import { buildBuiltInAgentIdentityV1 } from "@/lib/agents/identity-contracts";
 import { buildLoopV2ContextBindingV1 } from "@/lib/orchestration/loop-v2-context-contract";
-import { buildLoopV2ContextManifest } from "@/lib/orchestration/loop-v2-outcome";
+import {
+  buildLoopV2ContextManifest,
+  loopV2ContextManifestSha256,
+} from "@/lib/orchestration/loop-v2-outcome";
 import type { AgentEvent } from "@/lib/orchestration/types";
 import type { TenantCapabilityRollout } from "@/lib/rollouts/tenant-capability-rollouts";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -414,7 +417,7 @@ function preparedContext(request: ReturnType<typeof contextModelRequest>) {
     executionScope: request.executionScope,
     querySha256: sourceContractSha256(sourceText()),
     conversationSha256: sourceContractSha256("Earlier context."),
-    contextManifestSha256: sourceContractSha256(contextManifest),
+    contextManifestSha256: loopV2ContextManifestSha256(contextManifest),
     compiledContextSha256: sourceContractSha256("Earlier context."),
     selectedEvidenceIds: [],
     boundAt: "2026-09-08T00:00:00.000Z",
