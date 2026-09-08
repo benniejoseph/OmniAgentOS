@@ -242,11 +242,6 @@ class TodayView extends StatelessWidget {
                   tooltip: 'Add focus item',
                   icon: const Icon(Icons.add_task_rounded),
                 ),
-                IconButton(
-                  onPressed: controller.refresh,
-                  tooltip: 'Refresh today',
-                  icon: const Icon(Icons.refresh_rounded),
-                ),
               ],
             ),
             if (controller.error != null)
@@ -276,63 +271,35 @@ class TodayView extends StatelessWidget {
                 ),
               ),
             SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _MetricChip(
-                      icon: Icons.bolt_rounded,
-                      label: '$pending open',
-                    ),
-                    _MetricChip(
-                      icon: Icons.route_rounded,
-                      label: '${data.projects.length} projects',
-                    ),
-                    _MetricChip(
-                      icon: Icons.forum_outlined,
-                      label: '${data.threads.length} active threads',
-                    ),
-                  ],
-                ),
+              child: _TodayPulse(
+                pending: pending,
+                projects: data.projects.length,
+                conversations: data.threads.length,
               ),
             ),
             if (data.brief case final brief?)
+              SliverToBoxAdapter(child: _DailyBriefPanel(brief: brief)),
+            if (data.items.isNotEmpty)
               SliverToBoxAdapter(
-                child: Container(
-                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.primaryContainer,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.auto_awesome_rounded,
-                              size: 18,
-                              color: Theme.of(context).colorScheme.primary,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Focus',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const Spacer(),
+                      Text(
+                        '$pending remaining',
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
-                            const SizedBox(width: 8),
-                            const Text(
-                              'Daily brief',
-                              style: TextStyle(fontWeight: FontWeight.w700),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          brief.summary,
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -347,11 +314,14 @@ class TodayView extends StatelessWidget {
                   itemCount: items.length,
                   itemBuilder: (context, index) {
                     final item = items[index];
-                    return _TodayRow(
-                      item: item,
-                      busy: controller.updating.contains(item.id),
-                      focused: item.id == focusItemId,
-                      onToggle: () => controller.toggle(item),
+                    return _StaggeredReveal(
+                      index: index,
+                      child: _TodayRow(
+                        item: item,
+                        busy: controller.updating.contains(item.id),
+                        focused: item.id == focusItemId,
+                        onToggle: () => controller.toggle(item),
+                      ),
                     );
                   },
                 ),
@@ -393,17 +363,172 @@ class TodayView extends StatelessWidget {
   }
 }
 
-class _MetricChip extends StatelessWidget {
-  const _MetricChip({required this.icon, required this.label});
-  final IconData icon;
-  final String label;
+class _TodayPulse extends StatelessWidget {
+  const _TodayPulse({
+    required this.pending,
+    required this.projects,
+    required this.conversations,
+  });
+
+  final int pending;
+  final int projects;
+  final int conversations;
+
   @override
-  Widget build(BuildContext context) => Chip(
-    avatar: Icon(icon, size: 16),
-    label: Text(label),
-    side: BorderSide.none,
-    visualDensity: VisualDensity.compact,
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: .045),
+            blurRadius: 22,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'TODAY PULSE',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: scheme.primary,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '$pending',
+                      style: Theme.of(context).textTheme.displaySmall
+                          ?.copyWith(color: scheme.primary, fontSize: 42),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      pending == 1 ? 'open priority' : 'open priorities',
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                width: 1,
+                height: 50,
+                color: Theme.of(context).dividerColor,
+              ),
+              const SizedBox(width: 20),
+              Expanded(
+                child: Column(
+                  children: [
+                    _PulseLine(label: 'Projects', value: projects),
+                    const SizedBox(height: 9),
+                    _PulseLine(label: 'Conversations', value: conversations),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PulseLine extends StatelessWidget {
+  const _PulseLine({required this.label, required this.value});
+
+  final String label;
+  final int value;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Expanded(
+        child: Text(
+          label,
+          style: Theme.of(context).textTheme.bodySmall
+              ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+      ),
+      Text('$value', style: Theme.of(context).textTheme.titleMedium),
+    ],
   );
+}
+
+class _DailyBriefPanel extends StatelessWidget {
+  const _DailyBriefPanel({required this.brief});
+
+  final DailyBrief brief;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_awesome_rounded, size: 17, color: scheme.primary),
+              const SizedBox(width: 8),
+              Text(
+                'DAILY BRIEF',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.primary,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 13),
+          Text(brief.summary, style: Theme.of(context).textTheme.titleMedium),
+        ],
+      ),
+    );
+  }
+}
+
+class _StaggeredReveal extends StatelessWidget {
+  const _StaggeredReveal({required this.index, required this.child});
+
+  final int index;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (MediaQuery.disableAnimationsOf(context)) return child;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: 260 + (index.clamp(0, 6) * 45)),
+      curve: const Cubic(.16, 1, .3, 1),
+      child: child,
+      builder: (context, value, child) => Opacity(
+        opacity: value,
+        child: Transform.translate(
+          offset: Offset(0, 10 * (1 - value)),
+          child: child,
+        ),
+      ),
+    );
+  }
 }
 
 class _TodayRow extends StatelessWidget {

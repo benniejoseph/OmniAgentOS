@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../brand/asael_mark.dart';
 import 'app_destination.dart';
 
 class AdaptiveShell extends StatelessWidget {
   const AdaptiveShell({super.key, required this.navigationShell});
   final StatefulNavigationShell navigationShell;
 
-  static const _phoneBranches = [0, 1, 2, 3, 7];
+  static const _phoneBranches = [0, 1, 2, 7];
 
   void _select(int index) => navigationShell.goBranch(
     index,
@@ -16,9 +17,8 @@ class AdaptiveShell extends StatelessWidget {
 
   int get _phoneIndex {
     final current = navigationShell.currentIndex;
-    if (current >= 3 && current <= 6) return 3;
     final index = _phoneBranches.indexOf(current);
-    return index < 0 ? 4 : index;
+    return index < 0 ? _phoneBranches.length : index;
   }
 
   void _openLauncher(BuildContext context) {
@@ -48,27 +48,54 @@ class AdaptiveShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     if (width < 840) {
-      final phoneDestinations = _phoneBranches
-          .map((index) => appDestinations[index])
-          .map(
-            (item) => NavigationDestination(
-              icon: Icon(item.icon),
-              selectedIcon: Icon(item.selectedIcon),
-              label: item.label,
+      final phoneDestinations = <NavigationDestination>[
+        ..._phoneBranches
+            .map((index) => appDestinations[index])
+            .map(
+              (item) => NavigationDestination(
+                icon: Icon(item.icon),
+                selectedIcon: Icon(item.selectedIcon),
+                label: item.label,
+              ),
             ),
-          )
-          .toList();
+        const NavigationDestination(
+          icon: Icon(Icons.grid_view_outlined),
+          selectedIcon: Icon(Icons.grid_view_rounded),
+          label: 'More',
+        ),
+      ];
       return Scaffold(
         body: navigationShell,
-        floatingActionButton: FloatingActionButton.small(
-          tooltip: 'Open all workspaces',
-          onPressed: () => _openLauncher(context),
-          child: const Icon(Icons.apps_rounded),
-        ),
-        bottomNavigationBar: NavigationBar(
-          selectedIndex: _phoneIndex,
-          onDestinationSelected: (index) => _select(_phoneBranches[index]),
-          destinations: phoneDestinations,
+        bottomNavigationBar: SafeArea(
+          top: false,
+          minimum: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: .08),
+                  blurRadius: 26,
+                  offset: const Offset(0, 9),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: NavigationBar(
+                selectedIndex: _phoneIndex,
+                onDestinationSelected: (index) {
+                  if (index == _phoneBranches.length) {
+                    _openLauncher(context);
+                  } else {
+                    _select(_phoneBranches[index]);
+                  }
+                },
+                destinations: phoneDestinations,
+              ),
+            ),
+          ),
         ),
       );
     }
@@ -161,18 +188,27 @@ class _WorkspaceLauncher extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ConstrainedBox(
-    constraints: const BoxConstraints(maxHeight: 620),
+    constraints: const BoxConstraints(maxHeight: 720),
     child: CustomScrollView(
       slivers: [
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(20, 6, 12, 12),
+          padding: const EdgeInsets.fromLTRB(20, 8, 12, 18),
           sliver: SliverToBoxAdapter(
             child: Row(
               children: [
+                const AsaelMark(size: 38),
+                const SizedBox(width: 13),
                 const Expanded(
-                  child: Text(
-                    'All workspaces',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AsaelWordmark(compact: true),
+                      SizedBox(height: 4),
+                      Text(
+                        'Choose a workspace',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                    ],
                   ),
                 ),
                 IconButton(
@@ -206,7 +242,13 @@ class _WorkspaceLauncher extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                trailing: const Icon(Icons.chevron_right_rounded),
+                trailing: currentIndex == index
+                    ? Icon(
+                        Icons.circle,
+                        size: 8,
+                        color: Theme.of(context).colorScheme.primary,
+                      )
+                    : const Icon(Icons.chevron_right_rounded),
                 onTap: () => onSelect(index),
               );
             },
@@ -251,38 +293,21 @@ class _BrandMark extends StatelessWidget {
   final bool extended;
 
   @override
-  Widget build(BuildContext context) => Semantics(
-    label: 'Asael',
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primary,
-            borderRadius: BorderRadius.circular(11),
-          ),
-          child: Icon(
-            Icons.hub_rounded,
-            color: Theme.of(context).colorScheme.onPrimary,
-            size: 21,
-          ),
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      const AsaelMark(size: 40),
+      if (extended) ...[
+        const SizedBox(width: 12),
+        const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AsaelWordmark(compact: true),
+            SizedBox(height: 4),
+            Text('Private workspace', style: TextStyle(fontSize: 11)),
+          ],
         ),
-        if (extended) ...[
-          const SizedBox(width: 12),
-          const Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Asael',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-              ),
-              Text('System online', style: TextStyle(fontSize: 11)),
-            ],
-          ),
-        ],
       ],
-    ),
+    ],
   );
 }
