@@ -1578,8 +1578,16 @@ canonical membership, compares the complete authority digest, and passes only
 the resulting database memory scope to scoped-only context compilation.
 Revocation, access-level drift, plan/run mismatch, root-scope changes, missing
 bindings, and caller-supplied binding metadata fail closed. Agent-private
-workflow context and Loop v2 adoption still require their own authority-aware
-contract changes and are not silently enrolled.
+workflow context uses the parallel authority-aware contract: the reviewed plan
+stores only the selected Agent and identity/grant digest; start replaces any
+caller authority metadata with the current server-resolved identity and binds
+its exact principal to the root. The private run envelope is removed from
+public projections. Before retrieval and every plan or replan, the worker
+re-resolves the active definition, principal, grants, and expiry and compares
+the reviewed digest. Only the exact actor-and-Agent database scope is passed to
+context compilation, with Workspace, Project, and Mission coordinates forced
+to null as required by Agent-private RLS. Loop v2 adoption still requires its
+own authority-aware context integration and is not silently enrolled.
 
 P7.3 forms a durable episodic memory only from an exact verified effect receipt
 and binds it immutably to both the initiating actor and executing logical Agent.
