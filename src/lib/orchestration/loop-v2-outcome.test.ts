@@ -7,12 +7,16 @@ import {
   LOOP_V2_CAPABILITY_ID,
   LOOP_V2_CONFIGURATION_SHA256,
   LOOP_V2_CONTRACT_VERSION_ID,
+  LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+  LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256,
+  LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
   LOOP_V2_ENGINE_VERSION_ID,
   LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
   LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256,
   LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
 } from "@/lib/orchestration/loop-v2";
 import {
+  buildLoopV2ContextManifest,
   buildLoopV2PreExecutionRunContract,
   buildLoopV2TerminalRunContract,
   loopV2RunContractComponentsMatch,
@@ -114,6 +118,44 @@ describe("Loop v2 exact outcome contracts", () => {
     });
   });
 
+  it("pre-binds the authorized context manifest for the context-text engine", () => {
+    const root = initial("context");
+    const contextManifest = buildLoopV2ContextManifest({
+      runId: root.runId,
+      querySha256: sourceContractSha256("query"),
+      contextScope: "session",
+      selectedContext: [],
+      userInclusionIds: [],
+      userExclusionIds: [],
+      compiledContextSha256: sourceContractSha256("conversation"),
+      contextTokenCount: 32,
+      providerId: "openai",
+      compilerVersionId: "context-compiler:v1",
+    });
+    const preExecution = buildLoopV2PreExecutionRunContract({
+      rootCheckpoint: root,
+      executionScope: scope("context"),
+      requestSha256: sourceContractSha256("private request"),
+      requestedOutcomeSha256: sourceContractSha256("private outcome"),
+      agentId: "atlas",
+      contextManifest,
+    });
+
+    expect(preExecution).toMatchObject({
+      taskKind: "model_context_summary",
+      envelope: {
+        contextManifests: [expect.objectContaining({
+          contextManifestId: contextManifest.contextManifestId,
+          providerDisclosureBoundary: "authorized_content",
+        })],
+        harnessManifest: expect.objectContaining({
+          engineVersionId: LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
+          initialContextManifestId: contextManifest.contextManifestId,
+        }),
+      },
+    });
+  });
+
   it.each(["failed", "canceled"] as const)(
     "cannot upgrade a %s terminal checkpoint to success",
     (terminalDisposition) => {
@@ -162,20 +204,26 @@ describe("Loop v2 exact outcome contracts", () => {
   });
 });
 
-function initial(kind: "read" | "model") {
+function initial(kind: "read" | "model" | "context") {
   return createInitialLoopV2Checkpoint({
     tenantId: "tenant-a",
     runId: "run-a",
     ownerActorId: "actor-a",
     executionScope: scope(kind),
     enginePin: buildLoopV2EnginePin(rollout(kind)),
+    ...(kind === "context"
+      ? {
+          contextScope: "session" as const,
+          contextBindingSha256: sourceContractSha256("context-binding"),
+        }
+      : {}),
     transitionedAt: NOW,
   });
 }
 
 function prebind(
   root: ReturnType<typeof initial>,
-  kind: "read" | "model",
+  kind: "read" | "model" | "context",
 ) {
   return buildLoopV2PreExecutionRunContract({
     rootCheckpoint: root,
@@ -247,12 +295,14 @@ function finish(
 }
 
 function scopeFor(root: ReturnType<typeof initial>) {
-  return scope(
-    root.enginePin.capabilityId === LOOP_V2_CAPABILITY_ID ? "read" : "model",
-  );
+  return scope(root.enginePin.capabilityId === LOOP_V2_CAPABILITY_ID
+    ? "read"
+    : root.enginePin.capabilityId === LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID
+      ? "context"
+      : "model");
 }
 
-function scope(kind: "read" | "model") {
+function scope(kind: "read" | "model" | "context") {
   return createExecutionScope({
     tenantId: "tenant-a",
     initiatingActorId: "actor-a",
@@ -261,24 +311,35 @@ function scope(kind: "read" | "model") {
     correlationId: "run-a",
     purpose: kind === "read"
       ? "agent.loop.v2.read_only_canary"
-      : "agent.loop.v2.model_text_canary",
+      : kind === "context"
+        ? "agent.loop.v2.context_text_canary"
+        : "agent.loop.v2.model_text_canary",
   });
 }
 
-function rollout(kind: "read" | "model"): TenantCapabilityRollout {
+function rollout(
+  kind: "read" | "model" | "context",
+): TenantCapabilityRollout {
   const model = kind === "model";
+  const context = kind === "context";
   return {
     schemaVersion: 1,
     tenantId: "tenant-a",
-    capabilityId: model
+    capabilityId: context
+      ? LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID
+      : model
       ? LOOP_V2_MODEL_TEXT_CAPABILITY_ID
       : LOOP_V2_CAPABILITY_ID,
     rolloutGeneration: 1,
-    engineVersion: model
+    engineVersion: context
+      ? LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID
+      : model
       ? LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID
       : LOOP_V2_ENGINE_VERSION_ID,
     contractVersionId: LOOP_V2_CONTRACT_VERSION_ID,
-    configurationSha256: model
+    configurationSha256: context
+      ? LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256
+      : model
       ? LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256
       : LOOP_V2_CONFIGURATION_SHA256,
     mode: "canary",

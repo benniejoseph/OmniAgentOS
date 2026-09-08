@@ -7,6 +7,9 @@ import {
   LOOP_V2_CAPABILITY_ID,
   LOOP_V2_CONFIGURATION_SHA256,
   LOOP_V2_CONTRACT_VERSION_ID,
+  LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+  LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256,
+  LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
   LOOP_V2_ENGINE_VERSION_ID,
   LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
   LOOP_V2_MODEL_TEXT_CONFIGURATION_SHA256,
@@ -133,6 +136,55 @@ describe("Loop v2 transition checkpoints", () => {
       ...modelRollout,
       configurationSha256: LOOP_V2_CONFIGURATION_SHA256,
     })).toThrow("active supported canary");
+  });
+
+  it("binds a context scope and receipt through every context-text checkpoint", () => {
+    const contextRollout = rollout({
+      capabilityId: LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+      engineVersion: LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
+      configurationSha256: LOOP_V2_CONTEXT_TEXT_CONFIGURATION_SHA256,
+    });
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "actor-a",
+      executingPrincipalType: "agent",
+      executingPrincipalId: "atlas",
+      workspaceId: "workspace:a",
+      projectId: "project:a",
+      correlationId: "run-context-a",
+      purpose: "agent.loop.v2.context_text_canary",
+    });
+    const root = createInitialLoopV2Checkpoint({
+      tenantId: "tenant-a",
+      runId: "run-context-a",
+      ownerActorId: "actor-a",
+      executionScope,
+      enginePin: buildLoopV2EnginePin(contextRollout),
+      contextScope: "project",
+      contextBindingSha256: evidence("context-binding"),
+      transitionedAt: at,
+    });
+    const planned = advanceLoopV2Checkpoint({
+      current: root,
+      executionScope,
+      trigger: "plan_bound",
+      outputReceiptSha256: evidence("plan"),
+      transitionedAt: "2026-09-06T02:01:00.000Z",
+    });
+
+    expect(planned).toMatchObject({
+      contextScope: "project",
+      contextBindingSha256: root.contextBindingSha256,
+    });
+    expect(() => createInitialLoopV2Checkpoint({
+      tenantId: "tenant-a",
+      runId: "run-context-b",
+      ownerActorId: "actor-a",
+      executionScope: scope(),
+      enginePin: buildLoopV2EnginePin(contextRollout),
+      contextScope: "project",
+      contextBindingSha256: evidence("context-binding"),
+    })).toThrow(/read-only scope/i);
   });
 });
 
