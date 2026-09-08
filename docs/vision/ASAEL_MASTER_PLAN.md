@@ -1175,19 +1175,20 @@ The existing Asael API remains the only application backend; Firebase is a
 transport-only attachment to the existing production cloud project. Matching
 Android and iOS Firebase applications are registered for the compatibility
 identity `app.omniagent.omniagent`, their real native client configuration is
-committed, and a least-privilege FCM sender is active on Vercel. Android now
-has a dedicated upload identity and a verified signed release AAB. The native
-experience also has an Asael launcher/splash identity, a responsive branded
-login, focused phone navigation, and redesigned Today and Conversation
-surfaces. P12 completion hardening cancels an interrupted voice draft, binds a
-push acknowledgement to the delivery registration's exact current device and
-mobile session, and safely reconstructs every discriminated causal target.
-Schema v146 and native contract v4 are live. The overall phase remains
-operationally open only for a real Android delivery/deep-link/ack receipt and
-for the Apple-owned iOS signing and APNs configuration followed by the same
-real-device receipt. The authoritative production adoption projection
-currently reports zero active session families and devices, with enrollment
-evidence held. P9.12/P9.13 and Phase 13 remain out of the current sequence.
+committed, and a least-privilege FCM sender is active on Vercel. Android has a
+dedicated upload identity, verified signed AAB and private-install APK, and an
+active physical-device session with FCM registration. Its launcher, splash,
+palette, Daybook hierarchy, everyday dock, and workspace drawer now use the
+same botanical shield, eucalyptus/parchment/ink colors, terminology, and
+information architecture as the web workspace. P12 completion hardening
+cancels an interrupted voice draft, binds a push acknowledgement to the
+delivery registration's exact current device and mobile session, and safely
+reconstructs every discriminated causal target. Schema v146 and native
+contract v4 are live. Android remains operationally open only for one observed
+notification delivery/deep-link/acknowledgement receipt. The owner has
+explicitly deferred iOS implementation and all app-store publication; neither
+is a completion blocker for this private Android build. P9.12/P9.13 and Phase
+13 remain out of the current sequence.
 
 **Phase gate:** revoked-device, reconnect, token rotation, offline capture, push, voice interruption, and cross-tenant isolation scenarios pass before public release.
 
