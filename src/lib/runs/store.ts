@@ -33,8 +33,10 @@ import { loopV2ExecutionScopeSha256 } from "@/lib/orchestration/loop-v2";
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import { parseRuntimeClaimEvidenceV1 } from "@/lib/rag/claim-evidence-runtime";
 import {
+  parseContextCompilerV2AutomaticReceipt,
   parseContextCompilerV2CanaryReceipt,
   parseContextCompilerV2ShadowReceipt,
+  type ContextCompilerV2AutomaticReceipt,
   type ContextCompilerV2CanaryReceipt,
   type ContextCompilerV2ShadowReceipt,
 } from "@/lib/rag/context-compiler-v2";
@@ -534,6 +536,43 @@ export async function appendContextCompilerV2CanaryEvent(
   return appendScopedDomainEvent({
     streamId: `run:${runId}`,
     type: "run.context_compiler_v2.canary",
+    payload: parsed,
+    executionScope: options.executionScope,
+  });
+}
+
+/**
+ * Standing-consent personal context is also a strict disclosure barrier. The
+ * authoritative automatic receipt must be durable before a model sees text.
+ */
+export async function appendContextCompilerV2AutomaticEvent(
+  runId: string,
+  receipt: ContextCompilerV2AutomaticReceipt,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const parsed = parseContextCompilerV2AutomaticReceipt(receipt);
+  if (parsed.runId !== runId || parsed.tenantId !== tenantId) {
+    throw new Error(
+      "Automatic Context Compiler v2 receipt is bound to another run scope.",
+    );
+  }
+  const run = await getAgentRun(runId, { tenantId });
+  if (!run) {
+    throw new Error(
+      "Automatic Context Compiler v2 receipt requires an existing run.",
+    );
+  }
+  const boundScope = await getAgentRunExecutionScope(runId, { tenantId });
+  if (!boundScope || !executionScopesEqual(boundScope, options.executionScope)) {
+    throw new Error(
+      "Automatic Context Compiler v2 receipt scope does not match the run binding.",
+    );
+  }
+  return appendScopedDomainEvent({
+    streamId: `run:${runId}`,
+    type: "run.context_compiler_v2.automatic",
     payload: parsed,
     executionScope: options.executionScope,
   });

@@ -52,6 +52,7 @@ import type {
 } from "@/lib/rag/types";
 import { citationIdForEvidence } from "@/lib/rag/citations";
 import {
+  buildContextCompilerV2Automatic,
   buildContextCompilerV2Canary,
   buildContextCompilerV2Shadow,
   prepareContextCompilerV2Candidates,
@@ -122,6 +123,14 @@ export type BuildContextPackOptions = {
     runId: string;
     executionScope: ExecutionScope;
   };
+  /**
+   * Strict authority filter for automatic personal retrieval. It may shrink
+   * the already scope-authorized legacy ranking but cannot add candidates.
+   */
+  contextCompilerV2Automatic?: {
+    runId: string;
+    executionScope: ExecutionScope;
+  };
   /** Exact user-principal authority for P5.5 actor-private relation traversal. */
   entityGraphAccess?: RequestEntityAccessV1;
 };
@@ -189,6 +198,17 @@ export async function buildContextPack(
           asOfTime: compilerAsOfTime,
         })
       : undefined;
+    const compilerV2Automatic = options.contextCompilerV2Automatic
+      ? buildContextCompilerV2Automatic({
+          runId: options.contextCompilerV2Automatic.runId,
+          tenantId: normalizeTenantId(tenantId),
+          query: normalizedQuery,
+          candidates: [],
+          legacySelectedEvidenceIds: [],
+          limit,
+          asOfTime: compilerAsOfTime,
+        })
+      : undefined;
     const allocated = allocateContextBudget({
       items: [],
       limits: options.contextBudget,
@@ -207,6 +227,7 @@ export async function buildContextPack(
       budget: allocated.receipt,
       ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
       ...(compilerV2Canary ? { compilerV2Canary } : {}),
+      ...(compilerV2Automatic ? { compilerV2Automatic } : {}),
     };
     if (options.persistTrace !== false && !databaseMemoryAccessScope) {
       pack.trace = await saveRetrievalTrace({
@@ -376,12 +397,26 @@ export async function buildContextPack(
         asOfTime: compilerAsOfTime,
       })
     : undefined;
-  const canarySelectedIds = compilerV2Canary
-    ? new Set(compilerV2Canary.selectedEvidenceIds)
+  const compilerV2Automatic =
+    options.contextCompilerV2Automatic && compilerCandidatesPromise
+      ? buildContextCompilerV2Automatic({
+          runId: options.contextCompilerV2Automatic.runId,
+          tenantId: normalizeTenantId(tenantId),
+          query: normalizedQuery,
+          candidates: await compilerCandidatesPromise,
+          legacySelectedEvidenceIds: legacySelected.map(citationIdForEvidence),
+          limit,
+          asOfTime: compilerAsOfTime,
+        })
+      : undefined;
+  const authoritativeSelectedIds = compilerV2Canary || compilerV2Automatic
+    ? new Set(
+        (compilerV2Canary || compilerV2Automatic)!.selectedEvidenceIds,
+      )
     : undefined;
-  const authorizedSelected = canarySelectedIds
+  const authorizedSelected = authoritativeSelectedIds
     ? legacySelected.filter((item) =>
-        canarySelectedIds.has(citationIdForEvidence(item))
+        authoritativeSelectedIds.has(citationIdForEvidence(item))
       )
     : legacySelected;
   const allocated = allocateContextBudget({
@@ -466,6 +501,7 @@ export async function buildContextPack(
     trace,
     ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
     ...(compilerV2Canary ? { compilerV2Canary } : {}),
+    ...(compilerV2Automatic ? { compilerV2Automatic } : {}),
   });
 }
 
@@ -483,8 +519,13 @@ function assertContextCompilerV2Scope(
 }
 
 function contextCompilerV2Request(options: BuildContextPackOptions) {
-  if (options.contextCompilerV2Shadow && options.contextCompilerV2Canary) {
-    throw new Error("Context Compiler v2 cannot run in shadow and canary mode together.");
+  const configuredModes = [
+    options.contextCompilerV2Shadow,
+    options.contextCompilerV2Canary,
+    options.contextCompilerV2Automatic,
+  ].filter(Boolean);
+  if (configuredModes.length > 1) {
+    throw new Error("Context Compiler v2 requires one execution mode.");
   }
   if (
     options.contextCompilerV2Canary &&
@@ -492,7 +533,17 @@ function contextCompilerV2Request(options: BuildContextPackOptions) {
   ) {
     throw new Error("Context Compiler v2 canary requires explicit evidence.");
   }
-  return options.contextCompilerV2Canary || options.contextCompilerV2Shadow;
+  if (
+    options.contextCompilerV2Automatic &&
+    normalizeExplicitEvidenceIds(options.evidenceIds) !== undefined
+  ) {
+    throw new Error(
+      "Automatic Context Compiler v2 cannot accept explicit evidence.",
+    );
+  }
+  return options.contextCompilerV2Canary ||
+    options.contextCompilerV2Automatic ||
+    options.contextCompilerV2Shadow;
 }
 
 function resolveContextTenantId(
@@ -574,6 +625,7 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
   const {
     compilerV2Shadow,
     compilerV2Canary,
+    compilerV2Automatic,
     budget,
     ...redactionInput
   } = pack;
@@ -599,6 +651,7 @@ function sanitizeContextPack(pack: ContextPack): ContextPack {
     },
     ...(compilerV2Shadow ? { compilerV2Shadow } : {}),
     ...(compilerV2Canary ? { compilerV2Canary } : {}),
+    ...(compilerV2Automatic ? { compilerV2Automatic } : {}),
     budget,
     memoryResults: sanitized.memoryResults.map(withoutMemoryEmbedding),
     results: sanitized.results.map((item) => item.kind === "memory"

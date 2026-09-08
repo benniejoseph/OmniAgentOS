@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { listStreamEvents } from "@/lib/events/store";
 import {
+  buildContextCompilerV2Automatic,
   buildContextCompilerV2Canary,
   buildContextCompilerV2Shadow,
 } from "@/lib/rag/context-compiler-v2";
 import {
+  appendContextCompilerV2AutomaticEvent,
   appendContextCompilerV2CanaryEvent,
   appendContextCompilerV2ShadowEvent,
   bindAgentRunExecutionScope,
@@ -153,5 +155,63 @@ describe("Context Compiler v2 run event", () => {
       selectedCount: 1,
     });
     expect(JSON.stringify(event)).not.toContain("private-canary-evidence-id");
+  });
+
+  it("persists the automatic personal-context barrier before disclosure", async () => {
+    const scope = createExecutionScope({
+      tenantId: "tenant-context-v2-automatic",
+      initiatingActorId: "actor-context-v2-automatic",
+      executingPrincipalType: "user",
+      executingPrincipalId: "actor-context-v2-automatic",
+      correlationId: "correlation-context-v2-automatic",
+      purpose: "agent.run",
+    });
+    const run = await createAgentRun({
+      tenantId: scope.tenantId,
+      actorId: scope.initiatingActorId!,
+      mode: "orchestrate",
+      prompt: "Use my relevant saved context",
+      messages: [{ role: "user", content: "Use my relevant saved context" }],
+    });
+    await bindAgentRunExecutionScope(run.id, scope, {
+      tenantId: scope.tenantId,
+    });
+    const automatic = buildContextCompilerV2Automatic({
+      runId: run.id,
+      tenantId: scope.tenantId,
+      query: "Use my relevant saved context",
+      candidates: [{
+        evidenceId: "memory:automatic-private-evidence-id",
+        itemClass: "claim",
+        sourceRevisionId: null,
+        score: 0.9,
+        authorizationState: "authorized",
+        authorizationReason: "authorized",
+      }],
+      legacySelectedEvidenceIds: ["memory:automatic-private-evidence-id"],
+      limit: 8,
+      asOfTime: "2026-09-06T02:00:00.000Z",
+    });
+
+    await appendContextCompilerV2AutomaticEvent(run.id, automatic.receipt, {
+      tenantId: scope.tenantId,
+      executionScope: scope,
+    });
+    const events = await listStreamEvents(`run:${run.id}`, {
+      tenantId: scope.tenantId,
+      order: "asc",
+    });
+    const event = events.find((candidate) =>
+      candidate.type === "run.context_compiler_v2.automatic"
+    );
+    expect(event?.payload).toMatchObject({
+      mode: "automatic",
+      receiptId: automatic.receipt.receiptId,
+      explicitSelectionState: "automatic",
+      selectedCount: 1,
+    });
+    expect(JSON.stringify(event)).not.toContain(
+      "automatic-private-evidence-id",
+    );
   });
 });

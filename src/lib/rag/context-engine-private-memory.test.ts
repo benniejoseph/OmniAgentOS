@@ -350,6 +350,42 @@ describe("actor-scoped context retrieval", () => {
     expect(pack.contextBlock).not.toContain("Legacy preference");
   });
 
+  it("lets automatic personal context remove unbound context without widening", async () => {
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "context-v2-automatic",
+      purpose: "agent.run",
+    });
+    const pack = await buildContextPack("remember my deployment preference", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope(),
+      persistTrace: false,
+      limit: 8,
+      contextCompilerV2Automatic: {
+        runId: "run-context-v2-automatic",
+        executionScope,
+      },
+    });
+
+    expect(pack.compilerV2Automatic?.selectedEvidenceIds).toEqual([
+      "memory:private-memory",
+    ]);
+    expect(pack.compilerV2Automatic?.receipt).toMatchObject({
+      mode: "automatic",
+      explicitSelectionState: "automatic",
+      legacySelectedCount: 2,
+      selectedCount: 1,
+      legacyOnlyCount: 1,
+      v2OnlyCount: 0,
+    });
+    expect(pack.results.map((result) => result.id)).toEqual(["private-memory"]);
+    expect(pack.contextBlock).toContain("Private preference");
+    expect(pack.contextBlock).not.toContain("Legacy preference");
+  });
+
   it("rejects canary activation without explicit evidence", async () => {
     const executionScope = createExecutionScope({
       tenantId: "tenant-a",

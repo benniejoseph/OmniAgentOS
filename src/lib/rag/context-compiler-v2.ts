@@ -29,6 +29,10 @@ export const CONTEXT_COMPILER_V2_CANARY_VERSION_ID =
   "context-compiler:v2-explicit-private-canary" as const;
 export const CONTEXT_COMPILER_V2_CANARY_POLICY_VERSION_ID =
   "context-policy:v2-explicit-private-canary" as const;
+export const CONTEXT_COMPILER_V2_AUTOMATIC_VERSION_ID =
+  "context-compiler:v2-personal-automatic" as const;
+export const CONTEXT_COMPILER_V2_AUTOMATIC_POLICY_VERSION_ID =
+  "context-policy:v2-personal-automatic" as const;
 
 // Context engine candidates are independently bounded to 60 memories,
 // 60 knowledge chunks, and 24 graph neighborhoods.
@@ -124,9 +128,21 @@ const contextCompilerV2CanaryReceiptSchema =
     receiptSha256: sha256Schema,
   }).strict();
 
+const contextCompilerV2AutomaticReceiptSchema =
+  contextCompilerV2ReceiptCommonSchema.extend({
+    mode: z.literal("automatic"),
+    compilerVersionId: z.literal(CONTEXT_COMPILER_V2_AUTOMATIC_VERSION_ID),
+    policyVersionId: z.literal(
+      CONTEXT_COMPILER_V2_AUTOMATIC_POLICY_VERSION_ID,
+    ),
+    explicitSelectionState: z.literal("automatic"),
+    receiptSha256: sha256Schema,
+  }).strict();
+
 export const contextCompilerV2ReceiptSchema = z.discriminatedUnion("mode", [
   contextCompilerV2ShadowReceiptSchema,
   contextCompilerV2CanaryReceiptSchema,
+  contextCompilerV2AutomaticReceiptSchema,
 ]);
 
 export type ContextCompilerV2AuthorizationReason = z.infer<
@@ -140,6 +156,9 @@ export type ContextCompilerV2ShadowReceipt = z.infer<
 >;
 export type ContextCompilerV2CanaryReceipt = z.infer<
   typeof contextCompilerV2CanaryReceiptSchema
+>;
+export type ContextCompilerV2AutomaticReceipt = z.infer<
+  typeof contextCompilerV2AutomaticReceiptSchema
 >;
 export type ContextCompilerV2Receipt = z.infer<
   typeof contextCompilerV2ReceiptSchema
@@ -161,6 +180,10 @@ export type ContextCompilerV2Shadow = Readonly<{
 export type ContextCompilerV2Canary = Readonly<{
   selectedEvidenceIds: readonly string[];
   receipt: ContextCompilerV2CanaryReceipt;
+}>;
+export type ContextCompilerV2Automatic = Readonly<{
+  selectedEvidenceIds: readonly string[];
+  receipt: ContextCompilerV2AutomaticReceipt;
 }>;
 
 export async function prepareContextCompilerV2Candidates(input: {
@@ -271,6 +294,25 @@ export function buildContextCompilerV2Canary(input: {
   });
 }
 
+export function buildContextCompilerV2Automatic(input: {
+  runId: string;
+  tenantId: string;
+  query: string;
+  candidates: readonly ContextCompilerV2PreparedCandidate[];
+  legacySelectedEvidenceIds: readonly string[];
+  limit: number;
+  asOfTime?: string;
+}): ContextCompilerV2Automatic {
+  const selection = buildContextCompilerV2Selection({
+    ...input,
+    mode: "automatic",
+  });
+  return Object.freeze({
+    selectedEvidenceIds: selection.selectedEvidenceIds,
+    receipt: parseContextCompilerV2AutomaticReceipt(selection.receipt),
+  });
+}
+
 function buildContextCompilerV2Selection(input: {
   runId: string;
   tenantId: string;
@@ -280,7 +322,7 @@ function buildContextCompilerV2Selection(input: {
   explicitEvidenceIds?: readonly string[];
   limit: number;
   asOfTime?: string;
-  mode: "shadow" | "canary";
+  mode: "shadow" | "canary" | "automatic";
 }): Readonly<{
   selectedEvidenceIds: readonly string[];
   receipt: ContextCompilerV2Receipt;
@@ -309,6 +351,9 @@ function buildContextCompilerV2Selection(input: {
   );
   const selectedEvidenceIds = explicitEvidenceIds === undefined
     ? [...authorized]
+        .filter((candidate) =>
+          input.mode !== "automatic" || legacySelectedSet.has(candidate.evidenceId)
+        )
         .sort(compareCandidates)
         .slice(0, limit)
         .map((candidate) => candidate.evidenceId)
@@ -363,10 +408,14 @@ function buildContextCompilerV2Selection(input: {
     mode: input.mode,
     compilerVersionId: input.mode === "canary"
       ? CONTEXT_COMPILER_V2_CANARY_VERSION_ID
-      : CONTEXT_COMPILER_V2_VERSION_ID,
+      : input.mode === "automatic"
+        ? CONTEXT_COMPILER_V2_AUTOMATIC_VERSION_ID
+        : CONTEXT_COMPILER_V2_VERSION_ID,
     policyVersionId: input.mode === "canary"
       ? CONTEXT_COMPILER_V2_CANARY_POLICY_VERSION_ID
-      : CONTEXT_COMPILER_V2_POLICY_VERSION_ID,
+      : input.mode === "automatic"
+        ? CONTEXT_COMPILER_V2_AUTOMATIC_POLICY_VERSION_ID
+        : CONTEXT_COMPILER_V2_POLICY_VERSION_ID,
     purposeId: CONTEXT_COMPILER_V2_PURPOSE_ID,
     querySha256: sourceContractSha256(input.query),
     asOfTime,
@@ -419,6 +468,16 @@ export function parseContextCompilerV2CanaryReceipt(
   const receipt = parseContextCompilerV2Receipt(value);
   if (receipt.mode !== "canary") {
     throw new Error("Context Compiler v2 receipt is not a canary receipt.");
+  }
+  return receipt;
+}
+
+export function parseContextCompilerV2AutomaticReceipt(
+  value: unknown,
+): ContextCompilerV2AutomaticReceipt {
+  const receipt = parseContextCompilerV2Receipt(value);
+  if (receipt.mode !== "automatic") {
+    throw new Error("Context Compiler v2 receipt is not an automatic receipt.");
   }
   return receipt;
 }
