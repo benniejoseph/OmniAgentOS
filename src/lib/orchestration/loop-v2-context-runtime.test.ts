@@ -55,6 +55,30 @@ describe("Loop v2 context preparation", () => {
     expect(harness.updateContextCount).toHaveBeenCalledWith("run-a", 0);
   });
 
+  it("rejects a legacy controller after the request actor becomes canonical", async () => {
+    const request = baseRequest("current_turn");
+    const legacyIdentity = buildBuiltInAgentIdentityV1({
+      agentId: "atlas",
+      tenantId: securityContext.tenantId,
+      controllerActorId: securityContext.actorId,
+    });
+
+    await expect(prepareLoopV2Context({
+      ...request,
+      agentIdentity: legacyIdentity,
+      executionScope: createExecutionScope({
+        tenantId: securityContext.tenantId,
+        initiatingActorId: securityContext.actorId,
+        executingPrincipalType: "agent",
+        executingPrincipalId: legacyIdentity.principal.principalId,
+        correlationId: "request-a",
+        contextGrantIds: legacyIdentity.principal.contextGrantIds,
+        capabilityGrantIds: legacyIdentity.principal.capabilityGrantIds,
+        purpose: "agent.loop.v2.context_text_canary",
+      }),
+    }, dependencies())).rejects.toThrow(/identity is no longer exact/i);
+  });
+
   it("commits compiler, actual-use, and authority receipts before selected context", async () => {
     const selection = contextSelection();
     const harness = dependencies();
@@ -181,7 +205,7 @@ function baseRequest(
   const agentIdentity = buildBuiltInAgentIdentityV1({
     agentId: "atlas",
     tenantId: securityContext.tenantId,
-    controllerActorId: securityContext.actorId,
+    controllerActorId: `actor:${AUTH_USER_ID}`,
   });
   return {
     message: message(),
