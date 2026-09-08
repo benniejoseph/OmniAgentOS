@@ -1421,6 +1421,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[147],
       up: ensurePersonalContextConsentV1,
     },
+    {
+      ...databaseSchemaMigrations[148],
+      up: ensureDelegationActorIdentifierCompatibilityV1,
+    },
   ];
 }
 
@@ -11322,6 +11326,98 @@ async function ensureDelegationTaskLifecycleV1(sql: SqlClient) {
           )
       ) THEN
         RAISE EXCEPTION 'Delegation task lifecycle boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+}
+
+async function ensureDelegationActorIdentifierCompatibilityV1(sql: SqlClient) {
+  await sql`
+    DO $migration$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM omni_schema_version
+        WHERE version = 148
+          AND name = 'personal_context_consent_v1'
+          AND checksum =
+            'e41c0aa8ef3d49aa2b29da415d2ca37d4d1eeef3d36fe338cb1fffa2a6a48e0d'
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Delegation actor compatibility predecessor is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_delegation_tasks task
+        LEFT JOIN omni_auth_user_actor_identifiers identifier
+          ON identifier.actor_identifier = task.owner_actor_id
+        WHERE identifier.actor_identifier IS NULL
+      ) THEN
+        RAISE EXCEPTION 'A delegation task owner is not a registered auth-user actor identifier'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    ALTER TABLE omni_delegation_tasks
+    DROP CONSTRAINT IF EXISTS omni_delegation_tasks_owner_actor_id_fkey
+  `;
+  await sql`
+    DO $migration$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'omni_delegation_tasks'::regclass
+          AND conname =
+            'omni_delegation_tasks_owner_actor_identifier_fkey'
+      ) THEN
+        ALTER TABLE omni_delegation_tasks
+        ADD CONSTRAINT omni_delegation_tasks_owner_actor_identifier_fkey
+        FOREIGN KEY (owner_actor_id)
+        REFERENCES omni_auth_user_actor_identifiers (actor_identifier)
+        ON UPDATE RESTRICT ON DELETE RESTRICT;
+      END IF;
+    END
+    $migration$
+  `;
+  await sql`
+    DO $migration$
+    DECLARE
+      owner_column SMALLINT;
+    BEGIN
+      SELECT attnum
+      INTO STRICT owner_column
+      FROM pg_attribute
+      WHERE attrelid = 'omni_delegation_tasks'::regclass
+        AND attname = 'owner_actor_id'
+        AND NOT attisdropped;
+
+      IF (
+        SELECT count(*)
+        FROM pg_constraint
+        WHERE conrelid = 'omni_delegation_tasks'::regclass
+          AND conname =
+            'omni_delegation_tasks_owner_actor_identifier_fkey'
+          AND contype = 'f'
+          AND confrelid = 'omni_auth_user_actor_identifiers'::regclass
+          AND conkey = ARRAY[owner_column]
+          AND confkey = ARRAY[
+            (
+              SELECT attnum
+              FROM pg_attribute
+              WHERE attrelid =
+                  'omni_auth_user_actor_identifiers'::regclass
+                AND attname = 'actor_identifier'
+                AND NOT attisdropped
+            )::SMALLINT
+          ]
+          AND convalidated
+      ) <> 1 THEN
+        RAISE EXCEPTION 'Delegation actor identifier foreign key is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

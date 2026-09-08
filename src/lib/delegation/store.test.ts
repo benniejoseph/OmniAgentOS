@@ -4,6 +4,9 @@ const mocks = vi.hoisted(() => ({
   ensureDatabaseSchema: vi.fn(async () => undefined),
   hasDatabaseUrl: vi.fn(() => true),
   getSql: vi.fn(),
+  runWithDatabaseActorScope: vi.fn(
+    async (_tenantId: string, _actorIds: readonly string[], operation: () => unknown) => operation(),
+  ),
   appendScopedDomainEvent: vi.fn(async () => ({ id: "event" })),
 }));
 
@@ -11,6 +14,7 @@ vi.mock("@/lib/db/client", () => ({
   ensureDatabaseSchema: mocks.ensureDatabaseSchema,
   hasDatabaseUrl: mocks.hasDatabaseUrl,
   getSql: mocks.getSql,
+  runWithDatabaseActorScope: mocks.runWithDatabaseActorScope,
 }));
 vi.mock("@/lib/events/store", () => ({
   appendScopedDomainEvent: mocks.appendScopedDomainEvent,
@@ -41,6 +45,7 @@ describe("delegation task store", () => {
   beforeEach(() => {
     mocks.ensureDatabaseSchema.mockClear();
     mocks.appendScopedDomainEvent.mockClear();
+    mocks.runWithDatabaseActorScope.mockClear();
     mocks.hasDatabaseUrl.mockReturnValue(true);
   });
 
@@ -62,6 +67,11 @@ describe("delegation task store", () => {
     const task = await createDelegationTask({ contract, parentExecutionScope: parentScope() });
     expect(task.state).toBe("proposed");
     expect(statements.some((statement) => /INSERT INTO omni_delegation_tasks/.test(statement))).toBe(true);
+    expect(mocks.runWithDatabaseActorScope).toHaveBeenCalledWith(
+      "tenant-one",
+      ["actor-one"],
+      expect.any(Function),
+    );
     expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         streamId: `delegation:${contract.delegationId}`,
@@ -114,6 +124,11 @@ describe("delegation task store", () => {
       at: "2026-09-07T06:00:10.000Z",
     });
     expect(persisted.state).toBe("accepted");
+    expect(mocks.runWithDatabaseActorScope).toHaveBeenCalledWith(
+      "tenant-one",
+      ["actor-one"],
+      expect.any(Function),
+    );
     expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "delegation.task.accepted",
