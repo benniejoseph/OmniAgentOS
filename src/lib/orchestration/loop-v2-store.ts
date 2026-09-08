@@ -12,12 +12,14 @@ import {
 } from "@/lib/orchestration/loop-v2-outcome";
 import {
   advanceLoopV2Checkpoint,
+  LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
   loopV2ExecutionScopeSha256,
   parseLoopV2Checkpoint,
   replayLoopV2Checkpoints,
   validateLoopV2CheckpointSuccessor,
   type LoopV2Checkpoint,
 } from "@/lib/orchestration/loop-v2";
+import { parseLoopV2ContextBindingV1 } from "@/lib/orchestration/loop-v2-context-contract";
 import {
   executionScopesEqual,
   parsePersistedExecutionScope,
@@ -278,6 +280,35 @@ async function assertLoopV2RootAdmission(
       checkpoint.enginePin.rolloutLifecycleRevision
   ) {
     throw new Error("Loop v2 rollout changed before root admission committed.");
+  }
+  if (checkpoint.enginePin.capabilityId === LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID) {
+    const bindingRows = await sql.query(
+      `SELECT payload
+       FROM omni_events
+       WHERE tenant_id = $1
+         AND stream_id = $2
+         AND type = 'run.loop_v2.context_bound'
+       ORDER BY seq ASC
+       LIMIT 2
+       FOR SHARE`,
+      [checkpoint.tenantId, `run:${checkpoint.runId}`],
+    );
+    const bindingPayload = plainRecord(
+      exactlyOne(bindingRows, "Loop v2 context binding").payload,
+    );
+    const { _executionScope: _scope, ...bindingValue } = bindingPayload;
+    void _scope;
+    const binding = parseLoopV2ContextBindingV1(bindingValue);
+    if (
+      binding.runId !== checkpoint.runId ||
+      binding.tenantId !== checkpoint.tenantId ||
+      binding.ownerActorId !== checkpoint.ownerActorId ||
+      binding.contextScope !== checkpoint.contextScope ||
+      binding.executionScopeSha256 !== checkpoint.executionScopeSha256 ||
+      binding.bindingSha256 !== checkpoint.contextBindingSha256
+    ) {
+      throw new Error("Loop v2 root has a different context binding.");
+    }
   }
 }
 
@@ -792,6 +823,8 @@ function checkpointEventPayload(
     rolloutMode: checkpoint.enginePin.rolloutMode,
     rolloutGeneration: checkpoint.enginePin.rolloutGeneration,
     rolloutLifecycleRevision: checkpoint.enginePin.rolloutLifecycleRevision,
+    contextScope: checkpoint.contextScope,
+    contextBindingSha256: checkpoint.contextBindingSha256,
   };
 }
 

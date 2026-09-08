@@ -25,6 +25,11 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import type { AgentEvent, AgentMode, ChatMessage } from "@/lib/orchestration/types";
+import {
+  parseLoopV2ContextBindingV1,
+  type LoopV2ContextBindingV1,
+} from "@/lib/orchestration/loop-v2-context-contract";
+import { loopV2ExecutionScopeSha256 } from "@/lib/orchestration/loop-v2";
 import type { CitationSource, GroundingReport } from "@/lib/rag/citations";
 import { parseRuntimeClaimEvidenceV1 } from "@/lib/rag/claim-evidence-runtime";
 import {
@@ -363,6 +368,45 @@ export async function getAgentRunIdentityPin(
   const { _executionScope: _scope, ...payload } = pins[0].payload;
   void _scope;
   return parseAgentRunIdentityPinV1(payload);
+}
+
+/**
+ * Commits the metadata-only context authority selected for a context-aware
+ * Loop v2 run. The fixed event identity turns a retry into either an exact
+ * replay or a rejected attempt to rebind the run.
+ */
+export async function appendLoopV2ContextBinding(
+  runId: string,
+  bindingValue: LoopV2ContextBindingV1,
+  options: { tenantId: string; executionScope: ExecutionScope },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  assertExecutionScopeTenant(options.executionScope, tenantId);
+  const binding = parseLoopV2ContextBindingV1(bindingValue);
+  const run = await getAgentRun(runId, { tenantId });
+  if (
+    !run ||
+    binding.runId !== runId ||
+    binding.tenantId !== tenantId ||
+    binding.ownerActorId !== run.ownerActorId ||
+    binding.agentPrincipalId !== options.executionScope.executingPrincipalId ||
+    binding.executionScopeSha256 !== loopV2ExecutionScopeSha256(
+      options.executionScope,
+    )
+  ) {
+    throw new Error("Loop v2 context binding does not match its run.");
+  }
+  const boundScope = await getAgentRunExecutionScope(runId, { tenantId });
+  if (!boundScope || !executionScopesEqual(boundScope, options.executionScope)) {
+    throw new Error("Loop v2 context binding scope does not match the run.");
+  }
+  return appendScopedDomainEvent({
+    id: `run-loop-v2-context:${runId}`,
+    streamId: `run:${runId}`,
+    type: "run.loop_v2.context_bound",
+    payload: binding,
+    executionScope: options.executionScope,
+  });
 }
 
 /**
