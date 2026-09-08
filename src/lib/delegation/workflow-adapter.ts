@@ -35,6 +35,8 @@ const WORKFLOW_OUTPUT_ARTIFACT_KINDS = [
   "control",
 ] as const;
 
+const WORKFLOW_DELEGATION_CLEANUP_GRACE_MS = 5_000;
+
 export function buildWorkflowNodeDelegationContractV1(input: {
   detail: WorkflowRunDetail;
   planId: string;
@@ -43,6 +45,7 @@ export function buildWorkflowNodeDelegationContractV1(input: {
   dependencyRecords: readonly WorkflowPlanNodeExecutionRecord[];
   parentExecutionScope?: ExecutionScope;
   remainingWallTimeMs: number;
+  executionAttempt?: number;
   createdAt?: string;
 }) {
   if (input.nodeInput.executor !== "agent") {
@@ -73,8 +76,12 @@ export function buildWorkflowNodeDelegationContractV1(input: {
   const parentBudgets = runBudgetCountersV1Schema.parse(
     input.detail.run.input.budgetLimits || WORKFLOW_RUN_BUDGET_LIMITS,
   );
+  const executionAttempt = Math.floor(input.executionAttempt || 1);
+  if (executionAttempt < 1 || executionAttempt > 100) {
+    throw new Error("Workflow delegation execution attempt is invalid.");
+  }
   const wallTimeMs = Math.floor(Math.min(
-    WORKFLOW_EXECUTOR_TIMEOUT_MS,
+    WORKFLOW_EXECUTOR_TIMEOUT_MS + WORKFLOW_DELEGATION_CLEANUP_GRACE_MS,
     input.remainingWallTimeMs,
     parentBudgets.wallTimeMs,
   ));
@@ -88,7 +95,7 @@ export function buildWorkflowNodeDelegationContractV1(input: {
   }
   const completeBy = new Date(createdTime + wallTimeMs).toISOString();
   const acceptBy = new Date(
-    createdTime + Math.max(1, Math.min(1_000, Math.floor(wallTimeMs / 2))),
+    createdTime + Math.max(1, Math.min(5_000, Math.floor(wallTimeMs / 3))),
   ).toISOString();
   const delegationId = `delegation:${canonicalJsonSha256({
     schemaVersion: 1,
@@ -96,6 +103,7 @@ export function buildWorkflowNodeDelegationContractV1(input: {
     planId: input.planId,
     nodeId: input.node.id,
     inputSha256: workflowNodeInputSha256(input.nodeInput),
+    executionAttempt,
   })}`;
   const parentGrants: DelegationContractV1["grants"] = {
     contextGrantIds: [...(input.parentExecutionScope?.contextGrantIds || [])],
@@ -161,6 +169,7 @@ export function buildWorkflowNodeDelegationContractV1(input: {
       planId: input.planId,
       nodeId: input.node.id,
       inputSha256: workflowNodeInputSha256(input.nodeInput),
+      executionAttempt,
     }),
     objective: workflowDelegationObjective(input.nodeInput),
     acceptanceCriteria: workflowAcceptanceCriteria(input.nodeInput),

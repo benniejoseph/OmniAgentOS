@@ -269,6 +269,80 @@ describe("workflow agent node execution", () => {
     );
   });
 
+  it("uses a new durable delegation boundary when a failed node is retried", async () => {
+    mocks.generateModelStructured.mockRejectedValueOnce(
+      new Error("Transient model failure."),
+    );
+    mockSuccessfulNodeGeneration();
+    const workflowRunId = "workflow-delegation-retry-1";
+    const planId = "plan-delegation-retry-1";
+    const retryDetail: WorkflowRunDetail = {
+      ...detail,
+      run: { ...detail.run, id: workflowRunId },
+      steps: [{
+        id: "step-plan-retry-1",
+        tenantId: "tenant-1",
+        workflowRunId,
+        stepKey: "plan",
+        label: "Plan",
+        status: "completed",
+        attempt: 1,
+        maxAttempts: 3,
+        input: {},
+        output: {
+          id: planId,
+          planner: "deterministic",
+          confidence: 1,
+          validation: { isDag: true },
+          plan: {
+            objective: detail.run.goal,
+            summary: "Analyze the goal.",
+            mode: "orchestrate",
+            assumptions: [],
+            constraints: [],
+            risks: [],
+            acceptanceCriteria: node.acceptanceCriteria,
+            nodes: [node],
+            edges: [],
+            selectedToolIds: [],
+            connectorTargets: [],
+            executionPolicy: {
+              highestRiskLevel: 0,
+              requiresApproval: false,
+              defaultPolicy: "auto",
+              notes: [],
+            },
+            verificationPlan: [],
+            memoryPlan: [],
+            confidence: 1,
+          },
+        },
+        createdAt: "2026-09-06T00:00:00.000Z",
+        updatedAt: "2026-09-06T00:00:01.000Z",
+        completedAt: "2026-09-06T00:00:01.000Z",
+      }],
+    };
+
+    expect(await executeDynamicWorkflowPlan(retryDetail)).toMatchObject({
+      status: "failed",
+      failedNodes: 1,
+    });
+    expect(await executeDynamicWorkflowPlan(retryDetail)).toMatchObject({
+      status: "completed",
+      completedNodes: 1,
+    });
+
+    const starts = mocks.appendWorkflowEvent.mock.calls.filter(
+      ([runId, type]) =>
+        runId === workflowRunId && type === "workflow.plan_node.started",
+    );
+    expect(starts.map(([, , payload]) => payload)).toMatchObject([
+      { delegationAttempt: 1 },
+      { delegationAttempt: 2 },
+    ]);
+    expect(starts[0]?.[2].delegationId).not.toBe(starts[1]?.[2].delegationId);
+  });
+
   it("shares a Mission completion proposal before parent acceptance", async () => {
     mockSuccessfulNodeGeneration();
     const executionScope = createExecutionScope({
