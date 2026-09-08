@@ -3,6 +3,8 @@ import { z } from "zod";
 
 import {
   LOOP_V2_CAPABILITY_ID,
+  LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID,
+  LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID,
   LOOP_V2_ENGINE_VERSION_ID,
   LOOP_V2_MODEL_TEXT_CAPABILITY_ID,
   LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID,
@@ -11,6 +13,7 @@ import {
 } from "@/lib/orchestration/loop-v2";
 import {
   buildHarnessManifestV1,
+  buildContextManifestV1,
   buildOutcomeContractV1,
   buildRunContractEnvelopeV1,
   buildRunContractEventPayloadV1,
@@ -18,6 +21,7 @@ import {
   parseRunContractEnvelopeV1,
   runContractEventPayloadV1Schema,
   type HarnessManifestV1,
+  type ContextManifestV1,
   type RequirementVerificationV1,
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
@@ -30,13 +34,15 @@ import type { ExecutionScope } from "@/lib/security/execution-scope";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 import type { AgentRunIdentityPinV1 } from "@/lib/agents/identity-contracts";
+import { CONTEXT_SCOPE_POLICY_VERSION } from "@/lib/rag/context-scope";
 import { getGovernedTool } from "@/lib/tools/registry";
 
 export const LOOP_V2_OUTCOME_CONTRACT_VERSION = 1 as const;
 
 export type LoopV2OutcomeTaskKind =
   | "read_only_recent_runs"
-  | "model_text_summary";
+  | "model_text_summary"
+  | "model_context_summary";
 
 const readOnlyVerificationReceiptSchema = z.object({
   executionId: z.string().trim().min(1).max(240),
@@ -48,6 +54,85 @@ const readOnlyVerificationReceiptSchema = z.object({
 export type LoopV2RunContractSnapshot = ShadowRunContractSnapshot & Readonly<{
   taskKind: LoopV2OutcomeTaskKind;
 }>;
+
+export function buildLoopV2ContextManifest(input: {
+  runId: string;
+  querySha256: string;
+  contextScope: string;
+  selectedContext: ReadonlyArray<{
+    id: string;
+    score?: number;
+    userIncluded?: boolean;
+  }>;
+  userInclusionIds: readonly string[];
+  userExclusionIds: readonly string[];
+  compiledContextSha256: string;
+  contextTokenCount: number;
+  providerId?: string;
+  compilerVersionId: string;
+  retrievalTraceId?: string;
+}): ContextManifestV1 {
+  const selectedItems = uniqueContextItems(input.selectedContext).map((item) => {
+    const scoreBasisPoints = typeof item.score === "number" &&
+        Number.isFinite(item.score)
+      ? Math.round(Math.min(Math.max(item.score, 0), 1) * 10_000)
+      : null;
+    return {
+      itemType: "evidence" as const,
+      itemId: contextReferenceId("evidence", item.id),
+      sourceRevisionId: null,
+      selectionReason: item.userIncluded
+        ? "user_included" as const
+        : "semantic_match" as const,
+      scoreState: scoreBasisPoints === null
+        ? "unassessed" as const
+        : "scored" as const,
+      scoreBasisPoints,
+      freshness: "unknown" as const,
+      conflictState: "unassessed" as const,
+      conflictIds: [],
+    };
+  });
+  const providerDisclosureBoundary = input.contextScope === "none" ||
+      input.contextScope === "current_turn"
+    ? "none" as const
+    : "authorized_content" as const;
+  return buildContextManifestV1({
+    contextManifestId: `${input.runId}:context:initial:v1`,
+    runId: input.runId,
+    modelTurnId: `${input.runId}:model-context:1`,
+    retrievalTraceId: input.retrievalTraceId
+      ? contextReferenceId("retrieval", input.retrievalTraceId)
+      : null,
+    querySha256: input.querySha256,
+    scopeDecision: input.contextScope === "none"
+      ? "user_excluded"
+      : "user_selected",
+    selectedItems,
+    rejectedItems: [],
+    userInclusionIds: input.userInclusionIds.map((id) =>
+      contextReferenceId("evidence", id)
+    ),
+    userExclusionIds: input.userExclusionIds.map((id) =>
+      contextReferenceId("evidence", id)
+    ),
+    allocations: input.contextTokenCount > 0
+      ? [{ tier: "context", tokenCount: input.contextTokenCount }]
+      : [],
+    providerDisclosureBoundary,
+    providerId: providerDisclosureBoundary === "none"
+      ? null
+      : contextReferenceId("provider", input.providerId || "unknown"),
+    compilerVersionId: contextReferenceId(
+      "context-compiler",
+      input.compilerVersionId,
+    ),
+    embeddingVersionId: null,
+    rerankerVersionId: null,
+    policyVersionId: CONTEXT_SCOPE_POLICY_VERSION,
+    compiledContextSha256: input.compiledContextSha256,
+  });
+}
 
 /**
  * Builds the declared contract. The store only admits its binding alongside a
@@ -61,6 +146,7 @@ export function buildLoopV2PreExecutionRunContract(input: {
   requestedOutcomeSha256: string;
   agentId: string;
   agentIdentityPin?: AgentRunIdentityPinV1;
+  contextManifest?: ContextManifestV1;
 }): LoopV2RunContractSnapshot {
   const root = parseLoopV2Checkpoint(input.rootCheckpoint);
   if (root.lifecycleState === "terminal" || root.terminalDisposition !== null) {
@@ -68,6 +154,14 @@ export function buildLoopV2PreExecutionRunContract(input: {
   }
   const taskKind = taskKindFor(root);
   const readOnly = taskKind === "read_only_recent_runs";
+  const contextManifest = input.contextManifest;
+  const expectsContext = taskKind === "model_context_summary";
+  if (
+    expectsContext !== Boolean(contextManifest) ||
+    (contextManifest && contextManifest.runId !== root.runId)
+  ) {
+    throw new Error("Loop v2 context manifest does not match its engine.");
+  }
   const initial = buildInitialShadowRunContract({
     runId: root.runId,
     tenantId: root.tenantId,
@@ -142,6 +236,7 @@ export function buildLoopV2PreExecutionRunContract(input: {
         ? null
         : root.enginePin.configurationSha256,
       toolboxSha256: tool ? canonicalJsonSha256([tool.id]) : canonicalJsonSha256([]),
+      contextManifest,
     },
   );
   const envelope = buildRunContractEnvelopeV1({
@@ -150,7 +245,7 @@ export function buildLoopV2PreExecutionRunContract(input: {
     agentPrincipal: initial.envelope.agentPrincipal,
     intentSpec: initial.envelope.intentSpec,
     outcomeContract,
-    contextManifests: [],
+    contextManifests: contextManifest ? [contextManifest] : [],
     harnessManifest,
     terminalReceipt: null,
   });
@@ -330,6 +425,9 @@ function taskKindFor(checkpoint: LoopV2Checkpoint): LoopV2OutcomeTaskKind {
   if (checkpoint.enginePin.capabilityId === LOOP_V2_MODEL_TEXT_CAPABILITY_ID) {
     return "model_text_summary";
   }
+  if (checkpoint.enginePin.capabilityId === LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID) {
+    return "model_context_summary";
+  }
   throw new Error("Loop v2 outcome contracts do not support this capability.");
 }
 
@@ -341,8 +439,12 @@ function rebuildHarnessManifest(
     tools: HarnessManifestV1["tools"];
     instructionsSha256: string | null;
     toolboxSha256: string;
+    contextManifest?: ContextManifestV1;
   },
 ) {
+  const contextManifestSha256 = pins.contextManifest
+    ? sha256Json(pins.contextManifest)
+    : null;
   return buildHarnessManifestV1({
     harnessManifestId: `${checkpoint.runId}:loop-v2:harness:v1`,
     runId: base.runId,
@@ -361,9 +463,10 @@ function rebuildHarnessManifest(
     executionMode: "live",
     autonomy: base.autonomy,
     approvalPolicy: base.approvalPolicy,
-    contextCompilerVersionId: null,
-    initialContextManifestId: null,
-    initialContextManifestSha256: null,
+    contextCompilerVersionId: pins.contextManifest?.compilerVersionId || null,
+    initialContextManifestId:
+      pins.contextManifest?.contextManifestId || null,
+    initialContextManifestSha256: contextManifestSha256,
     tools: pins.tools,
     skills: [],
     policies: [{
@@ -393,7 +496,9 @@ function assertEngineBinding(
 ) {
   const expectedEngine = terminal.enginePin.capabilityId === LOOP_V2_CAPABILITY_ID
     ? LOOP_V2_ENGINE_VERSION_ID
-    : LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID;
+    : terminal.enginePin.capabilityId === LOOP_V2_CONTEXT_TEXT_CAPABILITY_ID
+      ? LOOP_V2_CONTEXT_TEXT_ENGINE_VERSION_ID
+      : LOOP_V2_MODEL_TEXT_ENGINE_VERSION_ID;
   if (
     harness.engineVersionId !== expectedEngine ||
     harness.promptContractVersionId !== terminal.enginePin.contractVersionId ||
@@ -446,6 +551,24 @@ function withTaskKind(
   taskKind: LoopV2OutcomeTaskKind,
 ) {
   return Object.freeze({ ...snapshotValue, taskKind });
+}
+
+function uniqueContextItems<T extends { id: string }>(
+  values: readonly T[],
+) {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    if (seen.has(value.id)) return false;
+    seen.add(value.id);
+    return true;
+  }).slice(0, 8);
+}
+
+function contextReferenceId(prefix: string, value: string) {
+  const normalized = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,239}$/.test(normalized)
+    ? normalized
+    : `${prefix}:${sourceContractSha256(normalized)}`;
 }
 
 function sha256Json(value: unknown) {
