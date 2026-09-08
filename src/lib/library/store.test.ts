@@ -133,4 +133,30 @@ describe("workspace library projections", () => {
       "source-revision:revision-2",
     ]);
   });
+
+  it("labels hash-only Drive rows as metadata instead of exposing a grant id", () => {
+    const item = sourceItemLibraryItem({
+      id: "source-drive",
+      tenant_id: "tenant-1",
+      owner_actor_id: "actor-1",
+      current_revision_id: "revision-drive",
+      source_kind: "file",
+      connection_id: "85735b1a-private-grant",
+      adapter_id: "google-drive.metadata-canonical",
+      content_sha256: "d".repeat(64),
+      content_byte_length: 0,
+      media_type: "application/x.asael-source-metadata",
+      version_count: 2,
+      created_at: createdAt,
+      updated_at: createdAt,
+      revision_created_at: createdAt,
+    });
+
+    expect(item).toMatchObject({
+      title: "File from Google Drive",
+      sourceLabel: "Google Drive",
+      summary: "File metadata · 2 versions · source-backed",
+    });
+    expect(JSON.stringify(item)).not.toContain("85735b1a");
+  });
 });

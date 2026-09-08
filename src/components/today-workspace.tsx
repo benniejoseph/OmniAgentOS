@@ -385,8 +385,8 @@ export function TodayWorkspace({
           <span className={styles.cloud} />
         </div>
         <div className="today-date" aria-hidden="true">
-          <strong>{now ? now.toLocaleDateString(undefined, { day: "2-digit" }) : "--"}</strong>
-          <span>{now ? now.toLocaleDateString(undefined, { month: "short", weekday: "short" }) : "Today"}</span>
+          <strong>{now ? now.toLocaleDateString("en-US", { day: "2-digit" }) : "--"}</strong>
+          <span>{now ? now.toLocaleDateString("en-US", { month: "short", weekday: "short" }) : "Today"}</span>
         </div>
         <div className="today-intro">
           <p className="today-kicker">{greeting(now)}</p>
@@ -803,7 +803,7 @@ function UsageCockpit({
               <span>Total consumption · {period.label}</span>
               <strong>{formatTokens(period.current.totalTokens)}</strong>
               <UsageDelta current={period.current.totalTokens} previous={period.previous.totalTokens} />
-              <small>tokens across {currentSourceStreams.toLocaleString()} distinct {currentSourceStreams === 1 ? "source" : "sources"}</small>
+          <small>tokens across {currentSourceStreams.toLocaleString("en-US")} distinct {currentSourceStreams === 1 ? "source" : "sources"}</small>
             </div>
 
             <div className={styles.usageMetricLedger}>
@@ -828,14 +828,14 @@ function UsageCockpit({
               <UsageMetric
                 icon={Cpu}
                 label="AI calls"
-                value={currentProviderCalls.toLocaleString()}
-                detail={`${compactComparison(currentProviderCalls, previousProviderCalls)} · ${(period.current.attempts ?? 0).toLocaleString()} attempts · ${(period.current.failedAttempts ?? 0).toLocaleString()} failed`}
+                value={currentProviderCalls.toLocaleString("en-US")}
+                detail={`${compactComparison(currentProviderCalls, previousProviderCalls)} · ${(period.current.attempts ?? 0).toLocaleString("en-US")} attempts · ${(period.current.failedAttempts ?? 0).toLocaleString("en-US")} failed`}
               />
               <UsageMetric
                 icon={Coins}
                 label="Known est. cost"
                 value={formatKnownCost(period.current)}
-                detail={`${period.current.costCoveragePercent}% priced · previous ${formatKnownCost(period.previous)} · ${period.current.unknownCostCalls.toLocaleString()} unknown`}
+                detail={`${period.current.costCoveragePercent}% priced · previous ${formatKnownCost(period.previous)} · ${period.current.unknownCostCalls.toLocaleString("en-US")} unknown`}
               />
             </div>
           </div>
@@ -956,9 +956,9 @@ function UsageTrendChart({ period }: { period: UsagePeriodSummary }) {
         role="img"
         aria-labelledby={`${titleId} ${descriptionId}`}
       >
-        <title id={titleId}>Token consumption trend for {period.currentLabel}</title>
+        <title id={titleId}>{`Token consumption trend for ${period.currentLabel}`}</title>
         <desc id={descriptionId}>
-          {period.current.totalTokens.toLocaleString()} tokens in the current period, compared with {period.previous.totalTokens.toLocaleString()} in the previous equal period.
+          {`${period.current.totalTokens.toLocaleString("en-US")} tokens in the current period, compared with ${period.previous.totalTokens.toLocaleString("en-US")} in the previous equal period.`}
         </desc>
         <defs>
           <linearGradient id={`usage-area-${period.key}`} x1="0" x2="0" y1="0" y2="1">
@@ -1001,7 +1001,7 @@ function UsageTrendChart({ period }: { period: UsagePeriodSummary }) {
         ))}
       </svg>
       <figcaption>
-        Current total {period.current.totalTokens.toLocaleString()} tokens; previous total {period.previous.totalTokens.toLocaleString()} tokens.
+        Current total {period.current.totalTokens.toLocaleString("en-US")} tokens; previous total {period.previous.totalTokens.toLocaleString("en-US")} tokens.
       </figcaption>
       <details className={styles.usageDataTable}>
         <summary>View chart data</summary>
@@ -1013,9 +1013,9 @@ function UsageTrendChart({ period }: { period: UsagePeriodSummary }) {
               {period.series.map((point) => (
                 <tr key={`${point.currentAt}-${point.previousAt}`}>
                   <th scope="row">{formatBucketLabel(point.currentAt, period.bucketUnit)}</th>
-                  <td>{point.currentTotalTokens.toLocaleString()}</td>
+                  <td>{point.currentTotalTokens.toLocaleString("en-US")}</td>
                   <th scope="row">{formatBucketLabel(point.previousAt, period.bucketUnit)}</th>
-                  <td>{point.previousTotalTokens.toLocaleString()}</td>
+                  <td>{point.previousTotalTokens.toLocaleString("en-US")}</td>
                 </tr>
               ))}
             </tbody>
@@ -1066,7 +1066,7 @@ function UsageBreakdown({
                   <p><strong>{item.label}</strong>{showProvider && item.provider ? <small>{item.provider}</small> : null}<span>{formatTokens(item.totals.totalTokens)} · {share}%</span></p>
                   <span className={styles.usageBar}><i style={{ width: `${share}%` }} /></span>
                   <small className={styles.usageItemCost}>
-                    {formatTokens(item.totals.inputTokens)} context · {providerCalls.toLocaleString()} {providerCalls === 1 ? "call" : "calls"} · {formatBreakdownCost(item.totals)} · {item.totals.costCoveragePercent}% priced
+                    {formatTokens(item.totals.inputTokens)} context · {providerCalls.toLocaleString("en-US")} {providerCalls === 1 ? "call" : "calls"} · {formatBreakdownCost(item.totals)} · {item.totals.costCoveragePercent}% priced
                   </small>
                 </div>
               </li>
@@ -1174,8 +1174,8 @@ function compactComparison(current: number, previous: number) {
 }
 
 function formatTokens(value: number) {
-  if (value < 1_000) return Math.round(value).toLocaleString();
-  return new Intl.NumberFormat(undefined, {
+  if (value < 1_000) return Math.round(value).toLocaleString("en-US");
+  return new Intl.NumberFormat("en-US", {
     notation: "compact",
     maximumFractionDigits: value >= 1_000_000 ? 2 : 1,
   }).format(value);
@@ -1185,7 +1185,7 @@ function formatKnownCost(totals: UsageTotals) {
   const calls = totals.providerCalls ?? totals.modelCalls;
   if (!totals.knownCostCalls && calls) return "Unknown";
   const value = totals.knownEstimatedCostUsd;
-  return new Intl.NumberFormat(undefined, {
+  return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: value > 0 && value < 0.01 ? 4 : 2,
@@ -1219,7 +1219,7 @@ function chartLabelIndexes(length: number) {
 }
 
 function compactAxisValue(value: number) {
-  return value >= 1_000 ? new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value) : String(value);
+  return value >= 1_000 ? new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value) : String(value);
 }
 
 function formatBucketLabel(value: string | undefined, unit: UsagePeriodSummary["bucketUnit"]) {
@@ -1227,14 +1227,14 @@ function formatBucketLabel(value: string | undefined, unit: UsagePeriodSummary["
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "—";
   return unit === "hour"
-    ? date.toLocaleTimeString(undefined, { hour: "numeric" })
-    : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    ? date.toLocaleTimeString("en-US", { hour: "numeric", timeZone: "UTC" })
+    : date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 function formatUpdatedAt(value: string) {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
-    ? date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    ? date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })
     : "recently";
 }
 
