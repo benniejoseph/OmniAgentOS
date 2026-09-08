@@ -6,7 +6,6 @@ import {
   CONTEXT_SCOPE_POLICIES,
   contextScopeMemoryMode,
   contextScopeUsesThreadHistory,
-  getContextScopePolicy,
 } from "@/lib/rag/context-scope";
 
 describe("context scope policy", () => {
@@ -17,9 +16,15 @@ describe("context scope policy", () => {
     expect(new Set(CONTEXT_SCOPE_IDS).size).toBe(CONTEXT_SCOPE_IDS.length);
   });
 
-  it("keeps automatic personal scope authority-held", () => {
-    expect(getContextScopePolicy("personal").state).toBe("authority_held");
-    expect(() => assertContextScopeRequest("personal", false)).toThrow(/held/i);
+  it("admits automatic personal scope only as a consent-gated runtime policy", () => {
+    expect(assertContextScopeRequest("personal", false)).toMatchObject({
+      state: "active",
+      durableContext: "personal",
+      requiresSelection: false,
+    });
+    expect(() => assertContextScopeRequest("personal", true)).toThrow(
+      /requires the explicit-selection scope/i,
+    );
   });
 
   it("maps active scopes without widening durable context", () => {
@@ -30,6 +35,7 @@ describe("context scope policy", () => {
     expect(contextScopeMemoryMode("mission")).toBe("all");
     expect(contextScopeMemoryMode("project")).toBe("all");
     expect(contextScopeMemoryMode("workspace")).toBe("all");
+    expect(contextScopeMemoryMode("personal")).toBe("all");
     expect(contextScopeMemoryMode("explicit_selection")).toBe("all");
     expect(contextScopeUsesThreadHistory("none")).toBe(false);
     expect(contextScopeUsesThreadHistory("current_turn")).toBe(false);
@@ -38,6 +44,7 @@ describe("context scope policy", () => {
     expect(contextScopeUsesThreadHistory("mission")).toBe(true);
     expect(contextScopeUsesThreadHistory("project")).toBe(true);
     expect(contextScopeUsesThreadHistory("workspace")).toBe(true);
+    expect(contextScopeUsesThreadHistory("personal")).toBe(true);
     expect(contextScopeUsesThreadHistory("explicit_selection")).toBe(true);
   });
 

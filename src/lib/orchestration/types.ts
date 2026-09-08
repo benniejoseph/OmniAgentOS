@@ -1,4 +1,5 @@
 import type { RequestMemoryAccessV1 } from "@/lib/memory/request-access";
+import type { RequestPersonalContextMemoryAccessV1 } from "@/lib/memory/personal-context-access";
 import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
 import type { RequestEntityAccessV1 } from "@/lib/entities/request-access";
 import type { GroundingReport } from "@/lib/rag/citations";
@@ -177,6 +178,8 @@ export type AgentRunRequest = {
   promptMemoryAccess?: RequestMemoryAccessV1;
   /** Exact membership authority for explicitly selected project/workspace context. */
   promptSharedMemoryAccess?: RequestSharedMemoryAccessV1;
+  /** Owner-controlled standing authority for automatic personal context. */
+  promptPersonalMemoryAccess?: RequestPersonalContextMemoryAccessV1;
   /** Exact user-principal authority for a reviewed temporal graph path. */
   promptEntityGraphAccess?: RequestEntityAccessV1;
   /** Server-validated effective limits; delegated callers may only narrow them. */

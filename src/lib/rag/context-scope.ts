@@ -21,6 +21,7 @@ export type ContextScopePolicy = Readonly<{
   durableContext:
     | "none"
     | "agent_private"
+    | "personal"
     | "project"
     | "workspace"
     | "explicit_selection"
@@ -89,11 +90,11 @@ export const CONTEXT_SCOPE_POLICIES: readonly ContextScopePolicy[] = Object.free
   },
   {
     id: "personal",
-    state: "authority_held",
+    state: "active",
     conversationHistory: "session",
-    durableContext: "authority_held",
+    durableContext: "personal",
     requiresSelection: false,
-    reason: "Automatic personal-memory disclosure requires active standing authority.",
+    reason: "Only owner-private memory covered by active standing consent is eligible.",
   },
   {
     id: "explicit_selection",
@@ -130,6 +131,7 @@ export function contextScopeMemoryMode(
   requireActiveContextScope(policy);
   return policy.durableContext === "explicit_selection" ||
       policy.durableContext === "agent_private" ||
+      policy.durableContext === "personal" ||
       policy.durableContext === "project" ||
       policy.durableContext === "workspace"
     ? "all"
