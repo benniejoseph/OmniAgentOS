@@ -301,6 +301,56 @@
   line-height: 1.65;
 }
 
+.capture [data-daybook="batch-dropzone"] {
+  background:
+    radial-gradient(circle at 50% 12%, color-mix(in oklch, var(--primary) 10%, transparent), transparent 42%),
+    var(--background);
+}
+
+.capture [data-daybook="batch-queue"] {
+  border-top: 1px solid color-mix(in oklch, var(--line) 76%, transparent);
+  padding-top: 1rem;
+}
+
+.capture [data-daybook="batch-item"] {
+  animation: capture-batch-enter 180ms ease-out both;
+}
+
+.capture [data-daybook="rail"] :global(progress) {
+  border: 0;
+  background: var(--line);
+  color: var(--primary);
+  appearance: none;
+}
+
+.capture [data-daybook="rail"] :global(progress::-webkit-progress-bar) {
+  background: var(--line);
+}
+
+.capture [data-daybook="rail"] :global(progress::-webkit-progress-value) {
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 500ms ease;
+}
+
+.capture [data-daybook="rail"] :global(progress::-moz-progress-bar) {
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 500ms ease;
+}
+
+@keyframes capture-batch-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.35rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .capture [role="tablist"] {
   border-radius: 999px;
   padding: 0.3rem;
@@ -1153,6 +1203,12 @@
   .results [data-daybook="evidence"] {
     border-top: 1px dashed var(--line);
     border-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .capture [data-daybook="batch-item"] {
+    animation: none;
   }
 }
 

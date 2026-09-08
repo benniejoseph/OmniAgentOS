@@ -14,6 +14,7 @@ import {
   Loader2,
   NotebookPen,
   Paperclip,
+  RefreshCw,
   ScanLine,
   Search,
   Trash2,
@@ -27,6 +28,12 @@ import { LongRecordingStudio } from "@/components/capture/long-recording-studio"
 import { VisualStudio } from "@/components/capture/visual-studio";
 import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/session-context";
 import { WorkspaceLibrary } from "@/components/workspace-library";
+import {
+  captureBatchRejectionMessage,
+  captureBatchTitle,
+  mergeCaptureBatchFiles,
+  runCaptureBatch,
+} from "@/lib/capture/batch-client";
 import { listOfflineCaptures, queueOfflineCapture, removeOfflineCapture, type OfflineCapture } from "@/lib/capture/offline";
 import styles from "./daybook-workspaces.module.css";
 
@@ -79,6 +86,23 @@ type CaptureJob = {
 
 type CaptureMode = "note" | "record" | "upload";
 type Notice = { tone: "success" | "warning" | "error"; text: string };
+type CaptureBatchStatus =
+  | "selected"
+  | "uploading"
+  | "queued"
+  | "running"
+  | "completed"
+  | "offline"
+  | "stored"
+  | "failed";
+type CaptureBatchItem = {
+  id: string;
+  file: File;
+  status: CaptureBatchStatus;
+  job?: CaptureJob;
+  assetId?: string;
+  error?: string;
+};
 
 export function CaptureWorkspace() {
   const { session, status } = useWorkspaceSession();
@@ -86,7 +110,7 @@ export function CaptureWorkspace() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState("");
-  const [file, setFile] = useState<File>();
+  const [batchItems, setBatchItems] = useState<CaptureBatchItem[]>([]);
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [captureNotice, setCaptureNotice] = useState<Notice>();
@@ -225,33 +249,96 @@ export function CaptureWorkspace() {
     return () => window.cancelAnimationFrame(frame);
   }, [activeJob, loadWorkspace]);
 
+  useEffect(() => {
+    const pending = batchItems.filter((item) =>
+      item.job && ["queued", "running"].includes(item.status)
+    );
+    if (!pending.length) return;
+    const timer = window.setTimeout(() => {
+      void Promise.all(pending.map(async (item) => {
+        try {
+          const response = await fetch(
+            `/api/operations/jobs/${encodeURIComponent(item.job!.id)}`,
+            { cache: "no-store" },
+          );
+          const payload = (await response.json().catch(() => ({}))) as {
+            job?: CaptureJob;
+          };
+          return response.ok && payload.job
+            ? { id: item.id, job: payload.job }
+            : undefined;
+        } catch {
+          return undefined;
+        }
+      })).then((results) => {
+        const updates = new Map(results.flatMap((result) =>
+          result ? [[result.id, result.job] as const] : []
+        ));
+        if (!updates.size) return;
+        const completed = batchItems.some((item) =>
+          item.status !== "completed" && updates.get(item.id)?.status === "completed"
+        );
+        setBatchItems((current) => current.map((item) => {
+          const job = updates.get(item.id);
+          if (!job) return item;
+          const nextStatus = batchStatusFromJob(job);
+          return {
+            ...item,
+            job,
+            status: nextStatus,
+            error: job.lastError || (job.status === "canceled" ? "Indexing was canceled." : undefined),
+          };
+        }));
+        if (completed) void loadWorkspace();
+      });
+    }, 2_000);
+    return () => window.clearTimeout(timer);
+  }, [batchItems, loadWorkspace]);
+
   const filteredDocuments = useMemo(() => documents.filter((document) => {
     const query = libraryQuery.trim().toLowerCase();
     if (query && !`${document.title} ${document.source}`.toLowerCase().includes(query)) return false;
     return sourceFilter === "all" || documentSource(document.source) === sourceFilter;
   }), [documents, libraryQuery, sourceFilter]);
 
-  function chooseFile(next?: File) {
+  const batchCounts = useMemo(() => summarizeBatch(batchItems), [batchItems]);
+
+  function chooseFiles(next: readonly File[]) {
     setCaptureNotice(undefined);
-    setFile(next);
-    if (next) {
-      setMode("upload");
-      if (!title) setTitle(next.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "));
-    }
+    if (!next.length) return;
+    const merged = mergeCaptureBatchFiles(
+      batchItems.map((item) => item.file),
+      next,
+    );
+    setBatchItems((current) => [
+      ...current,
+      ...merged.accepted.map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        status: "selected" as const,
+      })),
+    ]);
+    setMode("upload");
+    const rejection = captureBatchRejectionMessage(merged.rejected);
+    if (rejection) setCaptureNotice({ tone: "warning", text: rejection });
   }
 
   async function submitCapture(event: React.FormEvent) {
     event.preventDefault();
     if (captureBlocked) return setCaptureNotice({ tone: "error", text: captureBlocked });
-    if (!file && !content.trim()) return setCaptureNotice({ tone: "error", text: "Write a note or choose a file to preserve." });
+    if (mode === "upload") {
+      await submitCaptureBatch();
+      return;
+    }
+    if (!content.trim()) return setCaptureNotice({ tone: "error", text: "Write a note to preserve." });
     setSubmitting(true);
     setCaptureNotice(undefined);
     if (!navigator.onLine) {
-      await queueCurrentCapture();
+      await queueCurrentNote();
       setSubmitting(false);
       return;
     }
-    const form = captureForm({ title: title.trim(), content: content.trim(), tags: tags.trim(), file });
+    const form = captureForm({ title: title.trim(), content: content.trim(), tags: tags.trim() });
     try {
       const response = await fetch("/api/capture", { method: "POST", body: form, headers: { "idempotency-key": crypto.randomUUID() } });
       const payload = (await response.json().catch(() => ({}))) as {
@@ -272,15 +359,136 @@ export function CaptureWorkspace() {
       }
       await loadWorkspace();
     } catch (submitError) {
-      if (!navigator.onLine || submitError instanceof TypeError) await queueCurrentCapture();
+      if (!navigator.onLine || submitError instanceof TypeError) await queueCurrentNote();
       else setCaptureNotice({ tone: "error", text: submitError instanceof Error ? submitError.message : "Capture failed." });
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function queueCurrentCapture() {
-    await queueOfflineCapture({ title: title.trim(), content: content.trim(), tags: tags.trim(), file });
+  async function submitCaptureBatch() {
+    const selected = batchItems.filter((item) => item.status === "selected");
+    if (!selected.length) {
+      setCaptureNotice({
+        tone: "warning",
+        text: batchItems.length
+          ? "Add files or retry a failed item to start another upload."
+          : "Choose one or more files to process.",
+      });
+      return;
+    }
+    setSubmitting(true);
+    setCaptureNotice(undefined);
+    const shared = { content: content.trim(), tags: tags.trim() };
+    const singleTitle = selected.length === 1 ? title.trim() : "";
+    try {
+      const results = await runCaptureBatch(selected, async (item) => {
+        setBatchItem(item.id, { status: "uploading", error: undefined });
+        const capture = {
+          ...shared,
+          title: singleTitle || captureBatchTitle(item.file.name),
+          file: item.file,
+        };
+        if (!navigator.onLine) {
+          return queueBatchItemOffline(item, capture);
+        }
+        try {
+          const response = await fetch("/api/capture", {
+            method: "POST",
+            body: captureForm(capture),
+            headers: { "idempotency-key": `capture-batch-${item.id}` },
+          });
+          const payload = (await response.json().catch(() => ({}))) as {
+            job?: CaptureJob;
+            asset?: CaptureAsset;
+            ingestion?: { reason?: string };
+            error?: string;
+          };
+          if (!response.ok) throw new Error(payload.error || "This file could not be captured.");
+          if (payload.job) {
+            setBatchItem(item.id, {
+              job: payload.job,
+              assetId: payload.asset?.id,
+              status: batchStatusFromJob(payload.job),
+              error: undefined,
+            });
+            return "queued" as const;
+          }
+          setBatchItem(item.id, {
+            assetId: payload.asset?.id,
+            status: "stored",
+            error: payload.ingestion?.reason || "The original was stored, but no searchable text was indexed.",
+          });
+          return "stored" as const;
+        } catch (error) {
+          if (!navigator.onLine || error instanceof TypeError) {
+            return queueBatchItemOffline(item, capture);
+          }
+          setBatchItem(item.id, {
+            status: "failed",
+            error: error instanceof Error ? error.message : "This file could not be captured.",
+          });
+          return "failed" as const;
+        }
+      });
+      const accepted = results.filter((result) => result !== "failed").length;
+      setCaptureNotice({
+        tone: accepted ? "success" : "error",
+        text: accepted
+          ? `${accepted} file${accepted === 1 ? " is" : "s are"} safely stored or queued. Asael will build searchable RAG chunks and linked memory for every successfully processed document.`
+          : "None of the selected files could be queued. Review the file-level errors and retry.",
+      });
+      await loadWorkspace();
+      const pending = await listOfflineCaptures().catch(() => []);
+      setOfflinePending(pending.length);
+    } finally {
+      setSubmitting(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  async function queueBatchItemOffline(
+    item: CaptureBatchItem,
+    capture: Pick<OfflineCapture, "title" | "content" | "tags" | "file">,
+  ) {
+    try {
+      await queueOfflineCapture(capture);
+      setBatchItem(item.id, { status: "offline", error: undefined });
+      return "offline" as const;
+    } catch (error) {
+      setBatchItem(item.id, {
+        status: "failed",
+        error: error instanceof Error ? error.message : "This file could not be saved for offline upload.",
+      });
+      return "failed" as const;
+    }
+  }
+
+  function setBatchItem(id: string, patch: Partial<CaptureBatchItem>) {
+    setBatchItems((current) => current.map((item) =>
+      item.id === id ? { ...item, ...patch } : item
+    ));
+  }
+
+  function removeBatchItem(id: string) {
+    setBatchItems((current) => current.filter((item) => item.id !== id));
+  }
+
+  function retryBatchItem(id: string) {
+    setBatchItems((current) => current.map((item) => item.id === id
+      ? { ...item, id: crypto.randomUUID(), status: "selected", job: undefined, error: undefined }
+      : item
+    ));
+  }
+
+  function clearFinishedBatchItems() {
+    setBatchItems((current) => current.filter((item) =>
+      !["completed", "offline", "stored", "failed"].includes(item.status)
+    ));
+  }
+
+  async function queueCurrentNote() {
+    await queueOfflineCapture({ title: title.trim(), content: content.trim(), tags: tags.trim() });
     resetCaptureDraft();
     const pending = await listOfflineCaptures();
     setOfflinePending(pending.length);
@@ -291,7 +499,6 @@ export function CaptureWorkspace() {
     setTitle("");
     setContent("");
     setTags("");
-    setFile(undefined);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -342,7 +549,7 @@ export function CaptureWorkspace() {
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div><h2 id="capture-composer-title" className="text-xl font-semibold tracking-tight">Capture something</h2><p className="mt-1 text-sm text-muted">Choose the shape of what you are saving. One clear workspace expands for each mode.</p></div>
             <div className="inline-flex w-fit rounded-lg border border-line bg-surface p-1" role="tablist" aria-label="Capture type">
-              <ModeButton active={mode === "note"} onClick={() => { setFile(undefined); setMode("note"); }} icon={NotebookPen} label="Note" />
+              <ModeButton active={mode === "note"} onClick={() => setMode("note")} icon={NotebookPen} label="Note" />
               <ModeButton active={mode === "record"} onClick={() => setMode("record")} icon={AudioLines} label="Record" />
               <ModeButton active={mode === "upload"} onClick={() => setMode("upload")} icon={Upload} label="Upload" />
             </div>
@@ -360,43 +567,83 @@ export function CaptureWorkspace() {
                 </div>
               ) : (
                 <div className="p-5 sm:p-6">
-                  <div onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files[0]); }} className={clsx("flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed px-5 py-8 text-center transition-colors", dragging ? "border-primary bg-primary/5" : "border-line bg-background")}>
-                    {file ? (
-                      <><span className="grid size-12 place-items-center rounded-lg bg-primary/10 text-primary"><FileText size={23} aria-hidden="true" /></span><p className="mt-3 max-w-full truncate font-semibold">{file.name}</p><p className="mt-1 text-xs text-muted">{formatBytes(file.size)} · ready to store</p><button type="button" onClick={() => chooseFile(undefined)} className="mt-3 action-button"><X size={15} aria-hidden="true" />Remove</button></>
-                    ) : (
-                      <><span className="grid size-12 place-items-center rounded-lg bg-surface-raised text-primary"><Upload size={23} aria-hidden="true" /></span><p className="mt-3 font-semibold">Drop any file here</p><p className="mt-1 max-w-lg text-sm leading-6 text-muted">Every original up to 20 MB is preserved. Documents, spreadsheets, slides, PDFs, images, audio, video, email, calendar files, and common code or text files are indexed with format-aware evidence; unsupported formats stay available in your library.</p><div className="mt-4 flex flex-wrap justify-center gap-2"><button type="button" onClick={() => inputRef.current?.click()} className="primary-button"><Paperclip size={15} aria-hidden="true" />Choose file</button><button type="button" onClick={() => cameraInputRef.current?.click()} className="action-button"><ScanLine size={15} aria-hidden="true" />Scan with camera</button></div></>
-                    )}
+                  <div
+                    onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+                    onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }}
+                    onDragLeave={(event) => { if (event.currentTarget === event.target) setDragging(false); }}
+                    onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFiles([...event.dataTransfer.files]); }}
+                    className={clsx("flex min-h-52 flex-col items-center justify-center rounded-lg border border-dashed px-5 py-8 text-center transition-colors", dragging ? "border-primary bg-primary/5" : "border-line bg-background")}
+                    data-daybook="batch-dropzone"
+                  >
+                    <span className="grid size-12 place-items-center rounded-lg bg-surface-raised text-primary"><FileStack size={23} aria-hidden="true" /></span>
+                    <p className="mt-3 font-semibold">Drop a document set here</p>
+                    <p className="mt-1 max-w-xl text-sm leading-6 text-muted">Add up to 50 files at once, 5 MB each. PDF, DOCX, TXT, Markdown, SRT and VTT transcripts are extracted, embedded, and linked to memory independently, so one failed file will not stop the batch.</p>
+                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                      <button type="button" onClick={() => inputRef.current?.click()} className="primary-button"><Paperclip size={15} aria-hidden="true" />Choose files</button>
+                      <button type="button" onClick={() => cameraInputRef.current?.click()} className="action-button"><ScanLine size={15} aria-hidden="true" />Scan with camera</button>
+                    </div>
                   </div>
-                  <label className="mt-4 block text-xs font-semibold text-muted">Capture note <span className="font-normal">(optional)</span><textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} rows={3} placeholder="Why this matters, what to remember, or how Asael should use it…" className="mt-2 w-full resize-y rounded-lg border border-line bg-background px-3 py-3 text-sm leading-6 text-foreground outline-none focus:border-primary" /></label>
+                  {batchItems.length ? (
+                    <div className="mt-5" data-daybook="batch-queue" aria-label="Document upload queue">
+                      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line pb-3">
+                        <div><p className="text-sm font-semibold">{batchItems.length} file{batchItems.length === 1 ? "" : "s"} in this batch</p><p className="mt-1 text-xs text-muted">{batchCounts.selected} ready · {batchCounts.processing} processing · {batchCounts.completed} indexed · {batchCounts.attention} need attention</p></div>
+                        <div className="flex gap-2">
+                          <button type="button" onClick={() => inputRef.current?.click()} className="action-button"><Upload size={14} aria-hidden="true" />Add more</button>
+                          {batchCounts.finished ? <button type="button" onClick={clearFinishedBatchItems} className="action-button">Clear finished</button> : null}
+                        </div>
+                      </div>
+                      <ul className="max-h-80 divide-y divide-line overflow-y-auto" aria-live="polite">
+                        {batchItems.map((item) => (
+                          <li key={item.id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3" data-daybook="batch-item">
+                            <span className={clsx("grid size-9 place-items-center rounded-md", batchStatusTone(item.status))}>{batchStatusIcon(item.status)}</span>
+                            <div className="min-w-0"><p className="truncate text-sm font-medium">{item.file.name}</p><p className="mt-0.5 text-xs text-muted">{formatBytes(item.file.size)} · {batchStatusLabel(item.status)}</p>{item.error ? <p className="mt-1 text-xs leading-5 text-danger">{item.error}</p> : null}</div>
+                            {item.status === "failed" ? (
+                              <button type="button" onClick={() => retryBatchItem(item.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Retry ${item.file.name}`}><RefreshCw size={14} aria-hidden="true" /></button>
+                            ) : ["selected", "completed", "offline", "stored"].includes(item.status) ? (
+                              <button type="button" onClick={() => removeBatchItem(item.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Remove ${item.file.name} from batch`}><X size={15} aria-hidden="true" /></button>
+                            ) : <span className="size-9" aria-hidden="true" />}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  <label className="mt-4 block text-xs font-semibold text-muted">Batch note <span className="font-normal">(optional · added to every file)</span><textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={20_000} rows={3} placeholder="Example: ICT course transcripts — preserve the lesson structure and trading terminology." className="mt-2 w-full resize-y rounded-lg border border-line bg-background px-3 py-3 text-sm leading-6 text-foreground outline-none focus:border-primary" /></label>
                 </div>
               )}
 
               <div className="grid gap-3 border-t border-line bg-background px-5 py-4 sm:grid-cols-2 sm:px-6">
-                <label className="text-xs font-semibold text-muted">Title<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} placeholder="Optional — created automatically when blank" className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary" /></label>
-                <label className="text-xs font-semibold text-muted">Tags<input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="project, meeting, decision" className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary" /></label>
+                <label className="text-xs font-semibold text-muted">Title<input value={title} onChange={(event) => setTitle(event.target.value)} disabled={mode === "upload" && batchItems.length > 1} maxLength={240} placeholder={mode === "upload" && batchItems.length > 1 ? "Each filename becomes its document title" : "Optional — created automatically when blank"} className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60" /></label>
+                <label className="text-xs font-semibold text-muted">Tags <span className="font-normal">{mode === "upload" ? "(applied to the full batch)" : ""}</span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder={mode === "upload" ? "ict-course, transcript, trading" : "project, meeting, decision"} className="mt-2 w-full rounded-md border border-line bg-surface px-3 py-3 text-sm text-foreground outline-none focus:border-primary" /></label>
               </div>
               <div className="flex flex-col gap-3 border-t border-line px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-                <p className="text-xs leading-5 text-muted">Stored privately · redacted before indexing · selectable in Command context</p>
-                <button type="submit" disabled={submitting || Boolean(captureBlocked)} title={captureBlocked} className="primary-button min-w-40">{submitting ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}{submitting ? "Storing…" : "Store and index"}</button>
+                <p className="text-xs leading-5 text-muted">Private originals · source-aware extraction · RAG, memory and provenance built in the background</p>
+                <button type="submit" disabled={submitting || Boolean(captureBlocked)} title={captureBlocked} className="primary-button min-w-40">{submitting ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}{submitting ? (mode === "upload" ? "Uploading batch…" : "Storing…") : mode === "upload" ? `Process ${batchCounts.selected} file${batchCounts.selected === 1 ? "" : "s"}` : "Store and index"}</button>
               </div>
             </div>
           )}
 
-          <input ref={inputRef} data-testid="capture-file-input" type="file" className="sr-only" aria-label="Choose a file to capture" onChange={(event) => chooseFile(event.target.files?.[0])} />
-          <input ref={cameraInputRef} type="file" className="sr-only" aria-label="Scan an image with the camera" accept="image/*" capture="environment" onChange={(event) => chooseFile(event.target.files?.[0])} />
+          <input ref={inputRef} data-testid="capture-file-input" type="file" multiple className="sr-only" aria-label="Choose files to capture" onChange={(event) => chooseFiles([...(event.target.files || [])])} />
+          <input ref={cameraInputRef} type="file" className="sr-only" aria-label="Scan an image with the camera" accept="image/*" capture="environment" onChange={(event) => chooseFiles(event.target.files?.[0] ? [event.target.files[0]] : [])} />
           {captureNotice ? <p role={captureNotice.tone === "error" ? "alert" : "status"} className={clsx("mt-3 text-sm leading-6", captureNotice.tone === "error" ? "text-danger" : captureNotice.tone === "warning" ? "text-warning" : "text-success")}>{captureNotice.text}</p> : null}
         </form>
 
         <aside className="border-t border-line pt-5 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0" aria-label="Capture processing status" data-daybook="rail">
           <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold">Processing</p><p className="mt-1 text-xs text-muted">What happens after you save</p></div>{loadingWorkspace ? <Loader2 size={16} className="animate-spin text-muted" aria-label="Refreshing capture data" /> : null}</div>
           <ol className="mt-4 space-y-4">
-            <FlowStep number="1" title="Preserve original" detail="The source file or segmented audio is stored first." active={!activeJob || activeJob.status === "queued"} />
-            <FlowStep number="2" title="Extract and understand" detail="Text, OCR, metadata and transcription are normalized." active={activeJob?.status === "running"} />
-            <FlowStep number="3" title="Index and link" detail="RAG chunks, provenance, memory and graph links are created." active={activeJob?.status === "completed"} />
+            <FlowStep number="1" title="Preserve original" detail="Each file is stored independently before indexing." active={batchCounts.uploading > 0 || (!activeJob && !batchItems.length) || activeJob?.status === "queued"} />
+            <FlowStep number="2" title="Extract and understand" detail="Text, OCR, metadata and transcription are normalized." active={batchCounts.queued + batchCounts.running > 0 || activeJob?.status === "running"} />
+            <FlowStep number="3" title="Index and link" detail="RAG chunks, provenance, memory and graph links are created." active={batchCounts.completed > 0 || activeJob?.status === "completed"} />
           </ol>
+          {batchItems.length ? (
+            <div className="mt-5 border-l-2 border-primary bg-primary/5 px-4 py-3" aria-live="polite">
+              <p className="flex items-center gap-2 text-sm font-semibold">{batchCounts.processing ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <FileStack size={15} aria-hidden="true" />}Bulk document queue</p>
+              <p className="mt-1 text-xs leading-5 text-muted">{batchCounts.completed} indexed · {batchCounts.processing} processing · {batchCounts.selected} ready{batchCounts.offline ? ` · ${batchCounts.offline} waiting for connection` : ""}{batchCounts.attention ? ` · ${batchCounts.attention} need attention` : ""}</p>
+              <progress className="mt-3 block h-1.5 w-full overflow-hidden rounded-full" max={Math.max(batchItems.length, 1)} value={batchCounts.finished} aria-label={`${batchCounts.finished} of ${batchItems.length} files finished`} />
+            </div>
+          ) : null}
           {activeJob ? (
             <div className={clsx("mt-5 border-l-2 px-4 py-3", activeJob.status === "failed" ? "border-danger bg-danger/5" : activeJob.status === "completed" ? "border-success bg-success/5" : "border-primary bg-primary/5")}><p className="flex items-center gap-2 text-sm font-semibold">{activeJob.status === "failed" ? <CircleAlert size={15} /> : activeJob.status === "completed" ? <CheckCircle2 size={15} /> : <Loader2 size={15} className="animate-spin" />}{jobLabel(activeJob.status)}</p><p className="mt-1 text-xs leading-5 text-muted">{activeJob.lastError || jobDetail(activeJob)}</p>{activeJob.status === "running" ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full w-2/3 animate-pulse rounded-full bg-primary" /></div> : null}</div>
-          ) : <p className="mt-5 border-l-2 border-line pl-4 text-sm leading-6 text-muted">No active capture. Your latest job will appear here with honest queued, running, ready, or failed status.</p>}
+          ) : !batchItems.length ? <p className="mt-5 border-l-2 border-line pl-4 text-sm leading-6 text-muted">No active capture. Your latest job will appear here with honest queued, running, ready, or failed status.</p> : null}
           <div className="mt-6 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-line pt-5 text-xs">
             <StatusFact icon={Database} label={`${knowledgeStats?.embedded || 0} embedded chunks`} />
             <StatusFact icon={FileStack} label={`${assets.length} originals retained`} />
@@ -474,6 +721,61 @@ function FlowStep({ number, title, detail, active }: { number: string; title: st
 
 function StatusFact({ icon: Icon, label }: { icon: typeof Database; label: string }) {
   return <span className="flex items-center gap-2 text-muted"><Icon size={14} className="shrink-0 text-primary" aria-hidden="true" />{label}</span>;
+}
+
+function batchStatusFromJob(job: CaptureJob): CaptureBatchStatus {
+  if (job.status === "completed") return "completed";
+  if (job.status === "failed" || job.status === "canceled") return "failed";
+  return job.status;
+}
+
+function summarizeBatch(items: readonly CaptureBatchItem[]) {
+  const count = (status: CaptureBatchStatus) => items.filter((item) => item.status === status).length;
+  const selected = count("selected");
+  const uploading = count("uploading");
+  const queued = count("queued");
+  const running = count("running");
+  const completed = count("completed");
+  const offline = count("offline");
+  const stored = count("stored");
+  const failed = count("failed");
+  return {
+    selected,
+    uploading,
+    queued,
+    running,
+    completed,
+    offline,
+    attention: stored + failed,
+    processing: uploading + queued + running,
+    finished: completed + offline + stored + failed,
+  };
+}
+
+function batchStatusLabel(status: CaptureBatchStatus) {
+  if (status === "selected") return "Ready to upload";
+  if (status === "uploading") return "Preserving original";
+  if (status === "queued") return "Queued for RAG and memory";
+  if (status === "running") return "Building RAG and memory";
+  if (status === "completed") return "Indexed and ready in Command";
+  if (status === "offline") return "Saved on this device; waiting to sync";
+  if (status === "stored") return "Original stored; not indexed";
+  return "Needs attention";
+}
+
+function batchStatusTone(status: CaptureBatchStatus) {
+  if (status === "completed") return "bg-success/10 text-success";
+  if (status === "failed" || status === "stored") return "bg-warning/10 text-warning";
+  if (["uploading", "queued", "running"].includes(status)) return "bg-primary/10 text-primary";
+  return "bg-background text-muted";
+}
+
+function batchStatusIcon(status: CaptureBatchStatus) {
+  if (status === "completed") return <CheckCircle2 size={16} aria-hidden="true" />;
+  if (status === "failed" || status === "stored") return <CircleAlert size={16} aria-hidden="true" />;
+  if (status === "offline") return <HardDrive size={16} aria-hidden="true" />;
+  if (["uploading", "queued", "running"].includes(status)) return <Loader2 size={16} className="animate-spin" aria-hidden="true" />;
+  return <FileText size={16} aria-hidden="true" />;
 }
 
 function formatBytes(bytes: number) {
