@@ -25,6 +25,15 @@ describe("personal-context consent migration", () => {
       expect(sql).toContain("omni_actor_scope_v1_allows_canonical");
       expect(sql).toContain("FORCE ROW LEVEL SECURITY");
       expect(sql).toContain("Personal-context consent history is immutable");
+      expect(sql).toContain(
+        "REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_runtime",
+      );
+      expect(sql).toContain(
+        "REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_maintenance",
+      );
+      expect(sql).toContain(
+        "REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_backup",
+      );
       expect(sql).not.toMatch(/GRANT\s+(?:ALL|DELETE|TRUNCATE)\b/i);
     }
     expect(migration).toContain("personal_context_consent_v1");

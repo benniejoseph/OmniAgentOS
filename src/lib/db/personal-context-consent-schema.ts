@@ -264,12 +264,16 @@ export const PERSONAL_CONTEXT_CONSENT_SCHEMA_SQL = `
   DO $grants$
   BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+      EXECUTE
+        'REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_runtime';
       GRANT SELECT, INSERT ON omni_personal_context_consents TO omni_runtime;
       GRANT UPDATE (
         state, lifecycle_revision, revoked_by_actor_id, revoked_at, updated_at
       ) ON omni_personal_context_consents TO omni_runtime;
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+      EXECUTE
+        'REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_maintenance';
       GRANT SELECT, INSERT ON omni_personal_context_consents
         TO omni_maintenance;
       GRANT UPDATE (
@@ -277,6 +281,8 @@ export const PERSONAL_CONTEXT_CONSENT_SCHEMA_SQL = `
       ) ON omni_personal_context_consents TO omni_maintenance;
     END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup') THEN
+      EXECUTE
+        'REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_backup';
       GRANT SELECT ON omni_personal_context_consents TO omni_backup;
     END IF;
   END

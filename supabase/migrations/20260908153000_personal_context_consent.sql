@@ -255,18 +255,24 @@ REVOKE ALL ON FUNCTION omni_protect_personal_context_consent() FROM PUBLIC;
 DO $grants$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+    EXECUTE
+      'REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_runtime';
     GRANT SELECT, INSERT ON omni_personal_context_consents TO omni_runtime;
     GRANT UPDATE (
       state, lifecycle_revision, revoked_by_actor_id, revoked_at, updated_at
     ) ON omni_personal_context_consents TO omni_runtime;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+    EXECUTE
+      'REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_maintenance';
     GRANT SELECT, INSERT ON omni_personal_context_consents TO omni_maintenance;
     GRANT UPDATE (
       state, lifecycle_revision, revoked_by_actor_id, revoked_at, updated_at
     ) ON omni_personal_context_consents TO omni_maintenance;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup') THEN
+    EXECUTE
+      'REVOKE ALL ON TABLE omni_personal_context_consents FROM omni_backup';
     GRANT SELECT ON omni_personal_context_consents TO omni_backup;
   END IF;
 END
@@ -300,7 +306,7 @@ INSERT INTO omni_schema_version (version, name, checksum, applied_at)
 VALUES (
   148,
   'personal_context_consent_v1',
-  '4ab1e810484efcb03640d6938d7a4077e7c8b6eecfc435b2c879a0833ad811d6',
+  'e41c0aa8ef3d49aa2b29da415d2ca37d4d1eeef3d36fe338cb1fffa2a6a48e0d',
   clock_timestamp()
 );
 
