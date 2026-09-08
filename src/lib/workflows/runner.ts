@@ -941,6 +941,13 @@ async function executeStep(
 ) {
   throwIfAborted(abortSignal);
   const runBudget = budget || createWorkflowBudgetSession(detail);
+  if (
+    detail.run.input.metadata?.contextScope === "personal" &&
+    stepKey !== "preflight" &&
+    stepKey !== "retrieve_context"
+  ) {
+    await workflowDurableContextForRun(detail);
+  }
   if (stepKey === "preflight") {
     await runBudget.reserve({ agents: 1 }, { phase: "workflow.preflight" });
     const runtimeModel = await resolveWorkflowRuntimeModel(detail);
