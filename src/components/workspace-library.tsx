@@ -266,7 +266,7 @@ function WorkspaceLibraryCard({ item, compact }: { item: WorkspaceLibraryItem; c
       {item.summary ? <p className={clsx("mt-3 text-xs leading-5 text-muted", compact ? "line-clamp-2" : "line-clamp-3")}>{item.summary}</p> : null}
       <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] text-muted">
         <span className="rounded bg-surface-raised px-2 py-1">v{item.currentVersion.versionNumber} / {item.versionCount}</span>
-        <span className="rounded bg-surface-raised px-2 py-1">{formatBytes(item.currentVersion.byteCount)}</span>
+        <span className="rounded bg-surface-raised px-2 py-1">{workspaceLibraryVersionSize(item.currentVersion)}</span>
         <span className="rounded bg-surface-raised px-2 py-1">{scopeLabel(item.scope.visibility)}</span>
       </div>
       <div className="mt-3 min-w-0 border-t border-line pt-3">
@@ -287,6 +287,12 @@ function WorkspaceLibraryCard({ item, compact }: { item: WorkspaceLibraryItem; c
       </div>
     </article>
   );
+}
+
+export function workspaceLibraryVersionSize(version: WorkspaceLibraryItem["currentVersion"]) {
+  return version.mediaType === "application/x.asael-source-metadata"
+    ? "Metadata only"
+    : formatBytes(version.byteCount);
 }
 
 export function workspaceLibraryQueryHref(input: {

@@ -580,6 +580,8 @@ export function sourceItemLibraryItem(row: SqlRow): WorkspaceLibraryItem {
   const sourceKind = text(row.source_kind);
   const kind = kindFromSourceKind(sourceKind);
   const connectionId = text(row.connection_id, "connected_source");
+  const adapterId = text(row.adapter_id);
+  const connectedSourceLabel = sourceLabel(connectionId, adapterId);
   const versionCount = Math.max(1, integer(row.version_count, 1));
   const knowledgeDocumentId = optionalText(row.knowledge_document_id_joined);
   const workspaceId = optionalText(row.workspace_id);
@@ -588,7 +590,7 @@ export function sourceItemLibraryItem(row: SqlRow): WorkspaceLibraryItem {
   const title = safeText(
     row.knowledge_title,
     240,
-    `${kindLabel(kind)} from ${sourceLabel(connectionId)}`,
+    `${kindLabel(kind)} from ${connectedSourceLabel}`,
   );
   return parseWorkspaceLibraryItem({
     schemaVersion: 1,
@@ -598,8 +600,10 @@ export function sourceItemLibraryItem(row: SqlRow): WorkspaceLibraryItem {
     sourceAuthority: "source_item",
     sourceId: id,
     title,
-    summary: `${kindLabel(kind)} · ${versionCount} version${versionCount === 1 ? "" : "s"} · source-backed`,
-    sourceLabel: sourceLabel(connectionId),
+    summary: mimeType(row.media_type) === "application/x.asael-source-metadata"
+      ? `${kindLabel(kind)} metadata · ${versionCount} version${versionCount === 1 ? "" : "s"} · source-backed`
+      : `${kindLabel(kind)} · ${versionCount} version${versionCount === 1 ? "" : "s"} · source-backed`,
+    sourceLabel: connectedSourceLabel,
     status: "ready",
     tags: [sourceKind, "connected-source"],
     scope: sourceScope({
@@ -791,12 +795,13 @@ function kindLabel(kind: WorkspaceLibraryKind) {
     : kind.charAt(0).toUpperCase() + kind.slice(1).replaceAll("_", " ");
 }
 
-function sourceLabel(connectionId: string) {
-  if (connectionId.includes("google") && connectionId.includes("mail")) return "Google Mail";
-  if (connectionId.includes("google") && connectionId.includes("calendar")) return "Google Calendar";
-  if (connectionId.includes("google") && connectionId.includes("drive")) return "Google Drive";
-  if (connectionId.includes("google")) return "Google";
-  if (connectionId.includes("capture")) return "Capture";
+function sourceLabel(connectionId: string, adapterId = "") {
+  const identity = `${connectionId} ${adapterId}`.toLowerCase();
+  if (identity.includes("google") && identity.includes("mail")) return "Google Mail";
+  if (identity.includes("google") && identity.includes("calendar")) return "Google Calendar";
+  if (identity.includes("google") && identity.includes("drive")) return "Google Drive";
+  if (identity.includes("google")) return "Google";
+  if (identity.includes("capture")) return "Capture";
   return safeText(connectionId.replace(/[._:-]+/g, " "), 120, "Connected source");
 }
 

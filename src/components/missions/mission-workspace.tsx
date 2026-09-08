@@ -287,7 +287,7 @@ const BOARD_COLUMNS: BoardColumn[] = [
   { id: "working", title: "Working", description: "Work in progress" },
   { id: "needs-you", title: "Needs you", description: "Input required" },
   { id: "review", title: "Review", description: "Evidence ready" },
-  { id: "done", title: "Done", description: "Terminal work" },
+  { id: "done", title: "Closed", description: "Completed, failed, or canceled" },
 ];
 
 export function MissionWorkspace({
@@ -1403,11 +1403,11 @@ export function MissionWorkspace({
               </div>
               <div className={styles.missionLinks}>{!commandActionBlocked ? <Link href={talkHref(selectedMission)} onClick={(event) => { const blockedReason = currentCommandActionBlocked(selectedMission.id); if (blockedReason) { event.preventDefault(); setError(blockedReason); } }}><Bot size={14} aria-hidden="true" /> Continue in Command</Link> : null}<Link href="/app/approvals"><ShieldCheck size={14} aria-hidden="true" /> Approvals</Link></div>
             </section>
-            <div className={styles.metrics} aria-label="Mission task overview"><span><strong>{tasks.length}</strong> tasks</span><span><strong>{workingCount}</strong> working</span><span><strong>{attentionCount}</strong> need attention</span><span><strong>{doneCount}</strong> done</span><span className={styles.ledgerSignal}><i aria-hidden="true" /> Ledger live</span></div>
+            <div className={styles.metrics} aria-label="Mission task overview"><span><strong>{tasks.length}</strong> tasks</span><span><strong>{workingCount}</strong> working</span><span><strong>{attentionCount}</strong> need attention</span><span><strong>{doneCount}</strong> closed</span><span className={styles.ledgerSignal}><i aria-hidden="true" /> Ledger live</span></div>
             <div className={styles.toolbar}>
               <label className={styles.searchField}><span className="sr-only">Search tasks</span><Search size={14} aria-hidden="true" /><input value={search} onChange={(event) => setSearch(event.currentTarget.value)} placeholder="Search tasks" />{search ? <button type="button" onClick={() => setSearch("")} aria-label="Clear search"><X size={13} aria-hidden="true" /></button> : null}</label>
               <label className={styles.filterField}><UserRound size={13} aria-hidden="true" /><span className="sr-only">Filter by assignee</span><select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.currentTarget.value)}><option value="all">All agents</option><option value="unassigned">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
-              <label className={styles.filterField}><CircleDot size={13} aria-hidden="true" /><span className="sr-only">Filter by task state</span><select value={taskFilter} onChange={(event) => setTaskFilter(event.currentTarget.value as TaskFilter)}><option value="all">All states</option><option value="open">Open work</option><option value="attention">Needs attention</option><option value="done">Done</option></select></label>
+              <label className={styles.filterField}><CircleDot size={13} aria-hidden="true" /><span className="sr-only">Filter by task state</span><select value={taskFilter} onChange={(event) => setTaskFilter(event.currentTarget.value as TaskFilter)}><option value="all">All states</option><option value="open">Open work</option><option value="attention">Needs attention</option><option value="done">Closed</option></select></label>
               <div className={styles.viewSwitch} role="group" aria-label="Mission view"><ViewButton active={view === "board"} label="Board" onClick={() => setView("board")} icon={<Columns3 size={14} />} /><ViewButton active={view === "canvas"} label="Canvas" onClick={() => setView("canvas")} icon={<GitBranch size={14} />} /><ViewButton active={view === "list"} label="List" onClick={() => setView("list")} icon={<LayoutList size={14} />} /></div>
               <button type="button" className={styles.toolbarAdd} onClick={() => setShowTaskCreate(true)} disabled={Boolean(taskActionBlocked)} title={taskActionBlocked}><Plus size={14} aria-hidden="true" /> New task</button>
             </div>
@@ -1485,7 +1485,7 @@ function TaskCard({ task, allTasks, detail, agents, asOf, onSelect }: { task: Bo
   return <button type="button" className={styles.taskCard} onClick={onSelect} aria-label={`Open ${task.title}`}>
     <span className={styles.cardTopline}><span className={clsx(styles.priority, priorityClass(task.priority))}>{task.priority}</span><span className={styles.cardAge}>{relativeTime(task.updatedAt, asOf)}</span></span>
     <strong className={styles.cardTitle}>{task.title}</strong>
-    {taskCue(task, column) ? <span className={clsx(styles.taskCue, cueClass(column))}>{taskCue(task, column)}</span> : null}
+    {taskCue(task, column) ? <span className={clsx(styles.taskCue, taskCueClass(task, column))}>{taskCue(task, column)}</span> : null}
     <span className={styles.assignee}><span aria-hidden="true">{initials(assignee)}</span><b>{assignee}</b></span>
     <span className={styles.cardFooter}>{dependency.total ? <span title="Completed dependencies"><GitBranch size={12} aria-hidden="true" /> {dependency.done}/{dependency.total}</span> : null}{attempts.length ? <span title={`${attempts.length} attempts, ${retries} retries`}><RefreshCw size={12} aria-hidden="true" /> {attempts.length}a · {retries}r</span> : null}{comments.length ? <span title="Comments"><MessageSquare size={12} aria-hidden="true" /> {comments.length}</span> : null}{task.workItem.artifacts.count ? <span title="Canonical artifacts"><Paperclip size={12} aria-hidden="true" /> {task.workItem.artifacts.count}</span> : null}<span title={canonicalWorkItemCostLabel(task.workItem.cost)}><CircleDollarSign size={12} aria-hidden="true" /> {compactWorkItemCost(task)}</span></span>
   </button>;
@@ -1498,7 +1498,7 @@ function TaskCanvas({ tasks, allTasks, agents, onSelectTask }: { tasks: BoardTas
     <div className={styles.graphLegend}><span><i /> Parent or dependency link</span><span>Left to right execution order</span></div>
     <div className={styles.graph} style={{ width: graph.width, height: graph.height }}>
       <svg className={styles.graphEdges} width={graph.width} height={graph.height} aria-hidden="true"><defs><marker id="mission-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" /></marker></defs>{graph.edges.map((edge) => <path key={`${edge.from}-${edge.to}`} d={edge.path} markerEnd="url(#mission-arrow)" />)}</svg>
-      {graph.nodes.map((node) => { const assignee = taskAssigneeLabel(node.task, agents); const column = boardColumnForTask(node.task, allTasks); return <button key={node.task.id} type="button" className={styles.graphNode} style={{ left: node.x, top: node.y }} onClick={() => onSelectTask(node.task)}><span><i className={columnToneClass(column)} aria-hidden="true" />{boardColumnLabel(column)}</span><strong>{node.task.title}</strong><small>{assignee} · {node.task.priority}</small></button>; })}
+      {graph.nodes.map((node) => { const assignee = taskAssigneeLabel(node.task, agents); const column = boardColumnForTask(node.task, allTasks); return <button key={node.task.id} type="button" className={styles.graphNode} style={{ left: node.x, top: node.y }} onClick={() => onSelectTask(node.task)}><span><i className={taskToneClass(node.task, column)} aria-hidden="true" />{boardColumnLabel(column)}</span><strong>{node.task.title}</strong><small>{assignee} · {node.task.priority}</small></button>; })}
     </div>
   </section>;
 }
@@ -1507,7 +1507,7 @@ function TaskList({ tasks, allTasks, agents, asOf, onSelectTask }: { tasks: Boar
   if (!tasks.length) return <FilteredEmpty icon={<LayoutList size={22} />} title="No matching tasks" body="Change the filters or add a task to this mission." />;
   return <div className={styles.listViewport}><table className={styles.taskTable}><thead><tr><th>Task</th><th>State</th><th>Assignee</th><th>Progress</th><th>Artifacts</th><th>AI cost</th><th>Updated</th></tr></thead><tbody>{tasks.map((task) => {
     const dependency = dependencyProgress(task, allTasks); const column = boardColumnForTask(task, allTasks);
-    return <tr key={task.id}><td><button type="button" onClick={() => onSelectTask(task)}><strong>{task.title}</strong><small>{task.definitionOfDone || task.instructions || "Outcome not defined"}</small></button></td><td><span className={styles.tableState}><i className={columnToneClass(column)} aria-hidden="true" />{canonicalWorkItemStatusLabel(task.workItem.status.status)}</span></td><td>{taskAssigneeLabel(task, agents)}</td><td title={dependency.total ? `${dependency.done} of ${dependency.total} dependencies complete` : undefined}>{workItemProgressLabel(task)}</td><td>{task.workItem.artifacts.count}</td><td title={canonicalWorkItemCostLabel(task.workItem.cost)}>{compactWorkItemCost(task)}</td><td>{relativeTime(task.updatedAt, asOf)}</td></tr>;
+    return <tr key={task.id}><td><button type="button" onClick={() => onSelectTask(task)}><strong>{task.title}</strong><small>{task.definitionOfDone || task.instructions || "Outcome not defined"}</small></button></td><td><span className={styles.tableState}><i className={taskToneClass(task, column)} aria-hidden="true" />{canonicalWorkItemStatusLabel(task.workItem.status.status)}</span></td><td>{taskAssigneeLabel(task, agents)}</td><td title={dependency.total ? `${dependency.done} of ${dependency.total} dependencies complete` : undefined}>{workItemProgressLabel(task)}</td><td>{task.workItem.artifacts.count}</td><td title={canonicalWorkItemCostLabel(task.workItem.cost)}>{compactWorkItemCost(task)}</td><td>{relativeTime(task.updatedAt, asOf)}</td></tr>;
   })}</tbody></table></div>;
 }
 
@@ -1593,7 +1593,7 @@ function TaskDrawer({ task, allTasks, detail, agents, agentNames, asOf, busy, di
   function toggleDependency(id: string) { setDependencyIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]); }
   return <div className={styles.drawerBackdrop} onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className={styles.drawer} role="dialog" aria-modal="true" aria-labelledby="task-drawer-title">
     <header className={styles.drawerHeader}><div><p>Task details</p><h2 id="task-drawer-title">{task.title}</h2></div><button ref={closeRef} type="button" onClick={onClose} aria-label="Close task details"><X size={17} /></button></header>
-    <div className={styles.drawerStatus}><span><i className={columnToneClass(column)} aria-hidden="true" />{canonicalWorkItemStatusLabel(task.workItem.status.status)}</span><span>{taskAssigneeLabel(task, agentNames)}</span><span>{workItemProgressLabel(task)}</span><span title={canonicalWorkItemCostLabel(task.workItem.cost)}>{compactWorkItemCost(task)}</span><span>Updated {relativeTime(task.updatedAt, asOf)}</span></div>
+    <div className={styles.drawerStatus}><span><i className={taskToneClass(task, column)} aria-hidden="true" />{canonicalWorkItemStatusLabel(task.workItem.status.status)}</span><span>{taskAssigneeLabel(task, agentNames)}</span><span>{workItemProgressLabel(task)}</span><span title={canonicalWorkItemCostLabel(task.workItem.cost)}>{compactWorkItemCost(task)}</span><span>Updated {relativeTime(task.updatedAt, asOf)}</span></div>
     {disabledReason ? <div className={styles.drawerError} role="status"><ShieldCheck size={14} aria-hidden="true" /><span>{disabledReason}</span></div> : null}
     {error ? <div className={styles.drawerError} role="alert"><CircleAlert size={14} aria-hidden="true" /><span>{error}</span></div> : null}
     <form className={styles.taskForm} onSubmit={save}>
@@ -1698,9 +1698,11 @@ function missionWorkItemStatusLabel(mission: MissionSummaryView) {
   return canonicalWorkItemStatusLabel(missionWorkItemStatus(mission));
 }
 function statusToneClass(status: string) { if (["running", "succeeded", "completed", "approved"].includes(status)) return styles.toneGood; if (["waiting", "blocked", "queued", "review"].includes(status)) return styles.toneAttention; if (["failed", "canceled"].includes(status)) return styles.toneDanger; return styles.toneNeutral; }
-function columnToneClass(column: BoardColumnId) { if (["working", "done"].includes(column)) return styles.toneGood; if (["waiting", "needs-you", "review"].includes(column)) return styles.toneAttention; if (column === "ready") return styles.toneReady; return styles.toneNeutral; }
+function columnToneClass(column: BoardColumnId) { if (column === "working") return styles.toneGood; if (["waiting", "needs-you", "review"].includes(column)) return styles.toneAttention; if (column === "ready") return styles.toneReady; return styles.toneNeutral; }
+function taskToneClass(task: BoardTask, column: BoardColumnId) { const status = task.workItem?.status.status || task.workItemStatus?.status || task.canonicalStatus.status; return ["failed", "canceled", "unverified"].includes(status) ? styles.toneDanger : status === "succeeded" || task.status === "completed" ? styles.toneGood : columnToneClass(column); }
 function priorityClass(priority: string) { if (priority === "urgent") return styles.priorityUrgent; if (priority === "high") return styles.priorityHigh; if (priority === "low") return styles.priorityLow; return styles.priorityNormal; }
 function cueClass(column: BoardColumnId) { if (["needs-you", "review", "waiting"].includes(column)) return styles.cueAttention; if (column === "done") return styles.cueDone; return styles.cueNeutral; }
+function taskCueClass(task: BoardTask, column: BoardColumnId) { const status = task.workItem?.status.status || task.workItemStatus?.status || task.canonicalStatus.status; return ["failed", "canceled", "unverified"].includes(status) ? styles.toneDanger : cueClass(column); }
 function boardColumnLabel(column: BoardColumnId) { return BOARD_COLUMNS.find((item) => item.id === column)?.title || "Inbox"; }
 
 function boardColumnForTask(task: BoardTask, allTasks: BoardTask[]): BoardColumnId {

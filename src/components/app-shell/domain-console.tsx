@@ -613,6 +613,9 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
               (item) =>
                 !["gmail", "google-drive", "google-calendar"].includes(
                   stringValue(item.id),
+                ) && !catalogConnectorInstalled(
+                  item,
+                  arrayPath(data, "connectors.connectors"),
                 ),
             )
             .map((item) => ({
@@ -742,7 +745,6 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       { key: "evaluations", label: "Evaluation runs", path: "/api/evaluations?limit=12" },
       { key: "failureFeedback", label: "Failure feedback", path: "/api/evaluations/failure-feedback?limit=50" },
       { key: "release", label: "Release evidence", path: "/api/release/evidence" },
-      { key: "isolation", label: "Tenant isolation", path: "/api/security/isolation-report" },
     ],
     metrics: [
       { label: "Eval runs", description: "Recorded suite executions", value: (data) => numberPath(data, "evaluations.stats.total") },
@@ -750,7 +752,7 @@ const domainConfigs: Record<DomainConsoleKey, DomainConfig> = {
       { label: "Recurring", description: "Active repeated failure categories", value: (data) => numberPath(data, "failureFeedback.summary.activeRecurring"), tone: "warning" },
       { label: "Rule review", description: "Inactive harness proposals awaiting review", value: (data) => numberPath(data, "failureFeedback.summary.proposedRules"), tone: "warning" },
       { label: "Release gate", description: "Current production readiness", value: (data) => stringPath(data, "release.report.releaseGate.status", "unknown"), tone: "success" },
-      { label: "Isolation", description: "Tenant data boundary proof", value: (data) => stringPath(data, "isolation.report.status", "unknown") },
+      { label: "Isolation", description: "Tenant data boundary proof", value: (data) => stringPath(data, "release.report.tenantIsolation.status", "unknown") },
     ],
     flow: [
       { title: "Select", body: "Choose cases by safety mode, suite, or release gate.", icon: Search },
@@ -2179,6 +2181,30 @@ export function isConnectorReviewable(connector: JsonRecord) {
   );
 }
 
+export function catalogConnectorInstalled(
+  catalogConnector: JsonRecord,
+  installedConnectors: JsonRecord[],
+) {
+  const catalogId = textValue(catalogConnector.id).toLowerCase();
+  const catalogEndpoint = textValue(
+    catalogConnector.endpoint || catalogConnector.url,
+  ).toLowerCase();
+  return installedConnectors.some((connector) => {
+    const endpoint = textValue(connector.endpoint || connector.url).toLowerCase();
+    if (catalogEndpoint && endpoint === catalogEndpoint) return true;
+    const identity = [connector.id, connector.name, endpoint]
+      .map((value) => textValue(value).toLowerCase())
+      .join(" ");
+    if (catalogId === "github") return identity.includes("github");
+    if (catalogId === "browser-automation") {
+      return identity.includes("playwright") || identity.includes("browser automation");
+    }
+    const normalizedCatalogId = catalogId.replace(/[^a-z0-9]+/g, "");
+    return Boolean(normalizedCatalogId) &&
+      identity.replace(/[^a-z0-9]+/g, "").includes(normalizedCatalogId);
+  });
+}
+
 function connectorContractLabel(
   contract: JsonRecord,
   kind: "mcp" | "openapi",
@@ -2320,7 +2346,7 @@ const metricResourceKeys: Record<DomainConsoleKey, Record<string, string>> = {
     Recurring: "failureFeedback",
     "Rule review": "failureFeedback",
     "Release gate": "release",
-    Isolation: "isolation",
+    Isolation: "release",
   },
   monitoring: {
     Events: "observability",
