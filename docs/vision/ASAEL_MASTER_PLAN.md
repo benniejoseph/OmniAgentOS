@@ -724,8 +724,11 @@ sibling actor, Agent, Project, Workspace, tenant, and access-binding scopes.
 by canonical membership before ranking in both direct Conversation and durable
 workflow planning, retrieval, and replanning. Durable workers revalidate that
 membership and the reviewed authority digest before every disclosure.
-Automatic personal context, durable Agent-private context, and Loop v2 context
-integration remain held, so P4.1 and P4.2 are not yet complete.
+Durable Agent-private plans and runs similarly bind the exact assigned Agent
+principal, re-resolve its current identity and grants before every disclosure,
+and use only the coordinate-free Agent-private database lane. Automatic
+personal context and Loop v2 context integration remain held, so P4.1 and P4.2
+are not yet complete.
 
 ### Phase 5 — Graph Engineering
 
@@ -2414,6 +2417,17 @@ protocol 1, the exact activation marker, and all worker lanes are healthy.
 P4.1/P4.2 retain their separately declared authority work; P12/P13 remain
 deferred. P5.2 is already complete in the later recorded slices below; the
 next actionable master-plan slice is P5.3 bitemporal claims and typed relations.
+
+Durable Agent-private context is production-active at exact code revision
+`c45b3294ce47a0880b3c920408dccc21d626994c`. A reviewed plan names the assigned
+Agent and stores only a content-free authority digest. Start resolves the
+current immutable definition and principal, rejects caller-supplied authority
+metadata, binds the exact grants to the workflow root, and persists a private
+digest-bound envelope. Retrieval and every plan or replan re-resolve that
+identity and fail closed on definition, principal, grant, expiry, root, or plan
+drift. The database scope contains only the authenticated actor and Agent
+principal with null Workspace, Project, and Mission coordinates. Automatic
+personal context and Loop v2 context integration remain the Phase 4 gaps.
 
 P5.1 is complete, and the first safe P5.2 foundation is deployed without
 replacing the current graph UI. `asael-ontology:1` pins the 17 planned entity
