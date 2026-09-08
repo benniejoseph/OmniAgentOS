@@ -415,6 +415,49 @@ test("Today captures and reversibly completes a focus item", async ({ page }) =>
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test("Today explains trusted data and keeps the agenda aligned", async ({ page }) => {
+  const readinessRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/workspace-readiness") {
+      readinessRequests.push(request.url());
+    }
+  });
+
+  await signIn(page);
+  await expect(page.getByRole("heading", { name: "Trusted status" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "What Asael can reliably use" })).toBeVisible();
+  await expect(page.getByText("Setup and readiness", { exact: true })).toHaveCount(0);
+  expect(readinessRequests).toEqual([]);
+
+  expect(await page.evaluate(() => {
+    const trusted = document.querySelector("#today-projection-status-title")?.closest("section");
+    const usage = document.querySelector("#usage-cockpit-title")?.closest("section");
+    return Boolean(trusted && usage && (trusted.compareDocumentPosition(usage) & Node.DOCUMENT_POSITION_FOLLOWING));
+  })).toBe(true);
+
+  const coverageIsFullWidth = await page.getByRole("heading", {
+    name: "What Asael can reliably use",
+  }).evaluate((heading) => {
+    const panel = heading.closest("section");
+    const parent = panel?.parentElement;
+    if (!panel || !parent) return false;
+    return Math.abs(panel.getBoundingClientRect().width - parent.getBoundingClientRect().width) < 2;
+  });
+  expect(coverageIsFullWidth).toBe(true);
+
+  const timelineItem = page.locator(".today-timeline-item").first();
+  const timeBox = await timelineItem.locator(":scope > span").boundingBox();
+  const copyBox = await timelineItem.locator(":scope > div").boundingBox();
+  expect(timeBox).not.toBeNull();
+  expect(copyBox).not.toBeNull();
+  expect(copyBox!.x - (timeBox!.x + timeBox!.width)).toBeGreaterThan(8);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "Agenda" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test("Today hydrates timestamp labels in a non-UTC browser", async ({ browser, baseURL }) => {
   const context = await browser.newContext({
     baseURL,
@@ -905,338 +948,6 @@ test("Start avoids admin evidence requests on its critical path", async ({
   ).toBeVisible();
   await page.waitForLoadState("networkidle");
   expect(adminRequests).toEqual([]);
-});
-
-test("dashboard presents dismissible first-run readiness without blocking work", async ({ page }) => {
-  test.slow();
-  await signIn(page);
-  await page.route("**/api/workspace-readiness", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        generatedAt: new Date().toISOString(),
-        checks: {
-          identity: true,
-          knowledge: false,
-          connector: false,
-          firstRun: false,
-          evaluation: false,
-        },
-        completedCount: 1,
-        totalCount: 5,
-        firstSuccessfulRun: false,
-      }),
-    }),
-  );
-  await page.setViewportSize({ width: 320, height: 844 });
-  await page.goto("/app");
-  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Start first task" })).toHaveAttribute("href", "/app/command");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
-  await page.getByRole("button", { name: "Dismiss setup for now" }).click();
-  const reopen = page.getByRole("button", { name: "Open setup and readiness" });
-  await expect(reopen).toBeVisible();
-  await expect(reopen).toBeFocused();
-  expect(
-    await page.evaluate(() =>
-      window.localStorage.getItem("asael.workspace-readiness.compact.v1"),
-    ),
-  ).toBe("1");
-
-  await page.reload();
-  await expect(reopen).toBeVisible();
-  await reopen.click();
-  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Dismiss setup for now" })).toBeFocused();
-  expect(
-    await page.evaluate(() =>
-      window.localStorage.getItem("asael.workspace-readiness.compact.v1"),
-    ),
-  ).toBeNull();
-});
-
-test("persisted readiness dismissal survives failed reload", async ({ page }) => {
-  test.slow();
-  await signIn(page);
-  await page.evaluate(() => {
-    window.localStorage.setItem(
-      "asael.workspace-readiness.compact.v1",
-      "1",
-    );
-  });
-  await page.route("**/api/workspace-readiness", (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: "Service Unavailable",
-        message: "Readiness remains temporarily unavailable.",
-      }),
-    }),
-  );
-
-  await page.goto("/app");
-  const reopen = page.getByRole("button", { name: "Open setup and readiness" });
-  await expect(reopen).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Setup readiness could not be loaded" }),
-  ).toBeHidden();
-
-  await reopen.click();
-  await expect(
-    page.getByRole("alert").filter({
-      has: page.getByRole("button", { name: "Retry" }),
-    }),
-  ).toContainText(
-    "Readiness remains temporarily unavailable.",
-  );
-  await expect(page.getByTestId("workspace-readiness-focus")).toBeFocused();
-  expect(
-    await page.evaluate(() =>
-      window.localStorage.getItem("asael.workspace-readiness.compact.v1"),
-    ),
-  ).toBeNull();
-});
-
-test("dashboard keeps readiness compact after first success", async ({ page }) => {
-  test.slow();
-  await signIn(page);
-  await page.route("**/api/workspace-readiness", (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        generatedAt: new Date().toISOString(),
-        checks: {
-          identity: true,
-          knowledge: true,
-          connector: true,
-          firstRun: true,
-          evaluation: false,
-        },
-        completedCount: 4,
-        totalCount: 5,
-        firstSuccessfulRun: true,
-      }),
-    }),
-  );
-
-  await page.goto("/app");
-  const reopen = page.getByRole("button", { name: "Open setup and readiness" });
-  await expect(reopen).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeHidden();
-  await reopen.click();
-  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Dismiss setup for now" })).toBeFocused();
-});
-
-test("readiness failure leaves dashboard usable", async ({ page }) => {
-  test.slow();
-  let requests = 0;
-  await signIn(page);
-  await page.route("**/api/workspace-readiness", (route) => {
-    requests += 1;
-    return route.fulfill({
-      status: requests === 1 ? 503 : 200,
-      contentType: "application/json",
-      body: JSON.stringify(
-        requests === 1
-          ? {
-              error: "Service Unavailable",
-              message: "Readiness is temporarily unavailable.",
-            }
-          : {
-              generatedAt: new Date().toISOString(),
-              checks: {
-                identity: true,
-                knowledge: false,
-                connector: false,
-                firstRun: false,
-                evaluation: false,
-              },
-              completedCount: 1,
-              totalCount: 5,
-              firstSuccessfulRun: false,
-            },
-      ),
-    });
-  });
-
-  await page.goto("/app");
-  const readinessAlert = page.getByRole("alert").filter({
-    has: page.getByRole("button", { name: "Retry" }),
-  });
-  await expect(readinessAlert).toContainText("Readiness is temporarily unavailable.");
-  await expect(
-    page
-      .getByTestId("activity-workspace")
-      .getByRole("link", { name: "Start task", exact: true }),
-  ).toHaveAttribute("href", "/app/command");
-  await readinessAlert.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByTestId("workspace-readiness-focus")).toBeFocused();
-  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
-});
-
-test("readiness rejects malformed success and recovers", async ({ page }) => {
-  test.slow();
-  await signIn(page);
-  let requests = 0;
-  await page.route("**/api/workspace-readiness", (route) => {
-    requests += 1;
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(
-        requests === 1
-          ? { generatedAt: new Date().toISOString(), checks: null }
-          : {
-              generatedAt: new Date().toISOString(),
-              checks: {
-                identity: true,
-                knowledge: false,
-                connector: false,
-                firstRun: false,
-                evaluation: false,
-              },
-              completedCount: 1,
-              totalCount: 5,
-              firstSuccessfulRun: false,
-            },
-      ),
-    });
-  });
-
-  await page.goto("/app");
-  const readinessAlert = page.getByRole("alert").filter({
-    has: page.getByRole("button", { name: "Retry" }),
-  });
-  await expect(readinessAlert).toContainText("Readiness response was invalid.");
-  await expect(
-    page
-      .getByTestId("activity-workspace")
-      .getByRole("link", { name: "Start task", exact: true }),
-  ).toHaveAttribute("href", "/app/command");
-  await readinessAlert.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByTestId("workspace-readiness-focus")).toBeFocused();
-  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
-});
-
-test("readiness preserves stale data and can compact after refresh failure", async ({ page }) => {
-  test.slow();
-  await signIn(page);
-  let requests = 0;
-  await page.route("**/api/workspace-readiness", (route) => {
-    requests += 1;
-    return route.fulfill({
-      status: requests === 1 ? 200 : 503,
-      contentType: "application/json",
-      body: JSON.stringify(
-        requests === 1
-          ? {
-              generatedAt: new Date().toISOString(),
-              checks: {
-                identity: true,
-                knowledge: false,
-                connector: false,
-                firstRun: false,
-                evaluation: false,
-              },
-              completedCount: 1,
-              totalCount: 5,
-              firstSuccessfulRun: false,
-            }
-          : {
-              error: "Service Unavailable",
-              message: "Readiness refresh is temporarily unavailable.",
-            },
-      ),
-    });
-  });
-
-  await page.goto("/app");
-  await expect(page.getByText("1 of 5 readiness checks complete.")).toBeVisible();
-  await page.getByRole("button", { name: "Refresh setup" }).click();
-  const readinessAlert = page.getByRole("alert").filter({
-    has: page.getByRole("button", { name: "Retry" }),
-  });
-  await expect(readinessAlert).toContainText(
-    "Readiness refresh is temporarily unavailable.",
-  );
-  await expect(page.getByText("1 of 5 readiness checks complete.")).toBeVisible();
-
-  await page.getByRole("button", { name: "Dismiss setup for now" }).click();
-  const reopen = page.getByRole("button", { name: "Open setup and readiness" });
-  await expect(reopen).toBeVisible();
-  await expect(reopen).toBeFocused();
-  expect(
-    await page.evaluate(() =>
-      window.localStorage.getItem("asael.workspace-readiness.compact.v1"),
-    ),
-  ).toBe("1");
-});
-
-test("readiness stays outside recurring dashboard refresh", async ({ page }) => {
-  test.slow();
-  await signIn(page);
-  let readinessRequests = 0;
-  let summaryRequests = 0;
-  await page.route("**/api/workspace-readiness", (route) => {
-    readinessRequests += 1;
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        generatedAt: new Date().toISOString(),
-        checks: {
-          identity: true,
-          knowledge: false,
-          connector: false,
-          firstRun: false,
-          evaluation: false,
-        },
-        completedCount: 1,
-        totalCount: 5,
-        firstSuccessfulRun: false,
-      }),
-    });
-  });
-  await page.route("**/api/workspace-summary?*", (route) => {
-    summaryRequests += 1;
-    return route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        summary: {
-          sources: {
-            runs: {
-              status: "ready",
-              data: [
-                {
-                  id: "active-readiness-poll-check",
-                  status: "running",
-                  prompt: "Keep dashboard polling active",
-                  startedAt: new Date().toISOString(),
-                },
-              ],
-            },
-            workflows: { status: "ready", data: [] },
-            approvals: { status: "ready", data: [] },
-          },
-        },
-      }),
-    });
-  });
-
-  await page.goto("/app");
-  await expect(page.getByRole("heading", { name: "Get your workspace ready" })).toBeVisible();
-  // The first summary is server-seeded. An explicit refresh supplies an
-  // active run, then only the lightweight summary poll repeats at 15 seconds.
-  expect(summaryRequests).toBe(0);
-  await page.getByRole("button", { name: "Refresh Today" }).click();
-  await expect.poll(() => summaryRequests).toBe(1);
-  await expect.poll(() => summaryRequests, { timeout: 20_000 }).toBeGreaterThan(1);
-  expect(readinessRequests).toBe(1);
 });
 
 test("workspace summary panels settle independently", async ({ page }) => {

@@ -365,32 +365,16 @@ class _TodayHero extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           Positioned(
-            right: -42,
-            top: -55,
+            right: -58,
+            top: -64,
             child: IgnorePointer(
-              child: Container(
-                width: 176,
-                height: 176,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: scheme.secondary.withValues(alpha: .2),
-                  ),
-                ),
-                child: Center(
-                  child: Container(
-                    width: 116,
-                    height: 116,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: RadialGradient(
-                        colors: [
-                          scheme.secondary.withValues(alpha: .28),
-                          scheme.secondary.withValues(alpha: .06),
-                        ],
-                      ),
-                    ),
-                  ),
+              child: CustomPaint(
+                size: const Size(238, 218),
+                painter: _SolarFieldPainter(
+                  sun: scheme.secondary,
+                  planet: scheme.primary,
+                  space: scheme.onSurface,
+                  surface: scheme.surface,
                 ),
               ),
             ),
@@ -466,7 +450,7 @@ class _TodayHero extends StatelessWidget {
                         ),
                         const SizedBox(height: 9),
                         Text(
-                          'One view of your work, decisions, and recent evidence.',
+                          'One trusted view of your work, decisions, and recent evidence.',
                           style: TextStyle(
                             color: scheme.onSurfaceVariant,
                             fontSize: 13,
@@ -504,6 +488,103 @@ class _TodayHero extends StatelessWidget {
       ),
     );
   }
+}
+
+class _SolarFieldPainter extends CustomPainter {
+  const _SolarFieldPainter({
+    required this.sun,
+    required this.planet,
+    required this.space,
+    required this.surface,
+  });
+
+  final Color sun;
+  final Color planet;
+  final Color space;
+  final Color surface;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width * .54, size.height * .48);
+    final orbitPaint = Paint()
+      ..color = planet.withValues(alpha: .2)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    final farOrbitPaint = Paint()
+      ..color = space.withValues(alpha: .1)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(-.18);
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset.zero, width: 176, height: 72),
+      orbitPaint,
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset.zero, width: 226, height: 106),
+      farOrbitPaint,
+    );
+    canvas.restore();
+
+    final sunRect = Rect.fromCircle(center: center, radius: 44);
+    canvas.drawCircle(center, 55, Paint()..color = sun.withValues(alpha: .08));
+    canvas.drawCircle(
+      center,
+      44,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-.35, -.4),
+          radius: .9,
+          colors: [
+            surface.withValues(alpha: .96),
+            sun.withValues(alpha: .92),
+            sun.withValues(alpha: .52),
+          ],
+          stops: const [0, .42, 1],
+        ).createShader(sunRect),
+    );
+
+    _paintPlanet(canvas, const Offset(31, 77), 11, planet);
+    _paintPlanet(canvas, const Offset(190, 135), 7, sun);
+
+    final starPaint = Paint()..color = space.withValues(alpha: .26);
+    for (final star in const [
+      Offset(24, 34),
+      Offset(202, 38),
+      Offset(218, 84),
+      Offset(42, 162),
+      Offset(156, 18),
+    ]) {
+      canvas.drawCircle(star, 1.2, starPaint);
+    }
+  }
+
+  void _paintPlanet(Canvas canvas, Offset center, double radius, Color color) {
+    final rect = Rect.fromCircle(center: center, radius: radius);
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-.4, -.45),
+          colors: [
+            surface.withValues(alpha: .95),
+            color,
+            space.withValues(alpha: .72),
+          ],
+          stops: const [0, .48, 1],
+        ).createShader(rect),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _SolarFieldPainter oldDelegate) =>
+      sun != oldDelegate.sun ||
+      planet != oldDelegate.planet ||
+      space != oldDelegate.space ||
+      surface != oldDelegate.surface;
 }
 
 const _weekdays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];

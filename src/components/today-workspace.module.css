@@ -39,6 +39,9 @@
   --day-input: oklch(0.998 0.006 91);
   --day-danger-panel: oklch(0.98 0.025 35 / 0.75);
   --day-attention-panel: oklch(0.965 0.06 76 / 0.9);
+  --day-space-ink: oklch(0.24 0.055 232);
+  --day-space-blue: oklch(0.67 0.105 226);
+  --day-space-violet: oklch(0.63 0.105 296);
   position: relative;
   isolation: isolate;
   width: 100%;
@@ -95,6 +98,9 @@
   --day-input: oklch(0.18 0.02 211);
   --day-danger-panel: oklch(0.24 0.045 28 / 0.72);
   --day-attention-panel: oklch(0.26 0.045 70 / 0.72);
+  --day-space-ink: oklch(0.85 0.055 225);
+  --day-space-blue: oklch(0.66 0.105 226);
+  --day-space-violet: oklch(0.68 0.11 296);
 }
 
 .shell::before,
@@ -124,6 +130,47 @@
   box-shadow: 0 0 0 6rem oklch(from var(--accent) l c h / 0.025);
 }
 
+.cosmicBackdrop {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  perspective: 70rem;
+  mask-image: linear-gradient(to bottom, black 0, black 36rem, transparent 70rem);
+}
+
+.starField {
+  position: absolute;
+  inset: -5rem -3rem 0;
+  opacity: 0.42;
+  background-image:
+    radial-gradient(circle, var(--day-space-ink) 0 1px, transparent 1.6px),
+    radial-gradient(circle, var(--day-space-blue) 0 1.2px, transparent 1.8px),
+    radial-gradient(circle, var(--accent) 0 0.8px, transparent 1.5px);
+  background-position: 0 0, 2rem 3rem, 6rem 1rem;
+  background-size: 8rem 8rem, 13rem 13rem, 17rem 17rem;
+  transform: rotateZ(-7deg) translateZ(-2rem) scale(1.08);
+  animation: starDrift 36s ease-in-out infinite alternate;
+}
+
+.distantWorld {
+  position: absolute;
+  top: 26rem;
+  right: -13rem;
+  width: 29rem;
+  height: 29rem;
+  border: 1px solid oklch(from var(--day-space-blue) l c h / 0.18);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 27%, oklch(from var(--day-space-blue) 0.9 0.05 h / 0.22), transparent 18%),
+    radial-gradient(circle at 46% 40%, oklch(from var(--day-space-violet) l c h / 0.12), transparent 58%);
+  box-shadow:
+    inset 2.5rem -2rem 5rem oklch(from var(--day-space-ink) l c h / 0.08),
+    0 0 0 4rem oklch(from var(--day-space-blue) l c h / 0.025);
+  transform: rotateX(64deg) rotateZ(-18deg) translateZ(-4rem);
+}
+
 .shell :global(.today-brief) {
   position: relative;
   display: grid;
@@ -147,14 +194,15 @@
 }
 
 .sun,
-.sunRing,
-.cloud {
+.solarOrbit,
+.moon {
   position: absolute;
   display: block;
   border-radius: 999px;
 }
 
 .sun {
+  z-index: 2;
   top: 4.8rem;
   right: 4.9rem;
   width: clamp(8rem, 13vw, 12rem);
@@ -165,44 +213,83 @@
   box-shadow:
     0 0 0 1.65rem oklch(0.88 0.12 69 / 0.11),
     0 1.8rem 5rem oklch(0.69 0.15 59 / 0.24);
+  transform: translateZ(3rem);
   animation: sunBreathe 8s ease-in-out infinite;
 }
 
-.sunRing {
-  top: 1.9rem;
-  right: 2rem;
-  width: clamp(13.5rem, 19vw, 18rem);
-  height: clamp(13.5rem, 19vw, 18rem);
-  border: 1px solid var(--day-horizon);
-  opacity: 0.8;
+.solarOrbit {
+  z-index: 1;
+  border: 1px solid oklch(from var(--day-space-blue) l c h / 0.3);
+  transform-style: preserve-3d;
 }
 
-.sunRing::before,
-.sunRing::after {
+.solarOrbit::before,
+.solarOrbit::after {
   position: absolute;
-  inset: 1.45rem;
-  border: 1px dashed oklch(0.66 0.1 65 / 0.19);
-  border-radius: inherit;
   content: "";
 }
 
-.sunRing::after {
-  inset: 3rem;
-  border-style: solid;
-  opacity: 0.62;
+.solarOrbit::before {
+  inset: 1.15rem;
+  border: 1px dashed oklch(from var(--day-space-violet) l c h / 0.24);
+  border-radius: inherit;
 }
 
-.cloud {
-  right: 10.5rem;
-  bottom: 3rem;
-  width: 8.5rem;
-  height: 2.8rem;
-  background: oklch(0.995 0.009 94 / 0.66);
+.solarOrbit::after {
+  top: 16%;
+  left: 9%;
+  width: 1.4rem;
+  height: 1.4rem;
+  border: 2px solid oklch(from var(--day-paper-strong) l c h / 0.8);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, oklch(0.94 0.08 230), transparent 24%),
+    linear-gradient(145deg, var(--day-space-blue), var(--day-space-ink));
   box-shadow:
-    2.4rem -1rem 0 -0.2rem oklch(0.995 0.009 94 / 0.56),
-    5.5rem 0.4rem 0 -0.55rem oklch(0.995 0.009 94 / 0.47);
-  filter: blur(0.2px);
-  animation: cloudDrift 12s ease-in-out infinite alternate;
+    inset -0.35rem -0.28rem 0.6rem oklch(from var(--day-space-ink) l c h / 0.42),
+    0 0.45rem 1rem oklch(from var(--day-space-ink) l c h / 0.25);
+}
+
+.solarOrbitNear {
+  top: 2.2rem;
+  right: 1rem;
+  width: clamp(15rem, 21vw, 20rem);
+  height: clamp(15rem, 21vw, 20rem);
+  animation: orbitNear 28s linear infinite;
+}
+
+.solarOrbitFar {
+  top: -1.3rem;
+  right: -2.7rem;
+  width: clamp(22rem, 29vw, 28rem);
+  height: clamp(22rem, 29vw, 28rem);
+  border-style: dashed;
+  animation: orbitFar 44s linear infinite reverse;
+}
+
+.solarOrbitFar::after {
+  top: 72%;
+  left: 82%;
+  width: 0.9rem;
+  height: 0.9rem;
+  background:
+    radial-gradient(circle at 32% 28%, oklch(0.97 0.06 75), transparent 24%),
+    linear-gradient(145deg, var(--accent), oklch(0.46 0.11 55));
+}
+
+.moon {
+  z-index: 3;
+  right: 2.2rem;
+  bottom: 4rem;
+  width: 2.2rem;
+  height: 2.2rem;
+  background:
+    radial-gradient(circle at 35% 30%, oklch(0.98 0.025 220), transparent 22%),
+    linear-gradient(145deg, oklch(0.83 0.04 220), oklch(0.48 0.055 226));
+  box-shadow:
+    inset -0.45rem -0.35rem 0.8rem oklch(from var(--day-space-ink) l c h / 0.35),
+    0 0.7rem 1.4rem oklch(from var(--day-space-ink) l c h / 0.18);
+  transform: translateZ(5rem);
 }
 
 .shell :global(.today-date) {
@@ -857,11 +944,10 @@
 
 .sourceState span,
 .sourceState small {
-  overflow: hidden;
   color: var(--muted);
   font-size: 0.62rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .sourceState strong {
@@ -913,6 +999,37 @@
   background:
     radial-gradient(circle at 90% 5%, var(--day-sun-glow), transparent 12rem),
     linear-gradient(160deg, var(--day-blue-panel), var(--day-paper-soft));
+}
+
+.shell :global(.today-timeline) {
+  margin-top: 1.1rem;
+  padding-left: 0;
+}
+
+.shell :global(.today-timeline::before) {
+  left: 3.45rem;
+}
+
+.shell :global(.today-timeline-item) {
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+  gap: 1.95rem;
+  min-height: 4.4rem;
+}
+
+.shell :global(.today-timeline-item > div) {
+  min-width: 0;
+  padding-right: 0.2rem;
+}
+
+.shell :global(.today-timeline-item > div::before) {
+  left: 3.22rem;
+  top: 0.28rem;
+}
+
+.shell :global(.today-timeline-item strong),
+.shell :global(.today-timeline-item small) {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .shell :global(.today-section-heading) {
@@ -1919,13 +2036,23 @@
 }
 
 @keyframes sunBreathe {
-  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
-  50% { transform: translate3d(-0.35rem, 0.3rem, 0) scale(1.025); }
+  0%, 100% { transform: translate3d(0, 0, 3rem) scale(1); }
+  50% { transform: translate3d(-0.35rem, 0.3rem, 3rem) scale(1.025); }
 }
 
-@keyframes cloudDrift {
-  from { transform: translateX(-0.6rem); opacity: 0.58; }
-  to { transform: translateX(0.9rem); opacity: 0.82; }
+@keyframes starDrift {
+  from { transform: rotateZ(-7deg) translate3d(-0.4rem, -0.2rem, -2rem) scale(1.08); }
+  to { transform: rotateZ(-7deg) translate3d(0.7rem, 0.45rem, -2rem) scale(1.08); }
+}
+
+@keyframes orbitNear {
+  from { transform: rotateX(68deg) rotateZ(-17deg); }
+  to { transform: rotateX(68deg) rotateZ(343deg); }
+}
+
+@keyframes orbitFar {
+  from { transform: rotateX(72deg) rotateZ(12deg); }
+  to { transform: rotateX(72deg) rotateZ(372deg); }
 }
 
 @keyframes arcFlow {
@@ -2088,14 +2215,21 @@
     height: 8rem;
   }
 
-  .sunRing {
+  .solarOrbitNear {
     top: 3.6rem;
-    right: 4.4rem;
-    width: 12.5rem;
-    height: 12.5rem;
+    right: 4rem;
+    width: 13rem;
+    height: 13rem;
   }
 
-  .cloud {
+  .solarOrbitFar {
+    top: 0;
+    right: 0.2rem;
+    width: 20rem;
+    height: 20rem;
+  }
+
+  .moon {
     display: none;
   }
 
@@ -2459,7 +2593,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sun,
-  .cloud,
+  .starField,
+  .solarOrbit,
   .dayArc path,
   .shell :global(.today-overview-item),
   .usageHalo,
@@ -2498,17 +2633,13 @@
     0 2.5rem 7rem oklch(0.38 0.1 58 / 0.24);
 }
 
-:global(:root[data-theme="dark"]) .sunRing,
-:global(:root[data-theme="dark"]) .sunRing::before,
-:global(:root[data-theme="dark"]) .sunRing::after {
+:global(:root[data-theme="dark"]) .solarOrbit,
+:global(:root[data-theme="dark"]) .solarOrbit::before {
   border-color: oklch(0.72 0.08 70 / 0.18);
 }
 
-:global(:root[data-theme="dark"]) .cloud {
-  background: oklch(0.82 0.018 90 / 0.12);
-  box-shadow:
-    2.4rem -1rem 0 -0.2rem oklch(0.82 0.018 90 / 0.1),
-    5.5rem 0.4rem 0 -0.55rem oklch(0.82 0.018 90 / 0.08);
+:global(:root[data-theme="dark"]) .starField {
+  opacity: 0.55;
 }
 
 :global(:root[data-theme="dark"]) .shell :global(.today-brief-mark),
