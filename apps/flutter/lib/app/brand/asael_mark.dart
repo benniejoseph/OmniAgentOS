@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+/// Uses the same shield asset as the web app. Native layout may adapt, but the
+/// product mark must never fork into a platform-specific identity.
 class AsaelMark extends StatelessWidget {
   const AsaelMark({
     super.key,
@@ -13,32 +15,36 @@ class AsaelMark extends StatelessWidget {
   final Color? foregroundColor;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      label: 'Asael',
-      image: true,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: backgroundColor ?? scheme.primary,
-          borderRadius: BorderRadius.circular(size * .3),
-          boxShadow: [
-            BoxShadow(
-              color: (backgroundColor ?? scheme.primary).withValues(alpha: .2),
-              blurRadius: size * .45,
-              offset: Offset(0, size * .14),
-            ),
-          ],
+  Widget build(BuildContext context) => Semantics(
+    label: 'Asael',
+    image: true,
+    child: Container(
+      width: size,
+      height: size,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: const Color(0xFF060A09),
+        borderRadius: BorderRadius.circular(size * .28),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.primary.withValues(alpha: .18),
         ),
-        child: SizedBox.square(
-          dimension: size,
-          child: CustomPaint(
-            painter: _AsaelGlyphPainter(foregroundColor ?? scheme.onPrimary),
+        boxShadow: [
+          BoxShadow(
+            color: Theme.of(context).colorScheme.primary.withValues(alpha: .12),
+            blurRadius: size * .55,
+            offset: Offset(0, size * .16),
           ),
-        ),
+        ],
       ),
-    );
-  }
+      child: Image.asset(
+        'assets/brand/asael-mark.png',
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        filterQuality: FilterQuality.high,
+      ),
+    ),
+  );
 }
 
 class AsaelWordmark extends StatelessWidget {
@@ -49,45 +55,13 @@ class AsaelWordmark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Text(
-    'ASAEL',
+    'Asael',
     style: TextStyle(
       color: color ?? Theme.of(context).colorScheme.onSurface,
       fontSize: compact ? 15 : 18,
-      fontWeight: FontWeight.w800,
-      letterSpacing: compact ? 2.1 : 2.8,
+      fontWeight: FontWeight.w600,
+      letterSpacing: compact ? -.15 : -.25,
       height: 1,
     ),
   );
-}
-
-class _AsaelGlyphPainter extends CustomPainter {
-  const _AsaelGlyphPainter(this.color);
-
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final link = Paint()
-      ..color = color.withValues(alpha: .76)
-      ..strokeWidth = size.width * .052
-      ..strokeCap = StrokeCap.round;
-    final node = Paint()..color = color;
-    final center = Offset(size.width * .5, size.height * .5);
-    final points = <Offset>[
-      Offset(size.width * .5, size.height * .23),
-      Offset(size.width * .76, size.height * .42),
-      Offset(size.width * .66, size.height * .73),
-      Offset(size.width * .34, size.height * .73),
-      Offset(size.width * .24, size.height * .42),
-    ];
-    for (final point in points) {
-      canvas.drawLine(center, point, link);
-      canvas.drawCircle(point, size.width * .06, node);
-    }
-    canvas.drawCircle(center, size.width * .085, node);
-  }
-
-  @override
-  bool shouldRepaint(_AsaelGlyphPainter oldDelegate) =>
-      oldDelegate.color != color;
 }
