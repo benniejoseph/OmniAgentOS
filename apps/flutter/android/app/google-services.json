@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "156709848533",
+    "project_id": "asael-private-ai",
+    "storage_bucket": "asael-private-ai.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:156709848533:android:724b8b0ac41175c821695c",
+        "android_client_info": {
+          "package_name": "app.omniagent.omniagent"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "156709848533-1qeq2ted7mqe95c6d8s6109qm7nh2ktm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC69mnoDUw4HDBJiQcYSFDsWYWhtVCARoM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "156709848533-1qeq2ted7mqe95c6d8s6109qm7nh2ktm.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

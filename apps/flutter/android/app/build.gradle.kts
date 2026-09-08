@@ -1,7 +1,33 @@
 plugins {
     id("com.android.application")
+    id("com.google.gms.google-services")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+val releaseKeystorePath = providers.environmentVariable("ASAEL_ANDROID_KEYSTORE_PATH").orNull
+val releaseKeystorePassword =
+    providers.environmentVariable("ASAEL_ANDROID_KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("ASAEL_ANDROID_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("ASAEL_ANDROID_KEY_PASSWORD").orNull
+val releaseBuildRequested = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true)
+}
+
+if (
+    releaseBuildRequested &&
+        listOf(
+            releaseKeystorePath,
+            releaseKeystorePassword,
+            releaseKeyAlias,
+            releaseKeyPassword,
+        ).any { it.isNullOrBlank() }
+) {
+    throw GradleException(
+        "Release signing requires the ASAEL_ANDROID_KEYSTORE_PATH, " +
+            "ASAEL_ANDROID_KEYSTORE_PASSWORD, ASAEL_ANDROID_KEY_ALIAS, and " +
+            "ASAEL_ANDROID_KEY_PASSWORD environment variables.",
+    )
 }
 
 android {
@@ -29,11 +55,20 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (releaseKeystorePath != null) {
+            create("release") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 }
