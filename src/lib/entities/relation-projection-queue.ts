@@ -56,7 +56,7 @@ export async function queueTemporalRelationProjection(input: {
         lease_expires_at = NULL,
         updated_at = NOW(),
         generation = queue.generation + 1
-      RETURNING tenant_id, owner_actor_id, generation
+      RETURNING tenant_id, owner_actor_id, generation, requested_at
     `;
     if (!rows[0]) throw new Error("Relation projection could not be queued.");
     const result = Object.freeze({
@@ -64,6 +64,8 @@ export async function queueTemporalRelationProjection(input: {
       tenantId: String(rows[0].tenant_id),
       ownerActorId: String(rows[0].owner_actor_id),
       generation: String(rows[0].generation),
+      requestedAt: new Date(rows[0].requested_at as string | number | Date)
+        .toISOString(),
     });
     await appendScopedDomainEvent({
       id: `entity-relation-projection-requested:${sourceContractSha256(result)}`,
@@ -73,6 +75,7 @@ export async function queueTemporalRelationProjection(input: {
       payload: {
         schemaVersion: 1,
         generation: result.generation,
+        requestedAt: result.requestedAt,
         status: "queued",
       },
     }, { sql });
