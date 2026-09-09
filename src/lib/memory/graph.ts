@@ -105,6 +105,10 @@ type GraphAggregate = {
 
 const MEMORY_GRAPH_NODE_LIMIT = 10_000;
 const MEMORY_GRAPH_EDGE_LIMIT = 20_000;
+// Keep each JSON-to-recordset write comfortably below the production database
+// statement deadline. A rebuild remains atomic, but no individual statement
+// has to parse and persist the entire graph projection at once.
+const MEMORY_GRAPH_WRITE_BATCH_SIZE = 250;
 
 const USER_PRIVATE_GRAPH_PURPOSE_IDS = Object.freeze([
   MEMORY_PURPOSE_IDS.read,
@@ -1206,6 +1210,18 @@ async function upsertGraphNodes(
   if (!nodes.length) {
     return;
   }
+  for (let offset = 0; offset < nodes.length; offset += MEMORY_GRAPH_WRITE_BATCH_SIZE) {
+    await upsertGraphNodeBatch(
+      nodes.slice(offset, offset + MEMORY_GRAPH_WRITE_BATCH_SIZE),
+      sql,
+    );
+  }
+}
+
+async function upsertGraphNodeBatch(
+  nodes: MemoryGraphNode[],
+  sql: GraphSqlClient,
+) {
   const payload = nodes.map((node) => ({
     id: node.id,
     tenant_id: node.tenantId,
@@ -1299,6 +1315,18 @@ async function upsertGraphEdges(
   if (!edges.length) {
     return;
   }
+  for (let offset = 0; offset < edges.length; offset += MEMORY_GRAPH_WRITE_BATCH_SIZE) {
+    await upsertGraphEdgeBatch(
+      edges.slice(offset, offset + MEMORY_GRAPH_WRITE_BATCH_SIZE),
+      sql,
+    );
+  }
+}
+
+async function upsertGraphEdgeBatch(
+  edges: MemoryGraphEdge[],
+  sql: GraphSqlClient,
+) {
   const payload = edges.map((edge) => ({
     id: edge.id,
     tenant_id: edge.tenantId,
