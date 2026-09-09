@@ -16,14 +16,15 @@ const now = "2026-09-09T09:00:00.000Z";
 function memory(
   input: Partial<MemoryCatalogRecord> & Pick<MemoryCatalogRecord, "id" | "title">,
 ): MemoryCatalogRecord {
+  const { id, title, ...overrides } = input;
   return {
-    id: input.id,
+    id,
     tenantId: "tenant-a",
     type: "fact",
     tier: "semantic",
     tierPolicyVersion: 1,
     formationReason: "manual_user_entry",
-    title: input.title,
+    title,
     tags: [],
     scope: "user",
     source: "manual",
@@ -36,17 +37,18 @@ function memory(
     useCount: 0,
     createdAt: now,
     updatedAt: now,
-    ...input,
+    ...overrides,
   };
 }
 
 function document(
   input: Partial<KnowledgeDocument> & Pick<KnowledgeDocument, "id" | "title">,
 ): KnowledgeDocument {
+  const { id, title, ...overrides } = input;
   return {
-    id: input.id,
+    id,
     tenantId: "tenant-a",
-    title: input.title,
+    title,
     source: "capture:upload",
     sourceType: "file",
     tags: [],
@@ -56,7 +58,7 @@ function document(
     metadata: {},
     createdAt: now,
     updatedAt: now,
-    ...input,
+    ...overrides,
   };
 }
 
