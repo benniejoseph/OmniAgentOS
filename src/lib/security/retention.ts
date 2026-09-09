@@ -6,7 +6,7 @@ import {
   runWithDatabaseSystemScope,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
-import { rebuildMemoryGraph } from "@/lib/memory/graph";
+import { rebuildMemoryGraphSystemScoped } from "@/lib/memory/graph";
 import { getAccessRequestStore } from "@/lib/onboarding/access-request-store";
 
 export type RetentionPolicy = {
@@ -1391,9 +1391,10 @@ export async function processPendingMemoryGraphRebuilds({
   for (const claim of claims) {
     const pendingTenantId = claim.tenantId;
     try {
-      await rebuildMemoryGraph({
+      await rebuildMemoryGraphSystemScoped({
         tenantId: pendingTenantId,
         source: "retention-rebuild",
+        auditReason: "Rebuild the queued tenant memory graph projection.",
       });
       await runWithDatabaseTenantScope(pendingTenantId, async () => {
         const deleted = await getSql()`
