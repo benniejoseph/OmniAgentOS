@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { MemoryGraphEdge, MemoryGraphNode } from "@/lib/memory/types";
 
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   getGraphStorageDecisionReport: vi.fn(),
-  getMemoryGraphNode: vi.fn(),
+  getMemoryGraphNode: vi.fn(async (): Promise<MemoryGraphNode | null> => null),
   getMemoryGraphStats: vi.fn(async () => ({ nodes: 0, edges: 0 })),
-  listMemoryGraphEdges: vi.fn(async () => []),
-  listMemoryGraphNodes: vi.fn(async () => []),
+  listMemoryGraphEdges: vi.fn(async (): Promise<MemoryGraphEdge[]> => []),
+  listMemoryGraphNodes: vi.fn(async (): Promise<MemoryGraphNode[]> => []),
   queryTemporalRelationClaims: vi.fn(
     async (): Promise<Array<Record<string, unknown>>> => [],
   ),
