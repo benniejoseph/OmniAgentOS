@@ -448,6 +448,31 @@ export function MemoryIntelligenceWorkspace() {
     }
   }
 
+  async function rebuildEvidenceMap() {
+    setBusy("graph");
+    setError(undefined);
+    try {
+      const response = await fetch("/api/memory/graph", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source: "mnemosyne-recommendation" }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error || "The evidence map could not be rebuilt.");
+      }
+      setUniverseRevision((current) => current + 1);
+      setAnnouncement(
+        `Evidence map rebuilt with ${body.stats?.nodes || 0} points and ${body.stats?.edges || 0} links.`,
+      );
+      await loadOverview();
+    } catch (graphError) {
+      setError(message(graphError));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function toggleConsent() {
     if (!consent) return;
     setBusy("consent");
@@ -545,6 +570,7 @@ export function MemoryIntelligenceWorkspace() {
     if (item.action === "backfill_embeddings") void backfillKnowledgeEmbeddings();
     if (item.action === "run_maintenance") void runMaintenance();
     if (item.action === "enroll_ownership") void enrollLegacyOwnership();
+    if (item.action === "rebuild_graph") void rebuildEvidenceMap();
   }
 
   function selectView(nextView: WorkspaceView) {

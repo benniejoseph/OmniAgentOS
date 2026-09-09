@@ -5,7 +5,7 @@ import type { MemoryFormationReason, MemoryTier } from "@/lib/memory/tier-policy
 import type { KnowledgeDocument } from "@/lib/rag/types";
 
 export const MEMORY_INTELLIGENCE_VERSION =
-  "memory-intelligence-observatory:1" as const;
+  "memory-intelligence-observatory:2" as const;
 
 export const MEMORY_CATEGORY_IDS = [
   "preferences",
@@ -67,7 +67,7 @@ export type KnowledgeIndexItem = Readonly<{
 }>;
 
 export type MemoryStewardRecommendation = Readonly<{
-  id: "review" | "embedding" | "scope" | "classification" | "maintenance";
+  id: "review" | "embedding" | "scope" | "classification" | "graph" | "maintenance";
   priority: "high" | "medium" | "low";
   title: string;
   detail: string;
@@ -76,6 +76,7 @@ export type MemoryStewardRecommendation = Readonly<{
     | "open_knowledge"
     | "backfill_embeddings"
     | "run_maintenance"
+    | "rebuild_graph"
     | "enroll_ownership"
     | "none";
   affectedCount: number;
@@ -94,6 +95,9 @@ export type MemoryIntelligenceOverview = Readonly<{
     archivedMemories: number;
     graphNodes: number;
     graphEdges: number;
+    graphStatus: "current" | "stale" | "failed" | "unbuilt";
+    graphUpdatedAt: string | null;
+    graphBuildLatencyMs: number | null;
   }>;
   memoryCategories: readonly Readonly<{
     id: MemoryCategoryId;
@@ -209,7 +213,15 @@ export function buildMemoryIntelligenceOverview(input: {
     characters: number;
     embedded: number;
   }>;
-  graphStats: Readonly<{ nodes: number; edges: number }>;
+  graphStats: Readonly<{
+    nodes: number;
+    edges: number;
+    latestBuild?: Readonly<{
+      status: "completed" | "failed";
+      createdAt: string;
+      latencyMs: number;
+    }>;
+  }>;
   pendingReviews: number;
   resolvedReviews: number;
   deletionBarriers: number;
@@ -237,12 +249,18 @@ export function buildMemoryIntelligenceOverview(input: {
     0,
     input.knowledgeStats.chunks - input.knowledgeStats.embedded,
   );
+  const generatedAt = input.generatedAt || new Date().toISOString();
+  const graphStatus = memoryGraphHealth(
+    input.graphStats.latestBuild,
+    generatedAt,
+  );
   const recommendations = stewardRecommendations({
     pendingReviews: input.pendingReviews,
     missingEmbeddings,
     legacy,
     unclassified,
     durableCount: durable.length,
+    graphStatus,
   });
   const embeddingCoverage = input.knowledgeStats.chunks
     ? input.knowledgeStats.embedded / input.knowledgeStats.chunks
@@ -255,11 +273,17 @@ export function buildMemoryIntelligenceOverview(input: {
     20,
     legacy / Math.max(durable.length, 1) * 20,
   );
+  const graphPenalty = graphStatus === "failed" || graphStatus === "unbuilt"
+    ? 15
+    : graphStatus === "stale"
+      ? 5
+      : 0;
   const healthScore = Math.max(
     0,
-    Math.round(100 - (1 - embeddingCoverage) * 30 - reviewPenalty - scopePenalty),
+    Math.round(
+      100 - (1 - embeddingCoverage) * 30 - reviewPenalty - scopePenalty - graphPenalty,
+    ),
   );
-  const generatedAt = input.generatedAt || new Date().toISOString();
 
   return Object.freeze({
     version: MEMORY_INTELLIGENCE_VERSION,
@@ -274,6 +298,9 @@ export function buildMemoryIntelligenceOverview(input: {
       archivedMemories: archived,
       graphNodes: input.graphStats.nodes,
       graphEdges: input.graphStats.edges,
+      graphStatus,
+      graphUpdatedAt: input.graphStats.latestBuild?.createdAt || null,
+      graphBuildLatencyMs: input.graphStats.latestBuild?.latencyMs ?? null,
     }),
     memoryCategories: Object.freeze(categoryCounts(
       MEMORY_CATEGORY_IDS,
@@ -445,6 +472,7 @@ function stewardRecommendations(input: {
   legacy: number;
   unclassified: number;
   durableCount: number;
+  graphStatus: MemoryIntelligenceOverview["summary"]["graphStatus"];
 }): MemoryStewardRecommendation[] {
   const recommendations: MemoryStewardRecommendation[] = [];
   if (input.pendingReviews) {
@@ -487,6 +515,27 @@ function stewardRecommendations(input: {
       affectedCount: input.unclassified,
     }));
   }
+  if (input.graphStatus === "failed" || input.graphStatus === "unbuilt") {
+    recommendations.push(Object.freeze({
+      id: "graph",
+      priority: "high",
+      title: "Repair the evidence map",
+      detail: input.graphStatus === "failed"
+        ? "The latest graph projection failed. Rebuild it from the current memory catalogue."
+        : "The evidence map has not completed its first projection yet.",
+      action: "rebuild_graph",
+      affectedCount: 1,
+    }));
+  } else if (input.graphStatus === "stale") {
+    recommendations.push(Object.freeze({
+      id: "graph",
+      priority: "medium",
+      title: "Refresh the evidence map",
+      detail: "The latest successful graph projection is more than 24 hours old.",
+      action: "rebuild_graph",
+      affectedCount: 1,
+    }));
+  }
   if (input.durableCount > 20) {
     recommendations.push(Object.freeze({
       id: "maintenance",
@@ -498,6 +547,21 @@ function stewardRecommendations(input: {
     }));
   }
   return recommendations;
+}
+
+function memoryGraphHealth(
+  build: Readonly<{
+    status: "completed" | "failed";
+    createdAt: string;
+  }> | undefined,
+  observedAt: string,
+): MemoryIntelligenceOverview["summary"]["graphStatus"] {
+  if (!build) return "unbuilt";
+  if (build.status === "failed") return "failed";
+  return new Date(observedAt).getTime() - new Date(build.createdAt).getTime() >
+      86_400_000
+    ? "stale"
+    : "current";
 }
 
 function categoryCounts<T extends string>(

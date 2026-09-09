@@ -126,6 +126,11 @@ describe("memory intelligence projection", () => {
       graphStats: {
         nodes: 12,
         edges: 18,
+        latestBuild: {
+          status: "completed",
+          createdAt: now,
+          latencyMs: 420,
+        },
       },
       pendingReviews: 1,
       resolvedReviews: 2,
@@ -136,8 +141,36 @@ describe("memory intelligence projection", () => {
     expect(overview.summary.durableMemories).toBe(2);
     expect(overview.steward.state).toBe("attention");
     expect(overview.steward.learningSignals.retrievalUses).toBe(3);
+    expect(overview.summary.graphStatus).toBe("current");
     expect(overview.steward.recommendations.map((item) => item.id))
       .toEqual(expect.arrayContaining(["review", "embedding", "scope"]));
+  });
+
+  it("asks Mnemosyne to repair a failed graph projection", () => {
+    const overview = buildMemoryIntelligenceOverview({
+      memories: [memory({ id: "memory-a", title: "A durable fact" })],
+      documents: [],
+      knowledgeStats: { documents: 0, chunks: 0, characters: 0, embedded: 0 },
+      graphStats: {
+        nodes: 12,
+        edges: 18,
+        latestBuild: {
+          status: "failed",
+          createdAt: now,
+          latencyMs: 17_000,
+        },
+      },
+      pendingReviews: 0,
+      resolvedReviews: 0,
+      deletionBarriers: 0,
+      generatedAt: now,
+    });
+
+    expect(overview.summary.graphStatus).toBe("failed");
+    expect(overview.steward.healthScore).toBe(65);
+    expect(overview.steward.recommendations).toContainEqual(
+      expect.objectContaining({ id: "graph", action: "rebuild_graph" }),
+    );
   });
 
   it("binds pagination cursors to the active index query", () => {
