@@ -1177,6 +1177,15 @@ async function insertKnowledgeDocumentDb(
     `;
 
     const documentInserted = insertedDocuments.length === 1;
+    if (!documentInserted && canonicalSourceWrite) {
+      // Canonicalizing an exact legacy document can update a large evidence
+      // set in one atomic retry. Keep the ordinary 15-second SQL bound for
+      // every new write, but give this finite repair transaction the runtime's
+      // documented maximum so historical connector backfills make progress.
+      await transaction`
+        SELECT set_config('statement_timeout', '60000', true)
+      `;
+    }
     const persistedLineage = documentInserted
       ? canonicalSourceWrite
         ? await persistCanonicalSourceWrite(transaction, canonicalSourceWrite, {
