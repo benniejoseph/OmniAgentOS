@@ -3,9 +3,11 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
+import dynamic from "next/dynamic";
 import {
   Archive,
   ArrowRight,
@@ -31,7 +33,6 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { MemoryUniverse } from "@/components/memory-universe";
 import type {
   KnowledgeCategoryId,
   KnowledgeIndexItem,
@@ -44,6 +45,21 @@ import type { MemoryReconciliationReview } from "@/lib/memory/reconciliation";
 import type { MemoryTier } from "@/lib/memory/tier-policy";
 import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
 import styles from "@/components/memory-intelligence-workspace.module.css";
+
+const MemoryUniverse = dynamic(
+  () => import("@/components/memory-universe").then((module) =>
+    module.MemoryUniverse
+  ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className={styles.universeLoading} role="status">
+        <LoaderCircle size={18} className={styles.spin} />
+        Preparing the relationship map…
+      </div>
+    ),
+  },
+);
 
 type WorkspaceView = "memory" | "knowledge" | "reviews" | "universe";
 type Page<T> = { items: T[]; total: number; nextCursor: string | null };
@@ -83,7 +99,9 @@ export function MemoryIntelligenceWorkspace() {
   const [knowledgePage, setKnowledgePage] = useState<Page<KnowledgeIndexItem>>(emptyPage);
   const [reviews, setReviews] = useState<MemoryReconciliationReview[]>([]);
   const [reviewsLoaded, setReviewsLoaded] = useState(false);
+  const [reviewLimit, setReviewLimit] = useState(20);
   const [query, setQuery] = useState("");
+  const [indexQuery, setIndexQuery] = useState("");
   const [memoryCategory, setMemoryCategory] = useState<MemoryCategoryId | "all">("all");
   const [knowledgeCategory, setKnowledgeCategory] = useState<KnowledgeCategoryId | "all">("all");
   const [tier, setTier] = useState<MemoryTier | "all">("all");
@@ -93,12 +111,15 @@ export function MemoryIntelligenceWorkspace() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [indexLoading, setIndexLoading] = useState(false);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [forgetPreview, setForgetPreview] = useState<ForgetPreview>();
   const [consent, setConsent] = useState<ConsentStatus>();
+  const indexRequestRef = useRef<AbortController | null>(null);
+  const reviewsRequestRef = useRef<AbortController | null>(null);
 
   const loadOverview = useCallback(async () => {
     setLoading(true);
@@ -109,8 +130,6 @@ export function MemoryIntelligenceWorkspace() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Memory intelligence could not be loaded.");
       setOverview(body.overview as MemoryIntelligenceOverview);
-      setMemoryPage(body.memory as Page<MemoryIndexItem>);
-      setKnowledgePage(body.knowledge as Page<KnowledgeIndexItem>);
       setError(undefined);
     } catch (loadError) {
       setError(message(loadError));
@@ -138,17 +157,25 @@ export function MemoryIntelligenceWorkspace() {
     return () => window.clearTimeout(timer);
   }, [loadOverview, loadConsent]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setIndexQuery(query.trim()), 180);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
   const loadIndex = useCallback(async (
     kind: "memory" | "knowledge",
     cursor?: string,
   ) => {
+    indexRequestRef.current?.abort();
+    const controller = new AbortController();
+    indexRequestRef.current = controller;
     setIndexLoading(true);
     try {
       const parameters = new URLSearchParams({
         view: kind,
         limit: "40",
       });
-      if (query.trim()) parameters.set("q", query.trim());
+      if (indexQuery) parameters.set("q", indexQuery);
       if (cursor) parameters.set("cursor", cursor);
       if (kind === "memory") {
         parameters.set("category", memoryCategory);
@@ -159,6 +186,7 @@ export function MemoryIntelligenceWorkspace() {
       }
       const response = await fetch(`/api/memory/intelligence?${parameters}`, {
         cache: "no-store",
+        signal: controller.signal,
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "The index could not be loaded.");
@@ -175,23 +203,30 @@ export function MemoryIntelligenceWorkspace() {
       }
       setError(undefined);
     } catch (loadError) {
-      setError(message(loadError));
+      if (!controller.signal.aborted) setError(message(loadError));
     } finally {
-      setIndexLoading(false);
+      if (indexRequestRef.current === controller) setIndexLoading(false);
     }
-  }, [knowledgeCategory, memoryCategory, query, state, tier]);
+  }, [indexQuery, knowledgeCategory, memoryCategory, state, tier]);
 
   useEffect(() => {
-    if (view !== "memory" && view !== "knowledge") return;
-    const timer = window.setTimeout(() => void loadIndex(view), 220);
+    if (view !== "memory" && view !== "knowledge") {
+      indexRequestRef.current?.abort();
+      return;
+    }
+    const timer = window.setTimeout(() => void loadIndex(view), 0);
     return () => window.clearTimeout(timer);
   }, [view, loadIndex]);
 
   const loadReviews = useCallback(async () => {
-    setIndexLoading(true);
+    reviewsRequestRef.current?.abort();
+    const controller = new AbortController();
+    reviewsRequestRef.current = controller;
+    setReviewsLoading(true);
     try {
-      const response = await fetch("/api/memory/reconciliation?status=all&limit=200", {
+      const response = await fetch(`/api/memory/reconciliation?status=pending&limit=${reviewLimit}`, {
         cache: "no-store",
+        signal: controller.signal,
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Memory reviews could not be loaded.");
@@ -199,16 +234,22 @@ export function MemoryIntelligenceWorkspace() {
       setReviewsLoaded(true);
       setError(undefined);
     } catch (loadError) {
-      setError(message(loadError));
+      if (!controller.signal.aborted) setError(message(loadError));
     } finally {
-      setIndexLoading(false);
+      if (reviewsRequestRef.current === controller) setReviewsLoading(false);
     }
-  }, []);
+  }, [reviewLimit]);
 
   useEffect(() => {
-    if (view !== "reviews") return;
+    if (view !== "reviews") {
+      reviewsRequestRef.current?.abort();
+      return;
+    }
     const timer = window.setTimeout(() => void loadReviews(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      reviewsRequestRef.current?.abort();
+    };
   }, [view, loadReviews]);
 
   useEffect(() => {
@@ -422,6 +463,8 @@ export function MemoryIntelligenceWorkspace() {
         <Metric icon={<GitBranch />} value={overview ? `${overview.summary.graphNodes.toLocaleString()} / ${overview.summary.graphEdges.toLocaleString()}` : undefined} label="Nodes / links" />
       </section>
 
+      <MemoryGuide />
+
       <nav className={styles.tabs} aria-label="Memory workspace">
         <Tab active={view === "memory"} onClick={() => setView("memory")} icon={<Brain size={17} />} label="Memory" count={overview?.summary.durableMemories} />
         <Tab active={view === "knowledge"} onClick={() => setView("knowledge")} icon={<BookOpen size={17} />} label="Knowledge" count={overview?.summary.knowledgeDocuments} />
@@ -446,7 +489,7 @@ export function MemoryIntelligenceWorkspace() {
                 onState={setState}
                 selectedId={selectedMemoryId}
                 onSelect={setSelectedMemoryId}
-                loading={indexLoading || loading}
+                loading={indexLoading}
                 onMore={() => void loadIndex("memory", memoryPage.nextCursor || undefined)}
               />
             ) : view === "knowledge" ? (
@@ -455,7 +498,7 @@ export function MemoryIntelligenceWorkspace() {
                 page={knowledgePage}
                 category={knowledgeCategory}
                 onCategory={setKnowledgeCategory}
-                loading={indexLoading || loading}
+                loading={reviewsLoading}
                 onMore={() => void loadIndex("knowledge", knowledgePage.nextCursor || undefined)}
               />
             ) : (
@@ -465,6 +508,8 @@ export function MemoryIntelligenceWorkspace() {
                 loading={indexLoading}
                 busy={busy}
                 onResolve={resolveReview}
+                total={overview?.summary.pendingReviews || reviews.length}
+                onMore={() => setReviewLimit((current) => current + 20)}
               />
             )}
           </section>
@@ -527,6 +572,22 @@ function Metric(props: { icon: React.ReactNode; value?: number | string; label: 
   return <article className={props.warning ? styles.metricWarning : undefined}><i>{props.icon}</i><div><strong>{props.value ?? "—"}</strong><span>{props.label}</span></div></article>;
 }
 
+function MemoryGuide() {
+  return <section className={styles.memoryGuide} aria-labelledby="memory-guide-title">
+    <header>
+      <p>How memory works</p>
+      <h2 id="memory-guide-title">Four layers, each with a different job.</h2>
+      <span>When you ask something, Asael searches approved memory and source knowledge, follows useful links, then learns from corrections and review decisions.</span>
+    </header>
+    <div>
+      <article><BookOpen size={18} /><span><strong>Knowledge</strong><small>Your documents and transcripts. Evidence to search—not automatically treated as personal truth.</small></span></article>
+      <article><Brain size={18} /><span><strong>Memory</strong><small>Durable facts, preferences, decisions and experiences Asael may carry into future work.</small></span></article>
+      <article><ShieldCheck size={18} /><span><strong>Reviews</strong><small>The safety gate. Proposed or conflicting claims remain outside active recall until decided.</small></span></article>
+      <article><GitBranch size={18} /><span><strong>Universe</strong><small>A map of concepts and evidence links. Points are ideas; lines show observed relationships.</small></span></article>
+    </div>
+  </section>;
+}
+
 function Tab(props: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; count?: number }) {
   return <button type="button" className={props.active ? styles.activeTab : undefined} onClick={props.onClick} aria-current={props.active ? "page" : undefined}>{props.icon}<span>{props.label}</span>{props.count !== undefined ? <small>{props.count.toLocaleString()}</small> : null}</button>;
 }
@@ -583,7 +644,7 @@ function KnowledgeIndex(props: {
   </>;
 }
 
-function ReviewIndex(props: { reviews: MemoryReconciliationReview[]; loaded: boolean; loading: boolean; busy?: string; onResolve: (id: string, decision: "confirm_candidate" | "keep_existing" | "keep_both") => void }) {
+function ReviewIndex(props: { reviews: MemoryReconciliationReview[]; loaded: boolean; loading: boolean; busy?: string; total: number; onMore: () => void; onResolve: (id: string, decision: "confirm_candidate" | "keep_existing" | "keep_both") => void }) {
   const pending = props.reviews.filter((review) => review.status === "pending");
   return <>
     <IndexHeading eyebrow="Truth review" title="Keep memory accurate and inspectable" detail="Candidates never enter active recall until you make a governed decision." />
@@ -592,6 +653,7 @@ function ReviewIndex(props: { reviews: MemoryReconciliationReview[]; loaded: boo
       {props.loaded && !props.loading && !pending.length ? <EmptyState icon={<ShieldCheck />} title="Review queue is clear" detail="Mnemosyne will place contradictions and inferred candidates here before they can affect recall." /> : null}
       {props.loading ? <LoadingRow /> : null}
     </div>
+    {pending.length < props.total ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load {Math.min(20, props.total - pending.length)} more reviews</button> : null}
   </>;
 }
 
@@ -609,6 +671,7 @@ function MnemosynePanel(props: { overview?: MemoryIntelligenceOverview; consent?
   return <aside className={styles.steward}>
     <header><div className={styles.agentOrb}><Bot size={22} /><i /></div><div><p>Memory steward</p><h2>Mnemosyne</h2><span className={steward?.state === "attention" ? styles.attention : styles.healthy}><i /> {steward ? startCase(steward.state) : "Observing"}</span></div><strong style={{ "--score": `${steward?.healthScore || 0}%` } as React.CSSProperties}>{steward?.healthScore ?? "—"}<small>health</small></strong></header>
     <p className={styles.autonomy}>{steward?.autonomy || "Reading the catalogue and checking retrieval quality…"}</p>
+    <p className={styles.scoreHelp}>This health score measures indexing coverage, unresolved reviews and ownership—not how intelligent Asael is.</p>
     <div className={styles.learning}><p><Sparkles size={14} /> Learning signals</p><dl><div><dt>Useful recalls</dt><dd>{steward?.learningSignals.retrievalUses.toLocaleString() ?? "—"}</dd></div><div><dt>Corrections learned</dt><dd>{steward?.learningSignals.corrections.toLocaleString() ?? "—"}</dd></div><div><dt>Reviews resolved</dt><dd>{steward?.learningSignals.resolvedReviews.toLocaleString() ?? "—"}</dd></div><div><dt>Forget receipts</dt><dd>{steward?.learningSignals.forgetRequests.toLocaleString() ?? "—"}</dd></div></dl></div>
     {props.consent ? <section className={styles.recallControl}><div><strong>Personal automatic recall</strong><span>{props.consent.state === "active" ? "Available when selected in conversation" : "Off until you explicitly enable it"}</span></div><button type="button" className={props.consent.state === "active" ? styles.switchOn : undefined} onClick={props.onConsent} disabled={props.busy === "consent"} aria-pressed={props.consent.state === "active"}><i /></button></section> : null}
     <section className={styles.recommendations}><div className={styles.panelHeading}><p>Recommendations</p><span>{steward?.recommendations.length || 0}</span></div>{steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || props.busy === "maintenance"}><i className={styles[`priority${startCase(item.priority)}`]} /><span><strong>{item.title}</strong><small>{item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} /> : null}</button>) : <div className={styles.allClear}><Check size={16} /> No action needed right now.</div>}</section>
