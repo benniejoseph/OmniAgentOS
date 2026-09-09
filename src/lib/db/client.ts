@@ -1433,6 +1433,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[150],
       up: ensureMaintenanceSystemScopeV1,
     },
+    {
+      ...databaseSchemaMigrations[151],
+      up: ensureMemoryGraphScopeV2,
+    },
   ];
 }
 
@@ -59726,6 +59730,105 @@ async function ensureMaintenanceSystemScopeV1(sql: SqlClient) {
         )
     $function$
   `;
+}
+
+async function ensureMemoryGraphScopeV2(sql: SqlClient) {
+  const graphTables = [
+    ["omni_memory_graph_nodes", "omni_memory_graph_nodes_scope_v2_check"],
+    ["omni_memory_graph_edges", "omni_memory_graph_edges_scope_v2_check"],
+  ] as const;
+  const purposeContract = `ARRAY[
+    'memory.correct.v1', 'memory.export.v1', 'memory.forget.v1',
+    'memory.read.v1', 'memory.retrieve.v1', 'memory.write.v1'
+  ]::TEXT[]`;
+  const scopeContract = (constraintName: string) => `
+    CONSTRAINT ${constraintName} CHECK (
+      (access_contract_version = 0
+        AND access_state = 'legacy_unattributed'
+        AND owner_actor_id IS NULL AND owner_agent_id IS NULL
+        AND workspace_id IS NULL AND project_id IS NULL AND mission_id IS NULL
+        AND visibility IS NULL AND sensitivity IS NULL
+        AND origin_purpose IS NULL AND allowed_purpose_ids IS NULL
+        AND access_scope_sha256 IS NULL AND access_bound_at IS NULL)
+      OR
+      (access_contract_version = 1
+        AND access_state = 'scope_bound'
+        AND omni_source_contract_id_is_valid(owner_actor_id)
+        AND sensitivity IN ('confidential', 'restricted')
+        AND origin_purpose = 'memory.graph.projection'
+        AND allowed_purpose_ids = ${purposeContract}
+        AND access_scope_sha256 ~ '^[0-9a-f]{64}$'
+        AND access_bound_at IS NOT NULL
+        AND (
+          (visibility = 'user_private' AND owner_agent_id IS NULL
+            AND workspace_id IS NULL AND project_id IS NULL AND mission_id IS NULL)
+          OR
+          (visibility = 'agent_private'
+            AND omni_source_contract_id_is_valid(owner_agent_id)
+            AND workspace_id IS NULL AND project_id IS NULL AND mission_id IS NULL)
+          OR
+          (visibility = 'project_shared' AND owner_agent_id IS NULL
+            AND omni_source_contract_id_is_valid(workspace_id)
+            AND omni_source_contract_id_is_valid(project_id)
+            AND mission_id IS NULL)
+          OR
+          (visibility = 'workspace_shared' AND owner_agent_id IS NULL
+            AND omni_source_contract_id_is_valid(workspace_id)
+            AND project_id IS NULL AND mission_id IS NULL)
+        ))
+    ) NOT VALID
+  `;
+
+  for (const [tableName, constraintName] of graphTables) {
+    await sql.query(`
+      ALTER TABLE ${tableName}
+        DROP CONSTRAINT IF EXISTS ${tableName}_access_contract_check,
+        DROP CONSTRAINT IF EXISTS ${constraintName}
+    `);
+    await sql.query(`
+      ALTER TABLE ${tableName} ADD ${scopeContract(constraintName)}
+    `);
+    await sql.query(`
+      ALTER TABLE ${tableName} VALIDATE CONSTRAINT ${constraintName}
+    `);
+  }
+
+  const accessPolicy = (tableName: string) => `
+    omni_system_scope_enabled()
+    OR (access_contract_version = 0
+      AND omni_current_memory_access_scope_v1() IS NULL)
+    OR (access_contract_version = 1 AND access_state = 'scope_bound'
+      AND visibility = 'user_private'
+      AND omni_user_private_memory_scope_v1_allows(
+        tenant_id, owner_actor_id, allowed_purpose_ids))
+    OR (access_contract_version = 1 AND access_state = 'scope_bound'
+      AND visibility = 'agent_private'
+      AND omni_agent_private_memory_scope_v1_allows(
+        tenant_id, owner_actor_id, owner_agent_id, allowed_purpose_ids))
+    OR (access_contract_version = 1 AND access_state = 'scope_bound'
+      AND visibility IN ('project_shared', 'workspace_shared')
+      AND EXISTS (
+        SELECT 1 FROM omni_memories source_memory
+        WHERE source_memory.tenant_id = ${tableName}.tenant_id
+          AND source_memory.id = ANY(${tableName}.memory_ids)
+          AND omni_shared_memory_scope_v1_allows(
+            source_memory.id, ${tableName}.tenant_id,
+            ${tableName}.workspace_id, ${tableName}.project_id,
+            ${tableName}.visibility, ${tableName}.allowed_purpose_ids,
+            octet_length(source_memory.title)::BIGINT +
+              octet_length(source_memory.content)::BIGINT)))
+  `;
+  for (const [tableName] of graphTables) {
+    const policyName = `${tableName}_access_scope`;
+    await sql.query(`DROP POLICY IF EXISTS ${policyName} ON ${tableName}`);
+    const expression = accessPolicy(tableName);
+    await sql.query(`
+      CREATE POLICY ${policyName} ON ${tableName}
+      AS RESTRICTIVE FOR ALL
+      USING (${expression})
+      WITH CHECK (${expression})
+    `);
+  }
 }
 
 // ---------------------------------------------------------------------------
