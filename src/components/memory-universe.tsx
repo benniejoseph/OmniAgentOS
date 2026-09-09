@@ -307,13 +307,14 @@ export function MemoryUniverse(props: {
       const nodes = graph.nodes;
       const nodeById = new Map(nodes.map((node) => [node.id, node]));
       const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x061117, 0.022);
-      const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 180);
-      camera.position.set(0, 5, 31);
+      scene.fog = new THREE.FogExp2(0x041219, 0.012);
+      const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 180);
+      camera.position.set(0, 6, 35);
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-      renderer.setClearColor(0x061117, 1);
+      renderer.setClearColor(0x041219, 1);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.NoToneMapping;
       mount.replaceChildren(renderer.domElement);
       renderer.domElement.setAttribute(
         "aria-label",
@@ -334,10 +335,24 @@ export function MemoryUniverse(props: {
       controls.autoRotateSpeed = 0.12;
 
       const positions = layoutNodes(nodes, THREE);
-      const geometry = new THREE.IcosahedronGeometry(0.13, 1);
-      const material = new THREE.MeshBasicMaterial({ vertexColors: true });
+      const geometry = new THREE.IcosahedronGeometry(0.17, 1);
+      const material = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        toneMapped: false,
+      });
       const mesh = new THREE.InstancedMesh(geometry, material, nodes.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      const haloMaterial = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.42,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const halos = new THREE.InstancedMesh(geometry, haloMaterial, nodes.length);
+      halos.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      halos.renderOrder = 2;
       const dummy = new THREE.Object3D();
       let currentHidden: ReadonlySet<string> = hiddenKindsRef.current;
       let currentSelection = selectedIdRef.current;
@@ -354,14 +369,20 @@ export function MemoryUniverse(props: {
           dummy.scale.setScalar(scale);
           dummy.updateMatrix();
           mesh.setMatrixAt(index, dummy.matrix);
+          dummy.scale.setScalar(scale * (node.id === currentHighlight ? 2.15 : 1.75));
+          dummy.updateMatrix();
+          halos.setMatrixAt(index, dummy.matrix);
           const color = new THREE.Color(colorForKind(node.kind, mode));
           if (node.id === currentHighlight) color.offsetHSL(0, 0.04, 0.2);
           mesh.setColorAt(index, color);
+          halos.setColorAt(index, color.clone().offsetHSL(0, 0.06, 0.08));
         });
         mesh.instanceMatrix.needsUpdate = true;
+        halos.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        if (halos.instanceColor) halos.instanceColor.needsUpdate = true;
       };
-      scene.add(mesh);
+      scene.add(mesh, halos);
 
       const renderedEdges = [...graph.edges]
         .sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id))
@@ -387,8 +408,9 @@ export function MemoryUniverse(props: {
       const edgeMaterial = new THREE.LineBasicMaterial({
         vertexColors: true,
         transparent: true,
-        opacity: mode === "evidence" ? 0.1 : 0.22,
+        opacity: mode === "evidence" ? 0.2 : 0.3,
         blending: THREE.AdditiveBlending,
+        toneMapped: false,
       });
       const lines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
       scene.add(lines);
@@ -468,7 +490,7 @@ export function MemoryUniverse(props: {
           }
         }
         highlightGeometry.setFromPoints(points);
-        edgeMaterial.opacity = id ? 0.025 : mode === "evidence" ? 0.1 : 0.22;
+        edgeMaterial.opacity = id ? 0.045 : mode === "evidence" ? 0.2 : 0.3;
         setNodeInstances();
       };
 
@@ -531,7 +553,7 @@ export function MemoryUniverse(props: {
       const reset = () => {
         currentSelection = undefined;
         currentHighlight = undefined;
-        cameraGoal.set(0, 5, 31);
+        cameraGoal.set(0, 6, 35);
         targetGoal.set(0, 0, 0);
         setHighlight(undefined);
       };
@@ -587,6 +609,7 @@ export function MemoryUniverse(props: {
         controls.dispose();
         geometry.dispose();
         material.dispose();
+        haloMaterial.dispose();
         edgeGeometry.dispose();
         edgeMaterial.dispose();
         highlightGeometry.dispose();
@@ -858,15 +881,19 @@ function layoutNodes(
   ]));
   kinds.forEach((kind, kindIndex) => {
     const group = grouped.get(kind) || [];
-    const baseRadius = 3.4 + kindIndex * Math.min(1.8, 9.8 / Math.max(kinds.length, 1));
     group.forEach((node, index) => {
       const ratio = (index + 0.5) / Math.max(group.length, 1);
       const angle = index * 2.399963 + seeded(node.id) * Math.PI * 2;
-      const radius = baseRadius + (ratio - 0.5) * 1.7 + (seeded(`${node.id}:r`) - 0.5) * 0.7;
-      const inclination = (kindIndex % 2 ? -1 : 1) * (0.12 + kindIndex * 0.018);
+      const isConceptField = kind === "concept" && group.length > 100;
+      const baseRadius = isConceptField ? 2.4 : 12.5 + kindIndex * 1.85;
+      const radius = isConceptField
+        ? baseRadius + Math.sqrt(ratio) * 9.8 + (seeded(`${node.id}:r`) - 0.5) * 0.65
+        : baseRadius + (ratio - 0.5) * 1.5 + (seeded(`${node.id}:r`) - 0.5) * 0.55;
+      const inclination = (kindIndex % 2 ? -1 : 1) * (0.07 + kindIndex * 0.012);
+      const depth = (seeded(`${node.id}:depth`) - 0.5) * (isConceptField ? 4.8 : 2.2);
       positions.set(node.id, new THREE.Vector3(
         Math.cos(angle) * radius,
-        Math.sin(angle * 1.7) * (0.55 + ratio * 2.1) + Math.sin(angle) * radius * inclination,
+        depth + Math.sin(angle) * radius * inclination,
         Math.sin(angle) * radius,
       ));
     });
@@ -880,28 +907,33 @@ function createObservatory(
 ) {
   const group = new THREE.Group();
   const resources: Array<{ dispose: () => void }> = [];
-  const coreGeometry = new THREE.SphereGeometry(0.72, 28, 28);
+  const coreGeometry = new THREE.SphereGeometry(0.9, 28, 28);
   const coreMaterial = new THREE.MeshBasicMaterial({
     color: 0x8df0d1,
     transparent: true,
-    opacity: 0.22,
+    opacity: 0.38,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
+    toneMapped: false,
   });
   const core = new THREE.Mesh(coreGeometry, coreMaterial);
   group.add(core);
   resources.push(coreGeometry, coreMaterial);
 
   for (let index = 0; index < Math.min(ringCount + 1, 10); index += 1) {
-    const radius = 3.4 + index * Math.min(1.8, 9.8 / Math.max(ringCount, 1));
+    const radius = index === 0
+      ? 5.4
+      : 12.5 + index * Math.min(1.85, 10.5 / Math.max(ringCount, 1));
     const curve = new THREE.EllipseCurve(0, 0, radius, radius * (0.93 + index % 2 * 0.035));
     const ringGeometry = new THREE.BufferGeometry().setFromPoints(
       curve.getPoints(160).map((point) => new THREE.Vector3(point.x, 0, point.y)),
     );
     const ringMaterial = new THREE.LineBasicMaterial({
-      color: index % 2 ? 0x315b63 : 0x295248,
+      color: index % 2 ? 0x4d8492 : 0x3f806f,
       transparent: true,
-      opacity: index === 0 ? 0.28 : 0.12,
+      opacity: index === 0 ? 0.32 : 0.2,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
     });
     const ring = new THREE.LineLoop(ringGeometry, ringMaterial);
     ring.rotation.z = (index % 2 ? -1 : 1) * (0.035 + index * 0.008);
@@ -924,9 +956,12 @@ function createObservatory(
   starGeometry.setAttribute("position", new THREE.Float32BufferAttribute(starPositions, 3));
   const starMaterial = new THREE.PointsMaterial({
     color: 0xa7e7d6,
-    size: 0.06,
+    size: 0.09,
     transparent: true,
-    opacity: 0.46,
+    opacity: 0.68,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
   });
   group.add(new THREE.Points(starGeometry, starMaterial));
   resources.push(starGeometry, starMaterial);
