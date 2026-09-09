@@ -20,6 +20,7 @@ import {
 import { listMemories } from "@/lib/memory/store";
 import {
   buildUserPrivateMemoryAccessBindingV1,
+  memoryAccessBindingSha256,
   memoryAccessBindingAllows,
   memoryAccessBindingV1Schema,
   MEMORY_PURPOSE_IDS,
@@ -53,6 +54,7 @@ type RebuildMemoryGraphOptions = {
   memoryLimit?: number;
   traceLimit?: number;
   accessScope?: DatabaseMemoryAccessScope;
+  includeLegacyUnattributed?: boolean;
 };
 
 type SearchMemoryGraphOptions = {
@@ -199,7 +201,10 @@ export async function rebuildMemoryGraph(options: RebuildMemoryGraphOptions = {}
 }
 
 export async function rebuildMemoryGraphSystemScoped(
-  options: Omit<RebuildMemoryGraphOptions, "accessScope"> & {
+  options: Omit<
+    RebuildMemoryGraphOptions,
+    "accessScope" | "includeLegacyUnattributed"
+  > & {
     auditReason: string;
   },
 ) {
@@ -209,7 +214,15 @@ export async function rebuildMemoryGraphSystemScoped(
   // to create or alter objects.
   if (hasDatabaseUrl()) await ensureDatabaseSchema();
   return runWithDatabaseSystemScope(options.auditReason, () =>
-    rebuildMemoryGraphForTenant(options, tenantId, undefined, true)
+    rebuildMemoryGraphForTenant({
+      ...options,
+      // An all-tenant maintenance identity cannot infer ownership for legacy
+      // content. Fail closed instead of projecting unattributed data into a
+      // compatibility graph visible outside an actor boundary.
+      includeLegacyUnattributed: false,
+      memoryLimit: options.memoryLimit || 2_000,
+      traceLimit: options.traceLimit || 1_000,
+    }, tenantId, undefined, true)
   );
 }
 
@@ -385,15 +398,20 @@ async function collectMemoryGraphAggregate(
       options.accessScope,
     ),
   ]);
-  const selectedMemories = memories.slice(0, memoryLimit);
+  const selectedMemories = memories.slice(0, memoryLimit).filter((memory) =>
+    options.includeLegacyUnattributed !== false || Boolean(memory.accessBinding)
+  );
+  const selectedTraces = traces.filter((trace) =>
+    options.includeLegacyUnattributed !== false || Boolean(trace.accessBinding)
+  );
   return {
     aggregate: aggregateGraphByAccessCohort(
       selectedMemories,
-      traces,
+      selectedTraces,
       tenantId,
     ),
     selectedMemories,
-    traces,
+    traces: selectedTraces,
   };
 }
 
@@ -418,36 +436,31 @@ function aggregateGraphByAccessCohort(
     ),
   );
 
-  const actorIds = new Set<string>();
+  const cohorts = new Map<
+    string,
+    { memories: MemoryRecord[]; traces: TraceSeed[] }
+  >();
   for (const record of [...memories, ...traces]) {
     if (!record.accessBinding) continue;
-    if (record.accessBinding.visibility !== "user_private") {
-      throw new Error(
-        "Memory graph maintenance encountered an unsupported scoped cohort.",
-      );
-    }
-    actorIds.add(record.accessBinding.ownerActorId);
+    const key = scopedGraphIdentityNamespace(tenantId, record.accessBinding);
+    const cohort = cohorts.get(key) || { memories: [], traces: [] };
+    if ("query" in record) cohort.traces.push(record);
+    else cohort.memories.push(record);
+    cohorts.set(key, cohort);
   }
 
   const accessBoundAt = new Date().toISOString();
-  for (const ownerActorId of actorIds) {
+  for (const [identityNamespace, cohort] of cohorts) {
     const actorAggregate = aggregateGraph(
-      memories.filter((memory) =>
-        memory.accessBinding?.ownerActorId === ownerActorId
-      ),
-      traces.filter((trace) =>
-        trace.accessBinding?.ownerActorId === ownerActorId
-      ),
+      cohort.memories,
+      cohort.traces,
       tenantId,
-      userPrivateGraphIdentityNamespace(tenantId, ownerActorId),
+      identityNamespace,
     );
-    const accessBinding = buildUserPrivateMemoryAccessBindingV1({
-      tenantId,
-      ownerActorId,
-      originPurpose: "memory.graph.projection",
-      allowedPurposeIds: USER_PRIVATE_GRAPH_PURPOSE_IDS,
+    const accessBinding = graphProjectionAccessBinding(
+      [...cohort.memories, ...cohort.traces],
       accessBoundAt,
-    });
+    );
     for (const node of actorAggregate.nodes.values()) {
       node.accessBinding = accessBinding;
     }
@@ -462,6 +475,49 @@ function aggregateGraphByAccessCohort(
 function mergeGraphAggregate(target: GraphAggregate, source: GraphAggregate) {
   for (const node of source.nodes.values()) mergeNode(target.nodes, node);
   for (const edge of source.edges.values()) mergeEdge(target.edges, edge);
+}
+
+function graphProjectionAccessBinding(
+  records: Array<{ accessBinding?: MemoryAccessBindingV1 }>,
+  accessBoundAt: string,
+) {
+  const bindings = records.flatMap((record) =>
+    record.accessBinding ? [record.accessBinding] : []
+  );
+  const source = bindings[0];
+  if (!source) {
+    throw new Error("A scoped graph cohort requires an access binding.");
+  }
+  const allowedPurposeIds = source.allowedPurposeIds.filter((purposeId) =>
+    bindings.every((binding) => binding.allowedPurposeIds.includes(purposeId))
+  );
+  if (!allowedPurposeIds.length) {
+    throw new Error(
+      "A scoped graph cohort has no shared access purpose for its projection.",
+    );
+  }
+  const sensitivity = bindings.reduce<MemoryAccessBindingV1["sensitivity"]>(
+    (highest, binding) =>
+      sensitivityRank(binding.sensitivity) > sensitivityRank(highest)
+        ? binding.sensitivity
+        : highest,
+    source.sensitivity,
+  );
+  const draft = {
+    ...source,
+    originPurpose: "memory.graph.projection",
+    allowedPurposeIds,
+    sensitivity,
+    accessBoundAt,
+  };
+  return memoryAccessBindingV1Schema.parse({
+    ...draft,
+    accessScopeSha256: memoryAccessBindingSha256(draft),
+  });
+}
+
+function sensitivityRank(value: MemoryAccessBindingV1["sensitivity"]) {
+  return ["public", "internal", "confidential", "restricted"].indexOf(value);
 }
 
 export async function indexMemoryGraphRecords(
@@ -2117,12 +2173,34 @@ function userPrivateGraphIdentityNamespace(
   return `${tenantId}\0user_private\0${ownerActorId}`;
 }
 
+function scopedGraphIdentityNamespace(
+  tenantId: string,
+  accessBinding: MemoryAccessBindingV1,
+) {
+  if (accessBinding.visibility === "user_private") {
+    return userPrivateGraphIdentityNamespace(
+      tenantId,
+      accessBinding.ownerActorId,
+    );
+  }
+  if (accessBinding.visibility === "agent_private") {
+    return `${tenantId}\0agent_private\0${accessBinding.ownerActorId}\0${accessBinding.ownerAgentId}`;
+  }
+  if (accessBinding.visibility === "mission_shared") {
+    return `${tenantId}\0mission_shared\0${accessBinding.missionId}`;
+  }
+  if (accessBinding.visibility === "project_shared") {
+    return `${tenantId}\0project_shared\0${accessBinding.workspaceId}\0${accessBinding.projectId}`;
+  }
+  return `${tenantId}\0workspace_shared\0${accessBinding.workspaceId}`;
+}
+
 function graphStorageNamespace(
   tenantId: string,
   accessBinding?: MemoryAccessBindingV1,
 ) {
-  return accessBinding?.visibility === "user_private"
-    ? userPrivateGraphIdentityNamespace(tenantId, accessBinding.ownerActorId)
+  return accessBinding
+    ? scopedGraphIdentityNamespace(tenantId, accessBinding)
     : tenantId;
 }
 
