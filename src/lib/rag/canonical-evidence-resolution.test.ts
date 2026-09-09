@@ -99,4 +99,72 @@ describe("canonical knowledge evidence resolution", () => {
       }),
     ).rejects.toThrow("does not match");
   });
+
+  it("upgrades an exact legacy document to canonical source evidence on retry", async () => {
+    const tenantId = "tenant-legacy-repair";
+    const content = "The workspace source has an immutable evidence binding.";
+    const chunks = chunkText(content);
+    const idempotencyKey = "google:drive:legacy-document";
+    const legacy = await createKnowledgeDocument({
+      idempotencyKey,
+      tenantId,
+      title: "Legacy Drive document",
+      content,
+      source: "google:drive:legacy-document",
+      sourceType: "api",
+      tags: ["connected-source", "google", "drive"],
+      chunks,
+    });
+    expect(legacy.lineage).toBeUndefined();
+
+    const canonicalSourceWrite = buildCanonicalTextSourceWrite({
+      lineage: {
+        executionScope: createExecutionScope({
+          tenantId,
+          initiatingActorId: "actor-legacy-repair",
+          executingPrincipalType: "system",
+          executingPrincipalId: "connector.google.personal_sync",
+          correlationId: "legacy-repair",
+          purpose: "connector.google.drive.ingest",
+        }),
+        connectionId: "google-workspace",
+        adapterId: "google.personal_sync.drive",
+        externalItemId: "drive:legacy-document",
+        sourceKind: "file",
+        capturedAt: "2026-09-09T00:00:00.000Z",
+      },
+      content,
+      normalizedContent: normalizeTextForChunking(content),
+      chunks,
+    });
+    const repaired = await createKnowledgeDocument({
+      idempotencyKey,
+      tenantId,
+      title: "Legacy Drive document",
+      content,
+      source: "google:drive:legacy-document",
+      sourceType: "api",
+      tags: ["connected-source", "google", "drive"],
+      chunks,
+      canonicalSourceWrite,
+    });
+
+    expect(repaired.lineage).toEqual({
+      sourceItemId: canonicalSourceWrite.adapterOutput.sourceItem.sourceItemId,
+      sourceRevisionId:
+        canonicalSourceWrite.adapterOutput.sourceRevision.sourceRevisionId,
+      evidenceUnitIdsByChunkIndex:
+        canonicalSourceWrite.evidenceUnitIdsByChunkIndex,
+    });
+    expect(repaired.chunks[0]).toMatchObject({
+      sourceRevisionId:
+        canonicalSourceWrite.adapterOutput.sourceRevision.sourceRevisionId,
+      evidenceUnitId: canonicalSourceWrite.evidenceUnitIdsByChunkIndex[0],
+    });
+    await expect(
+      getCanonicalKnowledgeEvidenceByChunkIds([repaired.chunks[0].id], {
+        tenantId,
+      }),
+    ).resolves.toHaveLength(1);
+  });
 });

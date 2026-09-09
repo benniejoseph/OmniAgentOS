@@ -1341,7 +1341,56 @@ async function recoverExistingKnowledgeLineage(
     ) {
       throw new Error("Legacy knowledge document has partial source lineage.");
     }
-    return undefined;
+    if (!write) return undefined;
+    const repairedLineage = await persistCanonicalSourceWrite(sql, write, {
+      documentId: requestedDocument.id,
+    });
+    const repairedDocuments = await sql`
+      UPDATE omni_knowledge_documents
+      SET source_item_id = ${repairedLineage.sourceItemId},
+          source_revision_id = ${repairedLineage.sourceRevisionId}
+      WHERE tenant_id = ${requestedDocument.tenantId}
+        AND id = ${requestedDocument.id}
+        AND source_item_id IS NULL
+        AND source_revision_id IS NULL
+      RETURNING id
+    `;
+    if (repairedDocuments.length !== 1) {
+      throw new Error(
+        "Legacy knowledge document could not be bound to canonical source lineage.",
+      );
+    }
+    const chunkLineage = requestedChunks.map((chunk) => ({
+      id: chunk.id,
+      chunk_index: chunk.chunkIndex,
+      source_revision_id: repairedLineage.sourceRevisionId,
+      evidence_unit_id:
+        repairedLineage.evidenceUnitIdsByChunkIndex[chunk.chunkIndex],
+    }));
+    const repairedChunks = await sql`
+      UPDATE omni_knowledge_chunks chunk
+      SET source_revision_id = lineage.source_revision_id,
+          evidence_unit_id = lineage.evidence_unit_id
+      FROM jsonb_to_recordset(${chunkLineage}::jsonb) AS lineage(
+        id text,
+        chunk_index integer,
+        source_revision_id text,
+        evidence_unit_id text
+      )
+      WHERE chunk.tenant_id = ${requestedDocument.tenantId}
+        AND chunk.document_id = ${requestedDocument.id}
+        AND chunk.id = lineage.id
+        AND chunk.chunk_index = lineage.chunk_index
+        AND chunk.source_revision_id IS NULL
+        AND chunk.evidence_unit_id IS NULL
+      RETURNING chunk.id
+    `;
+    if (repairedChunks.length !== requestedChunks.length) {
+      throw new Error(
+        "Legacy knowledge chunks could not be bound to canonical evidence lineage.",
+      );
+    }
+    return repairedLineage;
   }
   if (!hasSourceItem || !hasSourceRevision) {
     throw new Error("Stored knowledge document has partial source lineage.");
@@ -1868,7 +1917,22 @@ function recoverFileKnowledgeLineage(
   );
   const hasSourceItem = Boolean(existingDocument.sourceItemId);
   const hasSourceRevision = Boolean(existingDocument.sourceRevisionId);
-  if (!hasSourceItem && !hasSourceRevision) return undefined;
+  if (!hasSourceItem && !hasSourceRevision) {
+    if (!write) return undefined;
+    const output = sourceAdapterUpsertV1Schema.parse(write.adapterOutput);
+    ledger.sourceLineage = mergeCanonicalSourceLedger(
+      ledger.sourceLineage,
+      write,
+    );
+    existingDocument.sourceItemId = output.sourceItem.sourceItemId;
+    existingDocument.sourceRevisionId = output.sourceRevision.sourceRevisionId;
+    for (const chunk of existingChunks) {
+      chunk.sourceRevisionId = output.sourceRevision.sourceRevisionId;
+      chunk.evidenceUnitId =
+        write.evidenceUnitIdsByChunkIndex[chunk.chunkIndex];
+    }
+    return expectedKnowledgeLineage(write);
+  }
   if (!hasSourceItem || !hasSourceRevision) {
     throw new Error("Stored knowledge document has partial source lineage.");
   }
