@@ -4,18 +4,25 @@ import { clsx } from "clsx";
 import {
   AlertTriangle,
   ArrowRight,
+  Braces,
+  CalendarDays,
   CheckCircle2,
   CircleHelp,
-  Clock3,
+  Cloud,
   Coins,
   DatabaseZap,
+  HardDrive,
+  Image as ImageIcon,
   KeyRound,
   Loader2,
+  Mail,
   RefreshCw,
+  ServerCog,
   ShieldCheck,
   Unplug,
 } from "lucide-react";
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 
 import type { TruthfulIntegrationsOverview } from "@/lib/connectors/truthful-overview";
@@ -23,7 +30,9 @@ import styles from "./integrations-workspace.module.css";
 
 const OVERVIEW_VERSION = "p11.7-truthful-integrations:1";
 
-export function IntegrationTruthPanel() {
+type InstalledIntegration = TruthfulIntegrationsOverview["installed"][number];
+
+export function IntegrationTruthPanel({ children }: { children?: ReactNode }) {
   const [overview, setOverview] = useState<TruthfulIntegrationsOverview>();
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string>();
@@ -57,186 +66,290 @@ export function IntegrationTruthPanel() {
   const unavailableSources = overview
     ? Object.entries(overview.inventory).filter(([, source]) => source.state === "unavailable")
     : [];
+  const googleIntegrations = overview?.installed.filter((integration) => integration.kind === "google_service") || [];
+  const otherIntegrations = overview?.installed.filter((integration) => integration.kind !== "google_service") || [];
 
   return (
-    <section className={styles.truthPanel} aria-labelledby="integration-truth-title" aria-busy={state === "loading"}>
-      <header className={styles.truthHeader}>
-        <div>
-          <p>Live access truth</p>
-          <h1 id="integration-truth-title">What Asael can access and do now</h1>
-          <span>Installed systems come from owner-scoped grants and reviewed contracts. Catalog ideas never count as connected.</span>
-        </div>
-        <button type="button" onClick={() => void load()} disabled={state === "loading"}>
-          {state === "loading" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
-          Refresh truth
-        </button>
-      </header>
-
-      {state === "error" ? (
-        <div className={styles.truthError} role="alert">
-          <AlertTriangle size={17} aria-hidden="true" />
-          <div><strong>Access truth is unavailable</strong><span>{error}</span></div>
-          <button type="button" onClick={() => void load()}>Retry</button>
-        </div>
-      ) : null}
-
-      {overview ? (
-        <>
-          <div className={styles.truthSummary} aria-label="Integration status summary">
-            <SummaryStat label="Installed" value={overview.summary.installed} icon={DatabaseZap} />
-            <SummaryStat label="Working" value={overview.summary.working} icon={CheckCircle2} tone="working" />
-            <SummaryStat label="Degraded" value={overview.summary.degraded} icon={Clock3} tone="degraded" />
-            <SummaryStat label="Needs action" value={overview.summary.actionRequired} icon={AlertTriangle} tone="attention" />
-            <SummaryStat label="Not installed" value={overview.summary.suggestions} icon={Unplug} />
+    <>
+      <section className={styles.truthPanel} aria-labelledby="connected-systems-title" aria-busy={state === "loading"}>
+        <header className={styles.truthHeader}>
+          <div>
+            <h2 id="connected-systems-title">Connected systems</h2>
+            <p>Only installed, owner-scoped records appear here. Catalog ideas never count as connected.</p>
           </div>
+          <button type="button" onClick={() => void load()} disabled={state === "loading"}>
+            {state === "loading" ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+            Refresh status
+          </button>
+        </header>
 
-          <div className={styles.inventoryStrip} aria-label="Integration inventory sources">
-            {Object.entries(overview.inventory).map(([name, source]) => (
-              <span key={name} className={clsx(source.state === "ready" ? styles.inventoryReady : styles.inventoryUnavailable)} title={source.detail}>
-                {source.state === "ready" ? <CheckCircle2 size={12} aria-hidden="true" /> : <CircleHelp size={12} aria-hidden="true" />}
-                {inventoryLabel(name)} · {source.state === "ready" ? "Current" : "Unavailable"}
-              </span>
-            ))}
+        {state === "error" ? (
+          <div className={styles.truthError} role="alert">
+            <AlertTriangle size={18} aria-hidden="true" />
+            <div><strong>Connection status is unavailable</strong><span>{error}</span></div>
+            <button type="button" onClick={() => void load()}>Try again</button>
           </div>
+        ) : null}
 
-          {unavailableSources.length ? (
-            <div className={styles.partialNotice} role="status">
-              <CircleHelp size={16} aria-hidden="true" />
-              <p><strong>Partial view.</strong> {unavailableSources.map(([, source]) => source.detail).join(" ")}</p>
+        {overview ? (
+          <>
+            <div className={styles.truthSummary} aria-label="Integration status summary">
+              <SummaryStat label="Connected" description="Installed records" value={overview.summary.installed} icon={DatabaseZap} />
+              <SummaryStat label="Working" description="Ready to use" value={overview.summary.working} icon={CheckCircle2} tone="working" />
+              <SummaryStat label="Syncing or partial" description="Still becoming current" value={overview.summary.degraded} icon={RefreshCw} tone="degraded" />
+              <SummaryStat label="Needs attention" description="A decision or fix is required" value={overview.summary.actionRequired} icon={AlertTriangle} tone="attention" />
+              <SummaryStat label="Available" description="Not connected yet" value={overview.summary.suggestions} icon={Unplug} />
             </div>
-          ) : null}
 
-          <section className={styles.installedSection} aria-labelledby="installed-integrations-title">
-            <div className={styles.sectionHeading}>
-              <div><p>Installed</p><h2 id="installed-integrations-title">Connected and retained systems</h2></div>
-              <span>{overview.installed.length} verified records</span>
+            {unavailableSources.length ? (
+              <div className={styles.partialNotice} role="status">
+                <CircleHelp size={17} aria-hidden="true" />
+                <p><strong>This view is partial.</strong> {unavailableSources.map(([, source]) => source.detail).join(" ")}</p>
+              </div>
+            ) : null}
+
+            <div className={styles.systemList}>
+              {googleIntegrations.length ? (
+                <ConnectedSystem
+                  title="Google Workspace"
+                  description="Gmail, Calendar, Drive, and selected Photos use one Google connection. Each source keeps its own sync proof."
+                  integrations={googleIntegrations}
+                  manageHref="#personal-sources"
+                />
+              ) : null}
+
+              {otherIntegrations.map((integration) => (
+                <ConnectedSystem
+                  key={integration.id}
+                  title={integration.name}
+                  description={systemDescription(integration)}
+                  integrations={[integration]}
+                  manageHref={managementHref(integration)}
+                />
+              ))}
+
+              {!overview.installed.length ? (
+                <div className={styles.emptyTruth}>
+                  <Unplug size={20} aria-hidden="true" />
+                  <div><strong>No connected systems are visible</strong><span>If an inventory source is unavailable, its connections remain unknown rather than being shown as disconnected.</span></div>
+                </div>
+              ) : null}
             </div>
-            {overview.installed.length ? (
-              <div className={styles.integrationGrid}>
-                {overview.installed.map((integration) => (
-                  <article key={integration.id} className={clsx(styles.integrationCard, styles[`state_${integration.state}`])}>
-                    <header>
-                      <div>
-                        <p>{adapterLabel(integration.adapter)} · {integration.installation === "installed" ? "Installed" : "Retained read-only"}</p>
-                        <h3>{integration.name}</h3>
-                      </div>
-                      <StatusPill state={integration.state} />
-                    </header>
 
-                    <div className={styles.factGrid}>
-                      <Fact icon={ShieldCheck} label="Access" value={permissionLabel(integration.permissions.mode)} />
-                      <Fact icon={DatabaseZap} label="Operations" value={`${integration.permissions.activeOperations} active · ${integration.permissions.pendingReviewOperations} pending`} />
-                      <Fact icon={RefreshCw} label="Sync" value={syncLabel(integration.sync.status)} />
-                      <Fact icon={Clock3} label="Freshness" value={freshnessLabel(integration.sync.freshness)} />
-                      <Fact icon={KeyRound} label="Cursor" value={cursorLabel(integration.sync.cursor.state)} />
-                      <Fact icon={Coins} label="30-day cost" value={costLabel(integration.cost)} />
-                    </div>
-
-                    <div className={styles.coverageBlock}>
-                      <span>Coverage · {coverageLabel(integration.sync.coverage)}</span>
-                      <p>{integration.sync.coverageDetail}</p>
-                      <small>{integration.sync.cursor.detail}</small>
-                    </div>
-
-                    <div className={styles.permissionBlock}>
-                      <div>
-                        <span>Granted</span>
-                        <p>{integration.permissions.granted.length ? integration.permissions.granted.join(" · ") : "No active access is verified."}</p>
-                      </div>
-                      {integration.permissions.missing.length ? (
-                        <div className={styles.missingPermissions}>
-                          <span>Missing or unresolved</span>
-                          <p>{integration.permissions.missing.join(" · ")}</p>
-                        </div>
-                      ) : null}
-                    </div>
-
-                    {integration.failure.state !== "none" ? (
-                      <div className={styles.failureBlock} role={integration.failure.state === "present" ? "alert" : "status"}>
-                        <AlertTriangle size={14} aria-hidden="true" />
-                        <p><strong>{integration.failure.message}</strong><span>{integration.failure.recovery}</span></p>
-                      </div>
-                    ) : null}
-
-                    <footer>
-                      <p><strong>Next:</strong> {integration.nextAction}</p>
-                      <Link href={integration.manageHref}>Manage <ArrowRight size={13} aria-hidden="true" /></Link>
-                    </footer>
-                  </article>
+            <details className={styles.inventoryDetails}>
+              <summary>
+                <span><ShieldCheck size={15} aria-hidden="true" />How this status is verified</span>
+                <small>{unavailableSources.length ? `${unavailableSources.length} source${unavailableSources.length === 1 ? "" : "s"} unavailable` : "All inventory sources responded"}</small>
+              </summary>
+              <div className={styles.inventoryStrip} aria-label="Integration inventory sources">
+                {Object.entries(overview.inventory).map(([name, source]) => (
+                  <span key={name} className={source.state === "ready" ? styles.inventoryReady : styles.inventoryUnavailable} title={source.detail}>
+                    {source.state === "ready" ? <CheckCircle2 size={13} aria-hidden="true" /> : <CircleHelp size={13} aria-hidden="true" />}
+                    <strong>{inventoryLabel(name)}</strong>
+                    <small>{source.state === "ready" ? "Current" : "Unavailable"}</small>
+                  </span>
                 ))}
               </div>
-            ) : (
-              <div className={styles.emptyTruth}>No installed integration record is visible. Unavailable inventories remain unknown, not disconnected.</div>
-            )}
-          </section>
+            </details>
+          </>
+        ) : state === "loading" ? (
+          <div className={styles.truthLoading} role="status">
+            <Loader2 size={20} className="animate-spin" aria-hidden="true" />
+            Checking connections, permissions, sync progress, and recorded usage…
+          </div>
+        ) : null}
+      </section>
 
-          <section className={styles.suggestionsSection} aria-labelledby="integration-suggestions-title">
-            <div className={styles.sectionHeading}>
-              <div><p>Not installed</p><h2 id="integration-suggestions-title">Catalog suggestions</h2></div>
-              <span>Suggestions cannot access data or run tools</span>
+      {children}
+
+      {overview ? (
+        <section className={styles.availableSection} aria-labelledby="available-integrations-title">
+          <header className={styles.sectionHeading}>
+            <div>
+              <h2 id="available-integrations-title">Available integrations</h2>
+              <p>These are options you can add. They cannot read data or run tools until setup is complete.</p>
             </div>
-            <div className={styles.suggestionGrid}>
+            <span>{overview.suggestions.length} options</span>
+          </header>
+          {overview.suggestions.length ? (
+            <div className={styles.suggestionList}>
               {overview.suggestions.map((suggestion) => (
                 <article key={suggestion.id}>
-                  <header><div><p>{adapterLabel(suggestion.adapter)}</p><h3>{suggestion.name}</h3></div><span>{suggestionLabel(suggestion.state)}</span></header>
-                  <p>{suggestion.detail}</p>
-                  <small>{suggestion.capabilities.join(" · ")}</small>
+                  <div>
+                    <span>{adapterLabel(suggestion.adapter)}</span>
+                    <h3>{suggestion.name}</h3>
+                    <p>{suggestion.detail}</p>
+                  </div>
+                  <div className={styles.suggestionMeta}>
+                    <strong>{suggestionLabel(suggestion.state)}</strong>
+                    <small>{suggestion.capabilities.join(" · ")}</small>
+                  </div>
                 </article>
               ))}
             </div>
-          </section>
-
-          <p className={styles.disclosureNote}>Costs show only usage that Asael can attribute from recorded receipts. Unknown never means free, and no recorded activity never means a zero provider subscription bill.</p>
-        </>
-      ) : state === "loading" ? (
-        <div className={styles.truthLoading} role="status"><Loader2 size={20} className="animate-spin" aria-hidden="true" /> Reading grants, contracts, sync checkpoints, and cost receipts…</div>
+          ) : (
+            <div className={styles.emptyTruth}>No additional integrations are available in the catalog.</div>
+          )}
+          <p className={styles.disclosureNote}>Costs come only from recorded usage receipts. Unknown never means free, and no recorded activity does not mean a provider subscription costs zero.</p>
+        </section>
       ) : null}
-    </section>
+    </>
   );
 }
 
-function SummaryStat({ label, value, icon: Icon, tone }: { label: string; value: number; icon: typeof DatabaseZap; tone?: "working" | "degraded" | "attention" }) {
-  return <div className={clsx(styles.summaryStat, tone && styles[`summary_${tone}`])}><Icon size={15} aria-hidden="true" /><span><strong>{value}</strong><small>{label}</small></span></div>;
+function ConnectedSystem({
+  title,
+  description,
+  integrations,
+  manageHref,
+}: {
+  title: string;
+  description: string;
+  integrations: InstalledIntegration[];
+  manageHref: string;
+}) {
+  const status = combinedState(integrations);
+  return (
+    <article className={styles.connectedSystem}>
+      <header className={styles.systemHeader}>
+        <div className={styles.systemIdentity}>
+          <span><SystemIcon integration={integrations.every((integration) => integration.kind === "google_service") ? undefined : integrations[0]} /></span>
+          <div><h3>{title}</h3><p>{description}</p></div>
+        </div>
+        <div className={styles.systemActions}>
+          <StatusPill state={status} />
+          <Link href={manageHref}>Manage system <ArrowRight size={14} aria-hidden="true" /></Link>
+        </div>
+      </header>
+      <ul className={styles.sourceList}>
+        {integrations.map((integration) => <IntegrationSourceRow key={integration.id} integration={integration} />)}
+      </ul>
+    </article>
+  );
 }
 
-function Fact({ icon: Icon, label, value }: { icon: typeof DatabaseZap; label: string; value: string }) {
-  return <div><Icon size={13} aria-hidden="true" /><span><small>{label}</small><strong>{value}</strong></span></div>;
+function IntegrationSourceRow({ integration }: { integration: InstalledIntegration }) {
+  const needsAttention = integration.failure.state !== "none" || integration.state === "action_required";
+  return (
+    <li className={styles.sourceRow}>
+      <div className={styles.sourceIdentity}>
+        <span><SystemIcon integration={integration} /></span>
+        <div>
+          <strong>{integration.name}</strong>
+          <small>{needsAttention ? integration.failure.message : integration.nextAction}</small>
+        </div>
+      </div>
+      <dl className={styles.sourceFacts}>
+        <div><dt>Access</dt><dd>{permissionLabel(integration.permissions.mode)}</dd></div>
+        <div><dt>Sync</dt><dd>{syncLabel(integration.sync.status)}</dd></div>
+        <div><dt>Coverage</dt><dd>{coverageLabel(integration.sync.coverage)}</dd></div>
+        <div><dt>Last verified</dt><dd>{freshnessLabel(integration.sync.freshness)}</dd></div>
+      </dl>
+      <details className={styles.technicalDetails}>
+        <summary>Technical details</summary>
+        <dl>
+          <div><dt><KeyRound size={13} aria-hidden="true" />Sync checkpoint</dt><dd>{cursorLabel(integration.sync.cursor.state)}. {integration.sync.cursor.detail}</dd></div>
+          <div><dt><DatabaseZap size={13} aria-hidden="true" />Operations</dt><dd>{integration.permissions.activeOperations} active, {integration.permissions.pendingReviewOperations} awaiting review, {integration.permissions.disabledOperations} disabled.</dd></div>
+          <div><dt><ShieldCheck size={13} aria-hidden="true" />Granted access</dt><dd>{integration.permissions.granted.length ? integration.permissions.granted.join(" · ") : "No active access has been verified."}</dd></div>
+          <div><dt><Coins size={13} aria-hidden="true" />Recorded 30-day cost</dt><dd>{costLabel(integration.cost)}. {integration.cost.detail}</dd></div>
+        </dl>
+        <p><strong>Coverage:</strong> {integration.sync.coverageDetail}</p>
+        {integration.permissions.missing.length ? <p className={styles.missingAccess}><strong>Missing access:</strong> {integration.permissions.missing.join(" · ")}</p> : null}
+        {integration.failure.state !== "none" ? <p className={styles.recovery}><strong>How to recover:</strong> {integration.failure.recovery}</p> : null}
+      </details>
+    </li>
+  );
 }
 
-function StatusPill({ state }: { state: TruthfulIntegrationsOverview["installed"][number]["state"] }) {
-  const label = ({ working: "Working", degraded: "Degraded", action_required: "Action required", unavailable: "Unavailable" })[state];
-  return <span className={clsx(styles.statusPill, styles[`pill_${state}`])}>{label}</span>;
+function SummaryStat({
+  label,
+  description,
+  value,
+  icon: Icon,
+  tone,
+}: {
+  label: string;
+  description: string;
+  value: number;
+  icon: typeof DatabaseZap;
+  tone?: "working" | "degraded" | "attention";
+}) {
+  return (
+    <div className={clsx(styles.summaryStat, tone && styles[`summary_${tone}`])}>
+      <Icon size={17} aria-hidden="true" />
+      <span><strong>{value}</strong><span>{label}</span><small>{description}</small></span>
+    </div>
+  );
 }
 
-function permissionLabel(mode: TruthfulIntegrationsOverview["installed"][number]["permissions"]["mode"]) {
-  return ({ no_access: "No access", read_only: "Read only", read_write: "Read + write", write_approval_required: "Writes need approval", unclassified: "Read/write unresolved" })[mode];
+function StatusPill({ state }: { state: InstalledIntegration["state"] }) {
+  const label = ({ working: "Working", degraded: "Syncing or partial", action_required: "Needs attention", unavailable: "Unavailable" })[state];
+  return <span className={clsx(styles.statusPill, styles[`pill_${state}`])}><span aria-hidden="true" />{label}</span>;
 }
 
-function syncLabel(state: TruthfulIntegrationsOverview["installed"][number]["sync"]["status"]) {
-  return ({ not_applicable: "Not a sync source", not_started: "Not started", syncing: "In progress", current: "Current", stale: "Stale", partial: "Partial", error: "Failed", unavailable: "Unavailable" })[state];
+function SystemIcon({ integration }: { integration?: InstalledIntegration }) {
+  if (!integration) return <Cloud size={17} aria-hidden="true" />;
+  if (integration.kind === "mcp") return <ServerCog size={17} aria-hidden="true" />;
+  if (integration.kind === "openapi") return <Braces size={17} aria-hidden="true" />;
+  if (integration.name.toLowerCase().includes("gmail")) return <Mail size={17} aria-hidden="true" />;
+  if (integration.name.toLowerCase().includes("calendar")) return <CalendarDays size={17} aria-hidden="true" />;
+  if (integration.name.toLowerCase().includes("drive")) return <HardDrive size={17} aria-hidden="true" />;
+  if (integration.name.toLowerCase().includes("photo")) return <ImageIcon size={17} aria-hidden="true" />;
+  return <Cloud size={17} aria-hidden="true" />;
 }
 
-function cursorLabel(state: TruthfulIntegrationsOverview["installed"][number]["sync"]["cursor"]["state"]) {
-  return ({ not_applicable: "Not applicable", not_started: "Not started", advancing: "Advancing", checkpointed: "Checkpointed", unknown: "Unknown", unavailable: "Owner-only" })[state];
+function combinedState(integrations: InstalledIntegration[]): InstalledIntegration["state"] {
+  const rank: Record<InstalledIntegration["state"], number> = {
+    unavailable: 4,
+    action_required: 3,
+    degraded: 2,
+    working: 1,
+  };
+  return integrations.reduce<InstalledIntegration["state"]>((current, integration) =>
+    rank[integration.state] > rank[current] ? integration.state : current, "working");
 }
 
-function coverageLabel(state: TruthfulIntegrationsOverview["installed"][number]["sync"]["coverage"]) {
-  return ({ not_applicable: "Not applicable", none: "None", partial: "Partial", complete: "Complete", unknown: "Unknown" })[state];
+function managementHref(integration: InstalledIntegration) {
+  if (integration.kind === "mcp" || integration.kind === "openapi") return "#manage-connections";
+  return integration.manageHref;
 }
 
-function freshnessLabel(freshness: TruthfulIntegrationsOverview["installed"][number]["sync"]["freshness"]) {
-  if (freshness.state === "not_applicable") return "Not applicable";
-  if (freshness.state === "never") return "Never verified";
-  if (freshness.state === "unavailable" || freshness.ageSeconds === null) return "Unavailable";
-  return `${freshness.state === "stale" ? "Stale" : "Current"} · ${formatAge(freshness.ageSeconds)}`;
+function systemDescription(integration: InstalledIntegration) {
+  if (integration.kind === "mcp") return "A reviewed MCP server whose discovered operations run through Asael's tool controls.";
+  if (integration.kind === "openapi") return "A REST API imported as reviewed operations with explicit risk and approval rules.";
+  if (integration.kind === "salesforce") return "Customer records and activity synchronized from the connected Salesforce organization.";
+  return "An owner-connected source available to Asael.";
 }
 
-function costLabel(cost: TruthfulIntegrationsOverview["installed"][number]["cost"]) {
-  if (cost.state === "unavailable") return "Unavailable";
-  if (cost.state === "unknown") return "Unknown";
+function permissionLabel(mode: InstalledIntegration["permissions"]["mode"]) {
+  return ({ no_access: "No access", read_only: "Read only", read_write: "Read and write", write_approval_required: "Writes need approval", unclassified: "Access not classified" })[mode];
+}
+
+function syncLabel(syncState: InstalledIntegration["sync"]["status"]) {
+  return ({ not_applicable: "No sync needed", not_started: "Not started", syncing: "Syncing", current: "Current", stale: "Out of date", partial: "Partially synced", error: "Sync failed", unavailable: "Not available" })[syncState];
+}
+
+function cursorLabel(cursorState: InstalledIntegration["sync"]["cursor"]["state"]) {
+  return ({ not_applicable: "Not needed", not_started: "Not started", advancing: "Moving through history", checkpointed: "Saved", unknown: "Not verified", unavailable: "Owner-only" })[cursorState];
+}
+
+function coverageLabel(coverageState: InstalledIntegration["sync"]["coverage"]) {
+  return ({ not_applicable: "Not needed", none: "Nothing indexed", partial: "Partially indexed", complete: "Complete", unknown: "Not measured" })[coverageState];
+}
+
+function freshnessLabel(freshness: InstalledIntegration["sync"]["freshness"]) {
+  if (freshness.state === "not_applicable") return "Not needed";
+  if (freshness.state === "never") return "Never";
+  if (freshness.state === "unavailable" || freshness.ageSeconds === null) return "Not available";
+  return `${freshness.state === "stale" ? "Out of date" : "Current"}, ${formatAge(freshness.ageSeconds)}`;
+}
+
+function costLabel(cost: InstalledIntegration["cost"]) {
+  if (cost.state === "unavailable") return "Not available";
+  if (cost.state === "unknown") return "Not measured";
   if (cost.state === "no_recorded_activity") return "No recorded usage";
   const value = (cost.knownEstimatedCostMicrousd || 0) / 1_000_000;
-  return `${cost.state === "partial" ? "Partial · " : ""}$${value.toFixed(value < 0.01 ? 4 : 2)}`;
+  return `${cost.state === "partial" ? "Partial, " : ""}$${value.toFixed(value < 0.01 ? 4 : 2)}`;
 }
 
 function formatAge(seconds: number) {
@@ -247,15 +360,15 @@ function formatAge(seconds: number) {
 }
 
 function adapterLabel(adapter: "native" | "mcp" | "openapi") {
-  return adapter === "mcp" ? "MCP" : adapter === "openapi" ? "OpenAPI" : "Native";
+  return adapter === "mcp" ? "MCP server" : adapter === "openapi" ? "REST API" : "Built in";
 }
 
-function suggestionLabel(state: TruthfulIntegrationsOverview["suggestions"][number]["state"]) {
-  return ({ setup_available: "Setup available", credentials_required: "Credentials required", configuration_required: "App setup required", planned: "Planned", availability_unknown: "Install status unknown" })[state];
+function suggestionLabel(suggestionState: TruthfulIntegrationsOverview["suggestions"][number]["state"]) {
+  return ({ setup_available: "Ready to set up", credentials_required: "Credentials needed", configuration_required: "App setup needed", planned: "Planned", availability_unknown: "Availability not verified" })[suggestionState];
 }
 
 function inventoryLabel(value: string) {
-  return ({ oauth: "OAuth", mcp: "MCP", openapi: "OpenAPI", salesforce: "Salesforce", usage: "Cost ledger" } as Record<string, string>)[value] || value;
+  return ({ oauth: "Personal connections", mcp: "MCP servers", openapi: "REST APIs", salesforce: "Salesforce", usage: "Usage records" } as Record<string, string>)[value] || value;
 }
 
 async function fetchIntegrationOverview() {

@@ -14,6 +14,7 @@
 
 .surface_memory { width: auto; margin: 1rem clamp(.75rem, 1.8vw, 1.8rem) 0; }
 .surface_today { width: 100%; }
+.surface_integrations { width: 100%; margin: 0; border: 0; border-radius: .65rem; box-shadow: none; backdrop-filter: none; }
 .header, .header > div, .summary, .metric, .verifiedMetric, .partial, .indexStatus > div, .domainCard header, .domainCard footer, .blindSpots summary, .blindSpots summary > span, .error, .loading { display: flex; }
 .header { align-items: flex-start; justify-content: space-between; gap: 1.5rem; }
 .header > div { min-width: 0; flex-direction: column; }
@@ -89,6 +90,7 @@
   .panel { width: calc(100% - 2rem); border-radius: 1.4rem; padding: 1rem; }
   .surface_today { width: 100%; }
   .surface_memory { width: auto; margin-inline: 1rem; }
+  .surface_integrations { width: 100%; margin: 0; border-radius: .65rem; }
   .header { align-items: stretch; flex-direction: column; gap: .8rem; }
   .header button { width: 100%; }
   .indexStatus { grid-template-columns: 1fr; gap: .4rem; }
