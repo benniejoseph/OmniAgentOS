@@ -97,15 +97,37 @@ export async function persistCanonicalSourceWrite(
     )
   `;
   const previousRows = await sql`
-    SELECT current_revision_id
-    FROM omni_source_items
-    WHERE tenant_id = ${item.tenantId}
-      AND id = ${item.sourceItemId}
-    FOR UPDATE
+    SELECT source_item.current_revision_id,
+           current_revision.source_updated_at AS current_source_updated_at,
+           current_revision.captured_at AS current_captured_at,
+           EXISTS (
+             SELECT 1
+             FROM omni_knowledge_documents document
+             WHERE document.tenant_id = source_item.tenant_id
+               AND document.source_item_id = source_item.id
+           ) AS has_knowledge_binding
+    FROM omni_source_items source_item
+    LEFT JOIN omni_source_revisions current_revision
+      ON current_revision.tenant_id = source_item.tenant_id
+     AND current_revision.id = source_item.current_revision_id
+    WHERE source_item.tenant_id = ${item.tenantId}
+      AND source_item.id = ${item.sourceItemId}
+    FOR UPDATE OF source_item
   `;
   const previousRevisionId = previousRows[0]?.current_revision_id
     ? String(previousRows[0].current_revision_id)
     : null;
+  const revisionAdvanceAllowed = canonicalSourceRevisionAdvanceAllowed({
+    requestedRevisionId: revision.sourceRevisionId,
+    requestedSourceUpdatedAt: revision.sourceUpdatedAt,
+    requestedCapturedAt: revision.capturedAt,
+    currentRevisionId: previousRevisionId,
+    currentSourceUpdatedAt:
+      previousRows[0]?.current_source_updated_at ?? null,
+    currentCapturedAt: previousRows[0]?.current_captured_at ?? null,
+    currentHasKnowledgeBinding:
+      Boolean(previousRows[0]?.has_knowledge_binding),
+  });
 
   await assertCanonicalAdapterOutputReceipt(sql, output);
 
@@ -176,25 +198,7 @@ export async function persistCanonicalSourceWrite(
       AND omni_source_items.source_kind = EXCLUDED.source_kind
       AND omni_source_items.provider_item_key_sha256 =
         EXCLUDED.provider_item_key_sha256
-      AND (
-        omni_source_items.current_revision_id IS NULL
-        OR EXISTS (
-          SELECT 1
-          FROM omni_source_revisions current_revision
-          WHERE current_revision.tenant_id = omni_source_items.tenant_id
-            AND current_revision.id = omni_source_items.current_revision_id
-            AND (
-              COALESCE(EXCLUDED.source_updated_at, EXCLUDED.captured_at),
-              ${revision.sourceRevisionId}
-            ) >= (
-              COALESCE(
-                current_revision.source_updated_at,
-                current_revision.captured_at
-              ),
-              current_revision.id
-            )
-        )
-      )
+      AND ${revisionAdvanceAllowed}
     RETURNING id
   `;
   if (itemRows.length !== 1) {
@@ -473,6 +477,38 @@ export async function persistCanonicalSourceWrite(
     sourceRevisionId: revision.sourceRevisionId,
     evidenceUnitIdsByChunkIndex: write.evidenceUnitIdsByChunkIndex,
   };
+}
+
+export function canonicalSourceRevisionAdvanceAllowed(input: {
+  requestedRevisionId: string;
+  requestedSourceUpdatedAt: string | null;
+  requestedCapturedAt: string;
+  currentRevisionId: string | null;
+  currentSourceUpdatedAt: unknown;
+  currentCapturedAt: unknown;
+  currentHasKnowledgeBinding: boolean;
+}) {
+  if (!input.currentRevisionId) return true;
+  const requestedAt = sourceObservationMilliseconds(
+    input.requestedSourceUpdatedAt || input.requestedCapturedAt,
+  );
+  const currentAt = sourceObservationMilliseconds(
+    input.currentSourceUpdatedAt || input.currentCapturedAt,
+  );
+  if (requestedAt > currentAt) return true;
+  if (requestedAt < currentAt) return false;
+  return input.requestedRevisionId === input.currentRevisionId ||
+    !input.currentHasKnowledgeBinding;
+}
+
+function sourceObservationMilliseconds(value: unknown) {
+  const milliseconds = value instanceof Date
+    ? value.getTime()
+    : Date.parse(String(value || ""));
+  if (!Number.isFinite(milliseconds)) {
+    throw new Error("Canonical source revision has an invalid observation time.");
+  }
+  return milliseconds;
 }
 
 export async function retireEntityLineageForSourceRevision(
