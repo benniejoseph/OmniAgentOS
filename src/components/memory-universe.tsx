@@ -383,14 +383,13 @@ export function MemoryUniverse(props: {
         toneMapped: false,
         vertexColors: true,
         vertexShader: `
-          attribute vec3 color;
           attribute float nodeSize;
           varying vec3 vColor;
 
           void main() {
             vColor = color;
             vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
-            gl_PointSize = nodeSize * min(24.0, 300.0 / max(1.0, -viewPosition.z));
+            gl_PointSize = nodeSize * min(28.0, 360.0 / max(1.0, -viewPosition.z));
             gl_Position = projectionMatrix * viewPosition;
           }
         `,
@@ -473,7 +472,7 @@ export function MemoryUniverse(props: {
       const lines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
       scene.add(lines);
 
-      const highlightGeometry = new THREE.BufferGeometry();
+      let highlightGeometry = new THREE.BufferGeometry();
       const highlightMaterial = new THREE.LineBasicMaterial({
         color: 0xb9ffe9,
         transparent: true,
@@ -547,7 +546,10 @@ export function MemoryUniverse(props: {
             ) points.push(segment.source, segment.target);
           }
         }
-        highlightGeometry.setFromPoints(points);
+        const nextHighlightGeometry = new THREE.BufferGeometry().setFromPoints(points);
+        highlightGeometry.dispose();
+        highlightGeometry = nextHighlightGeometry;
+        highlightLines.geometry = nextHighlightGeometry;
         edgeMaterial.opacity = id ? 0.08 : mode === "evidence" ? 0.34 : 0.46;
         setNodeInstances();
       };
@@ -651,13 +653,18 @@ export function MemoryUniverse(props: {
       const updateHomePosition = () => {
         const verticalHalfFov = THREE.MathUtils.degToRad(camera.fov * 0.5);
         const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * camera.aspect);
-        const limitingHalfFov = Math.max(
-          THREE.MathUtils.degToRad(12),
-          Math.min(verticalHalfFov, horizontalHalfFov),
-        );
+        const graphSize = graphBounds.isEmpty()
+          ? new THREE.Vector3(24, 12, 24)
+          : graphBounds.getSize(new THREE.Vector3());
+        const horizontalDistance = graphSize.x * 0.5 /
+          Math.tan(Math.max(horizontalHalfFov, THREE.MathUtils.degToRad(18)));
+        const projectedVerticalSpan = graphSize.y + graphSize.z * Math.abs(homeDirection.y);
+        const verticalDistance = projectedVerticalSpan * 0.5 /
+          Math.tan(Math.max(verticalHalfFov, THREE.MathUtils.degToRad(18)));
         const distance = Math.max(
           18,
-          graphSphere.radius / Math.sin(limitingHalfFov) * 1.16,
+          horizontalDistance * 1.12,
+          verticalDistance * 1.12,
         );
         homePosition.copy(homeTarget).add(homeDirection.clone().multiplyScalar(distance));
         controls.maxDistance = Math.max(120, distance * 2.8);
