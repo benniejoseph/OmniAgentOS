@@ -208,7 +208,10 @@ export async function listMemories(options: TenantScopedOptions = {}) {
  * embeddings and content that the caller is required to discard.
  */
 export async function listScopeBoundMemories(
-  options: Pick<TenantScopedOptions, "tenantId" | "limit" | "sql"> = {},
+  options: Pick<
+    TenantScopedOptions,
+    "tenantId" | "limit" | "includeInactive" | "sql"
+  > = {},
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
   const limit = Math.min(Math.max(options.limit || 500, 1), 5_000);
@@ -228,20 +231,30 @@ export async function listScopeBoundMemories(
       WHERE memory.tenant_id = ${tenantId}
         AND memory.access_contract_version = 1
         AND memory.access_state = 'scope_bound'
-        AND memory.claim_status = 'active'
-        AND lifecycle.archived_at IS NULL
-        AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
-        AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
+        AND memory.claim_status <> 'forgotten'
         AND (
-          memory.retention_expires_at IS NULL
-          OR memory.retention_expires_at > NOW()
+          ${Boolean(options.includeInactive)}
+          OR (
+            memory.claim_status = 'active'
+            AND lifecycle.archived_at IS NULL
+            AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
+            AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
+            AND (
+              memory.retention_expires_at IS NULL
+              OR memory.retention_expires_at > NOW()
+            )
+          )
         )
       ORDER BY memory.updated_at DESC
       LIMIT ${limit}
     `;
     return rows.map(memoryFromRow);
   }
-  return (await listMemories({ tenantId, limit }))
+  return (await listMemories({
+    tenantId,
+    limit,
+    includeInactive: options.includeInactive,
+  }))
     .filter((memory) => Boolean(memory.accessBinding));
 }
 

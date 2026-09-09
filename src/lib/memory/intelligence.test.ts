@@ -173,6 +173,31 @@ describe("memory intelligence projection", () => {
     );
   });
 
+  it("does not repeat lifecycle advice during the weekly observation window", () => {
+    const overview = buildMemoryIntelligenceOverview({
+      memories: Array.from({ length: 24 }, (_, index) =>
+        memory({ id: `memory-${index}`, title: `Memory ${index}` })
+      ),
+      documents: [],
+      knowledgeStats: { documents: 0, chunks: 0, characters: 0, embedded: 0 },
+      graphStats: {
+        nodes: 20,
+        edges: 30,
+        latestBuild: { status: "completed", createdAt: now, latencyMs: 80 },
+      },
+      pendingReviews: 0,
+      resolvedReviews: 0,
+      deletionBarriers: 0,
+      lastMaintenanceAt: "2026-09-08T09:00:00.000Z",
+      generatedAt: now,
+    });
+
+    expect(overview.summary.maintenanceUpdatedAt)
+      .toBe("2026-09-08T09:00:00.000Z");
+    expect(overview.steward.recommendations)
+      .not.toContainEqual(expect.objectContaining({ id: "maintenance" }));
+  });
+
   it("binds pagination cursors to the active index query", () => {
     const items = [
       memoryIndexItem(memory({ id: "a", title: "A" })),

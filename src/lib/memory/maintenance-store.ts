@@ -23,7 +23,10 @@ import {
   type MemoryPromotionDecision,
   type MemoryPromotionReview,
 } from "@/lib/memory/lifecycle";
-import { listMemories } from "@/lib/memory/store";
+import {
+  listMemories,
+  listScopeBoundMemories,
+} from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import {
   assertExecutionScopeTenant,
@@ -151,7 +154,7 @@ export async function runTenantMemoryMaintenance(input: {
   return runWithDatabaseSystemScope(
     `Apply deterministic memory lifecycle policy for tenant ${tenantId}.`,
     async () => {
-      const records = await listMemories({
+      const records = await listScopeBoundMemories({
         tenantId,
         includeInactive: true,
         limit: Math.min(Math.max(input.limit || 5_000, 1), 10_000),
