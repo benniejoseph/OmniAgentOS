@@ -18,7 +18,7 @@ import {
 import { recoverInterruptedLoopV2Runs } from "@/lib/orchestration/loop-v2-recovery";
 import { repairStuckAgentRuns } from "@/lib/runs/store";
 import { recordSecurityAudit } from "@/lib/security/audit-store";
-import { SecurityPolicyError } from "@/lib/security/context";
+import { redactSensitive, SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { processPendingMemoryGraphRebuilds } from "@/lib/security/retention";
 import { processPendingTemporalRelationProjections } from "@/lib/entities/relation-projection-queue";
@@ -592,6 +592,9 @@ function summarizeScheduledOutcome(
     overdueMemoryDeletionScrubs:
       scheduled.memoryDeletionScrubs?.overdueReceiptIds.length || 0,
     maintenanceTenants: scheduled.maintenanceTenantIds.length,
+    maintenanceFailures: scheduled.maintenance.filter(
+      (item) => Boolean(item.maintenanceError),
+    ).length,
   };
   const activityCount = Object.values(counts).reduce(
     (total, value) => total + value,
@@ -747,6 +750,7 @@ async function runAllTenantScheduledWork({
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
     externalDelegationsTerminated: number;
+    maintenanceError?: string;
     memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
@@ -757,21 +761,32 @@ async function runAllTenantScheduledWork({
     if (Date.now() >= deadlineAt) {
       break;
     }
-    maintenance.push(
-      await runWithDatabaseTenantScope(tenantId, () =>
-        runTenantMaintenance({
-          tenantId,
-          trigger,
-          actorId,
-          correlationId,
-          enableSlo,
-          enableAlerts,
-          alertQueueLimit,
-          alertDispatchLimit,
-          deadlineAt,
-        }),
-      ),
-    );
+    try {
+      maintenance.push(
+        await runWithDatabaseTenantScope(tenantId, () =>
+          runTenantMaintenance({
+            tenantId,
+            trigger,
+            actorId,
+            correlationId,
+            enableSlo,
+            enableAlerts,
+            alertQueueLimit,
+            alertDispatchLimit,
+            deadlineAt,
+          }),
+        ),
+      );
+    } catch (error) {
+      const maintenanceError = safeTenantMaintenanceError(error);
+      console.error(JSON.stringify({
+        level: "error",
+        msg: "tenant_maintenance_failed",
+        tenantId,
+        error: maintenanceError,
+      }));
+      maintenance.push(failedTenantMaintenance(tenantId, maintenanceError));
+    }
     maintenanceTenantIds.push(tenantId);
   }
   const hasMoreMaintenanceTenants =
@@ -861,6 +876,7 @@ async function runTenantMaintenance({
     connectedSourcesSynced: number;
     salesforceConnectionsSynced: number;
     externalDelegationsTerminated: number;
+    maintenanceError?: string;
     memoryMaintenance?: MemoryMaintenanceReport;
     loopV2Recovery: Awaited<ReturnType<typeof recoverInterruptedLoopV2Runs>>;
     slo?: Awaited<ReturnType<typeof runObservabilitySloMonitor>>;
@@ -957,6 +973,34 @@ async function runTenantMaintenance({
     });
   }
   return result;
+}
+
+function failedTenantMaintenance(
+  tenantId: string,
+  maintenanceError: string,
+) {
+  return {
+    tenantId,
+    agentRunsRepaired: 0,
+    toolClaimsRecovered: 0,
+    dailyBriefsGenerated: 0,
+    personalNotificationsProcessed: 0,
+    mobilePushProcessed: 0,
+    mobilePushDelivered: 0,
+    projectExecutionsProcessed: 0,
+    connectedSourcesSynced: 0,
+    salesforceConnectionsSynced: 0,
+    externalDelegationsTerminated: 0,
+    maintenanceError,
+    loopV2Recovery: emptyLoopV2RecoverySummary(),
+  };
+}
+
+function safeTenantMaintenanceError(error: unknown) {
+  const message = error instanceof Error
+    ? error.message
+    : "Tenant maintenance failed.";
+  return String(redactSensitive(message)).slice(0, 500);
 }
 
 function emptyLoopV2RecoverySummary(): Awaited<
