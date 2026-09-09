@@ -103,6 +103,9 @@ type GraphAggregate = {
   edges: Map<string, MemoryGraphEdge>;
 };
 
+const MEMORY_GRAPH_NODE_LIMIT = 10_000;
+const MEMORY_GRAPH_EDGE_LIMIT = 20_000;
+
 const USER_PRIVATE_GRAPH_PURPOSE_IDS = Object.freeze([
   MEMORY_PURPOSE_IDS.read,
   MEMORY_PURPOSE_IDS.retrieve,
@@ -593,7 +596,7 @@ async function listMemoryGraphNodesForTenant(
   tenantId: string,
   accessScope?: DatabaseMemoryAccessScope,
 ) {
-  const boundedLimit = Math.min(Math.max(limit, 1), 2000);
+  const boundedLimit = Math.min(Math.max(limit, 1), MEMORY_GRAPH_NODE_LIMIT);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const legacyRows = await getSql()`
@@ -647,6 +650,61 @@ async function listMemoryGraphNodesForTenant(
     .slice(0, boundedLimit);
 }
 
+export async function getMemoryGraphNode(
+  id: string,
+  options: GraphReadOptions = {},
+) {
+  const nodeIdValue = id.trim();
+  if (
+    !nodeIdValue ||
+    nodeIdValue.length > 240 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(nodeIdValue)
+  ) {
+    throw new Error("Memory graph node id is invalid.");
+  }
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseTenantScope(tenantId, async () => {
+    if (hasDatabaseUrl()) {
+      await ensureDatabaseSchema();
+      const readNode = (sql: GraphSqlClient) => sql`
+        SELECT node.*
+        FROM omni_memory_graph_nodes node
+        WHERE node.tenant_id = ${tenantId}
+          AND node.id = ${nodeIdValue}
+          AND NOT EXISTS (
+            SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+            WHERE lifecycle.tenant_id = node.tenant_id
+              AND lifecycle.archived_at IS NOT NULL
+              AND lifecycle.memory_id = ANY(node.memory_ids)
+          )
+        LIMIT 1
+      `;
+      const legacyRows = await readNode(getSql());
+      const scopedRows = options.accessScope
+        ? await runWithGraphAccessScope(
+            options.accessScope,
+            tenantId,
+            [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+            readNode,
+          )
+        : [];
+      return mergeGraphRows(
+        legacyRows.map(memoryGraphNodeFromRow),
+        scopedRows.map(memoryGraphNodeFromRow),
+        1,
+        sortNodes,
+      )[0] || null;
+    }
+
+    const node = (await readGraphLedger()).nodes.find((candidate) =>
+      candidate.id === nodeIdValue &&
+      graphTenantId(candidate) === tenantId &&
+      graphRecordVisibleForScope(candidate, options.accessScope)
+    );
+    return node ? { ...node, tenantId } : null;
+  });
+}
+
 export async function listMemoryGraphEdges(
   limit = 200,
   options: GraphReadOptions = {},
@@ -662,7 +720,7 @@ async function listMemoryGraphEdgesForTenant(
   tenantId: string,
   accessScope?: DatabaseMemoryAccessScope,
 ) {
-  const boundedLimit = Math.min(Math.max(limit, 1), 5000);
+  const boundedLimit = Math.min(Math.max(limit, 1), MEMORY_GRAPH_EDGE_LIMIT);
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const legacyRows = await getSql()`
@@ -730,8 +788,8 @@ async function getMemoryGraphStatsForTenant(
   accessScope?: DatabaseMemoryAccessScope,
 ): Promise<MemoryGraphStats> {
   const [nodes, edges, latestBuild] = await Promise.all([
-    listMemoryGraphNodes(1000, { tenantId, accessScope }),
-    listMemoryGraphEdges(3000, { tenantId, accessScope }),
+    listMemoryGraphNodes(MEMORY_GRAPH_NODE_LIMIT, { tenantId, accessScope }),
+    listMemoryGraphEdges(MEMORY_GRAPH_EDGE_LIMIT, { tenantId, accessScope }),
     getLatestGraphBuild(tenantId),
   ]);
   const communities = componentIds(nodes, edges);
@@ -1341,8 +1399,8 @@ function mergePrivateGraphLedger(
   for (const node of aggregate.nodes.values()) mergeNode(nodes, node);
   for (const edge of aggregate.edges.values()) mergeEdge(edges, edge);
   return {
-    nodes: [...nodes.values()].sort(sortNodes).slice(0, 2000),
-    edges: [...edges.values()].sort(sortEdges).slice(0, 5000),
+    nodes: [...nodes.values()].sort(sortNodes).slice(0, MEMORY_GRAPH_NODE_LIMIT),
+    edges: [...edges.values()].sort(sortEdges).slice(0, MEMORY_GRAPH_EDGE_LIMIT),
     builds: ledger.builds,
   };
 }
@@ -1358,8 +1416,8 @@ async function mutateGraphLedger(mutator: (ledger: MemoryGraphLedger) => MemoryG
     (ledger) => {
       const next = mutator(ledger);
       return {
-        nodes: next.nodes.slice(0, 2000),
-        edges: next.edges.slice(0, 5000),
+        nodes: next.nodes.slice(0, MEMORY_GRAPH_NODE_LIMIT),
+        edges: next.edges.slice(0, MEMORY_GRAPH_EDGE_LIMIT),
         builds: next.builds.slice(0, 50),
       };
     },
