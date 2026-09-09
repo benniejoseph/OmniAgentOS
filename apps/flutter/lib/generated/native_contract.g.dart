@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 4;
-  static const previousVersion = 3;
-  static const supportedVersions = <int>[4, 3];
+  static const currentVersion = 5;
+  static const previousVersion = 4;
+  static const supportedVersions = <int>[5, 4];
   static const discoveryPath = '/api/mobile/contracts';
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -118,6 +118,8 @@ abstract final class NativePaths {
   static String pushRegistrationsRevoke(String id) => '/api/mobile/push/registrations/${Uri.encodeComponent(id)}';
   static String pushDeliveriesAcknowledge(String id) => '/api/mobile/push/deliveries/${Uri.encodeComponent(id)}/acknowledge';
   static String customersGet(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}';
+  static const memoryIntelligenceGet = '/api/memory/intelligence';
+  static String memoryGet(String id) => '/api/memory/${Uri.encodeComponent(id)}';
 }
 
 abstract final class NativeConversationEvents {

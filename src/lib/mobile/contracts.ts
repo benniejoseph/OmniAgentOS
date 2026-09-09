@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 4 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 3 as const;
+export const NATIVE_API_CURRENT_VERSION = 5 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 4 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -425,6 +425,12 @@ const v4Operations = [
   operation("customers.get", "GET", "/api/customer-accounts/{id}", "Read one actor-visible Customer 360 projection.", "bearer", undefined, "JsonObject"),
 ] as const satisfies readonly NativeOperation[];
 
+const v5Operations = [
+  ...v4Operations,
+  operation("memory.intelligence.get", "GET", "/api/memory/intelligence", "Read the categorized memory and knowledge index with steward health.", "bearer", undefined, "JsonObject"),
+  operation("memory.get", "GET", "/api/memory/{id}", "Inspect one explicitly selected actor-scoped memory or its deletion preview.", "bearer", undefined, "JsonObject"),
+] as const satisfies readonly NativeOperation[];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -475,6 +481,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 2) return v2Operations;
   if (version === 3) return v3Operations;
   if (version === 4) return v4Operations;
+  if (version === 5) return v5Operations;
   return undefined;
 }
 
@@ -484,7 +491,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [4, 3],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [5, 4],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
