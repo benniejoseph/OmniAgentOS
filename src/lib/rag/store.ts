@@ -4,6 +4,7 @@ import {
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
+  runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { retireEntityEvidenceLineage } from "@/lib/entities/store";
@@ -1149,6 +1150,182 @@ export async function getKnowledgeStats(options: { tenantId?: string } = {}) {
     characters: documents.reduce((sum, document) => sum + document.totalCharacters, 0),
     embedded: chunks.filter((chunk) => chunk.embedding?.length).length,
   };
+}
+
+export async function listKnowledgeChunksMissingEmbeddings(
+  limit = 48,
+  options: { tenantId?: string } = {},
+): Promise<KnowledgeChunk[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const boundedLimit = Math.min(Math.max(Math.round(limit), 1), 96);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseTenantScope(tenantId, async () => {
+      const rows = await getSql()`
+        SELECT chunk.*
+        FROM omni_knowledge_chunks chunk
+        WHERE chunk.tenant_id = ${tenantId}
+          AND jsonb_typeof(chunk.embedding) IS DISTINCT FROM 'array'
+        ORDER BY chunk.updated_at ASC, chunk.id COLLATE "C"
+        LIMIT ${boundedLimit}
+      `;
+      return rows.map(chunkFromRow);
+    });
+  }
+  const ledger = await readKnowledgeLedger();
+  return ledger.chunks
+    .filter((chunk) =>
+      normalizeTenantId(chunk.tenantId) === tenantId &&
+      !chunk.embedding?.length
+    )
+    .sort((left, right) =>
+      left.updatedAt.localeCompare(right.updatedAt) ||
+      left.id.localeCompare(right.id)
+    )
+    .slice(0, boundedLimit)
+    .map(sanitizeKnowledgeChunk);
+}
+
+export async function applyKnowledgeChunkEmbeddingBackfill(input: {
+  tenantId: string;
+  chunks: readonly Readonly<{
+    id: string;
+    expectedUpdatedAt: string;
+    embedding: readonly number[];
+  }>[];
+  executionScope: ExecutionScope;
+  provider: string;
+  model: string;
+  dimensions: number;
+}) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const executionScope = parsePersistedExecutionScope(input.executionScope);
+  if (!executionScope) {
+    throw new Error("Knowledge embedding backfill requires an execution scope.");
+  }
+  assertExecutionScopeTenant(executionScope, tenantId);
+  if (
+    executionScope.executingPrincipalType !== "user" ||
+    executionScope.executingPrincipalId !== executionScope.initiatingActorId ||
+    executionScope.workspaceId !== null ||
+    executionScope.projectId !== null ||
+    executionScope.missionId !== null
+  ) {
+    throw new Error("Knowledge embedding backfill requires an exact user scope.");
+  }
+  if (!input.chunks.length || input.chunks.length > 96) {
+    throw new Error("Knowledge embedding backfill requires one to 96 chunks.");
+  }
+  const payload = input.chunks.map((chunk) => {
+    const embedding = chunk.embedding.map(Number);
+    if (
+      !chunk.id.trim() ||
+      !Number.isInteger(input.dimensions) ||
+      input.dimensions < 1 ||
+      embedding.length !== input.dimensions ||
+      embedding.some((value) => !Number.isFinite(value))
+    ) {
+      throw new Error("Knowledge embedding backfill received an invalid vector.");
+    }
+    return {
+      id: chunk.id,
+      expected_updated_at: new Date(chunk.expectedUpdatedAt).toISOString(),
+      embedding,
+    };
+  });
+  const chunkSetSha256 = sourceContractSha256(payload.map((chunk) => ({
+    id: chunk.id,
+    expectedUpdatedAt: chunk.expected_updated_at,
+  })));
+
+  if (!hasDatabaseUrl()) {
+    const byId = new Map(payload.map((chunk) => [chunk.id, chunk]));
+    await updateJsonFile<KnowledgeLedger>(
+      getKnowledgeFile(),
+      { documents: [], chunks: [] },
+      (ledger) => ({
+        ...ledger,
+        chunks: ledger.chunks.map((chunk) => {
+          const update = byId.get(chunk.id);
+          return update && chunk.updatedAt === update.expected_updated_at
+            ? { ...chunk, embedding: update.embedding }
+            : chunk;
+        }),
+      }),
+    );
+    return { updatedCount: payload.length, chunkSetSha256 };
+  }
+
+  await ensureDatabaseSchema();
+  const updatedIds = await runWithDatabaseTenantScope(tenantId, () =>
+    getSql().transaction(async (sql: RagSqlClient) => {
+      const rows = await sql`
+        UPDATE omni_knowledge_chunks chunk
+        SET embedding = input.embedding
+        FROM jsonb_to_recordset(${payload}::jsonb) AS input(
+          id text,
+          expected_updated_at timestamptz,
+          embedding jsonb
+        )
+        WHERE chunk.tenant_id = ${tenantId}
+          AND chunk.id = input.id
+          AND chunk.updated_at = input.expected_updated_at
+          AND jsonb_typeof(chunk.embedding) IS DISTINCT FROM 'array'
+        RETURNING chunk.id
+      `;
+      if (rows.length !== payload.length) {
+        throw new Error(
+          "Knowledge changed during embedding backfill; refresh and retry.",
+        );
+      }
+      await appendScopedDomainEvent({
+        id: `knowledge_embedding_backfill_${sourceContractSha256({
+          tenantId,
+          chunkSetSha256,
+          correlationId: executionScope.correlationId,
+        })}`,
+        streamId: `knowledge-index:${executionScope.initiatingActorId}`,
+        type: "knowledge.embedding_backfill.completed",
+        executionScope,
+        payload: {
+          schemaVersion: 1,
+          chunkSetSha256,
+          updatedCount: rows.length,
+          provider: input.provider,
+          model: input.model,
+          dimensions: input.dimensions,
+        },
+      }, { sql });
+      return rows.map((row) => String(row.id));
+    }) as Promise<string[]>
+  );
+
+  const vectors = payload
+    .filter((chunk) => updatedIds.includes(chunk.id))
+    .map((chunk) => ({
+      id: chunk.id,
+      embedding: toVectorLiteral(chunk.embedding as number[]),
+    }))
+    .filter((chunk): chunk is { id: string; embedding: string } =>
+      Boolean(chunk.embedding)
+    );
+  if (vectors.length) {
+    try {
+      await runWithDatabaseTenantScope(tenantId, () => getSql()`
+        UPDATE omni_knowledge_chunks chunk
+        SET embedding_vector = input.embedding::vector
+        FROM jsonb_to_recordset(${vectors}::jsonb) AS input(
+          id text,
+          embedding text
+        )
+        WHERE chunk.tenant_id = ${tenantId}
+          AND chunk.id = input.id
+      `);
+    } catch {
+      // JSON embeddings remain authoritative when pgvector is unavailable.
+    }
+  }
+  return { updatedCount: updatedIds.length, chunkSetSha256 };
 }
 
 async function insertKnowledgeDocumentDb(

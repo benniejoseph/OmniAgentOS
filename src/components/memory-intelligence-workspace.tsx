@@ -401,6 +401,50 @@ export function MemoryIntelligenceWorkspace() {
     }
   }
 
+  async function backfillKnowledgeEmbeddings() {
+    setBusy("indexing");
+    setError(undefined);
+    let processed = 0;
+    let remaining = 0;
+    try {
+      for (let batch = 0; batch < 12; batch += 1) {
+        const response = await fetch("/api/memory/indexing", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: "backfill_embeddings", limit: 48 }),
+        });
+        const body = await response.json();
+        if (!response.ok) {
+          throw new Error(body.error || "Semantic indexing could not continue.");
+        }
+        processed += Number(body.processed || 0);
+        remaining = Number(body.remaining || 0);
+        setAnnouncement(
+          remaining
+            ? `Semantic indexing: ${processed} repaired, ${remaining} remaining…`
+            : `Semantic indexing complete. ${processed} chunks repaired.`,
+        );
+        if (body.complete || !body.processed) break;
+      }
+      indexSignatureRef.current = {};
+      await Promise.all([
+        loadOverview(),
+        view === "knowledge"
+          ? loadIndex("knowledge", undefined, true)
+          : Promise.resolve(),
+      ]);
+      if (remaining) {
+        setAnnouncement(
+          `${processed} chunks repaired. ${remaining} remain and can resume from this recommendation.`,
+        );
+      }
+    } catch (indexError) {
+      setError(message(indexError));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function toggleConsent() {
     if (!consent) return;
     setBusy("consent");
@@ -495,6 +539,7 @@ export function MemoryIntelligenceWorkspace() {
   function handleRecommendation(item: MemoryStewardRecommendation) {
     if (item.action === "open_reviews") setView("reviews");
     if (item.action === "open_knowledge") setView("knowledge");
+    if (item.action === "backfill_embeddings") void backfillKnowledgeEmbeddings();
     if (item.action === "run_maintenance") void runMaintenance();
     if (item.action === "enroll_ownership") void enrollLegacyOwnership();
   }

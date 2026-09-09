@@ -74,6 +74,7 @@ export type MemoryStewardRecommendation = Readonly<{
   action:
     | "open_reviews"
     | "open_knowledge"
+    | "backfill_embeddings"
     | "run_maintenance"
     | "enroll_ownership"
     | "none";
@@ -462,7 +463,7 @@ function stewardRecommendations(input: {
       priority: "high",
       title: "Complete semantic indexing",
       detail: `${input.missingEmbeddings} chunks currently rely on lexical retrieval only.`,
-      action: "open_knowledge",
+      action: "backfill_embeddings",
       affectedCount: input.missingEmbeddings,
     }));
   }
