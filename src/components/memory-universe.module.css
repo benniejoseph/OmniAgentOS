@@ -129,14 +129,17 @@
   min-height: clamp(40rem, 70svh, 62rem);
   overflow: hidden;
   isolation: isolate;
+  background:
+    radial-gradient(ellipse at 50% 48%, rgb(61 177 151 / .12), transparent 46%),
+    #06151c;
 }
 .stage::before {
   position: absolute;
   z-index: 1;
   inset: 0;
   background:
-    radial-gradient(circle at 50% 50%, rgb(86 211 179 / .035), transparent 31%),
-    radial-gradient(circle at 50% 50%, transparent 48%, rgb(0 7 10 / .44) 100%);
+    radial-gradient(circle at 50% 48%, rgb(103 235 202 / .075), transparent 34%),
+    radial-gradient(circle at 50% 50%, transparent 58%, rgb(0 7 10 / .22) 100%);
   content: "";
   pointer-events: none;
 }
@@ -150,7 +153,7 @@
   mask-image: radial-gradient(circle, black, transparent 72%);
   pointer-events: none;
 }
-.canvas { position: absolute; inset: 0; }
+.canvas { position: absolute; z-index: 0; inset: 0; }
 .canvas canvas { display: block; width: 100%; height: 100%; cursor: grab; outline: 0; touch-action: none; }
 .canvas canvas:active { cursor: grabbing; }
 .canvas canvas:focus-visible { box-shadow: inset 0 0 0 3px rgb(144 234 208 / .7); }
@@ -194,6 +197,66 @@
 .counter span { display: inline-flex; align-items: center; gap: .28rem; }
 .counter span + span { border-left: 1px solid rgb(144 234 208 / .18); padding-left: .6rem; }
 .counter strong { color: #effcf8; font-variant-numeric: tabular-nums; }
+
+.controlsHint {
+  position: absolute;
+  z-index: 3;
+  top: 1rem;
+  left: 50%;
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: .45rem;
+  border: 1px solid rgb(144 234 208 / .16);
+  border-radius: 999px;
+  padding: 0 .85rem;
+  color: #a8c8c1;
+  background: rgb(5 20 25 / .76);
+  box-shadow: 0 .8rem 2.5rem rgb(0 0 0 / .16);
+  backdrop-filter: blur(16px);
+  font-size: .75rem;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.controlsHint svg { color: #90ead0; }
+
+.cameraControls {
+  position: absolute;
+  z-index: 4;
+  right: 1rem;
+  bottom: 3.6rem;
+  display: flex;
+  gap: .36rem;
+  border: 1px solid rgb(144 234 208 / .19);
+  border-radius: 1rem;
+  padding: .32rem;
+  background: rgb(5 20 25 / .86);
+  box-shadow: 0 .9rem 2.8rem rgb(0 0 0 / .24);
+  backdrop-filter: blur(18px);
+}
+.cameraControls button {
+  display: inline-flex;
+  min-width: 2.7rem;
+  min-height: 2.7rem;
+  align-items: center;
+  justify-content: center;
+  gap: .38rem;
+  border-radius: .7rem;
+  color: #d8f5ed;
+  background: rgb(144 234 208 / .07);
+  transition: color 150ms ease, background-color 150ms ease, transform 150ms ease;
+}
+.cameraControls button:hover {
+  color: #fff;
+  background: rgb(144 234 208 / .17);
+  transform: translateY(-1px);
+}
+.cameraControls .fitControl {
+  padding-inline: .78rem;
+  color: #90ead0;
+  font-size: .75rem;
+  font-weight: 760;
+}
 
 .legend {
   position: absolute;
@@ -314,10 +377,12 @@
   .stage { min-height: 74svh; }
   .counter { top: .7rem; left: .7rem; max-width: calc(100% - 1.4rem); border-radius: 1rem; }
   .counter span:last-child { display: none; }
+  .controlsHint { display: none; }
+  .cameraControls { right: .7rem; bottom: 4.15rem; }
   .legend { right: .7rem; bottom: .7rem; left: .7rem; max-width: none; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
   .legend button { flex: 0 0 auto; }
   .cornerMark { display: none; }
-  .inspector { top: auto; right: .7rem; bottom: 4.1rem; left: .7rem; width: auto; max-height: 52%; }
+  .inspector { top: auto; right: .7rem; bottom: 7.5rem; left: .7rem; width: auto; max-height: 48%; }
   .emptyVerified { top: 45%; }
 }
 
