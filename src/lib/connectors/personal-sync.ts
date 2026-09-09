@@ -15,6 +15,7 @@ import { deleteKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { mapInboundCommunication } from "@/lib/communications/store";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
+import { runWithDatabaseActorScope } from "@/lib/db/client";
 
 type SyncCursor = {
   calendar?: string;
@@ -104,7 +105,15 @@ export async function syncDuePersonalProviders(options: {
   return results;
 }
 
-export async function syncPersonalProvider(input: { tenantId: string; actorId: string; provider: OAuthProvider; abortSignal?: AbortSignal }) {
+export function syncPersonalProvider(input: { tenantId: string; actorId: string; provider: OAuthProvider; abortSignal?: AbortSignal }) {
+  return runWithDatabaseActorScope(
+    input.tenantId,
+    [input.actorId],
+    () => syncPersonalProviderWithActorScope(input),
+  );
+}
+
+async function syncPersonalProviderWithActorScope(input: { tenantId: string; actorId: string; provider: OAuthProvider; abortSignal?: AbortSignal }) {
   const secrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, input.provider);
   if (!secrets) throw new Error("Connected source not found.");
   const claim = await claimOAuthSyncLease(input);
