@@ -623,12 +623,17 @@ async function POSTHandler(request: Request) {
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const sourceAccess = requestMemoryAccessFromSecurityContext(context, {
+    purposeId: MEMORY_PURPOSE_IDS.read,
+    auditPurpose: "api.memory.graph.rebuild.sources",
+    correlationId: `memory_graph_rebuild_sources_${randomUUID()}`,
+  });
   const requestAccess = requestMemoryAccessFromSecurityContext(context, {
     purposeId: MEMORY_PURPOSE_IDS.write,
     auditPurpose: "api.memory.graph.rebuild",
     correlationId: `memory_graph_rebuild_${randomUUID()}`,
   });
-  if (!requestAccess) {
+  if (!sourceAccess || !requestAccess) {
     return Response.json(
       { error: "The private memory scope for this rebuild is unavailable." },
       { status: 403, headers: privateNoStoreHeaders },
@@ -641,6 +646,7 @@ async function POSTHandler(request: Request) {
     memoryLimit: parsed.data.memoryLimit,
     traceLimit: parsed.data.traceLimit,
     accessScope: requestAccess.databaseAccessScope,
+    sourceAccessScope: sourceAccess.databaseAccessScope,
   });
 
   return Response.json(result, {

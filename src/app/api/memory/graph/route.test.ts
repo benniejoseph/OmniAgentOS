@@ -168,6 +168,10 @@ describe("memory graph private-memory boundary", () => {
         initiatingActorId: "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
         purposeId: MEMORY_PURPOSE_IDS.write,
       }),
+      sourceAccessScope: expect.objectContaining({
+        initiatingActorId: "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        purposeId: MEMORY_PURPOSE_IDS.read,
+      }),
     }));
   });
 
