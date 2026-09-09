@@ -7,7 +7,10 @@ import {
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
-import { getMemoryGraphCounts } from "@/lib/memory/graph";
+import {
+  getLatestMemoryGraphBuild,
+  getMemoryGraphCounts,
+} from "@/lib/memory/graph";
 import {
   buildMemoryIntelligenceOverview,
   filterKnowledgeIndex,
@@ -124,6 +127,7 @@ export async function showMemoryIntelligenceService(
     documents,
     knowledgeStats,
     graphStats,
+    latestGraphBuild,
     legacyReviewStats,
     privateReviewStats,
     deletionBarriers,
@@ -137,6 +141,7 @@ export async function showMemoryIntelligenceService(
       tenantId: caller.context.tenantId,
       accessScope: requestAccess?.databaseAccessScope,
     }),
+    getLatestMemoryGraphBuild({ tenantId: caller.context.tenantId }),
     getMemoryReconciliationStats({ tenantId: caller.context.tenantId }),
     requestAccess
       ? getMemoryReconciliationStats({
@@ -155,7 +160,10 @@ export async function showMemoryIntelligenceService(
     memories,
     documents,
     knowledgeStats,
-    graphStats,
+    graphStats: {
+      ...graphStats,
+      latestBuild: latestGraphBuild,
+    },
     pendingReviews: legacyReviewStats.pending + privateReviewStats.pending,
     resolvedReviews: legacyReviewStats.resolved + privateReviewStats.resolved,
     deletionBarriers,
