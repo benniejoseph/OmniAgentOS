@@ -98,7 +98,7 @@ const paidInferenceTimeoutMs = boundedInteger(
 const paidInferenceModel = normalizeModelIdentifier(
   process.env.OMNIAGENT_DEPLOY_OPENAI_SMOKE_MODEL ||
     process.env.OPENAI_FAST_MODEL ||
-    "gpt-4o-mini",
+    process.env.OPENAI_AGENT_MODEL,
 );
 const workerStartupSettleMs = boundedInteger(
   process.env.OMNIAGENT_DEPLOY_WORKER_STARTUP_SETTLE_MS,
@@ -1220,7 +1220,10 @@ async function probeOpenAIGatewayToken(gateway, remainingMs) {
   // checks the OpenAI Authorization header. Deliberately omitting Authorization
   // yields 400 only when the gateway token was accepted and never reaches
   // OpenAI, so pairing is verified without an API key or a paid request.
-  const probeUrl = new URL("/v1/models/gpt-5", gateway.baseUrl.origin);
+  const probeUrl = new URL(
+    `/v1/models/${encodeURIComponent(paidInferenceModel)}`,
+    gateway.baseUrl.origin,
+  );
   let response;
   try {
     response = await fetch(probeUrl, {

@@ -182,6 +182,8 @@ export async function callMcpTool({
           : "deployment_environment" as const,
       }
     : undefined;
+  const browserUseServiceRoute = connector.name.trim().slice(0, 240) ||
+    connector.id;
   const browserUseStartedAt = Date.now();
   try {
     const result = await lease.session.client.callTool(
@@ -216,7 +218,7 @@ export async function callMcpTool({
         ...browserUseTask,
         status: "completed",
         provider: "browser_use",
-        model: "browser-use-cloud",
+        model: browserUseServiceRoute,
         usage: { browserTaskCount: 1 },
         providerCallCount: 1,
         attemptCount: 1,
@@ -231,7 +233,7 @@ export async function callMcpTool({
         ...browserUseTask,
         status: "failed",
         provider: "browser_use",
-        model: "browser-use-cloud",
+        model: browserUseServiceRoute,
         usage: { browserTaskCount: 1 },
         providerCallCount: 1,
         attemptCount: 1,

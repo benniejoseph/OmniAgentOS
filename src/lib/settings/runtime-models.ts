@@ -74,7 +74,7 @@ export type RuntimeModelResolution = Readonly<{
 }>;
 
 /**
- * Resolves one of the nine stored model-assignment scopes into request-bound
+ * Resolves a stored model-assignment scope into request-bound
  * server runtime state. Plaintext credentials remain captured by closures and
  * a WeakMap; callers receive no serializable secret fields.
  */

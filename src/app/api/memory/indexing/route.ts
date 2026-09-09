@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { EMBEDDING_DIMENSIONS, EMBEDDING_MODEL } from "@/lib/config";
+import { EMBEDDING_DIMENSIONS } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
-import { embedTexts } from "@/lib/openai/client";
+import { embedTextsWithRuntime } from "@/lib/openai/client";
 import {
   applyKnowledgeChunkEmbeddingBackfill,
   getKnowledgeStats,
@@ -72,7 +72,7 @@ async function POSTHandler(request: Request) {
       complete: stats.chunks === stats.embedded,
     }, { headers: privateHeaders });
   }
-  const vectors = await embedTexts(
+  const embedded = await embedTextsWithRuntime(
     chunks.map((chunk) => chunk.content),
     undefined,
     {
@@ -85,7 +85,11 @@ async function POSTHandler(request: Request) {
       executionScope: access.executionScope,
     },
   );
-  if (!vectors || vectors.length !== chunks.length) {
+  if (
+    !embedded ||
+    embedded.vectors.length !== chunks.length ||
+    embedded.dimensions !== EMBEDDING_DIMENSIONS
+  ) {
     return Response.json({
       error: "The embedding provider is unavailable. Existing lexical search is unchanged.",
     }, { status: 503, headers: privateHeaders });
@@ -95,12 +99,12 @@ async function POSTHandler(request: Request) {
     chunks: chunks.map((chunk, index) => ({
       id: chunk.id,
       expectedUpdatedAt: chunk.updatedAt,
-      embedding: vectors[index]!,
+      embedding: embedded.vectors[index]!,
     })),
     executionScope: access.executionScope,
-    provider: "openai",
-    model: EMBEDDING_MODEL,
-    dimensions: EMBEDDING_DIMENSIONS,
+    provider: embedded.provider,
+    model: embedded.model,
+    dimensions: embedded.dimensions,
   });
   const stats = await getKnowledgeStats({ tenantId: context.tenantId });
   const remaining = Math.max(0, stats.chunks - stats.embedded);
@@ -110,9 +114,9 @@ async function POSTHandler(request: Request) {
     complete: remaining === 0,
     receipt: {
       chunkSetSha256: result.chunkSetSha256,
-      provider: "openai",
-      model: EMBEDDING_MODEL,
-      dimensions: EMBEDDING_DIMENSIONS,
+      provider: embedded.provider,
+      model: embedded.model,
+      dimensions: embedded.dimensions,
     },
   }, { headers: privateHeaders });
 }

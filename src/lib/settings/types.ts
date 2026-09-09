@@ -17,9 +17,25 @@ export const MODEL_ASSIGNMENT_SCOPES = [
   "embeddings",
   "vision",
   "audio",
+  "audio_diarization",
+  "web_search",
+  "image_generation",
+  "speech_synthesis",
+  "realtime_transcription",
 ] as const;
 
 export type ModelAssignmentScope = (typeof MODEL_ASSIGNMENT_SCOPES)[number];
+
+export const SPECIALIZED_MODEL_ASSIGNMENT_SCOPES = [
+  "embeddings",
+  "vision",
+  "audio",
+  "audio_diarization",
+  "web_search",
+  "image_generation",
+  "speech_synthesis",
+  "realtime_transcription",
+] as const satisfies readonly ModelAssignmentScope[];
 
 export const SERVICE_API_SCOPES = [
   "mcp:discover",

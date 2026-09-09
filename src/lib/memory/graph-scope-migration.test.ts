@@ -12,7 +12,7 @@ describe("memory graph scope v2 migration", () => {
       "utf8",
     );
 
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((item) => item.version === 152)).toEqual({
       version: 152,
       name: "memory_graph_scope_v2",
       checksum:

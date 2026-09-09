@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { GOOGLE_TRANSCRIPTION_MODEL } from "@/lib/config";
 import { CredentialVaultUnavailableError } from "@/lib/settings/credential-vault";
 import {
   getProviderCredentials,
@@ -140,7 +141,7 @@ async function discoverGemini(apiKey: string): Promise<CatalogModel[]> {
     { headers: { "x-goog-api-key": apiKey } },
   );
   const data = Array.isArray(body.models) ? body.models : [];
-  return data.map(recordValue).filter((item) => typeof item.name === "string").slice(0, 1_000).map((item) => {
+  const geminiModels = data.map(recordValue).filter((item) => typeof item.name === "string").slice(0, 1_000).map((item) => {
     const modelId = String(item.name).replace(/^models\//, "");
     const methods = Array.isArray(item.supportedGenerationMethods)
       ? item.supportedGenerationMethods.map(String)
@@ -150,6 +151,15 @@ async function discoverGemini(apiKey: string): Promise<CatalogModel[]> {
       : inferCapabilities(modelId);
     return catalogModel(modelId, typeof item.displayName === "string" ? item.displayName : modelId, capabilities, String(item.description || ""));
   });
+  return [
+    ...geminiModels,
+    catalogModel(
+      GOOGLE_TRANSCRIPTION_MODEL,
+      "Google Cloud Speech (latest long-form)",
+      ["audio", "transcription"],
+      "Google Cloud Speech-to-Text long-form recognition service.",
+    ),
+  ];
 }
 
 async function discoverAnthropic(apiKey: string): Promise<CatalogModel[]> {

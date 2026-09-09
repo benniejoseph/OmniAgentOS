@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { arsenalAgents } from "@/lib/agents/arsenal";
+import { SPEECH_MODEL, hasOpenAIKey } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { parseJsonBody, jsonBodyErrorResponse } from "@/lib/http/body";
@@ -13,6 +14,7 @@ import { isBuiltInPromptAgentId } from "@/lib/orchestration/prompts";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 import {
   CustomAgentReadConflictError,
   getCustomAgentForRequest,
@@ -114,7 +116,25 @@ async function POSTHandler(request: Request) {
     );
   }
 
-  const profile = versionedVoiceProfile(identity);
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    scope: "speech_synthesis",
+    requiredCapability: "speech",
+    deploymentProvider: "openai",
+    deploymentModel: SPEECH_MODEL,
+    deploymentConfigured: hasOpenAIKey(),
+  });
+  if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
+    return Response.json(
+      { error: "Speech synthesis does not have an active model route." },
+      { status: 503, headers: privateNoStoreHeaders },
+    );
+  }
+  const profile = versionedVoiceProfile(identity, {
+    provider: runtimeModel.provider,
+    model: runtimeModel.model,
+  });
   const correlationId = `voice-speech:${randomUUID()}`;
   const executionScope = executionScopeFromSecurityContext(context, {
     correlationId,
@@ -122,11 +142,14 @@ async function POSTHandler(request: Request) {
   });
   const startedAt = Date.now();
   try {
-    const upstreamBody = await createOpenAISpeechStream({
-      text: parsed.data.text,
-      profile,
-      signal: request.signal,
-    });
+    const upstreamBody = await runtimeModel.withApiKey((apiKey) =>
+      createOpenAISpeechStream({
+        text: parsed.data.text,
+        profile,
+        apiKey,
+        signal: request.signal,
+      })
+    );
     const meteredBody = meterSpeechStream(upstreamBody, async (
       outcome,
       outputBytes,
@@ -142,7 +165,7 @@ async function POSTHandler(request: Request) {
         purpose: "agent.voice.stream",
         correlationId,
         executionScope,
-        credentialSource: "deployment_environment",
+        ...runtimeModel.usageReceipt,
         status: outcome === "completed" ? "completed" : "failed",
         provider: profile.provider,
         model: profile.model,

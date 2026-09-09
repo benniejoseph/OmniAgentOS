@@ -6,19 +6,38 @@ import {
   listModelCatalog,
   listProviderConnections,
 } from "@/lib/settings/store";
-import type { ModelAssignmentScope } from "@/lib/settings/types";
+import { modelSupportsAssignmentRole } from "@/lib/settings/model-assignment-contract";
+import type {
+  ModelAssignmentScope,
+  SettingsModelProvider,
+} from "@/lib/settings/types";
 import type { AiUsageScope } from "@/lib/usage/types";
 
 type SpecializedScope = Extract<
   ModelAssignmentScope,
-  "embeddings" | "vision" | "audio"
+  | "embeddings"
+  | "vision"
+  | "audio"
+  | "audio_diarization"
+  | "web_search"
+  | "image_generation"
+  | "speech_synthesis"
+  | "realtime_transcription"
 >;
+
+type SpecializedCapability =
+  | "embeddings"
+  | "vision"
+  | "transcription"
+  | "tools"
+  | "image"
+  | "speech";
 
 export type SpecializedRuntimeResolution = Readonly<{
   scope: SpecializedScope;
   source: "tenant_assignment" | "deployment_environment";
   configured: boolean;
-  provider: "openai";
+  provider: SettingsModelProvider;
   model: string;
   warning?: string;
   usageReceipt: Pick<
@@ -38,7 +57,8 @@ export async function resolveSpecializedRuntime(input: {
   tenantId?: string;
   actorId?: string;
   scope: SpecializedScope;
-  requiredCapability: "embeddings" | "vision" | "transcription";
+  requiredCapability: SpecializedCapability;
+  deploymentProvider?: SettingsModelProvider;
   deploymentModel: string;
   deploymentConfigured: boolean;
 }): Promise<SpecializedRuntimeResolution> {
@@ -72,19 +92,20 @@ export async function resolveSpecializedRuntime(input: {
     !assignment.configurationSha256 ||
     !assignment.validatedAt
   ) return environment;
-  if (assignment.provider !== "openai") {
-    return { ...environment, warning: "This specialized runtime currently supports only validated OpenAI workspace routes." };
-  }
   const model = catalog.find((candidate) =>
     candidate.provider === assignment.provider &&
     candidate.modelId === assignment.modelId
   );
-  if (!model || !specializedCapabilityMatches(model.capabilities, input.requiredCapability)) {
+  if (
+    !model ||
+    !modelSupportsAssignmentRole(input.scope, assignment.provider, model) ||
+    !specializedCapabilityMatches(model.capabilities, input.requiredCapability)
+  ) {
     return { ...environment, warning: `The active ${input.scope} route does not cover ${input.requiredCapability}.` };
   }
   const connection = connections.find((candidate) =>
     candidate.source === "tenant_vault" &&
-    candidate.provider === "openai" &&
+    candidate.provider === assignment.provider &&
     candidate.status === "connected" &&
     candidate.enabled
   );
@@ -107,7 +128,7 @@ export async function resolveSpecializedRuntime(input: {
     scope: input.scope,
     source: "tenant_assignment",
     configured: true,
-    provider: "openai",
+    provider: assignment.provider,
     model: assignment.modelId,
     usageReceipt: {
       assignmentScope: input.scope,
@@ -124,6 +145,7 @@ export async function resolveSpecializedRuntime(input: {
 
 function deploymentResolution(input: {
   scope: SpecializedScope;
+  deploymentProvider?: SettingsModelProvider;
   deploymentModel: string;
   deploymentConfigured: boolean;
 }): SpecializedRuntimeResolution {
@@ -131,7 +153,7 @@ function deploymentResolution(input: {
     scope: input.scope,
     source: "deployment_environment",
     configured: input.deploymentConfigured,
-    provider: "openai",
+    provider: input.deploymentProvider || "openai",
     model: input.deploymentModel,
     usageReceipt: {
       credentialSource: "deployment_environment",
@@ -144,7 +166,7 @@ function deploymentResolution(input: {
 
 function specializedCapabilityMatches(
   capabilities: readonly string[],
-  required: "embeddings" | "vision" | "transcription",
+  required: SpecializedCapability,
 ) {
   if (capabilities.includes(required)) return true;
   return required === "transcription" &&

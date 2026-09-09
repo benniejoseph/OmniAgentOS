@@ -6,9 +6,12 @@ import type { VersionedVoiceProfile } from "@/lib/voice/profile";
 export async function createOpenAISpeechStream(input: {
   text: string;
   profile: VersionedVoiceProfile;
+  apiKey?: string;
   signal?: AbortSignal;
 }) {
-  const response = await getOpenAIClient().audio.speech.create({
+  const response = await getOpenAIClient(
+    input.apiKey ? { apiKey: input.apiKey } : undefined,
+  ).audio.speech.create({
     input: input.text,
     model: input.profile.model,
     voice: input.profile.voice,

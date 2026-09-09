@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  embedTexts: vi.fn(),
+  embedTextsWithRuntime: vi.fn(),
 }));
-vi.mock("@/lib/openai/client", () => ({ embedTexts: mocks.embedTexts }));
+vi.mock("@/lib/openai/client", () => ({
+  embedTextsWithRuntime: mocks.embedTextsWithRuntime,
+}));
 
 import {
   LOCAL_MULTILINGUAL_EMBEDDING_DIMENSIONS,
@@ -17,7 +19,12 @@ import {
 describe("P4.4 retrieval embedding adapters", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.embedTexts.mockResolvedValue([[0.1, 0.2]]);
+    mocks.embedTextsWithRuntime.mockResolvedValue({
+      vectors: [[0.1, 0.2]],
+      provider: "openai",
+      model: "settings-embedding-model",
+      dimensions: 2,
+    });
   });
 
   it("uses external embeddings only when the disclosure policy allows them", async () => {
@@ -30,21 +37,23 @@ describe("P4.4 retrieval embedding adapters", () => {
     expect(local.vectors[0]).toHaveLength(
       LOCAL_MULTILINGUAL_EMBEDDING_DIMENSIONS,
     );
-    expect(mocks.embedTexts).not.toHaveBeenCalled();
+    expect(mocks.embedTextsWithRuntime).not.toHaveBeenCalled();
 
     const external = await embedRetrievalTexts(["allowed query"], {
       allowedExternalProviders: ["openai"],
     });
     expect(external.receipt).toMatchObject({
       provider: "openai",
+      model: "settings-embedding-model",
+      dimensions: 2,
       externalDisclosure: true,
       supportsStoredVectorIndex: true,
     });
-    expect(mocks.embedTexts).toHaveBeenCalledOnce();
+    expect(mocks.embedTextsWithRuntime).toHaveBeenCalledOnce();
   });
 
   it("falls back locally when an allowed provider is absent or fails", async () => {
-    mocks.embedTexts.mockResolvedValueOnce(null);
+    mocks.embedTextsWithRuntime.mockResolvedValueOnce(null);
     const unavailable = await embedRetrievalTexts(["consulta"], {
       allowedExternalProviders: ["openai"],
     });
@@ -53,7 +62,7 @@ describe("P4.4 retrieval embedding adapters", () => {
       fallbackReason: "external_provider_unavailable",
     });
 
-    mocks.embedTexts.mockRejectedValue(new Error("provider failed"));
+    mocks.embedTextsWithRuntime.mockRejectedValue(new Error("provider failed"));
     const failed = await embedRetrievalTexts(["consulta"], {
       allowedExternalProviders: ["openai"],
     });

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { saveCaptureAsset } from "@/lib/capture/assets";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
-import { GEMINI_IMAGE_MODEL } from "@/lib/config";
+import { GEMINI_IMAGE_MODEL, hasGeminiKey } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import {
   describeGeminiImageFailure,
@@ -15,6 +15,7 @@ import {
   recordRuntimeEventSafely,
 } from "@/lib/observability/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -40,22 +41,41 @@ async function POSTHandler(request: Request) {
   try { body = await parseJsonBody(request); } catch (error) { return jsonBodyErrorResponse(error); }
   const parsed = schema.safeParse(body);
   if (!parsed.success) return Response.json({ error: "Add a valid image prompt and aspect ratio." }, { status: 400 });
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    scope: "image_generation",
+    requiredCapability: "image",
+    deploymentProvider: "google",
+    deploymentModel: GEMINI_IMAGE_MODEL,
+    deploymentConfigured: hasGeminiKey(),
+  });
+  if (!runtimeModel.configured || runtimeModel.provider !== "google") {
+    return Response.json(
+      { error: "Image generation does not have an active model route." },
+      { status: 503, headers: { "cache-control": "private, no-store" } },
+    );
+  }
   const startedAt = Date.now();
   try {
-    const result = await generateGeminiImage({
-      ...parsed.data,
-      abortSignal: request.signal,
-      usageScope: {
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        sourceStreamId: "api:media:image",
-        operation: "image_generation",
-        purpose: "media.image.generate",
-        correlationId: executionScope.correlationId,
-        executionScope,
-        credentialSource: "deployment_environment",
-      },
-    });
+    const result = await runtimeModel.withApiKey((apiKey) =>
+      generateGeminiImage({
+        ...parsed.data,
+        model: runtimeModel.model,
+        apiKey,
+        abortSignal: request.signal,
+        usageScope: {
+          tenantId: context.tenantId,
+          actorId: context.actorId,
+          sourceStreamId: "api:media:image",
+          operation: "image_generation",
+          purpose: "media.image.generate",
+          correlationId: executionScope.correlationId,
+          executionScope,
+          ...runtimeModel.usageReceipt,
+        },
+      })
+    );
     request.signal.throwIfAborted();
     let asset;
     try {
@@ -150,7 +170,7 @@ async function POSTHandler(request: Request) {
         ...telemetry.syntheticMetadata,
         outcome: "failed",
         provider: "google",
-        model: GEMINI_IMAGE_MODEL,
+        model: runtimeModel.model,
         aspectRatio: parsed.data.aspectRatio || "1:1",
         failureCategory: failure.category,
         failureCode: failure.code,
@@ -168,7 +188,7 @@ async function POSTHandler(request: Request) {
         category: failure.category,
         code: failure.code,
         provider: "google",
-        model: GEMINI_IMAGE_MODEL,
+        model: runtimeModel.model,
         retryable: failure.retryable,
         suggestion: failure.suggestion,
         providerStatus: failure.providerStatus,

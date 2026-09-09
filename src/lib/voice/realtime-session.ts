@@ -2,15 +2,21 @@ import "server-only";
 
 import { getOpenAIClient } from "@/lib/openai/client";
 
-export const REALTIME_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 export const REALTIME_TRANSPORT_URL = "https://api.openai.com/v1/realtime/calls";
 export const REALTIME_AUDIO_RETENTION = "not_stored_by_asael" as const;
 export const REALTIME_TRANSCRIPT_RETENTION = "command_draft_until_sent" as const;
 
 export async function issueRealtimeTranscriptionSecret(input: {
   language?: string;
+  model: string;
+  /** Server-only request credential. Never persist or return it. */
+  apiKey?: string;
 }) {
-  const result = await getOpenAIClient().realtime.clientSecrets.create({
+  const model = input.model.trim();
+  if (!model) throw new Error("The realtime transcription model route is invalid.");
+  const result = await getOpenAIClient(
+    input.apiKey ? { apiKey: input.apiKey } : undefined,
+  ).realtime.clientSecrets.create({
     expires_after: {
       anchor: "created_at",
       seconds: 60,
@@ -22,7 +28,7 @@ export async function issueRealtimeTranscriptionSecret(input: {
         input: {
           noise_reduction: { type: "near_field" },
           transcription: {
-            model: REALTIME_TRANSCRIPTION_MODEL,
+            model,
             ...(input.language ? { language: input.language } : {}),
           },
           turn_detection: {
@@ -54,6 +60,6 @@ export async function issueRealtimeTranscriptionSecret(input: {
     clientSecretExpiresAt: result.expires_at,
     providerSessionId: result.session.id,
     providerSessionExpiresAt: result.session.expires_at,
-    model: REALTIME_TRANSCRIPTION_MODEL,
+    model,
   };
 }

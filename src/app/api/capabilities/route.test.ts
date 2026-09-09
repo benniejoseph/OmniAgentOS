@@ -4,6 +4,7 @@ const routeMocks = vi.hoisted(() => ({
   after: vi.fn(),
   loadSettingsSnapshot: vi.fn(),
   loadSharedSnapshot: vi.fn(),
+  resolveSpecializedRuntime: vi.fn(),
 }));
 
 vi.mock("next/cache", async (importOriginal) => ({
@@ -39,6 +40,10 @@ vi.mock("@/lib/capabilities/settings-snapshot", () => ({
 
 vi.mock("@/lib/capabilities/settings-cache", () => ({
   loadSharedSettingsStorageSnapshot: routeMocks.loadSharedSnapshot,
+}));
+
+vi.mock("@/lib/settings/specialized-runtime", () => ({
+  resolveSpecializedRuntime: routeMocks.resolveSpecializedRuntime,
 }));
 
 import { GET } from "@/app/api/capabilities/route";
@@ -78,6 +83,13 @@ beforeEach(() => {
   routeMocks.after.mockReset();
   routeMocks.loadSettingsSnapshot.mockReset();
   routeMocks.loadSharedSnapshot.mockReset();
+  routeMocks.resolveSpecializedRuntime.mockReset().mockResolvedValue({
+    configured: true,
+    provider: "google",
+    model: "configured-image-model",
+    source: "tenant_assignment",
+    usageReceipt: { credentialSource: "tenant_vault" },
+  });
 });
 
 describe("Settings capabilities cache fill", () => {

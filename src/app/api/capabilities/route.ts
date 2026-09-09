@@ -39,6 +39,7 @@ import { getKnowledgeStats } from "@/lib/rag/store";
 import { getRunStats } from "@/lib/runs/store";
 import { getSecurityStats } from "@/lib/security/audit-store";
 import { canPerform, requirePermission, resolveSecurityContext, rbacRules, secretVaultPolicy, securityErrorResponse } from "@/lib/security/context";
+import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 import { getToolExecutionStats } from "@/lib/tools/audit-store";
 import { getWorkflowPlanNodeExecutionStats } from "@/lib/workflows/executor";
 import { getWorkflowPlanStats } from "@/lib/workflows/planner";
@@ -97,9 +98,31 @@ async function GETHandler(request: Request) {
         }
       });
     }
+    const imageRuntime = await resolveSpecializedRuntime({
+      tenantId: securityContext.tenantId,
+      actorId: securityContext.actorId,
+      scope: "image_generation",
+      requiredCapability: "image",
+      deploymentProvider: "google",
+      deploymentModel: GEMINI_IMAGE_MODEL,
+      deploymentConfigured: hasGeminiKey(),
+    });
+    const capabilities = settingsCapabilities(snapshot);
     return Response.json(
       {
-        ...settingsCapabilities(snapshot),
+        ...capabilities,
+        geminiConfigured:
+          imageRuntime.configured && imageRuntime.provider === "google",
+        googleModels: {
+          ...capabilities.googleModels,
+          image: imageRuntime.model,
+        },
+        imageGenerationRoute: {
+          provider: imageRuntime.provider,
+          model: imageRuntime.model,
+          source: imageRuntime.source,
+          configured: imageRuntime.configured,
+        },
         storageSnapshot: snapshot.storageSnapshot,
       },
       { headers: { "cache-control": "private, no-store" } },

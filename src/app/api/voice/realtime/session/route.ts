@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import { REALTIME_TRANSCRIPTION_MODEL, hasOpenAIKey } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
@@ -10,6 +11,7 @@ import {
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 import { createThread, getOwnedThread } from "@/lib/threads/store";
 import {
   issueRealtimeTranscriptionSecret,
@@ -135,10 +137,30 @@ async function POSTHandler(request: Request) {
       : "voice.realtime.start",
   });
 
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    scope: "realtime_transcription",
+    requiredCapability: "transcription",
+    deploymentProvider: "openai",
+    deploymentModel: REALTIME_TRANSCRIPTION_MODEL,
+    deploymentConfigured: hasOpenAIKey(),
+  });
+  if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
+    return Response.json(
+      { error: "Realtime voice does not have an active model route." },
+      { status: 503, headers: privateNoStoreHeaders },
+    );
+  }
+
   try {
-    const credential = await issueRealtimeTranscriptionSecret({
-      language: parsed.language,
-    });
+    const credential = await runtimeModel.withApiKey((apiKey) =>
+      issueRealtimeTranscriptionSecret({
+        language: parsed.language,
+        model: runtimeModel.model,
+        apiKey,
+      })
+    );
     await appendScopedDomainEvent({
       streamId: scopedVoiceStreamId(
         context.tenantId,
@@ -160,6 +182,11 @@ async function POSTHandler(request: Request) {
         transcriptRetention: REALTIME_TRANSCRIPT_RETENTION,
         reconnectAttempt: parsed.reconnectAttempt,
         credentialExpiresAt: credential.clientSecretExpiresAt,
+        assignmentScope: runtimeModel.usageReceipt.assignmentScope || null,
+        assignmentId: runtimeModel.usageReceipt.assignmentId || null,
+        assignmentRevision:
+          runtimeModel.usageReceipt.assignmentRevision || null,
+        credentialSource: runtimeModel.usageReceipt.credentialSource,
       },
     });
 
