@@ -59,6 +59,7 @@ type UniverseNodeDetail = {
 
 type UniverseSceneController = {
   setHiddenKinds: (hiddenKinds: ReadonlySet<MemoryGraphNodeKind>) => void;
+  setActive: (active: boolean) => void;
   reset: () => void;
 };
 
@@ -82,7 +83,7 @@ const kindLabels: Record<MemoryGraphNodeKind, string> = {
   trace: "Recall traces",
 };
 
-export function MemoryUniverse() {
+export function MemoryUniverse({ active }: { active: boolean }) {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneControllerRef = useRef<UniverseSceneController | null>(null);
   const [payload, setPayload] = useState<UniversePayload>();
@@ -94,6 +95,7 @@ export function MemoryUniverse() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string>();
   const hiddenKindsRef = useRef(hiddenKinds);
+  const activeRef = useRef(active);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -279,15 +281,24 @@ export function MemoryUniverse() {
         controls.target.set(0, 0, 0);
         controls.update();
       };
-      sceneControllerRef.current = { setHiddenKinds, reset };
-
+      let rendering = false;
       const draw = () => {
-        if (disposed || !renderer) return;
+        if (disposed || !renderer || !rendering) return;
         controls.update();
         renderer.render(scene, camera);
         animationFrame = requestAnimationFrame(draw);
       };
-      draw();
+      const setActive = (nextActive: boolean) => {
+        if (nextActive && !rendering) {
+          rendering = true;
+          draw();
+        } else if (!nextActive && rendering) {
+          rendering = false;
+          cancelAnimationFrame(animationFrame);
+        }
+      };
+      sceneControllerRef.current = { setHiddenKinds, setActive, reset };
+      setActive(activeRef.current);
 
       disposeScene = () => {
         cancelAnimationFrame(animationFrame);
@@ -340,6 +351,11 @@ export function MemoryUniverse() {
     hiddenKindsRef.current = hiddenKinds;
     sceneControllerRef.current?.setHiddenKinds(hiddenKinds);
   }, [hiddenKinds]);
+
+  useEffect(() => {
+    activeRef.current = active;
+    sceneControllerRef.current?.setActive(active);
+  }, [active]);
 
   const shownNodeCount = useMemo(() => payload?.nodes.filter(
     (node) => !hiddenKinds.has(node.kind),

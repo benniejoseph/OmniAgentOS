@@ -100,6 +100,7 @@ export function MemoryIntelligenceWorkspace() {
   const [reviews, setReviews] = useState<MemoryReconciliationReview[]>([]);
   const [reviewsLoaded, setReviewsLoaded] = useState(false);
   const [reviewLimit, setReviewLimit] = useState(20);
+  const [universeVisited, setUniverseVisited] = useState(false);
   const [query, setQuery] = useState("");
   const [indexQuery, setIndexQuery] = useState("");
   const [memoryCategory, setMemoryCategory] = useState<MemoryCategoryId | "all">("all");
@@ -120,6 +121,8 @@ export function MemoryIntelligenceWorkspace() {
   const [consent, setConsent] = useState<ConsentStatus>();
   const indexRequestRef = useRef<AbortController | null>(null);
   const reviewsRequestRef = useRef<AbortController | null>(null);
+  const indexSignatureRef = useRef<Partial<Record<"memory" | "knowledge", string>>>({});
+  const reviewSignatureRef = useRef("");
 
   const loadOverview = useCallback(async () => {
     setLoading(true);
@@ -165,25 +168,28 @@ export function MemoryIntelligenceWorkspace() {
   const loadIndex = useCallback(async (
     kind: "memory" | "knowledge",
     cursor?: string,
+    force = false,
   ) => {
+    const parameters = new URLSearchParams({ view: kind, limit: "40" });
+    if (indexQuery) parameters.set("q", indexQuery);
+    if (cursor) parameters.set("cursor", cursor);
+    if (kind === "memory") {
+      parameters.set("category", memoryCategory);
+      parameters.set("tier", tier);
+      parameters.set("state", state);
+    } else {
+      parameters.set("category", knowledgeCategory);
+    }
+    const signature = parameters.toString().replace(/&cursor=[^&]+/, "");
+    if (!cursor && !force && indexSignatureRef.current[kind] === signature) {
+      return;
+    }
+
     indexRequestRef.current?.abort();
     const controller = new AbortController();
     indexRequestRef.current = controller;
     setIndexLoading(true);
     try {
-      const parameters = new URLSearchParams({
-        view: kind,
-        limit: "40",
-      });
-      if (indexQuery) parameters.set("q", indexQuery);
-      if (cursor) parameters.set("cursor", cursor);
-      if (kind === "memory") {
-        parameters.set("category", memoryCategory);
-        parameters.set("tier", tier);
-        parameters.set("state", state);
-      } else {
-        parameters.set("category", knowledgeCategory);
-      }
       const response = await fetch(`/api/memory/intelligence?${parameters}`, {
         cache: "no-store",
         signal: controller.signal,
@@ -201,6 +207,7 @@ export function MemoryIntelligenceWorkspace() {
           ? { ...next, items: [...current.items, ...next.items] }
           : next);
       }
+      indexSignatureRef.current[kind] = signature;
       setError(undefined);
     } catch (loadError) {
       if (!controller.signal.aborted) setError(message(loadError));
@@ -218,7 +225,9 @@ export function MemoryIntelligenceWorkspace() {
     return () => window.clearTimeout(timer);
   }, [view, loadIndex]);
 
-  const loadReviews = useCallback(async () => {
+  const loadReviews = useCallback(async (force = false) => {
+    const signature = `pending:${reviewLimit}`;
+    if (!force && reviewSignatureRef.current === signature) return;
     reviewsRequestRef.current?.abort();
     const controller = new AbortController();
     reviewsRequestRef.current = controller;
@@ -232,6 +241,7 @@ export function MemoryIntelligenceWorkspace() {
       if (!response.ok) throw new Error(body.error || "Memory reviews could not be loaded.");
       setReviews(body.reviews || []);
       setReviewsLoaded(true);
+      reviewSignatureRef.current = signature;
       setError(undefined);
     } catch (loadError) {
       if (!controller.signal.aborted) setError(message(loadError));
@@ -297,7 +307,7 @@ export function MemoryIntelligenceWorkspace() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "The review could not be resolved.");
       setAnnouncement("Review resolved. The recall index is being refreshed.");
-      await Promise.all([loadReviews(), loadOverview()]);
+      await Promise.all([loadReviews(true), loadOverview()]);
     } catch (actionError) {
       setError(message(actionError));
     } finally {
@@ -368,7 +378,7 @@ export function MemoryIntelligenceWorkspace() {
       if (!response.ok) throw new Error(body.error || "Memory state could not be updated.");
       setSelectedMemory(body.memory as MemoryRecord);
       setAnnouncement(`Memory ${action === "unpin" ? "unpinned" : `${action}d`}.`);
-      await Promise.all([loadOverview(), loadIndex("memory")]);
+      await Promise.all([loadOverview(), loadIndex("memory", undefined, true)]);
     } catch (actionError) {
       setError(message(actionError));
     } finally {
@@ -409,7 +419,7 @@ export function MemoryIntelligenceWorkspace() {
       setSelectedMemoryId(undefined);
       setForgetPreview(undefined);
       setAnnouncement("Memory and its derived recall paths were forgotten with a deletion receipt.");
-      await Promise.all([loadOverview(), loadIndex("memory")]);
+      await Promise.all([loadOverview(), loadIndex("memory", undefined, true)]);
     } catch (actionError) {
       setError(message(actionError));
     } finally {
@@ -421,6 +431,11 @@ export function MemoryIntelligenceWorkspace() {
     if (item.action === "open_reviews") setView("reviews");
     if (item.action === "open_knowledge") setView("knowledge");
     if (item.action === "run_maintenance") void runMaintenance();
+  }
+
+  function selectView(nextView: WorkspaceView) {
+    setView(nextView);
+    if (nextView === "universe") setUniverseVisited(true);
   }
 
   return (
@@ -466,15 +481,18 @@ export function MemoryIntelligenceWorkspace() {
       <MemoryGuide />
 
       <nav className={styles.tabs} aria-label="Memory workspace">
-        <Tab active={view === "memory"} onClick={() => setView("memory")} icon={<Brain size={17} />} label="Memory" count={overview?.summary.durableMemories} />
-        <Tab active={view === "knowledge"} onClick={() => setView("knowledge")} icon={<BookOpen size={17} />} label="Knowledge" count={overview?.summary.knowledgeDocuments} />
-        <Tab active={view === "reviews"} onClick={() => setView("reviews")} icon={<ShieldCheck size={17} />} label="Reviews" count={overview?.summary.pendingReviews} />
-        <Tab active={view === "universe"} onClick={() => setView("universe")} icon={<Layers3 size={17} />} label="Universe" />
+        <Tab active={view === "memory"} onClick={() => selectView("memory")} icon={<Brain size={17} />} label="Memory" count={overview?.summary.durableMemories} />
+        <Tab active={view === "knowledge"} onClick={() => selectView("knowledge")} icon={<BookOpen size={17} />} label="Knowledge" count={overview?.summary.knowledgeDocuments} />
+        <Tab active={view === "reviews"} onClick={() => selectView("reviews")} icon={<ShieldCheck size={17} />} label="Reviews" count={overview?.summary.pendingReviews} />
+        <Tab active={view === "universe"} onClick={() => selectView("universe")} icon={<Layers3 size={17} />} label="Universe" />
       </nav>
 
-      {view === "universe" ? (
-        <div className={styles.universeWrap}><MemoryUniverse /></div>
-      ) : (
+      {universeVisited ? (
+        <div className={styles.universeWrap} hidden={view !== "universe"}>
+          <MemoryUniverse active={view === "universe"} />
+        </div>
+      ) : null}
+      {view !== "universe" ? (
         <div className={styles.workspaceGrid}>
           <section className={styles.indexPane}>
             {view === "memory" ? (
@@ -498,14 +516,14 @@ export function MemoryIntelligenceWorkspace() {
                 page={knowledgePage}
                 category={knowledgeCategory}
                 onCategory={setKnowledgeCategory}
-                loading={reviewsLoading}
+                loading={indexLoading}
                 onMore={() => void loadIndex("knowledge", knowledgePage.nextCursor || undefined)}
               />
             ) : (
               <ReviewIndex
                 reviews={reviews}
                 loaded={reviewsLoaded}
-                loading={indexLoading}
+                loading={reviewsLoading}
                 busy={busy}
                 onResolve={resolveReview}
                 total={overview?.summary.pendingReviews || reviews.length}
@@ -523,7 +541,7 @@ export function MemoryIntelligenceWorkspace() {
             onRecommendation={handleRecommendation}
           />
         </div>
-      )}
+      ) : null}
 
       {selectedMemoryId && view === "memory" ? (
         <MemoryInspector
@@ -555,7 +573,10 @@ export function MemoryIntelligenceWorkspace() {
               if (!response.ok) throw new Error(body.error || body.message || "Memory could not be saved.");
               setCreateOpen(false);
               setAnnouncement("Memory saved. Mnemosyne indexed it and linked any explicit entities.");
-              await Promise.all([loadOverview(), loadIndex("memory")]);
+              await Promise.all([
+                loadOverview(),
+                loadIndex("memory", undefined, true),
+              ]);
             } catch (actionError) {
               setError(message(actionError));
             } finally {
