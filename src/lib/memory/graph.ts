@@ -4,6 +4,7 @@ import {
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
+  runWithDatabaseSystemScope,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import {
@@ -51,6 +52,7 @@ type RebuildMemoryGraphOptions = {
   source?: string;
   memoryLimit?: number;
   traceLimit?: number;
+  accessScope?: DatabaseMemoryAccessScope;
 };
 
 type SearchMemoryGraphOptions = {
@@ -184,7 +186,27 @@ const domainPhrases: Array<{ phrase: string; label: string; kind: MemoryGraphNod
 
 export async function rebuildMemoryGraph(options: RebuildMemoryGraphOptions = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
+  if (options.accessScope && hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithGraphAccessScope(
+      options.accessScope,
+      tenantId,
+      [MEMORY_PURPOSE_IDS.read],
+      (sql) => rebuildMemoryGraphForTenant(options, tenantId, sql),
+    );
+  }
   return runWithDatabaseTenantScope(tenantId, () => rebuildMemoryGraphForTenant(options, tenantId));
+}
+
+export async function rebuildMemoryGraphSystemScoped(
+  options: Omit<RebuildMemoryGraphOptions, "accessScope"> & {
+    auditReason: string;
+  },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseSystemScope(options.auditReason, () =>
+    rebuildMemoryGraphForTenant(options, tenantId)
+  );
 }
 
 export async function queueMemoryGraphRebuild(
@@ -222,6 +244,7 @@ export async function queueMemoryGraphRebuild(
 async function rebuildMemoryGraphForTenant(
   options: RebuildMemoryGraphOptions,
   tenantId: string,
+  scopedSql?: GraphSqlClient,
 ) {
   const startedAt = Date.now();
   const source = options.source || "rebuild";
@@ -231,8 +254,8 @@ async function rebuildMemoryGraphForTenant(
     let completedStats: MemoryGraphStats | undefined;
 
     if (hasDatabaseUrl()) {
-      await ensureDatabaseSchema();
-      await getSql().transaction(async (sql: GraphSqlClient) => {
+      if (!scopedSql) await ensureDatabaseSchema();
+      const rebuildPostgres = async (sql: GraphSqlClient) => {
         await sql`
           SELECT pg_advisory_xact_lock(
             hashtextextended(${"memory-graph:" + tenantId}, 0)
@@ -266,7 +289,9 @@ async function rebuildMemoryGraphForTenant(
         await upsertGraphNodes([...aggregate.nodes.values()], sql);
         await upsertGraphEdges([...aggregate.edges.values()], sql);
         await insertGraphBuild(build, sql);
-      });
+      };
+      if (scopedSql) await rebuildPostgres(scopedSql);
+      else await getSql().transaction(rebuildPostgres);
     } else {
       await withJsonFileLock(getGraphFile(), async () => {
         const { aggregate, selectedMemories, traces } =
@@ -340,8 +365,20 @@ async function collectMemoryGraphAggregate(
 ) {
   const memoryLimit = Math.min(Math.max(options.memoryLimit || 500, 1), 2000);
   const [memories, traces] = await Promise.all([
-    listMemories({ tenantId, limit: memoryLimit, sql }),
-    listTraceSeeds(options.traceLimit || 200, tenantId, sql),
+    listMemories({
+      tenantId,
+      limit: memoryLimit,
+      sql,
+      ...(!sql && options.accessScope
+        ? { accessScope: options.accessScope }
+        : {}),
+    }),
+    listTraceSeeds(
+      options.traceLimit || 200,
+      tenantId,
+      sql,
+      options.accessScope,
+    ),
   ]);
   const selectedMemories = memories.slice(0, memoryLimit);
   return {
@@ -1285,6 +1322,7 @@ async function listTraceSeeds(
   limit: number,
   tenantId: string,
   sql?: GraphSqlClient,
+  accessScope?: DatabaseMemoryAccessScope,
 ): Promise<TraceSeed[]> {
   if (hasDatabaseUrl()) {
     if (!sql) {
@@ -1304,7 +1342,8 @@ async function listTraceSeeds(
   const ledger = await readJsonFile<{ traces: TraceSeed[] }>(getDataPath("retrieval-traces.json"), { traces: [] });
   return ledger.traces
     .filter((trace) =>
-      graphTenantId(trace as TraceSeed & { tenantId?: string }) === tenantId
+      graphTenantId(trace as TraceSeed & { tenantId?: string }) === tenantId &&
+      graphRecordVisibleForScope(trace, accessScope)
     )
     .slice(0, limit)
     .map(traceSeedFromRow);

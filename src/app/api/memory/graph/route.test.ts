@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   retrieveGraphRelationshipPaths: vi.fn(),
   requestEntityAccessFromSecurityContext: vi.fn(),
   requestMemoryAccessFromSecurityContext: vi.fn(),
+  rebuildMemoryGraph: vi.fn(),
   searchMemoryGraph: vi.fn(async () => []),
 }));
 vi.mock("@/lib/entities/graph-retrieval", () => ({
@@ -68,11 +69,11 @@ vi.mock("@/lib/memory/graph", () => ({
   getMemoryGraphNode: mocks.getMemoryGraphNode,
   listMemoryGraphEdges: mocks.listMemoryGraphEdges,
   listMemoryGraphNodes: mocks.listMemoryGraphNodes,
-  rebuildMemoryGraph: vi.fn(),
+  rebuildMemoryGraph: mocks.rebuildMemoryGraph,
   searchMemoryGraph: mocks.searchMemoryGraph,
 }));
 
-import { GET } from "@/app/api/memory/graph/route";
+import { GET, POST } from "@/app/api/memory/graph/route";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 
 const context = {
@@ -107,6 +108,10 @@ describe("memory graph private-memory boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.authorizeRequest.mockResolvedValue(context);
+    mocks.rebuildMemoryGraph.mockResolvedValue({
+      build: { nodeCount: 12, edgeCount: 18 },
+      stats: { nodes: 12, edges: 18 },
+    });
     mocks.requestMemoryAccessFromSecurityContext.mockImplementation((
       _context: unknown,
       input: { purposeId: string },
@@ -142,6 +147,28 @@ describe("memory graph private-memory boundary", () => {
       shadowPromotionReady: false,
     });
     mocks.getMemoryGraphNode.mockResolvedValue(null);
+  });
+
+  it("rebuilds only inside the signed-in actor memory scope", async () => {
+    const response = await POST(new Request(
+      "http://localhost/api/memory/graph",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source: "memory-universe" }),
+      },
+    ));
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.rebuildMemoryGraph).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: "tenant-a",
+      source: "memory-universe",
+      accessScope: expect.objectContaining({
+        initiatingActorId: "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        purposeId: MEMORY_PURPOSE_IDS.read,
+      }),
+    }));
   });
 
   it("searches the graph under the owner retrieval scope", async () => {
