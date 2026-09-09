@@ -339,7 +339,7 @@ export function MemoryUniverse(props: {
       const mesh = new THREE.InstancedMesh(geometry, material, nodes.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const dummy = new THREE.Object3D();
-      let currentHidden = hiddenKindsRef.current;
+      let currentHidden: ReadonlySet<string> = hiddenKindsRef.current;
       let currentSelection = selectedIdRef.current;
       let currentHighlight = selectedIdRef.current;
 

@@ -12,7 +12,13 @@ const mocks = vi.hoisted(() => ({
   queryTemporalRelationClaims: vi.fn(
     async (): Promise<Array<Record<string, unknown>>> => [],
   ),
-  readEntityRegistry: vi.fn(async () => ({
+  readEntityRegistry: vi.fn(async (): Promise<{
+    schemaVersion: number;
+    entities: Array<Record<string, unknown>>;
+    aliases: unknown[];
+    resolutions: unknown[];
+    mergeReviews: unknown[];
+  }> => ({
     schemaVersion: 1,
     entities: [],
     aliases: [],

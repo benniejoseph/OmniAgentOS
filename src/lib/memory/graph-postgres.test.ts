@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const graphMocks = vi.hoisted(() => {
   const statements: string[] = [];
-  const sql = vi.fn(async (strings: TemplateStringsArray) => {
+  const sql = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
     const statement = strings.join("?");
     statements.push(statement);
     if (statement.includes("AS nodes") && statement.includes("AS edges")) {
