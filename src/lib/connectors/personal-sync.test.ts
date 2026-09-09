@@ -394,6 +394,155 @@ describe("personal OAuth synchronization", () => {
     expect(finalCursor).not.toHaveProperty("gmailHistoryId");
     expect(finalCursor).not.toHaveProperty("calendar");
     expect(finalCursor).not.toHaveProperty("driveModifiedAfter");
+    expect(mocks.observeCanonicalDrive).not.toHaveBeenCalled();
+    expect(mocks.observeDrive).not.toHaveBeenCalled();
+  });
+
+  it("uses small provider pages so maintenance backfills remain resumable", async () => {
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes("/messages?")) return json({ messages: [] });
+      if (url.endsWith("/profile")) return json({ historyId: "bounded-mail" });
+      if (url.includes("calendar")) {
+        return json({ nextSyncToken: "bounded-calendar", items: [] });
+      }
+      if (url.includes("/drive/v3/files")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    });
+
+    const gmailUrl = new URL(
+      requestedUrls.find((url) => url.includes("/messages?"))!,
+    );
+    const calendarUrl = new URL(
+      requestedUrls.find((url) => url.includes("calendar"))!,
+    );
+    const driveUrl = new URL(
+      requestedUrls.find((url) => url.includes("/drive/v3/files"))!,
+    );
+    expect(gmailUrl.searchParams.get("maxResults")).toBe("5");
+    expect(calendarUrl.searchParams.get("maxResults")).toBe("10");
+    expect(driveUrl.searchParams.get("pageSize")).toBe("3");
+  });
+
+  it("persists oversized Gmail history work as bounded encrypted-cursor input", async () => {
+    mocks.getSecrets.mockResolvedValue({
+      grant: {
+        id: "google-grant",
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+        status: "active",
+        authorizationGeneration: 1,
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        scopes: [],
+      },
+      tokens: { access_token: "access" },
+      syncCursor: JSON.stringify({ gmailHistoryId: "history-start" }),
+    });
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/history?")) {
+        expect(new URL(url).searchParams.get("maxResults")).toBe("10");
+        return json({
+          historyId: "history-fence",
+          history: [{
+            messagesAdded: Array.from({ length: 7 }, (_, index) => ({
+              message: { id: `mail-${index + 1}` },
+            })),
+            messagesDeleted: [{ message: { id: "mail-deleted" } }],
+          }],
+        });
+      }
+      if (url.includes("/messages/mail-")) {
+        const id = url.match(/messages\/(mail-\d+)/)?.[1] || "mail";
+        return json({
+          id,
+          threadId: `thread-${id}`,
+          historyId: "history-fence",
+          internalDate: "1787695200000",
+          snippet: id,
+          payload: { headers: [] },
+        });
+      }
+      if (url.includes("calendar")) {
+        return json({ nextSyncToken: "calendar-complete", items: [] });
+      }
+      if (url.includes("/drive/v3/files")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    const result = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    });
+
+    expect(result.sources[0]).toMatchObject({
+      source: "mail",
+      status: "syncing",
+      imported: 5,
+    });
+    const finalCursor = JSON.parse(
+      mocks.updateState.mock.calls.at(-1)?.[0].cursor,
+    ) as Record<string, unknown>;
+    expect(finalCursor).toMatchObject({
+      gmailHistoryId: "history-start",
+      gmailPendingHistoryId: "history-fence",
+      gmailPendingAddedIds: ["mail-6", "mail-7"],
+      gmailPendingDeletedIds: ["mail-deleted"],
+    });
+    expect(mocks.ingest).toHaveBeenCalledTimes(5);
+
+    mocks.getSecrets.mockResolvedValue({
+      grant: {
+        id: "google-grant",
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+        status: "active",
+        authorizationGeneration: 1,
+        expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+        scopes: [],
+      },
+      tokens: { access_token: "access" },
+      syncCursor: JSON.stringify(finalCursor),
+    });
+    mocks.ingest.mockClear();
+    mocks.remove.mockClear();
+    mocks.updateState.mockClear();
+
+    const resumed = await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    });
+
+    expect(resumed.sources[0]).toMatchObject({
+      source: "mail",
+      status: "healthy",
+      imported: 2,
+      removed: 1,
+    });
+    const resumedCursor = JSON.parse(
+      mocks.updateState.mock.calls.at(-1)?.[0].cursor,
+    ) as Record<string, unknown>;
+    expect(resumedCursor).toMatchObject({ gmailHistoryId: "history-fence" });
+    expect(resumedCursor).not.toHaveProperty("gmailPendingHistoryId");
+    expect(resumedCursor).not.toHaveProperty("gmailPendingAddedIds");
+    expect(resumedCursor).not.toHaveProperty("gmailPendingDeletedIds");
+    expect(mocks.ingest).toHaveBeenCalledTimes(2);
+    expect(mocks.remove).toHaveBeenCalledWith(
+      "oauth:google:mail:mail-deleted",
+      { tenantId: "personal" },
+    );
   });
 
   it("settles the legacy sync lease before running Drive sidecars serially", async () => {
