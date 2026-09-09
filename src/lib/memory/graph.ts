@@ -788,6 +788,18 @@ export async function getMemoryGraphStats(
 }
 
 /**
+ * Lightweight projection health for surfaces that already loaded their own
+ * bounded node and edge payload. Build records contain operational metadata
+ * only; private labels and source content are never returned here.
+ */
+export async function getLatestMemoryGraphBuild(
+  options: Pick<GraphReadOptions, "tenantId"> = {},
+): Promise<MemoryGraphBuildRecord | undefined> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseTenantScope(tenantId, () => getLatestGraphBuild(tenantId));
+}
+
+/**
  * Count-only projection for dashboards. This avoids transferring and parsing
  * every node and edge when callers need only the graph's current size.
  */
