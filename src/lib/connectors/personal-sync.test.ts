@@ -24,6 +24,7 @@ vi.mock("@/lib/rag/store", () => ({ deleteKnowledgeDocumentByIdempotencyKey: moc
 vi.mock("@/lib/communications/store", () => ({ mapInboundCommunication: mocks.mapInbound }));
 
 import { syncPersonalProvider } from "@/lib/connectors/personal-sync";
+import { getDatabaseActorContext } from "@/lib/db/client";
 
 describe("personal OAuth synchronization", () => {
   beforeEach(() => {
@@ -58,6 +59,10 @@ describe("personal OAuth synchronization", () => {
   });
 
   it("imports Google mail, calendar, and Drive updates and persists sync health", async () => {
+    mocks.ingest.mockImplementation(async () => {
+      expect(getDatabaseActorContext()).toEqual(["owner"]);
+      return {};
+    });
     mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
       const url = String(input);
       if (url.includes("/messages?")) return json({ messages: [{ id: "m1" }] });

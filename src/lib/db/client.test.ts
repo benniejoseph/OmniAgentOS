@@ -731,9 +731,9 @@ describe("ordered database schema versions", () => {
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 150,
-      name: "entity_relation_projection_queue_actor_policy_repair_v1",
-      checksum: "0635323de69b0bd7b2c1c520dd27f7271a4833abd6ce7263e120bb1d69984122",
+      version: 149,
+      name: "delegation_actor_identifier_compatibility_v1",
+      checksum: "e23652ba4ff4fb4598d3671175e36d8a4a2974af839031477033d9924bc03810",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
