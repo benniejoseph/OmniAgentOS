@@ -74,7 +74,10 @@ describe("personal OAuth synchronization", () => {
     });
     const result = await syncPersonalProvider({ tenantId: "personal", actorId: "owner", provider: "google" });
     expect(result).toMatchObject({ imported: 3, removed: 1, cursorAdvanced: true });
-    expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:mail:m1" }));
+    expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "oauth:google:mail:m1",
+      deferMemoryGraphIndex: true,
+    }));
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:calendar:e1" }));
     expect(mocks.ingest).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "oauth:google:drive:d1" }));
     expect(mocks.mapInbound).toHaveBeenCalledWith(

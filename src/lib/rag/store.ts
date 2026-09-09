@@ -1351,9 +1351,15 @@ async function recoverExistingKnowledgeLineage(
       throw new Error("Legacy knowledge document has partial source lineage.");
     }
     if (!write) return undefined;
-    const repairedLineage = await persistCanonicalSourceWrite(sql, write, {
-      documentId: requestedDocument.id,
-    });
+    const repairedLineage =
+      await recoverCompatibleCurrentKnowledgeLineage(
+        sql,
+        requestedDocument,
+        write,
+      ) ||
+      await persistCanonicalSourceWrite(sql, write, {
+        documentId: requestedDocument.id,
+      });
     const repairedDocuments = await sql`
       UPDATE omni_knowledge_documents
       SET source_item_id = ${repairedLineage.sourceItemId},
@@ -1480,6 +1486,99 @@ async function recoverExistingKnowledgeLineage(
   }
 
   return expectedKnowledgeLineage(write);
+}
+
+async function recoverCompatibleCurrentKnowledgeLineage(
+  sql: RagSqlClient,
+  requestedDocument: KnowledgeDocument,
+  write: CanonicalTextSourceWrite,
+): Promise<PersistedKnowledgeLineage | undefined> {
+  const output = sourceAdapterUpsertV1Schema.parse(write.adapterOutput);
+  const requestedItem = output.sourceItem;
+  const requestedRevision = output.sourceRevision;
+  const rows = await sql`
+    SELECT revision.*
+    FROM omni_source_items item
+    JOIN omni_source_revisions revision
+      ON revision.tenant_id = item.tenant_id
+     AND revision.id = item.current_revision_id
+    WHERE item.tenant_id = ${requestedDocument.tenantId}
+      AND item.id = ${requestedItem.sourceItemId}
+      AND item.owner_actor_id = ${requestedItem.ownerActorId}
+      AND item.connection_id = ${requestedItem.connectionId}
+      AND item.visibility = ${requestedItem.visibility}
+      AND item.sensitivity = ${requestedItem.sensitivity}
+      AND item.permission_set_sha256 = ${requestedItem.permissionSetSha256}
+      AND item.purpose_set_sha256 = ${requestedItem.purposeSetSha256}
+      AND item.source_kind = ${requestedItem.sourceKind}
+      AND item.provider_item_key_sha256 = ${requestedItem.providerItemKeySha256}
+    LIMIT 1
+  `;
+  const current = rows[0];
+  if (
+    !current ||
+    current.source_item_id !== requestedItem.sourceItemId ||
+    current.owner_actor_id !== requestedRevision.ownerActorId ||
+    current.connection_id !== requestedRevision.connectionId ||
+    current.visibility !== requestedRevision.visibility ||
+    current.sensitivity !== requestedRevision.sensitivity ||
+    current.permission_set_sha256 !== requestedRevision.permissionSetSha256 ||
+    current.purpose_set_sha256 !== requestedRevision.purposeSetSha256 ||
+    current.source_kind !== requestedRevision.sourceKind ||
+    current.provider_item_key_sha256 !==
+      requestedRevision.providerItemKeySha256 ||
+    current.content_sha256 !== requestedRevision.contentSha256 ||
+    Number(current.content_byte_length) !==
+      requestedRevision.contentByteLength ||
+    current.media_type !== requestedRevision.mediaType ||
+    current.adapter_id !== output.adapterId
+  ) {
+    return undefined;
+  }
+
+  const evidenceRows = await sql`
+    SELECT *
+    FROM omni_evidence_units
+    WHERE tenant_id = ${requestedDocument.tenantId}
+      AND source_item_id = ${requestedItem.sourceItemId}
+      AND source_revision_id = ${String(current.id)}
+    ORDER BY id COLLATE "C"
+  `;
+  if (evidenceRows.length !== output.evidenceUnits.length) {
+    return undefined;
+  }
+  const currentEvidence = evidenceRows.map(evidenceUnitFromStoredRow);
+  const currentByPassage = new Map<string, EvidenceUnitV1>();
+  for (const evidence of currentEvidence) {
+    const key = `${evidence.evidenceContentSha256}:${evidence.locatorSha256}`;
+    if (currentByPassage.has(key)) return undefined;
+    currentByPassage.set(key, evidence);
+  }
+  const requestedEvidenceById = new Map(
+    output.evidenceUnits.map((evidence) => [evidence.evidenceUnitId, evidence]),
+  );
+  const evidenceUnitIdsByChunkIndex: string[] = [];
+  for (const requestedEvidenceId of write.evidenceUnitIdsByChunkIndex) {
+    const requestedEvidence = requestedEvidenceById.get(requestedEvidenceId);
+    if (!requestedEvidence) return undefined;
+    const currentEvidenceUnit = currentByPassage.get(
+      `${requestedEvidence.evidenceContentSha256}:${requestedEvidence.locatorSha256}`,
+    );
+    if (!currentEvidenceUnit) return undefined;
+    evidenceUnitIdsByChunkIndex.push(currentEvidenceUnit.evidenceUnitId);
+  }
+  if (
+    new Set(evidenceUnitIdsByChunkIndex).size !== currentEvidence.length
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    sourceItemId: requestedItem.sourceItemId,
+    sourceRevisionId: String(current.id),
+    evidenceUnitIdsByChunkIndex: Object.freeze(
+      evidenceUnitIdsByChunkIndex,
+    ),
+  });
 }
 
 async function searchKnowledgeDb(

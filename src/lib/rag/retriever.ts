@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { embedTexts } from "@/lib/openai/client";
 import { chunkText, normalizeTextForChunking } from "@/lib/rag/chunk";
-import { indexMemoryGraphRecords } from "@/lib/memory/graph";
+import {
+  indexMemoryGraphRecords,
+  queueMemoryGraphRebuild,
+} from "@/lib/memory/graph";
 import { saveMemories } from "@/lib/memory/store";
 import { createKnowledgeDocument } from "@/lib/rag/store";
 import { buildContextPack } from "@/lib/rag/context-engine";
@@ -39,6 +42,7 @@ export async function ingestTextDocument({
   captureIngestGuard,
   executionScope,
   structuredUnits,
+  deferMemoryGraphIndex = false,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -55,6 +59,7 @@ export async function ingestTextDocument({
   captureIngestGuard?: CaptureIngestGuard;
   executionScope?: ExecutionScope;
   structuredUnits?: CaptureExtractionUnit[];
+  deferMemoryGraphIndex?: boolean;
 }) {
   if ((usageScope?.actorId || captureIngestGuard?.actorId) && !sourceLineage) {
     throw new Error(
@@ -167,9 +172,13 @@ export async function ingestTextDocument({
     { captureIngestGuard },
   );
   abortSignal?.throwIfAborted();
-  await indexMemoryGraphRecords(records, "knowledge.ingest", {
-    captureIngestGuard,
-  });
+  if (deferMemoryGraphIndex) {
+    await queueMemoryGraphRebuild({ tenantId });
+  } else {
+    await indexMemoryGraphRecords(records, "knowledge.ingest", {
+      captureIngestGuard,
+    });
+  }
 
   return {
     document: knowledge.document,
