@@ -38,25 +38,48 @@ vi.mock("@/lib/memory/store", () => ({
 import { getMemoryGraphCounts, rebuildMemoryGraph } from "@/lib/memory/graph";
 
 describe("memory graph postgres rebuild", () => {
+  function graphMemories(count: number) {
+    return Array.from({ length: count }, (_, index) => ({
+      id: `memory-${index}`,
+      tenantId: "tenant-bulk",
+      type: "knowledge",
+      title: `Workflow graph ${index}`,
+      content:
+        `Postgres workflow graph memory approval connector evaluation security signal-${index}`,
+      tags: ["workflow", "graph", `topic-${index}`],
+      scope: "workspace",
+      source: "test",
+      importance: 0.8,
+      createdAt: "2026-09-08T00:00:00.000Z",
+      updatedAt: "2026-09-08T00:00:00.000Z",
+    }));
+  }
+
   beforeEach(() => {
     graphMocks.statements.length = 0;
     graphMocks.sql.mockClear();
-    graphMocks.listMemories.mockReset().mockResolvedValue(
-      Array.from({ length: 80 }, (_, index) => ({
-        id: `memory-${index}`,
-        tenantId: "tenant-bulk",
-        type: "knowledge",
-        title: `Workflow graph ${index}`,
-        content:
-          "Postgres workflow graph memory approval connector evaluation security",
-        tags: ["workflow", "graph", `topic-${index}`],
-        scope: "workspace",
-        source: "test",
-        importance: 0.8,
-        createdAt: "2026-09-08T00:00:00.000Z",
-        updatedAt: "2026-09-08T00:00:00.000Z",
-      })),
+    graphMocks.listMemories.mockReset().mockResolvedValue(graphMemories(80));
+  });
+
+  it("batches large graph projections below the per-statement row bound", async () => {
+    graphMocks.listMemories.mockResolvedValue(graphMemories(300));
+
+    await rebuildMemoryGraph({
+      tenantId: "tenant-bulk",
+      source: "test.batched-rebuild",
+      memoryLimit: 300,
+    });
+
+    const graphWrites = graphMocks.sql.mock.calls.filter((call) => {
+      const statement = (call[0] as unknown as TemplateStringsArray).join("?");
+      return statement.includes("jsonb_to_recordset");
+    });
+    const rowCounts = graphWrites.map((call) =>
+      (JSON.parse(String(call[1])) as unknown[]).length
     );
+
+    expect(graphWrites.length).toBeGreaterThan(2);
+    expect(Math.max(...rowCounts)).toBeLessThanOrEqual(250);
   });
 
   it("persists rebuilt nodes and edges with one set-based statement each", async () => {
