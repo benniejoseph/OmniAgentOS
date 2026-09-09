@@ -17,7 +17,10 @@ import {
   lockActiveCaptureIngest,
   type CaptureIngestGuard,
 } from "@/lib/capture/ingest-guard";
-import { listMemories } from "@/lib/memory/store";
+import {
+  listMemories,
+  listScopeBoundMemories,
+} from "@/lib/memory/store";
 import {
   buildUserPrivateMemoryAccessBindingV1,
   memoryAccessBindingSha256,
@@ -383,19 +386,22 @@ async function collectMemoryGraphAggregate(
 ) {
   const memoryLimit = Math.min(Math.max(options.memoryLimit || 500, 1), 2000);
   const [memories, traces] = await Promise.all([
-    listMemories({
-      tenantId,
-      limit: memoryLimit,
-      sql,
-      ...(!sql && options.accessScope
-        ? { accessScope: options.accessScope }
-        : {}),
-    }),
+    options.includeLegacyUnattributed === false
+      ? listScopeBoundMemories({ tenantId, limit: memoryLimit, sql })
+      : listMemories({
+          tenantId,
+          limit: memoryLimit,
+          sql,
+          ...(!sql && options.accessScope
+            ? { accessScope: options.accessScope }
+            : {}),
+        }),
     listTraceSeeds(
       options.traceLimit || 200,
       tenantId,
       sql,
       options.accessScope,
+      options.includeLegacyUnattributed === false,
     ),
   ]);
   const selectedMemories = memories.slice(0, memoryLimit).filter((memory) =>
@@ -1372,6 +1378,7 @@ async function listTraceSeeds(
   tenantId: string,
   sql?: GraphSqlClient,
   accessScope?: DatabaseMemoryAccessScope,
+  scopeBoundOnly = false,
 ): Promise<TraceSeed[]> {
   if (hasDatabaseUrl()) {
     if (!sql) {
@@ -1382,6 +1389,7 @@ async function listTraceSeeds(
       SELECT *
       FROM omni_retrieval_traces
       WHERE tenant_id = ${tenantId}
+        AND (${scopeBoundOnly} = FALSE OR access_contract_version = 1)
       ORDER BY created_at DESC
       LIMIT ${Math.min(Math.max(limit, 1), 1000)}
     `;
