@@ -32,6 +32,9 @@ type OAuthGrant = {
   syncError?: string;
   lastSyncedAt?: string;
   syncedItems?: number;
+  sourceCoverage?: Partial<Record<"mail" | "calendar" | "drive", {
+    lastSuccessfulAt?: string;
+  }>>;
   createdAt: string;
   updatedAt: string;
   manageable?: boolean;
@@ -107,6 +110,7 @@ export function PersonalConnections({
       ),
     [grant?.scopes],
   );
+  const lastSuccessfulSyncAt = latestSuccessfulSyncAt(grant);
 
   function blockUnavailableAction() {
     if (!actionDisabledReason) return false;
@@ -369,8 +373,8 @@ export function PersonalConnections({
             value={loading && !provider ? "Checking…" : connected ? `Added ${formatDate(grant?.createdAt)}` : "Not connected"}
           />
           <ConnectionFact
-            label="Last sync"
-            value={grant?.lastSyncedAt ? formatDate(grant.lastSyncedAt) : "Not synced yet"}
+            label="Last successful sync"
+            value={lastSuccessfulSyncAt ? formatDate(lastSuccessfulSyncAt) : "Not synced yet"}
           />
           <ConnectionFact
             label="Imported"
@@ -478,6 +482,21 @@ function asOAuthPayload(value: unknown): OAuthPayload {
     return {};
   }
   return value as OAuthPayload;
+}
+
+function latestSuccessfulSyncAt(grant?: OAuthGrant) {
+  const candidates = [
+    grant?.lastSyncedAt,
+    ...Object.values(grant?.sourceCoverage || {}).map(
+      (checkpoint) => checkpoint?.lastSuccessfulAt,
+    ),
+  ].filter((value): value is string => Boolean(value));
+  return candidates.reduce<string | undefined>((latest, candidate) => {
+    const candidateTime = Date.parse(candidate);
+    if (!Number.isFinite(candidateTime)) return latest;
+    if (!latest || candidateTime > Date.parse(latest)) return candidate;
+    return latest;
+  }, undefined);
 }
 
 function formatDate(value?: string) {

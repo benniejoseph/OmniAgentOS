@@ -81,6 +81,41 @@
 .disclosure { margin-top: .65rem; color: var(--day-muted, var(--muted)); font-size: .52rem; line-height: 1.45; }
 .loading { min-height: 9rem; align-items: center; justify-content: center; gap: .5rem; color: var(--day-muted, var(--muted)); font-size: .63rem; }
 
+/* Integrations is an operational workspace, so its compact data still needs to
+   remain legible on wide monitors and small screens. Other surfaces retain
+   their intentionally denser dashboard scale. */
+.surface_integrations .header p { font-size: .75rem; }
+.surface_integrations .header h2 { font-size: clamp(1.5rem, 2.2vw, 2rem); }
+.surface_integrations .header > div > span { font-size: .875rem; }
+.surface_integrations .header button { font-size: .8125rem; }
+.surface_integrations .metric strong { font-size: 1rem; }
+.surface_integrations .metric small,
+.surface_integrations .verifiedMetric small { font-size: .75rem; }
+.surface_integrations .verifiedMetric strong { font-size: .8125rem; }
+.surface_integrations .partial p,
+.surface_integrations .error strong,
+.surface_integrations .error span { font-size: .8125rem; }
+.surface_integrations .indexStatus span,
+.surface_integrations .indexStatus strong,
+.surface_integrations .indexStatus small { font-size: .75rem; }
+.surface_integrations .indexStatus p { font-size: .8125rem; }
+.surface_integrations .domainCard header p,
+.surface_integrations .domainCard header > span,
+.surface_integrations .domainCard dt,
+.surface_integrations .domainCard > small,
+.surface_integrations .domainCard footer span,
+.surface_integrations .domainCard footer a,
+.surface_integrations .domainCard footer em { font-size: .75rem; }
+.surface_integrations .domainCard h3 { font-size: 1.125rem; }
+.surface_integrations .domainCard dd,
+.surface_integrations .domainCard > p { font-size: .8125rem; }
+.surface_integrations .blindSpots summary strong,
+.surface_integrations .blindSpots article strong { font-size: .8125rem; }
+.surface_integrations .blindSpots summary small,
+.surface_integrations .blindSpots article p,
+.surface_integrations .disclosure { font-size: .75rem; }
+.surface_integrations .loading { font-size: .8125rem; }
+
 @media (max-width: 82rem) {
   .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .domains { grid-template-columns: repeat(2, minmax(0, 1fr)); }
