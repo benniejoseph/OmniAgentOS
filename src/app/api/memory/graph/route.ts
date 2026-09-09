@@ -16,6 +16,7 @@ import {
 } from "@/lib/http/body";
 import {
   getMemoryGraphStats,
+  getMemoryGraphNode,
   listMemoryGraphEdges,
   listMemoryGraphNodes,
   rebuildMemoryGraph,
@@ -95,9 +96,84 @@ async function GETHandler(request: Request) {
       : MEMORY_PURPOSE_IDS.read,
     auditPurpose: query
       ? "api.memory.graph.search"
-      : "api.memory.graph.read",
+      : view === "universe_node"
+        ? "api.memory.graph.universe.node"
+        : view === "universe"
+          ? "api.memory.graph.universe"
+          : "api.memory.graph.read",
     correlationId: `memory_graph_read_${randomUUID()}`,
   });
+
+  if (view === "universe_node") {
+    const nodeId = url.searchParams.get("id")?.trim() || "";
+    try {
+      const node = await getMemoryGraphNode(nodeId, {
+        tenantId: context.tenantId,
+        accessScope: requestAccess?.databaseAccessScope,
+      });
+      return Response.json({
+        version: "memory-universe-node:1",
+        node: node ? publicUniverseNodeDetail(node) : null,
+      }, {
+        status: node ? 200 : 404,
+        headers: privateNoStoreHeaders,
+      });
+    } catch (error) {
+      return Response.json({
+        error: error instanceof Error
+          ? error.message
+          : "Memory graph node could not be loaded.",
+      }, { status: 400, headers: privateNoStoreHeaders });
+    }
+  }
+
+  if (view === "universe") {
+    const nodes = await listMemoryGraphNodes(10_000, {
+      tenantId: context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    });
+    const edges = await listMemoryGraphEdges(20_000, {
+      tenantId: context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    });
+    const kinds = countValues(nodes.map((node) => node.kind));
+    const relations = countValues(edges.map((edge) => edge.relation));
+    return Response.json({
+      version: "memory-universe:1",
+      generatedAt: new Date().toISOString(),
+      nodes: nodes.map((node) => ({
+        id: node.id,
+        kind: node.kind,
+        weight: node.weight,
+        sourceCount: node.sourceCount,
+        updatedAt: node.updatedAt,
+      })),
+      edges: edges.map((edge) => ({
+        id: edge.id,
+        sourceNodeId: edge.sourceNodeId,
+        targetNodeId: edge.targetNodeId,
+        relation: edge.relation,
+        weight: edge.weight,
+        evidenceCount: edge.evidenceCount,
+      })),
+      stats: {
+        nodes: nodes.length,
+        edges: edges.length,
+        kinds,
+        relations,
+        latestUpdatedAt: nodes.reduce<string | null>(
+          (latest, node) => !latest || node.updatedAt > latest
+            ? node.updatedAt
+            : latest,
+          null,
+        ),
+      },
+      disclosure: {
+        labels: "explicit_node_selection",
+        summaries: "explicit_node_selection",
+      },
+    }, { headers: privateNoStoreHeaders });
+  }
 
   if (query) {
     return Response.json({
@@ -110,7 +186,7 @@ async function GETHandler(request: Request) {
         tenantId: context.tenantId,
         accessScope: requestAccess?.databaseAccessScope,
       }),
-    });
+    }, { headers: privateNoStoreHeaders });
   }
 
   const [nodes, edges, stats] = await Promise.all([
@@ -128,7 +204,33 @@ async function GETHandler(request: Request) {
     }),
   ]);
 
-  return Response.json({ nodes, edges, stats });
+  return Response.json({ nodes, edges, stats }, {
+    headers: privateNoStoreHeaders,
+  });
+}
+
+function publicUniverseNodeDetail(
+  node: Awaited<ReturnType<typeof getMemoryGraphNode>> & {},
+) {
+  return {
+    id: node.id,
+    kind: node.kind,
+    label: node.label,
+    summary: node.summary,
+    tags: node.tags.slice(0, 20),
+    weight: node.weight,
+    sourceCount: node.sourceCount,
+    updatedAt: node.updatedAt,
+  };
+}
+
+function countValues(values: readonly string[]) {
+  return Object.fromEntries(
+    [...new Set(values)].sort().map((value) => [
+      value,
+      values.filter((candidate) => candidate === value).length,
+    ]),
+  );
 }
 
 async function readGraphScaleMetrics(request: Request, url: URL) {

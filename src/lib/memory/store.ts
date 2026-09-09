@@ -125,6 +125,14 @@ export type CreateMemoryInput = {
   formationOrigin?: MemoryFormationOrigin;
 };
 
+export type MemoryCatalogRecord = Omit<
+  MemoryRecord,
+  "content" | "embedding" | "evidenceRefs"
+> & Readonly<{
+  evidenceRefCount: number;
+  byteCount: number;
+}>;
+
 type TenantScopedOptions = {
   tenantId?: string;
   limit?: number;
@@ -180,6 +188,124 @@ export async function listMemories(options: TenantScopedOptions = {}) {
     .filter((memory) => options.includeInactive || isActiveMemory(sanitizeMemoryRecord(memory)))
     .slice(0, limit)
     .map(sanitizeMemoryRecord);
+}
+
+/**
+ * Content-free memory inventory for operator-facing catalogues and aggregate
+ * monitoring. Exact claim bodies, embeddings, and evidence coordinates remain
+ * behind the deliberate memory inspection boundary.
+ */
+export async function listMemoryCatalog(
+  options: Pick<
+    TenantScopedOptions,
+    "tenantId" | "limit" | "includeInactive" | "accessScope"
+  > = {},
+): Promise<MemoryCatalogRecord[]> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(options.limit || 5_000, 1), 10_000);
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const readRows = (sql: MemorySqlClient) => options.includeInactive
+      ? sql`
+          SELECT
+            memory.id, memory.tenant_id, memory.type, memory.title,
+            memory.tags, memory.scope, memory.source, memory.importance,
+            memory.created_at, memory.updated_at, memory.confidence,
+            memory.claim_status, memory.asserted_by, memory.valid_from,
+            memory.valid_to, memory.supersedes_id,
+            memory.contradiction_of_id, memory.forgotten_at, memory.tier,
+            memory.tier_policy_version, memory.formation_reason,
+            memory.retention_expires_at, memory.last_used_at,
+            memory.use_count, memory.promoted_from_tier, memory.promoted_at,
+            memory.access_contract_version, memory.access_state,
+            memory.owner_actor_id, memory.owner_agent_id, memory.workspace_id,
+            memory.project_id, memory.mission_id, memory.visibility,
+            memory.sensitivity, memory.origin_purpose,
+            memory.allowed_purpose_ids, memory.access_scope_sha256,
+            memory.access_bound_at,
+            cardinality(memory.evidence_refs) AS evidence_ref_count,
+            octet_length(memory.content) AS byte_count,
+            lifecycle.pinned_at AS lifecycle_pinned_at,
+            lifecycle.archived_at AS lifecycle_archived_at,
+            lifecycle.archive_reason AS lifecycle_archive_reason,
+            lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id
+          FROM omni_memories memory
+          LEFT JOIN omni_memory_lifecycle_states lifecycle
+            ON lifecycle.tenant_id = memory.tenant_id
+           AND lifecycle.memory_id = memory.id
+          WHERE memory.tenant_id = ${tenantId}
+            AND memory.claim_status <> 'forgotten'
+          ORDER BY memory.updated_at DESC, memory.id COLLATE "C" ASC
+          LIMIT ${limit}
+        `
+      : sql`
+          SELECT
+            memory.id, memory.tenant_id, memory.type, memory.title,
+            memory.tags, memory.scope, memory.source, memory.importance,
+            memory.created_at, memory.updated_at, memory.confidence,
+            memory.claim_status, memory.asserted_by, memory.valid_from,
+            memory.valid_to, memory.supersedes_id,
+            memory.contradiction_of_id, memory.forgotten_at, memory.tier,
+            memory.tier_policy_version, memory.formation_reason,
+            memory.retention_expires_at, memory.last_used_at,
+            memory.use_count, memory.promoted_from_tier, memory.promoted_at,
+            memory.access_contract_version, memory.access_state,
+            memory.owner_actor_id, memory.owner_agent_id, memory.workspace_id,
+            memory.project_id, memory.mission_id, memory.visibility,
+            memory.sensitivity, memory.origin_purpose,
+            memory.allowed_purpose_ids, memory.access_scope_sha256,
+            memory.access_bound_at,
+            cardinality(memory.evidence_refs) AS evidence_ref_count,
+            octet_length(memory.content) AS byte_count,
+            lifecycle.pinned_at AS lifecycle_pinned_at,
+            lifecycle.archived_at AS lifecycle_archived_at,
+            lifecycle.archive_reason AS lifecycle_archive_reason,
+            lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id
+          FROM omni_memories memory
+          LEFT JOIN omni_memory_lifecycle_states lifecycle
+            ON lifecycle.tenant_id = memory.tenant_id
+           AND lifecycle.memory_id = memory.id
+          WHERE memory.tenant_id = ${tenantId}
+            AND memory.claim_status = 'active'
+            AND lifecycle.archived_at IS NULL
+            AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
+            AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
+            AND (
+              memory.retention_expires_at IS NULL
+              OR memory.retention_expires_at > NOW()
+            )
+          ORDER BY memory.updated_at DESC, memory.id COLLATE "C" ASC
+          LIMIT ${limit}
+        `;
+    const rows = options.accessScope
+      ? await runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          readRows,
+          [
+            MEMORY_PURPOSE_IDS.read,
+            MEMORY_PURPOSE_IDS.retrieve,
+            MEMORY_PURPOSE_IDS.export,
+          ],
+        )
+      : await readRows(getSql());
+    return rows.map(memoryCatalogFromRow);
+  }
+
+  const memories = await readJsonFile<MemoryRecord[]>(getMemoryFile(), []);
+  return memories
+    .map(sanitizeMemoryRecord)
+    .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
+    .filter((memory) => memoryVisibleForScope(memory, options.accessScope))
+    .filter((memory) => memory.claimStatus !== "forgotten")
+    .filter((memory) => options.includeInactive || isActiveMemory(memory))
+    .sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt) ||
+      left.id.localeCompare(right.id)
+    )
+    .slice(0, limit)
+    .map((memory) => memoryCatalogFromMemory(memory));
 }
 
 export async function listThreadMemories(
@@ -3366,6 +3492,41 @@ function memoryFromRow(row: Record<string, unknown>): MemoryRecord {
     updatedAt: normalizeDate(row.updated_at),
     embedding: parseEmbedding(row.embedding),
     ...(accessBinding ? { accessBinding } : {}),
+  });
+}
+
+function memoryCatalogFromRow(
+  row: Record<string, unknown>,
+): MemoryCatalogRecord {
+  const memory = memoryFromRow({
+    ...row,
+    content: "",
+    embedding: null,
+    evidence_refs: [],
+  });
+  return memoryCatalogFromMemory(memory, {
+    evidenceRefCount: Math.max(0, Number(row.evidence_ref_count || 0)),
+    byteCount: Math.max(0, Number(row.byte_count || 0)),
+  });
+}
+
+function memoryCatalogFromMemory(
+  memory: MemoryRecord,
+  counts: Readonly<{ evidenceRefCount: number; byteCount: number }> = {
+    evidenceRefCount: memory.evidenceRefs?.length || 0,
+    byteCount: new TextEncoder().encode(memory.content).byteLength,
+  },
+): MemoryCatalogRecord {
+  const {
+    content: _content,
+    embedding: _embedding,
+    evidenceRefs: _evidenceRefs,
+    ...catalog
+  } = memory;
+  return Object.freeze({
+    ...catalog,
+    evidenceRefCount: counts.evidenceRefCount,
+    byteCount: counts.byteCount,
   });
 }
 

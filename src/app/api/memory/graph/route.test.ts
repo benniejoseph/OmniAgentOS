@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   getGraphStorageDecisionReport: vi.fn(),
+  getMemoryGraphNode: vi.fn(),
   getMemoryGraphStats: vi.fn(async () => ({ nodes: 0, edges: 0 })),
   listMemoryGraphEdges: vi.fn(async () => []),
   listMemoryGraphNodes: vi.fn(async () => []),
@@ -45,6 +46,7 @@ vi.mock("@/lib/entities/temporal-claim-store", () => ({
 }));
 vi.mock("@/lib/memory/graph", () => ({
   getMemoryGraphStats: mocks.getMemoryGraphStats,
+  getMemoryGraphNode: mocks.getMemoryGraphNode,
   listMemoryGraphEdges: mocks.listMemoryGraphEdges,
   listMemoryGraphNodes: mocks.listMemoryGraphNodes,
   rebuildMemoryGraph: vi.fn(),
@@ -120,6 +122,7 @@ describe("memory graph private-memory boundary", () => {
       scaleJustifiesShadowEvaluation: false,
       shadowPromotionReady: false,
     });
+    mocks.getMemoryGraphNode.mockResolvedValue(null);
   });
 
   it("searches the graph under the owner retrieval scope", async () => {
@@ -158,6 +161,70 @@ describe("memory graph private-memory boundary", () => {
       tenantId: "tenant-a",
       accessScope,
     });
+  });
+
+  it("lists the content-minimized universe and reveals one selected node", async () => {
+    mocks.listMemoryGraphNodes.mockResolvedValueOnce([{
+      id: "node-a",
+      tenantId: "tenant-a",
+      kind: "concept",
+      label: "Private label",
+      slug: "private-label",
+      aliases: [],
+      summary: "Private summary",
+      weight: 0.8,
+      sourceCount: 3,
+      memoryIds: ["memory-a"],
+      traceIds: [],
+      tags: ["private-tag"],
+      metadata: { private: true },
+      createdAt: "2026-09-01T00:00:00.000Z",
+      updatedAt: "2026-09-09T00:00:00.000Z",
+    }]);
+    mocks.listMemoryGraphEdges.mockResolvedValueOnce([]);
+
+    const universeResponse = await GET(new Request(
+      "http://localhost/api/memory/graph?view=universe",
+    ));
+    const universe = await universeResponse.json();
+    expect(universeResponse.status).toBe(200);
+    expect(universe.nodes[0]).toEqual({
+      id: "node-a",
+      kind: "concept",
+      weight: 0.8,
+      sourceCount: 3,
+      updatedAt: "2026-09-09T00:00:00.000Z",
+    });
+    expect(JSON.stringify(universe)).not.toContain("Private label");
+    expect(JSON.stringify(universe)).not.toContain("memory-a");
+
+    mocks.getMemoryGraphNode.mockResolvedValueOnce({
+      id: "node-a",
+      tenantId: "tenant-a",
+      kind: "concept",
+      label: "Private label",
+      slug: "private-label",
+      aliases: [],
+      summary: "Private summary",
+      weight: 0.8,
+      sourceCount: 3,
+      memoryIds: ["memory-a"],
+      traceIds: ["trace-a"],
+      tags: ["private-tag"],
+      metadata: { private: true },
+      createdAt: "2026-09-01T00:00:00.000Z",
+      updatedAt: "2026-09-09T00:00:00.000Z",
+    });
+    const detailResponse = await GET(new Request(
+      "http://localhost/api/memory/graph?view=universe_node&id=node-a",
+    ));
+    const detail = await detailResponse.json();
+    expect(detail.node).toEqual(expect.objectContaining({
+      id: "node-a",
+      label: "Private label",
+    }));
+    expect(JSON.stringify(detail)).not.toContain("memory-a");
+    expect(JSON.stringify(detail)).not.toContain("trace-a");
   });
 
   it("queries the bitemporal relation view without exposing contracts", async () => {
