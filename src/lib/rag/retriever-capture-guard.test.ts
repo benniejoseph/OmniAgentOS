@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createKnowledgeDocument: vi.fn(),
   embedTexts: vi.fn(async () => [[0.1, 0.2]]),
   indexMemoryGraphRecords: vi.fn(async () => undefined),
+  queueMemoryGraphRebuild: vi.fn(async () => undefined),
   saveMemories: vi.fn(),
 }));
 
@@ -20,6 +21,7 @@ vi.mock("@/lib/memory/store", () => ({
 }));
 vi.mock("@/lib/memory/graph", () => ({
   indexMemoryGraphRecords: mocks.indexMemoryGraphRecords,
+  queueMemoryGraphRebuild: mocks.queueMemoryGraphRebuild,
 }));
 
 import { ingestTextDocument } from "@/lib/rag/retriever";
@@ -63,7 +65,24 @@ describe("capture ingestion persistence guard", () => {
       source: "capture:asset:asset-a",
     }]);
     mocks.indexMemoryGraphRecords.mockReset().mockResolvedValue(undefined);
+    mocks.queueMemoryGraphRebuild.mockReset().mockResolvedValue(undefined);
     mocks.embedTexts.mockClear();
+  });
+
+  it("defers graph projection through the durable coalescing queue", async () => {
+    await ingestTextDocument({
+      tenantId: guard.tenantId,
+      title: "Connected source",
+      content: "Bounded provider page",
+      source: "google:mail:message-a",
+      sourceLineage,
+      deferMemoryGraphIndex: true,
+    });
+
+    expect(mocks.indexMemoryGraphRecords).not.toHaveBeenCalled();
+    expect(mocks.queueMemoryGraphRebuild).toHaveBeenCalledWith({
+      tenantId: guard.tenantId,
+    });
   });
 
   it("carries the same lock guard through knowledge, memory, and graph writes", async () => {
