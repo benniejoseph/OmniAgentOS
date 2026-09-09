@@ -7,6 +7,7 @@ import {
   entityRelationTypeIdSchema,
 } from "@/lib/entities/ontology";
 import { requestEntityAccessFromSecurityContext } from "@/lib/entities/request-access";
+import { readEntityRegistry } from "@/lib/entities/store";
 import { queryTemporalRelationClaims } from "@/lib/entities/temporal-claim-store";
 import { relationEpistemicKindSchema } from "@/lib/entities/temporal-claims";
 import {
@@ -15,6 +16,7 @@ import {
   parseJsonBody,
 } from "@/lib/http/body";
 import {
+  getLatestMemoryGraphBuild,
   getMemoryGraphStats,
   getMemoryGraphNode,
   listMemoryGraphEdges,
@@ -127,46 +129,139 @@ async function GETHandler(request: Request) {
     }
   }
 
+  if (view === "universe_entity") {
+    const entityId = url.searchParams.get("id")?.trim() || "";
+    const entityAccess = requestEntityAccessFromSecurityContext(context, {
+      purposeId: "entity.read.v1",
+      correlationId: `entity_universe_node_${randomUUID()}`,
+    });
+    if (!entityAccess) {
+      return Response.json(
+        { error: "Verified relationship details are unavailable for this identity." },
+        { status: 403, headers: privateNoStoreHeaders },
+      );
+    }
+    try {
+      const registry = await readEntityRegistry(entityAccess);
+      const entity = registry.entities.find((candidate) =>
+        candidate.entityId === entityId
+      );
+      return Response.json({
+        version: "memory-universe-entity:1",
+        entity: entity ? publicUniverseEntityDetail(entity) : null,
+      }, {
+        status: entity ? 200 : 404,
+        headers: privateNoStoreHeaders,
+      });
+    } catch (error) {
+      return Response.json({
+        error: error instanceof Error
+          ? error.message
+          : "Verified relationship details could not be loaded.",
+      }, { status: 400, headers: privateNoStoreHeaders });
+    }
+  }
+
   if (view === "universe") {
-    const nodes = await listMemoryGraphNodes(10_000, {
-      tenantId: context.tenantId,
-      accessScope: requestAccess?.databaseAccessScope,
+    const entityAccess = requestEntityAccessFromSecurityContext(context, {
+      purposeId: "entity.read.v1",
+      correlationId: `entity_universe_${randomUUID()}`,
     });
-    const edges = await listMemoryGraphEdges(20_000, {
-      tenantId: context.tenantId,
-      accessScope: requestAccess?.databaseAccessScope,
-    });
+    const [nodes, edges, latestBuild, registry, temporalRelations] = await Promise.all([
+      listMemoryGraphNodes(10_000, {
+        tenantId: context.tenantId,
+        accessScope: requestAccess?.databaseAccessScope,
+      }),
+      listMemoryGraphEdges(20_000, {
+        tenantId: context.tenantId,
+        accessScope: requestAccess?.databaseAccessScope,
+      }),
+      getLatestMemoryGraphBuild({ tenantId: context.tenantId }),
+      entityAccess ? readEntityRegistry(entityAccess) : undefined,
+      entityAccess ? queryTemporalRelationClaims({
+        ...entityAccess,
+        limit: 200,
+      }) : [],
+    ]);
     const kinds = countValues(nodes.map((node) => node.kind));
     const relations = countValues(edges.map((edge) => edge.relation));
+    const verifiedEntities = registry?.entities.filter((entity) =>
+      entity.state === "active"
+    ) || [];
+    const verifiedEntityIds = new Set(verifiedEntities.map((entity) => entity.entityId));
+    const verifiedRelations = temporalRelations.filter((record) =>
+      verifiedEntityIds.has(record.claim.source.entityId) &&
+      verifiedEntityIds.has(record.claim.target.entityId)
+    );
+    const verifiedDegree = new Map<string, number>();
+    for (const record of verifiedRelations) {
+      verifiedDegree.set(
+        record.claim.source.entityId,
+        (verifiedDegree.get(record.claim.source.entityId) || 0) + 1,
+      );
+      verifiedDegree.set(
+        record.claim.target.entityId,
+        (verifiedDegree.get(record.claim.target.entityId) || 0) + 1,
+      );
+    }
     return Response.json({
-      version: "memory-universe:1",
+      version: "memory-universe:2",
       generatedAt: new Date().toISOString(),
-      nodes: nodes.map((node) => ({
-        id: node.id,
-        kind: node.kind,
-        weight: node.weight,
-        sourceCount: node.sourceCount,
-        updatedAt: node.updatedAt,
-      })),
-      edges: edges.map((edge) => ({
-        id: edge.id,
-        sourceNodeId: edge.sourceNodeId,
-        targetNodeId: edge.targetNodeId,
-        relation: edge.relation,
-        weight: edge.weight,
-        evidenceCount: edge.evidenceCount,
-      })),
-      stats: {
-        nodes: nodes.length,
-        edges: edges.length,
-        kinds,
-        relations,
-        latestUpdatedAt: nodes.reduce<string | null>(
-          (latest, node) => !latest || node.updatedAt > latest
-            ? node.updatedAt
-            : latest,
-          null,
-        ),
+      evidence: {
+        nodes: nodes.map((node) => ({
+          id: node.id,
+          kind: node.kind,
+          weight: node.weight,
+          sourceCount: node.sourceCount,
+          updatedAt: node.updatedAt,
+        })),
+        edges: edges.map((edge) => ({
+          id: edge.id,
+          sourceNodeId: edge.sourceNodeId,
+          targetNodeId: edge.targetNodeId,
+          relation: edge.relation,
+          weight: edge.weight,
+          evidenceCount: edge.evidenceCount,
+        })),
+        stats: {
+          nodes: nodes.length,
+          edges: edges.length,
+          kinds,
+          relations,
+          latestUpdatedAt: nodes.reduce<string | null>(
+            (latest, node) => !latest || node.updatedAt > latest
+              ? node.updatedAt
+              : latest,
+            null,
+          ),
+          latestBuild: latestBuild ? publicUniverseBuild(latestBuild) : null,
+        },
+      },
+      verified: {
+        nodes: verifiedEntities.map((entity) => ({
+          id: entity.entityId,
+          kind: entity.entityTypeId,
+          degree: verifiedDegree.get(entity.entityId) || 0,
+          sourceCount: entity.lineage.length,
+          updatedAt: entity.updatedAt,
+        })),
+        edges: verifiedRelations.map((record) => ({
+          id: record.claim.claimId,
+          sourceNodeId: record.claim.source.entityId,
+          targetNodeId: record.claim.target.entityId,
+          relation: record.claim.relationTypeId,
+          epistemicKind: record.claim.epistemicKind,
+          confidenceBasisPoints: record.claim.confidenceBasisPoints,
+        })),
+        stats: {
+          nodes: verifiedEntities.length,
+          edges: verifiedRelations.length,
+          kinds: countValues(verifiedEntities.map((entity) => entity.entityTypeId)),
+          relations: countValues(
+            verifiedRelations.map((record) => record.claim.relationTypeId),
+          ),
+          relationLimitSaturated: temporalRelations.length >= 200,
+        },
       },
       disclosure: {
         labels: "explicit_node_selection",
@@ -221,6 +316,32 @@ function publicUniverseNodeDetail(
     weight: node.weight,
     sourceCount: node.sourceCount,
     updatedAt: node.updatedAt,
+  };
+}
+
+function publicUniverseEntityDetail(
+  entity: Awaited<ReturnType<typeof readEntityRegistry>>["entities"][number],
+) {
+  return {
+    id: entity.entityId,
+    kind: entity.entityTypeId,
+    label: entity.canonicalLabel,
+    state: entity.state,
+    sourceCount: entity.lineage.length,
+    updatedAt: entity.updatedAt,
+  };
+}
+
+function publicUniverseBuild(
+  build: NonNullable<Awaited<ReturnType<typeof getLatestMemoryGraphBuild>>>,
+) {
+  return {
+    status: build.status,
+    source: build.source,
+    nodeCount: build.nodeCount,
+    edgeCount: build.edgeCount,
+    latencyMs: build.latencyMs,
+    createdAt: build.createdAt,
   };
 }
 

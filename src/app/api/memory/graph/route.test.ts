@@ -4,6 +4,7 @@ import type { MemoryGraphEdge, MemoryGraphNode } from "@/lib/memory/types";
 const mocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   getGraphStorageDecisionReport: vi.fn(),
+  getLatestMemoryGraphBuild: vi.fn(async () => undefined),
   getMemoryGraphNode: vi.fn(async (): Promise<MemoryGraphNode | null> => null),
   getMemoryGraphStats: vi.fn(async () => ({ nodes: 0, edges: 0 })),
   listMemoryGraphEdges: vi.fn(async (): Promise<MemoryGraphEdge[]> => []),
@@ -11,6 +12,13 @@ const mocks = vi.hoisted(() => ({
   queryTemporalRelationClaims: vi.fn(
     async (): Promise<Array<Record<string, unknown>>> => [],
   ),
+  readEntityRegistry: vi.fn(async () => ({
+    schemaVersion: 1,
+    entities: [],
+    aliases: [],
+    resolutions: [],
+    mergeReviews: [],
+  })),
   retrieveGraphRelationshipPaths: vi.fn(),
   requestEntityAccessFromSecurityContext: vi.fn(),
   requestMemoryAccessFromSecurityContext: vi.fn(),
@@ -45,7 +53,11 @@ vi.mock("@/lib/entities/request-access", () => ({
 vi.mock("@/lib/entities/temporal-claim-store", () => ({
   queryTemporalRelationClaims: mocks.queryTemporalRelationClaims,
 }));
+vi.mock("@/lib/entities/store", () => ({
+  readEntityRegistry: mocks.readEntityRegistry,
+}));
 vi.mock("@/lib/memory/graph", () => ({
+  getLatestMemoryGraphBuild: mocks.getLatestMemoryGraphBuild,
   getMemoryGraphStats: mocks.getMemoryGraphStats,
   getMemoryGraphNode: mocks.getMemoryGraphNode,
   listMemoryGraphEdges: mocks.listMemoryGraphEdges,
@@ -189,7 +201,8 @@ describe("memory graph private-memory boundary", () => {
     ));
     const universe = await universeResponse.json();
     expect(universeResponse.status).toBe(200);
-    expect(universe.nodes[0]).toEqual({
+    expect(universe.version).toBe("memory-universe:2");
+    expect(universe.evidence.nodes[0]).toEqual({
       id: "node-a",
       kind: "concept",
       weight: 0.8,
@@ -226,6 +239,54 @@ describe("memory graph private-memory boundary", () => {
     }));
     expect(JSON.stringify(detail)).not.toContain("memory-a");
     expect(JSON.stringify(detail)).not.toContain("trace-a");
+  });
+
+  it("separates verified relationships and reveals a selected entity only", async () => {
+    mocks.readEntityRegistry.mockResolvedValue({
+      schemaVersion: 1,
+      entities: [{
+        entityId: "entity-person",
+        entityTypeId: "person",
+        canonicalLabel: "Private person",
+        state: "active",
+        lineage: [{ kind: "memory", referenceId: "private-memory" }],
+        updatedAt: "2026-09-09T01:00:00.000Z",
+      }],
+      aliases: [],
+      resolutions: [],
+      mergeReviews: [],
+    });
+    mocks.queryTemporalRelationClaims.mockResolvedValueOnce([]);
+
+    const universeResponse = await GET(new Request(
+      "http://localhost/api/memory/graph?view=universe",
+    ));
+    const universe = await universeResponse.json();
+    expect(universe.verified.nodes).toEqual([{
+      id: "entity-person",
+      kind: "person",
+      degree: 0,
+      sourceCount: 1,
+      updatedAt: "2026-09-09T01:00:00.000Z",
+    }]);
+    expect(JSON.stringify(universe)).not.toContain("Private person");
+    expect(JSON.stringify(universe)).not.toContain("private-memory");
+
+    const detailResponse = await GET(new Request(
+      "http://localhost/api/memory/graph?view=universe_entity&id=entity-person",
+    ));
+    expect(detailResponse.status).toBe(200);
+    expect(await detailResponse.json()).toEqual({
+      version: "memory-universe-entity:1",
+      entity: {
+        id: "entity-person",
+        kind: "person",
+        label: "Private person",
+        state: "active",
+        sourceCount: 1,
+        updatedAt: "2026-09-09T01:00:00.000Z",
+      },
+    });
   });
 
   it("queries the bitemporal relation view without exposing contracts", async () => {
