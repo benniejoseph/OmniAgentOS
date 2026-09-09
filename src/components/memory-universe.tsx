@@ -9,12 +9,15 @@ import {
   Layers3,
   LoaderCircle,
   Maximize2,
+  MousePointer2,
   Plus,
   RefreshCw,
   Rotate3D,
   ShieldCheck,
   Sparkles,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import type {
   EntityRelationTypeId,
@@ -131,7 +134,8 @@ type UniverseSceneController = {
   setHiddenKinds: (hiddenKinds: ReadonlySet<string>) => void;
   setSelection: (id?: string) => void;
   setActive: (active: boolean) => void;
-  reset: () => void;
+  fit: () => void;
+  zoomBy: (factor: number) => void;
 };
 
 const evidenceColors: Record<MemoryGraphNodeKind, string> = {
@@ -307,12 +311,12 @@ export function MemoryUniverse(props: {
       const nodes = graph.nodes;
       const nodeById = new Map(nodes.map((node) => [node.id, node]));
       const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x041219, 0.012);
-      const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 180);
-      camera.position.set(0, 6, 35);
+      scene.fog = new THREE.FogExp2(0x06151c, 0.007);
+      const camera = new THREE.PerspectiveCamera(46, 1, 0.05, 320);
+      camera.position.set(0, 14, 42);
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-      renderer.setClearColor(0x041219, 1);
+      renderer.setClearColor(0x06151c, 1);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.toneMapping = THREE.NoToneMapping;
       mount.replaceChildren(renderer.domElement);
@@ -328,31 +332,87 @@ export function MemoryUniverse(props: {
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       const controls = new OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
-      controls.dampingFactor = 0.06;
-      controls.minDistance = 5;
-      controls.maxDistance = 66;
-      controls.autoRotate = !reducedMotion;
-      controls.autoRotateSpeed = 0.12;
+      controls.dampingFactor = 0.075;
+      controls.enablePan = true;
+      controls.enableRotate = true;
+      controls.enableZoom = true;
+      controls.screenSpacePanning = true;
+      controls.rotateSpeed = 0.62;
+      controls.panSpeed = 0.78;
+      controls.zoomSpeed = 0.9;
+      controls.minDistance = 2.5;
+      controls.maxDistance = 120;
+      controls.autoRotate = false;
+      controls.autoRotateSpeed = 0.32;
 
       const positions = layoutNodes(nodes, THREE);
-      const geometry = new THREE.IcosahedronGeometry(0.17, 1);
-      const material = new THREE.MeshBasicMaterial({
-        vertexColors: true,
-        toneMapped: false,
+      const graphBounds = new THREE.Box3();
+      positions.forEach((position) => graphBounds.expandByPoint(position));
+      const graphSphere = graphBounds.isEmpty()
+        ? new THREE.Sphere(new THREE.Vector3(), 12)
+        : graphBounds.getBoundingSphere(new THREE.Sphere());
+      const homeTarget = graphSphere.center.clone();
+      const homePosition = new THREE.Vector3();
+      const homeDirection = new THREE.Vector3(0, 0.43, 1).normalize();
+
+      // Keep a generous invisible hit target for accurate selection while the
+      // visible points use a purpose-built luminous shader.
+      const hitGeometry = new THREE.IcosahedronGeometry(0.25, 1);
+      const hitMaterial = new THREE.MeshBasicMaterial();
+      hitMaterial.colorWrite = false;
+      hitMaterial.depthWrite = false;
+      hitMaterial.depthTest = false;
+      const hitMesh = new THREE.InstancedMesh(hitGeometry, hitMaterial, nodes.length);
+      hitMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      hitMesh.renderOrder = -1;
+
+      const pointPositions = new Float32Array(nodes.length * 3);
+      const pointColors = new Float32Array(nodes.length * 3);
+      const pointSizes = new Float32Array(nodes.length);
+      nodes.forEach((node, index) => {
+        (positions.get(node.id) || new THREE.Vector3()).toArray(pointPositions, index * 3);
       });
-      const mesh = new THREE.InstancedMesh(geometry, material, nodes.length);
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      const haloMaterial = new THREE.MeshBasicMaterial({
-        vertexColors: true,
+      const pointGeometry = new THREE.BufferGeometry();
+      pointGeometry.setAttribute("position", new THREE.BufferAttribute(pointPositions, 3));
+      pointGeometry.setAttribute("color", new THREE.BufferAttribute(pointColors, 3));
+      pointGeometry.setAttribute("nodeSize", new THREE.BufferAttribute(pointSizes, 1));
+      const pointMaterial = new THREE.ShaderMaterial({
         transparent: true,
-        opacity: 0.42,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         toneMapped: false,
+        vertexColors: true,
+        vertexShader: `
+          attribute vec3 color;
+          attribute float nodeSize;
+          varying vec3 vColor;
+
+          void main() {
+            vColor = color;
+            vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_PointSize = nodeSize * min(24.0, 300.0 / max(1.0, -viewPosition.z));
+            gl_Position = projectionMatrix * viewPosition;
+          }
+        `,
+        fragmentShader: `
+          varying vec3 vColor;
+
+          void main() {
+            float distanceFromCenter = distance(gl_PointCoord, vec2(0.5));
+            if (distanceFromCenter > 0.5) discard;
+            float core = 1.0 - smoothstep(0.05, 0.2, distanceFromCenter);
+            float body = 1.0 - smoothstep(0.16, 0.36, distanceFromCenter);
+            float halo = 1.0 - smoothstep(0.24, 0.5, distanceFromCenter);
+            vec3 light = vColor * (1.05 + core * 0.8) + vec3(core * 0.28);
+            gl_FragColor = vec4(light, max(body * 0.96, halo * 0.42));
+            #include <tonemapping_fragment>
+            #include <colorspace_fragment>
+          }
+        `,
       });
-      const halos = new THREE.InstancedMesh(geometry, haloMaterial, nodes.length);
-      halos.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      halos.renderOrder = 2;
+      const nodePoints = new THREE.Points(pointGeometry, pointMaterial);
+      nodePoints.renderOrder = 2;
+      nodePoints.frustumCulled = false;
       const dummy = new THREE.Object3D();
       let currentHidden: ReadonlySet<string> = hiddenKindsRef.current;
       let currentSelection = selectedIdRef.current;
@@ -365,24 +425,21 @@ export function MemoryUniverse(props: {
           const emphasis = node.id === currentHighlight ? 1.7 : 1;
           const scale = currentHidden.has(node.kind)
             ? 0
-            : Math.min(3.2, 0.72 + Math.sqrt(Math.max(node.weight, 0.05)) * 0.8) * emphasis;
+            : Math.min(3.5, 0.9 + Math.sqrt(Math.max(node.weight, 0.05)) * 0.92) * emphasis;
           dummy.scale.setScalar(scale);
           dummy.updateMatrix();
-          mesh.setMatrixAt(index, dummy.matrix);
-          dummy.scale.setScalar(scale * (node.id === currentHighlight ? 2.15 : 1.75));
-          dummy.updateMatrix();
-          halos.setMatrixAt(index, dummy.matrix);
+          hitMesh.setMatrixAt(index, dummy.matrix);
           const color = new THREE.Color(colorForKind(node.kind, mode));
-          if (node.id === currentHighlight) color.offsetHSL(0, 0.04, 0.2);
-          mesh.setColorAt(index, color);
-          halos.setColorAt(index, color.clone().offsetHSL(0, 0.06, 0.08));
+          if (node.id === currentHighlight) color.offsetHSL(0, 0.06, 0.18);
+          color.toArray(pointColors, index * 3);
+          pointSizes[index] = scale;
         });
-        mesh.instanceMatrix.needsUpdate = true;
-        halos.instanceMatrix.needsUpdate = true;
-        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-        if (halos.instanceColor) halos.instanceColor.needsUpdate = true;
+        hitMesh.instanceMatrix.needsUpdate = true;
+        hitMesh.updateMatrixWorld(true);
+        pointGeometry.getAttribute("color").needsUpdate = true;
+        pointGeometry.getAttribute("nodeSize").needsUpdate = true;
       };
-      scene.add(mesh, halos);
+      scene.add(hitMesh, nodePoints);
 
       const renderedEdges = [...graph.edges]
         .sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id))
@@ -408,10 +465,11 @@ export function MemoryUniverse(props: {
       const edgeMaterial = new THREE.LineBasicMaterial({
         vertexColors: true,
         transparent: true,
-        opacity: mode === "evidence" ? 0.2 : 0.3,
+        opacity: mode === "evidence" ? 0.34 : 0.46,
         blending: THREE.AdditiveBlending,
         toneMapped: false,
       });
+      edgeMaterial.fog = false;
       const lines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
       scene.add(lines);
 
@@ -490,7 +548,7 @@ export function MemoryUniverse(props: {
           }
         }
         highlightGeometry.setFromPoints(points);
-        edgeMaterial.opacity = id ? 0.045 : mode === "evidence" ? 0.2 : 0.3;
+        edgeMaterial.opacity = id ? 0.08 : mode === "evidence" ? 0.34 : 0.46;
         setNodeInstances();
       };
 
@@ -514,7 +572,7 @@ export function MemoryUniverse(props: {
         pointer.x = (event.clientX - rect.left) / rect.width * 2 - 1;
         pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(pointer, camera);
-        const hit = raycaster.intersectObject(mesh, false)[0];
+        const hit = raycaster.intersectObject(hitMesh, false)[0];
         return hit?.instanceId === undefined ? undefined : nodes[hit.instanceId];
       };
       const onPointerDown = (event: PointerEvent) => {
@@ -539,25 +597,104 @@ export function MemoryUniverse(props: {
       renderer.domElement.addEventListener("pointerleave", onPointerLeave);
       renderer.domElement.addEventListener("pointerup", onPointerUp);
 
-      const cameraGoal = camera.position.clone();
-      const targetGoal = new THREE.Vector3();
+      type CameraTransition = {
+        startedAt: number;
+        duration: number;
+        fromPosition: import("three").Vector3;
+        fromTarget: import("three").Vector3;
+        toPosition: import("three").Vector3;
+        toTarget: import("three").Vector3;
+      };
+      let cameraTransition: CameraTransition | undefined;
+      let controlsEngaged = false;
+      let lastInteractionAt = performance.now();
+
+      const cancelCameraTransition = () => {
+        cameraTransition = undefined;
+        lastInteractionAt = performance.now();
+      };
+      const onControlsStart = () => {
+        controlsEngaged = true;
+        controls.autoRotate = false;
+        cancelCameraTransition();
+      };
+      const onControlsEnd = () => {
+        controlsEngaged = false;
+        lastInteractionAt = performance.now();
+      };
+      controls.addEventListener("start", onControlsStart);
+      controls.addEventListener("end", onControlsEnd);
+
+      const transitionCamera = (
+        toPosition: import("three").Vector3,
+        toTarget: import("three").Vector3,
+        duration = 520,
+      ) => {
+        controls.autoRotate = false;
+        if (reducedMotion || duration === 0) {
+          camera.position.copy(toPosition);
+          controls.target.copy(toTarget);
+          cameraTransition = undefined;
+          controls.update();
+          return;
+        }
+        cameraTransition = {
+          startedAt: performance.now(),
+          duration,
+          fromPosition: camera.position.clone(),
+          fromTarget: controls.target.clone(),
+          toPosition: toPosition.clone(),
+          toTarget: toTarget.clone(),
+        };
+      };
+
+      const updateHomePosition = () => {
+        const verticalHalfFov = THREE.MathUtils.degToRad(camera.fov * 0.5);
+        const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * camera.aspect);
+        const limitingHalfFov = Math.max(
+          THREE.MathUtils.degToRad(12),
+          Math.min(verticalHalfFov, horizontalHalfFov),
+        );
+        const distance = Math.max(
+          18,
+          graphSphere.radius / Math.sin(limitingHalfFov) * 1.16,
+        );
+        homePosition.copy(homeTarget).add(homeDirection.clone().multiplyScalar(distance));
+        controls.maxDistance = Math.max(120, distance * 2.8);
+      };
+
       const focusNode = (id?: string) => {
         currentSelection = id;
         setHighlight(id);
         const position = id ? positions.get(id) : undefined;
         if (!position) return;
-        targetGoal.copy(position);
-        const direction = camera.position.clone().sub(controls.target).normalize();
-        cameraGoal.copy(position).add(direction.multiplyScalar(8.5));
+        const offset = camera.position.clone().sub(controls.target);
+        if (offset.lengthSq() < 0.01) offset.copy(homeDirection);
+        const focusDistance = THREE.MathUtils.clamp(offset.length() * 0.46, 6.8, 11.5);
+        transitionCamera(
+          position.clone().add(offset.normalize().multiplyScalar(focusDistance)),
+          position,
+          440,
+        );
       };
-      const reset = () => {
-        currentSelection = undefined;
-        currentHighlight = undefined;
-        cameraGoal.set(0, 6, 35);
-        targetGoal.set(0, 0, 0);
-        setHighlight(undefined);
+      const fit = () => {
+        updateHomePosition();
+        transitionCamera(homePosition, homeTarget, 620);
+      };
+      const zoomBy = (factor: number) => {
+        cancelCameraTransition();
+        const offset = camera.position.clone().sub(controls.target);
+        const distance = THREE.MathUtils.clamp(
+          Math.max(offset.length(), controls.minDistance) * factor,
+          controls.minDistance,
+          controls.maxDistance,
+        );
+        if (offset.lengthSq() < 0.01) offset.copy(homeDirection);
+        camera.position.copy(controls.target).add(offset.normalize().multiplyScalar(distance));
+        controls.update();
       };
 
+      let initialFitComplete = false;
       const resize = () => {
         if (!renderer) return;
         const width = Math.max(mount.clientWidth, 1);
@@ -565,6 +702,13 @@ export function MemoryUniverse(props: {
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
         renderer.setSize(width, height, false);
+        if (!initialFitComplete) {
+          updateHomePosition();
+          camera.position.copy(homePosition);
+          controls.target.copy(homeTarget);
+          controls.update();
+          initialFitComplete = true;
+        }
       };
       resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(mount);
@@ -573,10 +717,33 @@ export function MemoryUniverse(props: {
       let rendering = false;
       const draw = () => {
         if (disposed || !renderer || !rendering) return;
-        camera.position.lerp(cameraGoal, reducedMotion ? 1 : 0.045);
-        controls.target.lerp(targetGoal, reducedMotion ? 1 : 0.055);
-        glow.scale.setScalar(1 + Math.sin(performance.now() * 0.0024) * 0.16);
+        const now = performance.now();
+        if (cameraTransition) {
+          const progress = Math.min(1, (now - cameraTransition.startedAt) / cameraTransition.duration);
+          const eased = 1 - Math.pow(1 - progress, 3);
+          camera.position.lerpVectors(
+            cameraTransition.fromPosition,
+            cameraTransition.toPosition,
+            eased,
+          );
+          controls.target.lerpVectors(
+            cameraTransition.fromTarget,
+            cameraTransition.toTarget,
+            eased,
+          );
+          if (progress >= 1) {
+            cameraTransition = undefined;
+            lastInteractionAt = now;
+          }
+        }
+        controls.autoRotate = !reducedMotion &&
+          !controlsEngaged &&
+          !cameraTransition &&
+          now - lastInteractionAt > 4_000;
+        glow.scale.setScalar(1 + Math.sin(now * 0.0024) * 0.16);
         selectionRing.rotation.z += reducedMotion ? 0 : 0.003;
+        if (selectionRing.visible) selectionRing.lookAt(camera.position);
+        decorations.group.rotation.y += reducedMotion ? 0 : 0.00012;
         controls.update();
         renderer.render(scene, camera);
         animationFrame = requestAnimationFrame(draw);
@@ -594,7 +761,8 @@ export function MemoryUniverse(props: {
         setHiddenKinds,
         setSelection: focusNode,
         setActive,
-        reset,
+        fit,
+        zoomBy,
       };
       focusNode(selectedIdRef.current);
       setActive(activeRef.current);
@@ -606,10 +774,13 @@ export function MemoryUniverse(props: {
         renderer?.domElement.removeEventListener("pointermove", onPointerMove);
         renderer?.domElement.removeEventListener("pointerleave", onPointerLeave);
         renderer?.domElement.removeEventListener("pointerup", onPointerUp);
+        controls.removeEventListener("start", onControlsStart);
+        controls.removeEventListener("end", onControlsEnd);
         controls.dispose();
-        geometry.dispose();
-        material.dispose();
-        haloMaterial.dispose();
+        hitGeometry.dispose();
+        hitMaterial.dispose();
+        pointGeometry.dispose();
+        pointMaterial.dispose();
         edgeGeometry.dispose();
         edgeMaterial.dispose();
         highlightGeometry.dispose();
@@ -688,10 +859,17 @@ export function MemoryUniverse(props: {
     });
   }
 
-  function resetView() {
+  function clearSelection() {
     setSelectedId(undefined);
     setDetail(undefined);
-    sceneControllerRef.current?.reset();
+  }
+
+  function fitView() {
+    sceneControllerRef.current?.fit();
+  }
+
+  function zoomView(factor: number) {
+    sceneControllerRef.current?.zoomBy(factor);
   }
 
   async function rebuildGraph() {
@@ -733,7 +911,7 @@ export function MemoryUniverse(props: {
             {rebuilding ? <LoaderCircle size={17} className={styles.spin} /> : <RefreshCw size={17} />}
             Rebuild map
           </button>
-          <button type="button" onClick={resetView}><Focus size={17} /> Reset view</button>
+          <button type="button" onClick={fitView}><Focus size={17} /> Fit view</button>
         </div>
       </header>
 
@@ -786,6 +964,32 @@ export function MemoryUniverse(props: {
           </div>
         ) : null}
 
+        {payload && graph.nodes.length ? (
+          <>
+            <div className={styles.controlsHint}>
+              <MousePointer2 size={15} />
+              <span>Drag to orbit · Shift-drag to pan · Scroll to zoom</span>
+            </div>
+            <div className={styles.cameraControls} aria-label="Universe camera controls">
+              <button
+                type="button"
+                onClick={() => zoomView(0.72)}
+                aria-label="Zoom in"
+                title="Zoom in"
+              ><ZoomIn size={18} /></button>
+              <button
+                type="button"
+                onClick={() => zoomView(1.38)}
+                aria-label="Zoom out"
+                title="Zoom out"
+              ><ZoomOut size={18} /></button>
+              <button type="button" className={styles.fitControl} onClick={fitView}>
+                <Focus size={17} /> Fit
+              </button>
+            </div>
+          </>
+        ) : null}
+
         {verifiedEmpty && payload ? (
           <div className={styles.emptyVerified}>
             <div><ShieldCheck size={24} /></div>
@@ -825,7 +1029,7 @@ export function MemoryUniverse(props: {
             <button
               type="button"
               className={styles.close}
-              onClick={resetView}
+              onClick={clearSelection}
               aria-label="Close point details"
             ><X size={18} /></button>
             {detailLoading ? (
