@@ -32,6 +32,33 @@ describe("event store (file mode)", () => {
     expect(aOnly[0].tenantId).toBe("tenant-a");
   });
 
+  it("reads only the latest event timestamp for explicit actor aliases", async () => {
+    const store = await import("@/lib/events/store");
+    await store.appendDomainEvent({
+      id: "maintenance-old",
+      streamId: "memory-maintenance:tenant-a",
+      type: "memory.maintenance.completed",
+      tenantId: "tenant-a",
+      actorId: "actor:old",
+    });
+    const newest = await store.appendDomainEvent({
+      id: "maintenance-new",
+      streamId: "memory-maintenance:tenant-a",
+      type: "memory.maintenance.completed",
+      tenantId: "tenant-a",
+      actorId: "actor:new",
+    });
+
+    await expect(store.getLatestScopedStreamEventAt(
+      "memory-maintenance:tenant-a",
+      {
+        tenantId: "tenant-a",
+        actorIds: ["actor:old", "actor:new"],
+        type: "memory.maintenance.completed",
+      },
+    )).resolves.toBe(newest.at);
+  });
+
   it("scopes stream cursors by actor and returns a bounded newest-first delta", async () => {
     const store = await import("@/lib/events/store");
     const first = await store.appendDomainEvent({

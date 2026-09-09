@@ -331,6 +331,49 @@ export async function listStreamEvents(
     .slice(0, limit);
 }
 
+/** Count-free freshness read for UI projections that do not need event data. */
+export async function getLatestScopedStreamEventAt(
+  streamId: string,
+  options: {
+    tenantId: string;
+    actorIds: readonly string[];
+    type?: string;
+  },
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const actorIds = [...new Set(options.actorIds.map((id) => id.trim()))]
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!streamId.trim() || !actorIds.length) return null;
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT at
+      FROM omni_events
+      WHERE stream_id = ${streamId}
+        AND tenant_id = ${tenantId}
+        AND actor_id = ANY(${actorIds}::text[])
+        AND (${options.type || null}::text IS NULL OR type = ${options.type || null})
+      ORDER BY seq DESC
+      LIMIT 1
+    `;
+    return rows[0]?.at
+      ? rows[0].at instanceof Date
+        ? rows[0].at.toISOString()
+        : String(rows[0].at)
+      : null;
+  }
+  const events = (await readLedger()).events
+    .filter((event) =>
+      event.streamId === streamId &&
+      event.tenantId === tenantId &&
+      actorIds.includes(event.actorId) &&
+      (!options.type || event.type === options.type)
+    )
+    .sort((left, right) => right.seq - left.seq);
+  return events[0]?.at || null;
+}
+
 /**
  * Reads one correlation boundary without crossing tenant or initiating-actor
  * ownership. Callers must already know the exact correlation identifier from

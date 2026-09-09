@@ -98,6 +98,7 @@ export type MemoryIntelligenceOverview = Readonly<{
     graphStatus: "current" | "stale" | "failed" | "unbuilt";
     graphUpdatedAt: string | null;
     graphBuildLatencyMs: number | null;
+    maintenanceUpdatedAt: string | null;
   }>;
   memoryCategories: readonly Readonly<{
     id: MemoryCategoryId;
@@ -225,6 +226,7 @@ export function buildMemoryIntelligenceOverview(input: {
   pendingReviews: number;
   resolvedReviews: number;
   deletionBarriers: number;
+  lastMaintenanceAt?: string | null;
   generatedAt?: string;
 }): MemoryIntelligenceOverview {
   const durable = input.memories.filter((memory) =>
@@ -261,6 +263,8 @@ export function buildMemoryIntelligenceOverview(input: {
     unclassified,
     durableCount: durable.length,
     graphStatus,
+    lastMaintenanceAt: input.lastMaintenanceAt,
+    generatedAt,
   });
   const embeddingCoverage = input.knowledgeStats.chunks
     ? input.knowledgeStats.embedded / input.knowledgeStats.chunks
@@ -301,6 +305,7 @@ export function buildMemoryIntelligenceOverview(input: {
       graphStatus,
       graphUpdatedAt: input.graphStats.latestBuild?.createdAt || null,
       graphBuildLatencyMs: input.graphStats.latestBuild?.latencyMs ?? null,
+      maintenanceUpdatedAt: input.lastMaintenanceAt || null,
     }),
     memoryCategories: Object.freeze(categoryCounts(
       MEMORY_CATEGORY_IDS,
@@ -473,6 +478,8 @@ function stewardRecommendations(input: {
   unclassified: number;
   durableCount: number;
   graphStatus: MemoryIntelligenceOverview["summary"]["graphStatus"];
+  lastMaintenanceAt?: string | null;
+  generatedAt: string;
 }): MemoryStewardRecommendation[] {
   const recommendations: MemoryStewardRecommendation[] = [];
   if (input.pendingReviews) {
@@ -536,7 +543,13 @@ function stewardRecommendations(input: {
       affectedCount: 1,
     }));
   }
-  if (input.durableCount > 20) {
+  const maintenanceAgeMs = input.lastMaintenanceAt
+    ? Date.parse(input.generatedAt) - Date.parse(input.lastMaintenanceAt)
+    : Number.POSITIVE_INFINITY;
+  if (
+    input.durableCount > 20 &&
+    (!Number.isFinite(maintenanceAgeMs) || maintenanceAgeMs > 7 * 24 * 60 * 60 * 1_000)
+  ) {
     recommendations.push(Object.freeze({
       id: "maintenance",
       priority: "low",

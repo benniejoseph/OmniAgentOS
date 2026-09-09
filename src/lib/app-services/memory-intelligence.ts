@@ -32,6 +32,7 @@ import {
 import { getKnowledgeStats, listKnowledgeDocuments } from "@/lib/rag/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { memoryTierSchema } from "@/lib/memory/tier-policy";
+import { getLatestScopedStreamEventAt } from "@/lib/events/store";
 
 const indexStateSchema = z.enum([
   "active",
@@ -131,6 +132,7 @@ export async function showMemoryIntelligenceService(
     legacyReviewStats,
     privateReviewStats,
     deletionBarriers,
+    lastMaintenanceAt,
   ] = await Promise.all([
     readMemoryCatalog(caller, requestAccess, "durable"),
     listKnowledgeDocuments(5_000, {
@@ -155,6 +157,10 @@ export async function showMemoryIntelligenceService(
         caller.context.actorId,
       ],
     }),
+    latestMemoryMaintenanceAt(
+      caller.context.tenantId,
+      actorBinding?.readableOwnerActorIds || [caller.context.actorId],
+    ),
   ]);
   const overview = buildMemoryIntelligenceOverview({
     memories,
@@ -167,9 +173,21 @@ export async function showMemoryIntelligenceService(
     pendingReviews: legacyReviewStats.pending + privateReviewStats.pending,
     resolvedReviews: legacyReviewStats.resolved + privateReviewStats.resolved,
     deletionBarriers,
+    lastMaintenanceAt,
   });
   return completeAppServiceCall(authorized, { overview }, {
     resourceCount: memories.length + documents.length,
+  });
+}
+
+async function latestMemoryMaintenanceAt(
+  tenantId: string,
+  actorIds: readonly string[],
+) {
+  return getLatestScopedStreamEventAt(`memory-maintenance:${tenantId}`, {
+    tenantId,
+    actorIds,
+    type: "memory.maintenance.completed",
   });
 }
 
