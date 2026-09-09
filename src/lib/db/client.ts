@@ -1437,6 +1437,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[151],
       up: ensureMemoryGraphScopeV2,
     },
+    {
+      ...databaseSchemaMigrations[152],
+      up: ensureConfigurableAiModelScopesV1,
+    },
   ];
 }
 
@@ -17929,7 +17933,9 @@ async function ensureFunctionalModelAssignmentsV1(sql: SqlClient) {
         assignment_id IS NOT NULL
         AND assignment_scope IN (
           'main_agent', 'orchestrator', 'planner', 'verifier', 'council',
-          'memory', 'embeddings', 'vision', 'audio'
+          'memory', 'embeddings', 'vision', 'audio', 'audio_diarization',
+          'web_search', 'image_generation', 'speech_synthesis',
+          'realtime_transcription'
         )
         AND assignment_revision > 0
         AND assignment_configuration_sha256 ~ '^[a-f0-9]{64}$'
@@ -17945,6 +17951,10 @@ async function ensureFunctionalModelAssignmentsV1(sql: SqlClient) {
     )
     WHERE assignment_id IS NOT NULL
   `;
+}
+
+async function ensureConfigurableAiModelScopesV1(sql: SqlClient) {
+  await ensureFunctionalModelAssignmentsV1(sql);
 }
 
 async function ensureSourceCoverageProjectionV1(sql: SqlClient) {
@@ -21209,7 +21219,7 @@ async function ensureSettingsControlPlane(sql: SqlClient) {
       tenant_id TEXT NOT NULL,
       actor_id TEXT NOT NULL,
       scope TEXT NOT NULL
-        CHECK (scope IN ('main_agent', 'orchestrator', 'planner', 'verifier', 'council', 'memory', 'embeddings', 'vision', 'audio')),
+        CHECK (scope IN ('main_agent', 'orchestrator', 'planner', 'verifier', 'council', 'memory', 'embeddings', 'vision', 'audio', 'audio_diarization', 'web_search', 'image_generation', 'speech_synthesis', 'realtime_transcription')),
       provider TEXT NOT NULL
         CHECK (provider IN ('openai', 'google', 'anthropic', 'aws_bedrock')),
       model_id TEXT NOT NULL,
@@ -21242,7 +21252,7 @@ async function ensureSettingsControlPlane(sql: SqlClient) {
   await sql`ALTER TABLE omni_model_assignments ADD COLUMN IF NOT EXISTS validated_at TIMESTAMPTZ`;
   await sql`ALTER TABLE omni_model_assignments DROP CONSTRAINT IF EXISTS omni_model_assignments_scope_check`;
   await sql`UPDATE omni_model_assignments SET scope = 'planner' WHERE scope = 'workflow'`;
-  await sql`ALTER TABLE omni_model_assignments ADD CONSTRAINT omni_model_assignments_scope_check CHECK (scope IN ('main_agent', 'orchestrator', 'planner', 'verifier', 'council', 'memory', 'embeddings', 'vision', 'audio'))`;
+  await sql`ALTER TABLE omni_model_assignments ADD CONSTRAINT omni_model_assignments_scope_check CHECK (scope IN ('main_agent', 'orchestrator', 'planner', 'verifier', 'council', 'memory', 'embeddings', 'vision', 'audio', 'audio_diarization', 'web_search', 'image_generation', 'speech_synthesis', 'realtime_transcription'))`;
   await sql`ALTER TABLE omni_model_assignments DROP CONSTRAINT IF EXISTS omni_model_assignments_runtime_readiness_check`;
   await sql`ALTER TABLE omni_model_assignments ADD CONSTRAINT omni_model_assignments_runtime_readiness_check CHECK (runtime_readiness IN ('active', 'configuration_only'))`;
   await sql`CREATE INDEX IF NOT EXISTS omni_model_assignments_tenant_actor_idx ON omni_model_assignments (tenant_id, actor_id, scope)`;

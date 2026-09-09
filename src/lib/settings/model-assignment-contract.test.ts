@@ -24,6 +24,15 @@ describe("functional model assignment contract", () => {
     expect(modelSupportsAssignmentRole("audio", "openai", {
       capabilities: ["transcription"],
     })).toBe(true);
+    expect(modelSupportsAssignmentRole("audio", "google", {
+      capabilities: ["audio", "transcription"],
+    })).toBe(true);
+    expect(modelSupportsAssignmentRole("image_generation", "google", {
+      capabilities: ["image"],
+    })).toBe(true);
+    expect(modelSupportsAssignmentRole("web_search", "anthropic", {
+      capabilities: ["text", "tools"],
+    })).toBe(false);
   });
 
   it("exposes fallback only where the runtime executes and receipts attempts", () => {
@@ -32,6 +41,11 @@ describe("functional model assignment contract", () => {
     expect(modelAssignmentRoleSupportsFallback("embeddings")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("vision")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("audio")).toBe(false);
+    expect(modelAssignmentRoleSupportsFallback("audio_diarization")).toBe(false);
+    expect(modelAssignmentRoleSupportsFallback("web_search")).toBe(false);
+    expect(modelAssignmentRoleSupportsFallback("image_generation")).toBe(false);
+    expect(modelAssignmentRoleSupportsFallback("speech_synthesis")).toBe(false);
+    expect(modelAssignmentRoleSupportsFallback("realtime_transcription")).toBe(false);
   });
 
   it("binds activation identity, revision, and validation time into the digest", () => {

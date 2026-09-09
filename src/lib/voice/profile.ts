@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 
 export const ASAEL_VOICE_PROFILE_VERSION = "asael-voice:1" as const;
-export const ASAEL_VOICE_MODEL = "gpt-4o-mini-tts" as const;
 export const ASAEL_VOICE_NAME = "cedar" as const;
 export const ASAEL_VOICE_SAMPLE_RATE = 24_000 as const;
 export const ASAEL_VOICE_ENCODING = "pcm_s16le" as const;
@@ -17,7 +16,7 @@ export type VersionedVoiceProfile = Readonly<{
   schemaVersion: 1;
   profileVersion: typeof ASAEL_VOICE_PROFILE_VERSION;
   provider: "openai";
-  model: typeof ASAEL_VOICE_MODEL;
+  model: string;
   voice: typeof ASAEL_VOICE_NAME;
   sampleRate: typeof ASAEL_VOICE_SAMPLE_RATE;
   encoding: typeof ASAEL_VOICE_ENCODING;
@@ -29,6 +28,7 @@ export type VersionedVoiceProfile = Readonly<{
 
 export function versionedVoiceProfile(
   identity: AgentSpeechIdentity,
+  runtime: Readonly<{ provider: "openai"; model: string }>,
 ): VersionedVoiceProfile {
   const agentId = boundedToken(identity.id, "asael");
   const name = boundedText(identity.name, 120) || "Asael";
@@ -38,11 +38,13 @@ export function versionedVoiceProfile(
       identity.definitionVersion > 0
     ? identity.definitionVersion
     : 1;
+  const model = boundedToken(runtime.model, "");
+  if (!model) throw new Error("The speech synthesis model route is invalid.");
   const profile = {
     schemaVersion: 1 as const,
     profileVersion: ASAEL_VOICE_PROFILE_VERSION,
-    provider: "openai" as const,
-    model: ASAEL_VOICE_MODEL,
+    provider: runtime.provider,
+    model,
     voice: ASAEL_VOICE_NAME,
     sampleRate: ASAEL_VOICE_SAMPLE_RATE,
     encoding: ASAEL_VOICE_ENCODING,

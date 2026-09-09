@@ -10,6 +10,7 @@ import {
 } from "@/lib/models/types";
 import { estimateWebSearchCostUsd } from "@/lib/openai/model-router";
 import { citationIdForWebUrl } from "@/lib/rag/citations";
+import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
 
@@ -68,9 +69,21 @@ export async function runLiveWebSearch({
   if (!normalizedQuery) {
     throw new Error("Live web search query is required.");
   }
-  if (!hasOpenAIKey()) {
-    throw new Error("OPENAI_API_KEY is required for live web search.");
+  const runtimeModel = await resolveSpecializedRuntime({
+    tenantId: usageScope?.tenantId,
+    actorId: usageScope?.actorId,
+    scope: "web_search",
+    requiredCapability: "tools",
+    deploymentProvider: "openai",
+    deploymentModel: WEB_SEARCH_MODEL,
+    deploymentConfigured: hasOpenAIKey(),
+  });
+  if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
+    throw new Error("Live web search does not have an active model route.");
   }
+  const meteredUsageScope = usageScope
+    ? { ...usageScope, ...runtimeModel.usageReceipt }
+    : undefined;
 
   const timeoutController = new AbortController();
   const timeoutId = setTimeout(() => timeoutController.abort(new Error(`Web search timed out after ${WEB_SEARCH_TIMEOUT_MS}ms`)), WEB_SEARCH_TIMEOUT_MS);
@@ -81,58 +94,60 @@ export async function runLiveWebSearch({
   let response;
   const startedAt = Date.now();
   try {
-    response = await getOpenAIClient().responses.create(
-      {
-        model: WEB_SEARCH_MODEL,
-        store: false,
-        instructions: [
-          "You are Asael live web search.",
-          "Search the public web when needed, compare multiple credible sources, and summarize only source-supported facts.",
-          "Return a compact research brief with source titles and URLs. If sources disagree, call that out.",
-        ].join("\n"),
-        input: [
-          `Search query: ${normalizedQuery}`,
-          "",
-          "Output format:",
-          "1. Short answer",
-          "2. Key facts",
-          "3. Sources with title and URL",
-        ].join("\n"),
-        tools: [
-          {
-            type: "web_search",
-            search_context_size: contextSize,
-            // The gpt-4o family rejects the `filters` param on the hosted web_search
-            // tool; only attach domain filtering for models that support it.
-            ...(allowedDomains?.length && supportsWebSearchFilters(WEB_SEARCH_MODEL)
-              ? { filters: { allowed_domains: allowedDomains } }
-              : {}),
-          },
-        ],
-        include: ["web_search_call.results", "web_search_call.action.sources"],
-      },
-      { signal: combinedSignal },
+    response = await runtimeModel.withApiKey((apiKey) =>
+      getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
+        {
+          model: runtimeModel.model,
+          store: false,
+          instructions: [
+            "You are Asael live web search.",
+            "Search the public web when needed, compare multiple credible sources, and summarize only source-supported facts.",
+            "Return a compact research brief with source titles and URLs. If sources disagree, call that out.",
+          ].join("\n"),
+          input: [
+            `Search query: ${normalizedQuery}`,
+            "",
+            "Output format:",
+            "1. Short answer",
+            "2. Key facts",
+            "3. Sources with title and URL",
+          ].join("\n"),
+          tools: [
+            {
+              type: "web_search",
+              search_context_size: contextSize,
+              // The gpt-4o family rejects the `filters` param on the hosted web_search
+              // tool; only attach domain filtering for models that support it.
+              ...(allowedDomains?.length && supportsWebSearchFilters(runtimeModel.model)
+                ? { filters: { allowed_domains: allowedDomains } }
+                : {}),
+            },
+          ],
+          include: ["web_search_call.results", "web_search_call.action.sources"],
+        },
+        { signal: combinedSignal },
+      )
     );
     const usage = normalizeWebUsage(response);
     const estimatedCostUsd = response.usage
-      ? estimateWebSearchCostUsd(WEB_SEARCH_MODEL, usage, 1)
+      ? estimateWebSearchCostUsd(runtimeModel.model, usage, 1)
       : undefined;
     const responseFailure = classifyOpenAITerminalResponse(response);
     if (responseFailure) {
       throw attachModelProviderResponseReceipt(responseFailure, {
         usage,
         latencyMs: Date.now() - startedAt,
-        model: WEB_SEARCH_MODEL,
+        model: runtimeModel.model,
         estimatedCostUsd,
         providerRequestId: response.id,
       });
     }
-    if (usageScope) {
+    if (meteredUsageScope) {
       await recordAiUsageSafely({
-        ...usageScope,
+        ...meteredUsageScope,
         status: "completed",
         provider: "openai",
-        model: WEB_SEARCH_MODEL,
+        model: runtimeModel.model,
         usage: { ...usage, searchQueryCount: 1 },
         providerCallCount: 1,
         attemptCount: 1,
@@ -145,12 +160,12 @@ export async function runLiveWebSearch({
   } catch (error) {
     const responseReceipt = getModelProviderResponseReceipt(error);
     const providerFailure = error instanceof ModelProviderError ? error : undefined;
-    if (usageScope) {
+    if (meteredUsageScope) {
       await recordAiUsageSafely({
-        ...usageScope,
+        ...meteredUsageScope,
         status: "failed",
         provider: "openai",
-        model: WEB_SEARCH_MODEL,
+        model: runtimeModel.model,
         usage: {
           ...(responseReceipt?.usage || {}),
           searchQueryCount: 1,
@@ -180,7 +195,7 @@ export async function runLiveWebSearch({
     query: normalizedQuery,
     searchedAt: new Date().toISOString(),
     provider: "openai.responses.web_search",
-    model: WEB_SEARCH_MODEL,
+    model: runtimeModel.model,
     summary: response.output_text || "Live web search completed, but no summary text was returned.",
     sources,
     sourceCount: sources.length,

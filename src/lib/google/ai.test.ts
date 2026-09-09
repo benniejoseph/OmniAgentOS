@@ -22,7 +22,10 @@ describe("Google AI provider", () => {
       usage: { total_input_tokens: 10, total_output_tokens: 4, total_cached_tokens: 2, total_tokens: 14 },
     }), { status: 200, headers: { "content-type": "application/json" } })));
 
-    await expect(generateGeminiText({ prompt: "Summarize this" })).resolves.toMatchObject({
+    await expect(generateGeminiText({
+      prompt: "Summarize this",
+      model: "configured-gemini-model",
+    })).resolves.toMatchObject({
       text: "Concise result",
       model: "gemini-test",
       responseId: "interaction-1",

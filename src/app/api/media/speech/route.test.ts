@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     getOwnedThread: vi.fn(),
     recordAiUsageSafely: vi.fn(),
     recordRuntimeEventSafely: vi.fn(),
+    resolveSpecializedRuntime: vi.fn(),
   };
 });
 
@@ -48,6 +49,9 @@ vi.mock("@/lib/threads/store", () => ({
 }));
 vi.mock("@/lib/usage/ledger", () => ({
   recordAiUsageSafely: mocks.recordAiUsageSafely,
+}));
+vi.mock("@/lib/settings/specialized-runtime", () => ({
+  resolveSpecializedRuntime: mocks.resolveSpecializedRuntime,
 }));
 vi.mock("@/lib/voice/openai-speech", () => ({
   createOpenAISpeechStream: mocks.createOpenAISpeechStream,
@@ -91,6 +95,20 @@ beforeEach(() => {
   mocks.getOwnedThread.mockReset().mockResolvedValue({ id: threadId });
   mocks.recordAiUsageSafely.mockReset().mockResolvedValue(undefined);
   mocks.recordRuntimeEventSafely.mockReset().mockResolvedValue(undefined);
+  mocks.resolveSpecializedRuntime.mockReset().mockResolvedValue({
+    configured: true,
+    provider: "openai",
+    model: "configured-speech-model",
+    usageReceipt: {
+      assignmentScope: "speech_synthesis",
+      assignmentId: "assignment-speech",
+      assignmentRevision: 2,
+      assignmentConfigurationSha256: "a".repeat(64),
+      credentialSource: "tenant_vault",
+    },
+    withApiKey: (operation: (apiKey?: string) => Promise<unknown>) =>
+      operation("workspace-openai-key"),
+  });
 });
 
 describe("P9.10 versioned streaming Agent speech", () => {
@@ -124,16 +142,19 @@ describe("P9.10 versioned streaming Agent speech", () => {
         profile: expect.objectContaining({
           profileVersion: "asael-voice:1",
           agentId: "scout",
-          model: "gpt-4o-mini-tts",
+          model: "configured-speech-model",
           voice: "cedar",
         }),
+        apiKey: "workspace-openai-key",
       }),
     );
     expect(mocks.recordAiUsageSafely).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "completed",
         provider: "openai",
-        model: "gpt-4o-mini-tts",
+        model: "configured-speech-model",
+        assignmentScope: "speech_synthesis",
+        assignmentId: "assignment-speech",
         usage: { inputCharacters: 16, outputBytes: 4 },
       }),
     );

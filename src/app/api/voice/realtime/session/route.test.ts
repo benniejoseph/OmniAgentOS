@@ -7,6 +7,7 @@ const routeMocks = vi.hoisted(() => ({
   createThread: vi.fn(),
   getOwnedThread: vi.fn(),
   issueRealtimeTranscriptionSecret: vi.fn(),
+  resolveSpecializedRuntime: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -32,6 +33,10 @@ vi.mock("@/lib/security/guard", async (importOriginal) => ({
 vi.mock("@/lib/threads/store", () => ({
   createThread: routeMocks.createThread,
   getOwnedThread: routeMocks.getOwnedThread,
+}));
+
+vi.mock("@/lib/settings/specialized-runtime", () => ({
+  resolveSpecializedRuntime: routeMocks.resolveSpecializedRuntime,
 }));
 
 vi.mock("@/lib/voice/realtime-session", async (importOriginal) => ({
@@ -82,7 +87,21 @@ beforeEach(() => {
     clientSecretExpiresAt: 1_800_000_000,
     providerSessionId: "sess_test",
     providerSessionExpiresAt: 1_800_000_600,
-    model: "gpt-4o-mini-transcribe",
+    model: "configured-realtime-model",
+  });
+  routeMocks.resolveSpecializedRuntime.mockReset().mockResolvedValue({
+    configured: true,
+    provider: "openai",
+    model: "configured-realtime-model",
+    usageReceipt: {
+      assignmentScope: "realtime_transcription",
+      assignmentId: "assignment-realtime",
+      assignmentRevision: 3,
+      assignmentConfigurationSha256: "b".repeat(64),
+      credentialSource: "tenant_vault",
+    },
+    withApiKey: (operation: (apiKey?: string) => Promise<unknown>) =>
+      operation("workspace-openai-key"),
   });
 });
 
@@ -105,13 +124,15 @@ describe("realtime voice session route", () => {
     });
     expect(routeMocks.issueRealtimeTranscriptionSecret).toHaveBeenCalledWith({
       language: "hi",
+      model: "configured-realtime-model",
+      apiKey: "workspace-openai-key",
     });
     const body = await response.json();
     expect(body).toMatchObject({
       conversationId,
       clientSecret: "ek_test_ephemeral",
       provider: "openai",
-      model: "gpt-4o-mini-transcribe",
+      model: "configured-realtime-model",
       language: "hi",
       turnDetection: "server_vad",
       audioRetention: "not_stored_by_asael",

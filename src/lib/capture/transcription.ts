@@ -1,6 +1,7 @@
 import type { TranscriptionDiarized } from "openai/resources/audio/transcriptions";
 import {
   DIARIZATION_MODEL,
+  GOOGLE_TRANSCRIPTION_MODEL,
   TRANSCRIPTION_MODEL,
   hasGoogleMediaKey,
   hasOpenAIKey,
@@ -48,14 +49,17 @@ export async function captureTranscriptionConfigured(input?: {
   tenantId?: string;
   actorId?: string;
 }) {
-  if (hasGoogleMediaKey() || hasOpenAIKey()) return true;
+  const useGoogleDeployment = hasGoogleMediaKey();
   const runtimeModel = await resolveSpecializedRuntime({
     tenantId: input?.tenantId,
     actorId: input?.actorId,
     scope: "audio",
     requiredCapability: "transcription",
-    deploymentModel: TRANSCRIPTION_MODEL,
-    deploymentConfigured: false,
+    deploymentProvider: useGoogleDeployment ? "google" : "openai",
+    deploymentModel: useGoogleDeployment
+      ? GOOGLE_TRANSCRIPTION_MODEL
+      : TRANSCRIPTION_MODEL,
+    deploymentConfigured: useGoogleDeployment || hasOpenAIKey(),
   });
   return runtimeModel.configured;
 }
@@ -74,12 +78,12 @@ export async function transcribeCaptureMediaDiarized(
   const runtimeModel = await resolveSpecializedRuntime({
     tenantId: usageScope?.tenantId,
     actorId: usageScope?.actorId,
-    scope: "audio",
+    scope: "audio_diarization",
     requiredCapability: "transcription",
     deploymentModel: DIARIZATION_MODEL,
     deploymentConfigured: hasOpenAIKey(),
   });
-  if (!runtimeModel.configured) {
+  if (!runtimeModel.configured || runtimeModel.provider !== "openai") {
     const fallback = await transcribeCaptureMedia(
       media,
       abortSignal,
@@ -230,8 +234,17 @@ export async function transcribeCaptureMedia(
     actorId: usageScope?.actorId,
     scope: "audio",
     requiredCapability: "transcription",
-    deploymentModel: TRANSCRIPTION_MODEL,
-    deploymentConfigured: hasOpenAIKey(),
+    deploymentProvider:
+      CAPTURE_AUDIO_TYPES.has(mimeType) && hasGoogleMediaKey()
+        ? "google"
+        : "openai",
+    deploymentModel:
+      CAPTURE_AUDIO_TYPES.has(mimeType) && hasGoogleMediaKey()
+        ? GOOGLE_TRANSCRIPTION_MODEL
+        : TRANSCRIPTION_MODEL,
+    deploymentConfigured:
+      (CAPTURE_AUDIO_TYPES.has(mimeType) && hasGoogleMediaKey()) ||
+      hasOpenAIKey(),
   });
   const meteredUsageScope = usageScope
     ? { ...usageScope, ...runtimeModel.usageReceipt }
@@ -242,40 +255,49 @@ export async function transcribeCaptureMedia(
   let fallbackUsed = false;
   let segments: CaptureTranscriptionSegment[] = [];
   let durationMs = 0;
-  if (
-    runtimeModel.source !== "tenant_assignment" &&
-    hasGoogleMediaKey() &&
-    CAPTURE_AUDIO_TYPES.has(mimeType)
-  ) {
+  let activeProvider = runtimeModel.provider;
+  let activeModel = runtimeModel.model;
+  let withActiveApiKey = runtimeModel.withApiKey;
+  if (runtimeModel.configured && runtimeModel.provider === "google") {
     try {
-      const result = await transcribeGoogleAudio(
-        media,
-        abortSignal,
-        meteredUsageScope,
+      const result = await runtimeModel.withApiKey((apiKey) =>
+        transcribeGoogleAudio({
+          audio: media,
+          model: runtimeModel.model,
+          apiKey,
+          abortSignal,
+          usageScope: meteredUsageScope,
+        })
       );
       text = result.text;
       model = result.model;
       segments = result.segments;
       durationMs = result.durationMs;
     } catch (error) {
-      if (!runtimeModel.configured) throw error;
+      if (
+        runtimeModel.source === "tenant_assignment" ||
+        !hasOpenAIKey()
+      ) throw error;
       fallbackUsed = true;
+      activeProvider = "openai";
+      activeModel = TRANSCRIPTION_MODEL;
+      withActiveApiKey = (operation) => operation(undefined);
     }
   }
-  if (!text && runtimeModel.configured) {
+  if (!text && runtimeModel.configured && activeProvider === "openai") {
     abortSignal?.throwIfAborted();
     const startedAt = Date.now();
     try {
-      const result = await runtimeModel.withApiKey((apiKey) =>
+      const result = await withActiveApiKey((apiKey) =>
         getOpenAIClient(apiKey ? { apiKey } : undefined).audio.transcriptions.create({
           file: media,
-          model: runtimeModel.model,
+          model: activeModel,
           response_format: "verbose_json",
           timestamp_granularities: ["segment"],
         })
       );
       text = result.text;
-      model = runtimeModel.model;
+      model = activeModel;
       durationMs = Math.max(1, Math.round(Number(result.duration || 0) * 1_000));
       segments = (result.segments || []).flatMap((segment) => {
         const content = segment.text.trim();
@@ -299,7 +321,7 @@ export async function transcribeCaptureMedia(
           ...meteredUsageScope,
           status: "completed",
           provider: "openai",
-          model: runtimeModel.model,
+          model: activeModel,
           usage: { inputBytes: media.size },
           providerCallCount: 1,
           attemptCount: 1,
@@ -313,7 +335,7 @@ export async function transcribeCaptureMedia(
           ...meteredUsageScope,
           status: "failed",
           provider: "openai",
-          model: runtimeModel.model,
+          model: activeModel,
           usage: { inputBytes: media.size },
           providerCallCount: 1,
           attemptCount: 1,

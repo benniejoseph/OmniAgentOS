@@ -38,6 +38,7 @@ import {
   MODEL_ASSIGNMENT_SCOPES,
   MODEL_PROVIDERS,
   SERVICE_API_SCOPES,
+  SPECIALIZED_MODEL_ASSIGNMENT_SCOPES,
   type McpExportConfiguration,
   type ModelAssignmentScope,
   type ModelAssignmentRuntimeReceipt,
@@ -113,6 +114,11 @@ const assignmentLabels: Record<ModelAssignmentScope, { title: string; descriptio
   embeddings: { title: "Embeddings", description: "Document and memory vector indexing" },
   vision: { title: "Vision", description: "Image and visual document understanding" },
   audio: { title: "Audio transcription", description: "Uploaded recording and meeting transcription" },
+  audio_diarization: { title: "Speaker diarization", description: "Speaker-aware meeting and recording transcription" },
+  web_search: { title: "Web search", description: "Live public-web research and sourced summaries" },
+  image_generation: { title: "Image generation", description: "Visual creation from prompts in Capture" },
+  speech_synthesis: { title: "Speech synthesis", description: "Spoken Agent responses" },
+  realtime_transcription: { title: "Realtime transcription", description: "Live voice-command transcription" },
 };
 
 export type McpConfigurationGate = {
@@ -697,7 +703,9 @@ type AssignmentDraft = {
 };
 
 function AssignmentEditor({ scope, models, providers, current, receipt, busy, saveBlocked, onSave }: { scope: ModelAssignmentScope; models: RequestModelCatalogEntry[]; providers: RequestProviderConnection[]; current?: RequestModelAssignment; receipt?: ModelAssignmentRuntimeReceipt; busy: boolean; saveBlocked?: string; onSave: (value: AssignmentDraft) => Promise<unknown> }) {
-  const supportsFallback = !["embeddings", "vision", "audio"].includes(scope);
+  const supportsFallback = !SPECIALIZED_MODEL_ASSIGNMENT_SCOPES.includes(
+    scope as (typeof SPECIALIZED_MODEL_ASSIGNMENT_SCOPES)[number],
+  );
   const selectableModels = models.filter((item) =>
     item.selectable === true && modelSupportsUiRole(scope, item)
   );
@@ -774,7 +782,15 @@ function modelSupportsUiRole(
           ? { providers: ["openai"] as SettingsModelProvider[], capabilities: ["embeddings"] }
           : scope === "vision"
             ? { providers: ["openai"] as SettingsModelProvider[], capabilities: ["vision"] }
-            : { providers: ["openai"] as SettingsModelProvider[], capabilities: ["audio", "transcription"] };
+            : scope === "audio"
+              ? { providers: ["openai", "google"] as SettingsModelProvider[], capabilities: ["audio", "transcription"] }
+              : scope === "image_generation"
+                ? { providers: ["google"] as SettingsModelProvider[], capabilities: ["image"] }
+                : scope === "speech_synthesis"
+                  ? { providers: ["openai"] as SettingsModelProvider[], capabilities: ["speech"] }
+                  : scope === "web_search"
+                    ? { providers: ["openai"] as SettingsModelProvider[], capabilities: ["tools"] }
+                    : { providers: ["openai"] as SettingsModelProvider[], capabilities: ["audio", "transcription"] };
   return contract.providers.includes(model.provider) &&
     contract.capabilities.some((capability) => model.capabilities.includes(capability));
 }

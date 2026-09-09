@@ -5,6 +5,7 @@ import type {
   ModelCatalogEntry,
   SettingsModelProvider,
 } from "@/lib/settings/types";
+import { SPECIALIZED_MODEL_ASSIGNMENT_SCOPES } from "@/lib/settings/types";
 
 export const MODEL_ASSIGNMENT_CONTRACT_VERSION =
   "p11.8-model-assignment:1" as const;
@@ -84,6 +85,41 @@ export const modelAssignmentRoleContracts: Readonly<
     title: "Audio transcription",
     description: "Uploaded recording and meeting transcription",
     runtimePurpose: "Capture and meeting transcription",
+    supportedProviders: ["openai", "google"],
+    acceptedCapabilities: ["audio", "transcription"],
+  }),
+  audio_diarization: assignmentRoleContract({
+    title: "Speaker diarization",
+    description: "Speaker-aware transcription for meetings and recordings",
+    runtimePurpose: "Speaker-labelled capture transcription",
+    supportedProviders: ["openai"],
+    acceptedCapabilities: ["audio", "transcription"],
+  }),
+  web_search: assignmentRoleContract({
+    title: "Web search",
+    description: "Live public-web research and source-grounded summaries",
+    runtimePurpose: "Hosted live web search",
+    supportedProviders: ["openai"],
+    acceptedCapabilities: ["tools"],
+  }),
+  image_generation: assignmentRoleContract({
+    title: "Image generation",
+    description: "Visual creation from prompts in Capture",
+    runtimePurpose: "Generated capture assets",
+    supportedProviders: ["google"],
+    acceptedCapabilities: ["image"],
+  }),
+  speech_synthesis: assignmentRoleContract({
+    title: "Speech synthesis",
+    description: "Spoken Agent responses",
+    runtimePurpose: "Streaming Agent speech",
+    supportedProviders: ["openai"],
+    acceptedCapabilities: ["speech"],
+  }),
+  realtime_transcription: assignmentRoleContract({
+    title: "Realtime transcription",
+    description: "Live voice-command transcription",
+    runtimePurpose: "Realtime voice sessions",
     supportedProviders: ["openai"],
     acceptedCapabilities: ["audio", "transcription"],
   }),
@@ -92,7 +128,9 @@ export const modelAssignmentRoleContracts: Readonly<
 export function modelAssignmentRoleSupportsFallback(
   scope: ModelAssignmentScope,
 ) {
-  return scope !== "embeddings" && scope !== "vision" && scope !== "audio";
+  return !SPECIALIZED_MODEL_ASSIGNMENT_SCOPES.includes(
+    scope as (typeof SPECIALIZED_MODEL_ASSIGNMENT_SCOPES)[number],
+  );
 }
 
 export function modelSupportsAssignmentRole(

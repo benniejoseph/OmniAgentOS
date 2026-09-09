@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   applyKnowledgeChunkEmbeddingBackfill: vi.fn(),
   authorizeRequest: vi.fn(),
-  embedTexts: vi.fn(),
+  embedTextsWithRuntime: vi.fn(),
   getKnowledgeStats: vi.fn(),
   listKnowledgeChunksMissingEmbeddings: vi.fn(),
   requestMemoryAccessFromSecurityContext: vi.fn(),
@@ -28,7 +28,9 @@ vi.mock("@/lib/memory/request-access", () => ({
   requestMemoryAccessFromSecurityContext:
     mocks.requestMemoryAccessFromSecurityContext,
 }));
-vi.mock("@/lib/openai/client", () => ({ embedTexts: mocks.embedTexts }));
+vi.mock("@/lib/openai/client", () => ({
+  embedTextsWithRuntime: mocks.embedTextsWithRuntime,
+}));
 vi.mock("@/lib/rag/store", () => ({
   applyKnowledgeChunkEmbeddingBackfill:
     mocks.applyKnowledgeChunkEmbeddingBackfill,
@@ -58,7 +60,12 @@ describe("memory knowledge indexing route", () => {
       content: "untrusted evidence text",
       updatedAt: "2026-09-09T00:00:00.000Z",
     }]);
-    mocks.embedTexts.mockResolvedValue([[0.1, 0.2, 0.3]]);
+    mocks.embedTextsWithRuntime.mockResolvedValue({
+      vectors: [[0.1, 0.2, 0.3]],
+      provider: "openai",
+      model: "settings-embedding-model",
+      dimensions: 3,
+    });
     mocks.applyKnowledgeChunkEmbeddingBackfill.mockResolvedValue({
       updatedCount: 1,
       chunkSetSha256: "a".repeat(64),
@@ -82,7 +89,7 @@ describe("memory knowledge indexing route", () => {
     ));
 
     expect(response.status).toBe(200);
-    expect(mocks.embedTexts).toHaveBeenCalledWith(
+    expect(mocks.embedTextsWithRuntime).toHaveBeenCalledWith(
       ["untrusted evidence text"],
       undefined,
       expect.objectContaining({
@@ -95,7 +102,7 @@ describe("memory knowledge indexing route", () => {
       expect.objectContaining({
         tenantId: "tenant-a",
         provider: "openai",
-        model: "embedding-test",
+        model: "settings-embedding-model",
         dimensions: 3,
       }),
     );
@@ -107,7 +114,7 @@ describe("memory knowledge indexing route", () => {
   });
 
   it("preserves lexical search when the provider is unavailable", async () => {
-    mocks.embedTexts.mockResolvedValue(null);
+    mocks.embedTextsWithRuntime.mockResolvedValue(null);
     const response = await POST(new Request(
       "http://localhost/api/memory/indexing",
       {

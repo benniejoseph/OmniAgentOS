@@ -2,7 +2,7 @@ import {
   EMBEDDING_DIMENSIONS,
   EMBEDDING_MODEL,
 } from "@/lib/config";
-import { embedTexts } from "@/lib/openai/client";
+import { embedTextsWithRuntime } from "@/lib/openai/client";
 import type { AiUsageScope } from "@/lib/usage/types";
 
 export const LOCAL_MULTILINGUAL_EMBEDDING_DIMENSIONS = 384;
@@ -63,15 +63,18 @@ export async function embedRetrievalTexts(
     true;
   if (openAIAllowed) {
     try {
-      const vectors = await embedTexts(
+      const embedded = await embedTextsWithRuntime(
         [...normalizedInput],
         options.abortSignal,
         options.usageScope,
       );
-      if (vectors?.length === normalizedInput.length) {
+      if (embedded?.vectors.length === normalizedInput.length) {
         return {
-          vectors,
-          receipt: receipt(openAICapability(), normalizedInput.length),
+          vectors: embedded.vectors,
+          receipt: receipt(
+            openAICapability(embedded.model, embedded.dimensions),
+            normalizedInput.length,
+          ),
         };
       }
     } catch (error) {
@@ -146,7 +149,10 @@ export function isLocalRetrievalEmbeddingSpace(spaceId?: string) {
 export function retrievalEmbeddingSpaceSupportsStoredVectorIndex(
   spaceId?: string,
 ) {
-  return !spaceId || spaceId === retrievalEmbeddingCapabilities.openai.spaceId;
+  return !spaceId || (
+    spaceId.startsWith("openai:") &&
+    spaceId.endsWith(`:${EMBEDDING_DIMENSIONS}`)
+  );
 }
 
 function localEmbeddingResult(
@@ -185,12 +191,15 @@ function localCapability(): RetrievalEmbeddingCapability {
   };
 }
 
-function openAICapability(): RetrievalEmbeddingCapability {
+function openAICapability(
+  model = EMBEDDING_MODEL,
+  dimensions = EMBEDDING_DIMENSIONS,
+): RetrievalEmbeddingCapability {
   return {
     provider: "openai",
-    model: EMBEDDING_MODEL,
-    spaceId: `openai:${EMBEDDING_MODEL}:${EMBEDDING_DIMENSIONS}`,
-    dimensions: EMBEDDING_DIMENSIONS,
+    model,
+    spaceId: `openai:${model}:${dimensions}`,
+    dimensions,
     multilingual: true,
     externalDisclosure: true,
     requiresCredential: true,

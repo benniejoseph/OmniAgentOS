@@ -160,6 +160,15 @@ export async function embedTexts(
   abortSignal?: AbortSignal,
   usageScope?: AiUsageScope,
 ) {
+  const result = await embedTextsWithRuntime(input, abortSignal, usageScope);
+  return result?.vectors || null;
+}
+
+export async function embedTextsWithRuntime(
+  input: string[],
+  abortSignal?: AbortSignal,
+  usageScope?: AiUsageScope,
+) {
   if (input.length === 0) {
     return null;
   }
@@ -217,7 +226,13 @@ export async function embedTexts(
         }),
       });
     }
-    return response.data.map((item) => item.embedding);
+    const vectors = response.data.map((item) => item.embedding);
+    return {
+      vectors,
+      provider: "openai" as const,
+      model: runtimeModel.model,
+      dimensions: vectors[0]?.length || EMBEDDING_DIMENSIONS,
+    };
   } catch (error) {
     if (meteredUsageScope) {
       await recordAiUsageSafely({
@@ -235,36 +250,6 @@ export async function embedTexts(
       });
     }
     throw error;
-  }
-}
-
-export async function* streamOpenAIResponse({
-  instructions,
-  input,
-  abortSignal,
-}: {
-  instructions: string;
-  input: string;
-  abortSignal?: AbortSignal;
-}) {
-  const stream = await getOpenAIClient().responses.create(
-    {
-      model: AGENT_MODEL,
-      instructions,
-      input,
-      stream: true,
-      store: false,
-    },
-    { signal: abortSignal },
-  );
-
-  for await (const event of stream as AsyncIterable<Record<string, unknown>>) {
-    if (event.type === "response.output_text.delta") {
-      const delta = typeof event.delta === "string" ? event.delta : "";
-      if (delta) {
-        yield delta;
-      }
-    }
   }
 }
 
@@ -316,7 +301,7 @@ export async function streamResponseTurn({
   abortSignal,
   reasoningEffort,
   maxOutputTokens,
-  model = AGENT_MODEL,
+  model,
   fallbackModel,
   apiKey,
   usageScope,
@@ -330,7 +315,7 @@ export async function streamResponseTurn({
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
   maxOutputTokens?: number;
-  model?: string;
+  model: string;
   fallbackModel?: string;
   /** Server-only request credential. Never persist or include in receipts. */
   apiKey?: string;
@@ -852,7 +837,7 @@ export async function createStructuredResponse({
   name: string;
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
-  model?: string;
+  model: string;
   apiKey?: string;
   usageScope?: AiUsageScope;
 }) {
@@ -876,7 +861,7 @@ export async function createStructuredResponseWithMetrics({
   name,
   abortSignal,
   reasoningEffort,
-  model = AGENT_MODEL,
+  model,
   apiKey,
   usageScope,
 }: {
@@ -886,7 +871,7 @@ export async function createStructuredResponseWithMetrics({
   name: string;
   abortSignal?: AbortSignal;
   reasoningEffort?: "minimal" | "low" | "medium" | "high";
-  model?: string;
+  model: string;
   /** Server-only request credential. Never persist or include in receipts. */
   apiKey?: string;
   usageScope?: AiUsageScope;

@@ -200,4 +200,59 @@ describe("functional model runtime routing", () => {
     await expect(runtime.withApiKey(async (apiKey) => apiKey))
       .resolves.toBe("openai-secret");
   });
+
+  it("resolves provider-specific specialist routes from Settings", async () => {
+    storeMocks.listModelAssignments.mockResolvedValue([{
+      ...baseAssignment,
+      id: "assignment-audio",
+      scope: "audio",
+      provider: "google",
+      modelId: "google-cloud-speech:latest_long",
+    }]);
+    storeMocks.listModelCatalog.mockResolvedValue([{
+      id: "catalog-google-speech",
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      provider: "google",
+      modelId: "google-cloud-speech:latest_long",
+      displayName: "Google Cloud Speech",
+      capabilities: ["audio", "transcription"],
+      lifecycle: "available",
+      discoveredAt: "2026-09-07T12:00:00.000Z",
+      updatedAt: "2026-09-07T12:00:00.000Z",
+    }]);
+    storeMocks.listProviderConnections.mockResolvedValue([{
+      ...openAiConnection,
+      id: "connection-google",
+      provider: "google",
+    }]);
+    storeMocks.getProviderCredentials.mockResolvedValue({
+      connection: { provider: "google" },
+      credentials: { apiKey: "google-workspace-secret" },
+    });
+
+    const runtime = await resolveSpecializedRuntime({
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+      scope: "audio",
+      requiredCapability: "transcription",
+      deploymentProvider: "openai",
+      deploymentModel: "deployment-transcription",
+      deploymentConfigured: true,
+    });
+
+    expect(runtime).toMatchObject({
+      source: "tenant_assignment",
+      configured: true,
+      provider: "google",
+      model: "google-cloud-speech:latest_long",
+      usageReceipt: {
+        assignmentScope: "audio",
+        assignmentId: "assignment-audio",
+        credentialSource: "tenant_vault",
+      },
+    });
+    await expect(runtime.withApiKey(async (apiKey) => apiKey))
+      .resolves.toBe("google-workspace-secret");
+  });
 });
