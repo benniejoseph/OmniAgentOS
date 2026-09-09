@@ -31,6 +31,16 @@
 .metrics strong { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.15rem, 1.6vw, 1.55rem); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; }
 .metrics span { color: var(--memory-muted); font-size: .68rem; }
 .metrics .metricWarning > i { color: var(--warning); background: color-mix(in oklab, var(--warning) 12%, var(--memory-paper)); }
+.memoryGuide { display: grid; grid-template-columns: minmax(17rem, .7fr) minmax(0, 1.5fr); gap: clamp(1rem, 2.4vw, 2.5rem); margin: 1rem clamp(1rem, 3.2vw, 4rem) 0; border: 1px solid var(--memory-line); border-radius: 1.4rem; padding: clamp(1rem, 1.7vw, 1.5rem); background: linear-gradient(125deg, color-mix(in oklab, var(--memory-mint) 58%, var(--memory-paper)), var(--memory-paper)); box-shadow: 0 1rem 3rem oklch(0.22 0.04 80 / .055); }
+.memoryGuide > header { align-content: center; }
+.memoryGuide > header p { color: var(--memory-primary); font-size: .62rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.memoryGuide > header h2 { margin-top: .25rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.2rem, 1.7vw, 1.65rem); font-weight: 590; letter-spacing: -.03em; }
+.memoryGuide > header span { display: block; margin-top: .4rem; color: var(--memory-muted); font-size: .78rem; line-height: 1.55; }
+.memoryGuide > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .55rem; }
+.memoryGuide article { display: flex; min-width: 0; align-items: flex-start; gap: .55rem; border-left: 1px solid var(--memory-line); padding: .45rem .65rem; color: var(--memory-primary); }
+.memoryGuide article span { display: grid; gap: .18rem; }
+.memoryGuide article strong { color: var(--memory-ink); font-size: .79rem; }
+.memoryGuide article small { color: var(--memory-muted); font-size: .68rem; line-height: 1.5; }
 .tabs { position: relative; display: flex; margin: 1.5rem clamp(1rem, 3.2vw, 4rem) 0; gap: .4rem; overflow-x: auto; border-bottom: 1px solid var(--memory-line); }
 .tabs button { position: relative; display: inline-flex; min-height: 3.5rem; flex: 0 0 auto; align-items: center; gap: .45rem; padding: 0 .8rem; color: var(--memory-muted); font-size: .84rem; font-weight: 680; }
 .tabs button::after { position: absolute; right: .55rem; bottom: -1px; left: .55rem; height: 2px; border-radius: 999px; background: transparent; content: ""; transform: scaleX(.2); transition: transform 180ms ease, background-color 180ms ease; }
@@ -87,6 +97,7 @@
 .steward header > strong { display: grid; width: 3.25rem; height: 3.25rem; place-items: center; align-content: center; border-radius: 50%; color: var(--memory-ink); background: radial-gradient(circle, var(--memory-paper-solid) 58%, transparent 60%), conic-gradient(var(--memory-primary) var(--score), var(--memory-line) 0); font-size: .9rem; font-variant-numeric: tabular-nums; }
 .steward header > strong small { color: var(--memory-muted); font-size: .46rem; font-weight: 500; }
 .autonomy { padding: 1rem 1.1rem; color: var(--memory-muted); font-size: .72rem; line-height: 1.6; }
+.scoreHelp { margin: -.35rem 1.1rem .85rem; color: var(--memory-muted); font-size: .67rem; line-height: 1.5; }
 .learning { margin: 0 1.1rem; border-block: 1px solid var(--memory-line); padding: .85rem 0; }
 .learning > p { display: flex; align-items: center; gap: .35rem; color: var(--memory-primary); font-size: .64rem; font-weight: 760; letter-spacing: .07em; text-transform: uppercase; }
 .learning dl { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem 1rem; margin-top: .7rem; }
@@ -120,8 +131,9 @@
 .governance { display: flex; align-items: flex-start; gap: .4rem; padding: .9rem 1.1rem 1.15rem; color: var(--memory-muted); font-size: .57rem; line-height: 1.5; }
 .governance svg { flex: 0 0 auto; color: var(--memory-primary); }
 .universeWrap { padding: 1.2rem clamp(1rem, 3.2vw, 4rem) 0; }
+.universeLoading { display: flex; min-height: 32rem; align-items: center; justify-content: center; gap: .55rem; border: 1px solid var(--memory-line); border-radius: 1.8rem; color: var(--memory-muted); background: var(--memory-paper); font-size: .76rem; }
 .reviewList { display: grid; gap: .8rem; padding: 1rem; }
-.reviewList > article { overflow: hidden; border: 1px solid var(--memory-line); border-radius: 1.2rem; background: var(--memory-paper-solid); }
+.reviewList > article { overflow: hidden; border: 1px solid var(--memory-line); border-radius: 1.2rem; background: var(--memory-paper-solid); content-visibility: auto; contain-intrinsic-size: auto 17rem; }
 .reviewList article > header { display: flex; min-height: 2.8rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--memory-line); padding: 0 .9rem; }
 .reviewList article > header span { color: var(--warning); font-size: .66rem; font-weight: 780; letter-spacing: .08em; text-transform: uppercase; }
 .reviewList article > header small { color: var(--memory-muted); font-size: .61rem; }
@@ -181,6 +193,7 @@
   .hero { align-items: flex-start; flex-direction: column; }
   .heroActions { width: 100%; min-width: 0; justify-content: flex-start; }
   .workspaceGrid { grid-template-columns: minmax(0, 1fr); }
+  .memoryGuide { grid-template-columns: 1fr; }
   .steward { position: static; display: grid; grid-template-columns: minmax(16rem, .8fr) 1.2fr; border-radius: 1.7rem; }
   .steward > header, .autonomy, .learning, .recallControl { grid-column: 1; }
   .recommendations, .scanButton, .governance { grid-column: 2; }
@@ -198,6 +211,8 @@
   .metrics article:nth-child(even) { border-left: 1px solid var(--memory-line); }
   .metrics article:nth-child(n+3) { border-top: 1px solid var(--memory-line); }
   .metrics article:last-child { grid-column: 1 / -1; }
+  .memoryGuide { margin-inline: 1rem; }
+  .memoryGuide > div { grid-template-columns: 1fr 1fr; }
   .tabs { margin-top: 1rem; }
   .workspaceGrid, .universeWrap { padding-top: .8rem; }
   .indexPane { overflow-x: auto; border-radius: 1.2rem; }
@@ -211,7 +226,8 @@
   .heroActions { grid-template-columns: 1fr; }
   .search { grid-column: 1; }
   .primaryAction, .secondaryAction { width: 100%; }
-  .metrics { margin-inline: .75rem; }
+  .metrics, .memoryGuide { margin-inline: .75rem; }
+  .memoryGuide > div { grid-template-columns: 1fr; }
   .tabs, .workspaceGrid, .universeWrap { margin-inline: 0; padding-inline: .75rem; }
   .indexHeading, .categoryRail, .filters { width: calc(100vw - 1.5rem); }
   .filters { flex-wrap: wrap; }

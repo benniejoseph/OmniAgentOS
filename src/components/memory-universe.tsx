@@ -57,6 +57,11 @@ type UniverseNodeDetail = {
   updatedAt: string;
 };
 
+type UniverseSceneController = {
+  setHiddenKinds: (hiddenKinds: ReadonlySet<MemoryGraphNodeKind>) => void;
+  reset: () => void;
+};
+
 const kindColors: Record<MemoryGraphNodeKind, string> = {
   concept: "#90ead0",
   tag: "#ffd18a",
@@ -79,6 +84,7 @@ const kindLabels: Record<MemoryGraphNodeKind, string> = {
 
 export function MemoryUniverse() {
   const mountRef = useRef<HTMLDivElement>(null);
+  const sceneControllerRef = useRef<UniverseSceneController | null>(null);
   const [payload, setPayload] = useState<UniversePayload>();
   const [hiddenKinds, setHiddenKinds] = useState<Set<MemoryGraphNodeKind>>(
     new Set(),
@@ -87,7 +93,7 @@ export function MemoryUniverse() {
   const [detail, setDetail] = useState<UniverseNodeDetail>();
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [resetSignal, setResetSignal] = useState(0);
+  const hiddenKindsRef = useRef(hiddenKinds);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -120,14 +126,14 @@ export function MemoryUniverse() {
       import("three/examples/jsm/controls/OrbitControls.js"),
     ]).then(([THREE, { OrbitControls }]) => {
       if (disposed) return;
-      const visibleNodes = payload.nodes.filter((node) => !hiddenKinds.has(node.kind));
-      const visibleIds = new Set(visibleNodes.map((node) => node.id));
+      const nodes = payload.nodes;
+      const nodeById = new Map(nodes.map((node) => [node.id, node]));
       const scene = new THREE.Scene();
       scene.fog = new THREE.FogExp2(0x071318, 0.026);
       const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 160);
       camera.position.set(0, 4, 29);
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
       renderer.setClearColor(0x071318, 1);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       mount.replaceChildren(renderer.domElement);
@@ -145,35 +151,54 @@ export function MemoryUniverse() {
       controls.autoRotate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       controls.autoRotateSpeed = 0.16;
 
-      const positions = layoutNodes(visibleNodes, THREE);
+      const positions = layoutNodes(nodes, THREE);
       const geometry = new THREE.IcosahedronGeometry(0.12, 1);
       const material = new THREE.MeshBasicMaterial({ vertexColors: true });
-      const mesh = new THREE.InstancedMesh(geometry, material, visibleNodes.length);
+      const mesh = new THREE.InstancedMesh(geometry, material, nodes.length);
       const dummy = new THREE.Object3D();
-      visibleNodes.forEach((node, index) => {
-        const position = positions.get(node.id) || new THREE.Vector3();
-        dummy.position.copy(position);
-        const scale = Math.min(2.8, 0.7 + Math.sqrt(Math.max(node.weight, 0.05)) * 0.75);
-        dummy.scale.setScalar(scale);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(index, dummy.matrix);
-        mesh.setColorAt(index, new THREE.Color(kindColors[node.kind]));
-      });
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      const setNodeInstances = (hidden: ReadonlySet<MemoryGraphNodeKind>) => {
+        nodes.forEach((node, index) => {
+          const position = positions.get(node.id) || new THREE.Vector3();
+          dummy.position.copy(position);
+          const scale = hidden.has(node.kind)
+            ? 0
+            : Math.min(
+                2.8,
+                0.7 + Math.sqrt(Math.max(node.weight, 0.05)) * 0.75,
+              );
+          dummy.scale.setScalar(scale);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(index, dummy.matrix);
+          mesh.setColorAt(index, new THREE.Color(kindColors[node.kind]));
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      };
       scene.add(mesh);
 
-      const edgePoints: number[] = [];
+      const edgeSegments: Array<{
+        source: import("three").Vector3;
+        target: import("three").Vector3;
+        sourceKind: MemoryGraphNodeKind;
+        targetKind: MemoryGraphNodeKind;
+      }> = [];
       const edgeColors: number[] = [];
       for (const edge of payload.edges) {
-        if (!visibleIds.has(edge.sourceNodeId) || !visibleIds.has(edge.targetNodeId)) continue;
         const source = positions.get(edge.sourceNodeId);
         const target = positions.get(edge.targetNodeId);
-        if (!source || !target) continue;
-        edgePoints.push(source.x, source.y, source.z, target.x, target.y, target.z);
+        const sourceNode = nodeById.get(edge.sourceNodeId);
+        const targetNode = nodeById.get(edge.targetNodeId);
+        if (!source || !target || !sourceNode || !targetNode) continue;
+        edgeSegments.push({
+          source,
+          target,
+          sourceKind: sourceNode.kind,
+          targetKind: targetNode.kind,
+        });
         const intensity = Math.min(0.68, 0.14 + edge.weight * 0.32);
         edgeColors.push(0.28, intensity + 0.22, intensity, 0.28, intensity + 0.22, intensity);
       }
+      const edgePoints = new Float32Array(edgeSegments.length * 6);
       const edgeGeometry = new THREE.BufferGeometry();
       edgeGeometry.setAttribute("position", new THREE.Float32BufferAttribute(edgePoints, 3));
       edgeGeometry.setAttribute("color", new THREE.Float32BufferAttribute(edgeColors, 3));
@@ -185,6 +210,31 @@ export function MemoryUniverse() {
       });
       const lines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
       scene.add(lines);
+
+      const setEdgeSegments = (hidden: ReadonlySet<MemoryGraphNodeKind>) => {
+        edgeSegments.forEach((segment, index) => {
+          const offset = index * 6;
+          if (hidden.has(segment.sourceKind) || hidden.has(segment.targetKind)) {
+            edgePoints.fill(0, offset, offset + 6);
+          } else {
+            edgePoints.set([
+              segment.source.x,
+              segment.source.y,
+              segment.source.z,
+              segment.target.x,
+              segment.target.y,
+              segment.target.z,
+            ], offset);
+          }
+        });
+        edgeGeometry.getAttribute("position").needsUpdate = true;
+      };
+
+      const setHiddenKinds = (hidden: ReadonlySet<MemoryGraphNodeKind>) => {
+        setNodeInstances(hidden);
+        setEdgeSegments(hidden);
+      };
+      setHiddenKinds(hiddenKindsRef.current);
 
       const stars = starField(THREE);
       scene.add(stars.points);
@@ -206,7 +256,7 @@ export function MemoryUniverse() {
         raycaster.setFromCamera(pointer, camera);
         const hit = raycaster.intersectObject(mesh, false)[0];
         if (hit?.instanceId === undefined) return;
-        const node = visibleNodes[hit.instanceId];
+        const node = nodes[hit.instanceId];
         if (node) void selectNode(node.id);
       };
       renderer.domElement.addEventListener("pointerdown", onPointerDown);
@@ -223,6 +273,13 @@ export function MemoryUniverse() {
       resizeObserver = new ResizeObserver(resize);
       resizeObserver.observe(mount);
       resize();
+
+      const reset = () => {
+        camera.position.set(0, 4, 29);
+        controls.target.set(0, 0, 0);
+        controls.update();
+      };
+      sceneControllerRef.current = { setHiddenKinds, reset };
 
       const draw = () => {
         if (disposed || !renderer) return;
@@ -246,6 +303,7 @@ export function MemoryUniverse() {
         stars.material.dispose();
         renderer?.dispose();
         renderer?.domElement.remove();
+        sceneControllerRef.current = null;
       };
     }).catch((sceneError) => {
       if (!disposed) setError(message(sceneError));
@@ -276,7 +334,12 @@ export function MemoryUniverse() {
         setDetailLoading(false);
       }
     }
-  }, [payload, hiddenKinds, resetSignal]);
+  }, [payload]);
+
+  useEffect(() => {
+    hiddenKindsRef.current = hiddenKinds;
+    sceneControllerRef.current?.setHiddenKinds(hiddenKinds);
+  }, [hiddenKinds]);
 
   const shownNodeCount = useMemo(() => payload?.nodes.filter(
     (node) => !hiddenKinds.has(node.kind),
@@ -291,6 +354,10 @@ export function MemoryUniverse() {
     });
   }
 
+  function resetView() {
+    sceneControllerRef.current?.reset();
+  }
+
   return (
     <section className={styles.shell} aria-labelledby="memory-universe-title">
       <header className={styles.header}>
@@ -299,7 +366,7 @@ export function MemoryUniverse() {
           <h2 id="memory-universe-title">See how your knowledge connects.</h2>
           <span>Drag to orbit · scroll to zoom · select a point to reveal its meaning</span>
         </div>
-        <button type="button" onClick={() => setResetSignal((value) => value + 1)}>
+        <button type="button" onClick={resetView}>
           <Focus size={16} /> Reset view
         </button>
       </header>
