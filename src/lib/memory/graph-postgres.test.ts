@@ -22,6 +22,7 @@ const graphMocks = vi.hoisted(() => {
     statements,
     sql,
     listMemories: vi.fn(),
+    listScopeBoundMemories: vi.fn(),
   };
 });
 
@@ -40,6 +41,7 @@ vi.mock("@/lib/db/client", () => ({
 
 vi.mock("@/lib/memory/store", () => ({
   listMemories: graphMocks.listMemories,
+  listScopeBoundMemories: graphMocks.listScopeBoundMemories,
 }));
 
 import {
@@ -70,6 +72,9 @@ describe("memory graph postgres rebuild", () => {
     graphMocks.statements.length = 0;
     graphMocks.sql.mockClear();
     graphMocks.listMemories.mockReset().mockResolvedValue(graphMemories(80));
+    graphMocks.listScopeBoundMemories.mockReset().mockImplementation(
+      graphMocks.listMemories,
+    );
   });
 
   it("batches large graph projections below the per-statement row bound", async () => {
@@ -179,7 +184,7 @@ describe("memory graph postgres rebuild", () => {
       allowedPurposeIds: ["memory.read.v1", "memory.retrieve.v1"],
       accessBoundAt: "2026-09-09T00:00:00.000Z",
     });
-    graphMocks.listMemories.mockResolvedValue([
+    graphMocks.listScopeBoundMemories.mockResolvedValue([
       { ...graphMemories(1)[0], accessBinding },
     ]);
 

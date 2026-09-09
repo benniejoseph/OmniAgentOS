@@ -203,6 +203,49 @@ export async function listMemories(options: TenantScopedOptions = {}) {
 }
 
 /**
+ * Maintenance-only catalog read for projections that must fail closed on
+ * unattributed history. Filtering in Postgres avoids transferring legacy
+ * embeddings and content that the caller is required to discard.
+ */
+export async function listScopeBoundMemories(
+  options: Pick<TenantScopedOptions, "tenantId" | "limit" | "sql"> = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const limit = Math.min(Math.max(options.limit || 500, 1), 5_000);
+  if (hasDatabaseUrl()) {
+    if (!options.sql) await ensureDatabaseSchema();
+    const sql = options.sql || getSql();
+    const rows = await sql`
+      SELECT memory.*,
+        lifecycle.pinned_at AS lifecycle_pinned_at,
+        lifecycle.archived_at AS lifecycle_archived_at,
+        lifecycle.archive_reason AS lifecycle_archive_reason,
+        lifecycle.duplicate_of_memory_id AS lifecycle_duplicate_of_memory_id
+      FROM omni_memories memory
+      LEFT JOIN omni_memory_lifecycle_states lifecycle
+        ON lifecycle.tenant_id = memory.tenant_id
+        AND lifecycle.memory_id = memory.id
+      WHERE memory.tenant_id = ${tenantId}
+        AND memory.access_contract_version = 1
+        AND memory.access_state = 'scope_bound'
+        AND memory.claim_status = 'active'
+        AND lifecycle.archived_at IS NULL
+        AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
+        AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
+        AND (
+          memory.retention_expires_at IS NULL
+          OR memory.retention_expires_at > NOW()
+        )
+      ORDER BY memory.updated_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map(memoryFromRow);
+  }
+  return (await listMemories({ tenantId, limit }))
+    .filter((memory) => Boolean(memory.accessBinding));
+}
+
+/**
  * Content-free memory inventory for operator-facing catalogues and aggregate
  * monitoring. Exact claim bodies, embeddings, and evidence coordinates remain
  * behind the deliberate memory inspection boundary.
