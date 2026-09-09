@@ -32,4 +32,36 @@ void main() {
     expect(node.label, 'Flutter');
     expect(node.sourceCount, 3);
   });
+
+  test('memory intelligence items retain categories without exact content', () {
+    final memory = MemoryRecord.fromJson({
+      'id': 'memory-indexed',
+      'title': 'Preferred meeting time',
+      'category': 'preferences',
+      'tier': 'preference',
+      'state': 'active',
+      'evidenceCount': 2,
+    });
+    expect(memory.category, 'preferences');
+    expect(memory.tier, 'preference');
+    expect(memory.evidenceCount, 2);
+    expect(memory.content, isEmpty);
+  });
+
+  test('forget preview parses governed deletion impact', () {
+    final preview = MemoryForgetPreview.fromJson({
+      'expectedReceiptManifestSha256':
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      'guarantee': 'rollback_proof_barrier',
+      'impact': {
+        'descendantMemoryCount': 2,
+        'graphNodeCount': 7,
+        'graphEdgeCount': 8,
+        'retrievalTraceCount': 3,
+      },
+    });
+    expect(preview.descendantMemoryCount, 2);
+    expect(preview.graphEdgeCount, 8);
+    expect(preview.expectedReceiptManifestSha256, hasLength(64));
+  });
 }

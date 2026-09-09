@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -18,15 +20,22 @@ class MemoryRecord {
     required this.claimStatus,
     required this.assertedBy,
     required this.evidenceRefs,
+    required this.category,
+    required this.tier,
+    required this.evidenceCount,
     this.supersedesId,
     this.contradictionOfId,
     this.createdAt,
+    this.updatedAt,
   });
   final String id, title, content, type, scope, source, claimStatus, assertedBy;
+  final String category, tier;
   final List<String> tags, evidenceRefs;
+  final int evidenceCount;
   final double importance, confidence;
   final String? supersedesId, contradictionOfId;
   final DateTime? createdAt;
+  final DateTime? updatedAt;
   factory MemoryRecord.fromJson(Json j) => MemoryRecord(
     id: '${j['id']}',
     title: '${j['title'] ?? 'Memory'}',
@@ -37,12 +46,17 @@ class MemoryRecord {
     source: '${j['source'] ?? ''}',
     importance: (j['importance'] as num?)?.toDouble() ?? .5,
     confidence: (j['confidence'] as num?)?.toDouble() ?? .7,
-    claimStatus: '${j['claimStatus'] ?? 'active'}',
+    claimStatus: '${j['claimStatus'] ?? j['state'] ?? 'active'}',
     assertedBy: '${j['assertedBy'] ?? 'system'}',
     evidenceRefs: _ss(j['evidenceRefs']),
+    category: '${j['category'] ?? j['type'] ?? 'facts'}',
+    tier: '${j['tier'] ?? 'semantic'}',
+    evidenceCount:
+        (j['evidenceCount'] as num?)?.toInt() ?? _ss(j['evidenceRefs']).length,
     supersedesId: j['supersedesId']?.toString(),
     contradictionOfId: j['contradictionOfId']?.toString(),
     createdAt: DateTime.tryParse('${j['createdAt'] ?? ''}'),
+    updatedAt: DateTime.tryParse('${j['updatedAt'] ?? ''}'),
   );
 }
 
@@ -54,17 +68,24 @@ class KnowledgeItem {
     required this.source,
     required this.tags,
     required this.kind,
+    required this.category,
+    required this.chunkCount,
+    required this.totalCharacters,
   });
-  final String id, title, content, source, kind;
+  final String id, title, content, source, kind, category;
+  final int chunkCount, totalCharacters;
   final List<String> tags;
   factory KnowledgeItem.fromJson(Json j, {String kind = 'document'}) =>
       KnowledgeItem(
         id: '${j['id']}',
         title: '${j['title'] ?? j['documentTitle'] ?? 'Knowledge'}',
         content: '${j['content'] ?? j['text'] ?? j['summary'] ?? ''}',
-        source: '${j['source'] ?? j['sourceUri'] ?? ''}',
+        source: '${j['sourceLabel'] ?? j['source'] ?? j['sourceUri'] ?? ''}',
         tags: _ss(j['tags']),
         kind: kind,
+        category: '${j['category'] ?? 'other'}',
+        chunkCount: (j['chunkCount'] as num?)?.toInt() ?? 0,
+        totalCharacters: (j['totalCharacters'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -117,19 +138,54 @@ class KnowledgeState {
     required this.nodes,
     required this.edges,
     this.stats = const {},
+    this.overview = const {},
   });
   final List<MemoryRecord> memories;
   final List<KnowledgeItem> knowledge;
   final List<GraphNode> nodes;
   final List<GraphEdge> edges;
   final Json stats;
+  final Json overview;
+}
+
+class MemoryForgetPreview {
+  const MemoryForgetPreview({
+    required this.expectedReceiptManifestSha256,
+    required this.guarantee,
+    required this.descendantMemoryCount,
+    required this.graphNodeCount,
+    required this.graphEdgeCount,
+    required this.retrievalTraceCount,
+  });
+  final String expectedReceiptManifestSha256, guarantee;
+  final int descendantMemoryCount, graphNodeCount, graphEdgeCount;
+  final int retrievalTraceCount;
+
+  factory MemoryForgetPreview.fromJson(Json json) {
+    final impact = json['impact'] is Map
+        ? Map<String, dynamic>.from(json['impact'] as Map)
+        : const <String, dynamic>{};
+    return MemoryForgetPreview(
+      expectedReceiptManifestSha256:
+          '${json['expectedReceiptManifestSha256'] ?? ''}',
+      guarantee: '${json['guarantee'] ?? 'best_effort'}',
+      descendantMemoryCount:
+          (impact['descendantMemoryCount'] as num?)?.toInt() ?? 0,
+      graphNodeCount: (impact['graphNodeCount'] as num?)?.toInt() ?? 0,
+      graphEdgeCount: (impact['graphEdgeCount'] as num?)?.toInt() ?? 0,
+      retrievalTraceCount:
+          (impact['retrievalTraceCount'] as num?)?.toInt() ?? 0,
+    );
+  }
 }
 
 abstract interface class KnowledgeRepository {
   Future<KnowledgeState> load({String query = '', String type = 'all'});
+  Future<MemoryRecord> getMemory(String id);
   Future<void> addMemory(Json input);
   Future<void> correctMemory(String id, Json input);
-  Future<void> forgetMemory(String id);
+  Future<MemoryForgetPreview> previewForgetMemory(String id);
+  Future<void> forgetMemory(String id, String expectedManifestSha256);
   Future<void> rebuildGraph();
   Future<void> deleteConnectedSource(String source);
 }
@@ -171,8 +227,13 @@ class KnowledgeController extends ChangeNotifier {
     await refresh();
   }
 
-  Future<void> forget(String id) async {
-    await repository.forgetMemory(id);
+  Future<MemoryRecord> inspect(String id) => repository.getMemory(id);
+
+  Future<MemoryForgetPreview> previewForget(String id) =>
+      repository.previewForgetMemory(id);
+
+  Future<void> forget(String id, String expectedManifestSha256) async {
+    await repository.forgetMemory(id, expectedManifestSha256);
     await refresh();
   }
 
@@ -193,6 +254,8 @@ class _KnowledgeViewState extends State<KnowledgeView>
     with SingleTickerProviderStateMixin {
   late final TabController tabs;
   final search = TextEditingController();
+  String memoryCategory = 'all', knowledgeCategory = 'all';
+  double universeAngle = 0;
   @override
   void initState() {
     super.initState();
@@ -214,13 +277,13 @@ class _KnowledgeViewState extends State<KnowledgeView>
       final c = widget.controller, s = c.state;
       return Scaffold(
         appBar: AppBar(
-          title: const Text('Knowledge & memory'),
+          title: const Text('Memory observatory'),
           bottom: TabBar(
             controller: tabs,
             tabs: const [
               Tab(text: 'Memory'),
               Tab(text: 'Knowledge'),
-              Tab(text: 'Graph'),
+              Tab(text: 'Universe'),
             ],
           ),
           actions: [
@@ -259,6 +322,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
                 onChanged: (_) => setState(() {}),
               ),
             ),
+            if (s != null) _StewardStrip(s.overview),
             Expanded(
               child: c.loading && s == null
                   ? const _KnowledgeSkeleton()
@@ -292,110 +356,182 @@ class _KnowledgeViewState extends State<KnowledgeView>
       );
     },
   );
-  Widget _memory(List<MemoryRecord> values) => values.isEmpty
-      ? const _Empty('No memories match this view')
-      : LayoutBuilder(
-          builder: (context, box) {
-            final columns = box.maxWidth >= 920 ? 2 : 1;
-            return GridView.builder(
-              padding: EdgeInsets.symmetric(
-                horizontal: box.maxWidth >= 920 ? 28 : 16,
-                vertical: 16,
-              ),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: columns,
-                mainAxisExtent: 154,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-              ),
-              itemCount: values.length,
-              itemBuilder: (_, i) {
-                final m = values[i];
-                return Card(
-                  clipBehavior: Clip.antiAlias,
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(vertical: 6),
-                    leading: Icon(
-                      m.claimStatus == 'active'
-                          ? Icons.memory_rounded
-                          : Icons.history_toggle_off_rounded,
-                    ),
-                    title: Text(m.title),
-                    subtitle: Text(
-                      '${m.type} · ${m.claimStatus} · ${m.source}\n${m.content}',
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    isThreeLine: true,
-                    trailing:
-                        widget.controller.canManage &&
-                            m.claimStatus != 'forgotten'
-                        ? PopupMenuButton<String>(
-                            onSelected: (v) => v == 'forget'
-                                ? _forget(m)
-                                : _correct(m, contradiction: v == 'contradict'),
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(
-                                value: 'correct',
-                                child: Text('Correct'),
-                              ),
-                              PopupMenuItem(
-                                value: 'contradict',
-                                child: Text('Contradict'),
-                              ),
-                              PopupMenuItem(
-                                value: 'forget',
-                                child: Text('Forget'),
-                              ),
-                            ],
-                          )
-                        : null,
-                    onTap: () => _inspect(m),
-                  ),
-                );
-              },
-            );
-          },
-        );
-  Widget _knowledge(List<KnowledgeItem> values) => values.isEmpty
-      ? const _Empty('No indexed knowledge matches')
-      : ListView.builder(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          itemCount: values.length,
-          itemBuilder: (_, i) {
-            final k = values[i];
-            return Card(
-              clipBehavior: Clip.antiAlias,
-              child: ListTile(
-                contentPadding: const EdgeInsets.all(14),
-                leading: Icon(
-                  k.kind == 'document'
-                      ? Icons.description_outlined
-                      : Icons.segment_rounded,
+  Widget _memory(List<MemoryRecord> values) {
+    if (values.isEmpty) return const _Empty('No memories match this view');
+    final categories = values.map((item) => item.category).toSet().toList()
+      ..sort();
+    final filtered = memoryCategory == 'all'
+        ? values
+        : values.where((item) => item.category == memoryCategory).toList();
+    return Column(
+      children: [
+        _CategoryStrip(
+          categories: categories,
+          selected: memoryCategory,
+          count: (category) => category == 'all'
+              ? values.length
+              : values.where((item) => item.category == category).length,
+          onSelected: (value) => setState(() => memoryCategory = value),
+        ),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, box) {
+              final columns = box.maxWidth >= 920 ? 2 : 1;
+              return GridView.builder(
+                padding: EdgeInsets.symmetric(
+                  horizontal: box.maxWidth >= 920 ? 28 : 16,
+                  vertical: 16,
                 ),
-                title: Text(k.title),
-                subtitle: Text('${k.source}\n${k.content}', maxLines: 3),
-                isThreeLine: true,
-                onTap: () => showModalBottomSheet(
-                  context: context,
-                  showDragHandle: true,
-                  isScrollControlled: true,
-                  builder: (_) => _Sheet(
-                    title: k.title,
-                    body: k.content,
-                    meta: '${k.kind} · ${k.source}',
-                  ),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  mainAxisExtent: 154,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
                 ),
-              ),
-            );
-          },
-        );
+                itemCount: filtered.length,
+                itemBuilder: (_, i) {
+                  final m = filtered[i];
+                  return Card(
+                    clipBehavior: Clip.antiAlias,
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.symmetric(vertical: 6),
+                      leading: Icon(
+                        m.claimStatus == 'active'
+                            ? Icons.memory_rounded
+                            : Icons.history_toggle_off_rounded,
+                      ),
+                      title: Text(m.title),
+                      subtitle: Text(
+                        '${_label(m.category)} · ${_label(m.tier)}\n${m.claimStatus} · ${m.evidenceCount} evidence links',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      isThreeLine: true,
+                      trailing:
+                          widget.controller.canManage &&
+                              m.claimStatus != 'forgotten'
+                          ? PopupMenuButton<String>(
+                              onSelected: (v) => v == 'forget'
+                                  ? _forget(m)
+                                  : _correct(
+                                      m,
+                                      contradiction: v == 'contradict',
+                                    ),
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'correct',
+                                  child: Text('Correct'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'contradict',
+                                  child: Text('Contradict'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'forget',
+                                  child: Text('Forget'),
+                                ),
+                              ],
+                            )
+                          : null,
+                      onTap: () => _inspect(m),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _knowledge(List<KnowledgeItem> values) {
+    if (values.isEmpty) return const _Empty('No indexed knowledge matches');
+    final categories = values.map((item) => item.category).toSet().toList()
+      ..sort();
+    final filtered = knowledgeCategory == 'all'
+        ? values
+        : values.where((item) => item.category == knowledgeCategory).toList();
+    return Column(
+      children: [
+        _CategoryStrip(
+          categories: categories,
+          selected: knowledgeCategory,
+          count: (category) => category == 'all'
+              ? values.length
+              : values.where((item) => item.category == category).length,
+          onSelected: (value) => setState(() => knowledgeCategory = value),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            itemCount: filtered.length,
+            itemBuilder: (_, i) {
+              final k = filtered[i];
+              return Card(
+                clipBehavior: Clip.antiAlias,
+                child: ListTile(
+                  contentPadding: const EdgeInsets.all(14),
+                  leading: Icon(
+                    k.kind == 'document'
+                        ? Icons.description_outlined
+                        : Icons.segment_rounded,
+                  ),
+                  title: Text(k.title),
+                  subtitle: Text(
+                    '${_label(k.category)} · ${k.source}\n${k.chunkCount} chunks · ${_textSize(k.totalCharacters)}',
+                    maxLines: 2,
+                  ),
+                  isThreeLine: true,
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _graph(
     List<GraphNode> nodes,
     List<GraphEdge> edges,
     Json stats,
   ) => CustomScrollView(
     slivers: [
+      SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: GestureDetector(
+            onPanUpdate: (detail) =>
+                setState(() => universeAngle += detail.delta.dx * .008),
+            child: Container(
+              height: 260,
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                color: const Color(0xFF071318),
+                borderRadius: BorderRadius.circular(24),
+              ),
+              child: CustomPaint(
+                painter: _UniversePainter(
+                  nodes: nodes.take(100).toList(),
+                  edges: edges,
+                  angle: universeAngle,
+                ),
+                child: const Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Padding(
+                    padding: EdgeInsets.all(14),
+                    child: Text(
+                      'Drag to rotate the relationship space',
+                      style: TextStyle(color: Color(0xFFA5C2BA), fontSize: 12),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
       SliverToBoxAdapter(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -457,17 +593,29 @@ class _KnowledgeViewState extends State<KnowledgeView>
             ),
     ],
   );
-  Future<void> _inspect(MemoryRecord m) => showModalBottomSheet(
-    context: context,
-    showDragHandle: true,
-    isScrollControlled: true,
-    builder: (_) => _Sheet(
-      title: m.title,
-      body: m.content,
-      meta:
-          '${m.type} · ${m.scope} · ${m.claimStatus}\nAsserted by ${m.assertedBy} · confidence ${(m.confidence * 100).round()}%\nSource: ${m.source}\nEvidence: ${m.evidenceRefs.join(', ')}${m.supersedesId == null ? '' : '\nSupersedes: ${m.supersedesId}'}${m.contradictionOfId == null ? '' : '\nContradicts: ${m.contradictionOfId}'}',
-    ),
-  );
+  Future<void> _inspect(MemoryRecord indexed) async {
+    try {
+      final m = await widget.controller.inspect(indexed.id);
+      if (!mounted) return;
+      await showModalBottomSheet(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (_) => _Sheet(
+          title: m.title,
+          body: m.content,
+          meta:
+              '${m.type} · ${m.scope} · ${m.claimStatus}\nAsserted by ${m.assertedBy} · confidence ${(m.confidence * 100).round()}%\nSource: ${m.source}\nEvidence: ${m.evidenceRefs.join(', ')}${m.supersedesId == null ? '' : '\nSupersedes: ${m.supersedesId}'}${m.contradictionOfId == null ? '' : '\nContradicts: ${m.contradictionOfId}'}',
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
   Future<void> _add() async {
     final v = await showDialog<Json>(
       context: context,
@@ -477,19 +625,40 @@ class _KnowledgeViewState extends State<KnowledgeView>
   }
 
   Future<void> _correct(MemoryRecord m, {required bool contradiction}) async {
+    late final MemoryRecord exact;
+    try {
+      exact = await widget.controller.inspect(m.id);
+    } catch (error) {
+      _showError(error);
+      return;
+    }
+    if (!mounted) return;
     final v = await showDialog<Json>(
       context: context,
-      builder: (_) => _MemoryDialog(memory: m, contradiction: contradiction),
+      builder: (_) =>
+          _MemoryDialog(memory: exact, contradiction: contradiction),
     );
     if (v != null) await _run(() => widget.controller.correct(m.id, v));
   }
 
   Future<void> _forget(MemoryRecord m) async {
+    late final MemoryForgetPreview preview;
+    try {
+      preview = await widget.controller.previewForget(m.id);
+    } catch (error) {
+      _showError(error);
+      return;
+    }
+    if (!mounted) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Forget this memory?'),
-        content: Text(m.title),
+        content: Text(
+          '${m.title}\n\nThis also removes ${preview.descendantMemoryCount} derived memories, '
+          '${preview.graphNodeCount} graph points, ${preview.graphEdgeCount} links, '
+          'and ${preview.retrievalTraceCount} recall traces. A deletion receipt will be kept.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -502,18 +671,28 @@ class _KnowledgeViewState extends State<KnowledgeView>
         ],
       ),
     );
-    if (ok == true) await _run(() => widget.controller.forget(m.id));
+    if (ok == true) {
+      await _run(
+        () => widget.controller.forget(
+          m.id,
+          preview.expectedReceiptManifestSha256,
+        ),
+      );
+    }
   }
 
   Future<void> _run(Future<void> Function() f) async {
     try {
       await f();
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$e')));
-      }
+      _showError(e);
     }
+  }
+
+  void _showError(Object error) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('$error')));
   }
 }
 
@@ -636,6 +815,193 @@ class _MemoryDialogState extends State<_MemoryDialog> {
       ),
     ],
   );
+}
+
+class _StewardStrip extends StatelessWidget {
+  const _StewardStrip(this.overview);
+  final Json overview;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = overview['summary'] is Map
+        ? Map<String, dynamic>.from(overview['summary'] as Map)
+        : const <String, dynamic>{};
+    final steward = overview['steward'] is Map
+        ? Map<String, dynamic>.from(overview['steward'] as Map)
+        : const <String, dynamic>{};
+    final health = (steward['healthScore'] as num?)?.toInt();
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.primaryContainer
+            .withValues(alpha: .44),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: Theme.of(context).colorScheme.primary.withValues(alpha: .2),
+        ),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            backgroundColor: Theme.of(context).colorScheme.surface,
+            child: const Icon(Icons.smart_toy_outlined),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Mnemosyne · memory steward',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${summary['durableMemories'] ?? 0} memories · '
+                  '${summary['knowledgeDocuments'] ?? 0} sources · '
+                  '${summary['pendingReviews'] ?? 0} reviews',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+          if (health != null)
+            Column(
+              children: [
+                Text(
+                  '$health',
+                  style: Theme.of(context).textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                Text('health', style: Theme.of(context).textTheme.labelSmall),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CategoryStrip extends StatelessWidget {
+  const _CategoryStrip({
+    required this.categories,
+    required this.selected,
+    required this.count,
+    required this.onSelected,
+  });
+  final List<String> categories;
+  final String selected;
+  final int Function(String category) count;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 54,
+    child: ListView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+      children: [
+        for (final category in ['all', ...categories])
+          Padding(
+            padding: const EdgeInsets.only(right: 7),
+            child: FilterChip(
+              selected: selected == category,
+              label: Text('${_label(category)}  ${count(category)}'),
+              onSelected: (_) => onSelected(category),
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+class _UniversePainter extends CustomPainter {
+  const _UniversePainter({
+    required this.nodes,
+    required this.edges,
+    required this.angle,
+  });
+  final List<GraphNode> nodes;
+  final List<GraphEdge> edges;
+  final double angle;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2 - 5);
+    final points = <String, ({Offset point, double depth, GraphNode node})>{};
+    for (var index = 0; index < nodes.length; index += 1) {
+      final node = nodes[index];
+      final theta = index * 2.399963 + (node.id.hashCode % 97) / 97;
+      final radius = 22 + math.sqrt(index + 1) * 12;
+      final x = math.cos(theta) * radius;
+      final y = math.sin(theta * 1.7) * math.min(62, radius * .48);
+      final z = math.sin(theta) * radius;
+      final rotatedX = x * math.cos(angle) + z * math.sin(angle);
+      final rotatedZ = -x * math.sin(angle) + z * math.cos(angle);
+      final perspective = 520 / (520 + rotatedZ);
+      points[node.id] = (
+        point: center + Offset(rotatedX * perspective, y * perspective),
+        depth: rotatedZ,
+        node: node,
+      );
+    }
+
+    final linePaint = Paint()
+      ..color = const Color(0xFF76D8BD).withValues(alpha: .17)
+      ..strokeWidth = .7;
+    for (final edge in edges.take(400)) {
+      final source = points[edge.source], target = points[edge.target];
+      if (source != null && target != null) {
+        canvas.drawLine(source.point, target.point, linePaint);
+      }
+    }
+
+    final ordered = points.values.toList()
+      ..sort((left, right) => right.depth.compareTo(left.depth));
+    for (final item in ordered) {
+      final color = _graphColor(item.node.kind);
+      final radius = 2.5 + item.node.weight.clamp(0, 1) * 4.5;
+      canvas.drawCircle(
+        item.point,
+        radius + 5,
+        Paint()..color = color.withValues(alpha: .08),
+      );
+      canvas.drawCircle(item.point, radius, Paint()..color = color);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _UniversePainter oldDelegate) =>
+      oldDelegate.angle != angle ||
+      oldDelegate.nodes != nodes ||
+      oldDelegate.edges != edges;
+}
+
+Color _graphColor(String kind) => switch (kind) {
+  'tag' => const Color(0xFFFFD18A),
+  'system' => const Color(0xFF99C7FF),
+  'workflow' => const Color(0xFFD4B4FF),
+  'tool' => const Color(0xFFFF9FAE),
+  'memory' => const Color(0xFFFFF4C6),
+  'trace' => const Color(0xFF91A6C9),
+  _ => const Color(0xFF90EAD0),
+};
+
+String _label(String value) => value
+    .split('_')
+    .map(
+      (part) =>
+          part.isEmpty ? part : '${part[0].toUpperCase()}${part.substring(1)}',
+    )
+    .join(' ');
+
+String _textSize(int characters) {
+  if (characters < 1000) return '$characters characters';
+  if (characters < 1000000) {
+    return '${(characters / 1000).toStringAsFixed(1)}k characters';
+  }
+  return '${(characters / 1000000).toStringAsFixed(1)}m characters';
 }
 
 class _Metric extends StatelessWidget {

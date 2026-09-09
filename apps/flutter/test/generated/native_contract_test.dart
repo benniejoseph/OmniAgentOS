@@ -3,11 +3,13 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 4);
-    expect(NativeContract.previousVersion, 3);
-    expect(NativeContract.supportedVersions, [4, 3]);
-    expect(NativePaths.workspacesTasksUpdate('project one', 'task/two'),
-        '/api/projects/project%20one/tasks/task%2Ftwo');
+    expect(NativeContract.currentVersion, 5);
+    expect(NativeContract.previousVersion, 4);
+    expect(NativeContract.supportedVersions, [5, 4]);
+    expect(
+      NativePaths.workspacesTasksUpdate('project one', 'task/two'),
+      '/api/projects/project%20one/tasks/task%2Ftwo',
+    );
   });
 
   test('verifies advertised server compatibility with legacy fallback', () {
@@ -31,7 +33,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [6, 5],
+            'supportedVersions': [7, 6],
           },
         },
       }),
@@ -45,17 +47,14 @@ void main() {
       containsPair('text', 'ok'),
     );
     expect(
-      () => NativeConversationEvents.parse(
-        'delta',
-        {'type': 'done', 'response': 'not a delta'},
-      ),
+      () => NativeConversationEvents.parse('delta', {
+        'type': 'done',
+        'response': 'not a delta',
+      }),
       throwsFormatException,
     );
     expect(
-      () => NativeConversationEvents.parse(
-        'invented',
-        {'type': 'invented'},
-      ),
+      () => NativeConversationEvents.parse('invented', {'type': 'invented'}),
       throwsFormatException,
     );
   });

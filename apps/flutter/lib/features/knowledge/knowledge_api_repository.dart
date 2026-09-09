@@ -11,58 +11,48 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
   Future<KnowledgeState> load({String query = '', String type = 'all'}) async {
     final responses = await Future.wait([
       api.getJson(
-        NativePaths.memoryList,
-        query: {if (query.isNotEmpty) 'q': query, 'limit': 100},
+        NativePaths.memoryIntelligenceGet,
+        query: {'view': 'overview', 'limit': 40},
       ),
       api.getJson(
-        NativePaths.knowledgeList,
-        query: {if (query.isNotEmpty) 'q': query, 'limit': 100},
+        NativePaths.memoryIntelligenceGet,
+        query: {
+          'view': 'memory',
+          if (query.isNotEmpty) 'q': query,
+          'limit': 100,
+        },
       ),
       api.getJson(
-        NativePaths.memoryGraphGet,
-        query: {if (query.isNotEmpty) 'q': query, 'limit': 50},
+        NativePaths.memoryIntelligenceGet,
+        query: {
+          'view': 'knowledge',
+          if (query.isNotEmpty) 'q': query,
+          'limit': 100,
+        },
       ),
+      api.getJson(NativePaths.memoryGraphGet, query: {'limit': 100}),
     ]);
-    final memoryJson = responses[0],
-        knowledgeJson = responses[1],
-        graphJson = responses[2];
-    final rawMemories = query.isEmpty
-        ? _list(memoryJson['memories'])
-        : _list(memoryJson['results'])
-              .map((e) => (e as Map)['record'])
-              .toList();
-    final knowledge = query.isEmpty
-        ? <KnowledgeItem>[
-            ..._list(knowledgeJson['documents']).whereType<Map>().map(
-              (e) => KnowledgeItem.fromJson(Map<String, dynamic>.from(e)),
-            ),
-            ..._list(knowledgeJson['chunks']).whereType<Map>().map(
-              (e) => KnowledgeItem.fromJson(
-                Map<String, dynamic>.from(e),
-                kind: 'chunk',
-              ),
-            ),
-          ]
-        : _list(knowledgeJson['results'])
-              .whereType<Map>()
-              .map(
-                (e) => KnowledgeItem.fromJson(
-                  Map<String, dynamic>.from(e['chunk'] as Map),
-                  kind: 'match',
-                ),
-              )
-              .toList();
-    final rawNodes = query.isEmpty
-        ? _list(graphJson['nodes'])
-        : _list(graphJson['results']).map((e) => (e as Map)['node']).toList();
+    final overviewJson = responses[0],
+        memoryJson = responses[1],
+        knowledgeJson = responses[2],
+        graphJson = responses[3];
+    final memoryPage = memoryJson['memory'] is Map
+        ? Map<String, dynamic>.from(memoryJson['memory'] as Map)
+        : const <String, dynamic>{};
+    final knowledgePage = knowledgeJson['knowledge'] is Map
+        ? Map<String, dynamic>.from(knowledgeJson['knowledge'] as Map)
+        : const <String, dynamic>{};
     return KnowledgeState(
-      memories: rawMemories
+      memories: _list(memoryPage['items'])
           .whereType<Map>()
           .map((e) => MemoryRecord.fromJson(Map<String, dynamic>.from(e)))
           .where((e) => type == 'all' || e.type == type)
           .toList(),
-      knowledge: knowledge,
-      nodes: rawNodes
+      knowledge: _list(knowledgePage['items'])
+          .whereType<Map>()
+          .map((e) => KnowledgeItem.fromJson(Map<String, dynamic>.from(e)))
+          .toList(),
+      nodes: _list(graphJson['nodes'])
           .whereType<Map>()
           .map((e) => GraphNode.fromJson(Map<String, dynamic>.from(e)))
           .toList(),
@@ -73,6 +63,20 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
       stats: graphJson['stats'] is Map
           ? Map<String, dynamic>.from(graphJson['stats'] as Map)
           : const {},
+      overview: overviewJson['overview'] is Map
+          ? Map<String, dynamic>.from(overviewJson['overview'] as Map)
+          : const {},
+    );
+  }
+
+  @override
+  Future<MemoryRecord> getMemory(String id) async {
+    final response = await api.getJson(NativePaths.memoryGet(id));
+    if (response['memory'] is! Map) {
+      throw const FormatException('The selected memory is unavailable.');
+    }
+    return MemoryRecord.fromJson(
+      Map<String, dynamic>.from(response['memory'] as Map),
     );
   }
 
@@ -83,12 +87,40 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
   Future<void> correctMemory(String id, Json input) async =>
       api.patchJson(NativePaths.memoryUpdate(id), data: input);
   @override
-  Future<void> forgetMemory(String id) async =>
-      api.deleteJson(NativePaths.memoryDelete(id));
+  Future<MemoryForgetPreview> previewForgetMemory(String id) async {
+    final response = await api.getJson(
+      NativePaths.memoryGet(id),
+      query: {'view': 'deletion-preview'},
+    );
+    final preview = response['preview'];
+    if (preview is! Map) {
+      throw const FormatException(
+        'The deletion impact preview is unavailable.',
+      );
+    }
+    final result = MemoryForgetPreview.fromJson(
+      Map<String, dynamic>.from(preview),
+    );
+    if (result.expectedReceiptManifestSha256.isEmpty) {
+      throw const FormatException('The deletion impact preview is incomplete.');
+    }
+    return result;
+  }
+
+  @override
+  Future<void> forgetMemory(String id, String expectedManifestSha256) async {
+    await api.deleteJson(
+      NativePaths.memoryDelete(id),
+      headers: {'x-asael-deletion-preview': expectedManifestSha256},
+    );
+  }
+
   @override
   Future<void> rebuildGraph() async =>
       api.postJson(NativePaths.memoryGraphRebuild, data: {'source': 'flutter'});
   @override
-  Future<void> deleteConnectedSource(String source) async =>
-      api.deleteJson(NativePaths.knowledgeSourceDelete, query: {'source': source});
+  Future<void> deleteConnectedSource(String source) async => api.deleteJson(
+    NativePaths.knowledgeSourceDelete,
+    query: {'source': source},
+  );
 }
