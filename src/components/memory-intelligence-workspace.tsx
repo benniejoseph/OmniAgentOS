@@ -345,6 +345,62 @@ export function MemoryIntelligenceWorkspace() {
     }
   }
 
+  async function enrollLegacyOwnership() {
+    setBusy("ownership");
+    setError(undefined);
+    try {
+      const previewResponse = await fetch("/api/memory/ownership", {
+        cache: "no-store",
+      });
+      const previewBody = await previewResponse.json();
+      if (!previewResponse.ok) {
+        throw new Error(previewBody.error || "Older memory ownership could not be checked.");
+      }
+      const preview = previewBody.preview as {
+        count: number;
+        activeCount: number;
+        historicalCount: number;
+        manifestSha256: string;
+      };
+      if (!preview.count) {
+        setAnnouncement("All durable memories already use your private ownership boundary.");
+        await loadOverview();
+        return;
+      }
+      const confirmed = window.confirm(
+        `Secure ${preview.count} older memories for your account? ` +
+        `${preview.activeCount} are active and ${preview.historicalCount} are retained history.`,
+      );
+      if (!confirmed) return;
+      const response = await fetch("/api/memory/ownership", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "enroll_current_user",
+          expectedManifestSha256: preview.manifestSha256,
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error || "Older memory ownership could not be secured.");
+      }
+      indexSignatureRef.current = {};
+      reviewSignatureRef.current = "";
+      setAnnouncement(
+        `${body.migration.migratedCount} older memories now use your private ownership boundary.`,
+      );
+      await Promise.all([
+        loadOverview(),
+        loadIndex("memory", undefined, true),
+        reviewsLoaded ? loadReviews(true) : Promise.resolve(),
+      ]);
+    } catch (migrationError) {
+      setError(message(migrationError));
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
   async function toggleConsent() {
     if (!consent) return;
     setBusy("consent");
@@ -440,6 +496,7 @@ export function MemoryIntelligenceWorkspace() {
     if (item.action === "open_reviews") setView("reviews");
     if (item.action === "open_knowledge") setView("knowledge");
     if (item.action === "run_maintenance") void runMaintenance();
+    if (item.action === "enroll_ownership") void enrollLegacyOwnership();
   }
 
   function selectView(nextView: WorkspaceView) {
@@ -718,7 +775,7 @@ function MnemosynePanel(props: { overview?: MemoryIntelligenceOverview; consent?
     <p className={styles.scoreHelp}>This health score measures indexing coverage, unresolved reviews and ownership—not how intelligent Asael is.</p>
     <div className={styles.learning}><p><Sparkles size={14} /> Learning signals</p><dl><div><dt>Useful recalls</dt><dd>{steward?.learningSignals.retrievalUses.toLocaleString() ?? "—"}</dd></div><div><dt>Corrections learned</dt><dd>{steward?.learningSignals.corrections.toLocaleString() ?? "—"}</dd></div><div><dt>Reviews resolved</dt><dd>{steward?.learningSignals.resolvedReviews.toLocaleString() ?? "—"}</dd></div><div><dt>Forget receipts</dt><dd>{steward?.learningSignals.forgetRequests.toLocaleString() ?? "—"}</dd></div></dl></div>
     {props.consent ? <section className={styles.recallControl}><div><strong>Personal automatic recall</strong><span>{props.consent.state === "active" ? "Available when selected in conversation" : "Off until you explicitly enable it"}</span></div><button type="button" className={props.consent.state === "active" ? styles.switchOn : undefined} onClick={props.onConsent} disabled={props.busy === "consent"} aria-pressed={props.consent.state === "active"}><i /></button></section> : null}
-    <section className={styles.recommendations}><div className={styles.panelHeading}><p>Recommendations</p><span>{steward?.recommendations.length || 0}</span></div>{steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || props.busy === "maintenance"}><i className={styles[`priority${startCase(item.priority)}`]} /><span><strong>{item.title}</strong><small>{item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} /> : null}</button>) : <div className={styles.allClear}><Check size={16} /> No action needed right now.</div>}</section>
+    <section className={styles.recommendations}><div className={styles.panelHeading}><p>Recommendations</p><span>{steward?.recommendations.length || 0}</span></div>{steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || Boolean(props.busy)}><i className={styles[`priority${startCase(item.priority)}`]} /><span><strong>{item.title}</strong><small>{item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} /> : null}</button>) : <div className={styles.allClear}><Check size={16} /> No action needed right now.</div>}</section>
     <button type="button" className={styles.scanButton} onClick={props.onScan} disabled={props.busy === "maintenance"}>{props.busy === "maintenance" ? <LoaderCircle size={16} className={styles.spin} /> : <Sparkles size={16} />} Run lifecycle scan</button>
     <p className={styles.governance}><ShieldCheck size={14} /> Mnemosyne may classify, link and recommend. It cannot silently promote, rewrite or forget truth.</p>
   </aside>;

@@ -71,7 +71,12 @@ export type MemoryStewardRecommendation = Readonly<{
   priority: "high" | "medium" | "low";
   title: string;
   detail: string;
-  action: "open_reviews" | "open_knowledge" | "run_maintenance" | "none";
+  action:
+    | "open_reviews"
+    | "open_knowledge"
+    | "run_maintenance"
+    | "enroll_ownership"
+    | "none";
   affectedCount: number;
 }>;
 
@@ -465,9 +470,9 @@ function stewardRecommendations(input: {
     recommendations.push(Object.freeze({
       id: "scope",
       priority: "medium",
-      title: "Migrate legacy ownership",
-      detail: `${input.legacy} durable memories do not yet carry the current actor-bound access contract.`,
-      action: "none",
+      title: "Secure older memories",
+      detail: `${input.legacy} older memories can be enrolled into your private ownership boundary.`,
+      action: "enroll_ownership",
       affectedCount: input.legacy,
     }));
   }
