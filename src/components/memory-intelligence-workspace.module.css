@@ -180,6 +180,14 @@
 .dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .dialog header p { color: var(--memory-primary); font-size: .64rem; font-weight: 780; letter-spacing: .1em; text-transform: uppercase; }
 .dialog header h2 { margin-top: .2rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.65rem; font-weight: 560; }
+.relationshipGuide { display: grid; gap: .75rem; border: 1px solid color-mix(in oklab, var(--memory-primary) 26%, var(--memory-line)); border-radius: 1rem; padding: .9rem; background: color-mix(in oklab, var(--memory-mint) 58%, var(--memory-paper)); }
+.relationshipGuide > div { display: flex; align-items: flex-start; gap: .55rem; color: var(--memory-primary); }
+.relationshipGuide > div span { display: grid; gap: .18rem; }
+.relationshipGuide strong { color: var(--memory-ink); font-size: .82rem; }
+.relationshipGuide small { color: var(--memory-muted); font-size: .73rem; font-weight: 450; line-height: 1.5; }
+.relationshipGuide > p { display: flex; flex-wrap: wrap; gap: .45rem; }
+.relationshipGuide button { min-height: 2.35rem; border: 1px solid var(--memory-line); border-radius: 999px; padding: 0 .7rem; color: var(--memory-primary); background: var(--memory-paper); font-size: .72rem; font-weight: 700; }
+.relationshipGuide button:hover { border-color: var(--memory-primary); }
 .dialog > label { display: grid; gap: .38rem; color: var(--memory-muted); font-size: .7rem; font-weight: 680; }
 .dialog > label > span { justify-self: end; margin-top: -1.3rem; color: var(--memory-primary); }
 .dialog input:not([type="range"]), .dialog select, .dialog textarea { width: 100%; border: 1px solid var(--memory-line); border-radius: .85rem; padding: .75rem .85rem; outline: 0; color: var(--memory-ink); background: var(--memory-paper); font-size: .8rem; font-weight: 450; }

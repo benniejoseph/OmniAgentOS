@@ -62,6 +62,7 @@ const MemoryUniverse = dynamic(
 );
 
 type WorkspaceView = "memory" | "knowledge" | "reviews" | "universe";
+type CreateIntent = "memory" | "connected_fact";
 type Page<T> = { items: T[]; total: number; nextCursor: string | null };
 type ConsentStatus = {
   state: "active" | "inactive";
@@ -118,6 +119,8 @@ export function MemoryIntelligenceWorkspace() {
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [createIntent, setCreateIntent] = useState<CreateIntent>("memory");
+  const [universeRevision, setUniverseRevision] = useState(0);
   const [forgetPreview, setForgetPreview] = useState<ForgetPreview>();
   const [consent, setConsent] = useState<ConsentStatus>();
   const indexRequestRef = useRef<AbortController | null>(null);
@@ -572,7 +575,10 @@ export function MemoryIntelligenceWorkspace() {
           <button type="button" className={styles.secondaryAction} onClick={() => void loadOverview()} disabled={loading}>
             <RefreshCw size={16} className={loading ? styles.spin : undefined} /> Refresh
           </button>
-          <button type="button" className={styles.primaryAction} onClick={() => setCreateOpen(true)}>
+          <button type="button" className={styles.primaryAction} onClick={() => {
+            setCreateIntent("memory");
+            setCreateOpen(true);
+          }}>
             <Plus size={17} /> Add memory
           </button>
         </div>
@@ -600,7 +606,14 @@ export function MemoryIntelligenceWorkspace() {
 
       {universeVisited ? (
         <div className={styles.universeWrap} hidden={view !== "universe"}>
-          <MemoryUniverse active={view === "universe"} />
+          <MemoryUniverse
+            key={`memory-universe:${universeRevision}`}
+            active={view === "universe"}
+            onAddConnectedFact={() => {
+              setCreateIntent("connected_fact");
+              setCreateOpen(true);
+            }}
+          />
         </div>
       ) : null}
       {view !== "universe" ? (
@@ -672,6 +685,7 @@ export function MemoryIntelligenceWorkspace() {
       {createOpen ? (
         <CreateMemoryDialog
           busy={busy === "create"}
+          intent={createIntent}
           onClose={() => setCreateOpen(false)}
           onCreate={async (draft) => {
             setBusy("create");
@@ -684,6 +698,7 @@ export function MemoryIntelligenceWorkspace() {
               const body = await response.json();
               if (!response.ok) throw new Error(body.error || body.message || "Memory could not be saved.");
               setCreateOpen(false);
+              setUniverseRevision((current) => current + 1);
               setAnnouncement("Memory saved. Mnemosyne indexed it and linked any explicit entities.");
               await Promise.all([
                 loadOverview(),
@@ -818,7 +833,7 @@ function MnemosynePanel(props: { overview?: MemoryIntelligenceOverview; consent?
     <header><div className={styles.agentOrb}><Bot size={22} /><i /></div><div><p>Memory steward</p><h2>Mnemosyne</h2><span className={steward?.state === "attention" ? styles.attention : styles.healthy}><i /> {steward ? startCase(steward.state) : "Observing"}</span></div><strong style={{ "--score": `${steward?.healthScore || 0}%` } as React.CSSProperties}>{steward?.healthScore ?? "—"}<small>health</small></strong></header>
     <p className={styles.autonomy}>{steward?.autonomy || "Reading the catalogue and checking retrieval quality…"}</p>
     <p className={styles.scoreHelp}>This health score measures indexing coverage, unresolved reviews and ownership—not how intelligent Asael is.</p>
-    <div className={styles.learning}><p><Sparkles size={14} /> Learning signals</p><dl><div><dt>Useful recalls</dt><dd>{steward?.learningSignals.retrievalUses.toLocaleString() ?? "—"}</dd></div><div><dt>Corrections learned</dt><dd>{steward?.learningSignals.corrections.toLocaleString() ?? "—"}</dd></div><div><dt>Reviews resolved</dt><dd>{steward?.learningSignals.resolvedReviews.toLocaleString() ?? "—"}</dd></div><div><dt>Forget receipts</dt><dd>{steward?.learningSignals.forgetRequests.toLocaleString() ?? "—"}</dd></div></dl></div>
+    <div className={styles.learning}><p><Sparkles size={14} /> Learning signals</p><dl><div><dt>Recall uses</dt><dd>{steward?.learningSignals.retrievalUses.toLocaleString() ?? "—"}</dd></div><div><dt>Corrections learned</dt><dd>{steward?.learningSignals.corrections.toLocaleString() ?? "—"}</dd></div><div><dt>Reviews resolved</dt><dd>{steward?.learningSignals.resolvedReviews.toLocaleString() ?? "—"}</dd></div><div><dt>Forget receipts</dt><dd>{steward?.learningSignals.forgetRequests.toLocaleString() ?? "—"}</dd></div></dl></div>
     {props.consent ? <section className={styles.recallControl}><div><strong>Personal automatic recall</strong><span>{props.consent.state === "active" ? "Available when selected in conversation" : "Off until you explicitly enable it"}</span></div><button type="button" className={props.consent.state === "active" ? styles.switchOn : undefined} onClick={props.onConsent} disabled={props.busy === "consent"} aria-pressed={props.consent.state === "active"}><i /></button></section> : null}
     <section className={styles.recommendations}><div className={styles.panelHeading}><p>Recommendations</p><span>{steward?.recommendations.length || 0}</span></div>{steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || Boolean(props.busy)}><i className={styles[`priority${startCase(item.priority)}`]} /><span><strong>{item.title}</strong><small>{item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} /> : null}</button>) : <div className={styles.allClear}><Check size={16} /> No action needed right now.</div>}</section>
     <button type="button" className={styles.scanButton} onClick={props.onScan} disabled={props.busy === "maintenance"}>{props.busy === "maintenance" ? <LoaderCircle size={16} className={styles.spin} /> : <Sparkles size={16} />} Run lifecycle scan</button>
@@ -830,13 +845,20 @@ function MemoryInspector(props: { memory?: MemoryRecord; loading: boolean; busy?
   return <div className={styles.inspectorLayer}><button type="button" className={styles.scrim} onClick={props.onClose} aria-label="Close memory details" /><aside className={styles.inspector} aria-label="Memory details"><header><p>Exact memory</p><button type="button" onClick={props.onClose} aria-label="Close"><X size={18} /></button></header>{props.loading ? <div className={styles.inspectorLoading}><LoaderCircle className={styles.spin} /> Decrypting selected memory…</div> : props.memory ? <><div className={styles.inspectorTitle}><span>{startCase(props.memory.tier || props.memory.type)} · {startCase(props.memory.scope)}</span><h2>{props.memory.title}</h2><p>{props.memory.content}</p></div><dl className={styles.memoryMetadata}><div><dt>Confidence</dt><dd>{Math.round((props.memory.confidence ?? .7) * 100)}%</dd></div><div><dt>Importance</dt><dd>{Math.round(props.memory.importance * 100)}%</dd></div><div><dt>Used</dt><dd>{props.memory.useCount || 0} times</dd></div><div><dt>Updated</dt><dd>{relativeDate(props.memory.updatedAt)}</dd></div></dl>{props.memory.tags.length ? <div className={styles.memoryTags}>{props.memory.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}<div className={styles.lifecycle}><button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.archivedAt)} onClick={() => props.onLifecycle(props.memory?.pinnedAt ? "unpin" : "pin")}>{props.memory.pinnedAt ? <PinOff size={15} /> : <Pin size={15} />}{props.memory.pinnedAt ? "Unpin" : "Pin"}</button><button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.pinnedAt)} onClick={() => props.onLifecycle(props.memory?.archivedAt ? "restore" : "archive")}>{props.memory.archivedAt ? <RotateCcw size={15} /> : <Archive size={15} />}{props.memory.archivedAt ? "Restore" : "Archive"}</button></div>{props.preview ? <section className={styles.forgetPreview}><p><CircleAlert size={16} /> Permanent forgetting</p><span>This removes the memory plus {props.preview.impact.descendantMemoryCount} derived memories, {props.preview.impact.graphNodeCount} graph points and {props.preview.impact.graphEdgeCount} links. A deletion receipt will be stored.</span><div><button type="button" onClick={props.onCancelForget}>Cancel</button><button type="button" onClick={props.onForget} disabled={props.busy === "forget"}>{props.busy === "forget" ? <LoaderCircle size={15} className={styles.spin} /> : <Trash2 size={15} />} Forget permanently</button></div></section> : <button type="button" className={styles.forgetButton} onClick={props.onPreviewForget} disabled={Boolean(props.busy)}><Trash2 size={15} /> Review forgetting impact</button>}</> : null}</aside></div>;
 }
 
-function CreateMemoryDialog(props: { busy: boolean; onClose: () => void; onCreate: (draft: { title: string; content: string; type: MemoryType; tier: MemoryTier; importance: number; confidence: number }) => Promise<void> }) {
+function CreateMemoryDialog(props: { busy: boolean; intent: CreateIntent; onClose: () => void; onCreate: (draft: { title: string; content: string; type: MemoryType; tier: MemoryTier; importance: number; confidence: number }) => Promise<void> }) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [type, setType] = useState<MemoryType>("fact");
   const [confidence, setConfidence] = useState(.9);
   async function submit(event: FormEvent) { event.preventDefault(); const selected = memoryTypes.find((item) => item.id === type) || memoryTypes[0]; await props.onCreate({ title, content, type, tier: selected.tier, importance: .75, confidence }); }
-  return <div className={styles.dialogLayer}><button type="button" className={styles.scrim} onClick={props.onClose} aria-label="Close new memory dialog" /><form className={styles.dialog} onSubmit={(event) => void submit(event)}><header><div><p>Explicit memory</p><h2>What should Asael remember?</h2></div><button type="button" onClick={props.onClose} aria-label="Close"><X size={18} /></button></header><label>Category<select value={type} onChange={(event) => setType(event.target.value as MemoryType)}>{memoryTypes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>Short title<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required placeholder="e.g. Prefer meetings after 10 AM" /></label><label>Details<textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={200000} required rows={7} placeholder="Add the precise context that should be recalled…" /></label><label>Confidence <span>{Math.round(confidence * 100)}%</span><input type="range" min="0.5" max="1" step="0.05" value={confidence} onChange={(event) => setConfidence(Number(event.target.value))} /></label><footer><p><ShieldCheck size={14} /> You can inspect, correct or forget this later.</p><button type="submit" disabled={props.busy || !title.trim() || !content.trim()}>{props.busy ? <LoaderCircle size={16} className={styles.spin} /> : <Plus size={16} />} Save memory</button></footer></form></div>;
+  function applyRelationshipTemplate(template: "assignment" | "project") {
+    setType("fact");
+    if (!title.trim()) setTitle(template === "assignment" ? "Work assignment" : "Project relationship");
+    setContent(template === "assignment"
+      ? 'relation: assigned_to | work item: "Prepare launch brief" -> person: "Bennie"'
+      : 'relation: belongs_to | work item: "Prepare launch brief" -> project: "Asael"');
+  }
+  return <div className={styles.dialogLayer}><button type="button" className={styles.scrim} onClick={props.onClose} aria-label="Close new memory dialog" /><form className={styles.dialog} onSubmit={(event) => void submit(event)}><header><div><p>{props.intent === "connected_fact" ? "Connected fact" : "Explicit memory"}</p><h2>{props.intent === "connected_fact" ? "Which things are connected?" : "What should Asael remember?"}</h2></div><button type="button" onClick={props.onClose} aria-label="Close"><X size={18} /></button></header>{props.intent === "connected_fact" ? <section className={styles.relationshipGuide}><div><GitBranch size={17} /><span><strong>Verified links require explicit wording</strong><small>This prevents names guessed by AI from becoming facts. Choose a template, then replace its example values.</small></span></div><p><button type="button" onClick={() => applyRelationshipTemplate("assignment")}>Work item → person</button><button type="button" onClick={() => applyRelationshipTemplate("project")}>Work item → project</button></p></section> : null}<label>Category<select value={type} onChange={(event) => setType(event.target.value as MemoryType)}>{memoryTypes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>Short title<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={240} required placeholder="e.g. Prefer meetings after 10 AM" /></label><label>Details<textarea value={content} onChange={(event) => setContent(event.target.value)} maxLength={200000} required rows={7} placeholder={props.intent === "connected_fact" ? 'relation: assigned_to | work item: "…" -> person: "…"' : "Add the precise context that should be recalled…"} /></label><label>Confidence <span>{Math.round(confidence * 100)}%</span><input type="range" min="0.5" max="1" step="0.05" value={confidence} onChange={(event) => setConfidence(Number(event.target.value))} /></label><footer><p><ShieldCheck size={14} /> You can inspect, correct or forget this later.</p><button type="submit" disabled={props.busy || !title.trim() || !content.trim()}>{props.busy ? <LoaderCircle size={16} className={styles.spin} /> : <Plus size={16} />} Save memory</button></footer></form></div>;
 }
 
 function EmptyState(props: { icon: React.ReactNode; title: string; detail: string }) { return <div className={styles.empty}>{props.icon}<strong>{props.title}</strong><span>{props.detail}</span></div>; }
