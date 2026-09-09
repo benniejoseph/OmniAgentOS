@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { buildUserPrivateMemoryAccessBindingV1 } from "@/lib/memory/access-binding";
+import {
+  buildUserPrivateMemoryAccessBindingV1,
+  buildWorkspaceSharedMemoryAccessBindingV1,
+} from "@/lib/memory/access-binding";
 
 const graphMocks = vi.hoisted(() => {
   const statements: string[] = [];
@@ -165,6 +168,41 @@ describe("memory graph postgres rebuild", () => {
       "Test the worker projection boundary.",
       expect.any(Function),
     );
+  });
+
+  it("projects supported shared cohorts without widening their scope", async () => {
+    const accessBinding = buildWorkspaceSharedMemoryAccessBindingV1({
+      tenantId: "tenant-bulk",
+      ownerActorId: "actor:workspace-owner",
+      workspaceId: "workspace:research",
+      originPurpose: "memory.shared.write",
+      allowedPurposeIds: ["memory.read.v1", "memory.retrieve.v1"],
+      accessBoundAt: "2026-09-09T00:00:00.000Z",
+    });
+    graphMocks.listMemories.mockResolvedValue([
+      { ...graphMemories(1)[0], accessBinding },
+    ]);
+
+    await rebuildMemoryGraphSystemScoped({
+      tenantId: "tenant-bulk",
+      source: "test.workspace-rebuild",
+      auditReason: "Test workspace graph projection.",
+    });
+
+    const graphRows = graphMocks.sql.mock.calls
+      .filter((call) => {
+        const statement = (call[0] as unknown as TemplateStringsArray).join("?");
+        return statement.includes("jsonb_to_recordset");
+      })
+      .flatMap((call) => JSON.parse(String(call[1])) as Array<Record<string, unknown>>);
+    expect(graphRows.length).toBeGreaterThan(0);
+    expect(graphRows.every((row) =>
+      row.access_contract_version === 1 &&
+      row.visibility === "workspace_shared" &&
+      row.workspace_id === "workspace:research" &&
+      JSON.stringify(row.allowed_purpose_ids) ===
+        JSON.stringify(["memory.read.v1", "memory.retrieve.v1"])
+    )).toBe(true);
   });
 
   it("reads dashboard graph size without loading graph records", async () => {
