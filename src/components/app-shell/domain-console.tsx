@@ -1173,7 +1173,13 @@ function workflowPayload(values: Record<string, FormValue>) {
   };
 }
 
-export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
+export function DomainConsole({
+  domain,
+  presentation = "default",
+}: {
+  domain: DomainConsoleKey;
+  presentation?: "default" | "embedded";
+}) {
   const {
     session: workspaceSession,
     status: sessionStatus,
@@ -1195,6 +1201,9 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
   const [runningAction, setRunningAction] = useState<string>();
   const [actionFormVersion, setActionFormVersion] = useState(0);
   const [advancedControlsOpen, setAdvancedControlsOpen] = useState(false);
+  const [integrationSection, setIntegrationSection] = useState<
+    "personal" | "mcp" | "openapi"
+  >("personal");
   const [actionDefaults, setActionDefaults] = useState<
     Record<string, Record<string, FormValue>>
   >({});
@@ -1621,6 +1630,234 @@ export function DomainConsole({ domain }: { domain: DomainConsoleKey }) {
     } finally {
       setRunningAction(undefined);
     }
+  }
+
+  if (domain === "integrations" && presentation === "embedded") {
+    const openApiSection = config.sections.find(
+      (section) => section.title === "OpenAPI connectors",
+    );
+    const tabCounts = {
+      personal: arrayPath(data, "oauth.grants").length,
+      mcp: arrayPath(data, "connectors.connectors").length,
+      openapi: arrayPath(data, "openapi.connectors").length,
+    };
+
+    return (
+      <div
+        className="mt-4 w-full"
+        aria-busy={anyLoading || Boolean(runningAction)}
+        data-testid="integrations-workspace"
+        data-integration-admin="true"
+      >
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {announcement}
+        </p>
+
+        <section id="manage-connections" className="rounded-xl border border-line bg-surface p-4 sm:p-5" aria-labelledby="manage-connections-title">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <h2 id="manage-connections-title" className="text-lg font-semibold tracking-tight">Manage connections</h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">
+                Connect accounts and APIs, review discovered operations, or repair an existing connection.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void load()}
+              disabled={anyLoading}
+              className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised disabled:cursor-wait disabled:opacity-60"
+            >
+              {anyLoading ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
+              Refresh connections
+            </button>
+          </div>
+
+          {protectedError ? (
+            <div className="mt-4 rounded-md border border-warning/45 bg-warning/10 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold">
+                    {protectedError.code === 401 ? "Sign in to manage connections" : "Some connection controls are unavailable"}
+                  </p>
+                  <p className="mt-1 text-sm text-muted">{protectedError.error}</p>
+                  {protectedError.code === 403 ? <p className="mt-1 text-xs text-muted">Current role: {role}.</p> : null}
+                </div>
+                {protectedError.code === 401 ? <Link href="/login" className="primary-button">Sign in</Link> : null}
+              </div>
+            </div>
+          ) : null}
+
+          <details className="mt-4 border-y border-line py-2 text-xs text-muted">
+            <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 font-semibold text-foreground marker:content-none">
+              <span>Connection checks</span>
+              <span className="font-normal text-muted">{lastRefresh ? `Updated ${lastRefresh}` : anyLoading ? "Checking now" : "Open details"}</span>
+            </summary>
+            <div className="flex flex-wrap gap-2 pb-2 pt-1">
+              {config.endpoints.map((endpoint) => (
+                <EndpointStatus
+                  key={endpoint.key}
+                  label={endpoint.label}
+                  status={resources[endpoint.key]?.status || "idle"}
+                />
+              ))}
+            </div>
+          </details>
+
+          <div className="mt-4 flex w-full gap-1 overflow-x-auto rounded-lg border border-line bg-background p-1" aria-label="Connection types">
+            {([
+              ["personal", "Personal sources"],
+              ["mcp", "MCP servers"],
+              ["openapi", "REST APIs"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setIntegrationSection(value)}
+                aria-pressed={integrationSection === value}
+                aria-controls={`${value}-connections`}
+                className={clsx(
+                  "inline-flex min-h-11 flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 text-sm font-semibold transition",
+                  integrationSection === value
+                    ? "bg-primary text-primary-ink"
+                    : "text-muted hover:bg-surface-raised hover:text-foreground",
+                )}
+              >
+                {label}
+                <span className={clsx(
+                  "rounded-full px-2 py-0.5 font-mono text-xs",
+                  integrationSection === value ? "bg-primary-ink/15" : "bg-surface-raised",
+                )}>{tabCounts[value]}</span>
+              </button>
+            ))}
+          </div>
+
+          <div id="personal-connections" hidden={integrationSection !== "personal"}>
+            <div id="personal-sources">
+              <PersonalConnections
+                payload={data.oauth}
+                loading={resources.oauth?.status === "loading"}
+                error={resources.oauth?.status === "error" ? resources.oauth.error : undefined}
+                disabledReason={personalSourceDisabledReason}
+                onRefresh={load}
+              />
+            </div>
+          </div>
+
+          <div id="mcp-connections" hidden={integrationSection !== "mcp"}>
+            <div className="mt-4">
+              <McpConnections
+                payload={data.connectors}
+                loading={resources.connectors?.status === "loading"}
+                error={resources.connectors?.status === "error" ? resources.connectors.error : undefined}
+                disabledReason={connectorReviewDisabledReason}
+                onRefresh={load}
+              />
+            </div>
+          </div>
+
+          <div id="openapi-connections" hidden={integrationSection !== "openapi"}>
+            <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(19rem,.55fr)]">
+              {openApiSection ? (
+                <DataPanel
+                  section={openApiSection}
+                  data={data}
+                  resources={sectionResourceStates(domain, openApiSection.title, resources)}
+                />
+              ) : null}
+              <Panel title="Add a REST API" description="Import an OpenAPI description, then review the exact operations before Asael can use them.">
+                {advancedControlsOpen ? (
+                  <div className="space-y-3">
+                    <button
+                      type="button"
+                      onClick={() => setAdvancedControlsOpen(false)}
+                      className="inline-flex min-h-10 w-full items-center justify-center rounded-md border border-line bg-background px-3 text-xs font-semibold transition hover:bg-surface-raised"
+                      aria-expanded="true"
+                    >
+                      Hide setup form
+                    </button>
+                    <DomainActionForms
+                      key={actionFormVersion}
+                      actions={config.actions}
+                      defaultValues={actionDefaults}
+                      runningAction={runningAction}
+                      disabledReasons={Object.fromEntries(
+                        config.actions.map((action) => [
+                          action.id,
+                          permissionMessage(workspaceSession, sessionStatus, actionPermission(action)),
+                        ]),
+                      )}
+                      workflowRuns={[]}
+                      onRun={(action, values) => void runAction(action, values)}
+                    />
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setAdvancedControlsOpen(true)}
+                    className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-semibold text-primary-ink transition hover:brightness-105"
+                    aria-expanded="false"
+                  >
+                    Add REST API
+                  </button>
+                )}
+              </Panel>
+            </div>
+          </div>
+        </section>
+
+        <div className="mt-4">
+          <ConnectorContractReviewPanel
+            mcpConnectors={arrayPath(data, "connectors.connectors")}
+            mcpTools={arrayPath(data, "connectors.tools")}
+            openApiConnectors={arrayPath(data, "openapi.connectors")}
+            openApiOperations={arrayPath(data, "openapi.operations")}
+            runningAction={runningAction}
+            disabledReason={connectorReviewDisabledReason}
+            onReview={(item, kind) => void reviewConnectorContracts(item, kind)}
+          />
+        </div>
+
+        {actionResult ? (
+          <div className="mt-4">
+            <Panel title={actionResult.title} description={actionResult.status === "success" ? "Latest connection action." : "The action did not complete."}>
+              <div
+                className={clsx(
+                  "rounded-md border p-3 text-sm",
+                  actionResult.status === "success" ? "border-success/35 bg-success/10" : "border-danger/35 bg-danger/10",
+                )}
+                role={actionResult.status === "success" ? "status" : "alert"}
+              >
+                <div className="flex items-center gap-2 font-semibold">
+                  {actionResult.status === "success" ? <CheckCircle2 size={15} aria-hidden="true" /> : <XCircle size={15} aria-hidden="true" />}
+                  {actionResult.message}
+                </div>
+                {actionResult.data ? (
+                  <details className="mt-3">
+                    <summary className="min-h-10 cursor-pointer text-xs font-semibold text-primary">View technical response</summary>
+                    <pre className="max-h-64 overflow-auto rounded-md bg-background p-3 text-xs text-muted">{JSON.stringify(actionResult.data, null, 2)}</pre>
+                  </details>
+                ) : null}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {actionResult.data ? (
+                    <button type="button" onClick={() => void copyActionResult()} className="action-button">
+                      {copyResultStatus === "copied" ? "Copied" : "Copy response"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => { setActionResult(undefined); setCopyResultStatus(undefined); }}
+                    className="action-button"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                {copyResultStatus === "error" ? <p className="mt-2 text-xs text-danger" role="alert">Clipboard access failed. Select the response and copy it manually.</p> : null}
+              </div>
+            </Panel>
+          </div>
+        ) : null}
+      </div>
+    );
   }
 
   return (
