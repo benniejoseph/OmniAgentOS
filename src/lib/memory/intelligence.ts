@@ -2,7 +2,6 @@ import { Buffer } from "node:buffer";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { MemoryCatalogRecord } from "@/lib/memory/store";
 import type { MemoryFormationReason, MemoryTier } from "@/lib/memory/tier-policy";
-import type { MemoryGraphStats } from "@/lib/memory/types";
 import type { KnowledgeDocument } from "@/lib/rag/types";
 
 export const MEMORY_INTELLIGENCE_VERSION =
@@ -204,7 +203,7 @@ export function buildMemoryIntelligenceOverview(input: {
     characters: number;
     embedded: number;
   }>;
-  graphStats: MemoryGraphStats;
+  graphStats: Readonly<{ nodes: number; edges: number }>;
   pendingReviews: number;
   resolvedReviews: number;
   deletionBarriers: number;

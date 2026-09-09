@@ -126,9 +126,6 @@ describe("memory intelligence projection", () => {
       graphStats: {
         nodes: 12,
         edges: 18,
-        communities: 3,
-        averageDegree: 3,
-        topNodes: [],
       },
       pendingReviews: 1,
       resolvedReviews: 2,

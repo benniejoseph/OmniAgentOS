@@ -32,6 +32,12 @@ function createSql(transactionScoped = false) {
     ) {
       return mocks.returnedReviewRows;
     }
+    if (
+      query.includes("COUNT(*) FILTER") &&
+      query.includes("FROM omni_memory_reconciliation_reviews")
+    ) {
+      return [{ pending: 7, resolved: 3 }];
+    }
     if (query.includes("INSERT INTO omni_entity_relation_projection_queue")) {
       return [{
         tenant_id: "tenant-a",
@@ -90,6 +96,8 @@ import {
 } from "@/lib/memory/access-binding";
 import {
   applyRunMemoryFeedback,
+  getMemoryReconciliationStats,
+  listMemoryCatalog,
   listMemoryReconciliationReviews,
   listMemories,
   previewMemoryDeletion,
@@ -188,6 +196,30 @@ describe("Postgres memory recall", () => {
     mocks.events.length = 0;
     mocks.returnedMemoryRows.length = 0;
     mocks.returnedReviewRows.length = 0;
+  });
+
+  it("projects the durable catalogue without transferring raw source chunks", async () => {
+    await expect(listMemoryCatalog({
+      tenantId: "tenant-a",
+      catalogClass: "durable",
+    })).resolves.toEqual([]);
+
+    const catalogueQuery = mocks.queries.find((query) =>
+      query.includes("FROM omni_memories memory") &&
+      query.includes("canonical_source_observation")
+    );
+    expect(catalogueQuery).toContain("memory.type <> 'knowledge'");
+    expect(catalogueQuery).toContain("'rag' = ANY(memory.tags)");
+  });
+
+  it("counts review states without loading review content", async () => {
+    await expect(getMemoryReconciliationStats({ tenantId: "tenant-a" }))
+      .resolves.toEqual({ pending: 7, resolved: 3 });
+
+    const countQuery = mocks.queries.find((query) =>
+      query.includes("COUNT(*) FILTER")
+    );
+    expect(countQuery).not.toContain("SELECT review.*");
   });
 
   it("canonicalizes JSON projection timestamps before verifying review bindings", async () => {
