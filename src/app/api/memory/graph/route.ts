@@ -624,7 +624,7 @@ async function POSTHandler(request: Request) {
     return forbiddenResponse(error);
   }
   const requestAccess = requestMemoryAccessFromSecurityContext(context, {
-    purposeId: MEMORY_PURPOSE_IDS.read,
+    purposeId: MEMORY_PURPOSE_IDS.write,
     auditPurpose: "api.memory.graph.rebuild",
     correlationId: `memory_graph_rebuild_${randomUUID()}`,
   });

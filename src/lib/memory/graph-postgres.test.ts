@@ -201,7 +201,14 @@ describe("memory graph postgres rebuild", () => {
       row.visibility === "workspace_shared" &&
       row.workspace_id === "workspace:research" &&
       JSON.stringify(row.allowed_purpose_ids) ===
-        JSON.stringify(["memory.read.v1", "memory.retrieve.v1"])
+        JSON.stringify([
+          "memory.correct.v1",
+          "memory.export.v1",
+          "memory.forget.v1",
+          "memory.read.v1",
+          "memory.retrieve.v1",
+          "memory.write.v1",
+        ])
     )).toBe(true);
   });
 

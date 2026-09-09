@@ -116,12 +116,12 @@ const MEMORY_GRAPH_EDGE_LIMIT = 20_000;
 const MEMORY_GRAPH_WRITE_BATCH_SIZE = 250;
 
 const USER_PRIVATE_GRAPH_PURPOSE_IDS = Object.freeze([
+  MEMORY_PURPOSE_IDS.correct,
+  MEMORY_PURPOSE_IDS.export,
+  MEMORY_PURPOSE_IDS.forget,
   MEMORY_PURPOSE_IDS.read,
   MEMORY_PURPOSE_IDS.retrieve,
   MEMORY_PURPOSE_IDS.write,
-  MEMORY_PURPOSE_IDS.correct,
-  MEMORY_PURPOSE_IDS.forget,
-  MEMORY_PURPOSE_IDS.export,
 ]);
 
 const stopWords = new Set([
@@ -193,7 +193,7 @@ export async function rebuildMemoryGraph(options: RebuildMemoryGraphOptions = {}
     return runWithGraphAccessScope(
       options.accessScope,
       tenantId,
-      [MEMORY_PURPOSE_IDS.read],
+      [MEMORY_PURPOSE_IDS.write],
       (sql) => rebuildMemoryGraphForTenant(options, tenantId, sql),
     );
   }
@@ -488,25 +488,17 @@ function graphProjectionAccessBinding(
   if (!source) {
     throw new Error("A scoped graph cohort requires an access binding.");
   }
-  const allowedPurposeIds = source.allowedPurposeIds.filter((purposeId) =>
-    bindings.every((binding) => binding.allowedPurposeIds.includes(purposeId))
-  );
-  if (!allowedPurposeIds.length) {
-    throw new Error(
-      "A scoped graph cohort has no shared access purpose for its projection.",
-    );
-  }
-  const sensitivity = bindings.reduce<MemoryAccessBindingV1["sensitivity"]>(
-    (highest, binding) =>
-      sensitivityRank(binding.sensitivity) > sensitivityRank(highest)
-        ? binding.sensitivity
-        : highest,
-    source.sensitivity,
-  );
+  const sensitivity = bindings.some((binding) =>
+      binding.sensitivity === "restricted"
+    )
+    ? "restricted" as const
+    : "confidential" as const;
   const draft = {
     ...source,
     originPurpose: "memory.graph.projection",
-    allowedPurposeIds,
+    // The projection is its own governed derivative. Its purpose contract is
+    // fixed while its visibility boundary is inherited from source records.
+    allowedPurposeIds: USER_PRIVATE_GRAPH_PURPOSE_IDS,
     sensitivity,
     accessBoundAt,
   };
@@ -514,10 +506,6 @@ function graphProjectionAccessBinding(
     ...draft,
     accessScopeSha256: memoryAccessBindingSha256(draft),
   });
-}
-
-function sensitivityRank(value: MemoryAccessBindingV1["sensitivity"]) {
-  return ["public", "internal", "confidential", "restricted"].indexOf(value);
 }
 
 export async function indexMemoryGraphRecords(

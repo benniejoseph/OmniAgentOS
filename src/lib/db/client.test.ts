@@ -730,10 +730,15 @@ describe("ordered database schema versions", () => {
       name: "agent_release_lifecycle_v1",
       checksum: "9cbb9af27c5978f1fdd9af6ef12da8c9f9282251d162d879d5b323d657b1b6ff",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 151)).toEqual({
       version: 151,
       name: "maintenance_system_scope_v1",
       checksum: "6eeab2482987d833ab99862640348951d6d798d732cb91df91791ac29b098679",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 152,
+      name: "memory_graph_scope_v2",
+      checksum: "80fb478914e814d44034b303b3bcf39e4f99c7f66f0240f114fe23e704ab29ae",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
