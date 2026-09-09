@@ -484,16 +484,61 @@ describe("dedicated worker heartbeat timing", () => {
       "tenant-list",
     ]);
   });
+
+  it("continues to later tenants when one maintenance tenant fails", async () => {
+    routeMocks.listMaintenanceTenantIds.mockResolvedValue([
+      "tenant-poisoned",
+      "tenant-personal",
+    ]);
+    routeMocks.recoverInterruptedLoopV2Runs.mockImplementation(
+      async ({ tenantId }: { tenantId: string }) => {
+        if (tenantId === "tenant-poisoned") {
+          throw new Error("Domain event id is already bound to a different event.");
+        }
+        return emptyLoopV2Recovery;
+      },
+    );
+
+    const response = await POST(workerRequest({
+      startup: false,
+      lane: "maintenance",
+      timeBudgetMs: 10_000,
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      maintenanceTenantIds: ["tenant-poisoned", "tenant-personal"],
+      maintenance: [
+        {
+          tenantId: "tenant-poisoned",
+          maintenanceError:
+            "Domain event id is already bound to a different event.",
+        },
+        {
+          tenantId: "tenant-personal",
+          connectedSourcesSynced: 0,
+        },
+      ],
+    });
+    expect(routeMocks.recoverInterruptedLoopV2Runs).toHaveBeenCalledTimes(2);
+    expect(routeMocks.syncDuePersonalProviders).toHaveBeenCalledWith({
+      tenantId: "tenant-personal",
+      limit: 1,
+      abortSignal: expect.any(AbortSignal),
+    });
+  });
 });
 
 function workerRequest({
   startup,
   target = "http://localhost",
   lane = "fast",
+  timeBudgetMs = 1_000,
 }: {
   startup: boolean;
   target?: string;
   lane?: "fast" | "background" | "maintenance" | "all";
+  timeBudgetMs?: number;
 }) {
   return new Request("http://localhost/api/workflows/tick", {
     method: "POST",
@@ -508,7 +553,7 @@ function workerRequest({
       scope: "all_tenants",
       lane,
       startup,
-      timeBudgetMs: 1_000,
+      timeBudgetMs,
     }),
   });
 }
