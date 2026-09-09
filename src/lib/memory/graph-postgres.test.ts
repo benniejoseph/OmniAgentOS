@@ -27,6 +27,9 @@ vi.mock("@/lib/db/client", () => ({
   getDatabaseTenantContext: vi.fn(() => "tenant-bulk"),
   getSql: vi.fn(() => graphMocks.sql),
   hasDatabaseUrl: vi.fn(() => true),
+  runWithDatabaseSystemScope: vi.fn(
+    async (_reason: string, operation: () => Promise<unknown>) => operation(),
+  ),
   runWithDatabaseTenantScope: vi.fn(
     async (_tenantId: string, operation: () => Promise<unknown>) => operation(),
   ),
@@ -36,7 +39,11 @@ vi.mock("@/lib/memory/store", () => ({
   listMemories: graphMocks.listMemories,
 }));
 
-import { getMemoryGraphCounts, rebuildMemoryGraph } from "@/lib/memory/graph";
+import {
+  getMemoryGraphCounts,
+  rebuildMemoryGraph,
+  rebuildMemoryGraphSystemScoped,
+} from "@/lib/memory/graph";
 
 describe("memory graph postgres rebuild", () => {
   function graphMemories(count: number) {
@@ -142,6 +149,22 @@ describe("memory graph postgres rebuild", () => {
       row.visibility === "user_private" &&
       row.owner_actor_id === ownerActorId
     )).toBe(true);
+  });
+
+  it("prepares schema before entering the non-owner maintenance scope", async () => {
+    const database = await import("@/lib/db/client");
+
+    await rebuildMemoryGraphSystemScoped({
+      tenantId: "tenant-bulk",
+      source: "test.system-rebuild",
+      auditReason: "Test the worker projection boundary.",
+    });
+
+    expect(database.ensureDatabaseSchema).toHaveBeenCalled();
+    expect(database.runWithDatabaseSystemScope).toHaveBeenCalledWith(
+      "Test the worker projection boundary.",
+      expect.any(Function),
+    );
   });
 
   it("reads dashboard graph size without loading graph records", async () => {

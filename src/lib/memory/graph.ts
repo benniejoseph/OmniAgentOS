@@ -204,8 +204,12 @@ export async function rebuildMemoryGraphSystemScoped(
   },
 ) {
   const tenantId = normalizeTenantId(options.tenantId);
+  // Schema readiness belongs to the runtime role. The dedicated maintenance
+  // identity is deliberately BYPASSRLS but non-owner and must never be asked
+  // to create or alter objects.
+  if (hasDatabaseUrl()) await ensureDatabaseSchema();
   return runWithDatabaseSystemScope(options.auditReason, () =>
-    rebuildMemoryGraphForTenant(options, tenantId)
+    rebuildMemoryGraphForTenant(options, tenantId, undefined, true)
   );
 }
 
@@ -245,6 +249,7 @@ async function rebuildMemoryGraphForTenant(
   options: RebuildMemoryGraphOptions,
   tenantId: string,
   scopedSql?: GraphSqlClient,
+  schemaReady = false,
 ) {
   const startedAt = Date.now();
   const source = options.source || "rebuild";
@@ -254,7 +259,7 @@ async function rebuildMemoryGraphForTenant(
     let completedStats: MemoryGraphStats | undefined;
 
     if (hasDatabaseUrl()) {
-      if (!scopedSql) await ensureDatabaseSchema();
+      if (!scopedSql && !schemaReady) await ensureDatabaseSchema();
       const rebuildPostgres = async (sql: GraphSqlClient) => {
         await sql`
           SELECT pg_advisory_xact_lock(
