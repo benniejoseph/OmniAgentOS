@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   queries: [] as string[],
   events: [] as string[],
   returnedMemoryRows: [] as Array<Record<string, unknown>>,
+  returnedReviewRows: [] as Array<Record<string, unknown>>,
 }));
 
 function createSql(transactionScoped = false) {
@@ -25,11 +26,18 @@ function createSql(transactionScoped = false) {
     if (query.includes("INSERT INTO omni_memory_reconciliation_reviews")) {
       return [{ id: "memory-reconciliation-a" }];
     }
+    if (
+      query.includes("SELECT review.*") &&
+      query.includes("FROM omni_memory_reconciliation_reviews")
+    ) {
+      return mocks.returnedReviewRows;
+    }
     if (query.includes("INSERT INTO omni_entity_relation_projection_queue")) {
       return [{
         tenant_id: "tenant-a",
         owner_actor_id: ownerActorId,
         generation: "1",
+        requested_at: "2026-09-06T00:00:00.000Z",
       }];
     }
     if (
@@ -82,6 +90,7 @@ import {
 } from "@/lib/memory/access-binding";
 import {
   applyRunMemoryFeedback,
+  listMemoryReconciliationReviews,
   listMemories,
   previewMemoryDeletion,
   correctMemory,
@@ -178,6 +187,72 @@ describe("Postgres memory recall", () => {
     mocks.queries.length = 0;
     mocks.events.length = 0;
     mocks.returnedMemoryRows.length = 0;
+    mocks.returnedReviewRows.length = 0;
+  });
+
+  it("canonicalizes JSON projection timestamps before verifying review bindings", async () => {
+    const binding = buildUserPrivateMemoryAccessBindingV1({
+      tenantId: "tenant-a",
+      ownerActorId,
+      originPurpose: "memory.verified_effect",
+      accessBoundAt: "2026-09-06T00:00:00.000Z",
+    });
+    mocks.returnedReviewRows.push({
+      id: "memory-reconciliation-json-timestamp",
+      tenant_id: "tenant-a",
+      owner_actor_id: ownerActorId,
+      kind: "confirmation",
+      status: "pending",
+      decision: null,
+      detection_reason: "unverified_inference",
+      candidate_memory: {
+        id: "candidate-json-timestamp",
+        tenant_id: "tenant-a",
+        type: "fact",
+        tier: "semantic",
+        formation_reason: "assistant_inference_candidate",
+        title: "Canonical timestamp",
+        content: "A review projection may serialize timestamptz with an offset.",
+        tags: [],
+        evidence_refs: [],
+        scope: "user",
+        source: "agent",
+        importance: 0.7,
+        confidence: 0.8,
+        claim_status: "candidate",
+        asserted_by: "agent",
+        created_at: "2026-09-06T00:00:00+00:00",
+        updated_at: "2026-09-06T00:00:00+00:00",
+        access_contract_version: binding.version,
+        access_state: binding.state,
+        owner_actor_id: binding.ownerActorId,
+        owner_agent_id: null,
+        workspace_id: null,
+        project_id: null,
+        mission_id: null,
+        visibility: binding.visibility,
+        sensitivity: binding.sensitivity,
+        origin_purpose: binding.originPurpose,
+        allowed_purpose_ids: binding.allowedPurposeIds,
+        access_scope_sha256: binding.accessScopeSha256,
+        access_bound_at: "2026-09-06T00:00:00+00:00",
+      },
+      existing_memory: null,
+      created_at: "2026-09-06T00:00:00+00:00",
+      updated_at: "2026-09-06T00:00:00+00:00",
+      resolved_at: null,
+      resolved_by: null,
+    });
+
+    const reviews = await listMemoryReconciliationReviews({
+      tenantId: "tenant-a",
+      status: "all",
+      limit: 20,
+    });
+
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.candidate.accessBinding).toEqual(binding);
+    expect(reviews[0]?.candidate.updatedAt).toBe("2026-09-06T00:00:00.000Z");
   });
 
   it("fails closed before an unscoped production memory insert", async () => {

@@ -3799,7 +3799,8 @@ function memoryReconciliationReviewId(tenantId: string, candidateId: string) {
 }
 
 function normalizeDate(value: unknown) {
-  return value instanceof Date ? value.toISOString() : String(value);
+  const parsed = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
 }
 
 function normalizeTags(tags: string[]) {
