@@ -57,6 +57,7 @@ type RebuildMemoryGraphOptions = {
   memoryLimit?: number;
   traceLimit?: number;
   accessScope?: DatabaseMemoryAccessScope;
+  sourceAccessScope?: DatabaseMemoryAccessScope;
   includeLegacyUnattributed?: boolean;
 };
 
@@ -206,7 +207,7 @@ export async function rebuildMemoryGraph(options: RebuildMemoryGraphOptions = {}
 export async function rebuildMemoryGraphSystemScoped(
   options: Omit<
     RebuildMemoryGraphOptions,
-    "accessScope" | "includeLegacyUnattributed"
+    "accessScope" | "sourceAccessScope" | "includeLegacyUnattributed"
   > & {
     auditReason: string;
   },
@@ -282,8 +283,31 @@ async function rebuildMemoryGraphForTenant(
             hashtextextended(${"memory-graph:" + tenantId}, 0)
           )
         `;
+        const sourceAccessScope = options.sourceAccessScope
+          ? requireUserPrivateGraphAccessScope(
+              options.sourceAccessScope,
+              tenantId,
+              [MEMORY_PURPOSE_IDS.read],
+            )
+          : undefined;
+        if (sourceAccessScope) {
+          await setTransactionLocalDatabaseMemoryAccessScope(
+            sql,
+            sourceAccessScope,
+          );
+        }
         const { aggregate, selectedMemories, traces } =
           await collectMemoryGraphAggregate(options, tenantId, sql);
+        if (sourceAccessScope && options.accessScope) {
+          await setTransactionLocalDatabaseMemoryAccessScope(
+            sql,
+            requireUserPrivateGraphAccessScope(
+              options.accessScope,
+              tenantId,
+              [MEMORY_PURPOSE_IDS.write],
+            ),
+          );
+        }
         const build = buildRecord({
           tenantId,
           status: "completed",
