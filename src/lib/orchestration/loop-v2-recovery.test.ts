@@ -111,6 +111,7 @@ describe("Loop v2 interrupted-run recovery", () => {
     expect(metadata).not.toHaveProperty("claimToken");
     expect(JSON.stringify(metadata)).not.toContain(claimed?.fence.claimToken);
     expect(storage.claimEvent()).toMatchObject({
+      id: `run-loop-v2-recovery-claimed:${checkpoint.checkpointSha256}:1:${metadata.claimTokenSha256}`,
       type: "run.loop_v2.recovery_claimed",
       payload: expect.objectContaining({
         runId: "run-a",
@@ -121,19 +122,29 @@ describe("Loop v2 interrupted-run recovery", () => {
     expect(JSON.stringify(storage.claimEvent())).not.toContain(
       claimed?.fence.claimToken,
     );
+
+    const laterStorage = recoveryClaimStorage(checkpoint);
+    await claimInterruptedLoopV2Run({
+      tenantId: "tenant-a",
+      leaseOwner: "maintenance-worker-b",
+      staleAfterMs: 60_000,
+      leaseSeconds: 60,
+      now: "2026-09-06T04:02:00.000Z",
+    }, laterStorage.sql);
+    expect(laterStorage.claimEvent().id).not.toBe(storage.claimEvent().id);
   });
 });
 
 function recoveryClaimStorage(checkpoint: LoopV2Checkpoint) {
   let recoveryMetadata: Record<string, unknown> = {};
-  let claimEvent: { type?: unknown; payload?: unknown } = {};
+  let claimEvent: { id?: unknown; type?: unknown; payload?: unknown } = {};
   const sql = (async (
     strings: TemplateStringsArray,
     ...params: unknown[]
   ) => {
     const text = strings.join(" ");
     if (text.includes("INSERT INTO omni_events")) {
-      claimEvent = { type: params[2], payload: params[5] };
+      claimEvent = { id: params[0], type: params[2], payload: params[5] };
       return [{ seq: 1 }];
     }
     throw new Error(`Unexpected tagged SQL: ${text}`);

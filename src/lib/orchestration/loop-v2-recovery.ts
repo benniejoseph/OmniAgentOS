@@ -244,7 +244,10 @@ export async function claimInterruptedLoopV2Run(
     throw new Error("Loop v2 recovery claim did not bind its run.");
   }
   await appendScopedDomainEvent({
-    id: `run-loop-v2-recovery-claimed:${checkpoint.checkpointSha256}:${leaseGeneration}`,
+    // A legacy or externally repaired continuation can lose its prior lease
+    // generation while the immutable claim event remains. Bind the event to
+    // this exact persisted claim digest so the next real claim cannot collide.
+    id: `run-loop-v2-recovery-claimed:${checkpoint.checkpointSha256}:${leaseGeneration}:${recoveryMetadata.claimTokenSha256}`,
     streamId: `run:${checkpoint.runId}`,
     type: "run.loop_v2.recovery_claimed",
     executionScope,
