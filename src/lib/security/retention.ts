@@ -1396,7 +1396,9 @@ export async function processPendingMemoryGraphRebuilds({
         source: "retention-rebuild",
         auditReason: "Rebuild the queued tenant memory graph projection.",
       });
-      await runWithDatabaseTenantScope(pendingTenantId, async () => {
+      await runWithDatabaseSystemScope(
+        "Acknowledge a completed durable memory-graph rebuild request.",
+        async () => {
         const deleted = await getSql()`
           DELETE FROM omni_memory_graph_rebuild_queue
           WHERE tenant_id = ${pendingTenantId}
@@ -1413,7 +1415,8 @@ export async function processPendingMemoryGraphRebuilds({
               AND lease_owner = ${claim.leaseOwner}
           `;
         }
-      });
+        },
+      );
       completed += 1;
     } catch (error) {
       failed += 1;
@@ -1422,8 +1425,9 @@ export async function processPendingMemoryGraphRebuilds({
           ? error.message
           : "Memory graph rebuild failed."
       ).slice(0, 1000);
-      await runWithDatabaseTenantScope(pendingTenantId, () =>
-        getSql()`
+      await runWithDatabaseSystemScope(
+        "Record a failed durable memory-graph rebuild attempt.",
+        () => getSql()`
           UPDATE omni_memory_graph_rebuild_queue
           SET attempts = CASE
                 WHEN generation = ${claim.generation}::bigint
