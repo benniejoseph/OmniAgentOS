@@ -748,5 +748,10 @@
     "version": 150,
     "name": "legacy_memory_owner_enrollment_v1",
     "checksum": "d43fafd08d25aa6f3c7646828a43596a1c9301fc3b99d8fa82c077175a57cab2"
+  },
+  {
+    "version": 151,
+    "name": "maintenance_system_scope_v1",
+    "checksum": "6eeab2482987d833ab99862640348951d6d798d732cb91df91791ac29b098679"
   }
 ]

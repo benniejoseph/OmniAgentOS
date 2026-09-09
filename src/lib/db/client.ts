@@ -1429,6 +1429,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[149],
       up: ensureLegacyMemoryOwnerEnrollmentV1,
     },
+    {
+      ...databaseSchemaMigrations[150],
+      up: ensureMaintenanceSystemScopeV1,
+    },
   ];
 }
 
@@ -59690,6 +59694,36 @@ async function ensureLegacyMemoryOwnerEnrollmentV1(sql: SqlClient) {
       END IF;
       RETURN NEW;
     END
+    $function$
+  `;
+}
+
+async function ensureMaintenanceSystemScopeV1(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_system_scope_enabled()
+    RETURNS BOOLEAN
+    LANGUAGE sql
+    STABLE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+      SELECT
+        COALESCE(current_setting('omni.system_scope', TRUE), '') = 'true'
+        AND NULLIF(current_setting('omni.system_reason', TRUE), '') IS NOT NULL
+        AND (
+          current_user = (
+            SELECT pg_get_userbyid(relowner)
+            FROM pg_class
+            WHERE oid = 'omni_schema_version'::regclass
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM pg_roles
+            WHERE rolname = current_user
+              AND rolbypassrls
+              AND NOT rolsuper
+          )
+        )
     $function$
   `;
 }
