@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildUserPrivateMemoryAccessBindingV1 } from "@/lib/memory/access-binding";
 
 const graphMocks = vi.hoisted(() => {
   const statements: string[] = [];
@@ -102,6 +103,45 @@ describe("memory graph postgres rebuild", () => {
     expect(nodeWrites[0]).toContain("jsonb_to_recordset");
     expect(edgeWrites[0]).toContain("jsonb_to_recordset");
     expect(graphMocks.sql.mock.calls.length).toBeLessThan(12);
+    expect(result.stats).toEqual(expect.objectContaining({
+      nodes: result.build.nodeCount,
+      edges: result.build.edgeCount,
+    }));
+    expect(graphMocks.statements.some((statement) =>
+      statement.includes("SELECT node.*") || statement.includes("SELECT edge.*")
+    )).toBe(false);
+  });
+
+  it("keeps actor-owned rebuild projections scope-bound", async () => {
+    const ownerActorId = "actor:private-owner";
+    const accessBinding = buildUserPrivateMemoryAccessBindingV1({
+      tenantId: "tenant-bulk",
+      ownerActorId,
+      originPurpose: "api.memory.write",
+      accessBoundAt: "2026-09-09T00:00:00.000Z",
+    });
+    graphMocks.listMemories.mockResolvedValue(
+      graphMemories(3).map((memory) => ({ ...memory, accessBinding })),
+    );
+
+    await rebuildMemoryGraph({
+      tenantId: "tenant-bulk",
+      source: "test.private-rebuild",
+    });
+
+    const graphRows = graphMocks.sql.mock.calls
+      .filter((call) => {
+        const statement = (call[0] as unknown as TemplateStringsArray).join("?");
+        return statement.includes("jsonb_to_recordset");
+      })
+      .flatMap((call) => JSON.parse(String(call[1])) as Array<Record<string, unknown>>);
+
+    expect(graphRows.length).toBeGreaterThan(0);
+    expect(graphRows.every((row) =>
+      row.access_contract_version === 1 &&
+      row.visibility === "user_private" &&
+      row.owner_actor_id === ownerActorId
+    )).toBe(true);
   });
 
   it("reads dashboard graph size without loading graph records", async () => {

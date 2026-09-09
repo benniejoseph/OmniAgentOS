@@ -80,6 +80,7 @@ type TraceSeed = {
     reasons?: string[];
   }>;
   createdAt: string;
+  accessBinding?: MemoryAccessBindingV1;
 };
 
 type MemoryGraphLedger = {
@@ -227,6 +228,7 @@ async function rebuildMemoryGraphForTenant(
 
   try {
     let completedBuild: MemoryGraphBuildRecord | undefined;
+    let completedStats: MemoryGraphStats | undefined;
 
     if (hasDatabaseUrl()) {
       await ensureDatabaseSchema();
@@ -249,6 +251,11 @@ async function rebuildMemoryGraphForTenant(
           latencyMs: Date.now() - startedAt,
         });
         completedBuild = build;
+        completedStats = graphStatsFromRecords(
+          [...aggregate.nodes.values()],
+          [...aggregate.edges.values()],
+          build,
+        );
         await sql`DELETE FROM omni_memory_graph_edges WHERE tenant_id = ${tenantId}`;
         await sql`DELETE FROM omni_memory_graph_nodes WHERE tenant_id = ${tenantId}`;
         // A rebuild can contain thousands of graph records. Persist each
@@ -275,6 +282,11 @@ async function rebuildMemoryGraphForTenant(
           latencyMs: Date.now() - startedAt,
         });
         completedBuild = build;
+        completedStats = graphStatsFromRecords(
+          [...aggregate.nodes.values()],
+          [...aggregate.edges.values()],
+          build,
+        );
         const ledger = await readGraphLedger();
         await writeJsonFile<MemoryGraphLedger>(getGraphFile(), {
           nodes: [
@@ -294,12 +306,15 @@ async function rebuildMemoryGraphForTenant(
       });
     }
 
-    if (!completedBuild) {
+    if (!completedBuild || !completedStats) {
       throw new Error("Memory graph rebuild did not produce a build record.");
     }
     return {
       build: completedBuild,
-      stats: await getMemoryGraphStats({ tenantId }),
+      // The aggregate is the exact data committed above. Returning its stats
+      // avoids a second full graph read after a large rebuild and lets the UI
+      // acknowledge completion as soon as the transaction commits.
+      stats: completedStats,
     };
   } catch (error) {
     const build = buildRecord({
@@ -330,10 +345,81 @@ async function collectMemoryGraphAggregate(
   ]);
   const selectedMemories = memories.slice(0, memoryLimit);
   return {
-    aggregate: aggregateGraph(selectedMemories, traces, tenantId),
+    aggregate: aggregateGraphByAccessCohort(
+      selectedMemories,
+      traces,
+      tenantId,
+    ),
     selectedMemories,
     traces,
   };
+}
+
+/**
+ * A maintenance rebuild may see every actor-owned row in a tenant. Project
+ * each ownership cohort into its own namespace and access binding so a
+ * rebuild can never collapse private memories or recall traces back into the
+ * legacy tenant-wide graph.
+ */
+function aggregateGraphByAccessCohort(
+  memories: MemoryRecord[],
+  traces: TraceSeed[],
+  tenantId: string,
+) {
+  const aggregate: GraphAggregate = { nodes: new Map(), edges: new Map() };
+  mergeGraphAggregate(
+    aggregate,
+    aggregateGraph(
+      memories.filter((memory) => !memory.accessBinding),
+      traces.filter((trace) => !trace.accessBinding),
+      tenantId,
+    ),
+  );
+
+  const actorIds = new Set<string>();
+  for (const record of [...memories, ...traces]) {
+    if (!record.accessBinding) continue;
+    if (record.accessBinding.visibility !== "user_private") {
+      throw new Error(
+        "Memory graph maintenance encountered an unsupported scoped cohort.",
+      );
+    }
+    actorIds.add(record.accessBinding.ownerActorId);
+  }
+
+  const accessBoundAt = new Date().toISOString();
+  for (const ownerActorId of actorIds) {
+    const actorAggregate = aggregateGraph(
+      memories.filter((memory) =>
+        memory.accessBinding?.ownerActorId === ownerActorId
+      ),
+      traces.filter((trace) =>
+        trace.accessBinding?.ownerActorId === ownerActorId
+      ),
+      tenantId,
+      userPrivateGraphIdentityNamespace(tenantId, ownerActorId),
+    );
+    const accessBinding = buildUserPrivateMemoryAccessBindingV1({
+      tenantId,
+      ownerActorId,
+      originPurpose: "memory.graph.projection",
+      allowedPurposeIds: USER_PRIVATE_GRAPH_PURPOSE_IDS,
+      accessBoundAt,
+    });
+    for (const node of actorAggregate.nodes.values()) {
+      node.accessBinding = accessBinding;
+    }
+    for (const edge of actorAggregate.edges.values()) {
+      edge.accessBinding = accessBinding;
+    }
+    mergeGraphAggregate(aggregate, actorAggregate);
+  }
+  return aggregate;
+}
+
+function mergeGraphAggregate(target: GraphAggregate, source: GraphAggregate) {
+  for (const node of source.nodes.values()) mergeNode(target.nodes, node);
+  for (const edge of source.edges.values()) mergeEdge(target.edges, edge);
 }
 
 export async function indexMemoryGraphRecords(
@@ -880,16 +966,25 @@ async function getMemoryGraphStatsForTenant(
     listMemoryGraphEdges(MEMORY_GRAPH_EDGE_LIMIT, { tenantId, accessScope }),
     getLatestGraphBuild(tenantId),
   ]);
-  const communities = componentIds(nodes, edges);
-  const communityCount = new Set(communities.values()).size;
+  return graphStatsFromRecords(nodes, edges, latestBuild);
+}
 
+function graphStatsFromRecords(
+  nodes: MemoryGraphNode[],
+  edges: MemoryGraphEdge[],
+  latestBuild?: MemoryGraphBuildRecord,
+): MemoryGraphStats {
+  const sortedNodes = [...nodes].sort(sortNodes);
+  const communities = componentIds(sortedNodes, edges);
   return {
-    nodes: nodes.length,
+    nodes: sortedNodes.length,
     edges: edges.length,
-    communities: communityCount,
-    averageDegree: nodes.length ? Math.round((edges.length * 2 * 100) / nodes.length) / 100 : 0,
+    communities: new Set(communities.values()).size,
+    averageDegree: sortedNodes.length
+      ? Math.round((edges.length * 2 * 100) / sortedNodes.length) / 100
+      : 0,
     latestBuild,
-    topNodes: nodes.slice(0, 8),
+    topNodes: sortedNodes.slice(0, 8),
   };
 }
 
@@ -1197,7 +1292,7 @@ async function listTraceSeeds(
     }
     const query = sql || getSql();
     const rows = await query`
-      SELECT id, query, profile, results, created_at
+      SELECT *
       FROM omni_retrieval_traces
       WHERE tenant_id = ${tenantId}
       ORDER BY created_at DESC
@@ -1601,12 +1696,17 @@ function memoryGraphBuildFromRow(row: Record<string, unknown>): MemoryGraphBuild
 function traceSeedFromRow(row: Record<string, unknown>): TraceSeed {
   const profile = objectValue(row.profile) as TraceSeed["profile"];
   const results = Array.isArray(row.results) ? (row.results as TraceSeed["results"]) : [];
+  const directBinding = memoryAccessBindingV1Schema.safeParse(row.accessBinding);
+  const accessBinding = directBinding.success
+    ? directBinding.data
+    : graphAccessBindingFromRow(row);
   return {
     id: String(row.id),
     query: String(row.query || ""),
     profile,
     results,
     createdAt: normalizeDate(row.created_at || row.createdAt),
+    ...(accessBinding ? { accessBinding } : {}),
   };
 }
 
