@@ -133,6 +133,18 @@ export type MemoryCatalogRecord = Omit<
   byteCount: number;
 }>;
 
+export type MemoryCatalogClass = "all" | "durable";
+
+const DURABLE_KNOWLEDGE_FORMATION_REASONS = Object.freeze([
+  "manual_user_entry",
+  "explicit_user_request",
+  "correction",
+  "project_reflection",
+  "project_artifact",
+  "workflow_output",
+  "maintenance_promotion",
+]);
+
 type TenantScopedOptions = {
   tenantId?: string;
   limit?: number;
@@ -199,10 +211,11 @@ export async function listMemoryCatalog(
   options: Pick<
     TenantScopedOptions,
     "tenantId" | "limit" | "includeInactive" | "accessScope"
-  > = {},
+  > & { catalogClass?: MemoryCatalogClass } = {},
 ): Promise<MemoryCatalogRecord[]> {
   const tenantId = normalizeTenantId(options.tenantId);
   const limit = Math.min(Math.max(options.limit || 5_000, 1), 10_000);
+  const catalogClass = options.catalogClass || "all";
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -236,6 +249,20 @@ export async function listMemoryCatalog(
            AND lifecycle.memory_id = memory.id
           WHERE memory.tenant_id = ${tenantId}
             AND memory.claim_status <> 'forgotten'
+            AND (
+              ${catalogClass} = 'all'
+              OR memory.type <> 'knowledge'
+              OR memory.tier = 'summary'
+              OR COALESCE(memory.formation_reason, 'legacy_record') = ANY(
+                ${DURABLE_KNOWLEDGE_FORMATION_REASONS}::text[]
+              )
+              OR NOT (
+                COALESCE('rag' = ANY(memory.tags), FALSE)
+                OR COALESCE(memory.formation_reason, '') =
+                  'canonical_source_observation'
+                OR memory.asserted_by = 'import'
+              )
+            )
           ORDER BY memory.updated_at DESC, memory.id COLLATE "C" ASC
           LIMIT ${limit}
         `
@@ -268,6 +295,20 @@ export async function listMemoryCatalog(
            AND lifecycle.memory_id = memory.id
           WHERE memory.tenant_id = ${tenantId}
             AND memory.claim_status = 'active'
+            AND (
+              ${catalogClass} = 'all'
+              OR memory.type <> 'knowledge'
+              OR memory.tier = 'summary'
+              OR COALESCE(memory.formation_reason, 'legacy_record') = ANY(
+                ${DURABLE_KNOWLEDGE_FORMATION_REASONS}::text[]
+              )
+              OR NOT (
+                COALESCE('rag' = ANY(memory.tags), FALSE)
+                OR COALESCE(memory.formation_reason, '') =
+                  'canonical_source_observation'
+                OR memory.asserted_by = 'import'
+              )
+            )
             AND lifecycle.archived_at IS NULL
             AND (memory.valid_from IS NULL OR memory.valid_from <= NOW())
             AND (memory.valid_to IS NULL OR memory.valid_to > NOW())
@@ -298,6 +339,9 @@ export async function listMemoryCatalog(
     .map(sanitizeMemoryRecord)
     .filter((memory) => normalizeTenantId(memory.tenantId) === tenantId)
     .filter((memory) => memoryVisibleForScope(memory, options.accessScope))
+    .filter((memory) =>
+      catalogClass === "all" || !isRawSourceKnowledgeMemory(memory)
+    )
     .filter((memory) => memory.claimStatus !== "forgotten")
     .filter((memory) => options.includeInactive || isActiveMemory(memory))
     .sort((left, right) =>
@@ -1589,6 +1633,53 @@ export async function listMemoryReconciliationReviews(
     .slice(0, limit);
 }
 
+export async function getMemoryReconciliationStats(
+  options: {
+    tenantId?: string;
+    accessScope?: DatabaseMemoryAccessScope;
+  } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const scoped = Boolean(options.accessScope);
+    const readRows = (sql: MemorySqlClient) => sql`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
+        COUNT(*) FILTER (WHERE status = 'resolved')::int AS resolved
+      FROM omni_memory_reconciliation_reviews
+      WHERE tenant_id = ${tenantId}
+        AND (
+          (${scoped} = TRUE AND owner_actor_id IS NOT NULL)
+          OR (${scoped} = FALSE AND owner_actor_id IS NULL)
+        )
+    `;
+    const rows = options.accessScope
+      ? await runWithDatabaseMemoryAccessScope(
+          options.accessScope,
+          tenantId,
+          readRows,
+          [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.correct],
+        )
+      : await readRows(getSql());
+    return {
+      pending: Number(rows[0]?.pending || 0),
+      resolved: Number(rows[0]?.resolved || 0),
+    };
+  }
+
+  const reviews = await listMemoryReconciliationReviews({
+    tenantId,
+    status: "all",
+    limit: 200,
+    accessScope: options.accessScope,
+  });
+  return {
+    pending: reviews.filter((review) => review.status === "pending").length,
+    resolved: reviews.filter((review) => review.status === "resolved").length,
+  };
+}
+
 export async function resolveMemoryReconciliationReview(
   reviewId: string,
   decision: MemoryReconciliationDecision,
@@ -2129,6 +2220,29 @@ export async function listAttributedMemoryDeletionReceipts(
     LIMIT ${limit}
   `;
   return rows.map(memoryDeletionReceiptFromRow);
+}
+
+export async function countAttributedMemoryDeletionReceipts(
+  options: {
+    tenantId?: string;
+    initiatingActorIds: readonly string[];
+  },
+) {
+  if (!hasDatabaseUrl()) return 0;
+  await ensureDatabaseSchema();
+  const tenantId = normalizeTenantId(options.tenantId);
+  const initiatingActorIds = canonicalizeMemoryDeletionIds(
+    options.initiatingActorIds,
+  );
+  if (!initiatingActorIds.length) return 0;
+  const rows = await getSql()`
+    SELECT COUNT(*)::int AS count
+    FROM omni_memory_deletion_receipts
+    WHERE tenant_id = ${tenantId}
+      AND attribution_kind = 'scope_bound'
+      AND initiating_actor_id = ANY(${initiatingActorIds}::text[])
+  `;
+  return Number(rows[0]?.count || 0);
 }
 
 /**
@@ -3528,6 +3642,18 @@ function memoryCatalogFromMemory(
     evidenceRefCount: counts.evidenceRefCount,
     byteCount: counts.byteCount,
   });
+}
+
+function isRawSourceKnowledgeMemory(memory: MemoryRecord) {
+  if (memory.type !== "knowledge" || memory.tier === "summary") return false;
+  if (
+    DURABLE_KNOWLEDGE_FORMATION_REASONS.includes(memory.formationReason || "")
+  ) {
+    return false;
+  }
+  return memory.tags.includes("rag") ||
+    memory.formationReason === "canonical_source_observation" ||
+    memory.assertedBy === "import";
 }
 
 function memoryReconciliationReviewFromRow(

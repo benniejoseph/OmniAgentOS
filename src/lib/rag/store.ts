@@ -1121,22 +1121,22 @@ export async function getKnowledgeStats(options: { tenantId?: string } = {}) {
     const rows = await getSql()`
       SELECT COUNT(*)::int AS documents,
              COALESCE(SUM(chunk_count), 0)::int AS chunks,
-             COALESCE(SUM(total_characters), 0)::int AS characters
+             COALESCE(SUM(total_characters), 0)::int AS characters,
+             (
+               SELECT COUNT(*)::int
+               FROM omni_knowledge_chunks chunk
+               WHERE chunk.tenant_id = ${tenantId}
+                 AND jsonb_typeof(chunk.embedding) = 'array'
+             ) AS embedded
       FROM omni_knowledge_documents
       WHERE tenant_id = ${tenantId}
-    `;
-    const embeddedRows = await getSql()`
-      SELECT COUNT(*)::int AS count
-      FROM omni_knowledge_chunks
-      WHERE jsonb_typeof(embedding) = 'array'
-        AND tenant_id = ${tenantId}
     `;
 
     return {
       documents: Number(rows[0]?.documents || 0),
       chunks: Number(rows[0]?.chunks || 0),
       characters: Number(rows[0]?.characters || 0),
-      embedded: Number(embeddedRows[0]?.count || 0),
+      embedded: Number(rows[0]?.embedded || 0),
     };
   }
 

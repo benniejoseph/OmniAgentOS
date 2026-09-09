@@ -7,7 +7,7 @@ import {
 } from "@/lib/app-services/contracts";
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
-import { getMemoryGraphStats } from "@/lib/memory/graph";
+import { getMemoryGraphCounts } from "@/lib/memory/graph";
 import {
   buildMemoryIntelligenceOverview,
   filterKnowledgeIndex,
@@ -21,9 +21,10 @@ import {
 } from "@/lib/memory/intelligence";
 import { requestMemoryAccessFromSecurityContext } from "@/lib/memory/request-access";
 import {
-  listAttributedMemoryDeletionReceipts,
+  countAttributedMemoryDeletionReceipts,
+  getMemoryReconciliationStats,
   listMemoryCatalog,
-  listMemoryReconciliationReviews,
+  type MemoryCatalogClass,
 } from "@/lib/memory/store";
 import { getKnowledgeStats, listKnowledgeDocuments } from "@/lib/rag/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -64,7 +65,7 @@ export async function showMemoryIntelligenceService(
   });
 
   if (value.view === "memory") {
-    const memories = await readMemoryCatalog(caller, requestAccess);
+    const memories = await readMemoryCatalog(caller, requestAccess, "durable");
     const category = MEMORY_CATEGORY_IDS.includes(
         value.category as (typeof MEMORY_CATEGORY_IDS)[number],
       )
@@ -115,89 +116,77 @@ export async function showMemoryIntelligenceService(
     });
   }
 
-  const memories = await readMemoryCatalog(caller, requestAccess);
-  const documents = await listKnowledgeDocuments(5_000, {
-    tenantId: caller.context.tenantId,
-  });
-  const knowledgeStats = await getKnowledgeStats({
-    tenantId: caller.context.tenantId,
-  });
-  const graphStats = await getMemoryGraphStats({
-    tenantId: caller.context.tenantId,
-    accessScope: requestAccess?.databaseAccessScope,
-  });
-  const legacyReviews = await listMemoryReconciliationReviews({
-    tenantId: caller.context.tenantId,
-    status: "all",
-    limit: 200,
-  });
-  const privateReviews = requestAccess
-    ? await listMemoryReconciliationReviews({
-        tenantId: caller.context.tenantId,
-        status: "all",
-        limit: 200,
-        accessScope: requestAccess.databaseAccessScope,
-      })
-    : [];
-  const reviews = mergeById(legacyReviews, privateReviews);
   const actorBinding = canonicalRequestActorBindingFromSecurityContext(
     caller.context,
   );
-  const deletionReceipts = await listAttributedMemoryDeletionReceipts({
-    tenantId: caller.context.tenantId,
-    initiatingActorIds: actorBinding?.readableOwnerActorIds || [
-      caller.context.actorId,
-    ],
-    limit: 100,
-  });
+  const [
+    memories,
+    documents,
+    knowledgeStats,
+    graphStats,
+    legacyReviewStats,
+    privateReviewStats,
+    deletionBarriers,
+  ] = await Promise.all([
+    readMemoryCatalog(caller, requestAccess, "durable"),
+    listKnowledgeDocuments(5_000, {
+      tenantId: caller.context.tenantId,
+    }),
+    getKnowledgeStats({ tenantId: caller.context.tenantId }),
+    getMemoryGraphCounts({
+      tenantId: caller.context.tenantId,
+      accessScope: requestAccess?.databaseAccessScope,
+    }),
+    getMemoryReconciliationStats({ tenantId: caller.context.tenantId }),
+    requestAccess
+      ? getMemoryReconciliationStats({
+          tenantId: caller.context.tenantId,
+          accessScope: requestAccess.databaseAccessScope,
+        })
+      : Promise.resolve({ pending: 0, resolved: 0 }),
+    countAttributedMemoryDeletionReceipts({
+      tenantId: caller.context.tenantId,
+      initiatingActorIds: actorBinding?.readableOwnerActorIds || [
+        caller.context.actorId,
+      ],
+    }),
+  ]);
   const overview = buildMemoryIntelligenceOverview({
     memories,
     documents,
     knowledgeStats,
     graphStats,
-    pendingReviews: reviews.filter((review) => review.status === "pending").length,
-    resolvedReviews: reviews.filter((review) => review.status === "resolved").length,
-    deletionBarriers: deletionReceipts.length,
+    pendingReviews: legacyReviewStats.pending + privateReviewStats.pending,
+    resolvedReviews: legacyReviewStats.resolved + privateReviewStats.resolved,
+    deletionBarriers,
   });
-  const memoryItems = memories.filter((memory) => !isSourceKnowledgeMemory(memory))
-    .map(memoryIndexItem);
-  const knowledgeItems = documents.map(knowledgeIndexItem);
-  const memory = sliceIntelligencePage(memoryItems, undefined, value.limit, {
-    view: "memory",
-    query: "",
-    category: "all",
-    tier: "all",
-    state: "all",
-  });
-  const knowledge = sliceIntelligencePage(
-    knowledgeItems,
-    undefined,
-    value.limit,
-    { view: "knowledge", query: "", category: "all" },
-  );
-
-  return completeAppServiceCall(authorized, { overview, memory, knowledge }, {
-    resourceCount: memory.items.length + knowledge.items.length,
+  return completeAppServiceCall(authorized, { overview }, {
+    resourceCount: memories.length + documents.length,
   });
 }
 
 async function readMemoryCatalog(
   caller: AppServiceCaller,
   requestAccess: ReturnType<typeof requestMemoryAccessFromSecurityContext>,
+  catalogClass: MemoryCatalogClass = "all",
 ) {
-  const legacy = await listMemoryCatalog({
-    tenantId: caller.context.tenantId,
-    includeInactive: true,
-    limit: 10_000,
-  });
-  const scoped = requestAccess
-    ? await listMemoryCatalog({
-        tenantId: caller.context.tenantId,
-        includeInactive: true,
-        limit: 10_000,
-        accessScope: requestAccess.databaseAccessScope,
-      })
-    : [];
+  const [legacy, scoped] = await Promise.all([
+    listMemoryCatalog({
+      tenantId: caller.context.tenantId,
+      includeInactive: true,
+      limit: 10_000,
+      catalogClass,
+    }),
+    requestAccess
+      ? listMemoryCatalog({
+          tenantId: caller.context.tenantId,
+          includeInactive: true,
+          limit: 10_000,
+          catalogClass,
+          accessScope: requestAccess.databaseAccessScope,
+        })
+      : Promise.resolve([]),
+  ]);
   return mergeById(legacy, scoped)
     .sort((left, right) =>
       right.updatedAt.localeCompare(left.updatedAt) ||

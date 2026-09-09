@@ -783,6 +783,78 @@ export async function getMemoryGraphStats(
   );
 }
 
+/**
+ * Count-only projection for dashboards. This avoids transferring and parsing
+ * every node and edge when callers need only the graph's current size.
+ */
+export async function getMemoryGraphCounts(
+  options: GraphReadOptions = {},
+): Promise<Readonly<{ nodes: number; edges: number }>> {
+  const tenantId = normalizeTenantId(options.tenantId);
+  return runWithDatabaseTenantScope(tenantId, async () => {
+    if (hasDatabaseUrl()) {
+      await ensureDatabaseSchema();
+      const readCounts = (
+        sql: GraphSqlClient,
+        accessContractVersion: 0 | 1,
+      ) => sql`
+        SELECT
+          (
+            SELECT COUNT(*)::int
+            FROM omni_memory_graph_nodes node
+            WHERE node.tenant_id = ${tenantId}
+              AND node.access_contract_version = ${accessContractVersion}
+              AND NOT EXISTS (
+                SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+                WHERE lifecycle.tenant_id = node.tenant_id
+                  AND lifecycle.archived_at IS NOT NULL
+                  AND lifecycle.memory_id = ANY(node.memory_ids)
+              )
+          ) AS nodes,
+          (
+            SELECT COUNT(*)::int
+            FROM omni_memory_graph_edges edge
+            WHERE edge.tenant_id = ${tenantId}
+              AND edge.access_contract_version = ${accessContractVersion}
+              AND NOT EXISTS (
+                SELECT 1 FROM omni_memory_lifecycle_states lifecycle
+                WHERE lifecycle.tenant_id = edge.tenant_id
+                  AND lifecycle.archived_at IS NOT NULL
+                  AND lifecycle.memory_id = ANY(edge.memory_ids)
+              )
+          ) AS edges
+      `;
+      const legacyRows = await readCounts(getSql(), 0);
+      const scopedRows = options.accessScope
+        ? await runWithGraphAccessScope(
+            options.accessScope,
+            tenantId,
+            [MEMORY_PURPOSE_IDS.read, MEMORY_PURPOSE_IDS.retrieve],
+            (sql) => readCounts(sql, 1),
+          )
+        : [];
+      return Object.freeze({
+        nodes: Number(legacyRows[0]?.nodes || 0) +
+          Number(scopedRows[0]?.nodes || 0),
+        edges: Number(legacyRows[0]?.edges || 0) +
+          Number(scopedRows[0]?.edges || 0),
+      });
+    }
+
+    const ledger = await readGraphLedger();
+    return Object.freeze({
+      nodes: ledger.nodes.filter((node) =>
+        graphTenantId(node) === tenantId &&
+        graphRecordVisibleForScope(node, options.accessScope)
+      ).length,
+      edges: ledger.edges.filter((edge) =>
+        graphTenantId(edge) === tenantId &&
+        graphRecordVisibleForScope(edge, options.accessScope)
+      ).length,
+    });
+  });
+}
+
 async function getMemoryGraphStatsForTenant(
   tenantId: string,
   accessScope?: DatabaseMemoryAccessScope,

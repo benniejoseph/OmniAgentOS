@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const graphMocks = vi.hoisted(() => {
   const statements: string[] = [];
   const sql = vi.fn(async (strings: TemplateStringsArray) => {
-    statements.push(strings.join("?"));
+    const statement = strings.join("?");
+    statements.push(statement);
+    if (statement.includes("AS nodes") && statement.includes("AS edges")) {
+      return [{ nodes: 12, edges: 18 }];
+    }
     return [];
   });
   Object.assign(sql, {
@@ -31,7 +35,7 @@ vi.mock("@/lib/memory/store", () => ({
   listMemories: graphMocks.listMemories,
 }));
 
-import { rebuildMemoryGraph } from "@/lib/memory/graph";
+import { getMemoryGraphCounts, rebuildMemoryGraph } from "@/lib/memory/graph";
 
 describe("memory graph postgres rebuild", () => {
   beforeEach(() => {
@@ -75,5 +79,17 @@ describe("memory graph postgres rebuild", () => {
     expect(nodeWrites[0]).toContain("jsonb_to_recordset");
     expect(edgeWrites[0]).toContain("jsonb_to_recordset");
     expect(graphMocks.sql.mock.calls.length).toBeLessThan(12);
+  });
+
+  it("reads dashboard graph size without loading graph records", async () => {
+    await expect(getMemoryGraphCounts({ tenantId: "tenant-bulk" }))
+      .resolves.toEqual({ nodes: 12, edges: 18 });
+
+    const countStatement = graphMocks.statements.find((statement) =>
+      statement.includes("AS nodes") && statement.includes("AS edges")
+    );
+    expect(countStatement).toContain("COUNT(*)::int");
+    expect(countStatement).not.toContain("SELECT node.*");
+    expect(countStatement).not.toContain("SELECT edge.*");
   });
 });
