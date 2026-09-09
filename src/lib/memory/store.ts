@@ -1701,6 +1701,7 @@ export async function resolveMemoryReconciliationReview(
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
+    const scoped = Boolean(options.accessScope);
     return getSql().transaction(async (sql: MemorySqlClient) => {
       if (options.accessScope) {
         const accessScope = parseDatabaseMemoryAccessScope(options.accessScope);
@@ -1717,6 +1718,10 @@ export async function resolveMemoryReconciliationReview(
         FROM omni_memory_reconciliation_reviews
         WHERE tenant_id = ${tenantId}
           AND id = ${reviewId}
+          AND (
+            (${scoped} = TRUE AND owner_actor_id IS NOT NULL)
+            OR (${scoped} = FALSE AND owner_actor_id IS NULL)
+          )
         LIMIT 1
         FOR UPDATE
       `;
@@ -1841,7 +1846,12 @@ export async function resolveMemoryReconciliationReview(
     status: "all",
     accessScope: options.accessScope,
   });
-  const current = reviews.find((review) => review.id === reviewId);
+  const current = reviews.find((review) =>
+    review.id === reviewId &&
+    (options.accessScope
+      ? Boolean(review.ownerActorId)
+      : !review.ownerActorId)
+  );
   if (!current) return null;
   if (current.status === "resolved") {
     if (current.decision !== parsedDecision) {

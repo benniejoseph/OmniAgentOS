@@ -102,6 +102,7 @@ import {
   listMemories,
   previewMemoryDeletion,
   correctMemory,
+  resolveMemoryReconciliationReview,
   saveMemory,
   searchMemories,
   shareAgentPrivateMemory,
@@ -220,6 +221,26 @@ describe("Postgres memory recall", () => {
       query.includes("COUNT(*) FILTER")
     );
     expect(countQuery).not.toContain("SELECT review.*");
+  });
+
+  it("selects only the actor-bound reconciliation lane for scoped resolutions", async () => {
+    await expect(resolveMemoryReconciliationReview(
+      "memory-reconciliation-private",
+      "confirm_candidate",
+      {
+        tenantId: "tenant-a",
+        actorId: ownerActorId,
+        accessScope: accessScope(MEMORY_PURPOSE_IDS.correct),
+        executionScope: executionScope(MEMORY_PURPOSE_IDS.correct),
+      },
+    )).resolves.toBeNull();
+
+    const resolutionQuery = mocks.queries.find((query) =>
+      query.includes("FROM omni_memory_reconciliation_reviews") &&
+      query.includes("FOR UPDATE")
+    );
+    expect(resolutionQuery).toContain("owner_actor_id IS NOT NULL");
+    expect(resolutionQuery).toContain("owner_actor_id IS NULL");
   });
 
   it("canonicalizes JSON projection timestamps before verifying review bindings", async () => {

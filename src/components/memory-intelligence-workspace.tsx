@@ -114,6 +114,7 @@ export function MemoryIntelligenceWorkspace() {
   const [indexLoading, setIndexLoading] = useState(false);
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const [busy, setBusy] = useState<string>();
+  const [reviewErrors, setReviewErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -298,6 +299,11 @@ export function MemoryIntelligenceWorkspace() {
     decision: "confirm_candidate" | "keep_existing" | "keep_both",
   ) {
     setBusy(`review:${reviewId}`);
+    setReviewErrors((current) => {
+      const next = { ...current };
+      delete next[reviewId];
+      return next;
+    });
     try {
       const response = await fetch("/api/memory/reconciliation", {
         method: "PATCH",
@@ -306,10 +312,13 @@ export function MemoryIntelligenceWorkspace() {
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "The review could not be resolved.");
+      setReviews((current) => current.filter((review) => review.id !== reviewId));
       setAnnouncement("Review resolved. The recall index is being refreshed.");
       await Promise.all([loadReviews(true), loadOverview()]);
     } catch (actionError) {
-      setError(message(actionError));
+      const detail = message(actionError);
+      setReviewErrors((current) => ({ ...current, [reviewId]: detail }));
+      setAnnouncement(`Review was not changed. ${detail}`);
     } finally {
       setBusy(undefined);
     }
@@ -525,6 +534,7 @@ export function MemoryIntelligenceWorkspace() {
                 loaded={reviewsLoaded}
                 loading={reviewsLoading}
                 busy={busy}
+                errors={reviewErrors}
                 onResolve={resolveReview}
                 total={overview?.summary.pendingReviews || reviews.length}
                 onMore={() => setReviewLimit((current) => current + 20)}
@@ -665,12 +675,25 @@ function KnowledgeIndex(props: {
   </>;
 }
 
-function ReviewIndex(props: { reviews: MemoryReconciliationReview[]; loaded: boolean; loading: boolean; busy?: string; total: number; onMore: () => void; onResolve: (id: string, decision: "confirm_candidate" | "keep_existing" | "keep_both") => void }) {
+function ReviewIndex(props: { reviews: MemoryReconciliationReview[]; loaded: boolean; loading: boolean; busy?: string; errors: Record<string, string>; total: number; onMore: () => void; onResolve: (id: string, decision: "confirm_candidate" | "keep_existing" | "keep_both") => void }) {
   const pending = props.reviews.filter((review) => review.status === "pending");
   return <>
     <IndexHeading eyebrow="Truth review" title="Keep memory accurate and inspectable" detail="Candidates never enter active recall until you make a governed decision." />
     <div className={styles.reviewList}>
-      {pending.map((review) => <article key={review.id}><header><span>{review.kind === "contradiction" ? "Conflict" : "Proposed memory"}</span><small>{startCase(review.detectionReason)}</small></header><div className={styles.reviewClaims}><section><p>Candidate</p><strong>{review.candidate.title}</strong><span>{review.candidate.content}</span></section>{review.existing ? <section><p>Current memory</p><strong>{review.existing.title}</strong><span>{review.existing.content}</span></section> : null}</div><footer><button type="button" onClick={() => props.onResolve(review.id, "confirm_candidate")} disabled={props.busy === `review:${review.id}`}><Check size={15} /> Use candidate</button>{review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={props.busy === `review:${review.id}`}>Keep current</button> : <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={props.busy === `review:${review.id}`}>Dismiss</button>}{review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_both")} disabled={props.busy === `review:${review.id}`}>Keep both</button> : null}</footer></article>)}
+      {pending.map((review) => {
+        const resolving = props.busy === `review:${review.id}`;
+        return <article key={review.id} aria-busy={resolving}>
+          <header><span>{review.kind === "contradiction" ? "Conflict" : "Proposed memory"}</span><small>{startCase(review.detectionReason)}</small></header>
+          <div className={styles.reviewClaims}><section><p>Candidate</p><strong>{review.candidate.title}</strong><span>{review.candidate.content}</span></section>{review.existing ? <section><p>Current memory</p><strong>{review.existing.title}</strong><span>{review.existing.content}</span></section> : null}</div>
+          {props.errors[review.id] ? <p className={styles.reviewError} role="alert"><CircleAlert size={15} />{props.errors[review.id]}</p> : null}
+          <footer>
+            {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Applying decision…</span> : null}
+            <button type="button" onClick={() => props.onResolve(review.id, "confirm_candidate")} disabled={resolving}><Check size={15} /> Use candidate</button>
+            {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={resolving}>Keep current</button> : <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={resolving}>Dismiss</button>}
+            {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_both")} disabled={resolving}>Keep both</button> : null}
+          </footer>
+        </article>;
+      })}
       {props.loaded && !props.loading && !pending.length ? <EmptyState icon={<ShieldCheck />} title="Review queue is clear" detail="Mnemosyne will place contradictions and inferred candidates here before they can affect recall." /> : null}
       {props.loading ? <LoadingRow /> : null}
     </div>

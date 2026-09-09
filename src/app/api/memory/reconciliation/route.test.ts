@@ -159,6 +159,33 @@ describe("memory reconciliation API", () => {
     }));
   });
 
+  it("falls back to the legacy lane when the private lane does not own the review", async () => {
+    mocks.resolve.mockReset();
+    mocks.resolve.mockResolvedValueOnce(null).mockResolvedValueOnce(resolvedReview);
+
+    const response = await PATCH(new Request(
+      "http://localhost/api/memory/reconciliation",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reviewId: "review-a",
+          decision: "confirm_candidate",
+        }),
+      },
+    ));
+
+    expect(response.status).toBe(200);
+    expect(mocks.resolve).toHaveBeenCalledTimes(2);
+    expect(mocks.resolve).toHaveBeenNthCalledWith(
+      2,
+      "review-a",
+      "confirm_candidate",
+      expect.not.objectContaining({ accessScope: expect.anything() }),
+    );
+    expect(mocks.queueGraph).toHaveBeenCalledWith({ tenantId: "tenant-a" });
+  });
+
   it("returns a state conflict instead of overwriting an earlier decision", async () => {
     mocks.resolve.mockRejectedValueOnce(
       new mocks.MemoryReconciliationConflictError("Already resolved."),
