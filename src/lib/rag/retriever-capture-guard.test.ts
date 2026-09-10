@@ -86,6 +86,7 @@ describe("capture ingestion persistence guard", () => {
   });
 
   it("carries the same lock guard through knowledge, memory, and graph writes", async () => {
+    const progress: Array<{ stage: string; chunkCount?: number; memoryCount?: number }> = [];
     await ingestTextDocument({
       tenantId: guard.tenantId,
       title: "Capture",
@@ -93,6 +94,9 @@ describe("capture ingestion persistence guard", () => {
       source: "capture:asset:asset-a",
       captureIngestGuard: guard,
       sourceLineage,
+      onProgress: (update) => {
+        progress.push(update);
+      },
     });
 
     expect(mocks.createKnowledgeDocument).toHaveBeenCalledWith(
@@ -107,6 +111,14 @@ describe("capture ingestion persistence guard", () => {
       "knowledge.ingest",
       { captureIngestGuard: guard },
     );
+    expect(progress).toEqual([
+      { stage: "chunking" },
+      { stage: "embedding", chunkCount: 1 },
+      { stage: "knowledge", chunkCount: 1 },
+      { stage: "entities", chunkCount: 1 },
+      { stage: "memory", chunkCount: 1 },
+      { stage: "graph", chunkCount: 1, memoryCount: 1 },
+    ]);
   });
 
   it("rejects actor-attributed ingestion without canonical source lineage", async () => {

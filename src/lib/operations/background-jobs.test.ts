@@ -12,6 +12,84 @@ beforeAll(async () => {
 });
 
 describe("background operation jobs", () => {
+  it("processes a stored transcript through extraction, RAG, memory, and graph stages", async () => {
+    const assets = await import("@/lib/capture/assets");
+    const jobs = await import("@/lib/operations/background-jobs");
+    const queue = await import("@/lib/operations/job-queue");
+    const { createExecutionScope } = await import("@/lib/security/execution-scope");
+    const tenantId = "tenant-capture-asset-process";
+    const actorId = "owner-capture-asset-process";
+    const executionScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "capture-asset-process-test",
+      purpose: "capture.asset.ingest.test",
+    });
+    const stored = await assets.saveCaptureAsset({
+      tenantId,
+      actorId,
+      executionScope,
+      filename: "ict-liquidity.vtt",
+      mediaType: "text/vtt",
+      bytes: Buffer.from(
+        "WEBVTT\n\n00:00.000 --> 00:02.000\nLiquidity rests above old highs.\n",
+      ),
+      tags: ["ict"],
+    });
+    const queued = await jobs.enqueueCaptureAssetProcessJob({
+      tenantId,
+      actorId,
+      executionScope,
+      idempotencyKey: "capture-asset-process-request",
+      request: {
+        assetId: stored.id,
+        title: "ICT liquidity lesson",
+        tags: ["liquidity"],
+      },
+    });
+    await assets.updateCaptureAssetStatus(stored.id, {
+      tenantId,
+      actorId,
+      executionScope,
+    }, {
+      status: "queued",
+      extractionStatus: "pending",
+      ingestJobId: queued.id,
+      clearExtractionReceipt: true,
+    });
+
+    expect(queue.projectOperationJobStatus(queued)).not.toHaveProperty("request");
+    await expect(jobs.processBackgroundOperationQueue({
+      tenantId,
+      limit: 1,
+    })).resolves.toMatchObject({ leased: 1, completed: 1, failed: 0 });
+
+    const completed = await queue.getOperationJob(queued.id, { tenantId });
+    expect(queue.projectOperationJobStatus(completed!)).toMatchObject({
+      type: "capture.asset.process",
+      status: "completed",
+      progress: { stage: "completed" },
+      result: { chunkCount: 1, memoryCount: 1 },
+    });
+    expect(completed?.payload.request).toBeUndefined();
+    await expect(assets.getCaptureAsset(stored.id, {
+      tenantId,
+      actorId,
+    })).resolves.toMatchObject({
+      status: "indexed",
+      extractionStatus: "completed",
+      ingestJobId: queued.id,
+      knowledgeDocumentId: expect.any(String),
+      extractionReceipt: {
+        state: "completed",
+        sourceKind: "video",
+        unitCount: 1,
+      },
+    });
+  });
+
   it("accepts exact structured units and rejects units that do not compose the content", async () => {
     const { finalizeCaptureExtraction, renderCaptureExtractionUnits } = await import("@/lib/capture/extraction");
     const { knowledgeIngestJobRequestSchema } = await import("@/lib/operations/background-jobs");

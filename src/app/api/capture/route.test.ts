@@ -5,6 +5,12 @@ const routeMocks = vi.hoisted(() => ({
   canonicalRequestActorBindingFromSecurityContext: vi.fn(),
   captureExecutionScopeFromSecurityContext: vi.fn(),
   listCaptureAssets: vi.fn(),
+  saveCaptureAsset: vi.fn(),
+  updateCaptureAssetStatus: vi.fn(),
+  enqueueCaptureAssetProcessJob: vi.fn(),
+  enqueueKnowledgeIngestJob: vi.fn(),
+  getOperationJobsByIds: vi.fn(),
+  projectOperationJobStatus: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", async (importOriginal) => ({
@@ -30,23 +36,24 @@ vi.mock("@/lib/capture/execution-scope", () => ({
 
 vi.mock("@/lib/capture/assets", () => ({
   listCaptureAssets: routeMocks.listCaptureAssets,
-  saveCaptureAsset: vi.fn(),
-  updateCaptureAssetStatus: vi.fn(),
+  saveCaptureAsset: routeMocks.saveCaptureAsset,
+  updateCaptureAssetStatus: routeMocks.updateCaptureAssetStatus,
 }));
 
 vi.mock("@/lib/capture/files", () => ({
-  CaptureFileError: class CaptureFileError extends Error {},
-  extractCaptureFile: vi.fn(),
+  captureTitle: (filename: string) => filename.replace(/\.[^.]+$/, ""),
 }));
 
 vi.mock("@/lib/operations/background-jobs", () => ({
   BackgroundJobIdempotencyConflictError:
     class BackgroundJobIdempotencyConflictError extends Error {},
-  enqueueKnowledgeIngestJob: vi.fn(),
+  enqueueCaptureAssetProcessJob: routeMocks.enqueueCaptureAssetProcessJob,
+  enqueueKnowledgeIngestJob: routeMocks.enqueueKnowledgeIngestJob,
 }));
 
 vi.mock("@/lib/operations/job-queue", () => ({
-  projectOperationJobStatus: vi.fn(),
+  getOperationJobsByIds: routeMocks.getOperationJobsByIds,
+  projectOperationJobStatus: routeMocks.projectOperationJobStatus,
 }));
 
 import { GET, POST } from "@/app/api/capture/route";
@@ -84,6 +91,17 @@ beforeEach(() => {
     .mockReset()
     .mockReturnValue({});
   routeMocks.listCaptureAssets.mockReset().mockResolvedValue([]);
+  routeMocks.saveCaptureAsset.mockReset();
+  routeMocks.updateCaptureAssetStatus.mockReset();
+  routeMocks.enqueueCaptureAssetProcessJob.mockReset();
+  routeMocks.enqueueKnowledgeIngestJob.mockReset();
+  routeMocks.getOperationJobsByIds.mockReset().mockResolvedValue([]);
+  routeMocks.projectOperationJobStatus.mockReset().mockImplementation((job) => ({
+    id: job.id,
+    type: job.type,
+    status: job.status,
+    progress: job.payload?.progress || {},
+  }));
 });
 
 describe("request-bound Capture asset collection route", () => {
@@ -102,6 +120,41 @@ describe("request-bound Capture asset collection route", () => {
       actorId,
       requestActorBinding,
     }, 20);
+    expect(routeMocks.getOperationJobsByIds).toHaveBeenCalledWith([], {
+      tenantId: context.tenantId,
+    });
+  });
+
+  it("returns exact-owner processing progress without job payload content", async () => {
+    routeMocks.listCaptureAssets.mockResolvedValueOnce([
+      { id: "asset-a", manageable: true, ingestJobId: "job-a" },
+      { id: "asset-b", manageable: false, ingestJobId: "job-b" },
+    ]);
+    routeMocks.getOperationJobsByIds.mockResolvedValueOnce([{
+      id: "job-a",
+      type: "capture.asset.process",
+      status: "running",
+      payload: {
+        actorId,
+        request: { note: "private transcript content" },
+        progress: { stage: "embedding", chunkCount: 8 },
+      },
+    }]);
+
+    const response = await GET(new Request("http://localhost/api/capture"));
+    const body = await response.json();
+
+    expect(routeMocks.getOperationJobsByIds).toHaveBeenCalledWith(["job-a"], {
+      tenantId: context.tenantId,
+    });
+    expect(body.processingJobs).toEqual([{
+      assetId: "asset-a",
+      id: "job-a",
+      type: "capture.asset.process",
+      status: "running",
+      progress: { stage: "embedding", chunkCount: 8 },
+    }]);
+    expect(JSON.stringify(body.processingJobs)).not.toContain("private transcript");
   });
 
   it("does not derive or pass a request-read binding through POST", async () => {
@@ -121,6 +174,108 @@ describe("request-bound Capture asset collection route", () => {
       routeMocks.canonicalRequestActorBindingFromSecurityContext,
     ).not.toHaveBeenCalled();
     expect(routeMocks.listCaptureAssets).not.toHaveBeenCalled();
+  });
+
+  it("stores an uploaded transcript and queues extraction without reading it synchronously", async () => {
+    const stored = {
+      id: "capture_asset_a",
+      tenantId: context.tenantId,
+      actorId,
+      filename: "ICT lesson.vtt",
+      mediaType: "text/vtt",
+      extension: "vtt",
+      byteCount: 22,
+      contentSha256: "a".repeat(64),
+      storageKind: "database",
+      status: "stored",
+      extractionStatus: "pending",
+      tags: ["ict"],
+      metadata: {},
+      createdAt: "2026-09-10T00:00:00.000Z",
+      updatedAt: "2026-09-10T00:00:00.000Z",
+    };
+    const job = {
+      id: "job-a",
+      type: "capture.asset.process",
+      status: "queued",
+      payload: { actorId, progress: { stage: "queued" } },
+    };
+    routeMocks.saveCaptureAsset.mockResolvedValueOnce(stored);
+    routeMocks.enqueueCaptureAssetProcessJob.mockResolvedValueOnce(job);
+    routeMocks.updateCaptureAssetStatus.mockResolvedValueOnce({
+      ...stored,
+      status: "queued",
+      ingestJobId: job.id,
+    });
+    const form = new FormData();
+    form.set("file", new File([
+      "WEBVTT\n\n00:00.000 --> 00:02.000\nLiquidity",
+    ], "ICT lesson.vtt", { type: "text/vtt" }));
+    form.set("title", "ICT liquidity lesson");
+    form.set("tags", "ict, liquidity");
+
+    const response = await POST(new Request("http://localhost/api/capture", {
+      method: "POST",
+      body: form,
+    }));
+
+    expect(response.status).toBe(202);
+    expect(routeMocks.saveCaptureAsset).toHaveBeenCalledOnce();
+    expect(routeMocks.enqueueCaptureAssetProcessJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: context.tenantId,
+        actorId,
+        request: {
+          assetId: stored.id,
+          title: "ICT liquidity lesson",
+          tags: ["ict", "liquidity"],
+        },
+      }),
+    );
+    expect(routeMocks.enqueueKnowledgeIngestJob).not.toHaveBeenCalled();
+    expect(routeMocks.updateCaptureAssetStatus).toHaveBeenCalledWith(
+      stored.id,
+      expect.objectContaining({ tenantId: context.tenantId, actorId }),
+      {
+        status: "queued",
+        extractionStatus: "pending",
+        ingestJobId: job.id,
+        clearExtractionReceipt: true,
+      },
+    );
+  });
+
+  it("keeps manual notes on the existing knowledge ingestion job", async () => {
+    const job = {
+      id: "job-note",
+      type: "knowledge.ingest",
+      status: "queued",
+      payload: { actorId, progress: { stage: "queued" } },
+    };
+    routeMocks.enqueueKnowledgeIngestJob.mockResolvedValueOnce(job);
+    const form = new FormData();
+    form.set("content", "A manual observation about liquidity.");
+    form.set("title", "Liquidity note");
+
+    const response = await POST(new Request("http://localhost/api/capture", {
+      method: "POST",
+      body: form,
+    }));
+
+    expect(response.status).toBe(202);
+    expect(routeMocks.enqueueKnowledgeIngestJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: {
+          title: "Liquidity note",
+          content: "A manual observation about liquidity.",
+          source: "capture://quick-note",
+          sourceType: "manual",
+          tags: [],
+        },
+      }),
+    );
+    expect(routeMocks.saveCaptureAsset).not.toHaveBeenCalled();
+    expect(routeMocks.enqueueCaptureAssetProcessJob).not.toHaveBeenCalled();
   });
 
   it("rejects an offline retry that is not bound to the current owner", async () => {

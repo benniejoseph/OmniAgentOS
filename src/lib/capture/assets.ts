@@ -20,6 +20,7 @@ import {
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import {
+  AssetObjectError,
   readReadyAssetObject,
   retireAssetObjectsForSource,
   stageAssetObject,
@@ -96,6 +97,13 @@ export class CaptureAssetContentIntegrityError extends Error {
   constructor(message = "Capture asset content failed integrity validation.") {
     super(message);
     this.name = "CaptureAssetContentIntegrityError";
+  }
+}
+
+export class CaptureAssetContentNotReadyError extends Error {
+  constructor(message = "Captured file content is still being prepared.") {
+    super(message);
+    this.name = "CaptureAssetContentNotReadyError";
   }
 }
 
@@ -576,7 +584,13 @@ async function readCaptureAssetBytes(asset: CaptureAsset) {
         purpose: "capture.asset.download",
       });
       return Buffer.from(stored.bytes);
-    } catch {
+    } catch (error) {
+      if (
+        error instanceof AssetObjectError &&
+        error.code === "object_not_ready"
+      ) {
+        throw new CaptureAssetContentNotReadyError();
+      }
       throw new CaptureAssetContentIntegrityError();
     }
   }
@@ -629,9 +643,11 @@ export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, i
   status: CaptureAssetStatus;
   extractionStatus: CaptureAsset["extractionStatus"];
   ingestJobId?: string;
+  expectedIngestJobId?: string;
   knowledgeDocumentId?: string;
   error?: string;
   extractionReceipt?: CaptureExtractionReceipt;
+  clearExtractionReceipt?: boolean;
 }) {
   const executionScope = requireCaptureAssetMutationScope(owner);
   const asset = await requireCaptureAsset(id, owner);
@@ -652,17 +668,22 @@ export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, i
           knowledge_document_id = ${input.knowledgeDocumentId || null},
           error = ${error || null},
           extraction_receipt = CASE
+            WHEN ${Boolean(input.clearExtractionReceipt)} THEN NULL
             WHEN ${Boolean(extractionReceipt)}
             THEN ${extractionReceipt || null}::jsonb
             ELSE extraction_receipt
           END,
           updated_at = ${now}
         WHERE id = ${asset.id} AND tenant_id = ${asset.tenantId} AND actor_id = ${asset.actorId}
+          AND (${input.expectedIngestJobId || null}::text IS NULL OR ingest_job_id = ${input.expectedIngestJobId || null})
         RETURNING id, tenant_id, actor_id, filename, media_type, extension,
           byte_count, content_sha256, storage_kind, status, extraction_status,
           ingest_job_id, knowledge_document_id, error, extraction_receipt, tags, metadata, created_at,
           updated_at
       `;
+      if (!rows[0]) {
+        throw new Error("Capture asset status mutation is no longer active.");
+      }
       const updated = assetFromRow(rows[0]);
       await updateAssetObjectExtractionState({
         tenantId: updated.tenantId,
@@ -676,10 +697,23 @@ export async function updateCaptureAssetStatus(id: string, owner: ScopedOwner, i
       return updated;
     }) as Promise<CaptureAsset>;
   }
+  if (
+    input.expectedIngestJobId &&
+    asset.ingestJobId !== input.expectedIngestJobId
+  ) {
+    throw new Error("Capture asset status mutation is no longer active.");
+  }
+  const {
+    expectedIngestJobId: _expectedIngestJobId,
+    clearExtractionReceipt,
+    ...statusInput
+  } = input;
   const next: CaptureAsset = {
     ...asset,
-    ...input,
-    extractionReceipt: extractionReceipt || asset.extractionReceipt,
+    ...statusInput,
+    extractionReceipt: clearExtractionReceipt
+      ? undefined
+      : extractionReceipt || asset.extractionReceipt,
     error: error || undefined,
     updatedAt: now,
   };
