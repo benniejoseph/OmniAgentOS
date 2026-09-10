@@ -86,7 +86,7 @@ describe("temporal relation projection queue database scope", () => {
       tenantId: "tenant-queue",
       ownerActorId: "actor:00000000-0000-4000-8000-000000000001",
       executionScope,
-      sql: mocks.sql,
+      sql: mocks.sql as never,
     })).resolves.toMatchObject({ queued: true });
     expect(mocks.sql.mock.calls[0]?.[0].join("?")).toContain(
       "omni_actor_scope_v1_allows_canonical",

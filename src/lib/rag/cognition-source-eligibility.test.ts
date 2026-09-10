@@ -49,6 +49,7 @@ describe("actor-owned cognition source eligibility", () => {
       providerRevisionId: "revision-1",
       sourceUpdatedAt: "2026-09-06T00:00:00.000Z",
       content: "A displacement becomes useful when liquidity has been swept.",
+      retentionExpiresAt: "2026-10-10T00:00:00.000Z",
     });
 
     await expect(getActorOwnedKnowledgeForCognition({
@@ -59,6 +60,7 @@ describe("actor-owned cognition source eligibility", () => {
       document: { id: created.document.id },
       sourceItemId: created.document.sourceItemId,
       sourceRevisionId: created.document.sourceRevisionId,
+      retentionExpiresAt: "2026-10-10T00:00:00.000Z",
     });
     await expect(listActorOwnedKnowledgeDocumentsForCognition({
       tenantId: TENANT_ID,

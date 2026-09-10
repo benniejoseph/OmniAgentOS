@@ -39,6 +39,7 @@ import {
   markKnowledgeCognitionProjected,
   reviewKnowledgeCognition,
   saveKnowledgeCognition,
+  saveKnowledgeCognitionFromBackgroundWorker,
 } from "@/lib/knowledge/cognification-store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { contentSha256Hex } from "@/lib/sources/text-lineage";
@@ -85,7 +86,7 @@ describe("knowledge cognition candidate store", () => {
       actorId,
       status: "pending_review",
     })).toEqual([first]);
-    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledTimes(1);
+    expect(mocks.appendScopedDomainEvent).toHaveBeenCalledTimes(2);
     expect(mocks.appendScopedDomainEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         type: KNOWLEDGE_COGNITION_EVENT_TYPES.proposed,
@@ -101,15 +102,15 @@ describe("knowledge cognition candidate store", () => {
   });
 
   it("rejects a different valid contract for an existing deterministic batch", async () => {
-    await saveKnowledgeCognition(cognitionCandidate());
-    await expect(saveKnowledgeCognition(cognitionCandidate({
+    await saveOwnerCandidate(cognitionCandidate());
+    await expect(saveOwnerCandidate(cognitionCandidate({
       model: "another-configured-memory-model",
     }))).rejects.toBeInstanceOf(KnowledgeCognitionConflictError);
   });
 
   it("allows only the owner to confirm or dismiss a pending candidate", async () => {
     const candidate = cognitionCandidate();
-    await saveKnowledgeCognition(candidate);
+    await saveOwnerCandidate(candidate);
     const confirmed = await reviewKnowledgeCognition({
       id: candidate.batchId,
       tenantId,
@@ -159,7 +160,7 @@ describe("knowledge cognition candidate store", () => {
 
   it("binds only confirmed candidates to one projected memory", async () => {
     const candidate = cognitionCandidate();
-    await saveKnowledgeCognition(candidate);
+    await saveOwnerCandidate(candidate);
     await expect(markKnowledgeCognitionProjected({
       id: candidate.batchId,
       tenantId,
@@ -213,7 +214,7 @@ describe("knowledge cognition candidate store", () => {
 
   it("fails closed when the execution scope does not belong to the owner", async () => {
     const candidate = cognitionCandidate();
-    await saveKnowledgeCognition(candidate);
+    await saveOwnerCandidate(candidate);
     await expect(reviewKnowledgeCognition({
       id: candidate.batchId,
       tenantId,
@@ -230,7 +231,33 @@ describe("knowledge cognition candidate store", () => {
       }),
     })).rejects.toThrow("exact owner scope");
   });
+
+  it("allows only the governed cognition worker to persist model proposals", async () => {
+    const candidate = cognitionCandidate();
+    await expect(saveKnowledgeCognitionFromBackgroundWorker(candidate, {
+      executionScope: workerScope(),
+    })).resolves.toMatchObject({ status: "pending_review" });
+    await expect(saveKnowledgeCognitionFromBackgroundWorker(
+      cognitionCandidate({ model: "another-configured-memory-model" }),
+      { executionScope: ownerScope() },
+    )).rejects.toThrow("governed background worker");
+  });
 });
+
+function saveOwnerCandidate(candidate: CognificationCandidateBatchV1) {
+  return saveKnowledgeCognition(candidate, { executionScope: ownerScope() });
+}
+
+function workerScope() {
+  return createExecutionScope({
+    tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "system",
+    executingPrincipalId: "background-operations-worker",
+    correlationId: "cognition-background-worker",
+    purpose: "agent.knowledge.cognify.v1",
+  });
+}
 
 function cognitionCandidate(
   options: { model?: string } = {},
@@ -239,10 +266,12 @@ function cognitionCandidate(
   const sourceItemId = "source-item-cognition-store";
   const sourceRevisionId = "source-revision-cognition-store";
   const documentId = "document-cognition-store";
+  const retentionExpiresAt = "2026-10-10T00:00:00.000Z";
   const batchId = deriveCognificationBatchId({
     documentId,
     sourceItemId,
     sourceRevisionId,
+    retentionExpiresAt,
     batchIndex: 0,
     batchInputSha256,
   });
@@ -269,6 +298,7 @@ function cognitionCandidate(
     documentId,
     sourceItemId,
     sourceRevisionId,
+    retentionExpiresAt,
     batchIndex: 0,
     batchCount: 1,
     firstChunkIndex: 0,

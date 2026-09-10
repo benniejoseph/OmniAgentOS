@@ -414,6 +414,7 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
     ) {
       await retireKnowledgeEntityLineage({
         tenantId,
+        ownerActorId: lifecycleScope.ownerActorId,
         evidenceRows,
         memoryIds,
         executionScope: lifecycleScope.executionScope,
@@ -560,17 +561,24 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   const ids = new Set(ledger.documents.filter((document) => normalizeTenantId(document.tenantId) === tenantId && document.source.startsWith(prefix)).map((document) => document.id));
   const evidenceRows = canonicalFileEvidenceRows(ledger, ids);
   const invalidationScope = mutation?.executionScope || options.invalidationScope;
+  const invalidationLifecycle = invalidationScope
+    ? requireKnowledgeMemoryLifecycleScope(tenantId, invalidationScope)
+    : undefined;
   const fileMemoryIds = await findFileKnowledgeMemoryIds({
     tenantId,
     documentIds: ids,
     sourcePrefix: prefix,
   });
-  if (invalidationScope && (evidenceRows.length || fileMemoryIds.length)) {
+  if (
+    invalidationLifecycle &&
+    (evidenceRows.length || fileMemoryIds.length)
+  ) {
     await retireKnowledgeEntityLineage({
       tenantId,
+      ownerActorId: invalidationLifecycle.ownerActorId,
       evidenceRows,
       memoryIds: fileMemoryIds,
-      executionScope: invalidationScope,
+      executionScope: invalidationLifecycle.executionScope,
       retiredAt,
     });
   }
@@ -829,6 +837,7 @@ export async function retireSupersededCaptureKnowledge(input: {
   if (exactOwnerUser && (evidenceRows.length || fileMemoryIds.length)) {
     await retireKnowledgeEntityLineage({
       tenantId,
+      ownerActorId: guard.actorId,
       evidenceRows,
       memoryIds: fileMemoryIds,
       executionScope: input.executionScope,
@@ -1414,6 +1423,8 @@ export type ActorOwnedCognitionSource = Readonly<{
   chunks: readonly KnowledgeChunk[];
   sourceItemId: string;
   sourceRevisionId: string;
+  /** Earliest retention boundary across the item, revision, and evidence. */
+  retentionExpiresAt: string | null;
 }>;
 
 /**
@@ -1435,6 +1446,11 @@ export async function getActorOwnedKnowledgeForCognition(input: {
     await ensureDatabaseSchema();
     const rows = await getSql()`
       SELECT document.*,
+        LEAST(
+          item.retention_expires_at,
+          revision.retention_expires_at,
+          MIN(evidence.retention_expires_at)
+        ) AS cognition_retention_expires_at,
         jsonb_agg(
           jsonb_build_object(
             'chunk', to_jsonb(chunk),
@@ -1471,7 +1487,8 @@ export async function getActorOwnedKnowledgeForCognition(input: {
         AND (revision.retention_expires_at IS NULL OR revision.retention_expires_at > ${asOfTime})
         AND item.captured_at <= ${asOfTime}
         AND revision.captured_at <= ${asOfTime}
-      GROUP BY document.id
+      GROUP BY document.id, item.retention_expires_at,
+        revision.retention_expires_at
       HAVING COUNT(*) = document.chunk_count
         AND COUNT(DISTINCT chunk.id) = document.chunk_count
         AND COUNT(DISTINCT evidence.id) = document.chunk_count
@@ -1521,6 +1538,9 @@ export async function getActorOwnedKnowledgeForCognition(input: {
       chunks: Object.freeze(chunks),
       sourceItemId: document.sourceItemId,
       sourceRevisionId: document.sourceRevisionId,
+      retentionExpiresAt: nullableNormalizedDate(
+        rows[0].cognition_retention_expires_at,
+      ),
     });
   }
 
@@ -1555,6 +1575,12 @@ export async function getActorOwnedKnowledgeForCognition(input: {
     chunks: Object.freeze(chunks),
     sourceItemId: document.sourceItemId,
     sourceRevisionId: document.sourceRevisionId,
+    retentionExpiresAt: earliestRetentionBoundary([
+      output.retentionExpiresAt,
+      output.sourceItem.retentionExpiresAt,
+      output.sourceRevision.retentionExpiresAt,
+      ...output.evidenceUnits.map((evidence) => evidence.retentionExpiresAt),
+    ]),
   });
 }
 
@@ -3595,4 +3621,18 @@ function stringArray(value: unknown) {
     throw new Error("Knowledge cognition lifecycle IDs are invalid.");
   }
   return canonicalIds(value.map((item) => String(item)));
+}
+
+function nullableNormalizedDate(value: unknown): string | null {
+  return value === null || value === undefined ? null : normalizeDate(value);
+}
+
+function earliestRetentionBoundary(
+  values: readonly (string | null | undefined)[],
+): string | null {
+  const retained = values.filter((value): value is string => Boolean(value));
+  if (!retained.length) return null;
+  return retained.reduce((earliest, value) =>
+    new Date(value).getTime() < new Date(earliest).getTime() ? value : earliest
+  );
 }

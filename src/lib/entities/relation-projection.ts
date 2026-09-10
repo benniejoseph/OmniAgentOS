@@ -54,7 +54,10 @@ export type RelationProjectionSource = Readonly<{
   sourceSha256: string;
   content: string;
   accessBinding: EntityAccessBinding;
-  epistemicKind: Extract<RelationEpistemicKind, "asserted" | "observed">;
+  epistemicKind: Extract<
+    RelationEpistemicKind,
+    "asserted" | "observed" | "inferred"
+  >;
   confidenceBasisPoints: number;
   defaultValidFrom: string;
   defaultValidTo: string | null;
@@ -74,7 +77,8 @@ export type RelationProjectionPlan = Readonly<{
 
 /**
  * Parses only explicit, line-bounded relation statements. Ordinary prose,
- * retrieval traces, and model output cannot be promoted into truth edges.
+ * retrieval traces, and unreviewed model output cannot be promoted into
+ * truth edges.
  *
  * relation: assigned_to | work item: "Ship P5.4" -> person: "Ada"
  * relation: belongs_to | project: "Phoenix" -> organization: "Acme" |

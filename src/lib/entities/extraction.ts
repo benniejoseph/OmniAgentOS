@@ -534,11 +534,20 @@ async function settleResolution(input: {
 }
 
 function assertCanonicalExplicitMemory(memory: MemoryRecord) {
+  const reviewedCognition =
+    memory.source.startsWith("cognify-reviewed:") &&
+    memory.formationReason === "source_cognition" &&
+    memory.evidenceRefs?.some((reference) =>
+      reference.startsWith("cognition-review:")
+    ) &&
+    memory.evidenceRefs.some((reference) => reference.startsWith("knowledge:")) &&
+    memory.evidenceRefs.some((reference) => reference.startsWith("evidence:"));
   if (
     !memory.tenantId ||
     !(
       ["manual", "user-assertion"].includes(memory.source) ||
-      memory.source.startsWith("correction:")
+      memory.source.startsWith("correction:") ||
+      reviewedCognition
     ) ||
     memory.assertedBy !== "user" ||
     memory.claimStatus !== "active" ||

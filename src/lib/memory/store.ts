@@ -143,6 +143,7 @@ const DURABLE_KNOWLEDGE_FORMATION_REASONS = Object.freeze([
   "project_artifact",
   "workflow_output",
   "maintenance_promotion",
+  "source_cognition",
 ]);
 
 type TenantScopedOptions = {
@@ -813,7 +814,11 @@ export async function shareAgentPrivateMemory(input: {
   }>;
 }
 
-async function saveMemoryWithCommitStatusInTransaction(
+/**
+ * Narrow composition seam for a caller that already owns the SQL transaction.
+ * This keeps a governed review decision and its memory projection atomic.
+ */
+export async function saveMemoryWithCommitStatusInTransaction(
   input: CreateMemoryInput,
   sql: MemorySqlClient,
   options: { databaseAccessScopeAlreadyEntered?: boolean } = {},
@@ -1063,7 +1068,20 @@ async function saveMemoriesWithCommitStatus(
           record.claimStatus !== "active" ||
           !(
             ["manual", "user-assertion"].includes(record.source) ||
-            record.source.startsWith("correction:")
+            record.source.startsWith("correction:") ||
+            (
+              record.source.startsWith("cognify-reviewed:") &&
+              record.formationReason === "source_cognition" &&
+              record.evidenceRefs?.some((reference) =>
+                reference.startsWith("cognition-review:")
+              ) &&
+              record.evidenceRefs.some((reference) =>
+                reference.startsWith("knowledge:")
+              ) &&
+              record.evidenceRefs.some((reference) =>
+                reference.startsWith("evidence:")
+              )
+            )
           )
         ) continue;
         await queueTemporalRelationProjection({
@@ -3577,7 +3595,15 @@ function validateMemoryFormationInputs(
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     const origin = inputs[index]?.formationOrigin;
-    if (!record || !origin) continue;
+    if (!record) continue;
+    const isSourceCognition = record.formationReason === "source_cognition";
+    const isReviewedSourceCognition = origin === "reviewed_source_cognition";
+    if (isSourceCognition !== isReviewedSourceCognition) {
+      throw new Error(
+        "Source cognition memory requires the reviewed source cognition formation contract.",
+      );
+    }
+    if (!origin) continue;
     const executionScope = inputs[index]?.executionScope;
     if (!executionScope) {
       throw new Error("Traceable memory formation requires an execution scope.");

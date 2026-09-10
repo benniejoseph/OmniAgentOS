@@ -31,10 +31,10 @@ async function GETHandler(
   if (!job) {
     return Response.json({ error: "Operation job not found." }, { status: 404 });
   }
-  if (
-    job.type === "capture.asset.process" &&
-    job.payload.actorId !== securityContext.actorId
-  ) {
+  const ownerActorId = typeof job.payload.actorId === "string"
+    ? job.payload.actorId.trim()
+    : "";
+  if (ownerActorId && ownerActorId !== securityContext.actorId) {
     return Response.json(
       { error: "Operation job not found." },
       { status: 404, headers: { "cache-control": "private, no-store" } },

@@ -11,6 +11,7 @@ export const memoryFormationOriginSchema = z.enum([
   "verified_effect",
   "agent_shared_artifact",
   "assistant_inference",
+  "reviewed_source_cognition",
 ]);
 
 export type MemoryFormationOrigin = z.infer<
@@ -116,6 +117,22 @@ function assertFormationBoundary(
     ) {
       throw new Error(
         "Assistant-derived memory must remain an evidenced inference candidate.",
+      );
+    }
+    return;
+  }
+  if (origin === "reviewed_source_cognition") {
+    if (
+      claimStatus !== "active" ||
+      assertedBy !== "user" ||
+      record.accessBinding?.visibility !== "user_private" ||
+      !record.source.startsWith("cognify-reviewed:") ||
+      !has("knowledge:") ||
+      !has("evidence:") ||
+      !has("cognition-review:")
+    ) {
+      throw new Error(
+        "Reviewed source cognition requires private, user-confirmed memory with exact knowledge and evidence lineage.",
       );
     }
     return;

@@ -11,6 +11,11 @@ import {
 } from "@/lib/rag/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { buildCanonicalTextSourceWrite } from "@/lib/sources/text-lineage";
+import { buildUserPrivateMemoryAccessBindingV1 } from "@/lib/memory/access-binding";
+import { saveMemory } from "@/lib/memory/store";
+import type { MemoryRecord } from "@/lib/memory/types";
+import { readJsonFile } from "@/lib/storage/json";
+import { getDataPath } from "@/lib/storage/paths";
 
 const mocks = vi.hoisted(() => ({
   purge: vi.fn(async () => 0),
@@ -58,11 +63,57 @@ describe("file-backed knowledge cognition erasure", () => {
       source: "upload:direct",
       chunks: [{ index: 0, content: "Direct deletion" }],
     });
+    const cognitionMemoryId = "memory:cognition-review-direct-delete";
+    const memoryOwner = "actor-cognition-purge";
+    await saveMemory({
+      id: cognitionMemoryId,
+      tenantId,
+      title: "Reviewed source map",
+      content: "Reviewed cognition derived from the document.",
+      type: "knowledge",
+      tier: "summary",
+      formationReason: "source_cognition",
+      formationOrigin: "reviewed_source_cognition",
+      tags: ["reviewed"],
+      scope: "user",
+      source: "cognify-reviewed:cognition-review-direct-delete",
+      claimStatus: "active",
+      assertedBy: "user",
+      evidenceRefs: [
+        `knowledge:${direct.document.id}`,
+        "evidence:direct-delete",
+        "cognition-review:cognition-review-direct-delete",
+      ],
+      accessBinding: buildUserPrivateMemoryAccessBindingV1({
+        tenantId,
+        ownerActorId: memoryOwner,
+        originPurpose: "knowledge.cognition.review.confirm",
+      }),
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: memoryOwner,
+        executingPrincipalType: "user",
+        executingPrincipalId: memoryOwner,
+        correlationId: "cognition-purge-memory",
+        purpose: "memory.correct.v1",
+      }),
+    });
     await deleteKnowledgeDocumentByIdempotencyKey("direct-delete", { tenantId });
     expect(mocks.purge).toHaveBeenCalledWith({
       tenantId,
       documentIds: [direct.document.id],
     });
+    const memories = await readJsonFile<MemoryRecord[]>(
+      getDataPath("memory.json"),
+      [],
+    );
+    expect(memories.find((memory) => memory.id === cognitionMemoryId))
+      .toMatchObject({
+        claimStatus: "superseded",
+        title: "[retired]",
+        content: "",
+        evidenceRefs: [],
+      });
 
     const prefixed = await Promise.all(["a", "b"].map((suffix) =>
       createKnowledgeDocument({
