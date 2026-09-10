@@ -312,11 +312,39 @@ test("capture inbox queues a bulk transcript set", async ({ page }) => {
   await page.getByLabel("Tags").fill("ict-course, transcript");
   await page.getByRole("button", { name: "Process 2 files" }).click();
   await expect(page.getByText(/2 files are safely stored or queued/i)).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByText(/Queued for RAG and memory|Building RAG and memory|Indexed and ready in Command/).first()).toBeVisible();
+  const durableQueue = page.getByRole("region", { name: "Durable document queue" });
+  await expect(durableQueue).toBeVisible();
+  await expect(durableQueue.getByText("ict-lesson-01.vtt")).toBeVisible();
+  await expect(durableQueue.getByText("ict-lesson-02.srt")).toBeVisible();
+  await expect(
+    durableQueue.getByText(/Queued safely for background processing|Opening the original|Extracting transcript timecodes|Building cited passages|Building semantic search|Building the RAG index|Linking entities|Updating agentic memory|Updating the knowledge graph|Indexed and ready in Command/).first(),
+  ).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Turn anything worth keeping into usable context." })).toBeVisible();
+  await expect(durableQueue).toBeVisible();
+  await expect(durableQueue.getByText("ict-lesson-01.vtt")).toBeVisible();
+  await expect(durableQueue.getByText("ict-lesson-02.srt")).toBeVisible();
+
+  const libraryAtlas = page.getByRole("region", { name: "Files in context" });
+  await expect(libraryAtlas).toBeVisible();
+  await expect(libraryAtlas.locator("canvas")).toHaveCount(1, { timeout: 15_000 });
+  await expect(libraryAtlas.getByRole("button", { name: "Zoom in" })).toBeVisible();
+  await expect(libraryAtlas.getByRole("button", { name: "Zoom out" })).toBeVisible();
+  await expect(libraryAtlas.getByRole("button", { name: "Fit" })).toBeVisible();
+  await expect(libraryAtlas.getByRole("button", { name: "Drift" })).toBeVisible();
+  await libraryAtlas.getByRole("button", { name: "Zoom in" }).click();
+  await libraryAtlas.getByRole("button", { name: "Zoom out" }).click();
+  await libraryAtlas.getByRole("button", { name: "Fit" }).click();
+  await libraryAtlas.getByRole("button", { name: /ict-lesson-01\.vtt/ }).click();
+  await expect(libraryAtlas.getByRole("button", { name: "Clear selected asset" })).toBeVisible();
+  await expect(libraryAtlas.getByText("Citation", { exact: true })).toBeVisible();
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByText("2 files in this batch")).toBeVisible();
+  await expect(durableQueue).toBeVisible();
+  await expect(durableQueue.getByText("ict-lesson-01.vtt")).toBeVisible();
+  await expect(libraryAtlas).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
