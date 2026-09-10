@@ -63,6 +63,7 @@ type CaptureAsset = {
     locatorKinds: string[];
     warningCodes: string[];
   };
+  ingestJobId?: string;
   error?: string;
   tags: string[];
   contentAvailable?: boolean;
@@ -83,6 +84,8 @@ type CaptureJob = {
   lastError?: string;
   updatedAt?: string;
 };
+
+type CaptureProcessingJob = CaptureJob & { assetId: string };
 
 type CaptureMode = "note" | "record" | "upload";
 type Notice = { tone: "success" | "warning" | "error"; text: string };
@@ -126,6 +129,7 @@ export function CaptureWorkspace() {
   const [loadError, setLoadError] = useState<string>();
   const [offlinePending, setOfflinePending] = useState(0);
   const [activeJob, setActiveJob] = useState<CaptureJob>();
+  const [processingJobs, setProcessingJobs] = useState<CaptureProcessingJob[]>([]);
   const [imageGenerationRoute, setImageGenerationRoute] = useState<{ configured?: boolean; provider?: string; model?: string }>();
   const [videoGenerationRoute, setVideoGenerationRoute] = useState<{ configured?: boolean; provider?: string; model?: string }>();
   const [libraryQuery, setLibraryQuery] = useState("");
@@ -154,11 +158,14 @@ export function CaptureWorkspace() {
         setDocuments(Array.isArray(payload.documents) ? payload.documents : []);
         setKnowledgeStats(payload.stats);
       }),
-      fetch("/api/capture?limit=30", { cache: "no-store", signal: controller.signal }).then(async (response) => {
+      fetch("/api/capture?limit=100", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Original files could not be loaded.");
-        const payload = await response.json() as { assets?: CaptureAsset[] };
+        const payload = await response.json() as { assets?: CaptureAsset[]; processingJobs?: CaptureProcessingJob[] };
         if (controller.signal.aborted) return;
+        const nextJobs = Array.isArray(payload.processingJobs) ? payload.processingJobs : [];
         setAssets(Array.isArray(payload.assets) ? payload.assets : []);
+        setProcessingJobs(nextJobs);
+        setBatchItems((current) => mergeCaptureBatchJobs(current, nextJobs));
       }),
       fetch("/api/oauth?ownerScope=readable", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Connected sources could not be loaded.");
@@ -191,6 +198,37 @@ export function CaptureWorkspace() {
     }
     setLoadingWorkspace(false);
   }, [session, status]);
+
+  useEffect(() => {
+    if (status !== "ready" || !session || !processingJobs.some((job) => ["queued", "running"].includes(job.status))) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch("/api/capture?limit=100", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => ({})) as {
+          assets?: CaptureAsset[];
+          processingJobs?: CaptureProcessingJob[];
+        };
+        if (!response.ok || controller.signal.aborted) return;
+        const nextJobs = Array.isArray(payload.processingJobs) ? payload.processingJobs : [];
+        const activeIds = new Set(processingJobs.filter((job) => ["queued", "running"].includes(job.status)).map((job) => job.id));
+        const finished = nextJobs.some((job) => activeIds.has(job.id) && ["completed", "failed", "canceled"].includes(job.status));
+        setAssets(Array.isArray(payload.assets) ? payload.assets : []);
+        setProcessingJobs(nextJobs);
+        setBatchItems((current) => mergeCaptureBatchJobs(current, nextJobs));
+        if (finished) void loadWorkspace();
+      } catch {
+        // The queue is durable. The next poll or full refresh can recover.
+      }
+    }, 2_000);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [loadWorkspace, processingJobs, session, status]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadWorkspace(), 0);
@@ -253,8 +291,9 @@ export function CaptureWorkspace() {
   }, [activeJob, loadWorkspace]);
 
   useEffect(() => {
+    const durableIds = new Set(processingJobs.map((job) => job.id));
     const pending = batchItems.filter((item) =>
-      item.job && ["queued", "running"].includes(item.status)
+      item.job && ["queued", "running"].includes(item.status) && !durableIds.has(item.job.id)
     );
     if (!pending.length) return;
     const timer = window.setTimeout(() => {
@@ -296,7 +335,7 @@ export function CaptureWorkspace() {
       });
     }, 2_000);
     return () => window.clearTimeout(timer);
-  }, [batchItems, loadWorkspace]);
+  }, [batchItems, loadWorkspace, processingJobs]);
 
   const filteredDocuments = useMemo(() => documents.filter((document) => {
     const query = libraryQuery.trim().toLowerCase();
@@ -305,6 +344,18 @@ export function CaptureWorkspace() {
   }), [documents, libraryQuery, sourceFilter]);
 
   const batchCounts = useMemo(() => summarizeBatch(batchItems), [batchItems]);
+  const durableQueue = useMemo(() => {
+    const assetById = new Map(assets.map((asset) => [asset.id, asset] as const));
+    return processingJobs
+      .map((job) => ({ job, asset: assetById.get(job.assetId) }))
+      .filter((entry): entry is { job: CaptureProcessingJob; asset: CaptureAsset } => Boolean(entry.asset))
+      .sort((left, right) => {
+        const leftActive = ["queued", "running"].includes(left.job.status) ? 1 : 0;
+        const rightActive = ["queued", "running"].includes(right.job.status) ? 1 : 0;
+        return rightActive - leftActive || Date.parse(right.job.updatedAt || "") - Date.parse(left.job.updatedAt || "");
+      })
+      .slice(0, 8);
+  }, [assets, processingJobs]);
 
   function chooseFiles(next: readonly File[]) {
     setCaptureNotice(undefined);
@@ -530,7 +581,7 @@ export function CaptureWorkspace() {
     : 0;
 
   return (
-    <div className={clsx("mx-auto w-full max-w-[96rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8 2xl:px-10", styles.daybook, styles.capture)}>
+    <div className={clsx("mx-auto w-full max-w-[120rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8 2xl:px-10", styles.daybook, styles.capture)}>
       <header className="flex flex-col gap-5 border-b border-line pb-6 xl:flex-row xl:items-end xl:justify-between" data-daybook="hero">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Capture</p>
@@ -599,7 +650,7 @@ export function CaptureWorkspace() {
                         {batchItems.map((item) => (
                           <li key={item.id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-3" data-daybook="batch-item">
                             <span className={clsx("grid size-9 place-items-center rounded-md", batchStatusTone(item.status))}>{batchStatusIcon(item.status)}</span>
-                            <div className="min-w-0"><p className="truncate text-sm font-medium">{item.file.name}</p><p className="mt-0.5 text-xs text-muted">{formatBytes(item.file.size)} · {batchStatusLabel(item.status)}</p>{item.error ? <p className="mt-1 text-xs leading-5 text-danger">{item.error}</p> : null}</div>
+                            <div className="min-w-0"><p className="truncate text-sm font-medium">{item.file.name}</p><p className="mt-0.5 text-xs text-muted">{formatBytes(item.file.size)} · {item.job ? captureJobStageLabel(item.job) : batchStatusLabel(item.status)}</p>{item.error ? <p className="mt-1 text-xs leading-5 text-danger">{item.error}</p> : null}</div>
                             {item.status === "failed" ? (
                               <button type="button" onClick={() => retryBatchItem(item.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Retry ${item.file.name}`}><RefreshCw size={14} aria-hidden="true" /></button>
                             ) : ["selected", "completed", "offline", "stored"].includes(item.status) ? (
@@ -637,6 +688,36 @@ export function CaptureWorkspace() {
             <FlowStep number="2" title="Extract and understand" detail="Text, OCR, metadata and transcription are normalized." active={batchCounts.queued + batchCounts.running > 0 || activeJob?.status === "running"} />
             <FlowStep number="3" title="Index and link" detail="RAG chunks, provenance, memory and graph links are created." active={batchCounts.completed > 0 || activeJob?.status === "completed"} />
           </ol>
+          {durableQueue.length ? (
+            <section className="mt-5 overflow-hidden rounded-lg border border-line bg-background" aria-labelledby="durable-capture-queue-title" data-daybook="durable-queue">
+              <div className="flex items-center justify-between gap-3 border-b border-line px-3.5 py-3">
+                <div>
+                  <p id="durable-capture-queue-title" className="text-sm font-semibold">Durable document queue</p>
+                  <p className="mt-0.5 text-xs leading-5 text-muted">Safe to leave this page; progress resumes here.</p>
+                </div>
+                <span className="rounded-full bg-primary/10 px-2 py-1 text-xs font-semibold tabular-nums text-primary">{processingJobs.filter((job) => ["queued", "running"].includes(job.status)).length} active</span>
+              </div>
+              <ol className="max-h-72 divide-y divide-line overflow-y-auto" aria-live="polite">
+                {durableQueue.map(({ job, asset }) => (
+                  <li key={job.id} className="px-3.5 py-3">
+                    <div className="flex items-start gap-2.5">
+                      <span className={clsx("mt-0.5 grid size-7 shrink-0 place-items-center rounded-full", captureJobTone(job.status))}>{captureJobIcon(job.status)}</span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium" title={asset.filename}>{asset.filename}</p>
+                        <p className="mt-0.5 text-xs leading-5 text-muted">{captureJobStageLabel(job)}{job.attempt && job.status !== "completed" ? ` · attempt ${job.attempt}` : ""}</p>
+                        {["queued", "running"].includes(job.status) ? (
+                          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line" role="progressbar" aria-label={`${asset.filename}: ${captureJobStageLabel(job)}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={captureJobPercent(job)}>
+                            <div className="h-full rounded-full bg-primary transition-[width] duration-500" style={{ width: `${captureJobPercent(job)}%` }} />
+                          </div>
+                        ) : null}
+                        {job.status === "failed" && job.lastError ? <p className="mt-1 text-xs leading-5 text-danger">{job.lastError}</p> : null}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          ) : null}
           {batchItems.length ? (
             <div className="mt-5 border-l-2 border-primary bg-primary/5 px-4 py-3" aria-live="polite">
               <p className="flex items-center gap-2 text-sm font-semibold">{batchCounts.processing ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <FileStack size={15} aria-hidden="true" />}Bulk document queue</p>
@@ -671,7 +752,9 @@ export function CaptureWorkspace() {
       <WorkspaceLibrary
         title="Everything in this workspace"
         description="Browse files, generated artifacts, images, recordings, transcripts, email, meetings, and connected sources in one versioned and cited view."
-        refreshKey={`${assets.length}:${knowledgeStats?.documents || 0}:${activeJob?.updatedAt || activeJob?.status || "idle"}`}
+        presentation="atlas"
+        limit={100}
+        refreshKey={`${assets.length}:${knowledgeStats?.documents || 0}:${processingJobs[0]?.updatedAt || activeJob?.updatedAt || activeJob?.status || "idle"}`}
         className="mt-7"
       />
 
@@ -755,6 +838,28 @@ function summarizeBatch(items: readonly CaptureBatchItem[]) {
   };
 }
 
+function mergeCaptureBatchJobs(
+  items: CaptureBatchItem[],
+  jobs: readonly CaptureProcessingJob[],
+) {
+  if (!jobs.length || !items.some((item) => item.job)) return items;
+  const byId = new Map(jobs.map((job) => [job.id, job] as const));
+  let changed = false;
+  const next = items.map((item) => {
+    if (!item.job) return item;
+    const job = byId.get(item.job.id);
+    if (!job || (job.updatedAt === item.job.updatedAt && job.status === item.job.status)) return item;
+    changed = true;
+    return {
+      ...item,
+      job,
+      status: batchStatusFromJob(job),
+      error: job.lastError || (job.status === "canceled" ? "Processing was canceled." : undefined),
+    };
+  });
+  return changed ? next : items;
+}
+
 function batchStatusLabel(status: CaptureBatchStatus) {
   if (status === "selected") return "Ready to upload";
   if (status === "uploading") return "Preserving original";
@@ -803,6 +908,59 @@ function jobDetail(job: CaptureJob) {
   if (job.status === "running") return `Background worker is processing this capture${job.attempt ? ` · attempt ${job.attempt}` : ""}.`;
   if (job.status === "queued") return "The original is safe. Processing will begin in the background.";
   return "The original remains safely stored.";
+}
+
+function captureJobStageLabel(job: CaptureJob) {
+  if (job.status === "completed") {
+    const chunks = Number(job.result?.chunkCount || 0);
+    return chunks > 0 ? `Indexed · ${chunks} cited passage${chunks === 1 ? "" : "s"} · graph linked` : "Indexed and graph linked";
+  }
+  if (job.status === "failed") return "Processing needs attention";
+  if (job.status === "canceled") return "Processing canceled";
+  const stage = typeof job.progress?.stage === "string" ? job.progress.stage : "queued";
+  if (stage === "waiting") return "Waiting for private storage verification";
+  if (stage === "reading") return "Opening the private original";
+  if (stage === "extracting") return "Extracting transcript text and timecodes";
+  if (stage === "chunking") return "Splitting into cited passages";
+  if (stage === "embedding") return "Building semantic search";
+  if (stage === "knowledge") return "Writing the RAG index";
+  if (stage === "entities") return "Linking named entities";
+  if (stage === "memory") return "Creating linked memory";
+  if (stage === "graph") return "Updating the knowledge graph";
+  if (stage === "processing") return "Background worker starting";
+  return "Queued safely for background processing";
+}
+
+function captureJobPercent(job: CaptureJob) {
+  if (job.status === "completed") return 100;
+  if (job.status === "failed" || job.status === "canceled") return 100;
+  const stage = typeof job.progress?.stage === "string" ? job.progress.stage : "queued";
+  const percentages: Record<string, number> = {
+    queued: 4,
+    waiting: 7,
+    processing: 10,
+    reading: 16,
+    extracting: 28,
+    chunking: 40,
+    embedding: 54,
+    knowledge: 68,
+    entities: 77,
+    memory: 87,
+    graph: 95,
+  };
+  return percentages[stage] || 4;
+}
+
+function captureJobTone(status: CaptureJob["status"]) {
+  if (status === "completed") return "bg-success/10 text-success";
+  if (status === "failed" || status === "canceled") return "bg-danger/10 text-danger";
+  return "bg-primary/10 text-primary";
+}
+
+function captureJobIcon(status: CaptureJob["status"]) {
+  if (status === "completed") return <CheckCircle2 size={14} aria-hidden="true" />;
+  if (status === "failed" || status === "canceled") return <CircleAlert size={14} aria-hidden="true" />;
+  return <Loader2 size={14} className="animate-spin" aria-hidden="true" />;
 }
 
 function assetStatusLabel(asset: CaptureAsset) {
