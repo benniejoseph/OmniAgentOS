@@ -4,8 +4,8 @@ const mocks = vi.hoisted(() => ({
   embedTexts: vi.fn(async () => [[0.2, 0.4]]),
   getSql: vi.fn(),
   getActiveMemoriesByIds: vi.fn(async () => []),
-  getCanonicalKnowledgeEvidenceByChunkIds: vi.fn(async () => []),
-  searchKnowledge: vi.fn(async () => []),
+  getCanonicalKnowledgeEvidenceByChunkIds: vi.fn(async (): Promise<unknown[]> => []),
+  searchKnowledge: vi.fn(async (): Promise<unknown[]> => []),
   searchMemoryGraph: vi.fn(async () => []),
   searchMemories: vi.fn(),
   setTransactionLocalDatabaseMemoryAccessScope: vi.fn(),
@@ -61,6 +61,7 @@ import {
   buildContextPack,
 } from "@/lib/rag/context-engine";
 import { LOCAL_MULTILINGUAL_EMBEDDING_SPACE } from "@/lib/rag/retrieval-embedding";
+import type { CanonicalKnowledgeEvidence } from "@/lib/rag/store";
 import type { KnowledgeSearchResult } from "@/lib/rag/types";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { CONTEXT_COMPILER_V2_PURPOSE_ID } from "@/lib/sources/purposes";
@@ -196,7 +197,7 @@ function knowledgeResult(id: string, title: string): KnowledgeSearchResult {
 function canonicalKnowledge(
   result: KnowledgeSearchResult,
   ownerActorId: string,
-) {
+): CanonicalKnowledgeEvidence {
   return {
     chunk: result.chunk,
     evidenceUnit: {
@@ -217,7 +218,7 @@ function canonicalKnowledge(
       operation: "upsert",
       isCurrent: true,
     },
-  } as never;
+  } as unknown as CanonicalKnowledgeEvidence;
 }
 
 describe("actor-scoped context retrieval", () => {

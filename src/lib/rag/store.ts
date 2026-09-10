@@ -3034,11 +3034,9 @@ function cognitionDatabaseChunks(
   document: KnowledgeDocument,
   context: CognitionEligibility,
 ) {
-  if (
-    !document.sourceItemId ||
-    !document.sourceRevisionId ||
-    !Array.isArray(value)
-  ) return [];
+  const sourceItemId = document.sourceItemId;
+  const sourceRevisionId = document.sourceRevisionId;
+  if (!sourceItemId || !sourceRevisionId || !Array.isArray(value)) return [];
   return value.flatMap((candidate) => {
     if (
       !candidate ||
@@ -3053,8 +3051,8 @@ function cognitionDatabaseChunks(
           ...context,
           chunk,
           evidence,
-          sourceItemId: document.sourceItemId,
-          sourceRevisionId: document.sourceRevisionId,
+          sourceItemId,
+          sourceRevisionId,
         })
         ? [chunk]
         : [];
