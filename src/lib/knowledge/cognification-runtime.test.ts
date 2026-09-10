@@ -33,6 +33,14 @@ describe("knowledge cognification runtime", () => {
     });
 
     expect(first).toEqual(second);
+    const narrowedRetention = partitionCognificationBatches({
+      document: {
+        ...documentInput(),
+        retentionExpiresAt: "2026-09-20T00:00:00.000Z",
+      },
+      chunks,
+    });
+    expect(narrowedRetention[0].batchId).not.toBe(first[0].batchId);
     expect(first).toHaveLength(2);
     expect(first[0]).toMatchObject({
       batchIndex: 0,
@@ -97,6 +105,7 @@ describe("knowledge cognification runtime", () => {
       candidateOnly: true,
       tenantId,
       ownerActorId: actorId,
+      retentionExpiresAt: "2026-10-10T00:00:00.000Z",
       ontologyVersionId: "asael-ontology:1",
       modelAttribution: {
         provider: "openai",
@@ -207,6 +216,7 @@ function documentInput(title = "ICT training") {
     title,
     sourceItemId: "source-item-cognition",
     sourceRevisionId: "source-revision-cognition",
+    retentionExpiresAt: "2026-10-10T00:00:00.000Z",
   };
 }
 

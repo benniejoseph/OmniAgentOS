@@ -39,6 +39,7 @@ const documentInputSchema = z.object({
   title: z.string().trim().min(1).max(500),
   sourceItemId: contractIdSchema,
   sourceRevisionId: contractIdSchema,
+  retentionExpiresAt: z.string().datetime({ offset: true }).nullable(),
 });
 const chunkInputSchema = z.object({
   id: contractIdSchema,
@@ -198,6 +199,7 @@ export function partitionCognificationBatches(input: {
         documentId: document.id,
         sourceItemId: document.sourceItemId,
         sourceRevisionId: document.sourceRevisionId,
+        retentionExpiresAt: document.retentionExpiresAt,
         batchIndex,
         batchInputSha256,
       }),
@@ -394,6 +396,7 @@ export async function cognifyKnowledgeBatch(input: {
     documentId: document.id,
     sourceItemId: document.sourceItemId,
     sourceRevisionId: document.sourceRevisionId,
+    retentionExpiresAt: document.retentionExpiresAt,
     batchIndex: batch.batchIndex,
     batchCount: batch.batchCount,
     firstChunkIndex: batch.firstChunkIndex,

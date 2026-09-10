@@ -148,7 +148,7 @@ function readCanonicalMemorySources(
   return sql`
     SELECT
       id, tenant_id, owner_actor_id, access_scope_sha256, sensitivity,
-      content, confidence, valid_from, valid_to, created_at, updated_at
+      source, content, confidence, valid_from, valid_to, created_at, updated_at
     FROM omni_memories
     WHERE tenant_id = ${tenantId}
       AND owner_actor_id = ${ownerActorId}
@@ -164,6 +164,22 @@ function readCanonicalMemorySources(
       AND (
         source IN ('manual', 'user-assertion')
         OR source LIKE 'correction:%'
+        OR (
+          source LIKE 'cognify-reviewed:%'
+          AND formation_reason = 'source_cognition'
+          AND EXISTS (
+            SELECT 1 FROM unnest(evidence_refs) reference
+            WHERE reference LIKE 'cognition-review:%'
+          )
+          AND EXISTS (
+            SELECT 1 FROM unnest(evidence_refs) reference
+            WHERE reference LIKE 'knowledge:%'
+          )
+          AND EXISTS (
+            SELECT 1 FROM unnest(evidence_refs) reference
+            WHERE reference LIKE 'evidence:%'
+          )
+        )
       )
       AND btrim(content) <> ''
       AND (retention_expires_at IS NULL OR retention_expires_at > NOW())
@@ -231,7 +247,9 @@ function memoryProjectionSource(
       allowedPurposeIds: ENTITY_PURPOSE_IDS,
       boundAt: ASAEL_ONTOLOGY_EFFECTIVE_AT,
     }),
-    epistemicKind: "asserted",
+    epistemicKind: String(row.source || "").startsWith("cognify-reviewed:")
+      ? "inferred"
+      : "asserted",
     confidenceBasisPoints: Math.round(
       Math.min(Math.max(Number(row.confidence ?? 0.95), 0), 1) * 10_000,
     ),

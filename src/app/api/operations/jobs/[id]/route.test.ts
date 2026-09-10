@@ -89,4 +89,26 @@ describe("operation job detail route", () => {
     expect(response.status).toBe(404);
     expect(routeMocks.projectOperationJobStatus).not.toHaveBeenCalled();
   });
+
+  it("does not reveal any actor-owned background job to another actor", async () => {
+    routeMocks.getOperationJob.mockResolvedValueOnce({
+      id: "job-cognition",
+      tenantId: context.tenantId,
+      type: "knowledge.cognify",
+      status: "running",
+      payload: {
+        actorId: "owner-b",
+        request: { documentId: "private-document" },
+        progress: { stage: "cognifying", batchIndex: 0 },
+      },
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/operations/jobs/job-cognition"),
+      { params: Promise.resolve({ id: "job-cognition" }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(routeMocks.projectOperationJobStatus).not.toHaveBeenCalled();
+  });
 });

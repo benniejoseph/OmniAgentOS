@@ -17,6 +17,7 @@ export type OperationJobType =
   | "memory.consolidate"
   | "capture.asset.process"
   | "knowledge.ingest"
+  | "knowledge.cognify"
   | "evaluation.run"
   | "asset.object.commit"
   | "asset.object.delete"
@@ -29,6 +30,7 @@ export const BACKGROUND_OPERATION_JOB_TYPES = [
   "memory.consolidate",
   "capture.asset.process",
   "knowledge.ingest",
+  "knowledge.cognify",
   "evaluation.run",
   "asset.object.commit",
   "asset.object.delete",

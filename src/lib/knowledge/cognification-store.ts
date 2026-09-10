@@ -13,6 +13,7 @@ import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
+import { KNOWLEDGE_COGNIFY_PURPOSE_ID } from "@/lib/sources/purposes";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { readJsonFile, updateJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
@@ -58,7 +59,7 @@ type KnowledgeCognitionLedger = Readonly<{
 }>;
 
 type StoreOptions = Readonly<{
-  executionScope?: ExecutionScope;
+  executionScope: ExecutionScope;
   sql?: CognificationSql;
 }>;
 
@@ -87,12 +88,51 @@ export class KnowledgeCognitionNotFoundError extends Error {
 
 export async function saveKnowledgeCognition(
   value: CognificationCandidateBatchV1,
-  options: StoreOptions = {},
+  options: StoreOptions,
+): Promise<KnowledgeCognitionRecord> {
+  return saveKnowledgeCognitionInternal(value, options, false);
+}
+
+/**
+ * The only system-principal entry point for cognition persistence. Database
+ * writes and their proposal event share one transaction; file fallback uses
+ * the same deterministic event id so an interrupted append can self-heal.
+ */
+export async function saveKnowledgeCognitionFromBackgroundWorker(
+  value: CognificationCandidateBatchV1,
+  options: Readonly<{ executionScope: ExecutionScope }>,
 ): Promise<KnowledgeCognitionRecord> {
   const candidate = parseCognificationCandidateBatchV1(value);
-  const scope = options.executionScope
-    ? assertExactOwnerScope(candidate, options.executionScope, Boolean(options.sql))
-    : undefined;
+  const scope = assertBackgroundWorkerScope(candidate, options.executionScope);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseActorScope(
+      candidate.tenantId,
+      [candidate.ownerActorId],
+      () => getSql().transaction((sql: CognificationSql) =>
+        saveKnowledgeCognitionInternal(candidate, {
+          executionScope: scope,
+          sql,
+        }, true)
+      ) as Promise<KnowledgeCognitionRecord>,
+    );
+  }
+  return saveKnowledgeCognitionInternal(candidate, {
+    executionScope: scope,
+  }, true);
+}
+
+async function saveKnowledgeCognitionInternal(
+  value: CognificationCandidateBatchV1,
+  options: StoreOptions,
+  governedWorker: boolean,
+): Promise<KnowledgeCognitionRecord> {
+  const candidate = parseCognificationCandidateBatchV1(value);
+  const scope = assertExactOwnerScope(
+    candidate,
+    options.executionScope,
+    Boolean(options.sql) || governedWorker,
+  );
   const now = new Date().toISOString();
 
   if (hasDatabaseUrl() || options.sql) {
@@ -102,6 +142,7 @@ export async function saveKnowledgeCognition(
         INSERT INTO omni_knowledge_cognition_candidates (
           schema_version, id, tenant_id, owner_actor_id, document_id,
           source_item_id, source_revision_id, batch_index, batch_count,
+          retention_expires_at,
           model_provider, model_id, model_assignment_id,
           model_assignment_revision, model_configuration_sha256,
           model_usage_receipt_id, contract_sha256, contract, status,
@@ -111,6 +152,7 @@ export async function saveKnowledgeCognition(
           ${candidate.ownerActorId}, ${candidate.documentId},
           ${candidate.sourceItemId}, ${candidate.sourceRevisionId},
           ${candidate.batchIndex}, ${candidate.batchCount},
+          ${candidate.retentionExpiresAt},
           ${candidate.modelAttribution.provider},
           ${candidate.modelAttribution.model},
           ${candidate.modelAttribution.assignmentId || null},
@@ -154,7 +196,7 @@ export async function saveKnowledgeCognition(
         record = existing;
         created = false;
       }
-      if (created && scope) {
+      if (created) {
         await appendCognitionEvent(sql, scope, record, "proposed");
       }
       return record;
@@ -168,7 +210,6 @@ export async function saveKnowledgeCognition(
   }
 
   let saved!: KnowledgeCognitionRecord;
-  let created = false;
   await updateJsonFile<KnowledgeCognitionLedger>(
     cognitionFile(),
     emptyLedger,
@@ -205,13 +246,12 @@ export async function saveKnowledgeCognition(
         createdAt: now,
         updatedAt: now,
       });
-      created = true;
       return { schemaVersion: 1, records: [...records, saved] };
     },
   );
-  if (created && scope) {
-    await appendCognitionEvent(undefined, scope, saved, "proposed");
-  }
+  // Always reconcile the deterministic event in file mode. This repairs the
+  // narrow failure window where the candidate file committed first.
+  await appendCognitionEvent(undefined, scope, saved, "proposed");
   return saved;
 }
 
@@ -299,6 +339,38 @@ export async function listKnowledgeCognitions(input: {
       left.candidate.batchId.localeCompare(right.candidate.batchId)
     )
     .slice(0, limit);
+}
+
+/**
+ * File storage has no foreign-key cascade. Canonical knowledge deletion calls
+ * this after resolving the exact document set; PostgreSQL deletes candidates
+ * through the document FK cascade instead.
+ */
+export async function purgeKnowledgeCognitionsForDocuments(input: {
+  tenantId: string;
+  documentIds: readonly string[];
+}): Promise<number> {
+  const tenantId = requiredId(input.tenantId, "tenant id");
+  const documentIds = new Set(input.documentIds.map((id) =>
+    requiredId(id, "document id")
+  ));
+  if (!documentIds.size || hasDatabaseUrl()) return 0;
+  let purged = 0;
+  await updateJsonFile<KnowledgeCognitionLedger>(
+    cognitionFile(),
+    emptyLedger,
+    (ledger) => {
+      const records = ledger.records.map(parseRecord);
+      const retained = records.filter((record) => {
+        const matches = record.candidate.tenantId === tenantId &&
+          documentIds.has(record.candidate.documentId);
+        if (matches) purged += 1;
+        return !matches;
+      });
+      return purged ? { schemaVersion: 1, records: retained } : ledger;
+    },
+  );
+  return purged;
 }
 
 export async function reviewKnowledgeCognition(input: {
@@ -615,6 +687,8 @@ function recordFromRow(row: SqlRow): KnowledgeCognitionRecord {
     String(row.source_revision_id) !== candidate.sourceRevisionId ||
     Number(row.batch_index) !== candidate.batchIndex ||
     Number(row.batch_count) !== candidate.batchCount ||
+    nullableTimestamp(row.retention_expires_at) !==
+      candidate.retentionExpiresAt ||
     String(row.model_provider) !== candidate.modelAttribution.provider ||
     String(row.model_id) !== candidate.modelAttribution.model ||
     String(row.model_usage_receipt_id) !==
@@ -761,6 +835,23 @@ function assertExactOwnerScope(
     executionScope,
     governedTransaction,
   );
+}
+
+function assertBackgroundWorkerScope(
+  candidate: CognificationCandidateBatchV1,
+  executionScope: ExecutionScope,
+) {
+  const scope = assertExactOwnerScope(candidate, executionScope, true);
+  if (
+    scope.executingPrincipalType !== "system" ||
+    scope.executingPrincipalId !== "background-operations-worker" ||
+    scope.purpose !== KNOWLEDGE_COGNIFY_PURPOSE_ID
+  ) {
+    throw new Error(
+      "Knowledge cognition persistence requires the governed background worker.",
+    );
+  }
+  return scope;
 }
 
 function assertOwnerMutationScope(

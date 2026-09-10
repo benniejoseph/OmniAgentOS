@@ -259,12 +259,16 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
     ...eventedDefaults,
     domain: "memory",
     contractId: "memory.atomic-events.v1",
-    writerModules: Object.freeze(["src/lib/memory/store.ts"]),
+    writerModules: Object.freeze([
+      "src/lib/memory/store.ts",
+      "src/lib/knowledge/cognification-store.ts",
+    ]),
     mutationSurfaces: Object.freeze([
       "memory formation",
       "private and shared memory bindings",
       "memory feedback and correction",
       "memory deletion barriers",
+      "evidence-bound knowledge cognition proposals and reviews",
     ]),
     eventTypes: Object.freeze([
       "memory.created",
@@ -275,6 +279,9 @@ export const MUTATION_EVENT_CONTRACTS = Object.freeze([
       "memory.feedback_applied",
       "memory.corrected",
       "memory.deletion_barrier.recorded",
+      "knowledge.cognition.proposed",
+      "knowledge.cognition.reviewed",
+      "knowledge.cognition.projected",
     ]),
   }),
   Object.freeze({

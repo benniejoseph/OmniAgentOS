@@ -23,6 +23,7 @@ export const memoryFormationReasonSchema = z.enum([
   "verified_effect",
   "agent_shared_artifact",
   "assistant_inference_candidate",
+  "source_cognition",
   "correction",
   "project_reflection",
   "project_artifact",
@@ -267,6 +268,8 @@ export function inferMemoryFormationReason(input: {
       return "agent_shared_artifact";
     case "assistant_inference":
       return "assistant_inference_candidate";
+    case "reviewed_source_cognition":
+      return "source_cognition";
   }
   const source = input.source || "manual";
   if (source === "manual") return "manual_user_entry";
@@ -286,6 +289,7 @@ export function memoryFormationReasonLabel(reason: MemoryFormationReason) {
     verified_effect: "Formed from a verified tool effect receipt.",
     agent_shared_artifact: "Copied through an explicit provenance-preserving agent grant.",
     assistant_inference_candidate: "Proposed from an assistant inference and awaiting confirmation.",
+    source_cognition: "Structured from exact source evidence by the configured memory model and accepted through review.",
     correction: "Created as a traceable correction of an earlier memory.",
     project_reflection: "Formed from a project reflection.",
     project_artifact: "Formed from a project artifact.",
