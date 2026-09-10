@@ -1,6 +1,7 @@
 import "server-only";
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,7 +17,7 @@ export async function clipVideoBytes(input: {
   endSeconds: number;
   abortSignal?: AbortSignal;
 }) {
-  if (!ffmpegPath) throw new Error("The deterministic media processor is unavailable.");
+  const executablePath = resolveFfmpegPath();
   if (!input.mediaType.startsWith("video/")) throw new Error("The source asset is not a video.");
   if (!input.bytes.byteLength || input.bytes.byteLength > MAX_MEDIA_BYTES) throw new Error("The source video must be 20 MB or smaller.");
   if (!Number.isFinite(input.startSeconds) || !Number.isFinite(input.endSeconds) || input.startSeconds < 0 || input.endSeconds <= input.startSeconds || input.endSeconds - input.startSeconds > 600) {
@@ -29,7 +30,7 @@ export async function clipVideoBytes(input: {
   const outputPath = path.join(directory, `clip.${extension}`);
   try {
     await writeFile(sourcePath, input.bytes, { mode: 0o600 });
-    await runFfmpeg([
+    await runFfmpeg(executablePath, [
       "-hide_banner",
       "-loglevel",
       "error",
@@ -59,9 +60,23 @@ export async function clipVideoBytes(input: {
   }
 }
 
-function runFfmpeg(args: string[], abortSignal?: AbortSignal) {
+export function resolveFfmpegPath(options: {
+  bundledPath?: string | null;
+  workingDirectory?: string;
+} = {}) {
+  const filename = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+  const candidates = [
+    options.bundledPath === undefined ? ffmpegPath : options.bundledPath,
+    path.join(options.workingDirectory || process.cwd(), "node_modules", "ffmpeg-static", filename),
+  ];
+  const resolved = candidates.find((candidate): candidate is string => Boolean(candidate && existsSync(candidate)));
+  if (!resolved) throw new Error("The deterministic media processor is unavailable.");
+  return resolved;
+}
+
+function runFfmpeg(executablePath: string, args: string[], abortSignal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(ffmpegPath as string, args, {
+    const child = spawn(executablePath, args, {
       shell: false,
       stdio: ["ignore", "ignore", "pipe"],
     });
