@@ -158,7 +158,8 @@ describe("knowledge cognification runtime", () => {
 
   it("rejects ontology-invalid endpoints and missing usage receipts", async () => {
     const invalidRelation = modelOutput();
-    invalidRelation.relations[0].relationTypeId = "attends";
+    (invalidRelation.relations[0] as { relationTypeId: string })
+      .relationTypeId = "attends";
     const invalid = runtimeDependencies(invalidRelation);
     await expect(cognifyKnowledgeBatch({
       tenantId,
