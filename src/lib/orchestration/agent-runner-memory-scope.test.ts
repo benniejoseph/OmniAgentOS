@@ -6,6 +6,7 @@ import type { RequestSharedMemoryAccessV1 } from "@/lib/memory/shared-context";
 import { runAgent } from "@/lib/orchestration/agent-runner";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
 import { DEFAULT_CUSTOM_AGENT_PERSONA } from "@/lib/agents/persona";
+import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import type { SecurityContext } from "@/lib/security/types";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
@@ -94,6 +95,12 @@ vi.mock("@/lib/orchestration/council", () => ({
 }));
 
 vi.mock("@/lib/rag/context-engine", () => ({
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES: Object.freeze({
+    memory: "authorized_only",
+    knowledge: "canonical_authorized",
+    topicGraph: "exclude",
+    entityGraph: "authorized",
+  }),
   buildContextPack: mocks.buildContextPack,
 }));
 
@@ -405,7 +412,7 @@ describe("agent memory scope", () => {
           executingPrincipalId: "paid-test-agent",
           purposeId: "memory.retrieve.v1",
         }),
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
         persistTrace: false,
       }),
     );
@@ -461,7 +468,7 @@ describe("agent memory scope", () => {
       "hello",
       expect.objectContaining({
         databaseMemoryAccessScope: promptAccess?.databaseAccessScope,
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
         persistTrace: false,
         contextCompilerV2Automatic: expect.objectContaining({
           runId: "run-memory-scope",
@@ -520,7 +527,7 @@ describe("agent memory scope", () => {
         accessContext: undefined,
         databaseMemoryAccessScope:
           scopedRequest.promptSharedMemoryAccess.databaseAccessScope,
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
         persistTrace: false,
         contextCompilerV2Shadow: expect.objectContaining({
           runId: "run-memory-scope",
@@ -577,7 +584,7 @@ describe("agent memory scope", () => {
       expect.objectContaining({
         databaseMemoryAccessScope:
           scopedRequest.promptSharedMemoryAccess.databaseAccessScope,
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
       }),
     );
     expect(events).toContainEqual(expect.objectContaining({

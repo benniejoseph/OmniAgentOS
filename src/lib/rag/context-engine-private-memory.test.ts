@@ -55,9 +55,15 @@ import {
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
 import type { MemorySearchResult } from "@/lib/memory/types";
-import { buildContextPack } from "@/lib/rag/context-engine";
+import {
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+  AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
+  buildContextPack,
+} from "@/lib/rag/context-engine";
 import { LOCAL_MULTILINGUAL_EMBEDDING_SPACE } from "@/lib/rag/retrieval-embedding";
+import type { KnowledgeSearchResult } from "@/lib/rag/types";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import { CONTEXT_COMPILER_V2_PURPOSE_ID } from "@/lib/sources/purposes";
 
 const actorId = "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6";
 
@@ -142,6 +148,76 @@ function agentMemoryResult(): MemorySearchResult {
       }),
     },
   };
+}
+
+function knowledgeResult(id: string, title: string): KnowledgeSearchResult {
+  return {
+    chunk: {
+      id,
+      tenantId: "tenant-a",
+      documentId: `document-${id}`,
+      sourceRevisionId: `revision-${id}`,
+      evidenceUnitId: `evidence-${id}`,
+      chunkIndex: 0,
+      title,
+      content: `${title} content`,
+      tags: ["deployment"],
+      source: "capture",
+      tokenEstimate: 8,
+      characterCount: title.length + 8,
+      metadata: {},
+      createdAt: "2026-09-06T00:00:00.000Z",
+      updatedAt: "2026-09-06T00:00:00.000Z",
+    },
+    document: {
+      id: `document-${id}`,
+      tenantId: "tenant-a",
+      sourceItemId: `source-${id}`,
+      sourceRevisionId: `revision-${id}`,
+      title,
+      source: "capture",
+      sourceType: "file",
+      tags: ["deployment"],
+      contentHash: id,
+      chunkCount: 1,
+      totalCharacters: title.length + 8,
+      metadata: {},
+      createdAt: "2026-09-06T00:00:00.000Z",
+      updatedAt: "2026-09-06T00:00:00.000Z",
+    },
+    score: 0.9,
+    vectorScore: 0.8,
+    lexicalScore: 0.7,
+    recencyScore: 0.8,
+    reasons: ["semantic match"],
+  };
+}
+
+function canonicalKnowledge(
+  result: KnowledgeSearchResult,
+  ownerActorId: string,
+) {
+  return {
+    chunk: result.chunk,
+    evidenceUnit: {
+      tenantId: "tenant-a",
+      ownerActorId,
+      workspaceId: null,
+      projectId: null,
+      missionId: null,
+      sourceRevisionId: result.chunk.sourceRevisionId,
+      permissionGrantIds: [],
+      allowedPurposeIds: [CONTEXT_COMPILER_V2_PURPOSE_ID],
+      retentionExpiresAt: null,
+      capturedAt: "2026-09-06T00:00:00.000Z",
+      extractedAt: "2026-09-06T00:00:00.000Z",
+    },
+    sourceState: {
+      currentRevisionId: result.chunk.sourceRevisionId,
+      operation: "upsert",
+      isCurrent: true,
+    },
+  } as never;
 }
 
 describe("actor-scoped context retrieval", () => {
@@ -237,16 +313,44 @@ describe("actor-scoped context retrieval", () => {
     expect(mocks.searchMemories).not.toHaveBeenCalled();
   });
 
-  it("retrieves agent-private memory without consulting tenant-wide stores", async () => {
+  it("retrieves scoped memory and canonical actor knowledge without legacy stores", async () => {
     mocks.searchMemories.mockImplementationOnce(async () => [
       agentMemoryResult(),
     ]);
+    const ownedKnowledge = knowledgeResult(
+      "owned-knowledge",
+      "Owner deployment notes",
+    );
+    const foreignKnowledge = knowledgeResult(
+      "foreign-knowledge",
+      "Another actor deployment notes",
+    );
+    mocks.searchKnowledge.mockResolvedValueOnce([
+      ownedKnowledge,
+      foreignKnowledge,
+    ]);
+    mocks.getCanonicalKnowledgeEvidenceByChunkIds.mockResolvedValueOnce([
+      canonicalKnowledge(ownedKnowledge, actorId),
+      canonicalKnowledge(foreignKnowledge, "actor:other"),
+    ]);
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: actorId,
+      executingPrincipalType: "agent",
+      executingPrincipalId: "agent:atlas",
+      correlationId: "context-agent-private",
+      purpose: "agent.run",
+    });
 
     const pack = await buildContextPack("how should I deploy", {
       tenantId: "tenant-a",
       databaseMemoryAccessScope: agentAccessScope(),
-      scopedMemoryOnly: true,
+      retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
       persistTrace: false,
+      contextCompilerV2Shadow: {
+        runId: "run-agent-private",
+        executionScope,
+      },
     });
 
     expect(mocks.searchMemories).toHaveBeenCalledOnce();
@@ -254,21 +358,52 @@ describe("actor-scoped context retrieval", () => {
       expect.any(String),
       expect.objectContaining({ accessScope: agentAccessScope() }),
     );
-    expect(mocks.searchKnowledge).not.toHaveBeenCalled();
+    expect(mocks.searchKnowledge).toHaveBeenCalledOnce();
     expect(mocks.searchMemoryGraph).not.toHaveBeenCalled();
     expect(pack.memoryResults.map((result) => result.record.id)).toEqual([
       "agent-private-memory",
     ]);
+    expect(pack.knowledgeResults.map((result) => result.chunk.id)).toEqual([
+      "owned-knowledge",
+    ]);
     expect(pack.contextBlock).toContain("Verified deployment procedure");
+    expect(pack.contextBlock).toContain("Owner deployment notes");
+    expect(pack.contextBlock).not.toContain("Another actor deployment notes");
+    expect(pack.compilerV2Shadow?.receipt).toMatchObject({
+      candidateCount: 3,
+      authorizedCandidateCount: 2,
+      rejectedCount: 1,
+    });
     expect(pack.trace).toBeUndefined();
   });
 
-  it("rejects scoped-only retrieval without an authenticated scope", async () => {
+  it("rejects authorized-only retrieval without an authenticated scope", async () => {
     await expect(buildContextPack("how should I deploy", {
       tenantId: "tenant-a",
-      scopedMemoryOnly: true,
-    })).rejects.toThrow("requires a database memory access scope");
+      retrievalSources: AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
+    })).rejects.toThrow("Authorized-only context memory requires");
     expect(mocks.searchMemories).not.toHaveBeenCalled();
+  });
+
+  it("rejects canonical knowledge when compiler and memory actors differ", async () => {
+    await expect(buildContextPack("how should I deploy", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope(),
+      retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+      contextCompilerV2Shadow: {
+        runId: "run-cross-actor",
+        executionScope: createExecutionScope({
+          tenantId: "tenant-a",
+          initiatingActorId: "actor:other",
+          executingPrincipalType: "user",
+          executingPrincipalId: "actor:other",
+          correlationId: "context-cross-actor",
+          purpose: "agent.run",
+        }),
+      },
+    })).rejects.toThrow("authorized memory boundary");
+    expect(mocks.searchMemories).not.toHaveBeenCalled();
+    expect(mocks.searchKnowledge).not.toHaveBeenCalled();
   });
 
   it("compares the legacy pack with an independently authorized v2 selection", async () => {

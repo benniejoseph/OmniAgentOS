@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
 import type { ToolDefinition } from "@/lib/tools/types";
 
 const mocks = vi.hoisted(() => ({
@@ -11,6 +12,18 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/rag/context-engine", () => ({
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES: Object.freeze({
+    memory: "authorized_only",
+    knowledge: "canonical_authorized",
+    topicGraph: "exclude",
+    entityGraph: "authorized",
+  }),
+  AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES: Object.freeze({
+    memory: "authorized_only",
+    knowledge: "exclude",
+    topicGraph: "exclude",
+    entityGraph: "exclude",
+  }),
   buildContextPack: mocks.buildContextPack,
 }));
 vi.mock("@/lib/events/store", () => ({
@@ -91,7 +104,7 @@ describe("workflow planner shared-context boundary", () => {
       "List recent runs for this Project",
       expect.objectContaining({
         databaseMemoryAccessScope,
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
         persistTrace: false,
         evidenceIds: undefined,
       }),

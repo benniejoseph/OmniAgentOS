@@ -47,9 +47,13 @@ vi.mock("@/lib/rag/query-planner", async (importOriginal) => {
 });
 
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
-import { buildContextPack } from "@/lib/rag/context-engine";
+import {
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+  buildContextPack,
+} from "@/lib/rag/context-engine";
 import { LOCAL_MULTILINGUAL_EMBEDDING_SPACE } from "@/lib/rag/retrieval-embedding";
 import type { RetrievalQueryPlan } from "@/lib/rag/types";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const accessScope = {
   version: 1 as const,
@@ -266,8 +270,20 @@ describe("context-engine P4.3 query-plan integration", () => {
     const pack = await buildContextPack("Who manages Project Orion?", {
       tenantId: "tenant-a",
       databaseMemoryAccessScope: accessScope,
+      retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
       entityGraphAccess,
       persistTrace: false,
+      contextCompilerV2Shadow: {
+        runId: "run-graph-private",
+        executionScope: createExecutionScope({
+          tenantId: "tenant-a",
+          initiatingActorId: "actor-a",
+          executingPrincipalType: "user",
+          executingPrincipalId: "actor-a",
+          correlationId: "context-graph-private",
+          purpose: "agent.run",
+        }),
+      },
     });
 
     expect(mocks.retrieveGraphRelationshipPaths).toHaveBeenCalledWith(
@@ -279,6 +295,7 @@ describe("context-engine P4.3 query-plan integration", () => {
       }),
     );
     expect(pack.graphRelationshipPaths).toEqual([path]);
+    expect(mocks.searchMemoryGraph).not.toHaveBeenCalled();
     expect(pack.results).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: "graph",

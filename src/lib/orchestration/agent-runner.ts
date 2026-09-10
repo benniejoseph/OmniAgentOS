@@ -80,7 +80,10 @@ import {
   type CouncilContribution,
 } from "@/lib/orchestration/council";
 import type { AgentEvent, AgentRunRequest } from "@/lib/orchestration/types";
-import { buildContextPack } from "@/lib/rag/context-engine";
+import {
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+  buildContextPack,
+} from "@/lib/rag/context-engine";
 import { emptyContextBudgetReceipt } from "@/lib/rag/context-budget";
 import { contextScopeMemoryMode } from "@/lib/rag/context-scope";
 import { buildContextUseReceiptV1 } from "@/lib/rag/context-use-receipt";
@@ -808,13 +811,12 @@ export async function* runAgent(
             ? undefined
             : memoryAccessContext,
           databaseMemoryAccessScope,
-          scopedMemoryOnly: Boolean(
-            agentPrivateMemoryAccessScope || sharedPromptMemoryAccessScope ||
-              personalPromptMemoryAccessScope,
-          ),
           ...(agentPrivateMemoryAccessScope || sharedPromptMemoryAccessScope ||
               personalPromptMemoryAccessScope
-            ? { persistTrace: false }
+            ? {
+                retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+                persistTrace: false,
+              }
             : {}),
           entityGraphAccess: request.promptEntityGraphAccess,
           ...(request.threadId
