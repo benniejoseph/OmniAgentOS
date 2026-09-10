@@ -307,6 +307,9 @@ export async function cognifyKnowledgeBatch(input: {
 
   assertUnique(modelOutput.entities.map((entity) => entity.entityKey),
     "Cognification model returned duplicate entity keys.");
+  assertUnique(modelOutput.entities.map((entity) =>
+    `${entity.entityTypeId}\u0000${entity.canonicalLabel.toLowerCase()}`
+  ), "Cognification model returned duplicate semantic entities.");
 
   const topics = modelOutput.topics.map((candidate) => withCandidateId(
     "topic",

@@ -82,7 +82,7 @@ export const cognificationClaimCandidateV1Schema = z.object({
 }).strict();
 
 const markerSafeLabelSchema = boundedTextSchema(320).refine(
-  (value) => !/[\r\n|"“”]/u.test(value),
+  (value) => !/[\r\n|"“”]/u.test(value) && !value.includes("->"),
   "Entity labels must be safe for explicit review markers.",
 );
 
