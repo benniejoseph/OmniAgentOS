@@ -1171,7 +1171,7 @@ async function executeKnowledgeIngestJobRequest(
             }),
       }
     : undefined;
-  const result = await ingestTextDocument({
+  const ingestRequest: Parameters<typeof ingestTextDocument>[0] = {
     ...parsed,
     tenantId: job.tenantId,
     idempotencyKey: job.id,
@@ -1237,7 +1237,12 @@ async function executeKnowledgeIngestJobRequest(
         }
       : {}),
     captureIngestGuard,
-  });
+  };
+  const result = actorId
+    ? await runWithDatabaseActorScope(job.tenantId, [actorId], () =>
+        ingestTextDocument(ingestRequest)
+      )
+    : await ingestTextDocument(ingestRequest);
   if (actorId && captureExecutionScope) {
     try {
       const executionScope = captureExecutionScope;
