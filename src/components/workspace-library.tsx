@@ -1,15 +1,18 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import {
   AudioLines,
+  Boxes,
   CalendarDays,
   FileImage,
   FileSpreadsheet,
   FileText,
   Library,
   Link2,
+  List,
   Loader2,
   Mail,
   MessageSquare,
@@ -24,6 +27,18 @@ import type {
   WorkspaceLibraryKind,
 } from "@/lib/library/contracts";
 
+const WorkspaceLibraryAtlas = dynamic(
+  () => import("@/components/workspace-library-atlas").then((module) => module.WorkspaceLibraryAtlas),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="mt-4 flex min-h-[34rem] items-center justify-center gap-2 rounded-xl border border-line bg-[#06151c] text-sm text-[#a9c7c0]" role="status">
+        <Loader2 size={16} className="animate-spin" aria-hidden="true" /> Preparing Library Atlas…
+      </div>
+    ),
+  },
+);
+
 type WorkspaceLibraryProps = Readonly<{
   title?: string;
   description?: string;
@@ -33,6 +48,7 @@ type WorkspaceLibraryProps = Readonly<{
   limit?: number;
   refreshKey?: string | number;
   className?: string;
+  presentation?: "cards" | "atlas";
 }>;
 
 type LibraryPayload = Readonly<{
@@ -70,6 +86,7 @@ export function WorkspaceLibrary({
   limit = compact ? 8 : 60,
   refreshKey,
   className,
+  presentation = "cards",
 }: WorkspaceLibraryProps) {
   const availableKinds = useMemo(
     () => kinds?.length ? [...new Set(kinds)] : allKinds,
@@ -83,6 +100,10 @@ export function WorkspaceLibrary({
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string>();
   const [reloadNonce, setReloadNonce] = useState(0);
+  const atlasAvailable = presentation === "atlas" && !compact;
+  const [view, setView] = useState<"atlas" | "browse">(
+    atlasAvailable ? "atlas" : "browse",
+  );
   const effectiveProjectId = projectId || urlProjectId;
   const requestHref = useMemo(() => workspaceLibraryQueryHref({
     query,
@@ -163,7 +184,7 @@ export function WorkspaceLibrary({
           <h2 id={`workspace-library-${projectId || "all"}`} className={clsx("mt-2 font-semibold tracking-tight", compact ? "text-lg" : "text-xl")}>{title}</h2>
           <p className="mt-1 max-w-3xl text-sm leading-6 text-muted">{description}</p>
         </div>
-        <div className={clsx("flex gap-2", compact ? "flex-col sm:flex-row" : "flex-col sm:flex-row")}>
+        <div className={clsx("flex gap-2", compact ? "flex-col sm:flex-row" : "flex-col sm:flex-row lg:flex-wrap lg:justify-end")}>
           <label className="relative min-w-56 flex-1">
             <span className="sr-only">Search workspace assets</span>
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
@@ -185,6 +206,26 @@ export function WorkspaceLibrary({
               {availableKinds.map((candidate) => <option key={candidate} value={candidate}>{workspaceLibraryKindLabel(candidate)}</option>)}
             </select>
           </label>
+          {atlasAvailable ? (
+            <div className="inline-flex min-h-10 rounded-md border border-line bg-background p-1" role="group" aria-label="Library view">
+              <button
+                type="button"
+                onClick={() => setView("atlas")}
+                aria-pressed={view === "atlas"}
+                className={clsx("inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 text-xs font-semibold transition-colors", view === "atlas" ? "bg-primary text-primary-ink" : "text-muted hover:text-foreground")}
+              >
+                <Boxes size={14} aria-hidden="true" /> Atlas
+              </button>
+              <button
+                type="button"
+                onClick={() => setView("browse")}
+                aria-pressed={view === "browse"}
+                className={clsx("inline-flex min-h-8 items-center gap-1.5 rounded px-2.5 text-xs font-semibold transition-colors", view === "browse" ? "bg-primary text-primary-ink" : "text-muted hover:text-foreground")}
+              >
+                <List size={14} aria-hidden="true" /> Browse
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -223,9 +264,19 @@ export function WorkspaceLibrary({
 
       {payload.items.length ? (
         <>
-          <div className={clsx("mt-4 grid gap-3", compact ? "grid-cols-1" : "md:grid-cols-2 2xl:grid-cols-3")}>
-            {payload.items.map((item) => <WorkspaceLibraryCard key={item.id} item={item} compact={compact} />)}
-          </div>
+          {atlasAvailable && view === "atlas" ? (
+            <WorkspaceLibraryAtlas
+              items={payload.items}
+              total={payload.total}
+              totalIsLowerBound={payload.totalIsLowerBound}
+              nextOffset={payload.nextOffset}
+              className="mt-4"
+            />
+          ) : (
+            <div className={clsx("mt-4 grid gap-3", compact ? "grid-cols-1" : "md:grid-cols-2 2xl:grid-cols-3")}>
+              {payload.items.map((item) => <WorkspaceLibraryCard key={item.id} item={item} compact={compact} />)}
+            </div>
+          )}
           {payload.nextOffset !== null ? (
             <div className="mt-4 flex justify-center">
               <Link
