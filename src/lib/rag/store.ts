@@ -67,6 +67,8 @@ import {
 } from "@/lib/rag/deletion-events";
 import { invalidateRunsForDeletedContext } from "@/lib/runs/context-invalidation";
 import { buildCaptureKnowledgeSupersessionEvent } from "@/lib/rag/capture-supersession-event";
+import { KNOWLEDGE_COGNIFY_PURPOSE_ID } from "@/lib/sources/purposes";
+import { purgeKnowledgeCognitionsForDocuments } from "@/lib/knowledge/cognification-store";
 
 type RagSqlClient = ReturnType<typeof getSql>;
 
@@ -332,6 +334,10 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
     });
     return documentId;
   }
+  await purgeKnowledgeCognitionsForDocuments({
+    tenantId,
+    documentIds: [documentId],
+  });
   await updateJsonFile<KnowledgeLedger>(getKnowledgeFile(), { documents: [], chunks: [] }, (ledger) => ({
     ...ledger,
     documents: ledger.documents.filter((document) => document.id !== documentId || normalizeTenantId(document.tenantId) !== tenantId),
@@ -446,6 +452,10 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
       retiredAt,
     });
   }
+  await purgeKnowledgeCognitionsForDocuments({
+    tenantId,
+    documentIds: [...ids],
+  });
   await updateJsonFile<KnowledgeLedger>(getKnowledgeFile(), { documents: [], chunks: [] }, (current) => ({
     ...current,
     documents: current.documents.filter((document) => !ids.has(document.id)),
@@ -674,6 +684,10 @@ export async function retireSupersededCaptureKnowledge(input: {
       retiredAt,
     });
   }
+  await purgeKnowledgeCognitionsForDocuments({
+    tenantId,
+    documentIds: [...documentIds],
+  });
   await updateJsonFile<KnowledgeLedger>(
     getKnowledgeFile(),
     { documents: [], chunks: [] },
@@ -1070,6 +1084,279 @@ export async function listKnowledgeChunks(limit = 20, options: { tenantId?: stri
     .filter((chunk) => normalizeTenantId(chunk.tenantId) === tenantId)
     .slice(0, limit)
     .map(sanitizeKnowledgeChunk);
+}
+
+export type ActorOwnedCognitionSource = Readonly<{
+  document: KnowledgeDocument;
+  chunks: readonly KnowledgeChunk[];
+  sourceItemId: string;
+  sourceRevisionId: string;
+}>;
+
+/**
+ * Returns one complete, current, actor-owned evidence set that explicitly
+ * permits the cognition purpose. Partial, superseded, legacy, and cross-owner
+ * documents fail closed instead of being sent to a model.
+ */
+export async function getActorOwnedKnowledgeForCognition(input: {
+  tenantId: string;
+  actorId: string;
+  documentId: string;
+}): Promise<ActorOwnedCognitionSource | null> {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = cognitionContractId(input.actorId, "actor");
+  const documentId = cognitionContractId(input.documentId, "document");
+  const asOfTime = new Date().toISOString();
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT document.*,
+        jsonb_agg(
+          jsonb_build_object(
+            'chunk', to_jsonb(chunk),
+            'evidence', to_jsonb(evidence)
+          )
+          ORDER BY chunk.chunk_index, chunk.id COLLATE "C"
+        ) AS cognition_lineage_rows
+      FROM omni_knowledge_documents document
+      JOIN omni_source_items item
+        ON item.tenant_id = document.tenant_id
+       AND item.id = document.source_item_id
+       AND item.current_revision_id = document.source_revision_id
+       AND item.adapter_operation = 'upsert'
+      JOIN omni_source_revisions revision
+        ON revision.tenant_id = document.tenant_id
+       AND revision.id = document.source_revision_id
+       AND revision.source_item_id = item.id
+       AND revision.adapter_operation = 'upsert'
+      JOIN omni_knowledge_chunks chunk
+        ON chunk.tenant_id = document.tenant_id
+       AND chunk.document_id = document.id
+      LEFT JOIN omni_evidence_units evidence
+        ON evidence.tenant_id = chunk.tenant_id
+       AND evidence.id = chunk.evidence_unit_id
+      WHERE document.tenant_id = ${tenantId}
+        AND document.id = ${documentId}
+        AND item.owner_actor_id = ${actorId}
+        AND revision.owner_actor_id = ${actorId}
+        AND item.visibility = 'user_private'
+        AND revision.visibility = 'user_private'
+        AND ${KNOWLEDGE_COGNIFY_PURPOSE_ID} = ANY(item.allowed_purpose_ids)
+        AND ${KNOWLEDGE_COGNIFY_PURPOSE_ID} = ANY(revision.allowed_purpose_ids)
+        AND (item.retention_expires_at IS NULL OR item.retention_expires_at > ${asOfTime})
+        AND (revision.retention_expires_at IS NULL OR revision.retention_expires_at > ${asOfTime})
+        AND item.captured_at <= ${asOfTime}
+        AND revision.captured_at <= ${asOfTime}
+      GROUP BY document.id
+      HAVING COUNT(*) = document.chunk_count
+        AND COUNT(DISTINCT chunk.id) = document.chunk_count
+        AND COUNT(DISTINCT evidence.id) = document.chunk_count
+        AND (
+          SELECT COUNT(*)
+          FROM omni_evidence_units revision_evidence
+          WHERE revision_evidence.tenant_id = document.tenant_id
+            AND revision_evidence.source_item_id = document.source_item_id
+            AND revision_evidence.source_revision_id = document.source_revision_id
+        ) = document.chunk_count
+        AND BOOL_AND(
+          evidence.id IS NOT NULL
+          AND chunk.source_revision_id = document.source_revision_id
+          AND evidence.source_item_id = document.source_item_id
+          AND evidence.source_revision_id = document.source_revision_id
+          AND evidence.owner_actor_id = ${actorId}
+          AND evidence.visibility = 'user_private'
+          AND evidence.adapter_operation = 'upsert'
+          AND ${KNOWLEDGE_COGNIFY_PURPOSE_ID} = ANY(evidence.allowed_purpose_ids)
+          AND (
+            evidence.retention_expires_at IS NULL
+            OR evidence.retention_expires_at > ${asOfTime}
+          )
+          AND evidence.captured_at <= ${asOfTime}
+          AND evidence.extracted_at <= ${asOfTime}
+        )
+      LIMIT 1
+    `;
+    if (!rows[0]) return null;
+    const document = documentFromRow(rows[0]);
+    if (!document.sourceItemId || !document.sourceRevisionId) return null;
+    const chunks = cognitionDatabaseChunks(
+      rows[0].cognition_lineage_rows,
+      document,
+      { tenantId, actorId, asOfTime },
+    );
+    if (
+      chunks.length !== document.chunkCount ||
+      chunks.some((chunk, index) =>
+        chunk.chunkIndex !== index ||
+        !chunk.evidenceUnitId ||
+        chunk.sourceRevisionId !== document.sourceRevisionId
+      )
+    ) return null;
+    return Object.freeze({
+      document,
+      chunks: Object.freeze(chunks),
+      sourceItemId: document.sourceItemId,
+      sourceRevisionId: document.sourceRevisionId,
+    });
+  }
+
+  const ledger = await readKnowledgeLedger();
+  const document = ledger.documents.find((candidate) =>
+    normalizeTenantId(candidate.tenantId) === tenantId &&
+    candidate.id === documentId
+  );
+  if (!document?.sourceItemId || !document.sourceRevisionId) return null;
+  const outputs = currentCognitionOutputs(ledger);
+  if (!outputs) return null;
+  const output = outputs.find((candidate) =>
+    candidate.tenantId === tenantId &&
+    candidate.sourceItem.sourceItemId === document.sourceItemId
+  );
+  if (
+    !output ||
+    output.sourceRevision.sourceRevisionId !== document.sourceRevisionId ||
+    !cognitionOutputIsEligible(output, { tenantId, actorId, asOfTime })
+  ) return null;
+  const chunks = cognitionFileChunks({
+    ledger,
+    document,
+    output,
+    tenantId,
+    actorId,
+    asOfTime,
+  });
+  if (!chunks) return null;
+  return Object.freeze({
+    document: sanitizeKnowledgeDocument(document),
+    chunks: Object.freeze(chunks),
+    sourceItemId: document.sourceItemId,
+    sourceRevisionId: document.sourceRevisionId,
+  });
+}
+
+/** Lists current documents eligible for an explicit cognition request. */
+export async function listActorOwnedKnowledgeDocumentsForCognition(input: {
+  tenantId: string;
+  actorId: string;
+  limit?: number;
+}) {
+  const tenantId = normalizeTenantId(input.tenantId);
+  const actorId = cognitionContractId(input.actorId, "actor");
+  const limit = Math.min(Math.max(Math.round(input.limit || 24), 1), 100);
+  const asOfTime = new Date().toISOString();
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT document.*,
+        jsonb_agg(
+          jsonb_build_object(
+            'chunk', to_jsonb(chunk),
+            'evidence', to_jsonb(evidence)
+          )
+          ORDER BY chunk.chunk_index, chunk.id COLLATE "C"
+        ) AS cognition_lineage_rows
+      FROM omni_knowledge_documents document
+      JOIN omni_source_items item
+        ON item.tenant_id = document.tenant_id
+       AND item.id = document.source_item_id
+       AND item.current_revision_id = document.source_revision_id
+       AND item.adapter_operation = 'upsert'
+      JOIN omni_source_revisions revision
+        ON revision.tenant_id = document.tenant_id
+       AND revision.id = document.source_revision_id
+       AND revision.source_item_id = item.id
+       AND revision.adapter_operation = 'upsert'
+      JOIN omni_knowledge_chunks chunk
+        ON chunk.tenant_id = document.tenant_id
+       AND chunk.document_id = document.id
+      LEFT JOIN omni_evidence_units evidence
+        ON evidence.tenant_id = chunk.tenant_id
+       AND evidence.id = chunk.evidence_unit_id
+      WHERE document.tenant_id = ${tenantId}
+        AND item.owner_actor_id = ${actorId}
+        AND revision.owner_actor_id = ${actorId}
+        AND item.visibility = 'user_private'
+        AND revision.visibility = 'user_private'
+        AND ${KNOWLEDGE_COGNIFY_PURPOSE_ID} = ANY(item.allowed_purpose_ids)
+        AND ${KNOWLEDGE_COGNIFY_PURPOSE_ID} = ANY(revision.allowed_purpose_ids)
+        AND (item.retention_expires_at IS NULL OR item.retention_expires_at > ${asOfTime})
+        AND (revision.retention_expires_at IS NULL OR revision.retention_expires_at > ${asOfTime})
+        AND item.captured_at <= ${asOfTime}
+        AND revision.captured_at <= ${asOfTime}
+      GROUP BY document.id
+      HAVING COUNT(*) = document.chunk_count
+        AND COUNT(DISTINCT chunk.id) = document.chunk_count
+        AND COUNT(DISTINCT evidence.id) = document.chunk_count
+        AND (
+          SELECT COUNT(*)
+          FROM omni_evidence_units revision_evidence
+          WHERE revision_evidence.tenant_id = document.tenant_id
+            AND revision_evidence.source_item_id = document.source_item_id
+            AND revision_evidence.source_revision_id = document.source_revision_id
+        ) = document.chunk_count
+        AND BOOL_AND(
+          evidence.id IS NOT NULL
+          AND chunk.source_revision_id = document.source_revision_id
+          AND evidence.source_item_id = document.source_item_id
+          AND evidence.source_revision_id = document.source_revision_id
+          AND evidence.owner_actor_id = ${actorId}
+          AND evidence.visibility = 'user_private'
+          AND evidence.adapter_operation = 'upsert'
+          AND ${KNOWLEDGE_COGNIFY_PURPOSE_ID} = ANY(evidence.allowed_purpose_ids)
+          AND (
+            evidence.retention_expires_at IS NULL
+            OR evidence.retention_expires_at > ${asOfTime}
+          )
+          AND evidence.captured_at <= ${asOfTime}
+          AND evidence.extracted_at <= ${asOfTime}
+        )
+      ORDER BY document.updated_at DESC, document.id COLLATE "C"
+      LIMIT ${limit}
+    `;
+    return rows.flatMap((row) => {
+      const document = documentFromRow(row);
+      if (!document.sourceItemId || !document.sourceRevisionId) return [];
+      const chunks = cognitionDatabaseChunks(
+        row.cognition_lineage_rows,
+        document,
+        { tenantId, actorId, asOfTime },
+      );
+      return chunks.length === document.chunkCount
+        ? [document]
+        : [];
+    });
+  }
+  const ledger = await readKnowledgeLedger();
+  const outputs = currentCognitionOutputs(ledger);
+  if (!outputs) return [];
+  const eligibleByRevisionId = new Map(outputs
+    .filter((output) =>
+      cognitionOutputIsEligible(output, { tenantId, actorId, asOfTime })
+    )
+    .map((output) => [output.sourceRevision.sourceRevisionId, output] as const));
+  return ledger.documents
+    .filter((document) =>
+      normalizeTenantId(document.tenantId) === tenantId &&
+      Boolean(document.sourceRevisionId) &&
+      Boolean(document.sourceItemId) &&
+      eligibleByRevisionId.get(document.sourceRevisionId!)?.sourceItem
+        .sourceItemId === document.sourceItemId &&
+      Boolean(cognitionFileChunks({
+        ledger,
+        document,
+        output: eligibleByRevisionId.get(document.sourceRevisionId!)!,
+        tenantId,
+        actorId,
+        asOfTime,
+      })),
+    )
+    .sort((left, right) =>
+      right.updatedAt.localeCompare(left.updatedAt) ||
+      left.id.localeCompare(right.id)
+    )
+    .slice(0, limit)
+    .map(sanitizeKnowledgeDocument);
 }
 
 /**
@@ -2643,6 +2930,186 @@ async function readKnowledgeLedger() {
 
 function getKnowledgeFile() {
   return getDataPath("knowledge.json");
+}
+
+function cognitionContractId(value: string, label: string) {
+  const normalized = String(value || "").trim();
+  if (
+    !normalized ||
+    normalized.length > 320 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(normalized)
+  ) {
+    throw new Error(`Knowledge cognition ${label} identity is invalid.`);
+  }
+  return normalized;
+}
+
+type CognitionEligibility = Readonly<{
+  tenantId: string;
+  actorId: string;
+  asOfTime: string;
+}>;
+
+function currentCognitionOutputs(
+  ledger: KnowledgeLedger,
+): SourceAdapterUpsertV1[] | null {
+  const parsed: SourceAdapterUpsertV1[] = [];
+  for (const candidate of ledger.sourceLineage?.adapterOutputs || []) {
+    const result = sourceAdapterUpsertV1Schema.safeParse(candidate);
+    if (!result.success) return null;
+    parsed.push(result.data);
+  }
+  const settledSourceItems = new Set<string>();
+  return parsed.filter((output) => {
+    const sourceItemId = output.sourceItem.sourceItemId;
+    if (settledSourceItems.has(sourceItemId)) return false;
+    settledSourceItems.add(sourceItemId);
+    return true;
+  });
+}
+
+function cognitionOutputIsEligible(
+  output: SourceAdapterUpsertV1,
+  context: CognitionEligibility,
+) {
+  const bindings = [output, output.sourceItem, output.sourceRevision];
+  if (
+    bindings.some((binding) =>
+      !cognitionBindingIsEligible(binding, context)
+    ) ||
+    output.sourceItem.capturedAt > context.asOfTime ||
+    output.sourceRevision.capturedAt > context.asOfTime
+  ) return false;
+  return output.evidenceUnits.every((evidence) =>
+    cognitionBindingIsEligible(evidence, context) &&
+    evidence.sourceItemId === output.sourceItem.sourceItemId &&
+    evidence.sourceRevisionId === output.sourceRevision.sourceRevisionId &&
+    evidence.capturedAt <= context.asOfTime &&
+    evidence.extractedAt <= context.asOfTime
+  );
+}
+
+function cognitionBindingIsEligible(
+  binding: Pick<
+    SourceAdapterUpsertV1,
+    | "tenantId"
+    | "ownerActorId"
+    | "visibility"
+    | "allowedPurposeIds"
+    | "retentionExpiresAt"
+  >,
+  context: CognitionEligibility,
+) {
+  return binding.tenantId === context.tenantId &&
+    binding.ownerActorId === context.actorId &&
+    binding.visibility === "user_private" &&
+    binding.allowedPurposeIds.includes(KNOWLEDGE_COGNIFY_PURPOSE_ID) &&
+    (
+      binding.retentionExpiresAt === null ||
+      binding.retentionExpiresAt > context.asOfTime
+    );
+}
+
+function cognitionChunkMatchesEvidence(input: CognitionEligibility & {
+  chunk: KnowledgeChunk;
+  evidence: EvidenceUnitV1;
+  sourceItemId: string;
+  sourceRevisionId: string;
+}) {
+  const { chunk, evidence } = input;
+  return normalizeTenantId(chunk.tenantId) === input.tenantId &&
+    chunk.sourceRevisionId === input.sourceRevisionId &&
+    chunk.evidenceUnitId === evidence.evidenceUnitId &&
+    evidence.sourceItemId === input.sourceItemId &&
+    evidence.sourceRevisionId === input.sourceRevisionId &&
+    cognitionBindingIsEligible(evidence, input) &&
+    evidence.capturedAt <= input.asOfTime &&
+    evidence.extractedAt <= input.asOfTime &&
+    evidence.evidenceContentSha256 === hashContent(chunk.content) &&
+    evidence.evidenceByteLength === Buffer.byteLength(chunk.content, "utf8");
+}
+
+function cognitionDatabaseChunks(
+  value: unknown,
+  document: KnowledgeDocument,
+  context: CognitionEligibility,
+) {
+  if (
+    !document.sourceItemId ||
+    !document.sourceRevisionId ||
+    !Array.isArray(value)
+  ) return [];
+  return value.flatMap((candidate) => {
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      Array.isArray(candidate)
+    ) return [];
+    const lineage = candidate as Record<string, unknown>;
+    try {
+      const chunk = chunkFromRow(storedRecord(lineage.chunk));
+      const evidence = evidenceUnitFromStoredRow(storedRecord(lineage.evidence));
+      return cognitionChunkMatchesEvidence({
+          ...context,
+          chunk,
+          evidence,
+          sourceItemId: document.sourceItemId,
+          sourceRevisionId: document.sourceRevisionId,
+        })
+        ? [chunk]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function cognitionFileChunks(input: CognitionEligibility & {
+  ledger: KnowledgeLedger;
+  document: KnowledgeDocument;
+  output: SourceAdapterUpsertV1;
+}): KnowledgeChunk[] | null {
+  const { document, output } = input;
+  if (!document.sourceItemId || !document.sourceRevisionId) return null;
+  const candidates = input.ledger.chunks
+    .filter((chunk) =>
+      normalizeTenantId(chunk.tenantId) === input.tenantId &&
+      chunk.documentId === document.id
+    )
+    .sort((left, right) =>
+      left.chunkIndex - right.chunkIndex || left.id.localeCompare(right.id)
+    )
+    .map(sanitizeKnowledgeChunk);
+  if (
+    candidates.length !== document.chunkCount ||
+    output.evidenceUnits.length !== document.chunkCount ||
+    document.chunkCount < 1
+  ) return null;
+  const evidenceById = new Map(output.evidenceUnits.map((evidence) =>
+    [evidence.evidenceUnitId, evidence] as const
+  ));
+  const usedEvidence = new Set<string>();
+  for (const [index, chunk] of candidates.entries()) {
+    const evidence = chunk.evidenceUnitId
+      ? evidenceById.get(chunk.evidenceUnitId)
+      : undefined;
+    if (
+      chunk.chunkIndex !== index ||
+      !evidence ||
+      usedEvidence.has(evidence.evidenceUnitId) ||
+      !cognitionChunkMatchesEvidence({
+        ...input,
+        chunk,
+        evidence,
+        sourceItemId: document.sourceItemId,
+        sourceRevisionId: document.sourceRevisionId,
+      })
+    ) return null;
+    usedEvidence.add(evidence.evidenceUnitId);
+  }
+  return usedEvidence.size === output.evidenceUnits.length
+    ? candidates
+    : null;
 }
 
 function buildReasons({
