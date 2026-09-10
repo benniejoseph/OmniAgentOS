@@ -216,6 +216,48 @@ describe("request-bound Capture asset detail route", () => {
     expect(routeMocks.getCaptureAssetContent).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "video/mp4",
+    "video/webm",
+    "video/ogg",
+    "video/quicktime",
+    "video/x-m4v",
+    "video/mp4; codecs=avc1",
+  ])("serves a validated %s asset inline for private playback", async (mediaType) => {
+    routeMocks.getCaptureAssetContentForRequest.mockResolvedValueOnce({
+      asset: { ...asset, filename: "private-video.mp4", mediaType },
+      bytes: Buffer.from("test"),
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/capture/assets/asset-a?content=1"),
+      { params: Promise.resolve({ id: "asset-a" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toBe(
+      "inline; filename*=UTF-8''private-video.mp4",
+    );
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("forces an unsafe media type to download", async () => {
+    routeMocks.getCaptureAssetContentForRequest.mockResolvedValueOnce({
+      asset: { ...asset, filename: "unsafe.svg", mediaType: "image/svg+xml" },
+      bytes: Buffer.from("test"),
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/capture/assets/asset-a?content=1"),
+      { params: Promise.resolve({ id: "asset-a" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toBe(
+      "attachment; filename*=UTF-8''unsafe.svg",
+    );
+  });
+
   it("returns integrity-checked structured evidence only when requested", async () => {
     const response = await GET(
       new Request("http://localhost/api/capture/assets/asset-a?extraction=1"),

@@ -6,6 +6,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { foldRunProjection } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
+import { listRunMediaArtifacts } from "@/lib/runs/media-artifacts";
 import { publicAgentRun } from "@/lib/runs/public";
 import { getAgentRun } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -37,20 +38,36 @@ async function GETHandler(
     return forbiddenResponse(error);
   }
 
-  const url = new URL(request.url);
-  if (url.searchParams.get("replay") !== "true") {
-    try {
-      const result = await showRunService(createAppServiceCaller({ context: auth }), { runId: id });
-      return result.data.run
-        ? Response.json({ ...result.data, serviceReceipt: result.receipt })
-        : Response.json({ error: "Run not found." }, { status: 404 });
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== "Run not found.") throw error;
-      return Response.json({ error: "Run not found." }, { status: 404 });
-    }
+  let result;
+  try {
+    result = await showRunService(createAppServiceCaller({ context: auth }), { runId: id });
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "Run not found.") throw error;
+    return Response.json({ error: "Run not found." }, { status: 404 });
   }
+  if (!result.data.run) {
+    return Response.json({ error: "Run not found." }, { status: 404 });
+  }
+
   const run = await getAgentRun(id, { tenantId: auth.tenantId });
   if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
+  // Media is consumed with the terminal result. Avoid rebuilding a potentially
+  // long event projection during the three-second active-run polling loop.
+  const mediaArtifacts = ["completed", "failed", "canceled"].includes(run.status)
+    ? await listRunMediaArtifacts(run.id, {
+        tenantId: auth.tenantId,
+        actorId: run.ownerActorId,
+      }).catch(() => [])
+    : [];
+
+  const url = new URL(request.url);
+  if (url.searchParams.get("replay") !== "true") {
+    return Response.json({
+      ...result.data,
+      mediaArtifacts,
+      serviceReceipt: result.receipt,
+    });
+  }
 
   // Stage-2 (EVENT_LOG.md): rebuild run state by folding `run:<id>`'s events —
   // verifiable proof the stored run matches its event history.
@@ -75,6 +92,7 @@ async function GETHandler(
 
   return Response.json({
     run: publicAgentRun(run),
+    mediaArtifacts,
     eventCount: events.length,
     replayed,
     consistent,
