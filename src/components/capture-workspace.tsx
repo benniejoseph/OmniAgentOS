@@ -126,8 +126,8 @@ export function CaptureWorkspace() {
   const [loadError, setLoadError] = useState<string>();
   const [offlinePending, setOfflinePending] = useState(0);
   const [activeJob, setActiveJob] = useState<CaptureJob>();
-  const [geminiConfigured, setGeminiConfigured] = useState<boolean>();
-  const [geminiImageModel, setGeminiImageModel] = useState<string>();
+  const [imageGenerationRoute, setImageGenerationRoute] = useState<{ configured?: boolean; provider?: string; model?: string }>();
+  const [videoGenerationRoute, setVideoGenerationRoute] = useState<{ configured?: boolean; provider?: string; model?: string }>();
   const [libraryQuery, setLibraryQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [deletingAsset, setDeletingAsset] = useState<string>();
@@ -176,10 +176,13 @@ export function CaptureWorkspace() {
       }),
       fetch("/api/capabilities?view=settings", { cache: "no-store", signal: controller.signal }).then(async (response) => {
         if (!response.ok) throw new Error("Media capabilities could not be loaded.");
-        const payload = await response.json() as { geminiConfigured?: boolean; googleModels?: { image?: string } };
+        const payload = await response.json() as {
+          imageGenerationRoute?: { configured?: boolean; provider?: string; model?: string };
+          videoGenerationRoute?: { configured?: boolean; provider?: string; model?: string };
+        };
         if (controller.signal.aborted) return;
-        setGeminiConfigured(Boolean(payload.geminiConfigured));
-        setGeminiImageModel(payload.googleModels?.image);
+        setImageGenerationRoute(payload.imageGenerationRoute);
+        setVideoGenerationRoute(payload.videoGenerationRoute);
       }),
     ]);
     if (controller.signal.aborted) return;
@@ -663,7 +666,7 @@ export function CaptureWorkspace() {
         onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }}
       />
 
-      <VisualStudio configured={geminiConfigured} model={geminiImageModel} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
+      <VisualStudio assets={assets} imageRoute={imageGenerationRoute} videoRoute={videoGenerationRoute} disabledReason={visualBlocked} onJob={(job) => { completedJobRef.current = undefined; setActiveJob(job); }} onAssetsChanged={loadWorkspace} />
 
       <WorkspaceLibrary
         title="Everything in this workspace"

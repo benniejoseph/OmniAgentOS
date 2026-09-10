@@ -57,6 +57,7 @@
     "@vercel/blob": "^2.8.0",
     "ajv": "^8.20.0",
     "clsx": "^2.1.1",
+    "ffmpeg-static": "^5.2.0",
     "jszip": "^3.10.1",
     "lucide-react": "^1.33.0",
     "mammoth": "^1.12.1",

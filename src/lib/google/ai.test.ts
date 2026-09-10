@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   estimateGeminiCostUsd,
+  generateGeminiImage,
   generateGeminiText,
   generateGeminiToolTurn,
+  generateGeminiVideo,
 } from "@/lib/google/ai";
 
 describe("Google AI provider", () => {
@@ -31,6 +33,48 @@ describe("Google AI provider", () => {
       responseId: "interaction-1",
       usage: { inputTokens: 10, outputTokens: 4, cachedInputTokens: 2, totalTokens: 14 },
     });
+  });
+
+  it("sends source images for non-destructive image editing", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "image-edit-1",
+      status: "completed",
+      model: "gemini-image-configured",
+      steps: [{ type: "model_output", content: [{ type: "image", mime_type: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]).toString("base64") }] }],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await generateGeminiImage({
+      prompt: "Replace the background only",
+      model: "gemini-image-configured",
+      apiKey: "test-gemini-key",
+      sources: [{ bytes: new Uint8Array([1, 2, 3]), mimeType: "image/png" }],
+    });
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.input).toEqual([
+      { type: "text", text: "Replace the background only" },
+      { type: "image", data: "AQID", mime_type: "image/png" },
+    ]);
+  });
+
+  it("uses the configured Gemini Omni model for video editing", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "video-edit-1",
+      status: "completed",
+      model: "gemini-omni-configured",
+      steps: [{ type: "model_output", content: [{ type: "video", mime_type: "video/mp4", data: Buffer.from("video").toString("base64") }] }],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await generateGeminiVideo({
+      prompt: "Change the lighting. Keep everything else the same.",
+      model: "gemini-omni-configured",
+      apiKey: "test-gemini-key",
+      sources: [{ bytes: new Uint8Array([4, 5, 6]), mimeType: "video/mp4" }],
+    });
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.model).toBe("gemini-omni-configured");
+    expect(body.input[0].content[0]).toEqual({ type: "video", data: "BAUG", mime_type: "video/mp4" });
+    expect(body.response_format).toMatchObject({ type: "video", resolution: "360p" });
+    expect(body.store).toBe(false);
   });
 
   it("calculates only explicitly configured Gemini pricing", () => {

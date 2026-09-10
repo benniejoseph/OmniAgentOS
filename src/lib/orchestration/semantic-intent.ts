@@ -162,12 +162,14 @@ export function applySemanticIntentPolicy(input: {
         preferredAgentId: input.preferredAgentId,
       })
     : undefined;
-  const team = cardSelection
-    ? {
+  const team = matchedCapabilities.some((capability) => capability.category === "media")
+    ? semanticMediaAgentTeam(candidate)
+    : cardSelection
+      ? {
         primaryAgentId: asSupervisorAgentId(cardSelection.primaryAgentId),
         specialistIds: cardSelection.specialistIds.map(asSupervisorAgentId),
       }
-    : semanticAgentTeam(candidate, input.mode, input.preferredAgentId);
+      : semanticAgentTeam(candidate, input.mode, input.preferredAgentId);
   const route = semanticRoute(candidate, input.baseline);
   const requiresCapabilityApproval = matchedCapabilities.some(
     (capability) =>
@@ -338,7 +340,27 @@ function semanticCapabilityPolicyIds(
       add("knowledge.search");
     }
   }
+
+  const mentionsImage = /\b(?:image|photo|photograph|picture|portrait|headshot|passport\s+(?:photo|picture))s?\b/.test(semanticSurface);
+  const mentionsVideo = /\b(?:video|movie|footage|reel|clip)s?\b/.test(semanticSurface);
+  const editIntent = candidate.intent === "update" || /\b(?:edit|retouch|change|modify|remove|replace|enhance|correct|crop|resize)\b/.test(semanticSurface);
+  const clipIntent = mentionsVideo && /\b(?:clip|trim|cut|extract|segment)\b/.test(semanticSurface);
+  if (mentionsImage) {
+    add(editIntent ? "media.image.edit" : "media.image.generate");
+  }
+  if (mentionsVideo) {
+    add(clipIntent
+      ? "media.video.clip"
+      : editIntent ? "media.video.edit" : "media.video.generate");
+  }
   return [...selected];
+}
+
+function semanticMediaAgentTeam(candidate: SemanticIntentCandidate) {
+  const specialistIds = new Set<SupervisorAgentId>(["atlas", "forge"]);
+  if (candidate.workKinds.includes("research")) specialistIds.add("scout");
+  specialistIds.add("sentinel");
+  return { primaryAgentId: "atlas" as const, specialistIds: [...specialistIds] };
 }
 
 function semanticRouteScore(candidate: SemanticIntentCandidate) {

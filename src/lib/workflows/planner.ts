@@ -12,6 +12,7 @@ import {
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import { buildContextPack } from "@/lib/rag/context-engine";
+import { trustedRuntimeClockInstruction } from "@/lib/orchestration/prompts";
 import type { DatabaseMemoryAccessScope } from "@/lib/db/memory-access-scope";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -1484,6 +1485,8 @@ function workflowSubtreeReplanInstructions(
 
 function buildPlannerInstructions(agentInstructions?: string) {
   return `You are the Dynamic Workflow Planner for Asael.
+
+${trustedRuntimeClockInstruction()}
 
 Return JSON that exactly matches the provided schema.
 

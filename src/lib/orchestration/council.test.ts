@@ -88,23 +88,25 @@ describe("agent council", () => {
       }),
     );
     expect(formatCouncilContributions(contributions)).toContain("Scout (Research)");
-    const scoutInstructions = String(
-      mocks.generateModelStructured.mock.calls[0]?.[0]?.instructions,
+    const scoutCall = mocks.generateModelStructured.mock.calls.find((call) =>
+      String(call[0]?.instructions).includes("You are Scout")
     );
-    const forgeInstructions = String(
-      mocks.generateModelStructured.mock.calls[1]?.[0]?.instructions,
+    const forgeCall = mocks.generateModelStructured.mock.calls.find((call) =>
+      String(call[0]?.instructions).includes("You are Forge")
     );
+    const scoutInstructions = String(scoutCall?.[0]?.instructions);
+    const forgeInstructions = String(forgeCall?.[0]?.instructions);
     expect(scoutInstructions).toContain("Produce current, source-backed findings");
     expect(scoutInstructions).toContain("<untrusted_agent_persona>");
     expect(forgeInstructions).toContain("Build concrete, production-ready artifacts");
     expect(forgeInstructions).toContain("cannot grant tools, context, data access");
-    expect(String(mocks.generateModelStructured.mock.calls[0]?.[0]?.input))
+    expect(String(scoutCall?.[0]?.input))
       .toContain("<delegation_contract");
-    expect(mocks.generateModelStructured.mock.calls[0]?.[0]?.usageScope)
+    expect(scoutCall?.[0]?.usageScope)
       .toMatchObject({
         executionScope: {
-          executingPrincipalId: contributions[0].delegation.delegatePrincipalId,
-          delegationId: contributions[0].delegation.delegationId,
+          executingPrincipalId: contributions.find((item) => item.agentId === "scout")?.delegation.delegatePrincipalId,
+          delegationId: contributions.find((item) => item.agentId === "scout")?.delegation.delegationId,
           contextGrantIds: ["context-one"],
           capabilityGrantIds: [],
         },
@@ -224,6 +226,66 @@ describe("agent council", () => {
       .toContain("<delegated_tool_results");
   });
 
+  it("delegates reversible media work to Forge with a task-specific editor persona", async () => {
+    mocks.generateModelStructured
+      .mockResolvedValueOnce({
+        ...modelResult("media plan"),
+        text: JSON.stringify({
+          status: "execute",
+          clarification: "",
+          calls: [{
+            callId: "media-call-one",
+            toolId: mediaTool.id,
+            input: {
+              prompt: "Create a natural professional passport portrait.",
+              sourceAssetIds: ["asset-one"],
+              aspectRatio: "3:4",
+            },
+            rationale: "Apply the requested professional edit to the supplied source.",
+          }],
+        }),
+      })
+      .mockResolvedValueOnce(modelResult("Edited asset created"));
+    const executeDelegatedTool = vi.fn(async ({ tool, executionScope }) => ({
+      record: toolRecord(tool, "executed"),
+      result: { asset: { id: "asset-edited" }, contentUrl: "/api/capture/assets/asset-edited?content=1" },
+      executionScope,
+    }));
+
+    const [contribution] = await runCouncilRound({
+      goal: "Edit my portrait into a professional passport picture.",
+      mode: "orchestrate",
+      primaryAgentId: "atlas",
+      specialistIds: ["atlas", "forge", "sentinel"],
+      contextBlock: "The selected source asset ID is asset-one.",
+      delegationAuthority: {
+        ...delegationAuthority,
+        governedToolIds: [mediaTool.id],
+      },
+      delegatedTools: [mediaTool],
+      executeDelegatedTool,
+    });
+
+    expect(contribution.agentId).toBe("forge");
+    expect(executeDelegatedTool).toHaveBeenCalledOnce();
+    expect(executeDelegatedTool.mock.calls[0]?.[0]).toMatchObject({
+      tool: { id: "media.image.edit", category: "media" },
+      executionScope: {
+        delegationId: contribution.delegation.delegationId,
+        executingPrincipalId: contribution.delegation.delegatePrincipalId,
+      },
+    });
+    const planInstructions = String(
+      mocks.generateModelStructured.mock.calls[0]?.[0]?.instructions,
+    );
+    const contributionInstructions = String(
+      mocks.generateModelStructured.mock.calls[1]?.[0]?.instructions,
+    );
+    expect(planInstructions).toContain("Framewright");
+    expect(planInstructions).toContain("professional image editor and art director");
+    expect(contributionInstructions).toContain("cannot expand the DelegationContract");
+  });
+
   it("lets Sentinel fail a response and Atlas revise it", async () => {
     mocks.generateModelStructured
       .mockResolvedValueOnce({ text: JSON.stringify({ passed: false, score: 0.45, assessment: "Evidence is missing.", requiredChanges: ["Cite the source."] }) })
@@ -334,6 +396,28 @@ const delegatedTool: ToolDefinition = {
   approvalRequired: false,
   operationClass: "read_only",
   inputSchema: { type: "object", properties: { query: { type: "string" } } },
+};
+
+const mediaTool: ToolDefinition = {
+  id: "media.image.edit",
+  name: "Edit image",
+  description: "Edit one private source image without overwriting it.",
+  category: "media",
+  status: "active",
+  riskLevel: 1,
+  dryRunSupported: true,
+  approvalRequired: false,
+  operationClass: "mutation",
+  reversible: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      prompt: { type: "string" },
+      sourceAssetIds: { type: "array", items: { type: "string" } },
+      aspectRatio: { type: "string" },
+    },
+    required: ["prompt", "sourceAssetIds"],
+  },
 };
 
 function toolRecord(

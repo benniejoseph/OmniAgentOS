@@ -1,21 +1,13 @@
 import { z } from "zod";
-import { saveCaptureAsset } from "@/lib/capture/assets";
+
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
-import { GEMINI_IMAGE_MODEL, hasGeminiKey } from "@/lib/config";
 import { withDatabaseRequestScope } from "@/lib/db/client";
-import {
-  describeGeminiImageFailure,
-  generateGeminiImage,
-  GeminiImageGenerationError,
-  type GeminiImageFailureCategory,
-} from "@/lib/google/ai";
-import { parseJsonBody, jsonBodyErrorResponse } from "@/lib/http/body";
-import {
-  createRequestTelemetry,
-  recordRuntimeEventSafely,
-} from "@/lib/observability/store";
+import { describeGeminiImageFailure, GeminiImageGenerationError } from "@/lib/google/ai";
+import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { createImageMediaAsset } from "@/lib/media/operations";
+import { createRequestTelemetry, recordRuntimeEventSafely } from "@/lib/observability/store";
+import { describeOpenAIImageFailure, OpenAIImageGenerationError } from "@/lib/openai/image";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { resolveSpecializedRuntime } from "@/lib/settings/specialized-runtime";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -24,138 +16,59 @@ export const POST = withDatabaseRequestScope(POSTHandler);
 const schema = z.object({
   prompt: z.string().trim().min(3).max(4_000),
   aspectRatio: z.enum(["1:1", "16:9", "9:16", "4:3", "3:4"]).optional(),
-}).strict();
+  operation: z.enum(["generate", "edit"]).default("generate"),
+  sourceAssetIds: z.array(z.string().trim().min(1).max(240)).max(4).default([]),
+}).strict().superRefine((value, context) => {
+  if (value.operation === "edit" && !value.sourceAssetIds.length) context.addIssue({ code: "custom", path: ["sourceAssetIds"], message: "Image editing requires at least one source image." });
+  if (value.operation === "generate" && value.sourceAssetIds.length) context.addIssue({ code: "custom", path: ["sourceAssetIds"], message: "Source images are accepted only for editing." });
+});
 
 async function POSTHandler(request: Request) {
   let context;
-  try { context = await authorizeRequest({ request, action: "run.agent", resourceType: "media", metadata: { operation: "generate_image" } }); }
-  catch (error) { return forbiddenResponse(error); }
-  const telemetry = createRequestTelemetry(request, "gemini-image");
-  const executionScope = captureExecutionScopeFromSecurityContext(
-    context,
-    request,
-    "media.image.capture_asset.store",
-    { correlationId: telemetry.correlationId },
-  );
-  let body: unknown;
-  try { body = await parseJsonBody(request); } catch (error) { return jsonBodyErrorResponse(error); }
-  const parsed = schema.safeParse(body);
-  if (!parsed.success) return Response.json({ error: "Add a valid image prompt and aspect ratio." }, { status: 400 });
-  const runtimeModel = await resolveSpecializedRuntime({
-    tenantId: context.tenantId,
-    actorId: context.actorId,
-    scope: "image_generation",
-    requiredCapability: "image",
-    deploymentProvider: "google",
-    deploymentModel: GEMINI_IMAGE_MODEL,
-    deploymentConfigured: hasGeminiKey(),
-  });
-  if (!runtimeModel.configured || runtimeModel.provider !== "google") {
-    return Response.json(
-      { error: "Image generation does not have an active model route." },
-      { status: 503, headers: { "cache-control": "private, no-store" } },
-    );
+  try {
+    context = await authorizeRequest({ request, action: "run.agent", resourceType: "media", metadata: { operation: "image" } });
+  } catch (error) {
+    return forbiddenResponse(error);
   }
+  let body: unknown;
+  try {
+    body = await parseJsonBody(request);
+  } catch (error) {
+    return jsonBodyErrorResponse(error);
+  }
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message || "Add a valid image request." }, { status: 400 });
+  const telemetry = createRequestTelemetry(request, "media-image");
+  const executionScope = captureExecutionScopeFromSecurityContext(context, request, "media.image.capture_asset.store", { correlationId: telemetry.correlationId });
   const startedAt = Date.now();
   try {
-    const result = await runtimeModel.withApiKey((apiKey) =>
-      generateGeminiImage({
-        ...parsed.data,
-        model: runtimeModel.model,
-        apiKey,
-        abortSignal: request.signal,
-        usageScope: {
-          tenantId: context.tenantId,
-          actorId: context.actorId,
-          sourceStreamId: "api:media:image",
-          operation: "image_generation",
-          purpose: "media.image.generate",
-          correlationId: executionScope.correlationId,
-          executionScope,
-          ...runtimeModel.usageReceipt,
-        },
-      })
-    );
-    request.signal.throwIfAborted();
-    let asset;
-    try {
-      asset = await saveCaptureAsset({
-        tenantId: context.tenantId,
-        actorId: context.actorId,
-        executionScope,
-        filename: `gemini-visual-${Date.now()}.${imageExtension(result.mimeType)}`,
-        mediaType: result.mimeType,
-        bytes: result.bytes,
-        tags: ["gemini-generated"],
-        metadata: {
-          origin: "gemini_visual_studio",
-          model: result.model,
-          responseId: result.responseId,
-          aspectRatio: parsed.data.aspectRatio || "1:1",
-        },
-      });
-    } catch {
-      throw new GeminiImageGenerationError({
-        category: "upstream",
-        code: "gemini_image_storage_failed",
-        publicMessage: "Gemini created the image, but the workspace could not store it.",
-        suggestion: "Try again after checking workspace storage availability.",
-        retryable: true,
-        httpStatus: 503,
-      });
-    }
-    const imageUrl = `/api/capture/assets/${encodeURIComponent(asset.id)}?content=1`;
-    await recordRuntimeEventSafely({
-      category: "api",
-      action: "gemini.image",
-      route: "/api/media/image",
-      method: "POST",
-      statusCode: 200,
+    const result = await createImageMediaAsset({
       tenantId: context.tenantId,
       actorId: context.actorId,
-      resourceType: "capture_asset",
-      resourceId: asset.id,
-      durationMs: Date.now() - startedAt,
-      requestId: telemetry.requestId,
-      correlationId: telemetry.correlationId,
-      message: "Gemini image generation completed.",
-      metadata: {
-        ...telemetry.syntheticMetadata,
-        outcome: "completed",
-        provider: "google",
-        model: result.model,
-        usage: result.usage,
-        responseId: result.responseId,
-        aspectRatio: parsed.data.aspectRatio || "1:1",
-        byteCount: asset.byteCount,
-        storageKind: asset.storageKind,
-      },
+      executionScope,
+      sourceStreamId: "api:media:image",
+      abortSignal: request.signal,
+      ...parsed.data,
     });
+    await recordMediaEvent({ context, telemetry, result, startedAt, statusCode: 200 });
     return Response.json({
-      image: imageUrl,
-      imageUrl,
-      asset: {
-        id: asset.id,
-        filename: asset.filename,
-        byteCount: asset.byteCount,
-        storageKind: asset.storageKind,
-        contentUrl: imageUrl,
-        indexUrl: `/api/capture/assets/${encodeURIComponent(asset.id)}`,
-      },
-      mimeType: result.mimeType,
+      image: result.contentUrl,
+      imageUrl: result.contentUrl,
+      operation: result.operation,
+      provider: result.provider,
       model: result.model,
       responseId: result.responseId,
       latencyMs: result.latencyMs,
       requestId: telemetry.correlationId,
-    }, { headers: { "cache-control": "private, no-store" } });
+      sourceAssetIds: result.sourceAssetIds,
+      asset: publicAsset(result.asset, result.contentUrl),
+    }, { headers: privateHeaders() });
   } catch (error) {
-    const failure = request.signal.aborted
-      ? describeGeminiImageFailure({ name: "AbortError" })
-      : describeGeminiImageFailure(error);
+    const failure = imageFailure(error, request.signal.aborted);
     await recordRuntimeEventSafely({
-      level: failureLevel(failure.category),
+      level: failure.category === "cancelled" ? "info" : failure.category === "quota" || failure.category === "safety" ? "warn" : "error",
       category: "api",
-      action: "gemini.image",
+      action: `media.image.${parsed.data.operation}`,
       route: "/api/media/image",
       method: "POST",
       statusCode: failure.httpStatus,
@@ -165,48 +78,60 @@ async function POSTHandler(request: Request) {
       durationMs: Date.now() - startedAt,
       requestId: telemetry.requestId,
       correlationId: telemetry.correlationId,
-      message: "Gemini image generation failed.",
-      metadata: {
-        ...telemetry.syntheticMetadata,
-        outcome: "failed",
-        provider: "google",
-        model: runtimeModel.model,
-        aspectRatio: parsed.data.aspectRatio || "1:1",
-        failureCategory: failure.category,
-        failureCode: failure.code,
-        retryable: failure.retryable,
-        providerStatus: failure.providerStatus,
-      },
+      message: `Image ${parsed.data.operation} failed.`,
+      metadata: { ...telemetry.syntheticMetadata, outcome: "failed", failureCategory: failure.category, failureCode: failure.code },
     });
-    const headers: Record<string, string> = { "cache-control": "private, no-store" };
-    if (failure.retryAfterSeconds !== undefined) {
-      headers["retry-after"] = String(failure.retryAfterSeconds);
-    }
-    return Response.json({
-      error: failure.publicMessage,
-      failure: {
-        category: failure.category,
-        code: failure.code,
-        provider: "google",
-        model: runtimeModel.model,
-        retryable: failure.retryable,
-        suggestion: failure.suggestion,
-        providerStatus: failure.providerStatus,
-        retryAfterSeconds: failure.retryAfterSeconds,
-        requestId: telemetry.correlationId,
-      },
-    }, { status: failure.httpStatus, headers });
+    return Response.json({ error: failure.publicMessage, failure: { ...failure, requestId: telemetry.correlationId } }, {
+      status: failure.httpStatus,
+      headers: { ...privateHeaders(), ...(failure.retryAfterSeconds !== undefined ? { "retry-after": String(failure.retryAfterSeconds) } : {}) },
+    });
   }
 }
 
-function imageExtension(mimeType: string) {
-  if (mimeType === "image/png") return "png";
-  if (mimeType === "image/webp") return "webp";
-  return "jpg";
+async function recordMediaEvent(input: {
+  context: { tenantId: string; actorId: string };
+  telemetry: ReturnType<typeof createRequestTelemetry>;
+  result: Awaited<ReturnType<typeof createImageMediaAsset>>;
+  startedAt: number;
+  statusCode: number;
+}) {
+  await recordRuntimeEventSafely({
+    category: "api",
+    action: `media.image.${input.result.operation}`,
+    route: "/api/media/image",
+    method: "POST",
+    statusCode: input.statusCode,
+    tenantId: input.context.tenantId,
+    actorId: input.context.actorId,
+    resourceType: "capture_asset",
+    resourceId: input.result.asset.id,
+    durationMs: Date.now() - input.startedAt,
+    requestId: input.telemetry.requestId,
+    correlationId: input.telemetry.correlationId,
+    message: `Image ${input.result.operation} completed.`,
+    metadata: { ...input.telemetry.syntheticMetadata, outcome: "completed", provider: input.result.provider, model: input.result.model, sourceAssetIds: input.result.sourceAssetIds, byteCount: input.result.asset.byteCount },
+  });
 }
 
-function failureLevel(category: GeminiImageFailureCategory) {
-  if (category === "cancelled") return "info" as const;
-  if (category === "quota" || category === "safety") return "warn" as const;
-  return "error" as const;
+function imageFailure(error: unknown, aborted: boolean) {
+  if (error instanceof OpenAIImageGenerationError) return describeOpenAIImageFailure(aborted ? { name: "AbortError" } : error);
+  if (error instanceof GeminiImageGenerationError) return describeGeminiImageFailure(aborted ? { name: "AbortError" } : error);
+  const message = error instanceof Error ? error.message : "The image request failed.";
+  const configuration = message.includes("active model route");
+  return {
+    category: configuration ? "configuration" as const : "upstream" as const,
+    code: configuration ? "image_model_route_unavailable" : "image_request_invalid",
+    publicMessage: message,
+    suggestion: configuration ? "Assign and validate an image model in Settings." : "Check the source image and request, then try again.",
+    retryable: configuration,
+    httpStatus: configuration ? 503 : 400,
+  };
+}
+
+function publicAsset(asset: Awaited<ReturnType<typeof createImageMediaAsset>>["asset"], contentUrl: string) {
+  return { id: asset.id, filename: asset.filename, byteCount: asset.byteCount, storageKind: asset.storageKind, contentUrl, indexUrl: `/api/capture/assets/${encodeURIComponent(asset.id)}` };
+}
+
+function privateHeaders() {
+  return { "cache-control": "private, no-store" };
 }

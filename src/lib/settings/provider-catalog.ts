@@ -132,7 +132,7 @@ async function discoverOpenAI(apiKey: string): Promise<CatalogModel[]> {
     .map(recordValue)
     .filter((item) => typeof item.id === "string" && isUsefulOpenAIModel(item.id))
     .slice(0, 1_000)
-    .map((item) => catalogModel(String(item.id), String(item.id), inferCapabilities(String(item.id)), String(item.description || "")));
+    .map((item) => catalogModel(String(item.id), String(item.id), inferProviderModelCapabilities(String(item.id)), String(item.description || "")));
 }
 
 async function discoverGemini(apiKey: string): Promise<CatalogModel[]> {
@@ -148,7 +148,7 @@ async function discoverGemini(apiKey: string): Promise<CatalogModel[]> {
       : [];
     const capabilities = methods.some((method) => method.includes("embed"))
       ? ["embeddings"]
-      : inferCapabilities(modelId);
+      : inferProviderModelCapabilities(modelId);
     return catalogModel(modelId, typeof item.displayName === "string" ? item.displayName : modelId, capabilities, String(item.description || ""));
   });
   return [
@@ -175,7 +175,7 @@ async function discoverAnthropic(apiKey: string): Promise<CatalogModel[]> {
     return catalogModel(
       modelId,
       typeof item.display_name === "string" ? item.display_name : modelId,
-      inferCapabilities(modelId),
+      inferProviderModelCapabilities(modelId),
       String(item.description || ""),
     );
   });
@@ -201,7 +201,7 @@ async function discoverBedrock(credentials: Record<string, string>): Promise<Cat
     const lifecycle = recordValue(item.modelLifecycle);
     const state = String(lifecycle.status || "").toUpperCase() === "LEGACY" ? "deprecated" : "unknown";
     return {
-      ...catalogModel(modelId, typeof item.modelName === "string" ? item.modelName : modelId, inferCapabilities(modelId)),
+      ...catalogModel(modelId, typeof item.modelName === "string" ? item.modelName : modelId, inferProviderModelCapabilities(modelId)),
       lifecycle: state,
       lifecycleReason: state === "deprecated" ? "AWS reports this foundation model as legacy." : undefined,
     };
@@ -296,7 +296,7 @@ function catalogModel(modelId: string, displayName: string, capabilities: string
   };
 }
 
-function inferCapabilities(modelId: string) {
+export function inferProviderModelCapabilities(modelId: string) {
   const normalized = modelId.toLowerCase();
   if (normalized.includes("embed")) return ["embeddings"];
   if (normalized.includes("whisper") || normalized.includes("transcri")) return ["audio", "transcription"];
@@ -304,6 +304,7 @@ function inferCapabilities(modelId: string) {
   if (normalized.includes("image") || normalized.includes("dall-e")) return ["image"];
   if (normalized.includes("omni-1.1") || normalized.includes("veo-")) return ["video"];
   if (normalized.includes("computer-use") || normalized.includes("computer_use")) return ["text", "vision", "tools", "computer_use"];
+  if (/^gpt-6(?:[-.]|$)/.test(normalized)) return ["text", "vision", "tools", "computer_use"];
   return normalized.includes("vision") || normalized.includes("gemini") || normalized.includes("claude") || normalized.includes("gpt-")
     ? ["text", "vision", "tools"]
     : ["text", "tools"];

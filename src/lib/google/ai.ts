@@ -20,6 +20,7 @@ import { renderModelBrowserObservation } from "@/lib/models/browser-observation"
 const INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const SPEECH_URL = "https://speech.googleapis.com/v1/speech:recognize";
 const MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_GENERATED_VIDEO_BYTES = 20 * 1024 * 1024;
 
 type InteractionContent = { type?: string; text?: string; data?: string; mime_type?: string };
 type InteractionStep = Record<string, unknown> & {
@@ -75,6 +76,15 @@ export class GeminiImageGenerationError extends Error {
   constructor(readonly failure: GeminiImageFailure) {
     super(failure.publicMessage);
     this.name = "GeminiImageGenerationError";
+  }
+}
+
+export type GeminiVideoFailure = GeminiImageFailure;
+
+export class GeminiVideoGenerationError extends Error {
+  constructor(readonly failure: GeminiVideoFailure) {
+    super(failure.publicMessage);
+    this.name = "GeminiVideoGenerationError";
   }
 }
 
@@ -325,6 +335,7 @@ export async function generateGeminiImage(input: {
   prompt: string;
   model: string;
   aspectRatio?: "1:1" | "16:9" | "9:16" | "4:3" | "3:4";
+  sources?: Array<{ bytes: Uint8Array; mimeType: string }>;
   abortSignal?: AbortSignal;
   usageScope?: AiUsageScope;
   /** Server-only request credential. Never persist or include in receipts. */
@@ -351,7 +362,16 @@ export async function generateGeminiImage(input: {
       headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
       body: JSON.stringify({
         model: requestedModel,
-        input: input.prompt,
+        input: input.sources?.length
+          ? [
+              { type: "text", text: input.prompt },
+              ...input.sources.map((source) => ({
+                type: "image",
+                data: Buffer.from(source.bytes).toString("base64"),
+                mime_type: source.mimeType,
+              })),
+            ]
+          : input.prompt,
         response_format: {
           type: "image",
           mime_type: "image/jpeg",
@@ -445,6 +465,153 @@ export async function generateGeminiImage(input: {
 export function describeGeminiImageFailure(error: unknown): GeminiImageFailure {
   if (error instanceof GeminiImageGenerationError) return error.failure;
   return classifyGeminiImageFailure(error);
+}
+
+export async function generateGeminiVideo(input: {
+  prompt: string;
+  model: string;
+  aspectRatio?: "16:9" | "9:16";
+  resolution?: "360p" | "720p";
+  sources?: Array<{ bytes: Uint8Array; mimeType: string }>;
+  abortSignal?: AbortSignal;
+  usageScope?: AiUsageScope;
+  apiKey?: string;
+}) {
+  const apiKey = input.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+  const requestedModel = input.model.trim();
+  if (!apiKey || (!input.apiKey && !hasGeminiKey()) || !requestedModel) {
+    throw new GeminiVideoGenerationError({
+      category: "configuration",
+      code: "gemini_video_not_configured",
+      publicMessage: "Video generation is not configured for this workspace.",
+      suggestion: "Connect Google and assign a video model in Settings.",
+      retryable: false,
+      httpStatus: 503,
+    });
+  }
+  const startedAt = Date.now();
+  let response: Response | undefined;
+  let responseBody: InteractionResponse | undefined;
+  try {
+    const sources = input.sources || [];
+    const content = [
+      ...sources.map((source) => ({
+        type: source.mimeType.startsWith("video/") ? "video" : "image",
+        data: Buffer.from(source.bytes).toString("base64"),
+        mime_type: source.mimeType,
+      })),
+      { type: "text", text: input.prompt },
+    ];
+    response = await fetch(INTERACTIONS_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({
+        model: requestedModel,
+        input: sources.some((source) => source.mimeType.startsWith("video/"))
+          ? [{ type: "user_input", content }]
+          : sources.length
+            ? content
+            : input.prompt,
+        response_format: {
+          type: "video",
+          aspect_ratio: input.aspectRatio || "16:9",
+          resolution: input.resolution || "360p",
+        },
+        background: false,
+        store: false,
+        stream: false,
+      }),
+      signal: input.abortSignal,
+    });
+    const body = await readInteractionResponse(response);
+    responseBody = body;
+    if (body.status === "failed") throw new Error(body.error?.message || "Gemini video interaction failed.");
+    input.abortSignal?.throwIfAborted();
+    const video = interactionContents(body).find((item) => item.type === "video" && item.data);
+    if (!video?.data) {
+      throw new GeminiVideoGenerationError({
+        category: "upstream",
+        code: "gemini_video_empty_response",
+        publicMessage: "The video model completed the request but returned no video.",
+        suggestion: "Revise the request and try again.",
+        retryable: true,
+        httpStatus: 502,
+      });
+    }
+    const bytes = Buffer.from(video.data, "base64");
+    if (!bytes.length || bytes.length > MAX_GENERATED_VIDEO_BYTES) {
+      throw new GeminiVideoGenerationError({
+        category: "upstream",
+        code: "gemini_video_invalid_output",
+        publicMessage: "The video model returned an invalid or oversized file.",
+        suggestion: "Try 360p or a shorter request so the result fits the private asset limit.",
+        retryable: true,
+        httpStatus: 502,
+      });
+    }
+    const model = body.model || requestedModel;
+    const usage = normalizeGeminiUsage(body.usage);
+    if (input.usageScope) {
+      await recordAiUsageSafely({
+        ...input.usageScope,
+        status: "completed",
+        provider: "google",
+        model,
+        usage: { ...usage, outputBytes: bytes.length },
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 0,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd: estimateGeminiCostUsd(model, usage),
+        providerRequestId: body.id,
+      });
+    }
+    return {
+      bytes,
+      mimeType: video.mime_type === "video/webm" ? "video/webm" : "video/mp4",
+      model,
+      responseId: body.id,
+      latencyMs: Date.now() - startedAt,
+      usage,
+    };
+  } catch (error) {
+    const failure = describeGeminiVideoFailure(error, response);
+    const model = responseBody?.model || requestedModel;
+    const usage = normalizeGeminiUsage(responseBody?.usage);
+    if (input.usageScope) {
+      await recordAiUsageSafely({
+        ...input.usageScope,
+        status: "failed",
+        provider: "google",
+        model,
+        usage,
+        providerCallCount: 1,
+        attemptCount: 1,
+        failedAttemptCount: 1,
+        latencyMs: Date.now() - startedAt,
+        estimatedCostUsd: responseBody?.usage ? estimateGeminiCostUsd(model, usage) : undefined,
+        providerRequestId: responseBody?.id,
+        failureKind: failure.category,
+        retryable: failure.retryable,
+      });
+    }
+    if (error instanceof GeminiVideoGenerationError) throw error;
+    throw new GeminiVideoGenerationError(failure);
+  }
+}
+
+export function describeGeminiVideoFailure(
+  error: unknown,
+  response?: Response,
+): GeminiVideoFailure {
+  if (error instanceof GeminiVideoGenerationError) return error.failure;
+  const base = classifyGeminiImageFailure(error, response);
+  return {
+    ...base,
+    code: base.code.replace("image", "video"),
+    publicMessage: base.publicMessage.replace(/Gemini image|image/gi, "video"),
+    suggestion: base.suggestion.replace(/image/gi, "video"),
+  };
 }
 
 export async function transcribeGoogleAudio(input: {
