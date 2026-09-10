@@ -238,7 +238,24 @@ function safeErrorCode(error: unknown) {
 }
 
 function safeInlineMediaType(mediaType: string) {
-  return ["image/png", "image/jpeg", "image/webp", "application/pdf", "audio/webm", "audio/mpeg", "audio/mp4", "audio/wav", "audio/ogg"].includes(mediaType);
+  return [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "image/avif",
+    "application/pdf",
+    "audio/webm",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/wav",
+    "audio/ogg",
+    "video/mp4",
+    "video/webm",
+    "video/ogg",
+    "video/quicktime",
+    "video/x-m4v",
+  ].includes(mediaType.toLowerCase().split(";", 1)[0].trim());
 }
 
 async function cancelIngestJob(jobId: string | undefined, tenantId: string) {

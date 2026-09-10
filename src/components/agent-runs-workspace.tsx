@@ -13,10 +13,13 @@ import {
   ChevronRight,
   Clock3,
   Database,
+  Download,
   FileText,
+  Film,
   GitBranch,
   Globe2,
   History,
+  ImageIcon,
   Loader2,
   Map as MapIcon,
   MessageSquareText,
@@ -45,6 +48,11 @@ import {
 } from "@/components/app-shell/session-context";
 import { ConversationCanvas } from "@/components/conversation-canvas";
 import { ConversationProgressPanel } from "@/components/conversation-progress-panel";
+import {
+  PrivateMediaPreview,
+  type PrivateMediaReadiness,
+  privateCaptureAssetContentUrl,
+} from "@/components/media/private-media-preview";
 import { VoiceMode } from "@/components/voice/voice-mode";
 import workspaceStyles from "@/components/agent-runs-workspace.module.css";
 import { arsenalAgents } from "@/lib/agents/arsenal";
@@ -59,6 +67,16 @@ import {
   type VoiceCommandReply,
   type VoiceCommandReview,
 } from "@/lib/voice/command-review";
+import {
+  projectClientThreadSummaries,
+  projectClientThreadTurns,
+} from "@/lib/command/client-projection";
+import {
+  extractLegacyCommandMedia,
+  mergeCommandMediaArtifacts,
+  projectCommandMediaArtifacts,
+  type CommandMediaArtifact,
+} from "@/lib/command/media-projection";
 
 type JsonRecord = Record<string, unknown>;
 type ThreadSummary = { id: string; title: string; updatedAt: string; mode: AgentMode };
@@ -460,6 +478,10 @@ export function AgentRunsWorkspace({
   const [workflowRun, setWorkflowRun] = useState<JsonRecord>();
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [agentResponse, setAgentResponse] = useState("");
+  const [runMediaProjection, setRunMediaProjection] = useState<{
+    runId: string;
+    artifacts: CommandMediaArtifact[];
+  }>({ runId: "", artifacts: [] });
   const [grounding, setGrounding] = useState<GroundingReport>();
   const [activeAgentRunId, setActiveAgentRunId] = useState("");
   const [runFeedback, setRunFeedback] = useState<RunFeedback>();
@@ -973,6 +995,10 @@ export function AgentRunsWorkspace({
       try {
         const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(activeAgentRunId)}`, { signal: controller.signal }));
         if (disposed) return;
+        setRunMediaProjection({
+          runId: activeAgentRunId,
+          artifacts: projectCommandMediaArtifacts(payload),
+        });
         setContextUseReceipt(contextUseReceiptFromPayload(payload));
         const run = asRecord(payload.run);
         const status = stringValue(run.status);
@@ -1014,11 +1040,11 @@ export function AgentRunsWorkspace({
           }
         } else if (status === "completed") {
           const response = stringValue(run.response);
-          const nextGrounding = asRecord(run.grounding) as unknown as GroundingReport;
+          const nextGrounding = renderSafeGroundingReport(run.grounding);
           setWaitingApproval(undefined);
           setClarificationRunId("");
           setAgentResponse(response);
-          if (run.grounding) setGrounding(nextGrounding);
+          setGrounding(nextGrounding);
           setStreamEvents((current) => current.some((event) => event.type === "done")
             ? current
             : [...current, { type: "done", response, grounding: run.grounding ? nextGrounding : undefined }]);
@@ -1304,13 +1330,17 @@ export function AgentRunsWorkspace({
       const status = stringValue(run.status);
       const response = stringValue(run.response);
       const nextGrounding = run.grounding
-        ? asRecord(run.grounding) as unknown as GroundingReport
+        ? renderSafeGroundingReport(run.grounding)
         : undefined;
       currentRunIdRef.current = runId;
       directRunStatusRef.current = status;
       setActiveAgentRunId(runId);
       setSelectedActivityRunId(runId);
       setAgentResponse(response);
+      setRunMediaProjection({
+        runId,
+        artifacts: projectCommandMediaArtifacts(payload),
+      });
       setGrounding(nextGrounding);
       setRunFeedback(undefined);
       setTurns((current) => {
@@ -1910,6 +1940,7 @@ export function AgentRunsWorkspace({
     setLoading("workflow");
     setError(undefined);
     setAgentResponse("");
+    setRunMediaProjection({ runId: "", artifacts: [] });
     setGrounding(undefined);
     setContextUseReceipt(undefined);
     setStreamEvents([{ type: "status", label: "Starting workflow", detail: "Preparing durable work." }]);
@@ -2035,6 +2066,7 @@ export function AgentRunsWorkspace({
     setWorkflowRun(undefined);
     setWorkflowSyncError(undefined);
     setAgentResponse("");
+    setRunMediaProjection({ runId: "", artifacts: [] });
     setGrounding(undefined);
     if (!resumeRunId) setContextUseReceipt(undefined);
     setActiveAgentRunId(resumeRunId || "");
@@ -2148,7 +2180,7 @@ export function AgentRunsWorkspace({
           flushPendingDeltas();
           completedResponse = event.response || streamedResponse;
           setAgentResponse(completedResponse);
-          setGrounding(event.grounding);
+          setGrounding(renderSafeGroundingReport(event.grounding));
           if (completedResponse) {
             setTurns((current) => [
               ...current,
@@ -2158,6 +2190,8 @@ export function AgentRunsWorkspace({
           setGoal("");
           void refreshThreads();
           setRunAnnouncement("Agent run completed. Review the result and evidence.");
+          const mediaRunId = currentRunIdRef.current || completedRunId;
+          if (mediaRunId) void refreshRunMediaArtifacts(mediaRunId);
         }
         if (event.type === "status") {
           setRunAnnouncement(streamEventLabel(event));
@@ -2264,7 +2298,11 @@ export function AgentRunsWorkspace({
   async function refreshThreads() {
     try {
       const result = asRecord(await readJson("/api/threads?limit=100"));
-      setThreads(arrayPath(result, "threads") as unknown as ThreadSummary[]);
+      setThreads(projectClientThreadSummaries(
+        readPath(result, "threads"),
+        ["orchestrate", "research", "execute", "learn"] as const,
+        "orchestrate",
+      ));
     } catch {
       // Threads are convenience navigation; agent execution reports its own errors.
     }
@@ -2358,9 +2396,23 @@ export function AgentRunsWorkspace({
     try {
       const result = asRecord(await readJson(`/api/threads/${encodeURIComponent(id)}`));
       if (id !== threadId) return;
-      setTurns(arrayPath(result, "turns") as unknown as ThreadTurn[]);
+      setTurns(projectClientThreadTurns(readPath(result, "turns")));
     } catch {
       // Keep the current transcript visible and let the next poll or reopen retry.
+    }
+  }
+
+  async function refreshRunMediaArtifacts(id: string) {
+    try {
+      const payload = asRecord(await readJson(`/api/runs/${encodeURIComponent(id)}`));
+      if (currentRunIdRef.current !== id) return;
+      setRunMediaProjection({
+        runId: id,
+        artifacts: projectCommandMediaArtifacts(payload),
+      });
+    } catch {
+      // The text response stays usable; a later run poll or reopen retries the
+      // durable media projection without replacing the conversation.
     }
   }
 
@@ -2368,17 +2420,19 @@ export function AgentRunsWorkspace({
     try {
       const result = asRecord(await readJson(`/api/threads/${encodeURIComponent(id)}`));
       const thread = asRecord(result.thread);
-      const loadedTurns = arrayPath(result, "turns") as unknown as ThreadTurn[];
+      const loadedTurns = projectClientThreadTurns(readPath(result, "turns"));
       const latestRunId = [...loadedTurns]
         .reverse()
         .find((turn) => Boolean(turn.runId))
         ?.runId;
       let waitingClarification: { runId: string; message: string } | undefined;
+      let loadedMediaArtifacts: CommandMediaArtifact[] = [];
       if (latestRunId) {
         try {
           const runPayload = asRecord(await readJson(
             `/api/runs/${encodeURIComponent(latestRunId)}`,
           ));
+          loadedMediaArtifacts = projectCommandMediaArtifacts(runPayload);
           setContextUseReceipt(contextUseReceiptFromPayload(runPayload));
           const run = asRecord(runPayload.run);
           if (stringValue(run.status) === "waiting_clarification") {
@@ -2400,6 +2454,10 @@ export function AgentRunsWorkspace({
       setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
       setTurns(loadedTurns);
       setAgentResponse(waitingClarification?.message || "");
+      setRunMediaProjection({
+        runId: latestRunId || "",
+        artifacts: loadedMediaArtifacts,
+      });
       contextControllerRef.current?.abort();
       contextVersionRef.current += 1;
       setContextPack(undefined);
@@ -2453,7 +2511,7 @@ export function AgentRunsWorkspace({
       const status = stringValue(run.status);
       const response = stringValue(run.response);
       const nextGrounding = run.grounding
-        ? asRecord(run.grounding) as unknown as GroundingReport
+        ? renderSafeGroundingReport(run.grounding)
         : undefined;
       const identity = asRecord(payload.agentIdentity);
       const card = asRecord(identity.card);
@@ -2471,6 +2529,10 @@ export function AgentRunsWorkspace({
       setSelectedActivityRunId(id);
       setActiveAgentRunId(["completed", "failed", "canceled"].includes(status) ? "" : id);
       setAgentResponse(response);
+      setRunMediaProjection({
+        runId: id,
+        artifacts: projectCommandMediaArtifacts(payload),
+      });
       setGrounding(nextGrounding);
       setContextUseReceipt(contextUseReceiptFromPayload(payload));
       setWaitingApproval(status === "waiting_approval" ? {
@@ -2513,6 +2575,7 @@ export function AgentRunsWorkspace({
     setContextLoading(false);
     setContextError(undefined);
     setAgentResponse("");
+    setRunMediaProjection({ runId: "", artifacts: [] });
     setStreamEvents([]);
     setWorkflowPlan(undefined);
     setWorkflowRun(undefined);
@@ -2825,7 +2888,12 @@ export function AgentRunsWorkspace({
                         {activeAssistantName}
                         {preferredAgent?.role ? <span className="ml-2 text-muted">· {preferredAgent.role}</span> : null}
                       </p>
-                      <ConversationMessageContent content={turn.content} />
+                      <ConversationMessageContent
+                        content={turn.content}
+                        mediaArtifacts={turn.runId && turn.runId === runMediaProjection.runId
+                          ? runMediaProjection.artifacts
+                          : undefined}
+                      />
                       {turn.runId ? (
                         <button
                           type="button"
@@ -2891,7 +2959,11 @@ export function AgentRunsWorkspace({
                       ) : null}
                     </div>
                     <div className="mt-2">
-                      <ConversationMessageContent content={currentAssistantResponse} grounding={grounding} />
+                      <ConversationMessageContent
+                        content={currentAssistantResponse}
+                        grounding={grounding}
+                        mediaArtifacts={runMediaProjection.artifacts}
+                      />
                     </div>
                     <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line/70 pt-3">
                       <button
@@ -3811,11 +3883,19 @@ function InlineTaskProgress({
 function ConversationMessageContent({
   content,
   grounding,
+  mediaArtifacts = [],
 }: {
   content: string;
   grounding?: GroundingReport;
+  mediaArtifacts?: readonly CommandMediaArtifact[];
 }) {
-  const lines = content.replaceAll("\r\n", "\n").split("\n");
+  const safeContent = typeof content === "string" ? content : "";
+  const recoveredMedia = extractLegacyCommandMedia(safeContent);
+  const renderedMedia = mergeCommandMediaArtifacts(
+    mediaArtifacts,
+    recoveredMedia.artifacts,
+  );
+  const lines = recoveredMedia.content.replaceAll("\r\n", "\n").split("\n");
   const blocks: React.ReactNode[] = [];
   const citations = new Map(
     grounding
@@ -3930,7 +4010,85 @@ function ConversationMessageContent({
     );
   }
 
-  return <div className="min-w-0 max-w-[72ch]">{blocks}</div>;
+  return (
+    <div className="min-w-0 max-w-3xl">
+      {blocks.length ? <div className="max-w-[72ch]">{blocks}</div> : null}
+      {renderedMedia.length ? (
+        <div className={clsx("space-y-4", blocks.length ? "mt-5" : "mt-0")}>
+          {renderedMedia.map((artifact) => (
+            <CommandMediaArtifactCard key={artifact.assetId} artifact={artifact} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CommandMediaArtifactCard({ artifact }: { artifact: CommandMediaArtifact }) {
+  const [readiness, setReadiness] = useState<PrivateMediaReadiness>("preparing");
+  const downloadUrl = readiness === "ready"
+    ? privateCaptureAssetContentUrl(artifact.assetId, { download: true })
+    : undefined;
+  const Icon = artifact.kind === "image" ? ImageIcon : Film;
+  const operationLabel = artifact.operation === "clip"
+    ? "Clipped video"
+    : artifact.operation === "edit"
+      ? `Edited ${artifact.kind}`
+      : `Generated ${artifact.kind}`;
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm" aria-label={`${operationLabel}: ${artifact.filename}`}>
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line/80 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+            <Icon size={17} aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">{artifact.filename}</p>
+            <p className="mt-0.5 text-xs text-muted">
+              {operationLabel}
+              {artifact.byteCount > 0 ? ` · ${formatMediaBytes(artifact.byteCount)}` : ""}
+              {` · ${readiness === "ready" ? "Ready" : readiness === "failed" ? "Preview unavailable" : "Preparing"}`}
+              {" · Private"}
+            </p>
+          </div>
+        </div>
+        <span className="rounded-full border border-line bg-background px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-muted">
+          {artifact.kind}
+        </span>
+      </header>
+      <PrivateMediaPreview
+        assetId={artifact.assetId}
+        kind={artifact.kind}
+        alt={`${operationLabel}: ${artifact.filename}`}
+        className="min-h-64 rounded-none sm:min-h-80"
+        mediaClassName="max-h-[34rem]"
+        onReadinessChange={setReadiness}
+      />
+      <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-line/80 bg-background/70 px-4 py-3 sm:px-5">
+        <p className="text-xs leading-5 text-muted">
+          Stored in your private Capture library.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/app/capture#media-studio-title" className="action-button">
+            <Sparkles size={14} aria-hidden="true" />
+            Media Studio
+          </Link>
+          {downloadUrl ? (
+            <a href={downloadUrl} className="action-button">
+              <Download size={14} aria-hidden="true" />
+              Download
+            </a>
+          ) : (
+            <span className="action-button cursor-not-allowed opacity-50" aria-disabled="true">
+              <Download size={14} aria-hidden="true" />
+              Preparing
+            </span>
+          )}
+        </div>
+      </footer>
+    </section>
+  );
 }
 
 function MessageInline({
@@ -6035,24 +6193,34 @@ function streamEventLabel(event: StreamEvent) {
     return event.count ? `${event.title || "Memory"} (${event.count})` : event.title || "Memory event.";
   }
   if (event.type === "harness") {
+    const contextCount = numberValue(event.contextCount, 0);
     const context = {
       disabled_session: "durable context off for this session",
       disabled_project_unavailable: "project context isolated until authorized",
       excluded_by_user: "saved context excluded by you",
-      selected_by_user: `${event.contextCount} selected context item${event.contextCount === 1 ? "" : "s"} resolved`,
-      retrieved: `${event.contextCount} relevant context item${event.contextCount === 1 ? "" : "s"} retrieved`,
+      selected_by_user: `${contextCount} selected context item${contextCount === 1 ? "" : "s"} resolved`,
+      retrieved: `${contextCount} relevant context item${contextCount === 1 ? "" : "s"} retrieved`,
       skipped: "memory retrieval skipped as unnecessary",
-    }[event.contextDecision];
-    const tools = `${event.toolCount} governed tool${event.toolCount === 1 ? "" : "s"} available`;
-    const budget = `${event.budgetLimits.modelTurns} turns, ${event.budgetLimits.toolCalls} tool calls, ${event.budgetLimits.tokens.toLocaleString()} tokens, ${(event.budgetLimits.wallTimeMs / 1_000).toFixed(0)}s`;
-    const adaptation = event.adaptationActivationVersions?.length
-      ? `adaptation ${event.adaptationActivationVersions.map((version) => `v${version}`).join(", ")} active`
-      : event.adaptationEvidenceCount
-        ? `${event.adaptationEvidenceCount} outcome${event.adaptationEvidenceCount === 1 ? "" : "s"} observed with no implicit behavior change`
-        : event.learningSampleSize
-          ? `legacy outcome evidence from ${event.learningSampleSize} prior run${event.learningSampleSize === 1 ? "" : "s"}`
+    }[event.contextDecision] || "context decision recorded";
+    const toolCount = numberValue(event.toolCount, 0);
+    const tools = `${toolCount} governed tool${toolCount === 1 ? "" : "s"} available`;
+    const budgetLimits = asRecord(event.budgetLimits);
+    const budget = `${numberValue(budgetLimits.modelTurns, 0)} turns, ${numberValue(budgetLimits.toolCalls, 0)} tool calls, ${numberValue(budgetLimits.tokens, 0).toLocaleString()} tokens, ${(numberValue(budgetLimits.wallTimeMs, 0) / 1_000).toFixed(0)}s`;
+    const adaptationVersions = Array.isArray(event.adaptationActivationVersions)
+      ? event.adaptationActivationVersions.filter((version): version is number => typeof version === "number" && Number.isFinite(version))
+      : [];
+    const adaptationEvidenceCount = numberValue(event.adaptationEvidenceCount, 0);
+    const learningSampleSize = numberValue(event.learningSampleSize, 0);
+    const adaptation = adaptationVersions.length
+      ? `adaptation ${adaptationVersions.map((version) => `v${version}`).join(", ")} active`
+      : adaptationEvidenceCount
+        ? `${adaptationEvidenceCount} outcome${adaptationEvidenceCount === 1 ? "" : "s"} observed with no implicit behavior change`
+        : learningSampleSize
+          ? `legacy outcome evidence from ${learningSampleSize} prior run${learningSampleSize === 1 ? "" : "s"}`
           : "adaptation baseline";
-    const reason = event.contextRationale[0];
+    const reason = Array.isArray(event.contextRationale)
+      ? stringValue(event.contextRationale[0])
+      : "";
     const provider = event.provider === "google"
       ? "Gemini"
       : event.provider === "openai"
@@ -6063,13 +6231,16 @@ function streamEventLabel(event: StreamEvent) {
     return `${provider} · ${event.tier} route · ${context} · ${tools} · budget ${budget} · ${adaptation}.${reason ? ` ${reason}` : ""}`;
   }
   if (event.type === "model") {
-    const cost = event.estimatedCostUsd === undefined ? "cost rate not configured" : `$${event.estimatedCostUsd.toFixed(6)}`;
-    const loop = event.iterationCount
-      ? ` across ${event.iterationCount} loop pass${event.iterationCount === 1 ? "" : "es"}`
-      : event.iteration
-        ? ` on loop pass ${event.iteration}`
+    const estimatedCostUsd = numberValue(event.estimatedCostUsd, Number.NaN);
+    const cost = Number.isFinite(estimatedCostUsd) ? `$${estimatedCostUsd.toFixed(6)}` : "cost rate not configured";
+    const iterationCount = numberValue(event.iterationCount, 0);
+    const iteration = numberValue(event.iteration, 0);
+    const loop = iterationCount
+      ? ` across ${iterationCount} loop pass${iterationCount === 1 ? "" : "es"}`
+      : iteration
+        ? ` on loop pass ${iteration}`
         : "";
-    return `${event.provider === "google" ? "Google · " : event.provider === "anthropic" ? "Anthropic · " : "OpenAI · "}${event.model} used ${event.totalTokens.toLocaleString()} tokens${loop} in ${(event.latencyMs / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
+    return `${event.provider === "google" ? "Google · " : event.provider === "anthropic" ? "Anthropic · " : "OpenAI · "}${stringValue(event.model, "Assigned model")} used ${numberValue(event.totalTokens, 0).toLocaleString()} tokens${loop} in ${(numberValue(event.latencyMs, 0) / 1_000).toFixed(1)}s (${cost})${event.fallbackUsed ? "; fallback used" : ""}.`;
   }
   if (event.type === "council_member") {
     if (event.status === "thinking") return `${event.agentName} is working independently as ${event.role}.`;
@@ -6079,14 +6250,16 @@ function streamEventLabel(event: StreamEvent) {
       : event.lifecycleState === "completed_proposed"
         ? " The result remains proposed pending parent evaluation."
         : "";
-    return `${event.agentName} completed its ${event.role.toLowerCase()} pass${event.confidence === undefined ? "." : ` at ${Math.round(event.confidence * 100)}% confidence.`}${lifecycle}`;
+    const confidence = numberValue(event.confidence, Number.NaN);
+    return `${stringValue(event.agentName, "Specialist")} completed its ${stringValue(event.role, "review").toLowerCase()} pass${Number.isFinite(confidence) ? ` at ${Math.round(confidence * 100)}% confidence.` : "."}${lifecycle}`;
   }
   if (event.type === "council_verdict") {
+    const score = numberValue(event.score, 0);
     return event.status === "passed"
-      ? `Sentinel accepted the result at ${Math.round(event.score * 100)}%.`
+      ? `Sentinel accepted the result at ${Math.round(score * 100)}%.`
       : event.status === "revised"
-        ? `Sentinel requested changes; Atlas revised the answer (${Math.round(event.score * 100)}% initial score).`
-        : event.assessment;
+        ? `Sentinel requested changes; Atlas revised the answer (${Math.round(score * 100)}% initial score).`
+        : stringValue(event.assessment, "Sentinel could not accept the result.");
   }
   if (event.type === "tool") {
     const name = event.toolName || event.toolId || "Tool";
@@ -6300,11 +6473,103 @@ function groundingLabel(grounding: GroundingReport) {
   return "Citation needed";
 }
 
+function renderSafeGroundingReport(value: unknown): GroundingReport | undefined {
+  const record = asRecord(value);
+  const status = stringValue(record.status);
+  if (!["verified", "not_required", "missing", "invalid"].includes(status)) {
+    return undefined;
+  }
+  const stringArray = (candidate: unknown) => Array.isArray(candidate)
+    ? candidate.filter((item): item is string => typeof item === "string")
+    : [];
+  const sources = Array.isArray(record.sources)
+    ? record.sources.flatMap((candidate) => {
+        const source = asRecord(candidate);
+        const citationId = stringValue(source.citationId);
+        const kind = stringValue(source.kind);
+        const title = stringValue(source.title);
+        if (!citationId || !kind || !title) return [];
+        const confidence = numberValue(source.confidence, Number.NaN);
+        return [{
+          citationId,
+          kind,
+          title,
+          ...(Number.isFinite(confidence) ? { confidence } : {}),
+          ...(stringValue(source.url) ? { url: stringValue(source.url) } : {}),
+          ...(stringValue(source.snippet) ? { snippet: stringValue(source.snippet) } : {}),
+          ...(stringValue(source.accessedAt) ? { accessedAt: stringValue(source.accessedAt) } : {}),
+        }];
+      })
+    : [];
+  const claimEvidenceRecord = asRecord(record.claimEvidence);
+  const coverageRecord = asRecord(claimEvidenceRecord.coverage);
+  const rawClaims = claimEvidenceRecord.claims;
+  const claims = Array.isArray(rawClaims)
+    ? rawClaims.flatMap((candidate) => {
+        const claim = asRecord(candidate);
+        const claimId = stringValue(claim.claimId);
+        const materiality = stringValue(claim.materiality);
+        const supportState = stringValue(claim.supportState);
+        const startUtf16 = numberValue(claim.startUtf16, Number.NaN);
+        const endUtf16Exclusive = numberValue(claim.endUtf16Exclusive, Number.NaN);
+        if (
+          !claimId ||
+          !["material", "non_material"].includes(materiality) ||
+          !["supported", "inferred", "disputed", "stale", "unsupported"].includes(supportState) ||
+          !Number.isSafeInteger(startUtf16) ||
+          !Number.isSafeInteger(endUtf16Exclusive) ||
+          startUtf16 < 0 ||
+          endUtf16Exclusive < startUtf16
+        ) return [];
+        return [{
+          claimId,
+          startUtf16,
+          endUtf16Exclusive,
+          materiality: materiality as "material" | "non_material",
+          supportState: supportState as ClaimSupportState,
+          supportReason: stringValue(claim.supportReason),
+          evidenceUnitIds: stringArray(claim.evidenceUnitIds),
+        }];
+      })
+    : [];
+  const claimEvidenceMapId = stringValue(claimEvidenceRecord.claimEvidenceMapId);
+  const materialClaimCount = numberValue(coverageRecord.materialClaimCount, Number.NaN);
+  const supportedMaterialClaimCount = numberValue(coverageRecord.supportedMaterialClaimCount, Number.NaN);
+  const coverageBpsValue = coverageRecord.coverageBps === null
+    ? null
+    : numberValue(coverageRecord.coverageBps, Number.NaN);
+  const validClaimEvidence = claimEvidenceRecord.schemaVersion === 1 &&
+    claimEvidenceMapId &&
+    Number.isSafeInteger(materialClaimCount) &&
+    Number.isSafeInteger(supportedMaterialClaimCount) &&
+    (coverageBpsValue === null || Number.isSafeInteger(coverageBpsValue));
+  return {
+    status: status as GroundingReport["status"],
+    citedIds: stringArray(record.citedIds),
+    invalidIds: stringArray(record.invalidIds),
+    sources,
+    ...(validClaimEvidence ? {
+      claimEvidence: {
+        schemaVersion: 1,
+        claimEvidenceMapId,
+        evaluatedAt: stringValue(claimEvidenceRecord.evaluatedAt),
+        coverage: {
+          materialClaimCount,
+          supportedMaterialClaimCount,
+          coverageBps: coverageBpsValue,
+        },
+        claims,
+      },
+    } : {}),
+  };
+}
+
 function citedGroundingSources(grounding: GroundingReport) {
-  const citedIds = new Set(grounding.citedIds);
-  return grounding.sources.filter((source, index, sources) =>
+  const citedIds = new Set(Array.isArray(grounding.citedIds) ? grounding.citedIds : []);
+  const sources = Array.isArray(grounding.sources) ? grounding.sources : [];
+  return sources.filter((source, index, values) =>
     citedIds.has(source.citationId) &&
-    sources.findIndex((candidate) => candidate.citationId === source.citationId) === index);
+    values.findIndex((candidate) => candidate.citationId === source.citationId) === index);
 }
 
 function safeExternalUrl(value?: string) {
@@ -6467,6 +6732,14 @@ function formatBrowserBytes(byteCount: number) {
   const bounded = Math.max(0, byteCount);
   if (bounded < 1_024) return `${bounded} B`;
   return `${Math.max(0.1, bounded / 1_024).toFixed(1)} KB`;
+}
+
+function formatMediaBytes(byteCount: number) {
+  const bounded = Math.max(0, byteCount);
+  if (bounded < 1_024) return `${bounded} B`;
+  if (bounded < 1_024 ** 2) return `${(bounded / 1_024).toFixed(1)} KB`;
+  if (bounded < 1_024 ** 3) return `${(bounded / 1_024 ** 2).toFixed(1)} MB`;
+  return `${(bounded / 1_024 ** 3).toFixed(1)} GB`;
 }
 
 function formatRelativeThreadTime(value: string) {

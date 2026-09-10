@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import {
   CheckCircle2,
   Clapperboard,
@@ -14,6 +13,12 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { clsx } from "clsx";
+import {
+  PrivateMediaPreview,
+  type PrivateMediaReadiness,
+  normalizePrivateMediaAssetId,
+  privateCaptureAssetContentUrl,
+} from "@/components/media/private-media-preview";
 
 type CaptureJob = {
   id: string;
@@ -38,7 +43,6 @@ type MediaRoute = {
 
 type MediaResult = {
   kind: "image" | "video";
-  contentUrl: string;
   model: string;
   prompt: string;
   operation: "generate" | "edit" | "clip";
@@ -80,6 +84,8 @@ export function VisualStudio({
   const [working, setWorking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<MediaResult>();
+  const [sourceReadiness, setSourceReadiness] = useState<PrivateMediaReadiness>("ready");
+  const [resultReadiness, setResultReadiness] = useState<PrivateMediaReadiness>("preparing");
   const [saved, setSaved] = useState(false);
   const [message, setMessage] = useState<{ tone: "success" | "error"; text: string }>();
 
@@ -104,11 +110,16 @@ export function VisualStudio({
       : videoOperation;
   const unavailable = Boolean(disabledReason) || (mode !== "clip" && route?.configured === false);
   const requiresSource = mode === "clip" || (mode === "video" && videoOperation === "edit");
-  const canRun = !working && !unavailable && (!requiresSource || Boolean(sourceAssetId)) && (mode === "clip" || prompt.trim().length >= 3);
+  const sourceReady = !sourceAssetId || sourceReadiness === "ready";
+  const canRun = !working && !unavailable && sourceReady && (!requiresSource || Boolean(sourceAssetId)) && (mode === "clip" || prompt.trim().length >= 3);
+  const selectedSource = eligibleSources.find((asset) => asset.id === sourceAssetId);
 
   function switchMode(nextMode: StudioMode) {
     setMode(nextMode);
     setSourceAssetId("");
+    setSourceReadiness("ready");
+    setResult(undefined);
+    setResultReadiness("preparing");
     setMessage(undefined);
     setSaved(false);
   }
@@ -116,6 +127,8 @@ export function VisualStudio({
   async function runMediaRequest() {
     if (!canRun) return;
     setWorking(true);
+    setResult(undefined);
+    setResultReadiness("preparing");
     setMessage(undefined);
     setSaved(false);
     try {
@@ -150,13 +163,11 @@ export function VisualStudio({
       error?: string;
       failure?: { category?: string; suggestion?: string };
     };
-    const contentUrl = mode === "image" ? payload.image : payload.video;
-    if (!response.ok || !contentUrl || !payload.asset?.id) {
+    if (!response.ok || !payload.asset?.id || !normalizePrivateMediaAssetId(payload.asset.id)) {
       throw new Error(mediaFailureMessage(payload.error, payload.failure?.category, payload.failure?.suggestion));
     }
     setResult({
       kind: mode === "image" ? "image" : "video",
-      contentUrl,
       model: payload.model || route?.model || "Assigned media model",
       prompt: prompt.trim(),
       operation: operation as "generate" | "edit",
@@ -164,7 +175,7 @@ export function VisualStudio({
     });
     setMessage({
       tone: "success",
-      text: `${mode === "image" ? "Image" : "Video"} ${operation === "edit" ? "edited" : "created"} and stored privately. The original source was not changed.`,
+      text: `${mode === "image" ? "Image" : "Video"} ${operation === "edit" ? "edited" : "created"} and stored privately. Its preview will appear after storage verification.`,
     });
   }
 
@@ -186,22 +197,21 @@ export function VisualStudio({
       asset?: MediaResult["asset"];
       error?: string;
     };
-    if (!response.ok || !payload.video || !payload.asset?.id) {
+    if (!response.ok || !payload.asset?.id || !normalizePrivateMediaAssetId(payload.asset.id)) {
       throw new Error(payload.error || "The encoded clip could not be stored.");
     }
     setResult({
       kind: "video",
-      contentUrl: payload.video,
       model: "Deterministic FFmpeg clip",
       prompt: `${source.filename} · ${formatSeconds(startSeconds)}–${formatSeconds(endSeconds)}`,
       operation: "clip",
       asset: payload.asset,
     });
-    setMessage({ tone: "success", text: "Clip created and stored privately. The source video was not changed." });
+    setMessage({ tone: "success", text: "Clip created and stored privately. Its preview will appear after storage verification." });
   }
 
   async function saveToKnowledge() {
-    if (!result) return;
+    if (!result || resultReadiness !== "ready") return;
     setSaving(true);
     setMessage(undefined);
     try {
@@ -253,19 +263,32 @@ export function VisualStudio({
             {mode === "video" ? (
               <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg bg-background p-1">
                 {(["generate", "edit"] as const).map((value) => (
-                  <button key={value} type="button" onClick={() => { setVideoOperation(value); setSourceAssetId(""); }} className={clsx("min-h-10 rounded-md px-3 text-sm font-semibold capitalize", videoOperation === value ? "bg-surface text-foreground shadow-sm" : "text-muted")}>{value}</button>
+                  <button key={value} type="button" onClick={() => { setVideoOperation(value); setSourceAssetId(""); setSourceReadiness("ready"); setResult(undefined); setResultReadiness("preparing"); setMessage(undefined); setSaved(false); }} className={clsx("min-h-10 rounded-md px-3 text-sm font-semibold capitalize", videoOperation === value ? "bg-surface text-foreground shadow-sm" : "text-muted")}>{value}</button>
                 ))}
               </div>
             ) : null}
 
             <label className="block text-xs font-semibold text-muted">
               {mode === "clip" ? "Source video" : operation === "edit" ? `Source ${mode}` : mode === "video" ? "Reference image (optional)" : "Source image (optional)"}
-              <select value={sourceAssetId} onChange={(event) => setSourceAssetId(event.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-line bg-background px-3 text-sm text-foreground">
+              <select value={sourceAssetId} onChange={(event) => { const nextId = event.target.value; setSourceAssetId(nextId); setSourceReadiness(nextId ? "preparing" : "ready"); setResult(undefined); setResultReadiness("preparing"); setSaved(false); }} className="mt-2 min-h-11 w-full rounded-md border border-line bg-background px-3 text-sm text-foreground">
                 <option value="">{requiresSource ? "Choose a source…" : "Start without a source"}</option>
                 {eligibleSources.map((asset) => <option key={asset.id} value={asset.id}>{asset.filename} · {formatBytes(asset.byteCount)}</option>)}
               </select>
             </label>
             {!eligibleSources.length ? <p className="mt-2 text-xs leading-5 text-muted">Upload a compatible {mode === "image" || (mode === "video" && videoOperation === "generate") ? "image" : "video"} in Capture to use it here.</p> : null}
+            {selectedSource ? (
+              <div className="mt-3">
+                <PrivateMediaPreview
+                  assetId={selectedSource.id}
+                  kind={selectedSource.mediaType.startsWith("video/") ? "video" : "image"}
+                  alt={`Private source preview: ${selectedSource.filename}`}
+                  compact
+                  className="max-h-44"
+                  mediaClassName="max-h-44"
+                  onReadinessChange={setSourceReadiness}
+                />
+              </div>
+            ) : null}
 
             {mode === "clip" ? (
               <div className="mt-4 grid grid-cols-2 gap-3">
@@ -289,6 +312,7 @@ export function VisualStudio({
                 {working ? mode === "clip" ? "Clipping in real time…" : "Creating…" : actionLabel(mode, operation, Boolean(result))}
               </button>
             </div>
+            {sourceAssetId && sourceReadiness !== "ready" ? <p className="mt-3 text-xs leading-5 text-muted">This source is still being verified. Editing and clipping unlock when the preview is ready.</p> : null}
             {mode !== "clip" && route?.configured === false ? <p className="mt-4 border-l-2 border-warning pl-3 text-sm leading-6 text-warning">Assign and validate a compatible {mode} model in Settings before using this operation.</p> : null}
             {mode === "clip" ? <p className="mt-4 text-xs leading-5 text-muted">Clipping is deterministic, preserves the original video and available audio, and stores only the selected segment as a new asset.</p> : null}
             {message ? <p role={message.tone === "error" ? "alert" : "status"} className={clsx("mt-4 text-sm leading-6", message.tone === "error" ? "text-danger" : "text-success")}>{message.text}</p> : null}
@@ -297,10 +321,17 @@ export function VisualStudio({
           <div className="relative grid min-h-[28rem] place-items-center bg-background p-4 sm:p-6">
             {result ? (
               <>
-                {result.kind === "image" ? <Image src={result.contentUrl} alt={`${result.operation} result: ${result.prompt}`} width={1536} height={1024} unoptimized className="max-h-[40rem] w-auto max-w-full rounded-lg object-contain" /> : <video src={result.contentUrl} controls playsInline className="max-h-[40rem] w-full rounded-lg object-contain" aria-label={`${result.operation} video result`} />}
-                <div className="absolute inset-x-3 bottom-3 flex flex-col gap-2 rounded-lg border border-line bg-background/95 p-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0"><p className="truncate text-xs font-semibold">{result.asset.filename}</p><p className="mt-0.5 truncate text-xs text-muted">{result.model} · {formatBytes(result.asset.byteCount)} · {result.operation} · private</p></div>
-                  <div className="flex flex-wrap gap-2"><a href={`${result.contentUrl}&download=1`} className="action-button"><Download size={14} aria-hidden="true" />Download</a><button type="button" onClick={() => void saveToKnowledge()} disabled={saving || saved} className="primary-button">{saving ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : saved ? <CheckCircle2 size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}{saving ? "Queuing…" : saved ? "Added to knowledge" : "Save to knowledge"}</button></div>
+                <PrivateMediaPreview
+                  assetId={result.asset.id}
+                  kind={result.kind}
+                  alt={`${result.operation} result: ${result.prompt}`}
+                  className="h-full min-h-[28rem] pb-24"
+                  mediaClassName="max-h-[40rem]"
+                  onReadinessChange={setResultReadiness}
+                />
+                <div className="absolute inset-x-3 bottom-3 z-10 flex flex-col gap-2 rounded-lg border border-line bg-background/95 p-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0"><p className="truncate text-xs font-semibold">{result.asset.filename}</p><p className="mt-0.5 truncate text-xs text-muted">{result.model} · {formatBytes(result.asset.byteCount)} · {result.operation} · {resultReadiness === "ready" ? "ready" : resultReadiness === "failed" ? "preview unavailable" : "preparing"} · private</p></div>
+                  <div className="flex flex-wrap gap-2">{resultReadiness === "ready" ? <a href={privateCaptureAssetContentUrl(result.asset.id, { download: true })} className="action-button"><Download size={14} aria-hidden="true" />Download</a> : <span className="action-button cursor-not-allowed opacity-50" aria-disabled="true"><Download size={14} aria-hidden="true" />Preparing</span>}<button type="button" onClick={() => void saveToKnowledge()} disabled={saving || saved || resultReadiness !== "ready"} className="primary-button">{saving ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : saved ? <CheckCircle2 size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}{saving ? "Queuing…" : saved ? "Added to knowledge" : resultReadiness === "ready" ? "Save to knowledge" : "Waiting for file"}</button></div>
                 </div>
               </>
             ) : (
