@@ -355,14 +355,19 @@ export function CaptureWorkspace() {
       ...asset.tags,
     ]);
   }), [assets, libraryQuery, sourceFilter]);
+  const activelyProcessingAssetIds = useMemo(() => new Set(
+    processingJobs
+      .filter((job) => job.status === "queued" || job.status === "running")
+      .map((job) => job.assetId),
+  ), [processingJobs]);
   const reindexableAssets = useMemo(() => filteredAssets
     .filter((asset) =>
       asset.manageable === true &&
       asset.indexable === true &&
-      asset.status !== "queued" &&
+      !activelyProcessingAssetIds.has(asset.id) &&
       !reindexingAssetIds.has(asset.id)
     )
-    .slice(0, 50), [filteredAssets, reindexingAssetIds]);
+    .slice(0, 50), [activelyProcessingAssetIds, filteredAssets, reindexingAssetIds]);
 
   const batchCounts = useMemo(() => summarizeBatch(batchItems), [batchItems]);
   const durableQueue = useMemo(() => {
@@ -604,7 +609,7 @@ export function CaptureWorkspace() {
     const eligible = targets.filter((asset) =>
       asset.manageable === true &&
       asset.indexable === true &&
-      asset.status !== "queued" &&
+      !activelyProcessingAssetIds.has(asset.id) &&
       !reindexingAssetIds.has(asset.id)
     ).slice(0, 50);
     if (!eligible.length) {
@@ -872,7 +877,7 @@ export function CaptureWorkspace() {
             <div className="flex items-center justify-between gap-3 border-b border-line bg-surface-raised px-4 py-3"><div><p className="text-sm font-semibold">Original files</p><p className="mt-0.5 text-xs text-muted">Private and retrievable · actions follow stored ownership</p></div><span className="text-xs text-muted">{filteredAssets.length}{filteredAssets.length !== assets.length ? ` / ${assets.length}` : ""}</span></div>
             <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
               {filteredAssets.length ? filteredAssets.map((asset) => (
-                <div key={asset.id} className="group px-4 py-3"><div className="flex items-start gap-3"><span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-md bg-background text-primary"><FileText size={16} aria-hidden="true" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{asset.filename}</p><p className="mt-1 truncate text-xs text-muted">{formatBytes(asset.byteCount)} · {asset.storageKind} · {formatTime(asset.updatedAt)}</p><p className={clsx("mt-1 text-xs font-semibold", asset.status === "failed" || asset.status === "unsupported" ? "text-warning" : asset.status === "indexed" ? "text-success" : "text-muted")}>{assetStatusLabel(asset)}</p>{asset.error ? <p className="mt-1 line-clamp-2 text-xs text-danger">{asset.error}</p> : null}{asset.manageable !== true ? <p className="mt-1 text-xs text-muted">Read only · indexing and management remain with its stored owner</p> : captureBlocked ? <p className="mt-1 text-xs text-muted">Read only in your current role</p> : null}</div><div className="flex shrink-0 gap-1">{asset.manageable === true && asset.indexable === true && !captureBlocked ? <button type="button" onClick={() => void reindexAssets([asset])} disabled={asset.status === "queued" || reindexingAssetIds.has(asset.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50" aria-label={`Re-index ${asset.filename}`}>{reindexingAssetIds.has(asset.id) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}</button> : null}{asset.contentAvailable === true ? <a href={`/api/capture/assets/${encodeURIComponent(asset.id)}?content=1&download=1`} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Download ${asset.filename}`}><Download size={14} /></a> : null}{asset.manageable === true && !captureBlocked ? <button type="button" onClick={() => void deleteAsset(asset.id)} disabled={deletingAsset === asset.id} className="grid size-9 place-items-center rounded-md text-muted hover:bg-danger/10 hover:text-danger" aria-label={`Delete ${asset.filename}`}>{deletingAsset === asset.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}</button> : null}</div></div></div>
+                <div key={asset.id} className="group px-4 py-3"><div className="flex items-start gap-3"><span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-md bg-background text-primary"><FileText size={16} aria-hidden="true" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{asset.filename}</p><p className="mt-1 truncate text-xs text-muted">{formatBytes(asset.byteCount)} · {asset.storageKind} · {formatTime(asset.updatedAt)}</p><p className={clsx("mt-1 text-xs font-semibold", asset.status === "failed" || asset.status === "unsupported" ? "text-warning" : asset.status === "indexed" ? "text-success" : "text-muted")}>{assetStatusLabel(asset, activelyProcessingAssetIds.has(asset.id))}</p>{asset.error ? <p className="mt-1 line-clamp-2 text-xs text-danger">{asset.error}</p> : null}{asset.manageable !== true ? <p className="mt-1 text-xs text-muted">Read only · indexing and management remain with its stored owner</p> : captureBlocked ? <p className="mt-1 text-xs text-muted">Read only in your current role</p> : null}</div><div className="flex shrink-0 gap-1">{asset.manageable === true && asset.indexable === true && !captureBlocked ? <button type="button" onClick={() => void reindexAssets([asset])} disabled={activelyProcessingAssetIds.has(asset.id) || reindexingAssetIds.has(asset.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50" aria-label={`Re-index ${asset.filename}`}>{reindexingAssetIds.has(asset.id) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}</button> : null}{asset.contentAvailable === true ? <a href={`/api/capture/assets/${encodeURIComponent(asset.id)}?content=1&download=1`} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Download ${asset.filename}`}><Download size={14} /></a> : null}{asset.manageable === true && !captureBlocked ? <button type="button" onClick={() => void deleteAsset(asset.id)} disabled={deletingAsset === asset.id} className="grid size-9 place-items-center rounded-md text-muted hover:bg-danger/10 hover:text-danger" aria-label={`Delete ${asset.filename}`}>{deletingAsset === asset.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}</button> : null}</div></div></div>
               )) : <p className="px-4 py-8 text-center text-sm text-muted">{assets.length ? "No original files match this filter." : "Uploaded and generated originals will appear here."}</p>}
             </div>
           </div>
@@ -1063,9 +1068,13 @@ function captureJobIcon(status: CaptureJob["status"]) {
   return <Loader2 size={14} className="animate-spin" aria-hidden="true" />;
 }
 
-function assetStatusLabel(asset: CaptureAsset) {
+function assetStatusLabel(asset: CaptureAsset, activelyProcessing = false) {
   if (asset.status === "indexed") return "Indexed and searchable";
-  if (asset.status === "queued") return "Stored · indexing queued";
+  if (asset.status === "queued") {
+    return activelyProcessing
+      ? "Stored · indexing queued"
+      : "Indexed result ready · refresh status";
+  }
   if (asset.status === "unsupported") return "Stored · not indexed";
   if (asset.status === "failed") return "Stored · processing failed";
   if (asset.extractionStatus === "partial") return "Stored · partially extracted";
