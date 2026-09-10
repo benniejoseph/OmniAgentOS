@@ -30,6 +30,18 @@ describe("functional model assignment contract", () => {
     expect(modelSupportsAssignmentRole("image_generation", "google", {
       capabilities: ["image"],
     })).toBe(true);
+    expect(modelSupportsAssignmentRole("image_generation", "openai", {
+      capabilities: ["image"],
+    })).toBe(true);
+    expect(modelSupportsAssignmentRole("video_generation", "google", {
+      capabilities: ["video"],
+    })).toBe(true);
+    expect(modelSupportsAssignmentRole("video_generation", "openai", {
+      capabilities: ["video"],
+    })).toBe(false);
+    expect(modelSupportsAssignmentRole("computer_use", "openai", {
+      capabilities: ["computer_use"],
+    })).toBe(true);
     expect(modelSupportsAssignmentRole("web_search", "anthropic", {
       capabilities: ["text", "tools"],
     })).toBe(false);
@@ -44,6 +56,8 @@ describe("functional model assignment contract", () => {
     expect(modelAssignmentRoleSupportsFallback("audio_diarization")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("web_search")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("image_generation")).toBe(false);
+    expect(modelAssignmentRoleSupportsFallback("video_generation")).toBe(false);
+    expect(modelAssignmentRoleSupportsFallback("computer_use")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("speech_synthesis")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("realtime_transcription")).toBe(false);
   });

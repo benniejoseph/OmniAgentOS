@@ -104,10 +104,24 @@ export const modelAssignmentRoleContracts: Readonly<
   }),
   image_generation: assignmentRoleContract({
     title: "Image generation",
-    description: "Visual creation from prompts in Capture",
-    runtimePurpose: "Generated capture assets",
-    supportedProviders: ["google"],
+    description: "Image creation and non-destructive editing in Media Studio",
+    runtimePurpose: "Generated and edited image assets",
+    supportedProviders: ["openai", "google"],
     acceptedCapabilities: ["image"],
+  }),
+  video_generation: assignmentRoleContract({
+    title: "Video generation",
+    description: "Video creation and conversational editing in Media Studio",
+    runtimePurpose: "Generated and edited video assets",
+    supportedProviders: ["google"],
+    acceptedCapabilities: ["video"],
+  }),
+  computer_use: assignmentRoleContract({
+    title: "Computer use",
+    description: "Model-driven browser and desktop operation through an isolated runtime",
+    runtimePurpose: "Governed computer-use planning and visual interaction",
+    supportedProviders: ["openai", "google"],
+    acceptedCapabilities: ["computer_use"],
   }),
   speech_synthesis: assignmentRoleContract({
     title: "Speech synthesis",

@@ -9,6 +9,7 @@ export const AI_USAGE_OPERATIONS = [
   "web_search",
   "ocr",
   "image_generation",
+  "video_generation",
   "transcription",
   "speech_synthesis",
   "browser_automation",

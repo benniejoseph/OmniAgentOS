@@ -33,7 +33,7 @@ export type LiveWebSearchResult = {
   sourceCount: number;
 };
 
-const freshnessPattern = /\b(today|tonight|yesterday|tomorrow|now|current|currently|latest|newest|recent|recently|breaking|live|real[-\s]?time|up[-\s]?to[-\s]?date|as of|this week|this month|this year|released|launch(?:ed)?|announc(?:ed|ement)|price|pricing|stock|market|weather|score|schedule|deadline|version|changelog|news|web search|search (?:the )?web|browse|look up|verify|multiple sources|sources|citations?)\b/i;
+const freshnessPattern = /\b(today|tonight|yesterday|tomorrow|now|current|currently|latest|newest|recent|recently|breaking|live|real[-\s]?time|up[-\s]?to[-\s]?date|as of|this week|this month|this year|released|launch(?:ed)?|announc(?:ed|ement)|available|availability|support(?:s|ed|ing)?|compatible|price|pricing|stock|market|weather|score|schedule|deadline|version|changelog|news|president|prime minister|ceo|law|laws|regulation|policy|recommend(?:ation|ed)?|best|model|api|library|package|travel|flight|restaurant|web search|search (?:the )?web|browse|look up|verify|multiple sources|sources|citations?)\b/i;
 const noWebPattern = /\b(do not|don't|dont|without|no)\s+(?:use\s+)?(?:the\s+)?(?:web|internet|browser|search|live search|(?:any\s+)?external tools?|any tools?)\b|\bfrom memory only\b|\boffline\b/i;
 
 /** The gpt-4o family does not accept the `filters` param on the hosted web_search tool. */
@@ -94,6 +94,7 @@ export async function runLiveWebSearch({
   let response;
   const startedAt = Date.now();
   try {
+    const searchedAt = new Date().toISOString();
     response = await runtimeModel.withApiKey((apiKey) =>
       getOpenAIClient(apiKey ? { apiKey } : undefined).responses.create(
         {
@@ -101,6 +102,7 @@ export async function runLiveWebSearch({
           store: false,
           instructions: [
             "You are Asael live web search.",
+            `The trusted current UTC timestamp is ${searchedAt}.`,
             "Search the public web when needed, compare multiple credible sources, and summarize only source-supported facts.",
             "Return a compact research brief with source titles and URLs. If sources disagree, call that out.",
           ].join("\n"),

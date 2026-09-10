@@ -160,7 +160,13 @@ describe("agent prompt provenance", () => {
   });
 
   it("treats natural-language intent as an outcome instead of requiring tool syntax", () => {
-    const instructions = buildAgentInstructions({ mode: "orchestrate" });
+    const instructions = buildAgentInstructions({
+      mode: "orchestrate",
+      runtimeClock: {
+        now: new Date("2026-09-10T12:34:56.000Z"),
+        timeZone: "Asia/Kolkata",
+      },
+    });
     expect(instructions).toContain("Never require the user to translate a request into tool names");
     expect(instructions).toContain("recent conversation");
     expect(instructions).toContain("safe read-only tool discovery");
@@ -168,5 +174,8 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("connection status only");
     expect(instructions).toContain("Connectors at /app/connectors");
     expect(instructions).toContain("Never ask the user to paste a secret into chat");
+    expect(instructions).toContain("2026-09-10T12:34:56.000Z");
+    expect(instructions).toContain("Asia/Kolkata");
+    expect(instructions).toContain("use live web evidence");
   });
 });

@@ -302,7 +302,9 @@ function inferCapabilities(modelId: string) {
   if (normalized.includes("whisper") || normalized.includes("transcri")) return ["audio", "transcription"];
   if (normalized.includes("tts") || normalized.includes("speech")) return ["audio", "speech"];
   if (normalized.includes("image") || normalized.includes("dall-e")) return ["image"];
-  return normalized.includes("vision") || normalized.includes("gemini") || normalized.includes("claude") || normalized.includes("gpt-4") || normalized.includes("gpt-5")
+  if (normalized.includes("omni-1.1") || normalized.includes("veo-")) return ["video"];
+  if (normalized.includes("computer-use") || normalized.includes("computer_use")) return ["text", "vision", "tools", "computer_use"];
+  return normalized.includes("vision") || normalized.includes("gemini") || normalized.includes("claude") || normalized.includes("gpt-")
     ? ["text", "vision", "tools"]
     : ["text", "tools"];
 }

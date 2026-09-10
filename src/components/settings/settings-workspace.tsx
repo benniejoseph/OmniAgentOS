@@ -116,7 +116,9 @@ const assignmentLabels: Record<ModelAssignmentScope, { title: string; descriptio
   audio: { title: "Audio transcription", description: "Uploaded recording and meeting transcription" },
   audio_diarization: { title: "Speaker diarization", description: "Speaker-aware meeting and recording transcription" },
   web_search: { title: "Web search", description: "Live public-web research and sourced summaries" },
-  image_generation: { title: "Image generation", description: "Visual creation from prompts in Capture" },
+  image_generation: { title: "Image generation", description: "Image creation and non-destructive editing" },
+  video_generation: { title: "Video generation", description: "Video creation and conversational editing" },
+  computer_use: { title: "Computer use", description: "Governed browser and desktop interaction" },
   speech_synthesis: { title: "Speech synthesis", description: "Spoken Agent responses" },
   realtime_transcription: { title: "Realtime transcription", description: "Live voice-command transcription" },
 };
@@ -785,7 +787,11 @@ function modelSupportsUiRole(
             : scope === "audio"
               ? { providers: ["openai", "google"] as SettingsModelProvider[], capabilities: ["audio", "transcription"] }
               : scope === "image_generation"
-                ? { providers: ["google"] as SettingsModelProvider[], capabilities: ["image"] }
+                ? { providers: ["openai", "google"] as SettingsModelProvider[], capabilities: ["image"] }
+                : scope === "video_generation"
+                  ? { providers: ["google"] as SettingsModelProvider[], capabilities: ["video"] }
+                  : scope === "computer_use"
+                    ? { providers: ["openai", "google"] as SettingsModelProvider[], capabilities: ["computer_use"] }
                 : scope === "speech_synthesis"
                   ? { providers: ["openai"] as SettingsModelProvider[], capabilities: ["speech"] }
                   : scope === "web_search"

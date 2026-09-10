@@ -20,6 +20,8 @@ export const MODEL_ASSIGNMENT_SCOPES = [
   "audio_diarization",
   "web_search",
   "image_generation",
+  "video_generation",
+  "computer_use",
   "speech_synthesis",
   "realtime_transcription",
 ] as const;
@@ -33,6 +35,8 @@ export const SPECIALIZED_MODEL_ASSIGNMENT_SCOPES = [
   "audio_diarization",
   "web_search",
   "image_generation",
+  "video_generation",
+  "computer_use",
   "speech_synthesis",
   "realtime_transcription",
 ] as const satisfies readonly ModelAssignmentScope[];
