@@ -19,6 +19,12 @@ const routeMocks = vi.hoisted(() => {
       this.name = "CaptureAssetContentIntegrityError";
     }
   }
+  class CaptureAssetContentNotReadyError extends Error {
+    constructor(message = "Captured file content is still being prepared.") {
+      super(message);
+      this.name = "CaptureAssetContentNotReadyError";
+    }
+  }
   class CaptureAssetExtractionIntegrityError extends Error {
     constructor(message = "Capture asset extraction evidence failed integrity validation.") {
       super(message);
@@ -27,6 +33,7 @@ const routeMocks = vi.hoisted(() => {
   }
   return {
     CaptureAssetContentIntegrityError,
+    CaptureAssetContentNotReadyError,
     CaptureAssetExtractionIntegrityError,
     CaptureAssetError,
     CaptureAssetReadConflictError,
@@ -60,6 +67,8 @@ vi.mock("@/lib/security/canonical-actor", () => ({
 vi.mock("@/lib/capture/assets", () => ({
   CaptureAssetContentIntegrityError:
     routeMocks.CaptureAssetContentIntegrityError,
+  CaptureAssetContentNotReadyError:
+    routeMocks.CaptureAssetContentNotReadyError,
   CaptureAssetExtractionIntegrityError:
     routeMocks.CaptureAssetExtractionIntegrityError,
   CaptureAssetError: routeMocks.CaptureAssetError,
@@ -92,6 +101,7 @@ vi.mock("@/lib/capture/files", () => ({
 vi.mock("@/lib/operations/background-jobs", () => ({
   BackgroundJobIdempotencyConflictError:
     class BackgroundJobIdempotencyConflictError extends Error {},
+  enqueueCaptureAssetProcessJob: vi.fn(),
   enqueueKnowledgeIngestJob: vi.fn(),
 }));
 
@@ -306,6 +316,24 @@ describe("request-bound Capture asset detail route", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     await expect(response.json()).resolves.toEqual({
       error: "Captured file content could not be verified safely.",
+    });
+  });
+
+  it("returns retry guidance while private source bytes are being prepared", async () => {
+    routeMocks.getCaptureAssetContentForRequest.mockRejectedValueOnce(
+      new routeMocks.CaptureAssetContentNotReadyError(),
+    );
+
+    const response = await GET(
+      new Request("http://localhost/api/capture/assets/asset-a?content=1"),
+      { params: Promise.resolve({ id: "asset-a" }) },
+    );
+
+    expect(response.status).toBe(409);
+    expect(response.headers.get("retry-after")).toBe("2");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    await expect(response.json()).resolves.toEqual({
+      error: "Captured file content is still being prepared.",
     });
   });
 

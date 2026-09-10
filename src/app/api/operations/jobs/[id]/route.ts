@@ -31,6 +31,15 @@ async function GETHandler(
   if (!job) {
     return Response.json({ error: "Operation job not found." }, { status: 404 });
   }
+  if (
+    job.type === "capture.asset.process" &&
+    job.payload.actorId !== securityContext.actorId
+  ) {
+    return Response.json(
+      { error: "Operation job not found." },
+      { status: 404, headers: { "cache-control": "private, no-store" } },
+    );
+  }
   return Response.json(
     { job: projectOperationJobStatus(job) },
     { headers: { "cache-control": "private, no-store" } },

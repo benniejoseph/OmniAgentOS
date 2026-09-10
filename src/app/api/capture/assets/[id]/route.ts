@@ -2,6 +2,7 @@ import { indexStoredAssetService } from "@/lib/app-services/assets";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
   CaptureAssetContentIntegrityError,
+  CaptureAssetContentNotReadyError,
   CaptureAssetError,
   CaptureAssetExtractionIntegrityError,
   CaptureAssetReadConflictError,
@@ -9,14 +10,9 @@ import {
   getCaptureAssetForRequest,
   getCaptureAssetContentForRequest,
   getCaptureAssetExtractionForRequest,
-  updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
 import { deleteCaptureAssetWithKnowledge } from "@/lib/capture/deletion";
 import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
-import { CaptureFileError } from "@/lib/capture/files";
-import {
-  terminalCaptureExtractionReceipt,
-} from "@/lib/capture/extraction";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import {
@@ -149,7 +145,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
       createAppServiceCaller({
         context,
         executionScope,
-        idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || `capture-asset:${id}`,
+        idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || undefined,
       }),
       { id, ...parsed.data },
     );
@@ -166,20 +162,6 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     );
   } catch (error) {
     if (error instanceof BackgroundJobIdempotencyConflictError) return Response.json({ error: error.message }, { status: 409, headers: privateNoStoreHeaders });
-    if (error instanceof CaptureFileError) {
-      const existing = await getCaptureAsset(id, context);
-      const asset = existing ? await updateCaptureAssetStatus(id, { ...context, executionScope }, {
-        status: error.status === 415 ? "unsupported" : "failed",
-        extractionStatus: error.status === 415 ? "unsupported" : "failed",
-        error: error.message,
-        extractionReceipt: terminalCaptureExtractionReceipt({
-          format: error.format || existing.extension || "unknown",
-          state: error.status === 415 ? "unsupported" : "failed",
-          warningCode: error.code,
-        }),
-      }) : undefined;
-      return Response.json({ asset, ingestion: { status: asset?.extractionStatus || "failed", code: error.code, reason: error.message } }, { status: 202, headers: { "cache-control": "private, no-store" } });
-    }
     return assetErrorResponse(error);
   }
 }
@@ -192,6 +174,15 @@ function assetErrorResponse(
     return Response.json(
       { error: "Captured file content could not be verified safely." },
       { status: 409, headers: privateNoStoreHeaders },
+    );
+  }
+  if (error instanceof CaptureAssetContentNotReadyError) {
+    return Response.json(
+      { error: "Captured file content is still being prepared." },
+      {
+        status: 409,
+        headers: { ...privateNoStoreHeaders, "retry-after": "2" },
+      },
     );
   }
   if (error instanceof CaptureAssetExtractionIntegrityError) {

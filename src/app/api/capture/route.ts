@@ -1,12 +1,4 @@
-import { extractCaptureFile, CaptureFileError } from "@/lib/capture/files";
-import {
-  appendCaptureNote,
-  captureExtractionReceipt,
-  renderCaptureExtractionUnits,
-  terminalCaptureExtractionReceipt,
-  type CaptureExtractionReceipt,
-  type CaptureStructuredExtraction,
-} from "@/lib/capture/extraction";
+import { captureTitle } from "@/lib/capture/files";
 import {
   listCaptureAssets,
   saveCaptureAsset,
@@ -19,8 +11,15 @@ import {
 } from "@/lib/capture/offline-outbox";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
-import { BackgroundJobIdempotencyConflictError, enqueueKnowledgeIngestJob } from "@/lib/operations/background-jobs";
-import { projectOperationJobStatus } from "@/lib/operations/job-queue";
+import {
+  BackgroundJobIdempotencyConflictError,
+  enqueueCaptureAssetProcessJob,
+  enqueueKnowledgeIngestJob,
+} from "@/lib/operations/background-jobs";
+import {
+  getOperationJobsByIds,
+  projectOperationJobStatus,
+} from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -37,13 +36,32 @@ async function GETHandler(request: Request) {
     return forbiddenResponse(error);
   }
   const limit = parseBoundedInteger(new URL(request.url).searchParams.get("limit"), 50, { max: 100 });
-  return Response.json({
-    assets: await listCaptureAssets({
+  const assets = await listCaptureAssets({
       tenantId: context.tenantId,
       actorId: context.actorId,
       requestActorBinding:
         canonicalRequestActorBindingFromSecurityContext(context),
-    }, limit),
+    }, limit);
+  const jobIds = assets.flatMap((asset) =>
+    asset.manageable && asset.ingestJobId ? [asset.ingestJobId] : []
+  );
+  const jobById = new Map(
+    (await getOperationJobsByIds(jobIds, { tenantId: context.tenantId }))
+      .filter((job) =>
+        (job.type === "capture.asset.process" || job.type === "knowledge.ingest") &&
+        job.payload.actorId === context.actorId
+      )
+      .map((job) => [job.id, job] as const),
+  );
+  return Response.json({
+    assets,
+    processingJobs: assets.flatMap((asset) => {
+      if (!asset.manageable || !asset.ingestJobId) return [];
+      const job = jobById.get(asset.ingestJobId);
+      return job
+        ? [{ assetId: asset.id, ...projectOperationJobStatus(job) }]
+        : [];
+    }),
   }, { headers: { "cache-control": "private, no-store" } });
 }
 
@@ -103,181 +121,94 @@ async function POSTHandler(request: Request) {
   const requestedTitle = String(form.get("title") || "").trim().slice(0, 240);
   const tags = String(form.get("tags") || "").split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 50);
 
-  let document: {
-    title: string;
-    content: string;
-    source: string;
-    sourceType: "file" | "manual";
-    extraction?: CaptureStructuredExtraction;
-  };
-  let asset: Awaited<ReturnType<typeof saveCaptureAsset>> | undefined;
-  let assetExtractionReceipt: CaptureExtractionReceipt | undefined;
-  let contentOrigin: "extracted" | "supplied_note" = "extracted";
-  try {
-    if (file instanceof File && file.size) {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      asset = await saveCaptureAsset({
-        ...context,
+  const idempotencyKey = request.headers.get("idempotency-key")?.trim().slice(0, 200) || undefined;
+  if (file instanceof File && file.size) {
+    let asset = await saveCaptureAsset({
+      ...context,
+      executionScope,
+      filename: file.name,
+      mediaType: file.type,
+      bytes: new Uint8Array(await file.arrayBuffer()),
+      tags,
+      metadata: { requestedTitle, note },
+    });
+    try {
+      const job = await enqueueCaptureAssetProcessJob({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
         executionScope,
-        filename: file.name,
-        mediaType: file.type,
-        bytes,
-        tags,
-        metadata: { requestedTitle, note },
-      });
-      const extracted = await extractCaptureFile(
-        new File([bytes], file.name, { type: file.type }),
-        {
-          tenantId: context.tenantId,
-          actorId: context.actorId,
-          sourceStreamId: `capture-asset:${asset.id}`,
-          operation: "ocr",
-          purpose: "capture.file.extract",
-          correlationId: executionScope.correlationId,
-          executionScope,
-          credentialSource: "deployment_environment",
+        idempotencyKey,
+        request: {
+          assetId: asset.id,
+          ...(requestedTitle ? { title: requestedTitle } : {}),
+          ...(note ? { note } : {}),
+          ...(tags.length ? { tags } : {}),
         },
-      );
-      const extraction = note
-        ? appendCaptureNote(extracted.extraction, note)
-        : extracted.extraction;
-      document = {
-        ...extracted,
-        source: `capture:asset:${asset.id}`,
-        content: renderCaptureExtractionUnits(extraction.units),
-        extraction,
-      };
-      assetExtractionReceipt = captureExtractionReceipt(extraction);
-    } else {
-      document = {
-          title: requestedTitle || note.split(/\r?\n/, 1)[0]?.slice(0, 80) || "Quick note",
-          content: note,
-          source: "capture://quick-note",
-          sourceType: "manual" as const,
-        };
-    }
-  } catch (error) {
-    if (asset && note && error instanceof CaptureFileError) {
-      contentOrigin = "supplied_note";
-      assetExtractionReceipt = terminalCaptureExtractionReceipt({
-        format: error.format || asset.extension || "unknown",
-        state: error.status === 415 ? "unsupported" : "failed",
-        warningCode: error.code,
       });
-      document = {
-        title: requestedTitle || captureTitleFromAsset(asset.filename),
-        content: note,
-        source: `capture:asset:${asset.id}`,
-        sourceType: "file",
-      };
-    } else if (asset) {
-      const captureError = error instanceof CaptureFileError ? error : undefined;
-      const stored = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
-        status: captureError?.status === 415 ? "unsupported" : "failed",
-        extractionStatus: captureError?.status === 415 ? "unsupported" : "failed",
-        error: error instanceof Error ? error.message : "The captured file could not be extracted.",
-        extractionReceipt: terminalCaptureExtractionReceipt({
-          format: captureError?.format || asset.extension || "unknown",
-          state: captureError?.status === 415 ? "unsupported" : "failed",
-          warningCode: captureError?.code || "extraction_failed",
-        }),
-      });
+      if (asset.ingestJobId && asset.ingestJobId !== job.id) {
+        throw new BackgroundJobIdempotencyConflictError("capture.asset.process");
+      }
+      if (asset.ingestJobId !== job.id) {
+        asset = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
+          status: "queued",
+          extractionStatus: "pending",
+          ingestJobId: job.id,
+          clearExtractionReceipt: true,
+        });
+      }
       return Response.json({
-        asset: stored,
-        ingestion: {
-          status: stored.extractionStatus,
-          code: captureError?.code || "extraction_failed",
-          reason: stored.error,
+        job: projectOperationJobStatus(job),
+        asset,
+        capture: {
+          title: requestedTitle || captureTitle(asset.filename),
+          source: `capture:asset:${asset.id}`,
+          tags,
         },
-      }, { status: 202, headers: { location: `/api/capture/assets/${stored.id}`, "cache-control": "private, no-store" } });
-    } else {
-      if (error instanceof CaptureFileError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
-      throw error;
+      }, {
+        status: 202,
+        headers: { location: `/api/operations/jobs/${job.id}`, "retry-after": "2", "cache-control": "private, no-store" },
+      });
+    } catch (error) {
+      if (error instanceof BackgroundJobIdempotencyConflictError) {
+        return Response.json({ error: error.message }, { status: 409 });
+      }
+      asset = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
+        status: "failed",
+        extractionStatus: "pending",
+        error: error instanceof Error ? error.message : "Capture queue failed.",
+      });
+      return Response.json({ error: error instanceof Error ? error.message : "Capture queue failed.", asset }, { status: 500 });
     }
   }
-  if (!document.content) return Response.json({ error: "Add a note or choose a supported file." }, { status: 400 });
-  if (requestedTitle) document.title = requestedTitle;
 
-  let job;
+  if (!note) {
+    return Response.json({ error: "Add a note or choose a supported file." }, { status: 400 });
+  }
+  const document = {
+    title: requestedTitle || note.split(/\r?\n/, 1)[0]?.slice(0, 80) || "Quick note",
+    content: note,
+    source: "capture://quick-note",
+    sourceType: "manual" as const,
+  };
   try {
-    job = await enqueueKnowledgeIngestJob({
+    const job = await enqueueKnowledgeIngestJob({
       tenantId: context.tenantId,
       actorId: context.actorId,
       executionScope,
-      idempotencyKey: request.headers.get("idempotency-key")?.trim().slice(0, 200) || undefined,
-      request: {
-        title: document.title,
-        content: document.content,
-        source: document.source,
-        sourceType: document.sourceType,
-        tags,
-        ...(asset ? {
-          evidenceRefs: [`capture-asset:${asset.id}`],
-          ...(document.extraction ? {
-            structuredUnits: document.extraction.units,
-            metadata: {
-              captureAssetId: asset.id,
-              actorId: asset.actorId,
-              filename: asset.filename,
-              mediaType: asset.mediaType,
-              byteCount: asset.byteCount,
-              contentOrigin,
-              structuredSourceKind: document.extraction.sourceKind,
-              extractionState: document.extraction.state,
-              extractionReceiptSha256: assetExtractionReceipt?.receiptSha256 || "",
-            },
-          } : {
-            metadata: {
-              captureAssetId: asset.id,
-              actorId: asset.actorId,
-              filename: asset.filename,
-              mediaType: asset.mediaType,
-              byteCount: asset.byteCount,
-              contentOrigin,
-              extractionState: assetExtractionReceipt?.state || "completed",
-              extractionReceiptSha256: assetExtractionReceipt?.receiptSha256 || "",
-            },
-          }),
-        } : {}),
-      },
+      idempotencyKey,
+      request: { ...document, tags },
+    });
+    return Response.json({
+      job: projectOperationJobStatus(job),
+      capture: { title: document.title, source: document.source, tags },
+    }, {
+      status: 202,
+      headers: { location: `/api/operations/jobs/${job.id}`, "retry-after": "2", "cache-control": "private, no-store" },
     });
   } catch (error) {
     if (error instanceof BackgroundJobIdempotencyConflictError) {
       return Response.json({ error: error.message }, { status: 409 });
     }
-    if (asset) {
-      asset = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
-        status: "failed",
-        extractionStatus: assetExtractionReceipt?.state || "completed",
-        error: error instanceof Error ? error.message : "Capture queue failed.",
-        extractionReceipt: assetExtractionReceipt,
-      });
-    }
-    return Response.json({ error: error instanceof Error ? error.message : "Capture queue failed.", asset }, { status: 500 });
+    return Response.json({ error: error instanceof Error ? error.message : "Capture queue failed." }, { status: 500 });
   }
-  if (asset) {
-    asset = await updateCaptureAssetStatus(asset.id, { ...context, executionScope }, {
-      status: "queued",
-      extractionStatus: assetExtractionReceipt?.state || "completed",
-      ingestJobId: job.id,
-      extractionReceipt: assetExtractionReceipt,
-    });
-  }
-  return Response.json({
-    job: projectOperationJobStatus(job),
-    asset,
-    capture: {
-      title: document.title,
-      source: document.source,
-      tags,
-      extraction: assetExtractionReceipt,
-    },
-  }, {
-    status: 202,
-    headers: { location: `/api/operations/jobs/${job.id}`, "retry-after": "2", "cache-control": "private, no-store" },
-  });
-}
-
-function captureTitleFromAsset(filename: string) {
-  return filename.trim().replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").slice(0, 240) || "Untitled capture";
 }

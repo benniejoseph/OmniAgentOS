@@ -4,14 +4,27 @@ import {
   CAPTURE_STRUCTURED_EXTRACTOR_CONFIG_SHA256,
   CAPTURE_STRUCTURED_EXTRACTOR_ID,
   CAPTURE_STRUCTURED_EXTRACTOR_VERSION,
+  appendCaptureNote,
+  captureExtractionReceipt,
   captureExtractionUnitSchema,
   renderCaptureExtractionUnits,
+  terminalCaptureExtractionReceipt,
+  type CaptureExtractionReceipt,
+  type CaptureExtractionUnit,
 } from "@/lib/capture/extraction";
 import { OPERATION_QUEUE_LEASE_SECONDS } from "@/lib/config";
 import {
+  CaptureAssetContentNotReadyError,
+  getCaptureAsset,
+  getCaptureAssetContent,
   resolveCaptureAssetActorForIngestJob,
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
+import {
+  CaptureFileError,
+  captureTitle,
+  extractCaptureFile,
+} from "@/lib/capture/files";
 import {
   markCaptureRecordingIndexed,
   resolveCaptureRecordingActorForIngestJob,
@@ -114,6 +127,13 @@ export const knowledgeIngestJobRequestSchema = z
     }
   });
 
+export const captureAssetProcessJobRequestSchema = z.object({
+  assetId: z.string().trim().min(1).max(200).regex(/^[a-zA-Z0-9_-]+$/),
+  title: z.string().trim().min(1).max(240).optional(),
+  note: z.string().trim().max(20_000).optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
+}).strict();
+
 const memoryConsolidationJobRequestSchema = z
   .object({
     runId: z.string().min(1).max(200),
@@ -129,12 +149,62 @@ export type EvaluationJobRequest = z.infer<
 export type KnowledgeIngestJobRequest = z.infer<
   typeof knowledgeIngestJobRequestSchema
 >;
+export type CaptureAssetProcessJobRequest = z.infer<
+  typeof captureAssetProcessJobRequestSchema
+>;
 
 export class BackgroundJobIdempotencyConflictError extends Error {
-  constructor(type: "knowledge.ingest" | "evaluation.run") {
+  constructor(type: "capture.asset.process" | "knowledge.ingest" | "evaluation.run") {
     super(`The idempotency key is already bound to a different ${type} request.`);
     this.name = "BackgroundJobIdempotencyConflictError";
   }
+}
+
+export async function enqueueCaptureAssetProcessJob({
+  tenantId,
+  actorId,
+  executionScope,
+  request,
+  idempotencyKey,
+}: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  request: CaptureAssetProcessJobRequest;
+  idempotencyKey?: string;
+}) {
+  const parsed = captureAssetProcessJobRequestSchema.parse(request);
+  const usageActorId = normalizeQueuedActorId(actorId);
+  if (!usageActorId) {
+    throw new Error("Capture asset processing requires an owner actor.");
+  }
+  const trustedExecutionScope = requireQueuedExecutionScope(
+    executionScope,
+    tenantId,
+    usageActorId,
+  );
+  const requestId = idempotencyKey?.trim().slice(0, 200) || randomUUID();
+  const requestHash = backgroundRequestHash(parsed);
+  const job = await enqueueOperationJob({
+    tenantId,
+    type: "capture.asset.process",
+    dedupeKey: requestDedupeKey("capture.asset.process", { requestId }),
+    payload: {
+      request: parsed,
+      actorId: usageActorId,
+      executionScope: trustedExecutionScope,
+      requestHash,
+      progress: { stage: "queued" },
+    },
+    maxAttempts: 3,
+    priority: 1,
+    dedupeMode: "idempotent",
+  });
+  if (job.payload.actorId !== usageActorId) {
+    throw new BackgroundJobIdempotencyConflictError("capture.asset.process");
+  }
+  assertIdempotentRequest(job, requestHash, "capture.asset.process");
+  return job;
 }
 
 const BACKGROUND_JOB_LEASE_SECONDS = Math.max(
@@ -358,6 +428,12 @@ type BackgroundJobResult = {
   error?: string;
 };
 
+type BackgroundDeferredResult = CaptureMediaDeferredResult & {
+  waitCount?: number;
+};
+
+const CAPTURE_ASSET_OBJECT_MAX_WAIT_COUNT = 40;
+
 async function processBackgroundOperationJob(
   job: OperationJobRecord,
   maxRuntimeMs: number,
@@ -399,6 +475,9 @@ async function processBackgroundOperationJob(
             stage: "waiting",
             reason: result.reason,
             deferredAt: new Date().toISOString(),
+            ...("waitCount" in result && typeof result.waitCount === "number"
+              ? { waitCount: result.waitCount }
+              : {}),
           },
         },
         { tenantId: job.tenantId },
@@ -454,6 +533,11 @@ async function processBackgroundOperationJob(
     } else if (job.type === "knowledge.ingest" && !failed) {
       await cleanCanceledCaptureIngestSafely(job);
     }
+    if (job.type === "capture.asset.process" && failed?.status === "failed") {
+      await markCaptureAssetProcessFailureSafely(job, error, message);
+    } else if (job.type === "capture.asset.process" && !failed) {
+      await cleanCanceledCaptureAssetProcessSafely(job);
+    }
     if (
       job.type === "capture.media.recording.process" &&
       failed?.status === "failed"
@@ -484,6 +568,7 @@ function executeBackgroundOperationInAccessScope(
     job.type === "asset.object.commit" ||
     job.type === "asset.object.delete" ||
     job.type === "asset.object.backfill" ||
+    job.type === "capture.asset.process" ||
     job.type === "capture.media.segment.transcribe" ||
     job.type === "capture.media.recording.process"
   ) {
@@ -521,6 +606,76 @@ async function cleanCanceledCaptureIngestSafely(job: OperationJobRecord) {
   } catch {
     // The delete route performs the same purge. This is a best-effort race
     // guard for a worker that finished after its lease was canceled.
+  }
+}
+
+async function cleanCanceledCaptureAssetProcessSafely(
+  job: OperationJobRecord,
+) {
+  try {
+    const current = await getOperationJob(job.id, { tenantId: job.tenantId });
+    if (current?.status !== "canceled") return;
+    const parsed = captureAssetProcessJobRequestSchema.safeParse(
+      job.payload.request,
+    );
+    if (!parsed.success) return;
+    await deleteKnowledgeDocumentsBySourcePrefix(
+      `capture:asset:${parsed.data.assetId}`,
+      { tenantId: job.tenantId },
+    );
+  } catch {
+    // Capture deletion performs the same purge. This closes only the race in
+    // which a worker loses its lease after beginning an idempotent ingest.
+  }
+}
+
+async function markCaptureAssetProcessFailureSafely(
+  job: OperationJobRecord,
+  error: unknown,
+  message: string,
+) {
+  const parsed = captureAssetProcessJobRequestSchema.safeParse(
+    job.payload.request,
+  );
+  const actorId = normalizeQueuedActorId(
+    typeof job.payload.actorId === "string" ? job.payload.actorId : undefined,
+  );
+  if (!parsed.success || !actorId) return;
+  try {
+    const asset = await getCaptureAsset(parsed.data.assetId, {
+      tenantId: job.tenantId,
+      actorId,
+    });
+    if (!asset || asset.ingestJobId !== job.id) return;
+    const captureError = error instanceof CaptureFileError ? error : undefined;
+    const captureFailureState = captureError?.status === 415
+      ? "unsupported"
+      : "failed";
+    const status = captureError?.status === 415 ? "unsupported" : "failed";
+    const extractionStatus = captureError
+      ? captureFailureState
+      : asset.extractionStatus;
+    await updateCaptureAssetStatus(asset.id, {
+      tenantId: job.tenantId,
+      actorId,
+      executionScope: captureIngestMutationExecutionScope(job, actorId),
+    }, {
+      status,
+      extractionStatus,
+      ingestJobId: job.id,
+      expectedIngestJobId: job.id,
+      error: message,
+      ...(captureError ? {
+        extractionReceipt: terminalCaptureExtractionReceipt({
+          format: captureError.format || asset.extension || "unknown",
+          state: captureFailureState,
+          warningCode: captureError.code,
+        }),
+      } : {}),
+    });
+  } catch {
+    // The durable operation job remains the failure source if the asset was
+    // deleted, superseded, or temporarily unavailable during projection.
   }
 }
 
@@ -795,131 +950,16 @@ async function executeBackgroundOperation(
     };
   }
 
+  if (job.type === "capture.asset.process") {
+    return executeCaptureAssetProcessJob(job, abortSignal);
+  }
+
   if (job.type === "knowledge.ingest") {
-    const parsed = knowledgeIngestJobRequestSchema.parse(request);
-    const captureTarget = captureIngestTarget(parsed);
-    const actorId = await resolveKnowledgeIngestActorId(job, parsed);
-    const sourceExecutionScope = knowledgeIngestSourceExecutionScope(
+    return executeKnowledgeIngestJobRequest(
       job,
-      actorId,
-      Boolean(captureTarget),
-    );
-    const captureExecutionScope = actorId && captureTarget
-      ? captureIngestMutationExecutionScope(job, actorId)
-      : undefined;
-    const captureIngestGuard = actorId && captureTarget
-      ? {
-          tenantId: job.tenantId,
-          actorId,
-          ingestJobId: job.id,
-          ...(captureTarget.assetId
-            ? { kind: "asset" as const, captureId: captureTarget.assetId }
-            : {
-                kind: "recording" as const,
-                captureId: captureTarget.recordingId as string,
-              }),
-        }
-      : undefined;
-    const result = await ingestTextDocument({
-      ...parsed,
-      tenantId: job.tenantId,
-      idempotencyKey: job.id,
+      knowledgeIngestJobRequestSchema.parse(request),
       abortSignal,
-      executionScope: sourceExecutionScope,
-      ...(actorId ? {
-        usageScope: {
-          tenantId: job.tenantId,
-          actorId,
-          sourceStreamId: `operation-job:${job.id}`,
-          operation: "embedding" as const,
-          purpose: "knowledge.ingest.background",
-          correlationId: sourceExecutionScope?.correlationId || job.id,
-          causationId: sourceExecutionScope?.causationId || undefined,
-          executionScope: sourceExecutionScope,
-          credentialSource: "deployment_environment" as const,
-        },
-      } : {}),
-      ...(actorId
-        ? {
-            sourceLineage: {
-              executionScope: sourceExecutionScope,
-              connectionId: captureTarget
-                ? "first_party.capture"
-                : "first_party.ingest_api",
-              adapterId: captureTarget
-                ? "asael.capture"
-                : "asael.ingest_api",
-              adapterVersionId: "1",
-              externalItemId:
-                (captureTarget?.assetId
-                  ? `asset:${captureTarget.assetId}`
-                  : captureTarget?.recordingId
-                    ? `recording:${captureTarget.recordingId}`
-                    : `job:${job.id}`),
-              providerRevisionId: job.id,
-              capturedAt: job.createdAt,
-              sourceKind: captureTarget
-                ? captureStructuredSourceKind(parsed)
-                : canonicalSourceKind(parsed.sourceType),
-              ...(captureTarget ? {
-                visibility: "user_private" as const,
-                sensitivity: "confidential" as const,
-                permissionGrantIds: ["first_party.capture"],
-                allowedPurposeIds: [
-                  CLAIM_EVIDENCE_PURPOSE_ID,
-                  CONTEXT_COMPILER_V2_PURPOSE_ID,
-                ].sort(),
-                retentionPolicyId: "retention.capture.owner-controlled",
-                extractorId: parsed.structuredUnits?.length
-                  ? CAPTURE_STRUCTURED_EXTRACTOR_ID
-                  : undefined,
-                extractorVersionId: parsed.structuredUnits?.length
-                  ? CAPTURE_STRUCTURED_EXTRACTOR_VERSION
-                  : undefined,
-                extractorConfigSha256: parsed.structuredUnits?.length
-                  ? CAPTURE_STRUCTURED_EXTRACTOR_CONFIG_SHA256
-                  : undefined,
-              } : {}),
-            },
-          }
-        : {}),
-      captureIngestGuard,
-    });
-    if (actorId && captureExecutionScope) {
-      try {
-        const executionScope = captureExecutionScope;
-        if (captureTarget?.assetId) {
-          await updateCaptureAssetStatus(captureTarget.assetId, {
-            tenantId: job.tenantId,
-            actorId,
-            executionScope,
-          }, {
-            status: "indexed",
-            extractionStatus: captureAssetExtractionState(parsed),
-            ingestJobId: job.id,
-            knowledgeDocumentId: result.document.id,
-          });
-        }
-        if (captureTarget?.recordingId) {
-          await markCaptureRecordingIndexed(captureTarget.recordingId, {
-            tenantId: job.tenantId,
-            actorId,
-            executionScope,
-          }, {
-            knowledgeDocumentId: result.document.id,
-          });
-        }
-      } catch {
-        // Indexing is the source of truth; a deleted or temporarily unavailable
-        // Capture projection must not turn a completed ingest into a retry.
-      }
-    }
-    return {
-      resourceId: result.document.id,
-      documentId: result.document.id,
-      chunkCount: result.chunks.length,
-      memoryCount: result.memories.length,
-    };
+    );
   }
 
   if (job.type === "evaluation.run") {
@@ -955,6 +995,309 @@ async function executeBackgroundOperation(
   }
 
   throw new Error(`Unsupported background operation type: ${job.type}`);
+}
+
+async function executeCaptureAssetProcessJob(
+  job: OperationJobRecord,
+  abortSignal: AbortSignal,
+): Promise<Record<string, unknown> | BackgroundDeferredResult> {
+  const request = captureAssetProcessJobRequestSchema.parse(job.payload.request);
+  const actorId = normalizeQueuedActorId(
+    typeof job.payload.actorId === "string" ? job.payload.actorId : undefined,
+  );
+  if (!actorId) {
+    throw new Error("Capture asset processing job is missing its owner actor.");
+  }
+  const sourceExecutionScope = knowledgeIngestSourceExecutionScope(
+    job,
+    actorId,
+    true,
+  );
+  const asset = await getCaptureAsset(request.assetId, {
+    tenantId: job.tenantId,
+    actorId,
+  });
+  if (!asset) {
+    throw new Error("Capture asset processing source was not found.");
+  }
+  if (!asset.ingestJobId && asset.status === "stored") {
+    const waitCount = captureAssetObjectWaitCount(job) + 1;
+    if (waitCount <= CAPTURE_ASSET_OBJECT_MAX_WAIT_COUNT) {
+      return {
+        __deferOperation: true,
+        delaySeconds: 2,
+        reason: "Capture source is still being linked to its processing job.",
+        resourceId: request.assetId,
+        waitCount,
+      };
+    }
+  }
+  if (asset.ingestJobId !== job.id) {
+    throw new Error("Capture asset processing job is no longer the active source mutation.");
+  }
+
+  await updateBackgroundJobProgress(job, abortSignal, { stage: "reading" });
+  let bytes: Uint8Array;
+  try {
+    ({ bytes } = await getCaptureAssetContent(request.assetId, {
+      tenantId: job.tenantId,
+      actorId,
+    }));
+  } catch (error) {
+    if (!(error instanceof CaptureAssetContentNotReadyError)) throw error;
+    const waitCount = captureAssetObjectWaitCount(job) + 1;
+    if (waitCount > CAPTURE_ASSET_OBJECT_MAX_WAIT_COUNT) {
+      throw new Error("Captured file content did not become ready for processing.");
+    }
+    return {
+      __deferOperation: true,
+      delaySeconds: 15,
+      reason: "Private source bytes are still being verified.",
+      resourceId: request.assetId,
+      waitCount,
+    };
+  }
+
+  abortSignal.throwIfAborted();
+  await updateBackgroundJobProgress(job, abortSignal, { stage: "extracting" });
+  let title = request.title || captureTitle(asset.filename);
+  let content = "";
+  let contentOrigin: "extracted" | "supplied_note" = "extracted";
+  let extractionReceipt: CaptureExtractionReceipt | undefined;
+  let structuredUnits: CaptureExtractionUnit[] | undefined;
+  try {
+    const extracted = await extractCaptureFile(
+      new File([Uint8Array.from(bytes)], asset.filename, {
+        type: asset.mediaType,
+      }),
+      {
+        tenantId: job.tenantId,
+        actorId,
+        sourceStreamId: `capture-asset:${asset.id}`,
+        operation: "ocr",
+        purpose: "capture.file.extract.background",
+        correlationId: sourceExecutionScope.correlationId,
+        causationId: job.id,
+        executionScope: sourceExecutionScope,
+        credentialSource: "deployment_environment",
+      },
+    );
+    title = request.title || extracted.title;
+    const extraction = request.note
+      ? appendCaptureNote(extracted.extraction, request.note)
+      : extracted.extraction;
+    structuredUnits = extraction.units;
+    content = renderCaptureExtractionUnits(extraction.units);
+    extractionReceipt = captureExtractionReceipt(extraction);
+  } catch (error) {
+    if (!request.note || !(error instanceof CaptureFileError)) throw error;
+    contentOrigin = "supplied_note";
+    content = request.note;
+    extractionReceipt = terminalCaptureExtractionReceipt({
+      format: error.format || asset.extension || "unknown",
+      state: error.status === 415 ? "unsupported" : "failed",
+      warningCode: error.code,
+    });
+  }
+
+  await updateCaptureAssetStatus(asset.id, {
+    tenantId: job.tenantId,
+    actorId,
+    executionScope: captureIngestMutationExecutionScope(job, actorId),
+  }, {
+    status: "queued",
+    extractionStatus: extractionReceipt.state,
+    ingestJobId: job.id,
+    expectedIngestJobId: job.id,
+    extractionReceipt,
+  });
+
+  const ingestRequest = knowledgeIngestJobRequestSchema.parse({
+    title,
+    content,
+    source: `capture:asset:${asset.id}`,
+    sourceType: "file",
+    tags: [...new Set([
+      "capture",
+      "asset",
+      ...asset.tags,
+      ...(request.tags || []),
+    ])].slice(0, 50),
+    metadata: {
+      captureAssetId: asset.id,
+      actorId: asset.actorId,
+      filename: asset.filename,
+      mediaType: asset.mediaType,
+      byteCount: asset.byteCount,
+      contentOrigin,
+      structuredSourceKind: extractionReceipt?.sourceKind || "file",
+      extractionState: extractionReceipt?.state || "completed",
+      extractionReceiptSha256: extractionReceipt?.receiptSha256 || "",
+    },
+    evidenceRefs: [`capture-asset:${asset.id}`],
+    ...(structuredUnits ? { structuredUnits } : {}),
+  });
+  return executeKnowledgeIngestJobRequest(job, ingestRequest, abortSignal, {
+    assetExtractionReceipt: extractionReceipt,
+  });
+}
+
+async function executeKnowledgeIngestJobRequest(
+  job: OperationJobRecord,
+  parsed: KnowledgeIngestJobRequest,
+  abortSignal: AbortSignal,
+  options: { assetExtractionReceipt?: CaptureExtractionReceipt } = {},
+) {
+  const captureTarget = captureIngestTarget(parsed);
+  const actorId = await resolveKnowledgeIngestActorId(job, parsed);
+  const sourceExecutionScope = knowledgeIngestSourceExecutionScope(
+    job,
+    actorId,
+    Boolean(captureTarget),
+  );
+  const captureExecutionScope = actorId && captureTarget
+    ? captureIngestMutationExecutionScope(job, actorId)
+    : undefined;
+  const captureIngestGuard = actorId && captureTarget
+    ? {
+        tenantId: job.tenantId,
+        actorId,
+        ingestJobId: job.id,
+        ...(captureTarget.assetId
+          ? { kind: "asset" as const, captureId: captureTarget.assetId }
+          : {
+              kind: "recording" as const,
+              captureId: captureTarget.recordingId as string,
+            }),
+      }
+    : undefined;
+  const result = await ingestTextDocument({
+    ...parsed,
+    tenantId: job.tenantId,
+    idempotencyKey: job.id,
+    abortSignal,
+    executionScope: sourceExecutionScope,
+    onProgress: (progress) =>
+      updateBackgroundJobProgress(job, abortSignal, progress),
+    ...(actorId ? {
+      usageScope: {
+        tenantId: job.tenantId,
+        actorId,
+        sourceStreamId: `operation-job:${job.id}`,
+        operation: "embedding" as const,
+        purpose: "knowledge.ingest.background",
+        correlationId: sourceExecutionScope.correlationId || job.id,
+        causationId: sourceExecutionScope.causationId || undefined,
+        executionScope: sourceExecutionScope,
+        credentialSource: "deployment_environment" as const,
+      },
+    } : {}),
+    ...(actorId
+      ? {
+          sourceLineage: {
+            executionScope: sourceExecutionScope,
+            connectionId: captureTarget
+              ? "first_party.capture"
+              : "first_party.ingest_api",
+            adapterId: captureTarget
+              ? "asael.capture"
+              : "asael.ingest_api",
+            adapterVersionId: "1",
+            externalItemId:
+              (captureTarget?.assetId
+                ? `asset:${captureTarget.assetId}`
+                : captureTarget?.recordingId
+                  ? `recording:${captureTarget.recordingId}`
+                  : `job:${job.id}`),
+            providerRevisionId: job.id,
+            capturedAt: job.createdAt,
+            sourceKind: captureTarget
+              ? captureStructuredSourceKind(parsed)
+              : canonicalSourceKind(parsed.sourceType),
+            ...(captureTarget ? {
+              visibility: "user_private" as const,
+              sensitivity: "confidential" as const,
+              permissionGrantIds: ["first_party.capture"],
+              allowedPurposeIds: [
+                CLAIM_EVIDENCE_PURPOSE_ID,
+                CONTEXT_COMPILER_V2_PURPOSE_ID,
+              ].sort(),
+              retentionPolicyId: "retention.capture.owner-controlled",
+              extractorId: parsed.structuredUnits?.length
+                ? CAPTURE_STRUCTURED_EXTRACTOR_ID
+                : undefined,
+              extractorVersionId: parsed.structuredUnits?.length
+                ? CAPTURE_STRUCTURED_EXTRACTOR_VERSION
+                : undefined,
+              extractorConfigSha256: parsed.structuredUnits?.length
+                ? CAPTURE_STRUCTURED_EXTRACTOR_CONFIG_SHA256
+                : undefined,
+            } : {}),
+          },
+        }
+      : {}),
+    captureIngestGuard,
+  });
+  if (actorId && captureExecutionScope) {
+    try {
+      const executionScope = captureExecutionScope;
+      if (captureTarget?.assetId) {
+        await updateCaptureAssetStatus(captureTarget.assetId, {
+          tenantId: job.tenantId,
+          actorId,
+          executionScope,
+        }, {
+          status: "indexed",
+          extractionStatus: captureAssetExtractionState(parsed),
+          ingestJobId: job.id,
+          expectedIngestJobId: job.id,
+          knowledgeDocumentId: result.document.id,
+          extractionReceipt: options.assetExtractionReceipt,
+        });
+      }
+      if (captureTarget?.recordingId) {
+        await markCaptureRecordingIndexed(captureTarget.recordingId, {
+          tenantId: job.tenantId,
+          actorId,
+          executionScope,
+        }, {
+          knowledgeDocumentId: result.document.id,
+        });
+      }
+    } catch {
+      // Indexing is the source of truth; a deleted or temporarily unavailable
+      // Capture projection must not turn a completed ingest into a retry.
+    }
+  }
+  return {
+    resourceId: result.document.id,
+    documentId: result.document.id,
+    chunkCount: result.chunks.length,
+    memoryCount: result.memories.length,
+  };
+}
+
+async function updateBackgroundJobProgress(
+  job: OperationJobRecord,
+  abortSignal: AbortSignal,
+  progress: Record<string, unknown>,
+) {
+  abortSignal.throwIfAborted();
+  const updated = await updateOperationJobPayload(
+    job.id,
+    job.leaseOwner || "",
+    { progress },
+    { tenantId: job.tenantId },
+  );
+  assertLeaseMutation(updated, job.id);
+}
+
+function captureAssetObjectWaitCount(job: OperationJobRecord) {
+  const progress = objectValue(job.payload.progress);
+  const value = Number(progress?.waitCount || 0);
+  return Number.isInteger(value) && value >= 0
+    ? Math.min(value, CAPTURE_ASSET_OBJECT_MAX_WAIT_COUNT)
+    : 0;
 }
 
 function startBackgroundJobGuard(
@@ -1038,7 +1381,7 @@ function summarizeBackgroundResults(results: BackgroundJobResult[]) {
 }
 
 function requestDedupeKey(
-  type: "knowledge.ingest" | "evaluation.run",
+  type: "capture.asset.process" | "knowledge.ingest" | "evaluation.run",
   request: Record<string, unknown>,
 ) {
   const digest = createHash("sha256")
@@ -1057,7 +1400,7 @@ function backgroundRequestHash(request: Record<string, unknown>) {
 function assertIdempotentRequest(
   job: OperationJobRecord,
   requestHash: string,
-  type: "knowledge.ingest" | "evaluation.run",
+  type: "capture.asset.process" | "knowledge.ingest" | "evaluation.run",
 ) {
   if (
     typeof job.payload.requestHash === "string" &&

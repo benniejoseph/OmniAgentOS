@@ -15,6 +15,7 @@ export type OperationJobType =
   | "agent.execute"
   | "agent.resume"
   | "memory.consolidate"
+  | "capture.asset.process"
   | "knowledge.ingest"
   | "evaluation.run"
   | "asset.object.commit"
@@ -26,6 +27,7 @@ export type OperationJobStatus = "queued" | "running" | "completed" | "failed" |
 
 export const BACKGROUND_OPERATION_JOB_TYPES = [
   "memory.consolidate",
+  "capture.asset.process",
   "knowledge.ingest",
   "evaluation.run",
   "asset.object.commit",
@@ -1161,6 +1163,39 @@ export async function getOperationJob(
       (job) => job.id === jobId && jobTenantId(job) === tenantId,
     ) || null
   );
+}
+
+export async function getOperationJobsByIds(
+  jobIds: readonly string[],
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const ids = [...new Set(jobIds.map((value) => value.trim()).filter((value) =>
+    /^[a-zA-Z0-9_-]{1,200}$/.test(value)
+  ))].slice(0, 100);
+  if (!ids.length) return [];
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_operation_jobs
+      WHERE tenant_id = ${tenantId}
+        AND id = ANY(${ids}::text[])
+      ORDER BY updated_at DESC, id COLLATE "C" ASC
+    `;
+    return rows.map(operationJobFromRow);
+  }
+
+  const idSet = new Set(ids);
+  const ledger = await readJobLedger();
+  return ledger.jobs
+    .filter((job) => jobTenantId(job) === tenantId && idSet.has(job.id))
+    .map((job) => ({ ...job, tenantId }))
+    .sort((left, right) =>
+      Date.parse(right.updatedAt) - Date.parse(left.updatedAt) ||
+      left.id.localeCompare(right.id)
+    );
 }
 
 export async function listRunnableWorkflowTenantIds(limit = 10) {

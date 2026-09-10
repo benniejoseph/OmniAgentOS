@@ -26,6 +26,18 @@ import type { AiUsageScope } from "@/lib/usage/types";
 import type { CaptureIngestGuard } from "@/lib/capture/ingest-guard";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 
+export type KnowledgeIngestProgress = Readonly<{
+  stage:
+    | "chunking"
+    | "embedding"
+    | "knowledge"
+    | "entities"
+    | "memory"
+    | "graph";
+  chunkCount?: number;
+  memoryCount?: number;
+}>;
+
 export async function ingestTextDocument({
   idempotencyKey,
   tenantId,
@@ -43,6 +55,7 @@ export async function ingestTextDocument({
   executionScope,
   structuredUnits,
   deferMemoryGraphIndex = false,
+  onProgress,
 }: {
   idempotencyKey?: string;
   tenantId?: string;
@@ -60,6 +73,7 @@ export async function ingestTextDocument({
   executionScope?: ExecutionScope;
   structuredUnits?: CaptureExtractionUnit[];
   deferMemoryGraphIndex?: boolean;
+  onProgress?: (progress: KnowledgeIngestProgress) => void | Promise<void>;
 }) {
   if ((usageScope?.actorId || captureIngestGuard?.actorId) && !sourceLineage) {
     throw new Error(
@@ -81,6 +95,8 @@ export async function ingestTextDocument({
   const safeTags = tags
     .map((tag) => jsonbSafeTruncate(String(redactSensitive(tag)), 80))
     .slice(0, 50);
+  await onProgress?.({ stage: "chunking" });
+  abortSignal?.throwIfAborted();
   const chunks = structured?.chunks || chunkText(safeContent).map((chunk) => ({
       ...chunk,
       content: jsonbSafeText(chunk.content),
@@ -99,11 +115,15 @@ export async function ingestTextDocument({
         },
       })
     : undefined;
+  await onProgress?.({ stage: "embedding", chunkCount: chunks.length });
+  abortSignal?.throwIfAborted();
   const embeddings = await embedKnowledgeTexts(
     chunks.map((chunk) => chunk.content),
     abortSignal,
     usageScope,
   );
+  abortSignal?.throwIfAborted();
+  await onProgress?.({ stage: "knowledge", chunkCount: chunks.length });
   abortSignal?.throwIfAborted();
   const knowledge = await createKnowledgeDocument({
     idempotencyKey,
@@ -122,6 +142,8 @@ export async function ingestTextDocument({
     })),
   });
   if (canonicalSourceWrite) {
+    await onProgress?.({ stage: "entities", chunkCount: chunks.length });
+    abortSignal?.throwIfAborted();
     await projectCanonicalEvidenceEntities({
       sourceWrite: canonicalSourceWrite,
       chunks: knowledge.chunks.map((chunk) => ({
@@ -132,6 +154,8 @@ export async function ingestTextDocument({
   }
   abortSignal?.throwIfAborted();
 
+  await onProgress?.({ stage: "memory", chunkCount: chunks.length });
+  abortSignal?.throwIfAborted();
   const records = await saveMemories(
     chunks.map((chunk) => ({
       id: idempotencyKey
@@ -171,6 +195,12 @@ export async function ingestTextDocument({
     })),
     { captureIngestGuard },
   );
+  abortSignal?.throwIfAborted();
+  await onProgress?.({
+    stage: "graph",
+    chunkCount: chunks.length,
+    memoryCount: records.length,
+  });
   abortSignal?.throwIfAborted();
   if (deferMemoryGraphIndex) {
     await queueMemoryGraphRebuild({ tenantId });

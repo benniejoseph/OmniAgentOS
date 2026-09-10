@@ -48,6 +48,34 @@ describe("operation job queue (file mode)", () => {
     expect(second.id).toBe(first.id);
   });
 
+  it("loads a bounded set of tenant-scoped jobs without exposing other tenants", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const first = await queue.enqueueOperationJob({
+      tenantId: "tenant-job-batch-a",
+      type: "capture.asset.process",
+      payload: { actorId: "owner-a", progress: { stage: "queued" } },
+    });
+    const second = await queue.enqueueOperationJob({
+      tenantId: "tenant-job-batch-a",
+      type: "capture.asset.process",
+      payload: { actorId: "owner-a", progress: { stage: "reading" } },
+    });
+    const otherTenant = await queue.enqueueOperationJob({
+      tenantId: "tenant-job-batch-b",
+      type: "capture.asset.process",
+      payload: { actorId: "owner-b", progress: { stage: "queued" } },
+    });
+
+    const jobs = await queue.getOperationJobsByIds(
+      [first.id, second.id, otherTenant.id, first.id, " invalid "],
+      { tenantId: "tenant-job-batch-a" },
+    );
+
+    expect(new Set(jobs.map((job) => job.id))).toEqual(
+      new Set([first.id, second.id]),
+    );
+  });
+
   it("preserves a wake-up requested during an active lease", async () => {
     const queue = await import("@/lib/operations/job-queue");
     const tenantId = "tenant-active-wakeup";
