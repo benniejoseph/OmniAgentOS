@@ -18,6 +18,7 @@ import {
 import {
   CLAIM_EVIDENCE_PURPOSE_ID,
   CONTEXT_COMPILER_V2_PURPOSE_ID,
+  KNOWLEDGE_COGNIFY_PURPOSE_ID,
 } from "@/lib/sources/purposes";
 
 export type TextSourceLineageInput = Readonly<{
@@ -132,6 +133,7 @@ export function buildCanonicalTextSourceWrite(input: {
           `purpose_${sourceContractSha256(executionScope.purpose).slice(0, 56)}`,
           CLAIM_EVIDENCE_PURPOSE_ID,
           CONTEXT_COMPILER_V2_PURPOSE_ID,
+          KNOWLEDGE_COGNIFY_PURPOSE_ID,
         ],
   );
   const extractorIdentity = {
