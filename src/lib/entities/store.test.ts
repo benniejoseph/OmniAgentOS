@@ -12,6 +12,7 @@ import {
   readEntityRegistry,
   resolveAndRecordEntityIdentity,
   retireEntityEvidenceLineage,
+  retireEntityMemoryLineage,
   reviewEntityMerge,
   saveEntityAlias,
   saveEntityRecord,
@@ -229,6 +230,46 @@ describe("durable entity registry", () => {
       executionScope: scope("actor-a", "entity.read.v1"),
     });
     expect(snapshot.entities).toEqual([]);
+  });
+
+  it("permits actor-bound system memory retirement only inside a governed transaction", async () => {
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "actor-a",
+      executingPrincipalType: "system",
+      executingPrincipalId: "background-operations-worker",
+      correlationId: "capture-memory-retirement",
+      purpose: "memory.forget.v1",
+    });
+    const transactionSql = Object.assign(
+      async () => [] as Array<Record<string, unknown>>,
+      { transactionScoped: true as const },
+    );
+
+    await expect(retireEntityMemoryLineage({
+      tenantId: "tenant-a",
+      ownerActorId: "actor-a",
+      memoryIds: ["memory-cognition-old-revision"],
+      executionScope,
+    })).rejects.toThrow("exact owner scope");
+    await expect(retireEntityMemoryLineage({
+      tenantId: "tenant-a",
+      ownerActorId: "actor-b",
+      memoryIds: ["memory-cognition-old-revision"],
+      executionScope,
+      sql: transactionSql as never,
+    })).rejects.toThrow("exact owner scope");
+    await expect(retireEntityMemoryLineage({
+      tenantId: "tenant-a",
+      ownerActorId: "actor-a",
+      memoryIds: ["memory-cognition-old-revision"],
+      executionScope,
+      sql: transactionSql as never,
+    })).resolves.toMatchObject({
+      affectedEntityIds: [],
+      retiredEntityIds: [],
+      retiredAliasIds: [],
+    });
   });
 });
 

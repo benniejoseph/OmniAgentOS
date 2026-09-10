@@ -198,6 +198,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
           if (item.deleted) {
             await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
               tenantId: input.tenantId,
+              executionScope: sourceExecutionScope,
             });
             sourceRemoved += 1;
             continue;
@@ -253,6 +254,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             // id to two payloads.
             await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
               tenantId: input.tenantId,
+              executionScope: sourceExecutionScope,
             });
             input.abortSignal?.throwIfAborted();
             await ingest();

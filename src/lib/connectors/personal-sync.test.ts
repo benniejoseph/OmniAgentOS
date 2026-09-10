@@ -125,7 +125,17 @@ describe("personal OAuth synchronization", () => {
         }),
       }),
     );
-    expect(mocks.remove).toHaveBeenCalledWith("oauth:google:calendar:e0", { tenantId: "personal" });
+    expect(mocks.remove).toHaveBeenCalledWith(
+      "oauth:google:calendar:e0",
+      expect.objectContaining({
+        tenantId: "personal",
+        executionScope: expect.objectContaining({
+          initiatingActorId: "owner",
+          executingPrincipalType: "system",
+          executingPrincipalId: "connector.google.personal_sync",
+        }),
+      }),
+    );
     expect(mocks.updateState).toHaveBeenCalledTimes(4);
     expect(mocks.updateState).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -160,6 +170,11 @@ describe("personal OAuth synchronization", () => {
     ).resolves.toMatchObject({ imported: 0, removed: 1 });
     expect(mocks.remove).toHaveBeenCalledWith("oauth:google:mail:gone", {
       tenantId: "personal",
+      executionScope: expect.objectContaining({
+        initiatingActorId: "owner",
+        executingPrincipalType: "system",
+        executingPrincipalId: "connector.google.personal_sync",
+      }),
     });
     expect(mocks.updateState).toHaveBeenLastCalledWith(
       expect.objectContaining({ status: "healthy" }),
@@ -203,7 +218,14 @@ describe("personal OAuth synchronization", () => {
 
     expect(mocks.remove).toHaveBeenCalledWith(
       "oauth:google:calendar:event-replace",
-      { tenantId: "personal" },
+      expect.objectContaining({
+        tenantId: "personal",
+        executionScope: expect.objectContaining({
+          initiatingActorId: "owner",
+          executingPrincipalType: "system",
+          executingPrincipalId: "connector.google.personal_sync",
+        }),
+      }),
     );
     expect(mocks.ingest).toHaveBeenCalledTimes(2);
   });
@@ -544,7 +566,13 @@ describe("personal OAuth synchronization", () => {
     expect(mocks.ingest).toHaveBeenCalledTimes(2);
     expect(mocks.remove).toHaveBeenCalledWith(
       "oauth:google:mail:mail-deleted",
-      { tenantId: "personal" },
+      expect.objectContaining({
+        tenantId: "personal",
+        executionScope: expect.objectContaining({
+          initiatingActorId: "owner",
+          executingPrincipalId: "connector.google.personal_sync",
+        }),
+      }),
     );
   });
 

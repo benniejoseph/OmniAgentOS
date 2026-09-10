@@ -351,13 +351,19 @@ export async function retireEntityMemoryLineage(input: {
   const scope = parsePersistedExecutionScope(input.executionScope);
   const memoryIds = [...new Set(input.memoryIds.map((id) => id.trim()).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
+  const exactOwnerUser =
+    scope?.executingPrincipalType === "user" &&
+    scope.executingPrincipalId === input.ownerActorId;
+  const governedSystemTransaction =
+    Boolean(input.sql) &&
+    scope?.executingPrincipalType === "system" &&
+    Boolean(scope.executingPrincipalId);
   if (
     !scope ||
     !input.executionScope ||
     scope.tenantId !== input.tenantId ||
     scope.initiatingActorId !== input.ownerActorId ||
-    scope.executingPrincipalType !== "user" ||
-    scope.executingPrincipalId !== input.ownerActorId ||
+    (!exactOwnerUser && !governedSystemTransaction) ||
     !["memory.correct.v1", "memory.forget.v1"].includes(scope.purpose) ||
     memoryIds.length === 0
   ) {
