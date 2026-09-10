@@ -111,4 +111,41 @@ describe("operation job detail route", () => {
     expect(response.status).toBe(404);
     expect(routeMocks.projectOperationJobStatus).not.toHaveBeenCalled();
   });
+
+  it("fails closed when an actor-owned job has no actor binding", async () => {
+    routeMocks.getOperationJob.mockResolvedValueOnce({
+      id: "job-cognition-unbound",
+      tenantId: context.tenantId,
+      type: "knowledge.cognify",
+      status: "running",
+      payload: { progress: { stage: "extracting_candidates", batchIndex: 0 } },
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/operations/jobs/job-cognition-unbound"),
+      { params: Promise.resolve({ id: "job-cognition-unbound" }) },
+    );
+
+    expect(response.status).toBe(404);
+    expect(routeMocks.projectOperationJobStatus).not.toHaveBeenCalled();
+  });
+
+  it("preserves tenant-scoped job status without an actor binding", async () => {
+    const tenantJob = {
+      id: "job-tenant-maintenance",
+      tenantId: context.tenantId,
+      type: "memory.consolidate",
+      status: "queued",
+      payload: { progress: { stage: "queued" } },
+    };
+    routeMocks.getOperationJob.mockResolvedValueOnce(tenantJob);
+
+    const response = await GET(
+      new Request("http://localhost/api/operations/jobs/job-tenant-maintenance"),
+      { params: Promise.resolve({ id: "job-tenant-maintenance" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(routeMocks.projectOperationJobStatus).toHaveBeenCalledWith(tenantJob);
+  });
 });

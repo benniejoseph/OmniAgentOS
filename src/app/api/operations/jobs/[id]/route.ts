@@ -8,6 +8,16 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
 
+const ACTOR_OWNED_OPERATION_JOB_TYPES = new Set([
+  "asset.object.commit",
+  "asset.object.delete",
+  "asset.object.backfill",
+  "capture.asset.process",
+  "capture.media.segment.transcribe",
+  "capture.media.recording.process",
+  "knowledge.cognify",
+]);
+
 async function GETHandler(
   request: Request,
   context: { params: Promise<{ id: string }> },
@@ -34,7 +44,10 @@ async function GETHandler(
   const ownerActorId = typeof job.payload.actorId === "string"
     ? job.payload.actorId.trim()
     : "";
-  if (ownerActorId && ownerActorId !== securityContext.actorId) {
+  if (
+    (ACTOR_OWNED_OPERATION_JOB_TYPES.has(job.type) && !ownerActorId) ||
+    (ownerActorId && ownerActorId !== securityContext.actorId)
+  ) {
     return Response.json(
       { error: "Operation job not found." },
       { status: 404, headers: { "cache-control": "private, no-store" } },
