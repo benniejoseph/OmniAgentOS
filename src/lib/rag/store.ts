@@ -472,7 +472,7 @@ export async function retireSupersededCaptureKnowledge(input: {
   captureIngestGuard: CaptureIngestGuard;
   executionScope: ExecutionScope;
   keepDocumentId: string;
-}) {
+}): Promise<{ documents: number; memories: number }> {
   const guard = input.captureIngestGuard;
   const tenantId = normalizeTenantId(guard.tenantId);
   const source = captureIngestSource(guard);
@@ -619,7 +619,7 @@ export async function retireSupersededCaptureKnowledge(input: {
           sql,
         });
         return { documents: documentIds.length, memories: retired.length };
-      })
+      }) as Promise<{ documents: number; memories: number }>
     );
   }
 
