@@ -79,14 +79,11 @@ type ForgetPreview = {
   };
 };
 type CognificationEvidence = {
-  evidenceUnitId: string;
   quote: string;
 };
 type CognificationReview = {
   candidate: {
     batchId: string;
-    documentId: string;
-    documentTitle?: string;
     batchIndex: number;
     batchCount: number;
     summary: {
@@ -104,7 +101,14 @@ type CognificationReview = {
     };
   };
   status: "pending_review" | "confirmed" | "dismissed";
-  projectedMemoryId?: string | null;
+  projected?: boolean;
+};
+type CognificationJob = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed" | "canceled";
+  progress?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  lastError?: string;
 };
 
 const emptyPage = <T,>(): Page<T> => ({ items: [], total: 0, nextCursor: null });
@@ -133,6 +137,7 @@ export function MemoryIntelligenceWorkspace() {
   const [cognitionReviewsLoading, setCognitionReviewsLoading] = useState(false);
   const [cognitionReviewsError, setCognitionReviewsError] = useState<string>();
   const [cognitionQueueFeedback, setCognitionQueueFeedback] = useState<string>();
+  const [cognitionJobs, setCognitionJobs] = useState<CognificationJob[]>([]);
   const [reviewLimit, setReviewLimit] = useState(20);
   const [universeVisited, setUniverseVisited] = useState(false);
   const [query, setQuery] = useState("");
@@ -162,6 +167,7 @@ export function MemoryIntelligenceWorkspace() {
   const indexSignatureRef = useRef<Partial<Record<"memory" | "knowledge", string>>>({});
   const reviewSignatureRef = useRef("");
   const cognitionReviewSignatureRef = useRef("");
+  const cognitionCompletionSignatureRef = useRef("");
 
   const loadOverview = useCallback(async () => {
     setLoading(true);
@@ -338,6 +344,98 @@ export function MemoryIntelligenceWorkspace() {
   }, [view, loadCognitionReviews, loadReviews]);
 
   useEffect(() => {
+    if (!cognitionJobs.length) return;
+    const knownIds = new Set(cognitionJobs.map((job) => job.id));
+    const followUpIds = cognitionJobs.flatMap((job) => {
+      const nextJobId = stringRecordValue(job.result, "nextJobId");
+      return nextJobId && !knownIds.has(nextJobId) ? [nextJobId] : [];
+    });
+    const pollIds = [...new Set([
+      ...cognitionJobs
+        .filter((job) => job.status === "queued" || job.status === "running")
+        .map((job) => job.id),
+      ...followUpIds,
+    ])];
+    if (!pollIds.length) return;
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void Promise.all(pollIds.map(async (jobId) => {
+        try {
+          const response = await fetch(
+            `/api/operations/jobs/${encodeURIComponent(jobId)}`,
+            { cache: "no-store", signal: controller.signal },
+          );
+          const body = await response.json().catch(() => ({})) as {
+            job?: unknown;
+          };
+          return response.ok ? parseCognificationJob(body.job) : undefined;
+        } catch {
+          return undefined;
+        }
+      })).then((updates) => {
+        if (controller.signal.aborted) return;
+        const jobs = updates.filter((job): job is CognificationJob =>
+          Boolean(job)
+        );
+        if (jobs.length) {
+          setCognitionJobs((current) => mergeCognificationJobs(current, jobs));
+        }
+      });
+    }, 2_000);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [cognitionJobs]);
+
+  useEffect(() => {
+    if (!cognitionJobs.length) return;
+    const knownIds = new Set(cognitionJobs.map((job) => job.id));
+    const hasUnresolvedFollowUp = cognitionJobs.some((job) => {
+      const nextJobId = stringRecordValue(job.result, "nextJobId");
+      return Boolean(nextJobId && !knownIds.has(nextJobId));
+    });
+    const active = cognitionJobs.filter((job) =>
+      job.status === "queued" || job.status === "running"
+    );
+    const completed = cognitionJobs.filter((job) =>
+      job.status === "completed"
+    ).length;
+    const failed = cognitionJobs.filter((job) =>
+      job.status === "failed" || job.status === "canceled"
+    );
+    if (active.length || hasUnresolvedFollowUp) {
+      const timer = window.setTimeout(() => {
+        setCognitionQueueFeedback(
+          `Building source maps in the background · ${completed} ${completed === 1 ? "batch" : "batches"} complete · ${active.length || 1} active.`,
+        );
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+
+    const signature = cognitionJobs
+      .map((job) => `${job.id}:${job.status}`)
+      .sort()
+      .join("|");
+    if (cognitionCompletionSignatureRef.current === signature) return;
+    cognitionCompletionSignatureRef.current = signature;
+    const feedback = failed.length
+      ? `${failed.length} source-map ${failed.length === 1 ? "batch needs" : "batches need"} attention. ${failed[0].lastError || "Use Cognify sources to retry safely."}`
+      : `${completed} source-map ${completed === 1 ? "batch is" : "batches are"} ready for review.`;
+    const timer = window.setTimeout(() => {
+      setCognitionQueueFeedback(feedback);
+      setAnnouncement(feedback);
+      cognitionReviewSignatureRef.current = "";
+      void Promise.all([
+        loadOverview(),
+        view === "reviews" ? loadCognitionReviews(true) : Promise.resolve(),
+      ]);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [cognitionJobs, loadCognitionReviews, loadOverview, view]);
+
+  useEffect(() => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setForgetPreview(undefined);
@@ -454,8 +552,17 @@ export function MemoryIntelligenceWorkspace() {
       if (!response.ok) {
         throw new Error(body.error || "Source map processing could not be queued.");
       }
-      const queuedCount = Array.isArray(body.jobs) ? body.jobs.length : 0;
+      const queuedCount = Number(body.queuedJobCount || 0);
       const eligibleCount = Number(body.eligibleDocumentCount || 0);
+      const queuedJobs = Array.isArray(body.jobs)
+        ? body.jobs
+          .map(parseCognificationJob)
+          .filter((job: CognificationJob | undefined): job is CognificationJob =>
+            Boolean(job)
+          )
+        : [];
+      cognitionCompletionSignatureRef.current = "";
+      setCognitionJobs(queuedJobs);
       const feedback = queuedCount
         ? `${queuedCount} ${queuedCount === 1 ? "source" : "sources"} queued. Processing continues in the background; proposals will appear in Reviews.`
         : eligibleCount
@@ -847,6 +954,7 @@ export function MemoryIntelligenceWorkspace() {
             consent={consent}
             busy={busy}
             cognitionFeedback={cognitionQueueFeedback}
+            cognitionJobs={cognitionJobs}
             onConsent={() => void toggleConsent()}
             onScan={() => void runMaintenance()}
             onCognify={() => void queueCognification()}
@@ -1049,11 +1157,15 @@ function ReviewIndex(props: {
           return <article key={candidate.batchId} aria-busy={resolving}>
             <header>
               <div>
-                <span>{candidate.documentTitle || `Source ${compactIdentifier(candidate.documentId)}`}</span>
+                <span>Source map {candidate.batchIndex + 1} of {candidate.batchCount}</span>
                 <small>Batch {candidate.batchIndex + 1} of {candidate.batchCount}</small>
               </div>
               <em className={pendingDecision ? styles.cognitionPending : styles.cognitionConfirmed}>
-                {pendingDecision ? "Awaiting review" : "Confirmed"}
+                {pendingDecision
+                  ? "Awaiting review"
+                  : review.projected
+                    ? "Confirmed"
+                    : "Projection interrupted"}
               </em>
             </header>
             <div className={styles.cognitionBody}>
@@ -1065,7 +1177,7 @@ function ReviewIndex(props: {
               {evidence[0] ? <figure className={styles.cognitionEvidence}>
                 <figcaption>Exact evidence · {Math.round(candidate.summary.confidenceBasisPoints / 100)}% confidence</figcaption>
                 <blockquote>“{evidence[0].quote}”</blockquote>
-                <small>{evidence[0].evidenceUnitId}{evidence.length > 1 ? ` · +${evidence.length - 1} more cited ${evidence.length === 2 ? "quote" : "quotes"}` : ""}</small>
+                <small>{evidence.length > 1 ? `+${evidence.length - 1} more cited ${evidence.length === 2 ? "quote" : "quotes"}` : "Verified against the private source"}</small>
               </figure> : null}
               <dl className={styles.cognitionCounts}>
                 <div><dt>Topics</dt><dd>{candidate.topics.length}</dd></div>
@@ -1080,7 +1192,14 @@ function ReviewIndex(props: {
               {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Applying decision…</span> : null}
               <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolveCognition(candidate.batchId, "confirm")} disabled={Boolean(props.busy)}><Check size={15} /> Confirm source map</button>
               <button type="button" onClick={() => props.onResolveCognition(candidate.batchId, "dismiss")} disabled={Boolean(props.busy)}><X size={15} /> Dismiss</button>
-            </footer> : <footer className={styles.confirmedFooter}><Check size={15} /> {review.projectedMemoryId ? "Added to reviewed memory and graph" : "Confirmed for projection"}</footer>}
+            </footer> : review.projected ? (
+              <footer className={styles.confirmedFooter}><Check size={15} /> Added to reviewed memory and graph</footer>
+            ) : (
+              <footer>
+                {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Retrying projection…</span> : <span>Review saved; graph projection needs another attempt.</span>}
+                <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolveCognition(candidate.batchId, "confirm")} disabled={Boolean(props.busy)}><RefreshCw size={15} /> Retry projection</button>
+              </footer>
+            )}
           </article>;
         })}
         {props.cognitionLoaded && !props.cognitionLoading && !sourceMaps.length && !props.cognitionLoadError ? <EmptyState icon={<GitBranch />} title="No source maps await review" detail="Ask Mnemosyne to cognify eligible sources; proposals will appear here after background processing." /> : null}
@@ -1130,6 +1249,7 @@ function MnemosynePanel(props: {
   consent?: ConsentStatus;
   busy?: string;
   cognitionFeedback?: string;
+  cognitionJobs: CognificationJob[];
   onConsent: () => void;
   onScan: () => void;
   onCognify: () => void;
@@ -1151,6 +1271,7 @@ function MnemosynePanel(props: {
         {props.busy === "cognify-sources" ? <LoaderCircle size={15} className={styles.spin} /> : <GitBranch size={15} />}
         {props.busy === "cognify-sources" ? "Queueing sources…" : "Cognify sources"}
       </button>
+      {props.cognitionJobs.length ? <CognitionJobSummary jobs={props.cognitionJobs} /> : null}
       <p aria-live="polite">{props.cognitionFeedback || "Runs asynchronously. Every proposal still requires review."}</p>
     </section>
     <section className={styles.recommendations}><div className={styles.panelHeading}><p>Recommendations</p><span>{steward?.recommendations.length || 0}</span></div>{steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || Boolean(props.busy)}><i className={styles[`priority${startCase(item.priority)}`]} /><span><strong>{item.title}</strong><small>{item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} /> : null}</button>) : <div className={styles.allClear}><Check size={16} /> No action needed right now.</div>}</section>
@@ -1161,6 +1282,19 @@ function MnemosynePanel(props: {
 
 function MemoryInspector(props: { memory?: MemoryRecord; loading: boolean; busy?: string; preview?: ForgetPreview; onClose: () => void; onLifecycle: (action: "pin" | "unpin" | "archive" | "restore") => void; onPreviewForget: () => void; onForget: () => void; onCancelForget: () => void }) {
   return <div className={styles.inspectorLayer}><button type="button" className={styles.scrim} onClick={props.onClose} aria-label="Close memory details" /><aside className={styles.inspector} aria-label="Memory details"><header><p>Exact memory</p><button type="button" onClick={props.onClose} aria-label="Close"><X size={18} /></button></header>{props.loading ? <div className={styles.inspectorLoading}><LoaderCircle className={styles.spin} /> Decrypting selected memory…</div> : props.memory ? <><div className={styles.inspectorTitle}><span>{startCase(props.memory.tier || props.memory.type)} · {startCase(props.memory.scope)}</span><h2>{props.memory.title}</h2><p>{props.memory.content}</p></div><dl className={styles.memoryMetadata}><div><dt>Confidence</dt><dd>{Math.round((props.memory.confidence ?? .7) * 100)}%</dd></div><div><dt>Importance</dt><dd>{Math.round(props.memory.importance * 100)}%</dd></div><div><dt>Used</dt><dd>{props.memory.useCount || 0} times</dd></div><div><dt>Updated</dt><dd>{relativeDate(props.memory.updatedAt)}</dd></div></dl>{props.memory.tags.length ? <div className={styles.memoryTags}>{props.memory.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}<div className={styles.lifecycle}><button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.archivedAt)} onClick={() => props.onLifecycle(props.memory?.pinnedAt ? "unpin" : "pin")}>{props.memory.pinnedAt ? <PinOff size={15} /> : <Pin size={15} />}{props.memory.pinnedAt ? "Unpin" : "Pin"}</button><button type="button" disabled={Boolean(props.busy) || Boolean(props.memory.pinnedAt)} onClick={() => props.onLifecycle(props.memory?.archivedAt ? "restore" : "archive")}>{props.memory.archivedAt ? <RotateCcw size={15} /> : <Archive size={15} />}{props.memory.archivedAt ? "Restore" : "Archive"}</button></div>{props.preview ? <section className={styles.forgetPreview}><p><CircleAlert size={16} /> Permanent forgetting</p><span>This removes the memory plus {props.preview.impact.descendantMemoryCount} derived memories, {props.preview.impact.graphNodeCount} graph points and {props.preview.impact.graphEdgeCount} links. A deletion receipt will be stored.</span><div><button type="button" onClick={props.onCancelForget}>Cancel</button><button type="button" onClick={props.onForget} disabled={props.busy === "forget"}>{props.busy === "forget" ? <LoaderCircle size={15} className={styles.spin} /> : <Trash2 size={15} />} Forget permanently</button></div></section> : <button type="button" className={styles.forgetButton} onClick={props.onPreviewForget} disabled={Boolean(props.busy)}><Trash2 size={15} /> Review forgetting impact</button>}</> : null}</aside></div>;
+}
+
+function CognitionJobSummary(props: { jobs: CognificationJob[] }) {
+  const count = (statuses: CognificationJob["status"][]) =>
+    props.jobs.filter((job) => statuses.includes(job.status)).length;
+  const active = count(["queued", "running"]);
+  const completed = count(["completed"]);
+  const attention = count(["failed", "canceled"]);
+  return <dl className={styles.cognifyJobSummary} aria-label="Source map processing progress">
+    <div><dt>Active</dt><dd>{active}</dd></div>
+    <div><dt>Ready</dt><dd>{completed}</dd></div>
+    <div data-attention={attention ? "true" : undefined}><dt>Attention</dt><dd>{attention}</dd></div>
+  </dl>;
 }
 
 function CreateMemoryDialog(props: { busy: boolean; intent: CreateIntent; onClose: () => void; onCreate: (draft: { title: string; content: string; type: MemoryType; tier: MemoryTier; importance: number; confidence: number }) => Promise<void> }) {
@@ -1182,7 +1316,51 @@ function CreateMemoryDialog(props: { busy: boolean; intent: CreateIntent; onClos
 function EmptyState(props: { icon: React.ReactNode; title: string; detail: string }) { return <div className={styles.empty}>{props.icon}<strong>{props.title}</strong><span>{props.detail}</span></div>; }
 function LoadingRow() { return <div className={styles.loadingRow}><LoaderCircle size={17} className={styles.spin} /> Updating index…</div>; }
 function startCase(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
-function compactIdentifier(value: string) { return value.length > 18 ? `${value.slice(0, 9)}…${value.slice(-6)}` : value; }
 function relativeDate(value: string) { const milliseconds = Date.now() - new Date(value).getTime(); const days = Math.floor(milliseconds / 86_400_000); if (days < 1) return "Today"; if (days === 1) return "Yesterday"; if (days < 30) return `${days}d ago`; return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value)); }
 function formatBytes(characters: number) { const bytes = characters * 2; if (bytes < 1024) return `${bytes} B`; if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1_048_576).toFixed(1)} MB`; }
 function message(error: unknown) { return error instanceof Error ? error.message : "Something went wrong."; }
+
+function parseCognificationJob(value: unknown): CognificationJob | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const status = record.status;
+  if (
+    !id ||
+    !["queued", "running", "completed", "failed", "canceled"].includes(
+      String(status),
+    )
+  ) return undefined;
+  return {
+    id,
+    status: status as CognificationJob["status"],
+    progress: objectRecord(record.progress),
+    result: objectRecord(record.result),
+    lastError: typeof record.lastError === "string"
+      ? record.lastError.trim().slice(0, 500)
+      : undefined,
+  };
+}
+
+function mergeCognificationJobs(
+  current: CognificationJob[],
+  updates: CognificationJob[],
+) {
+  const byId = new Map(current.map((job) => [job.id, job]));
+  for (const job of updates) byId.set(job.id, job);
+  return [...byId.values()];
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringRecordValue(
+  record: Record<string, unknown> | undefined,
+  key: string,
+) {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
