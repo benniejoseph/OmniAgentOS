@@ -92,5 +92,8 @@
     "fast-uri": "3.1.6",
     "postcss": "^8.5.23",
     "qs": "6.16.0"
+  },
+  "allowScripts": {
+    "ffmpeg-static@5.2.0": true
   }
 }
