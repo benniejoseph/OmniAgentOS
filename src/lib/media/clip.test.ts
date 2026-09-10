@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import ffmpegPath from "ffmpeg-static";
 import { describe, expect, it } from "vitest";
 
-import { clipVideoBytes } from "@/lib/media/clip";
+import { clipVideoBytes, resolveFfmpegPath } from "@/lib/media/clip";
 
 describe("deterministic video clipping", () => {
   it("rejects non-video and unbounded ranges before starting FFmpeg", async () => {
@@ -22,6 +22,26 @@ describe("deterministic video clipping", () => {
       startSeconds: 0,
       endSeconds: 601,
     })).rejects.toThrow("no longer than 10 minutes");
+  });
+
+  it("falls back from a build-machine path to the traced runtime binary", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "asael-ffmpeg-path-test-"));
+    const runtimePath = path.join(
+      directory,
+      "node_modules",
+      "ffmpeg-static",
+      process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
+    );
+    try {
+      await mkdir(path.dirname(runtimePath), { recursive: true });
+      await writeFile(runtimePath, "runtime-binary");
+      expect(resolveFfmpegPath({
+        bundledPath: "/ROOT/node_modules/ffmpeg-static/ffmpeg",
+        workingDirectory: directory,
+      })).toBe(runtimePath);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("creates a playable bounded MP4 clip with the packaged processor", async () => {
