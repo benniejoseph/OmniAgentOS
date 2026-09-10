@@ -50,7 +50,7 @@ The first implemented slice follows these rules:
 5. A proposal is stored in an actor-RLS review queue. Raw model output is not retained as canonical truth.
 6. Pending and dismissed proposals are excluded from recall and all graph projections.
 7. Confirmation creates one private reviewed memory with knowledge, evidence and review lineage. Only that reviewed memory may feed explicit entity and inferred-relation projection.
-8. Reprocessing is idempotent across document, source revision, batch input, extractor contract and configured model attribution.
+8. Reprocessing is idempotent for the immutable source plan: document, source revision, retention boundary, batch input and extractor contract. Each persisted generation freezes its resolved Settings-backed model attribution; changing the model does not silently rewrite an existing review generation.
 9. Missing model configuration or a superseded source revision is visible and safe; it must not corrupt or block the source index.
 
 ## What is deliberately rejected
@@ -75,7 +75,7 @@ The first implemented slice follows these rules:
 - Memory UI review queue and backfill control.
 - Separation of safe canonical knowledge retrieval from legacy unscoped memory.
 - Fail-closed current-revision, owner, purpose, retention and evidence checks before model access.
-- Earliest source/evidence retention inheritance for proposals and reviewed memories, with bounded expiry purging.
+- Earliest source/evidence retention inheritance for proposals and reviewed memories, with bounded PostgreSQL expiry purging. Bounded-local fallback hides expired records and deletes them with their source; physical TTL purging remains hardening work.
 - Source deletion/supersession cleanup for proposals and their reviewed memory lineage.
 
 ### Next hardening slice
@@ -83,6 +83,7 @@ The first implemented slice follows these rules:
 - Stop duplicating raw source chunks into semantic memory for newly cognified revisions.
 - Add semantic duplicate and contradiction groups, still review-gated.
 - Measure extraction support rate, review acceptance, retrieval usefulness and graph lag.
+- Add explicit cognition-generation identity for intentional model/contract reprocessing and physical TTL purging for bounded-local storage.
 
 ### Later learning slice
 
