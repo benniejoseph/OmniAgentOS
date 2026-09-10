@@ -137,7 +137,7 @@ describe("canonical explicit-memory entity extraction", () => {
 
     expect(() => extractEntitiesFromExplicitMemory({
       ...reviewed,
-      evidenceRefs: reviewed.evidenceRefs.filter((reference) =>
+      evidenceRefs: reviewed.evidenceRefs?.filter((reference) =>
         !reference.startsWith("cognition-review:")
       ),
     })).toThrow(/canonical active user-authored memory/i);
