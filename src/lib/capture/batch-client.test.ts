@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   captureBatchRejectionMessage,
   captureBatchTitle,
+  captureSearchMatches,
   MAX_CAPTURE_BATCH_FILE_BYTES,
   mergeCaptureBatchFiles,
   runCaptureBatch,
@@ -56,6 +57,14 @@ describe("Capture batch client", () => {
     expect(captureBatchTitle("ICT_2026-lesson-01.vtt")).toBe(
       "ICT 2026 lesson 01",
     );
+  });
+
+  it("matches transcript filenames across separators and term order", () => {
+    const values = ["01_ICT_Mentorship-2022_Introduction.txt", "text/plain"];
+
+    expect(captureSearchMatches("ICT Mentorship", values)).toBe(true);
+    expect(captureSearchMatches("mentorship ICT", values)).toBe(true);
+    expect(captureSearchMatches("ICT liquidity", values)).toBe(false);
   });
 
   it("caps a browser batch at fifty files", () => {

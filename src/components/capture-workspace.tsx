@@ -30,6 +30,7 @@ import { permissionMessage, useWorkspaceSession } from "@/components/app-shell/s
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import {
   captureBatchRejectionMessage,
+  captureSearchMatches,
   captureBatchTitle,
   mergeCaptureBatchFiles,
   runCaptureBatch,
@@ -341,20 +342,18 @@ export function CaptureWorkspace() {
   }, [batchItems, loadWorkspace, processingJobs]);
 
   const filteredDocuments = useMemo(() => documents.filter((document) => {
-    const query = libraryQuery.trim().toLowerCase();
-    if (query && !`${document.title} ${document.source}`.toLowerCase().includes(query)) return false;
+    if (!captureSearchMatches(libraryQuery, [document.title, document.source])) return false;
     return sourceFilter === "all" || documentSource(document.source) === sourceFilter;
   }), [documents, libraryQuery, sourceFilter]);
   const filteredAssets = useMemo(() => assets.filter((asset) => {
     if (sourceFilter !== "all" && sourceFilter !== "capture") return false;
-    const query = libraryQuery.trim().toLowerCase();
-    return !query || [
+    return captureSearchMatches(libraryQuery, [
       asset.filename,
       asset.mediaType,
       asset.extension,
       asset.status,
       ...asset.tags,
-    ].join(" ").toLowerCase().includes(query);
+    ]);
   }), [assets, libraryQuery, sourceFilter]);
   const reindexableAssets = useMemo(() => filteredAssets
     .filter((asset) =>
