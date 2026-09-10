@@ -1041,17 +1041,24 @@ function appendAssetObjectEvent(
   payload: Record<string, unknown>,
   sql: ReturnType<typeof getSql>,
 ) {
+  const eventPayload = {
+    schemaVersion: ASSET_OBJECT_CONTRACT_VERSION,
+    ...payload,
+  };
   const eventRevision = type === "asset_object.failed"
     ? String(object.failureCount)
     : type === "asset_object.extraction_changed"
-      ? `${object.objectVersion}:${object.extractionState}`
+      ? `${object.objectVersion}:${object.extractionState}:${sha256(JSON.stringify({
+          executionScope,
+          payload: eventPayload,
+        }))}`
       : String(object.objectVersion);
   return appendScopedDomainEvent({
     id: `asset-object:${object.id}:${type}:${eventRevision}`,
     streamId: `asset-object:${object.id}`,
     type,
     executionScope,
-    payload: { schemaVersion: ASSET_OBJECT_CONTRACT_VERSION, ...payload },
+    payload: eventPayload,
   }, { sql });
 }
 

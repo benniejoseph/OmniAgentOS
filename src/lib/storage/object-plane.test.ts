@@ -35,6 +35,7 @@ import {
   redeemAssetObjectDelivery,
   retireAssetObjectsForSource,
   stageAssetObject,
+  updateAssetObjectExtractionState,
   type PrivateAssetBlobAdapter,
 } from "@/lib/storage/object-plane";
 
@@ -117,12 +118,24 @@ function createObjectHarness() {
     created_at: "2026-09-06T10:00:00.000Z",
     updated_at: "2026-09-06T10:00:00.000Z",
   };
+  let extractionMutation = 0;
   const sql = Object.assign(
-    vi.fn(async (strings: TemplateStringsArray) => {
+    vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const query = strings.join(" ").replace(/\s+/g, " ");
       if (query.includes("INSERT INTO omni_asset_objects")) return [row];
       if (query.includes("SET upload_job_id")) {
         row = { ...row, upload_job_id: "job-commit-a" };
+        return [row];
+      }
+      if (query.includes("SET extraction_state")) {
+        const extractionState = String(values[0]);
+        if (row.extraction_state === extractionState) return [];
+        extractionMutation += 1;
+        row = {
+          ...row,
+          extraction_state: extractionState,
+          updated_at: `2026-09-06T10:00:0${extractionMutation}.000Z`,
+        };
         return [row];
       }
       if (query.includes("SELECT content AS bytes")) return [{ bytes }];
@@ -317,6 +330,73 @@ describe("tenant-scoped private asset object plane", () => {
     const deleted = await deleteAssetObjectJob(deleteJob, { adapter });
     expect(deleted).toMatchObject({ status: "deleted", scrubbedAt: expect.any(String) });
     expect(adapter.delete).toHaveBeenCalledWith(harness.locator);
+  });
+
+  it("gives repeated extraction states distinct event identities across processing runs", async () => {
+    const harness = createObjectHarness();
+    mocks.getSql.mockReturnValue(harness.sql);
+    const reindexScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "capture-reindex-request-a",
+      causationId: "capture-reindex-request-a",
+      capabilityGrantIds: ["first_party.capture"],
+      purpose: "capture.asset.index",
+    });
+    const workerScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "system",
+      executingPrincipalId: "background-worker",
+      correlationId: "capture-reindex-request-a",
+      causationId: "capture-reindex-job-a",
+      capabilityGrantIds: ["first_party.capture"],
+      purpose: "capture.asset.ingest",
+    });
+
+    await updateAssetObjectExtractionState({
+      tenantId,
+      ownerActorId: actorId,
+      sourceKind: "capture_asset",
+      sourceId,
+      extractionState: "completed",
+      executionScope: scope,
+    }, { sql: harness.sql as never });
+    await updateAssetObjectExtractionState({
+      tenantId,
+      ownerActorId: actorId,
+      sourceKind: "capture_asset",
+      sourceId,
+      extractionState: "pending",
+      executionScope: reindexScope,
+    }, { sql: harness.sql as never });
+    await updateAssetObjectExtractionState({
+      tenantId,
+      ownerActorId: actorId,
+      sourceKind: "capture_asset",
+      sourceId,
+      extractionState: "completed",
+      executionScope: workerScope,
+    }, { sql: harness.sql as never });
+    await updateAssetObjectExtractionState({
+      tenantId,
+      ownerActorId: actorId,
+      sourceKind: "capture_asset",
+      sourceId,
+      extractionState: "completed",
+      executionScope: workerScope,
+    }, { sql: harness.sql as never });
+
+    const extractionEvents = mocks.appendScopedDomainEvent.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "asset_object.extraction_changed");
+    expect(extractionEvents).toHaveLength(3);
+    expect(extractionEvents[0].id).not.toBe(extractionEvents[2].id);
+    expect(new Set(extractionEvents.map((event) => event.id)).size).toBe(3);
+    expect(extractionEvents[0].id).toContain(":1:completed:");
+    expect(extractionEvents[2].id).toContain(":1:completed:");
   });
 });
 
