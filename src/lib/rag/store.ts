@@ -13,10 +13,6 @@ import {
   retireEntityMemoryLineage,
 } from "@/lib/entities/store";
 import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
-import {
-  databaseMemoryAccessScopeFromExecutionScope,
-  setTransactionLocalDatabaseMemoryAccessScope,
-} from "@/lib/db/memory-access-scope";
 import { getDataPath } from "@/lib/storage/paths";
 import { redactSensitive } from "@/lib/security/context";
 import {
@@ -43,7 +39,6 @@ import type {
   KnowledgeSourceType,
 } from "@/lib/rag/types";
 import type { MemoryRecord } from "@/lib/memory/types";
-import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
 import {
   assertCaptureIngestSource,
   captureIngestSource,
@@ -333,11 +328,6 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
     await ensureDatabaseSchema();
     await runWithDatabaseActorScope(tenantId, [lifecycleScope.ownerActorId], () =>
       getSql().transaction(async (sql: RagSqlClient) => {
-        await enterKnowledgeMemoryLifecycleScope(
-          sql,
-          tenantId,
-          lifecycleScope.executionScope,
-        );
         await lockKnowledgeMemoryGraph(sql, tenantId);
         const memoryRows = await sql`
           SELECT id
@@ -350,11 +340,23 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
             AND claim_status <> 'forgotten'
           ORDER BY id COLLATE "C"
         `;
-        const memoryIds = memoryRows.map((row) => String(row.id));
+        const legacyMemoryIds = memoryRows.map((row) => String(row.id));
+        const cognition = await retireScopeBoundCognitionMemories({
+          sql,
+          tenantId,
+          sourceOwnerActorId: lifecycleScope.ownerActorId,
+          documentIds: [documentId],
+          retiredAt,
+        });
+        const memoryIds = canonicalIds([
+          ...legacyMemoryIds,
+          ...cognition.retiredMemoryIds,
+        ]);
         await invalidateKnowledgeMemoryLineage(sql, tenantId, memoryIds, {
           executionScope: lifecycleScope.executionScope,
           sourceKind: "knowledge",
           sourceReference: `knowledge:${documentId}`,
+          additionalRetrievalTraceIds: cognition.retrievalTraceIds,
         });
         const evidenceRows = await sql`
           SELECT evidence_id AS id, owner_actor_id
@@ -372,10 +374,11 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
           ORDER BY owner_actor_id COLLATE "C", evidence_id COLLATE "C"
         `;
         if (evidenceRows.length || memoryIds.length) {
-          await retireKnowledgeEntityLineage({
+          await retireKnowledgeEntityLineages({
             tenantId,
             evidenceRows,
-            memoryIds,
+            legacyMemoryIds,
+            cognition,
             executionScope: lifecycleScope.executionScope,
             retiredAt,
             sql,
@@ -383,7 +386,12 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
         }
         await sql`DELETE FROM omni_knowledge_chunks WHERE tenant_id = ${tenantId} AND document_id = ${documentId}`;
         await sql`DELETE FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND id = ${documentId}`;
-        await retireKnowledgeMemoryRows(sql, tenantId, memoryIds, retiredAt);
+        await retireKnowledgeMemoryRows(
+          sql,
+          tenantId,
+          legacyMemoryIds,
+          retiredAt,
+        );
       })
     );
     return documentId;
@@ -461,13 +469,6 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
     const deleteWithSql = async (sql: RagSqlClient) => {
       const invalidationScope = mutation?.executionScope ||
         options.invalidationScope;
-      if (invalidationScope) {
-        await enterKnowledgeMemoryLifecycleScope(
-          sql,
-          tenantId,
-          invalidationScope,
-        );
-      }
       await lockKnowledgeMemoryGraph(sql, tenantId);
       const rows = await sql`SELECT id FROM omni_knowledge_documents WHERE tenant_id = ${tenantId} AND source LIKE ${prefix + "%"}`;
       const ids = rows.map((row) => String(row.id));
@@ -483,11 +484,28 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
           AND claim_status <> 'forgotten'
         ORDER BY id COLLATE "C"
       `;
-      const memoryIds = memoryRows.map((row) => String(row.id));
+      const legacyMemoryIds = memoryRows.map((row) => String(row.id));
+      const lifecycleScope = invalidationScope
+        ? requireKnowledgeMemoryLifecycleScope(tenantId, invalidationScope)
+        : undefined;
+      const cognition = lifecycleScope && ids.length
+        ? await retireScopeBoundCognitionMemories({
+            sql,
+            tenantId,
+            sourceOwnerActorId: lifecycleScope.ownerActorId,
+            documentIds: ids,
+            retiredAt,
+          })
+        : emptyCognitionRetirement();
+      const memoryIds = canonicalIds([
+        ...legacyMemoryIds,
+        ...cognition.retiredMemoryIds,
+      ]);
       await invalidateKnowledgeMemoryLineage(sql, tenantId, memoryIds, {
         executionScope: invalidationScope,
         sourceKind: prefix.startsWith("capture:") ? "capture" : "knowledge",
         sourceReference: prefix,
+        additionalRetrievalTraceIds: cognition.retrievalTraceIds,
       });
       if (ids.length && invalidationScope) {
         const evidenceRows = await sql`
@@ -506,10 +524,11 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
           ORDER BY owner_actor_id COLLATE "C", evidence_id COLLATE "C"
         `;
         if (evidenceRows.length || memoryIds.length) {
-          await retireKnowledgeEntityLineage({
+          await retireKnowledgeEntityLineages({
             tenantId,
             evidenceRows,
-            memoryIds,
+            legacyMemoryIds,
+            cognition,
             executionScope: invalidationScope,
             retiredAt,
             sql,
@@ -522,13 +541,16 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
       const retired = await retireKnowledgeMemoryRows(
         sql,
         tenantId,
-        memoryIds,
+        legacyMemoryIds,
         retiredAt,
       );
       if (mutation) {
         await appendKnowledgeDeletionEvent(prefix, mutation, sql);
       }
-      return { documents: ids.length, memories: retired.length };
+      return {
+        documents: ids.length,
+        memories: retired.length + cognition.retiredMemoryIds.length,
+      };
     };
     return options.sql
       ? deleteWithSql(options.sql)
@@ -619,16 +641,6 @@ export async function retireSupersededCaptureKnowledge(input: {
     await ensureDatabaseSchema();
     return runWithDatabaseActorScope(tenantId, [guard.actorId], () =>
       getSql().transaction(async (sql: RagSqlClient) => {
-        const memoryLifecycle = await enterKnowledgeMemoryLifecycleScope(
-          sql,
-          tenantId,
-          input.executionScope,
-        );
-        if (memoryLifecycle.ownerActorId !== guard.actorId) {
-          throw new Error(
-            "Capture memory retirement cannot cross actor ownership.",
-          );
-        }
         await lockActiveCaptureIngest(sql, guard);
         await lockKnowledgeMemoryGraph(sql, tenantId);
         const currentRows = await sql`
@@ -687,11 +699,23 @@ export async function retireSupersededCaptureKnowledge(input: {
             AND memory.claim_status <> 'forgotten'
           ORDER BY memory.id COLLATE "C"
         `;
-        const memoryIds = memoryRows.map((row) => String(row.id));
+        const legacyMemoryIds = memoryRows.map((row) => String(row.id));
+        const cognition = await retireScopeBoundCognitionMemories({
+          sql,
+          tenantId,
+          sourceOwnerActorId: guard.actorId,
+          documentIds,
+          retiredAt,
+        });
+        const memoryIds = canonicalIds([
+          ...legacyMemoryIds,
+          ...cognition.retiredMemoryIds,
+        ]);
         await invalidateKnowledgeMemoryLineage(sql, tenantId, memoryIds, {
           executionScope: input.executionScope,
           sourceKind: "capture",
           sourceReference: source,
+          additionalRetrievalTraceIds: cognition.retrievalTraceIds,
         });
 
         const evidenceRows = await sql`
@@ -710,10 +734,11 @@ export async function retireSupersededCaptureKnowledge(input: {
           ORDER BY owner_actor_id COLLATE "C", evidence_id COLLATE "C"
         `;
         if (evidenceRows.length || memoryIds.length) {
-          await retireKnowledgeEntityLineage({
+          await retireKnowledgeEntityLineages({
             tenantId,
             evidenceRows,
-            memoryIds,
+            legacyMemoryIds,
+            cognition,
             executionScope: input.executionScope,
             retiredAt,
             sql,
@@ -733,7 +758,7 @@ export async function retireSupersededCaptureKnowledge(input: {
         const retired = await retireKnowledgeMemoryRows(
           sql,
           tenantId,
-          memoryIds,
+          legacyMemoryIds,
           retiredAt,
         );
         await appendCaptureKnowledgeSupersessionEvent({
@@ -741,12 +766,16 @@ export async function retireSupersededCaptureKnowledge(input: {
           sourceItemId,
           keepDocumentId,
           retiredDocumentCount: documentIds.length,
-          retiredMemoryCount: retired.length,
+          retiredMemoryCount:
+            retired.length + cognition.retiredMemoryIds.length,
           retiredAt,
           executionScope: input.executionScope,
           sql,
         });
-        return { documents: documentIds.length, memories: retired.length };
+        return {
+          documents: documentIds.length,
+          memories: retired.length + cognition.retiredMemoryIds.length,
+        };
       }) as Promise<{ documents: number; memories: number }>
     );
   }
@@ -889,10 +918,17 @@ async function appendCaptureKnowledgeSupersessionEvent(input: {
   );
 }
 
-async function retireKnowledgeEntityLineage(input: {
+type ScopeBoundCognitionRetirement = Readonly<{
+  retiredMemoryIds: readonly string[];
+  retrievalTraceIds: readonly string[];
+  canonicalOwnerActorId: string | null;
+}>;
+
+async function retireKnowledgeEntityLineages(input: {
   tenantId: string;
   evidenceRows: readonly Readonly<Record<string, unknown>>[];
-  memoryIds: readonly string[];
+  legacyMemoryIds: readonly string[];
+  cognition: ScopeBoundCognitionRetirement;
   executionScope: ExecutionScope;
   retiredAt: string;
   sql?: RagSqlClient;
@@ -913,10 +949,55 @@ async function retireKnowledgeEntityLineage(input: {
       "Knowledge entity retirement cannot cross actor ownership.",
     );
   }
+  if (input.evidenceRows.length || input.legacyMemoryIds.length) {
+    await retireKnowledgeEntityLineage({
+      ...input,
+      ownerActorId: scope.initiatingActorId,
+      memoryIds: input.legacyMemoryIds,
+    });
+  }
+  if (
+    input.cognition.retiredMemoryIds.length &&
+    input.cognition.canonicalOwnerActorId
+  ) {
+    await retireKnowledgeEntityLineage({
+      ...input,
+      evidenceRows: [],
+      ownerActorId: input.cognition.canonicalOwnerActorId,
+      memoryIds: input.cognition.retiredMemoryIds,
+    });
+  }
+}
+
+async function retireKnowledgeEntityLineage(input: {
+  tenantId: string;
+  ownerActorId: string;
+  evidenceRows: readonly Readonly<Record<string, unknown>>[];
+  memoryIds: readonly string[];
+  executionScope: ExecutionScope;
+  retiredAt: string;
+  sql?: RagSqlClient;
+}) {
+  const scope = parsePersistedExecutionScope(input.executionScope);
+  if (!scope?.initiatingActorId || scope.tenantId !== input.tenantId) {
+    throw new Error(
+      "Knowledge evidence retirement requires an actor-bound execution scope.",
+    );
+  }
+  const ownerIds = new Set(input.evidenceRows.map((row) =>
+    String(row.owner_actor_id)
+  ));
+  if (ownerIds.size > 1 || (ownerIds.size === 1 && !ownerIds.has(
+    input.ownerActorId,
+  ))) {
+    throw new Error(
+      "Knowledge entity retirement cannot cross actor ownership.",
+    );
+  }
   if (input.evidenceRows.length) {
     await retireEntityEvidenceLineage({
       tenantId: input.tenantId,
-      ownerActorId: scope.initiatingActorId,
+      ownerActorId: input.ownerActorId,
       evidenceUnitIds: input.evidenceRows.map((row) => String(row.id)),
       executionScope: deriveExecutionScope(scope, {
         purpose: "entity.source.lifecycle.v1",
@@ -928,7 +1009,7 @@ async function retireKnowledgeEntityLineage(input: {
   if (input.memoryIds.length) {
     await retireEntityMemoryLineage({
       tenantId: input.tenantId,
-      ownerActorId: scope.initiatingActorId,
+      ownerActorId: input.ownerActorId,
       memoryIds: input.memoryIds,
       executionScope: deriveExecutionScope(scope, {
         purpose: "memory.forget.v1",
@@ -939,34 +1020,50 @@ async function retireKnowledgeEntityLineage(input: {
   }
   await queueTemporalRelationProjection({
     tenantId: input.tenantId,
-    ownerActorId: scope.initiatingActorId,
+    ownerActorId: input.ownerActorId,
     executionScope: input.executionScope,
     sql: input.sql,
   });
 }
 
-async function enterKnowledgeMemoryLifecycleScope(
-  sql: RagSqlClient,
-  tenantId: string,
-  executionScope: ExecutionScope,
-) {
-  const lifecycleScope = requireKnowledgeMemoryLifecycleScope(
-    tenantId,
-    executionScope,
-  );
-  const forgetScope = deriveExecutionScope(lifecycleScope.executionScope, {
-    purpose: "memory.forget.v1",
-  });
-  await setTransactionLocalDatabaseMemoryAccessScope(
-    sql,
-    databaseMemoryAccessScopeFromExecutionScope(forgetScope, {
-      purposeId: MEMORY_PURPOSE_IDS.forget,
-      auditPurpose: "knowledge.source.lifecycle.v1",
-    }),
-  );
+async function retireScopeBoundCognitionMemories(input: {
+  sql: RagSqlClient;
+  tenantId: string;
+  sourceOwnerActorId: string;
+  documentIds: readonly string[];
+  retiredAt: string;
+}): Promise<ScopeBoundCognitionRetirement> {
+  const documentIds = canonicalIds(input.documentIds);
+  if (!documentIds.length) return emptyCognitionRetirement();
+  const rows = await input.sql`
+    SELECT retired_memory_ids, retrieval_trace_ids,
+      canonical_owner_actor_id
+    FROM omni_retire_knowledge_cognition_memories_v1(
+      ${input.tenantId}, ${input.sourceOwnerActorId},
+      ${documentIds}::TEXT[], ${input.retiredAt}::TIMESTAMPTZ
+    )
+  `;
+  if (rows.length !== 1) {
+    throw new Error("Knowledge cognition lifecycle receipt is unavailable.");
+  }
+  const canonicalOwnerActorId = String(
+    rows[0].canonical_owner_actor_id || "",
+  ).trim();
+  if (!canonicalOwnerActorId.startsWith("actor:")) {
+    throw new Error("Knowledge cognition lifecycle owner is invalid.");
+  }
   return Object.freeze({
-    ownerActorId: lifecycleScope.ownerActorId,
-    executionScope: forgetScope,
+    retiredMemoryIds: Object.freeze(stringArray(rows[0].retired_memory_ids)),
+    retrievalTraceIds: Object.freeze(stringArray(rows[0].retrieval_trace_ids)),
+    canonicalOwnerActorId,
+  });
+}
+
+function emptyCognitionRetirement(): ScopeBoundCognitionRetirement {
+  return Object.freeze({
+    retiredMemoryIds: Object.freeze([]),
+    retrievalTraceIds: Object.freeze([]),
+    canonicalOwnerActorId: null,
   });
 }
 
@@ -1132,6 +1229,7 @@ async function invalidateKnowledgeMemoryLineage(
     executionScope?: ExecutionScope;
     sourceKind: "knowledge" | "capture";
     sourceReference: string;
+    additionalRetrievalTraceIds?: readonly string[];
   },
 ) {
   if (!memoryIds.length) return;
@@ -1143,10 +1241,14 @@ async function invalidateKnowledgeMemoryLineage(
     ORDER BY id COLLATE "C"
     FOR UPDATE
   `;
+  const retrievalTraceIds = canonicalIds([
+    ...traceRows.map((row) => String(row.id)),
+    ...(invalidation?.additionalRetrievalTraceIds || []),
+  ]);
   if (invalidation?.executionScope) {
     await invalidateRunsForDeletedContext({
       tenantId,
-      retrievalTraceIds: traceRows.map((row) => String(row.id)),
+      retrievalTraceIds,
       executionScope: invalidation.executionScope,
       sourceKind: invalidation.sourceKind,
       sourceReference: invalidation.sourceReference,
@@ -1175,7 +1277,10 @@ async function invalidateKnowledgeMemoryLineage(
   await sql`
     DELETE FROM omni_retrieval_traces
     WHERE tenant_id = ${tenantId}
-      AND memory_ids && ${memoryIds}::text[]
+      AND (
+        memory_ids && ${memoryIds}::text[]
+        OR id = ANY(${retrievalTraceIds}::text[])
+      )
   `;
   await sql`
     INSERT INTO omni_memory_graph_rebuild_queue AS rebuild (
@@ -3478,4 +3583,16 @@ function optionalString(value: unknown) {
 
 function normalizeDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function canonicalIds(values: readonly string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function stringArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new Error("Knowledge cognition lifecycle IDs are invalid.");
+  }
+  return canonicalIds(value.map((item) => String(item)));
 }

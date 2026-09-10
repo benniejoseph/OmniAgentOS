@@ -738,7 +738,7 @@ describe("ordered database schema versions", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
       version: 155,
       name: "knowledge_cognification_candidates_v1",
-      checksum: "7be9cf9382966145ef45ed3dc5e7ce9ad4b9717592b9fc7200ad23bdf1776185",
+      checksum: "c14f3308088df1ce4eb94f7208580b91bc574efe7479bf2832d2f2ba853cac1e",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

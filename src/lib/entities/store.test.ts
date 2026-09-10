@@ -271,6 +271,43 @@ describe("durable entity registry", () => {
       retiredAliasIds: [],
     });
   });
+
+  it("requires database proof before translating legacy ownership to canonical lineage", async () => {
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-a",
+      initiatingActorId: "owner@example.com",
+      executingPrincipalType: "system",
+      executingPrincipalId: "background-operations-worker",
+      correlationId: "canonical-cognition-retirement",
+      purpose: "memory.forget.v1",
+    });
+    const deniedSql = Object.assign(
+      async () => [{ allowed: false }],
+      { transactionScoped: true as const },
+    );
+    const allowedSql = Object.assign(
+      async (strings: TemplateStringsArray) =>
+        strings.join("?").includes("omni_actor_scope_v1_allows_canonical")
+          ? [{ allowed: true }]
+          : [],
+      { transactionScoped: true as const },
+    );
+
+    await expect(retireEntityMemoryLineage({
+      tenantId: "tenant-a",
+      ownerActorId: "actor:00000000-0000-4000-8000-000000000001",
+      memoryIds: ["memory-cognition"],
+      executionScope,
+      sql: deniedSql as never,
+    })).rejects.toThrow("exact owner scope");
+    await expect(retireEntityMemoryLineage({
+      tenantId: "tenant-a",
+      ownerActorId: "actor:00000000-0000-4000-8000-000000000001",
+      memoryIds: ["memory-cognition"],
+      executionScope,
+      sql: allowedSql as never,
+    })).resolves.toMatchObject({ affectedEntityIds: [] });
+  });
 });
 
 function accessBinding(ownerActorId: string) {
