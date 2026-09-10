@@ -21,6 +21,8 @@ type SpecializedScope = Extract<
   | "audio_diarization"
   | "web_search"
   | "image_generation"
+  | "video_generation"
+  | "computer_use"
   | "speech_synthesis"
   | "realtime_transcription"
 >;
@@ -31,6 +33,8 @@ type SpecializedCapability =
   | "transcription"
   | "tools"
   | "image"
+  | "video"
+  | "computer_use"
   | "speech";
 
 export type SpecializedRuntimeResolution = Readonly<{

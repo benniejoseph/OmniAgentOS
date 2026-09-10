@@ -788,8 +788,7 @@ export async function* runAgent(
     }
     const useLiveWeb = !personalPromptMemoryAccessScope &&
       !browserCapabilityIntent.excludeWebSearch &&
-      shouldUseLiveWebSearch(query) &&
-      hasOpenAIKey();
+      shouldUseLiveWebSearch(query);
     if (durableMemoryEnabled) {
       reserveBudget({
         tokens: AGENT_CONTEXT_TASK_TOKEN_LIMIT,
