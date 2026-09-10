@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   reconcile: vi.fn(),
   sql: vi.fn(),
+  memorySource: "manual",
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -59,6 +60,7 @@ const person = buildEntityRecord({
 
 describe("canonical temporal relation projector", () => {
   beforeEach(() => {
+    mocks.memorySource = "manual";
     mocks.sql.mockReset().mockImplementation(
       (strings: TemplateStringsArray) => {
         const query = strings.join(" ");
@@ -69,6 +71,7 @@ describe("canonical temporal relation projector", () => {
             owner_actor_id: "actor-projector",
             access_scope_sha256: "f".repeat(64),
             sensitivity: "confidential",
+            source: mocks.memorySource,
             content:
               'relation: assigned_to | work item: "Ship P5.4" -> person: "Ada"',
             confidence: 0.95,
@@ -135,5 +138,27 @@ describe("canonical temporal relation projector", () => {
     expect(queries).toContain("FROM omni_memories");
     expect(queries).toContain("FROM omni_source_items");
     expect(queries).not.toContain("omni_retrieval_traces");
+    const memorySelect = queries.split("FROM omni_memories")[0];
+    expect(memorySelect).toContain("source");
+    expect(queries).toContain("claim_status = 'active'");
+    expect(queries).toContain("asserted_by = 'user'");
+    expect(queries).toContain("source LIKE 'cognify-reviewed:%'");
+    expect(queries).toContain("formation_reason = 'source_cognition'");
+    expect(queries).toContain("reference LIKE 'cognition-review:%'");
+    expect(queries).toContain("reference LIKE 'knowledge:%'");
+    expect(queries).toContain("reference LIKE 'evidence:%'");
+  });
+
+  it("projects reviewed model cognition as inferred rather than asserted truth", async () => {
+    mocks.memorySource = "cognify-reviewed:cognition-batch-a";
+
+    await rebuildTemporalRelationProjection({
+      tenantId: "tenant-projector",
+      ownerActorId: "actor-projector",
+      correlationId: "projector-reviewed-cognition-test",
+    });
+
+    expect(mocks.reconcile.mock.calls[0][0].desiredClaims[0])
+      .toMatchObject({ epistemicKind: "inferred" });
   });
 });
