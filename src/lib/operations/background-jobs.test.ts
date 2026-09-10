@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 beforeAll(async () => {
   process.env.OMNIAGENT_DATA_DIR = await mkdtemp(
@@ -90,6 +90,85 @@ describe("background operation jobs", () => {
     });
   });
 
+  it("requeues an ingest when its active asset completion projection fails", async () => {
+    const assets = await import("@/lib/capture/assets");
+    const jobs = await import("@/lib/operations/background-jobs");
+    const queue = await import("@/lib/operations/job-queue");
+    const { createExecutionScope } = await import("@/lib/security/execution-scope");
+    const tenantId = "tenant-capture-projection-retry";
+    const actorId = "owner-capture-projection-retry";
+    const executionScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "capture-projection-retry-test",
+      purpose: "capture.asset.ingest.test",
+    });
+    const stored = await assets.saveCaptureAsset({
+      tenantId,
+      actorId,
+      executionScope,
+      filename: "projection-retry.txt",
+      mediaType: "text/plain",
+      bytes: Buffer.from("A private transcript must never appear in diagnostics."),
+    });
+    const queued = await jobs.enqueueCaptureAssetProcessJob({
+      tenantId,
+      actorId,
+      executionScope,
+      idempotencyKey: "capture-projection-retry-request",
+      request: { assetId: stored.id },
+    });
+    await assets.updateCaptureAssetStatus(stored.id, {
+      tenantId,
+      actorId,
+      executionScope,
+    }, {
+      status: "queued",
+      extractionStatus: "pending",
+      ingestJobId: queued.id,
+      clearExtractionReceipt: true,
+    });
+    const updateCaptureAssetStatus = assets.updateCaptureAssetStatus;
+    const updateSpy = vi.spyOn(assets, "updateCaptureAssetStatus")
+      .mockImplementation(async (id, owner, input) => {
+        if (input.status === "indexed") {
+          throw new Error("A private transcript must never appear in diagnostics.");
+        }
+        return updateCaptureAssetStatus(id, owner, input);
+      });
+
+    try {
+      await expect(jobs.processBackgroundOperationQueue({
+        tenantId,
+        limit: 1,
+      })).resolves.toMatchObject({
+        leased: 1,
+        completed: 0,
+        failed: 0,
+        deferred: 1,
+      });
+    } finally {
+      updateSpy.mockRestore();
+    }
+
+    const deferred = await queue.getOperationJob(queued.id, { tenantId });
+    expect(deferred).toMatchObject({
+      status: "queued",
+      attempt: 1,
+      lastError: "Capture asset completion projection could not be finalized.",
+    });
+    expect(deferred?.lastError).not.toContain("private transcript");
+    await expect(assets.getCaptureAsset(stored.id, {
+      tenantId,
+      actorId,
+    })).resolves.toMatchObject({
+      status: "queued",
+      ingestJobId: queued.id,
+    });
+  });
+
   it("accepts exact structured units and rejects units that do not compose the content", async () => {
     const { finalizeCaptureExtraction, renderCaptureExtractionUnits } = await import("@/lib/capture/extraction");
     const { knowledgeIngestJobRequestSchema } = await import("@/lib/operations/background-jobs");
@@ -119,6 +198,58 @@ describe("background operation jobs", () => {
       content: "Different content",
       structuredUnits: extraction.units,
     })).toThrow(/exactly compose/i);
+  });
+
+  it("suppresses a final asset projection failure only after confirming it is resolved", async () => {
+    const { assertCaptureAssetCompletionProjectionFailureIsResolved } = await import(
+      "@/lib/operations/background-jobs"
+    );
+
+    expect(() =>
+      assertCaptureAssetCompletionProjectionFailureIsResolved(
+        null,
+        "job-a",
+        "knowledge-a",
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertCaptureAssetCompletionProjectionFailureIsResolved(
+        { ingestJobId: "job-new" },
+        "job-a",
+        "knowledge-a",
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertCaptureAssetCompletionProjectionFailureIsResolved(
+        {
+          status: "indexed",
+          ingestJobId: "job-a",
+          knowledgeDocumentId: "knowledge-a",
+        },
+        "job-a",
+        "knowledge-a",
+      )
+    ).not.toThrow();
+
+    let failure: unknown;
+    try {
+      assertCaptureAssetCompletionProjectionFailureIsResolved(
+        {
+          status: "queued",
+          ingestJobId: "job-a",
+          knowledgeDocumentId: "knowledge-a",
+        },
+        "job-a",
+        "knowledge-a",
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "Capture asset completion projection could not be finalized.",
+    );
+    expect((failure as Error).message).not.toContain("transcript");
   });
 
   it("queues ingestion idempotently and exposes progress without request content", async () => {
