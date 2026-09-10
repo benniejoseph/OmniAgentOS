@@ -265,10 +265,11 @@ async function PATCHHandler(request: Request) {
     });
     if (
       !source ||
-      source.sourceRevisionId !== existing.candidate.sourceRevisionId
+      source.sourceRevisionId !== existing.candidate.sourceRevisionId ||
+      source.retentionExpiresAt !== existing.candidate.retentionExpiresAt
     ) {
       throw new KnowledgeCognitionConflictError(
-        "The source changed after this proposal was created. Cognify the current revision instead.",
+        "The source policy changed after this proposal was created. Cognify the current source instead.",
       );
     }
     const requestAccess = requestMemoryAccessFromSecurityContext(context, {
