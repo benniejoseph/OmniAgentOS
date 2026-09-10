@@ -1,5 +1,7 @@
 import {
   finalizeCaptureExtraction,
+  MAX_CAPTURE_EXTRACTION_UNIT_CHARACTERS,
+  MAX_CAPTURE_EXTRACTION_UNITS,
   renderCaptureExtractionUnits,
   type CaptureExtractionDraftUnit,
   type CaptureStructuredExtraction,
@@ -83,9 +85,14 @@ export async function extractCaptureFile(file: File, usageScope?: AiUsageScope) 
       if (bytes.includes(0)) throw new CaptureFileError("The selected text file appears to be binary.", 415, "binary_text", extension);
       let content = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
       if (extension === "html" || extension === "htm" || extension === "xml") content = stripMarkup(content);
-      extraction = extension === "csv" || extension === "tsv"
-        ? extractDelimitedText(content, extension)
-        : textExtraction(content, extension, "document");
+      if (extension === "srt" || extension === "vtt") {
+        extraction = extractTimedTranscript(content, extension)
+          || textExtraction(content, extension, "video");
+      } else {
+        extraction = extension === "csv" || extension === "tsv"
+          ? extractDelimitedText(content, extension)
+          : textExtraction(content, extension, "document");
+      }
     }
   } catch (error) {
     if (error instanceof CaptureFileError) throw error;
@@ -500,7 +507,7 @@ async function extractImageTextOrThrow(
 function textExtraction(
   content: string,
   format: string,
-  sourceKind: "document" | "calendar_event" | "record",
+  sourceKind: "document" | "calendar_event" | "record" | "video",
 ) {
   return finalizeCaptureExtraction({
     sourceKind,
@@ -511,6 +518,207 @@ function textExtraction(
       locator: { kind: "text_span" },
     })),
   });
+}
+
+type TimedTranscriptCue = Readonly<{
+  cueNumber: number;
+  startMilliseconds: number;
+  endMilliseconds: number;
+  content: string;
+}>;
+
+type TimedTranscriptFragment = TimedTranscriptCue & Readonly<{
+  partNumber: number;
+  partCount: number;
+}>;
+
+function extractTimedTranscript(
+  content: string,
+  format: "srt" | "vtt",
+): CaptureStructuredExtraction | null {
+  const normalized = content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
+  if (!normalized) return null;
+  const blocks = normalized.split(/\n[ \t]*\n+/).map((block) => block.trim()).filter(Boolean);
+  if (!blocks.length) return null;
+
+  let firstCueBlock = 0;
+  if (format === "vtt") {
+    const headerLines = blocks[0].split("\n");
+    if (!/^WEBVTT(?:[ \t].*)?$/.test(headerLines[0].trim())) return null;
+    firstCueBlock = 1;
+  }
+
+  const cues: TimedTranscriptCue[] = [];
+  let previousStartMilliseconds = -1;
+  let latestEndMilliseconds = 0;
+  for (let blockIndex = firstCueBlock; blockIndex < blocks.length; blockIndex += 1) {
+    const lines = blocks[blockIndex].split("\n").map((line) => line.trimEnd());
+    if (format === "vtt" && isWebVttMetadataBlock(lines[0])) continue;
+
+    const timingIndexes = lines.flatMap((line, index) => line.includes("-->") ? [index] : []);
+    if (timingIndexes.length !== 1) return null;
+    const timingIndex = timingIndexes[0];
+    if (format === "srt") {
+      if (timingIndex > 1 || (timingIndex === 1 && !/^\d+$/.test(lines[0].trim()))) return null;
+    } else if (timingIndex > 1) {
+      return null;
+    }
+
+    const timing = parseTranscriptTimingLine(lines[timingIndex], format);
+    if (!timing || timing.startMilliseconds < previousStartMilliseconds) return null;
+    previousStartMilliseconds = timing.startMilliseconds;
+    latestEndMilliseconds = Math.max(latestEndMilliseconds, timing.endMilliseconds);
+
+    const cueContent = lines.slice(timingIndex + 1).join("\n").trim();
+    if (!cueContent) continue;
+    cues.push({
+      cueNumber: cues.length + 1,
+      startMilliseconds: timing.startMilliseconds,
+      endMilliseconds: timing.endMilliseconds,
+      content: cueContent,
+    });
+  }
+  if (!cues.length || latestEndMilliseconds < 1) return null;
+
+  const fragments = cues.flatMap((cue): TimedTranscriptFragment[] => {
+    const parts = chunkText(cue.content, MAX_CAPTURE_EXTRACTION_UNIT_CHARACTERS, 0);
+    return parts.map((part, index) => ({
+      ...cue,
+      content: part.content,
+      partNumber: index + 1,
+      partCount: parts.length,
+    }));
+  });
+  if (!fragments.length) return null;
+
+  const groups = fragments.length <= MAX_CAPTURE_EXTRACTION_UNITS
+    ? fragments.map((fragment) => [fragment])
+    : mergeTimedTranscriptFragments(fragments);
+  if (!groups.length || groups.length > MAX_CAPTURE_EXTRACTION_UNITS) return null;
+
+  return finalizeCaptureExtraction({
+    sourceKind: "video",
+    format,
+    units: groups.map((group) => {
+      const first = group[0];
+      const last = group[group.length - 1];
+      const singleFragment = group.length === 1;
+      const partLabel = singleFragment && first.partCount > 1
+        ? `, part ${first.partNumber}`
+        : "";
+      return {
+        label: first.cueNumber === last.cueNumber
+          ? `Video cue ${first.cueNumber}${partLabel}`
+          : `Video cues ${first.cueNumber}-${last.cueNumber}`,
+        content: group.map((fragment) => fragment.content).join("\n\n"),
+        locator: {
+          kind: "media_time_range" as const,
+          mediaKind: "video" as const,
+          startMilliseconds: first.startMilliseconds,
+          endMillisecondsExclusive: Math.max(...group.map((fragment) => fragment.endMilliseconds)),
+          durationMilliseconds: latestEndMilliseconds,
+        },
+      };
+    }),
+  });
+}
+
+function isWebVttMetadataBlock(value: string | undefined) {
+  return /^(?:NOTE(?:[ \t]|$)|STYLE$|REGION$)/.test((value || "").trim());
+}
+
+function parseTranscriptTimingLine(
+  line: string,
+  format: "srt" | "vtt",
+) {
+  const match = line.trim().match(/^(\S+)[ \t]+-->[ \t]+(\S+)(?:[ \t]+.*)?$/);
+  if (!match) return null;
+  const startMilliseconds = parseTranscriptTimestamp(match[1], format);
+  const endMilliseconds = parseTranscriptTimestamp(match[2], format);
+  if (
+    startMilliseconds === null
+    || endMilliseconds === null
+    || endMilliseconds <= startMilliseconds
+  ) return null;
+  return { startMilliseconds, endMilliseconds };
+}
+
+function parseTranscriptTimestamp(value: string, format: "srt" | "vtt") {
+  const match = format === "srt"
+    ? value.match(/^(\d+):(\d{2}):(\d{2})[,.](\d{3})$/)
+    : value.match(/^(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})$/);
+  if (!match) return null;
+  const hours = format === "srt" ? Number(match[1]) : Number(match[1] || 0);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3]);
+  const milliseconds = Number(match[4]);
+  if (
+    !Number.isSafeInteger(hours)
+    || minutes < 0
+    || minutes > 59
+    || seconds < 0
+    || seconds > 59
+  ) return null;
+  const result = ((hours * 60 + minutes) * 60 + seconds) * 1_000 + milliseconds;
+  return Number.isSafeInteger(result) && result >= 0 ? result : null;
+}
+
+function mergeTimedTranscriptFragments(fragments: TimedTranscriptFragment[]) {
+  const precisionGroups = packTimedTranscriptFragmentsToUnitLimit(fragments);
+  return precisionGroups.length
+    ? precisionGroups
+    : packTimedTranscriptFragments(fragments, Number.MAX_SAFE_INTEGER);
+}
+
+function packTimedTranscriptFragmentsToUnitLimit(fragments: TimedTranscriptFragment[]) {
+  const groups: TimedTranscriptFragment[][] = [];
+  let cursor = 0;
+  while (cursor < fragments.length && groups.length < MAX_CAPTURE_EXTRACTION_UNITS) {
+    const remainingSlots = MAX_CAPTURE_EXTRACTION_UNITS - groups.length;
+    const targetSize = Math.ceil((fragments.length - cursor) / remainingSlots);
+    const group: TimedTranscriptFragment[] = [];
+    let characters = 0;
+    while (cursor < fragments.length && group.length < targetSize) {
+      const fragment = fragments[cursor];
+      const separatorCharacters = group.length ? 2 : 0;
+      if (
+        group.length
+        && characters + separatorCharacters + fragment.content.length > MAX_CAPTURE_EXTRACTION_UNIT_CHARACTERS
+      ) break;
+      characters += separatorCharacters + fragment.content.length;
+      group.push(fragment);
+      cursor += 1;
+    }
+    groups.push(group);
+  }
+  return cursor === fragments.length ? groups : [];
+}
+
+function packTimedTranscriptFragments(
+  fragments: TimedTranscriptFragment[],
+  maxFragmentsPerGroup: number,
+) {
+  const groups: TimedTranscriptFragment[][] = [];
+  let current: TimedTranscriptFragment[] = [];
+  let characters = 0;
+  for (const fragment of fragments) {
+    const separatorCharacters = current.length ? 2 : 0;
+    if (
+      current.length
+      && (
+        current.length >= maxFragmentsPerGroup
+        || characters + separatorCharacters + fragment.content.length > MAX_CAPTURE_EXTRACTION_UNIT_CHARACTERS
+      )
+    ) {
+      groups.push(current);
+      current = [];
+      characters = 0;
+    }
+    characters += (current.length ? 2 : 0) + fragment.content.length;
+    current.push(fragment);
+  }
+  if (current.length) groups.push(current);
+  return groups;
 }
 
 function extractDelimitedText(content: string, format: string) {
