@@ -63,6 +63,36 @@ describe("temporal relation projection queue database scope", () => {
     expect(mocks.appendEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("queues a canonical owner only after actor-scope identity proof", async () => {
+    mocks.sql.mockReset()
+      .mockResolvedValueOnce([{ allowed: true }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        tenant_id: "tenant-queue",
+        owner_actor_id: "actor:00000000-0000-4000-8000-000000000001",
+        generation: 1,
+        requested_at: "2026-09-09T06:50:00.000Z",
+      }]);
+    const executionScope = createExecutionScope({
+      tenantId: "tenant-queue",
+      initiatingActorId: "owner@example.com",
+      executingPrincipalType: "system",
+      executingPrincipalId: "background-operations-worker",
+      correlationId: "canonical-queue-test",
+      purpose: "memory.forget.v1",
+    });
+
+    await expect(queueTemporalRelationProjection({
+      tenantId: "tenant-queue",
+      ownerActorId: "actor:00000000-0000-4000-8000-000000000001",
+      executionScope,
+      sql: mocks.sql,
+    })).resolves.toMatchObject({ queued: true });
+    expect(mocks.sql.mock.calls[0]?.[0].join("?")).toContain(
+      "omni_actor_scope_v1_allows_canonical",
+    );
+  });
+
   it("does not reuse a request event id after a completed queue generation resets", async () => {
     mocks.sql.mockReset()
       .mockResolvedValueOnce([])

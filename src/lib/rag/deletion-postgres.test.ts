@@ -10,6 +10,13 @@ const dbMocks = vi.hoisted(() => {
     if (text.includes("FROM omni_capture_assets")) {
       return Promise.resolve([{ id: "capture-asset-1" }]);
     }
+    if (text.includes("omni_retire_knowledge_cognition_memories_v1")) {
+      return Promise.resolve([{
+        retired_memory_ids: ["memory-cognition-1"],
+        retrieval_trace_ids: ["trace-cognition-1"],
+        canonical_owner_actor_id: "actor:canonical-owner",
+      }]);
+    }
     if (text.includes("SELECT document.source_item_id")) {
       return Promise.resolve([{
         source_item_id: "source-item-1",
@@ -62,7 +69,6 @@ const eventMocks = vi.hoisted(() => ({
 }));
 
 const lifecycleMocks = vi.hoisted(() => ({
-  enterMemoryScope: vi.fn(async () => undefined),
   retireEvidence: vi.fn(async () => undefined),
   retireMemory: vi.fn(async () => undefined),
   queueRelations: vi.fn(async () => undefined),
@@ -77,12 +83,6 @@ vi.mock("@/lib/db/client", async (importOriginal) => ({
 
 vi.mock("@/lib/events/store", () => ({
   appendScopedDomainEvent: eventMocks.appendScopedDomainEvent,
-}));
-
-vi.mock("@/lib/db/memory-access-scope", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/db/memory-access-scope")>()),
-  setTransactionLocalDatabaseMemoryAccessScope:
-    lifecycleMocks.enterMemoryScope,
 }));
 
 vi.mock("@/lib/entities/store", () => ({
@@ -108,7 +108,6 @@ describe("Postgres knowledge deletion event boundary", () => {
     dbMocks.sql.transaction.mockClear();
     dbMocks.statements.splice(0);
     eventMocks.appendScopedDomainEvent.mockClear();
-    lifecycleMocks.enterMemoryScope.mockClear();
     lifecycleMocks.retireEvidence.mockClear();
     lifecycleMocks.retireMemory.mockClear();
     lifecycleMocks.queueRelations.mockClear();
@@ -133,24 +132,11 @@ describe("Postgres knowledge deletion event boundary", () => {
           purpose: "knowledge.delete_source",
         }),
       },
-    })).resolves.toEqual({ documents: 1, memories: 1 });
+    })).resolves.toEqual({ documents: 1, memories: 2 });
 
     expect(dbMocks.sql.transaction).toHaveBeenCalledTimes(1);
-    expect(lifecycleMocks.enterMemoryScope).toHaveBeenCalledWith(
-      dbMocks.sql,
-      expect.objectContaining({
-        tenantId,
-        initiatingActorId: actorId,
-        executingPrincipalType: "user",
-        executingPrincipalId: actorId,
-        purposeId: "memory.forget.v1",
-        purpose: "knowledge.source.lifecycle.v1",
-      }),
-    );
-    expect(lifecycleMocks.enterMemoryScope.mock.invocationCallOrder[0]).toBeLessThan(
-      dbMocks.sql.mock.invocationCallOrder.find((order, index) =>
-        dbMocks.statements[index]?.includes("FROM omni_memories")
-      )!,
+    expect(dbMocks.statements).toContainEqual(
+      expect.stringContaining("omni_retire_knowledge_cognition_memories_v1"),
     );
     expect(dbMocks.statements).toEqual(expect.arrayContaining([
       expect.stringContaining("DELETE FROM omni_knowledge_documents"),
@@ -181,6 +167,19 @@ describe("Postgres knowledge deletion event boundary", () => {
         sql: dbMocks.sql,
       }),
     );
+    expect(lifecycleMocks.retireMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId,
+        ownerActorId: "actor:canonical-owner",
+        memoryIds: ["memory-cognition-1"],
+        executionScope: expect.objectContaining({
+          initiatingActorId: actorId,
+          executingPrincipalType: "user",
+          purpose: "memory.forget.v1",
+        }),
+        sql: dbMocks.sql,
+      }),
+    );
     expect(lifecycleMocks.queueRelations).toHaveBeenCalledWith(
       expect.objectContaining({
         tenantId,
@@ -190,7 +189,7 @@ describe("Postgres knowledge deletion event boundary", () => {
     );
   });
 
-  it("enters actor-bound memory scope before governed Capture supersession", async () => {
+  it("uses the bounded lifecycle seam for governed Capture supersession", async () => {
     const tenantId = "tenant-capture";
     const actorId = "capture-owner";
     const executionScope = createExecutionScope({
@@ -212,17 +211,10 @@ describe("Postgres knowledge deletion event boundary", () => {
       },
       executionScope,
       keepDocumentId: "document-current",
-    })).resolves.toEqual({ documents: 1, memories: 1 });
+    })).resolves.toEqual({ documents: 1, memories: 2 });
 
-    expect(lifecycleMocks.enterMemoryScope).toHaveBeenCalledWith(
-      dbMocks.sql,
-      expect.objectContaining({
-        tenantId,
-        initiatingActorId: actorId,
-        executingPrincipalType: "system",
-        executingPrincipalId: "background-operations-worker",
-        purposeId: "memory.forget.v1",
-      }),
+    expect(dbMocks.statements).toContainEqual(
+      expect.stringContaining("omni_retire_knowledge_cognition_memories_v1"),
     );
     expect(lifecycleMocks.retireMemory).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -230,6 +222,19 @@ describe("Postgres knowledge deletion event boundary", () => {
         ownerActorId: actorId,
         memoryIds: ["memory-1"],
         executionScope: expect.objectContaining({
+          executingPrincipalType: "system",
+          purpose: "memory.forget.v1",
+        }),
+        sql: dbMocks.sql,
+      }),
+    );
+    expect(lifecycleMocks.retireMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId,
+        ownerActorId: "actor:canonical-owner",
+        memoryIds: ["memory-cognition-1"],
+        executionScope: expect.objectContaining({
+          initiatingActorId: actorId,
           executingPrincipalType: "system",
           purpose: "memory.forget.v1",
         }),
@@ -267,21 +272,26 @@ describe("Postgres knowledge deletion event boundary", () => {
       { tenantId, executionScope },
     )).resolves.toEqual(expect.any(String));
 
-    expect(lifecycleMocks.enterMemoryScope).toHaveBeenCalledWith(
-      dbMocks.sql,
-      expect.objectContaining({
-        tenantId,
-        initiatingActorId: actorId,
-        executingPrincipalType: "system",
-        executingPrincipalId: "connector.google.personal_sync",
-        purposeId: "memory.forget.v1",
-      }),
+    expect(dbMocks.statements).toContainEqual(
+      expect.stringContaining("omni_retire_knowledge_cognition_memories_v1"),
     );
     expect(lifecycleMocks.retireMemory).toHaveBeenCalledWith(
       expect.objectContaining({
         tenantId,
         ownerActorId: actorId,
         memoryIds: ["memory-1"],
+        executionScope: expect.objectContaining({
+          executingPrincipalId: "connector.google.personal_sync",
+          purpose: "memory.forget.v1",
+        }),
+        sql: dbMocks.sql,
+      }),
+    );
+    expect(lifecycleMocks.retireMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId,
+        ownerActorId: "actor:canonical-owner",
+        memoryIds: ["memory-cognition-1"],
         executionScope: expect.objectContaining({
           executingPrincipalId: "connector.google.personal_sync",
           purpose: "memory.forget.v1",

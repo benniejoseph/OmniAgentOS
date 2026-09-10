@@ -7,6 +7,9 @@ import {
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import { rebuildMemoryGraphSystemScoped } from "@/lib/memory/graph";
+import { retireEntityMemoryLineage } from "@/lib/entities/store";
+import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { getAccessRequestStore } from "@/lib/onboarding/access-request-store";
 
 export type RetentionPolicy = {
@@ -44,6 +47,7 @@ export type RetentionSweepResult = {
     memoryGraphEdges: number;
     memoryGraphNodes: number;
     memories: number;
+    knowledgeCognitionCandidates: number;
     retrievalTraces: number;
     workflowPlans: number;
     workflows: number;
@@ -169,6 +173,16 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         )
       `;
     }
+    // Purge expired/revoked source-map proposals first. The guarded database
+    // function also shortens any linked reviewed memory to NOW(), allowing
+    // the ordinary memory-retention path below to scrub it in this transaction.
+    const knowledgeCognitionCandidates = await transaction`
+      SELECT candidate_id AS id
+      FROM omni_purge_expired_knowledge_cognition_candidates(
+        ${tenantId || null},
+        ${batchLimit}
+      )
+    `;
     const affectedMemoryTenants = tenantId
       ? await transaction`
           SELECT DISTINCT tenant_id
@@ -269,7 +283,7 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
     }
     const expiredMemoryRows = tenantId
       ? await transaction`
-          SELECT id, tenant_id
+          SELECT id, tenant_id, owner_actor_id, formation_reason
           FROM omni_memories
           WHERE tenant_id = ${tenantId}
             AND claim_status <> 'forgotten'
@@ -290,7 +304,7 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         `
       : affectedMemoryTenantIds.length
         ? await transaction`
-            SELECT id, tenant_id
+            SELECT id, tenant_id, owner_actor_id, formation_reason
             FROM omni_memories
             WHERE tenant_id = ANY(${affectedMemoryTenantIds}::text[])
               AND claim_status <> 'forgotten'
@@ -449,6 +463,52 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
               )
             RETURNING id
           `;
+    const retiredMemoryIds = new Set(memories.map((row) => String(row.id)));
+    const cognitionLineageGroups = new Map<
+      string,
+      { tenantId: string; ownerActorId: string; memoryIds: string[] }
+    >();
+    for (const row of expiredMemoryRows) {
+      const memoryId = String(row.id);
+      const memoryTenantId = String(row.tenant_id);
+      const ownerActorId = String(row.owner_actor_id || "").trim();
+      if (
+        !retiredMemoryIds.has(memoryId) ||
+        row.formation_reason !== "source_cognition" ||
+        !ownerActorId.startsWith("actor:")
+      ) continue;
+      const key = `${memoryTenantId}\u0000${ownerActorId}`;
+      const group = cognitionLineageGroups.get(key) || {
+        tenantId: memoryTenantId,
+        ownerActorId,
+        memoryIds: [],
+      };
+      group.memoryIds.push(memoryId);
+      cognitionLineageGroups.set(key, group);
+    }
+    for (const group of cognitionLineageGroups.values()) {
+      const executionScope = createExecutionScope({
+        tenantId: group.tenantId,
+        initiatingActorId: group.ownerActorId,
+        executingPrincipalType: "system",
+        executingPrincipalId: "retention-sweep",
+        correlationId: `retention-cognition:${randomUUID()}`,
+        purpose: "memory.forget.v1",
+      });
+      await retireEntityMemoryLineage({
+        tenantId: group.tenantId,
+        ownerActorId: group.ownerActorId,
+        memoryIds: group.memoryIds,
+        executionScope,
+        sql: transaction,
+      });
+      await queueTemporalRelationProjection({
+        tenantId: group.tenantId,
+        ownerActorId: group.ownerActorId,
+        executionScope,
+        sql: transaction,
+      });
+    }
     const expiredAccessRequests = tenantId
       ? await transaction`
           WITH expired AS (
@@ -1330,6 +1390,7 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         memoryGraphEdges: memoryGraphEdges.length,
         memoryGraphNodes: memoryGraphNodes.length,
         memories: memories.length,
+        knowledgeCognitionCandidates: knowledgeCognitionCandidates.length,
         retrievalTraces: retrievalTraces.length,
         workflowPlans: workflowPlans.length,
         workflows: workflows.length,
@@ -1563,6 +1624,7 @@ function emptyDeletedCounts(): RetentionSweepResult["deleted"] {
     memoryGraphEdges: 0,
     memoryGraphNodes: 0,
     memories: 0,
+    knowledgeCognitionCandidates: 0,
     retrievalTraces: 0,
     workflowPlans: 0,
     workflows: 0,

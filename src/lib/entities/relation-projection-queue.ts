@@ -34,6 +34,16 @@ export async function queueTemporalRelationProjection(input: {
   }
   if (!input.sql) await ensureDatabaseSchema();
   const operation = async (sql: RelationProjectionQueueSqlClient) => {
+    if (scope.initiatingActorId !== input.ownerActorId) {
+      const ownerRows = await sql`
+        SELECT public.omni_actor_scope_v1_allows_canonical(
+          ${input.tenantId}, ${input.ownerActorId}
+        ) AS allowed
+      `;
+      if (ownerRows[0]?.allowed !== true) {
+        throw new Error("Relation projection queue requires an exact owner scope.");
+      }
+    }
     await sql`
       SELECT pg_advisory_xact_lock(
         hashtext(${input.tenantId}),
@@ -236,16 +246,20 @@ function assertQueueScope(input: {
   const scope = parsePersistedExecutionScope(input.executionScope);
   const userOwner =
     scope?.executingPrincipalType === "user" &&
-    scope.executingPrincipalId === input.ownerActorId;
+    scope.executingPrincipalId === scope.initiatingActorId;
   const governedTransaction =
     Boolean(input.sql) &&
     scope?.executingPrincipalType === "system" &&
     Boolean(scope.executingPrincipalId);
+  const canonicalResolutionAvailable = Boolean(input.sql) || hasDatabaseUrl();
   if (
     !scope ||
     scope.tenantId !== input.tenantId ||
-    scope.initiatingActorId !== input.ownerActorId ||
     (!userOwner && !governedTransaction) ||
+    (
+      scope.initiatingActorId !== input.ownerActorId &&
+      !canonicalResolutionAvailable
+    ) ||
     scope.workspaceId !== null ||
     scope.projectId !== null ||
     scope.missionId !== null

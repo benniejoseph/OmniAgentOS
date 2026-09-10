@@ -353,7 +353,7 @@ export async function retireEntityMemoryLineage(input: {
     .sort((left, right) => left.localeCompare(right));
   const exactOwnerUser =
     scope?.executingPrincipalType === "user" &&
-    scope.executingPrincipalId === input.ownerActorId;
+    scope.executingPrincipalId === scope.initiatingActorId;
   const governedSystemTransaction =
     Boolean(input.sql) &&
     scope?.executingPrincipalType === "system" &&
@@ -362,7 +362,6 @@ export async function retireEntityMemoryLineage(input: {
     !scope ||
     !input.executionScope ||
     scope.tenantId !== input.tenantId ||
-    scope.initiatingActorId !== input.ownerActorId ||
     (!exactOwnerUser && !governedSystemTransaction) ||
     !["memory.correct.v1", "memory.forget.v1"].includes(scope.purpose) ||
     memoryIds.length === 0
@@ -374,6 +373,18 @@ export async function retireEntityMemoryLineage(input: {
   if (hasDatabaseUrl() || input.sql) {
     if (!input.sql) await ensureDatabaseSchema();
     const operation = async (sql: EntitySqlClient) => {
+      if (scope.initiatingActorId !== input.ownerActorId) {
+        const ownerRows = await sql`
+          SELECT public.omni_actor_scope_v1_allows_canonical(
+            ${input.tenantId}, ${input.ownerActorId}
+          ) AS allowed
+        `;
+        if (ownerRows[0]?.allowed !== true) {
+          throw new Error(
+            "Entity lineage retirement requires an exact owner scope.",
+          );
+        }
+      }
       const rows = await sql`
         SELECT contract
         FROM omni_entity_records
@@ -424,6 +435,10 @@ export async function retireEntityMemoryLineage(input: {
     return runWithDatabaseActorScope(input.tenantId, [input.ownerActorId], () =>
       getSql().transaction(operation) as Promise<ReturnType<typeof frozenRetirement>>
     );
+  }
+
+  if (scope.initiatingActorId !== input.ownerActorId) {
+    throw new Error("Entity lineage retirement requires an exact owner scope.");
   }
 
   let retirement = frozenRetirement([], [], []);
