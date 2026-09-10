@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WORKFLOW_RUN_BUDGET_LIMITS } from "@/lib/config";
+import {
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+  AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
+} from "@/lib/rag/context-engine";
 import type { WorkflowRunDetail } from "@/lib/workflows/types";
 
 const mocks = vi.hoisted(() => ({
@@ -27,6 +31,18 @@ vi.mock("@/lib/approval-grants/store", () => ({
   revokeApprovalGrantsForPlan: mocks.revokeApprovalGrantsForPlan,
 }));
 vi.mock("@/lib/rag/context-engine", () => ({
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES: Object.freeze({
+    memory: "authorized_only",
+    knowledge: "canonical_authorized",
+    topicGraph: "exclude",
+    entityGraph: "authorized",
+  }),
+  AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES: Object.freeze({
+    memory: "authorized_only",
+    knowledge: "exclude",
+    topicGraph: "exclude",
+    entityGraph: "exclude",
+  }),
   buildContextPack: mocks.buildContextPack,
 }));
 vi.mock("@/lib/settings/runtime-models", () => ({
@@ -453,7 +469,7 @@ describe("workflow runner bounded replan", () => {
         databaseMemoryAccessScope: expect.objectContaining({
           projectId: "project:one",
         }),
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
         persistTrace: false,
       }),
     );
@@ -494,7 +510,7 @@ describe("workflow runner bounded replan", () => {
           executingPrincipalId: "agent:atlas:principal",
           projectId: null,
         }),
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
         persistTrace: false,
       }),
     );
@@ -541,7 +557,7 @@ describe("workflow runner bounded replan", () => {
           initiatingActorId: "actor:canonical-owner",
           projectId: null,
         }),
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
         persistTrace: false,
         contextCompilerV2Automatic: expect.objectContaining({
           runId: detail.run.id,

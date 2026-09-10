@@ -24,7 +24,10 @@ import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
 import type { ChatMessage } from "@/lib/orchestration/types";
 import { estimateContextTokens } from "@/lib/rag/context-budget";
 import { buildCitationSources } from "@/lib/rag/citations";
-import { buildContextPack } from "@/lib/rag/context-engine";
+import {
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+  buildContextPack,
+} from "@/lib/rag/context-engine";
 import { CONTEXT_COMPILER_V2_AUTOMATIC_VERSION_ID } from "@/lib/rag/context-compiler-v2";
 import type { ContextScopeId } from "@/lib/rag/context-scope";
 import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
@@ -118,7 +121,7 @@ export async function prepareLoopV2Context(
           limit: 8,
           tenantId: request.securityContext.tenantId,
           databaseMemoryAccessScope: access.databaseAccessScope,
-          scopedMemoryOnly: true,
+          retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
           persistTrace: false,
           evidenceIds: request.contextSelection?.evidenceIds,
           entityGraphAccess: request.promptEntityGraphAccess,

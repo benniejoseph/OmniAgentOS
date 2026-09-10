@@ -11,7 +11,11 @@ import {
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import { generateModelStructured } from "@/lib/models/gateway";
-import { buildContextPack } from "@/lib/rag/context-engine";
+import {
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+  AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
+  buildContextPack,
+} from "@/lib/rag/context-engine";
 import { trustedRuntimeClockInstruction } from "@/lib/orchestration/prompts";
 import type { DatabaseMemoryAccessScope } from "@/lib/db/memory-access-scope";
 import { redactSensitive } from "@/lib/security/context";
@@ -220,7 +224,9 @@ export async function buildDynamicWorkflowPlan(input: BuildWorkflowPlanInput) {
     evidenceIds: contextSelection?.evidenceIds,
     ...(input.databaseMemoryAccessScope ? {
       databaseMemoryAccessScope: input.databaseMemoryAccessScope,
-      scopedMemoryOnly: true,
+      retrievalSources: input.contextBoundary?.contextScope === "personal"
+        ? AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES
+        : AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
       persistTrace: false,
     } : {}),
     ...(input.contextBoundary?.contextScope === "personal"

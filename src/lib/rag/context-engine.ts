@@ -56,6 +56,7 @@ import {
   buildContextCompilerV2Canary,
   buildContextCompilerV2Shadow,
   prepareContextCompilerV2Candidates,
+  type ContextCompilerV2PreparedCandidate,
 } from "@/lib/rag/context-compiler-v2";
 import { normalizeExplicitEvidenceIds } from "@/lib/rag/evidence-selection";
 import {
@@ -79,8 +80,12 @@ export type BuildContextPackOptions = {
    * query or result is written to the tenant-wide compatibility trace.
    */
   databaseMemoryAccessScope?: DatabaseMemoryAccessScope;
-  /** Restricts retrieval to the authorized database scope, excluding legacy tenant stores. */
-  scopedMemoryOnly?: boolean;
+  /**
+   * Selects each retrieval surface independently. Canonical-authorized
+   * knowledge is filtered through Context Compiler v2 before ranking; it
+   * never turns the tenant-compatible knowledge lane into actor authority.
+   */
+  retrievalSources?: ContextRetrievalSources;
   limit?: number;
   candidateLimit?: number;
   /** Exact thread/session evidence reference required by working memory. */
@@ -135,6 +140,40 @@ export type BuildContextPackOptions = {
   entityGraphAccess?: RequestEntityAccessV1;
 };
 
+export type ContextRetrievalSources = Readonly<{
+  memory: "tenant_and_authorized" | "authorized_only" | "exclude";
+  knowledge: "tenant_compatible" | "canonical_authorized" | "exclude";
+  topicGraph: "tenant_and_authorized" | "exclude";
+  entityGraph: "authorized" | "exclude";
+}>;
+
+/**
+ * Strict actor-aware retrieval: legacy unattributed memories and the legacy
+ * topic graph stay closed, while canonical source evidence and typed relation
+ * paths remain available only after their existing authorization checks.
+ */
+export const AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES = Object.freeze({
+  memory: "authorized_only",
+  knowledge: "canonical_authorized",
+  topicGraph: "exclude",
+  entityGraph: "authorized",
+} as const satisfies ContextRetrievalSources);
+
+/** Strict scoped-memory retrieval for runtimes without canonical source authority. */
+export const AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES = Object.freeze({
+  memory: "authorized_only",
+  knowledge: "exclude",
+  topicGraph: "exclude",
+  entityGraph: "exclude",
+} as const satisfies ContextRetrievalSources);
+
+const TENANT_COMPATIBLE_CONTEXT_RETRIEVAL_SOURCES = Object.freeze({
+  memory: "tenant_and_authorized",
+  knowledge: "tenant_compatible",
+  topicGraph: "tenant_and_authorized",
+  entityGraph: "authorized",
+} as const satisfies ContextRetrievalSources);
+
 type RetrievalTraceLedger = {
   traces: RetrievalTraceRecord[];
 };
@@ -145,9 +184,12 @@ export async function buildContextPack(
 ): Promise<ContextPack> {
   const startedAt = Date.now();
   const databaseMemoryAccessScope = resolveContextMemoryAccessScope(options);
-  if (options.scopedMemoryOnly && !databaseMemoryAccessScope) {
-    throw new Error("Scoped-only context requires a database memory access scope.");
-  }
+  const compilerV2Request = contextCompilerV2Request(options);
+  const retrievalSources = resolveContextRetrievalSources(
+    options,
+    databaseMemoryAccessScope,
+    compilerV2Request,
+  );
   const privateTraceAccessScope = resolvePrivateTraceAccessScope(
     databaseMemoryAccessScope,
   );
@@ -170,8 +212,11 @@ export async function buildContextPack(
     });
     profile = profileQuery(normalizedQuery, queryPlan);
   }
-  const compilerV2Request = contextCompilerV2Request(options);
-  assertContextCompilerV2Scope(compilerV2Request, tenantId);
+  assertContextCompilerV2Scope(
+    compilerV2Request,
+    tenantId,
+    databaseMemoryAccessScope,
+  );
 
   if (!profile.shouldRetrieve || evidenceIds?.length === 0) {
     const compilerV2Shadow = options.contextCompilerV2Shadow
@@ -266,7 +311,7 @@ export async function buildContextPack(
   );
   const queryEmbedding = embeddingResult.vectors[0];
   const queryEmbeddingSpaceId = embeddingResult.receipt.spaceId;
-  const graphPathPromise = !options.scopedMemoryOnly &&
+  const graphPathPromise = retrievalSources.entityGraph === "authorized" &&
       options.entityGraphAccess && databaseMemoryAccessScope &&
       queryPlan.domains.some((domain) => domain === "entity" || domain === "relationship")
     ? retrieveGraphRelationshipPaths(normalizedQuery, {
@@ -280,17 +325,17 @@ export async function buildContextPack(
         asOfTime: compilerAsOfTime,
       })
     : Promise.resolve(undefined);
-  const [legacyMemoryResults, scopedMemoryResults, knowledgeResults, graphResults, graphPathResult] = await Promise.all([
-    options.scopedMemoryOnly
-      ? Promise.resolve([])
-      : searchMemories(retrievalQuery || normalizedQuery, {
+  const [legacyMemoryResults, scopedMemoryResults, rawKnowledgeResults, graphResults, graphPathResult] = await Promise.all([
+    retrievalSources.memory === "tenant_and_authorized"
+      ? searchMemories(retrievalQuery || normalizedQuery, {
           limit: candidateLimit,
           queryEmbedding,
           queryEmbeddingSpaceId,
           tenantId,
           workingMemoryReference: options.workingMemoryReference,
-        }),
-    databaseMemoryAccessScope
+        })
+      : Promise.resolve([]),
+    retrievalSources.memory !== "exclude" && databaseMemoryAccessScope
       ? searchMemories(retrievalQuery || normalizedQuery, {
           limit: candidateLimit,
           queryEmbedding,
@@ -300,7 +345,7 @@ export async function buildContextPack(
           workingMemoryReference: options.workingMemoryReference,
         })
       : Promise.resolve([]),
-    options.scopedMemoryOnly
+    retrievalSources.knowledge === "exclude"
       ? Promise.resolve([])
       : searchKnowledge(retrievalQuery || normalizedQuery, {
           limit: candidateLimit,
@@ -308,7 +353,7 @@ export async function buildContextPack(
           queryEmbeddingSpaceId,
           tenantId,
         }),
-    options.scopedMemoryOnly
+    retrievalSources.topicGraph === "exclude"
       ? Promise.resolve([])
       : searchMemoryGraph(retrievalQuery || normalizedQuery, {
           limit: Math.min(candidateLimit, 24),
@@ -328,12 +373,23 @@ export async function buildContextPack(
         executionScope: compilerV2Request.executionScope,
         memoryAccessScope: databaseMemoryAccessScope,
         memoryResults,
-        knowledgeResults,
+        knowledgeResults: rawKnowledgeResults,
         graphResults,
         relationshipPaths: graphRelationshipPaths,
         asOfTime: compilerAsOfTime,
       })
     : undefined;
+  const canonicalAuthorizationCandidates =
+    retrievalSources.knowledge === "canonical_authorized" &&
+      compilerCandidatesPromise
+      ? await compilerCandidatesPromise
+      : undefined;
+  const knowledgeResults = retrievalSources.knowledge === "canonical_authorized"
+    ? filterAuthorizedCanonicalKnowledge(
+        rawKnowledgeResults,
+        canonicalAuthorizationCandidates || [],
+      )
+    : rawKnowledgeResults;
   const evidence = scoreEvidenceItems({
     profile,
     memoryResults,
@@ -373,24 +429,27 @@ export async function buildContextPack(
       : lineageEvidence,
     limit,
   );
-  const compilerV2Shadow = options.contextCompilerV2Shadow && compilerCandidatesPromise
+  const compilerCandidates = compilerCandidatesPromise
+    ? await compilerCandidatesPromise
+    : undefined;
+  const compilerV2Shadow = options.contextCompilerV2Shadow && compilerCandidates
     ? buildContextCompilerV2Shadow({
         runId: options.contextCompilerV2Shadow.runId,
         tenantId: normalizeTenantId(tenantId),
         query: normalizedQuery,
-        candidates: await compilerCandidatesPromise,
+        candidates: compilerCandidates,
         legacySelectedEvidenceIds: legacySelected.map(citationIdForEvidence),
         explicitEvidenceIds: evidenceIds,
         limit,
         asOfTime: compilerAsOfTime,
       })
     : undefined;
-  const compilerV2Canary = options.contextCompilerV2Canary && compilerCandidatesPromise
+  const compilerV2Canary = options.contextCompilerV2Canary && compilerCandidates
     ? buildContextCompilerV2Canary({
         runId: options.contextCompilerV2Canary.runId,
         tenantId: normalizeTenantId(tenantId),
         query: normalizedQuery,
-        candidates: await compilerCandidatesPromise,
+        candidates: compilerCandidates,
         legacySelectedEvidenceIds: legacySelected.map(citationIdForEvidence),
         explicitEvidenceIds: evidenceIds || [],
         limit,
@@ -398,12 +457,12 @@ export async function buildContextPack(
       })
     : undefined;
   const compilerV2Automatic =
-    options.contextCompilerV2Automatic && compilerCandidatesPromise
+    options.contextCompilerV2Automatic && compilerCandidates
       ? buildContextCompilerV2Automatic({
           runId: options.contextCompilerV2Automatic.runId,
           tenantId: normalizeTenantId(tenantId),
           query: normalizedQuery,
-          candidates: await compilerCandidatesPromise,
+          candidates: compilerCandidates,
           legacySelectedEvidenceIds: legacySelected.map(citationIdForEvidence),
           limit,
           asOfTime: compilerAsOfTime,
@@ -508,6 +567,7 @@ export async function buildContextPack(
 function assertContextCompilerV2Scope(
   compiler: BuildContextPackOptions["contextCompilerV2Shadow"],
   tenantId: string | undefined,
+  databaseMemoryAccessScope?: DatabaseMemoryAccessScope,
 ) {
   if (!compiler) return;
   if (normalizeTenantId(compiler.executionScope.tenantId) !== normalizeTenantId(tenantId)) {
@@ -516,6 +576,64 @@ function assertContextCompilerV2Scope(
   if (!compiler.executionScope.initiatingActorId) {
     throw new Error("Context Compiler v2 requires an initiating actor.");
   }
+  if (
+    databaseMemoryAccessScope &&
+    (
+      compiler.executionScope.initiatingActorId !==
+        databaseMemoryAccessScope.initiatingActorId ||
+      compiler.executionScope.workspaceId !== databaseMemoryAccessScope.workspaceId ||
+      compiler.executionScope.projectId !== databaseMemoryAccessScope.projectId ||
+      compiler.executionScope.missionId !== databaseMemoryAccessScope.missionId
+    )
+  ) {
+    throw new Error(
+      "Context Compiler v2 scope does not match the authorized memory boundary.",
+    );
+  }
+}
+
+function resolveContextRetrievalSources(
+  options: BuildContextPackOptions,
+  databaseMemoryAccessScope: DatabaseMemoryAccessScope | undefined,
+  compilerV2Request: ReturnType<typeof contextCompilerV2Request>,
+): ContextRetrievalSources {
+  const sources = options.retrievalSources ||
+    TENANT_COMPATIBLE_CONTEXT_RETRIEVAL_SOURCES;
+  if (sources.memory === "authorized_only" && !databaseMemoryAccessScope) {
+    throw new Error(
+      "Authorized-only context memory requires a database memory access scope.",
+    );
+  }
+  if (sources.knowledge === "canonical_authorized") {
+    if (!databaseMemoryAccessScope) {
+      throw new Error(
+        "Canonical-authorized knowledge requires a database memory access scope.",
+      );
+    }
+    if (!compilerV2Request) {
+      throw new Error(
+        "Canonical-authorized knowledge requires a Context Compiler v2 execution scope.",
+      );
+    }
+  }
+  return sources;
+}
+
+function filterAuthorizedCanonicalKnowledge(
+  results: readonly KnowledgeSearchResult[],
+  compilerCandidates: readonly ContextCompilerV2PreparedCandidate[],
+) {
+  const authorizedIds = new Set(
+    compilerCandidates
+      .filter((candidate) =>
+        candidate.itemClass === "canonical_evidence" &&
+        candidate.authorizationState === "authorized"
+      )
+      .map((candidate) => candidate.evidenceId),
+  );
+  return results.filter((result) =>
+    authorizedIds.has(`knowledge:${result.chunk.id}`)
+  );
 }
 
 function contextCompilerV2Request(options: BuildContextPackOptions) {

@@ -10,7 +10,11 @@ import { saveMemory } from "@/lib/memory/store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
-import { buildContextPack } from "@/lib/rag/context-engine";
+import {
+  AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+  AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
+  buildContextPack,
+} from "@/lib/rag/context-engine";
 import { parseContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import {
   deriveExecutionScope,
@@ -1015,7 +1019,10 @@ async function executeStep(
       evidenceIds: contextSelection?.evidenceIds,
       ...(durableContext ? {
         databaseMemoryAccessScope: durableContext.databaseAccessScope,
-        scopedMemoryOnly: true,
+        retrievalSources:
+          detail.run.input.metadata?.contextScope === "personal"
+            ? AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES
+            : AUTHORIZED_MEMORY_ONLY_RETRIEVAL_SOURCES,
         persistTrace: false,
       } : {}),
       ...(detail.run.input.metadata?.contextScope === "personal"

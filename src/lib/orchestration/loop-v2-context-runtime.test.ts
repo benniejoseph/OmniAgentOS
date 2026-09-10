@@ -10,6 +10,7 @@ import {
   type LoopV2ContextRuntimeRequest,
 } from "@/lib/orchestration/loop-v2-context-runtime";
 import { emptyContextBudgetReceipt } from "@/lib/rag/context-budget";
+import { AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES } from "@/lib/rag/context-engine";
 import type { ContextSelectionLockBinding } from "@/lib/rag/context-selection-lock";
 import type { ContextPack } from "@/lib/rag/types";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -96,7 +97,7 @@ describe("Loop v2 context preparation", () => {
     expect(harness.buildContext).toHaveBeenCalledWith(
       selection.query,
       expect.objectContaining({
-        scopedMemoryOnly: true,
+        retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
         persistTrace: false,
         evidenceIds: selection.evidenceIds,
         queryPlanning: { allowSemanticModel: false },
