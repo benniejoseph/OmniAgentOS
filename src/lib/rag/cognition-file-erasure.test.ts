@@ -16,6 +16,18 @@ import { saveMemory } from "@/lib/memory/store";
 import type { MemoryRecord } from "@/lib/memory/types";
 import { readJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
+import { ASAEL_ONTOLOGY_EFFECTIVE_AT } from "@/lib/entities/ontology";
+import {
+  buildEntityAccessBinding,
+  buildEntityRecord,
+  ENTITY_PURPOSE_IDS,
+} from "@/lib/entities/registry";
+import {
+  readEntityRegistry,
+  saveEntityRecord,
+} from "@/lib/entities/store";
+import { sourceContractSha256 } from "@/lib/sources/contracts";
+import { knowledgeDeletionTargetId } from "@/lib/rag/deletion-events";
 
 const mocks = vi.hoisted(() => ({
   purge: vi.fn(async () => 0),
@@ -64,7 +76,7 @@ describe("file-backed knowledge cognition erasure", () => {
       chunks: [{ index: 0, content: "Direct deletion" }],
     });
     const cognitionMemoryId = "memory:cognition-review-direct-delete";
-    const memoryOwner = "actor-cognition-purge";
+    const memoryOwner = "actor:00000000-0000-4000-8000-000000000111";
     await saveMemory({
       id: cognitionMemoryId,
       tenantId,
@@ -98,7 +110,47 @@ describe("file-backed knowledge cognition erasure", () => {
         purpose: "memory.correct.v1",
       }),
     });
-    await deleteKnowledgeDocumentByIdempotencyKey("direct-delete", { tenantId });
+    const entityBinding = buildEntityAccessBinding({
+      tenantId,
+      ownerActorId: memoryOwner,
+      visibility: "user_private",
+      sensitivity: "confidential",
+      allowedPurposeIds: ENTITY_PURPOSE_IDS,
+      boundAt: ASAEL_ONTOLOGY_EFFECTIVE_AT,
+    });
+    await saveEntityRecord({
+      entity: buildEntityRecord({
+        entityId: "entity-reviewed-source-map",
+        entityTypeId: "product",
+        canonicalLabel: "Reviewed source map",
+        accessBinding: entityBinding,
+        lineage: [{
+          kind: "memory",
+          referenceId: cognitionMemoryId,
+          referenceSha256: sourceContractSha256(cognitionMemoryId),
+        }],
+        createdAt: "2026-09-10T12:00:00.000Z",
+      }),
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: memoryOwner,
+        executingPrincipalType: "user",
+        executingPrincipalId: memoryOwner,
+        correlationId: "cognition-purge-entity",
+        purpose: "entity.write.v1",
+      }),
+    });
+    await deleteKnowledgeDocumentByIdempotencyKey("direct-delete", {
+      tenantId,
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: memoryOwner,
+        executingPrincipalType: "user",
+        executingPrincipalId: memoryOwner,
+        correlationId: "cognition-purge-delete",
+        purpose: "knowledge.delete_source",
+      }),
+    });
     expect(mocks.purge).toHaveBeenCalledWith({
       tenantId,
       documentIds: [direct.document.id],
@@ -114,6 +166,17 @@ describe("file-backed knowledge cognition erasure", () => {
         content: "",
         evidenceRefs: [],
       });
+    await expect(readEntityRegistry({
+      accessBinding: entityBinding,
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: memoryOwner,
+        executingPrincipalType: "user",
+        executingPrincipalId: memoryOwner,
+        correlationId: "cognition-purge-entity-read",
+        purpose: "entity.read.v1",
+      }),
+    })).resolves.toMatchObject({ entities: [] });
 
     const prefixed = await Promise.all(["a", "b"].map((suffix) =>
       createKnowledgeDocument({
@@ -125,8 +188,78 @@ describe("file-backed knowledge cognition erasure", () => {
         chunks: [{ index: 0, content: `Prefix deletion ${suffix}` }],
       })
     ));
+    const prefixMemoryId = "memory:cognition-review-prefix-delete";
+    await saveMemory({
+      id: prefixMemoryId,
+      tenantId,
+      title: "Reviewed course map",
+      content: "Reviewed cognition derived from the course source.",
+      type: "knowledge",
+      tier: "summary",
+      formationReason: "source_cognition",
+      formationOrigin: "reviewed_source_cognition",
+      tags: ["reviewed"],
+      scope: "user",
+      source: "cognify-reviewed:cognition-review-prefix-delete",
+      claimStatus: "active",
+      assertedBy: "user",
+      evidenceRefs: [
+        `knowledge:${prefixed[0]!.document.id}`,
+        "evidence:prefix-delete",
+        "cognition-review:cognition-review-prefix-delete",
+      ],
+      accessBinding: buildUserPrivateMemoryAccessBindingV1({
+        tenantId,
+        ownerActorId: memoryOwner,
+        originPurpose: "knowledge.cognition.review.confirm",
+      }),
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: memoryOwner,
+        executingPrincipalType: "user",
+        executingPrincipalId: memoryOwner,
+        correlationId: "cognition-prefix-memory",
+        purpose: "memory.correct.v1",
+      }),
+    });
+    await saveEntityRecord({
+      entity: buildEntityRecord({
+        entityId: "entity-reviewed-course-map",
+        entityTypeId: "product",
+        canonicalLabel: "Reviewed course map",
+        accessBinding: entityBinding,
+        lineage: [{
+          kind: "memory",
+          referenceId: prefixMemoryId,
+          referenceSha256: sourceContractSha256(prefixMemoryId),
+        }],
+        createdAt: "2026-09-10T12:05:00.000Z",
+      }),
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: memoryOwner,
+        executingPrincipalType: "user",
+        executingPrincipalId: memoryOwner,
+        correlationId: "cognition-prefix-entity",
+        purpose: "entity.write.v1",
+      }),
+    });
+    const sourcePrefix = "connector:course:";
     await deleteKnowledgeDocumentsBySourcePrefix("connector:course:", {
       tenantId,
+      actorId: memoryOwner,
+      mutation: {
+        idempotencyKey: "delete-course-source",
+        executionScope: createExecutionScope({
+          tenantId,
+          initiatingActorId: memoryOwner,
+          executingPrincipalType: "user",
+          executingPrincipalId: memoryOwner,
+          correlationId: "cognition-prefix-delete",
+          causationId: knowledgeDeletionTargetId(sourcePrefix),
+          purpose: "knowledge.delete_source",
+        }),
+      },
     });
     expect(mocks.purge).toHaveBeenLastCalledWith({
       tenantId,
@@ -134,6 +267,101 @@ describe("file-backed knowledge cognition erasure", () => {
         prefixed.map((item) => item.document.id),
       ),
     });
+    const afterPrefixMemories = await readJsonFile<MemoryRecord[]>(
+      getDataPath("memory.json"),
+      [],
+    );
+    expect(afterPrefixMemories.find((memory) => memory.id === prefixMemoryId))
+      .toMatchObject({ claimStatus: "superseded", content: "" });
+    await expect(readEntityRegistry({
+      accessBinding: entityBinding,
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: memoryOwner,
+        executingPrincipalType: "user",
+        executingPrincipalId: memoryOwner,
+        correlationId: "cognition-prefix-entity-read",
+        purpose: "entity.read.v1",
+      }),
+    })).resolves.toMatchObject({ entities: [] });
+  });
+
+  it("rejects cross-owner cognition before deleting the source or memory", async () => {
+    const tenantId = "tenant-cognition-owner-guard";
+    const sourceOwner = "actor:00000000-0000-4000-8000-000000000121";
+    const memoryOwner = "actor:00000000-0000-4000-8000-000000000122";
+    const document = await createKnowledgeDocument({
+      idempotencyKey: "cross-owner-delete",
+      tenantId,
+      title: "Owner-bound source",
+      content: "Owner-bound content",
+      source: "upload:owner-bound",
+      chunks: [{ index: 0, content: "Owner-bound content" }],
+    });
+    const memoryId = "memory:cross-owner-cognition";
+    await saveMemory({
+      id: memoryId,
+      tenantId,
+      title: "Other owner's cognition",
+      content: "Must not be retired by the source owner.",
+      type: "knowledge",
+      tier: "summary",
+      formationReason: "source_cognition",
+      formationOrigin: "reviewed_source_cognition",
+      tags: ["reviewed"],
+      scope: "user",
+      source: "cognify-reviewed:cross-owner",
+      claimStatus: "active",
+      assertedBy: "user",
+      evidenceRefs: [
+        `knowledge:${document.document.id}`,
+        "evidence:cross-owner",
+        "cognition-review:cross-owner",
+      ],
+      accessBinding: buildUserPrivateMemoryAccessBindingV1({
+        tenantId,
+        ownerActorId: memoryOwner,
+        originPurpose: "knowledge.cognition.review.confirm",
+      }),
+      executionScope: createExecutionScope({
+        tenantId,
+        initiatingActorId: memoryOwner,
+        executingPrincipalType: "user",
+        executingPrincipalId: memoryOwner,
+        correlationId: "cross-owner-memory",
+        purpose: "memory.correct.v1",
+      }),
+    });
+
+    await expect(deleteKnowledgeDocumentByIdempotencyKey(
+      "cross-owner-delete",
+      { tenantId },
+    )).rejects.toThrow("actor-bound execution scope");
+    await expect(deleteKnowledgeDocumentByIdempotencyKey(
+      "cross-owner-delete",
+      {
+        tenantId,
+        executionScope: createExecutionScope({
+          tenantId,
+          initiatingActorId: sourceOwner,
+          executingPrincipalType: "user",
+          executingPrincipalId: sourceOwner,
+          correlationId: "cross-owner-delete",
+          purpose: "knowledge.delete_source",
+        }),
+      },
+    )).rejects.toThrow("cannot cross actor ownership");
+
+    const memories = await readJsonFile<MemoryRecord[]>(
+      getDataPath("memory.json"),
+      [],
+    );
+    expect(memories.find((memory) => memory.id === memoryId)).toMatchObject({
+      claimStatus: "active",
+      title: "Other owner's cognition",
+      evidenceRefs: expect.arrayContaining([`knowledge:${document.document.id}`]),
+    });
+    expect(mocks.purge).not.toHaveBeenCalled();
   });
 
   it("purges cognition for superseded Capture revisions but not the current one", async () => {

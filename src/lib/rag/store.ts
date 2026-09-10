@@ -39,6 +39,7 @@ import type {
   KnowledgeSourceType,
 } from "@/lib/rag/types";
 import type { MemoryRecord } from "@/lib/memory/types";
+import { memoryAccessBindingV1Schema } from "@/lib/memory/access-binding";
 import {
   assertCaptureIngestSource,
   captureIngestSource,
@@ -396,27 +397,42 @@ export async function deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey: st
     );
     return documentId;
   }
-  if (options.executionScope) {
+  const ledger = await readKnowledgeLedger();
+  const documentIds = new Set([documentId]);
+  const evidenceRows = canonicalFileEvidenceRows(ledger, documentIds);
+  const memoryLineage = await findFileKnowledgeMemoryLineage({
+    tenantId,
+    documentIds,
+  });
+  const hasBoundMemoryLineage = memoryLineage.some((memory) =>
+    Boolean(memory.ownerActorId)
+  );
+  if (hasBoundMemoryLineage) {
     const lifecycleScope = requireKnowledgeMemoryLifecycleScope(
       tenantId,
       options.executionScope,
     );
-    const ledger = await readKnowledgeLedger();
-    const documentIds = new Set([documentId]);
-    const evidenceRows = canonicalFileEvidenceRows(ledger, documentIds);
-    const memoryIds = await findFileKnowledgeMemoryIds({
+    await retireFileKnowledgeEntityLineages({
       tenantId,
-      documentIds,
+      evidenceRows,
+      memoryLineage,
+      lifecycleScope,
+      retiredAt,
     });
-    if (
-      lifecycleScope.exactOwnerUser &&
-      (evidenceRows.length || memoryIds.length)
-    ) {
+  } else if (
+    options.executionScope &&
+    (evidenceRows.length || memoryLineage.length)
+  ) {
+    const lifecycleScope = requireKnowledgeMemoryLifecycleScope(
+      tenantId,
+      options.executionScope,
+    );
+    if (lifecycleScope.exactOwnerUser) {
       await retireKnowledgeEntityLineage({
         tenantId,
         ownerActorId: lifecycleScope.ownerActorId,
         evidenceRows,
-        memoryIds,
+        memoryIds: memoryLineage.map((memory) => memory.memoryId),
         executionScope: lifecycleScope.executionScope,
         retiredAt,
       });
@@ -564,20 +580,33 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
   const invalidationLifecycle = invalidationScope
     ? requireKnowledgeMemoryLifecycleScope(tenantId, invalidationScope)
     : undefined;
-  const fileMemoryIds = await findFileKnowledgeMemoryIds({
+  const memoryLineage = await findFileKnowledgeMemoryLineage({
     tenantId,
     documentIds: ids,
     sourcePrefix: prefix,
   });
-  if (
+  const hasBoundMemoryLineage = memoryLineage.some((memory) =>
+    Boolean(memory.ownerActorId)
+  );
+  if (hasBoundMemoryLineage) {
+    const lifecycleScope = invalidationLifecycle ||
+      requireKnowledgeMemoryLifecycleScope(tenantId, undefined);
+    await retireFileKnowledgeEntityLineages({
+      tenantId,
+      evidenceRows,
+      memoryLineage,
+      lifecycleScope,
+      retiredAt,
+    });
+  } else if (
     invalidationLifecycle &&
-    (evidenceRows.length || fileMemoryIds.length)
+    (evidenceRows.length || memoryLineage.length)
   ) {
     await retireKnowledgeEntityLineage({
       tenantId,
       ownerActorId: invalidationLifecycle.ownerActorId,
       evidenceRows,
-      memoryIds: fileMemoryIds,
+      memoryIds: memoryLineage.map((memory) => memory.memoryId),
       executionScope: invalidationLifecycle.executionScope,
       retiredAt,
     });
@@ -830,16 +859,33 @@ export async function retireSupersededCaptureKnowledge(input: {
   if (!documentIds.size) return { documents: 0, memories: 0 };
 
   const evidenceRows = canonicalFileEvidenceRows(ledger, documentIds);
-  const fileMemoryIds = await findFileKnowledgeMemoryIds({
+  const memoryLineage = await findFileKnowledgeMemoryLineage({
     tenantId,
     documentIds,
   });
-  if (exactOwnerUser && (evidenceRows.length || fileMemoryIds.length)) {
+  const hasBoundMemoryLineage = memoryLineage.some((memory) =>
+    Boolean(memory.ownerActorId)
+  );
+  if (hasBoundMemoryLineage) {
+    await retireFileKnowledgeEntityLineages({
+      tenantId,
+      evidenceRows,
+      memoryLineage,
+      lifecycleScope: requireKnowledgeMemoryLifecycleScope(
+        tenantId,
+        input.executionScope,
+      ),
+      retiredAt,
+    });
+  } else if (
+    exactOwnerUser &&
+    (evidenceRows.length || memoryLineage.length)
+  ) {
     await retireKnowledgeEntityLineage({
       tenantId,
       ownerActorId: guard.actorId,
       evidenceRows,
-      memoryIds: fileMemoryIds,
+      memoryIds: memoryLineage.map((memory) => memory.memoryId),
       executionScope: input.executionScope,
       retiredAt,
     });
@@ -1103,31 +1149,84 @@ function requireKnowledgeMemoryLifecycleScope(
   });
 }
 
-async function findFileKnowledgeMemoryIds(input: {
+type FileKnowledgeMemoryLineage = Readonly<{
+  memoryId: string;
+  ownerActorId: string | null;
+}>;
+
+async function findFileKnowledgeMemoryLineage(input: {
   tenantId: string;
   documentIds: ReadonlySet<string>;
   sourcePrefix?: string;
-}) {
+}): Promise<readonly FileKnowledgeMemoryLineage[]> {
   const memories = await readJsonFile<MemoryRecord[]>(
     getDataPath("memory.json"),
     [],
   );
-  return memories.filter((memory) =>
-    normalizeTenantId(memory.tenantId) === input.tenantId &&
-    memory.claimStatus !== "forgotten" &&
-    (
-      (input.sourcePrefix && memory.source.startsWith(input.sourcePrefix)) ||
-      [...input.documentIds].some((documentId) =>
-        memory.id.startsWith(`${documentId}_memory_`)
-      ) ||
-      memory.evidenceRefs?.some((reference) =>
-        reference.startsWith("knowledge:") &&
-        input.documentIds.has(reference.slice("knowledge:".length))
+  return memories.flatMap((memory) => {
+    if (
+      normalizeTenantId(memory.tenantId) !== input.tenantId ||
+      memory.claimStatus === "forgotten" ||
+      !(
+        (input.sourcePrefix && memory.source.startsWith(input.sourcePrefix)) ||
+        [...input.documentIds].some((documentId) =>
+          memory.id.startsWith(`${documentId}_memory_`)
+        ) ||
+        memory.evidenceRefs?.some((reference) =>
+          reference.startsWith("knowledge:") &&
+          input.documentIds.has(reference.slice("knowledge:".length))
+        )
       )
-    )
-  ).map((memory) => memory.id).sort((left, right) =>
-    left.localeCompare(right)
+    ) return [];
+    const binding = memory.accessBinding
+      ? memoryAccessBindingV1Schema.parse(memory.accessBinding)
+      : undefined;
+    if (binding && binding.tenantId !== input.tenantId) {
+      throw new Error("Knowledge memory lineage tenant is invalid.");
+    }
+    return [{
+      memoryId: memory.id,
+      ownerActorId: binding?.ownerActorId || null,
+    }];
+  }).sort((left, right) =>
+    (left.ownerActorId || "").localeCompare(right.ownerActorId || "") ||
+    left.memoryId.localeCompare(right.memoryId)
   );
+}
+
+async function retireFileKnowledgeEntityLineages(input: {
+  tenantId: string;
+  evidenceRows: readonly Readonly<Record<string, unknown>>[];
+  memoryLineage: readonly FileKnowledgeMemoryLineage[];
+  lifecycleScope: ReturnType<typeof requireKnowledgeMemoryLifecycleScope>;
+  retiredAt: string;
+}) {
+  if (!input.lifecycleScope.exactOwnerUser) {
+    throw new Error(
+      "File-backed knowledge lineage retirement requires an exact owner user scope.",
+    );
+  }
+  const ownerActorId = input.lifecycleScope.ownerActorId;
+  const evidenceOwners = input.evidenceRows.map((row) =>
+    String(row.owner_actor_id || "").trim()
+  );
+  const memoryOwners = input.memoryLineage.map((memory) =>
+    memory.ownerActorId || ownerActorId
+  );
+  const owners = canonicalIds([...evidenceOwners, ...memoryOwners]);
+  if (owners.some((owner) => owner !== ownerActorId)) {
+    throw new Error(
+      "File-backed knowledge lineage retirement cannot cross actor ownership.",
+    );
+  }
+  await retireKnowledgeEntityLineage({
+    tenantId: input.tenantId,
+    ownerActorId,
+    evidenceRows: input.evidenceRows,
+    memoryIds: input.memoryLineage.map((memory) => memory.memoryId),
+    executionScope: input.lifecycleScope.executionScope,
+    retiredAt: input.retiredAt,
+  });
 }
 
 function canonicalFileEvidenceRows(
