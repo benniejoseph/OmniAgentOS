@@ -85,6 +85,26 @@ export function captureBatchTitle(filename: string) {
     .slice(0, 240) || "Untitled capture";
 }
 
+export function captureSearchMatches(
+  query: string,
+  values: readonly (string | undefined)[],
+) {
+  const terms = captureSearchTerms(query);
+  if (!terms.length) return true;
+  const searchable = captureSearchTerms(values.filter(Boolean).join(" "));
+  return terms.every((term) =>
+    searchable.some((candidate) => candidate.includes(term))
+  );
+}
+
+function captureSearchTerms(value: string) {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+}
+
 export function captureBatchRejectionMessage(
   rejected: readonly CaptureBatchRejection[],
 ) {
