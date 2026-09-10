@@ -109,6 +109,40 @@ describe("canonical explicit-memory entity extraction", () => {
     expect(extraction.candidates).toEqual([]);
   });
 
+  it("projects explicit cognition markers only after confirmed source review", () => {
+    const reviewed = explicitMemory("person: Ada Lovelace");
+    reviewed.source = "cognify-reviewed:cognition-batch-a";
+    reviewed.formationReason = "source_cognition";
+    reviewed.evidenceRefs = [
+      "knowledge:document-a",
+      "evidence:evidence-a",
+      "cognition-review:cognition-batch-a",
+    ];
+
+    expect(extractEntitiesFromExplicitMemory(reviewed).candidates)
+      .toEqual([expect.objectContaining({
+        entityTypeId: "person",
+        canonicalLabel: "Ada Lovelace",
+      })]);
+
+    const unreviewedCandidate = {
+      ...reviewed,
+      source: "cognify-proposed:cognition-batch-a",
+      formationReason: "assistant_inference_candidate" as const,
+      claimStatus: "candidate" as const,
+      assertedBy: "agent" as const,
+    };
+    expect(() => extractEntitiesFromExplicitMemory(unreviewedCandidate))
+      .toThrow(/canonical active user-authored memory/i);
+
+    expect(() => extractEntitiesFromExplicitMemory({
+      ...reviewed,
+      evidenceRefs: reviewed.evidenceRefs.filter((reference) =>
+        !reference.startsWith("cognition-review:")
+      ),
+    })).toThrow(/canonical active user-authored memory/i);
+  });
+
   it("projects new entities once and keeps retry decisions idempotent", async () => {
     const input = {
       context,

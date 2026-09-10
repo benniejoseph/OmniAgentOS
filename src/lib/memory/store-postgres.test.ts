@@ -693,6 +693,38 @@ describe("Postgres memory recall", () => {
     );
   });
 
+  it("rejects unreviewed model output before it can become source cognition", async () => {
+    const binding = buildUserPrivateMemoryAccessBindingV1({
+      tenantId: "tenant-a",
+      ownerActorId,
+      originPurpose: "memory.source_cognition",
+      accessBoundAt: "2026-09-06T00:00:00.000Z",
+    });
+
+    await expect(saveMemory({
+      id: "unreviewed-source-cognition",
+      tenantId: "tenant-a",
+      type: "knowledge",
+      title: "Unreviewed model output",
+      content: "relation: related_to | project: \"Phoenix\" -> person: \"Ada\"",
+      source: "cognify-proposed:cognition-batch-a",
+      formationReason: "source_cognition",
+      claimStatus: "active",
+      assertedBy: "user",
+      evidenceRefs: ["knowledge:document-a", "evidence:evidence-a"],
+      accessBinding: binding,
+      databaseAccessScope: accessScope(MEMORY_PURPOSE_IDS.correct),
+      executionScope: executionScope(MEMORY_PURPOSE_IDS.correct),
+    })).rejects.toThrow(/reviewed source cognition/i);
+
+    expect(mocks.queries.some((query) =>
+      query.includes("INSERT INTO omni_memories")
+    )).toBe(false);
+    expect(mocks.queries.some((query) =>
+      query.includes("INSERT INTO omni_entity_relation_projection_queue")
+    )).toBe(false);
+  });
+
   it("binds run feedback mutation to a deterministic scoped event", async () => {
     await expect(applyRunMemoryFeedback("run-a", "useful", {
       tenantId: "tenant-a",

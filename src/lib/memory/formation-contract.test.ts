@@ -114,4 +114,62 @@ describe("memory formation receipt", () => {
       executionScope,
     }).payload.origin).toBe("verified_effect");
   });
+
+  it("forms source cognition only after user review with exact evidence lineage", () => {
+    const reviewed = memory({
+      type: "knowledge",
+      formationReason: "source_cognition",
+      source: "cognify-reviewed:cognition-batch-a",
+      evidenceRefs: [
+        "knowledge:document-a",
+        "evidence:evidence-a",
+        "cognition-review:cognition-batch-a",
+      ],
+    });
+
+    expect(buildMemoryFormationEvent({
+      record: reviewed,
+      origin: "reviewed_source_cognition",
+      executionScope,
+    }).payload).toMatchObject({
+      origin: "reviewed_source_cognition",
+      claimStatus: "active",
+      assertedBy: "user",
+      evidenceRefs: [
+        "knowledge:document-a",
+        "evidence:evidence-a",
+        "cognition-review:cognition-batch-a",
+      ],
+    });
+
+    for (const record of [
+      { ...reviewed, claimStatus: "candidate" as const },
+      { ...reviewed, assertedBy: "agent" as const },
+      { ...reviewed, source: "cognify-proposed:cognition-batch-a" },
+      {
+        ...reviewed,
+        evidenceRefs: reviewed.evidenceRefs?.filter((reference) =>
+          !reference.startsWith("knowledge:")
+        ),
+      },
+      {
+        ...reviewed,
+        evidenceRefs: reviewed.evidenceRefs?.filter((reference) =>
+          !reference.startsWith("evidence:")
+        ),
+      },
+      {
+        ...reviewed,
+        evidenceRefs: reviewed.evidenceRefs?.filter((reference) =>
+          !reference.startsWith("cognition-review:")
+        ),
+      },
+    ]) {
+      expect(() => buildMemoryFormationEvent({
+        record,
+        origin: "reviewed_source_cognition",
+        executionScope,
+      })).toThrow(/user-confirmed memory with exact knowledge and evidence lineage/i);
+    }
+  });
 });

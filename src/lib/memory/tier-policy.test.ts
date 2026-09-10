@@ -3,6 +3,7 @@ import {
   canPromoteMemoryTier,
   defaultMemoryTier,
   inferMemoryFormationReason,
+  memoryFormationReasonLabel,
   memoryTierPoliciesV1,
   memoryTierRetentionExpiresAt,
   memoryTierSchema,
@@ -77,5 +78,10 @@ describe("memory tier policy v1", () => {
       source: "correction:user",
       supersedesId: "old-memory",
     })).toBe("correction");
+    expect(inferMemoryFormationReason({
+      formationOrigin: "reviewed_source_cognition",
+    })).toBe("source_cognition");
+    expect(memoryFormationReasonLabel("source_cognition"))
+      .toMatch(/exact source evidence.*accepted through review/i);
   });
 });
