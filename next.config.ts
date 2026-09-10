@@ -9,6 +9,12 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
   },
+  outputFileTracingIncludes: {
+    "/api/media/video/clip": ["node_modules/ffmpeg-static/ffmpeg"],
+    "/api/agent": ["node_modules/ffmpeg-static/ffmpeg"],
+    "/api/tools/*": ["node_modules/ffmpeg-static/ffmpeg"],
+    "/api/workflows/*": ["node_modules/ffmpeg-static/ffmpeg"],
+  },
   async headers() {
     return [
       {

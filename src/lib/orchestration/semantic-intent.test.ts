@@ -239,6 +239,50 @@ describe("semantic intent policy", () => {
     ]);
   });
 
+  it("routes image and video production through Atlas with a Forge delegate", () => {
+    const mediaCapability = (
+      id: string,
+    ): CapabilityDescriptor => ({
+      id,
+      name: id,
+      description: id,
+      category: "media",
+      source: "native",
+      riskLevel: 1,
+      approvalRequired: false,
+      reversible: true,
+    });
+    const image = applySemanticIntentPolicy({
+      message: "Edit my portrait into a professional passport picture.",
+      baseline: routeAgentRequest("Edit my portrait into a professional passport picture."),
+      mode: "orchestrate",
+      capabilityCandidates: [mediaCapability("media.image.edit")],
+      candidate: candidate({
+        intent: "update",
+        executionShape: "single_action",
+        workKinds: ["build"],
+      }),
+    });
+    expect(image.receipt.matchedCapabilityIds).toEqual(["media.image.edit"]);
+    expect(image.decision).toMatchObject({ primaryAgentId: "atlas" });
+    expect(image.decision.specialistIds).toEqual(
+      expect.arrayContaining(["atlas", "forge", "sentinel"]),
+    );
+
+    const clip = applySemanticIntentPolicy({
+      message: "Clip the video from 12 to 25 seconds.",
+      baseline: routeAgentRequest("Clip the video from 12 to 25 seconds."),
+      mode: "orchestrate",
+      capabilityCandidates: [mediaCapability("media.video.clip")],
+      candidate: candidate({
+        intent: "update",
+        executionShape: "single_action",
+        workKinds: ["build"],
+      }),
+    });
+    expect(clip.receipt.matchedCapabilityIds).toEqual(["media.video.clip"]);
+  });
+
   it("keeps learn-mode retrieval bound to memory when the model omits its work kind", () => {
     const resolution = applySemanticIntentPolicy({
       message: "What did I decide about the September launch?",

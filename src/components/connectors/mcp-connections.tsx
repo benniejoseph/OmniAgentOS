@@ -113,7 +113,7 @@ export function McpConnections({
     endpoint.trim() === GITHUB_MCP_ENDPOINT &&
     authType === "bearer_vault";
   const playwrightPresetApplied =
-    name.trim() === "Playwright Browser" &&
+    ["Computer Use Runtime", "Playwright Browser"].includes(name.trim()) &&
     endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT &&
     authType === "bearer_vault";
 
@@ -138,7 +138,7 @@ export function McpConnections({
   }
 
   function applyPlaywrightPreset() {
-    setName("Playwright Browser");
+    setName("Computer Use Runtime");
     setEndpoint(PLAYWRIGHT_MCP_ENDPOINT);
     setAuthType("bearer_vault");
     setAuthTokenEnv("");
@@ -749,12 +749,12 @@ export function McpConnections({
                     <Globe2 size={17} aria-hidden="true" />
                   </span>
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold">Connect Playwright</p>
+                    <p className="text-sm font-semibold">Connect Computer Use runtime</p>
                     <p className="mt-1 max-w-3xl text-xs leading-5 text-muted">
-                      Use Asael&apos;s self-hosted, open-source Playwright MCP
-                      service. Each task gets an isolated browser, while the
-                      service token stays encrypted in this app. Remote page
-                      content is always treated as untrusted data.{" "}
+                      Use Asael&apos;s self-hosted Playwright runtime for governed
+                      Computer Use. Each task gets an isolated, persistent browser
+                      scope while the service token stays encrypted in this app.
+                      Remote screen and page content stays untrusted.{" "}
                       <a
                         href="https://github.com/microsoft/playwright-mcp"
                         target="_blank"
@@ -786,8 +786,8 @@ export function McpConnections({
                 >
                   <Globe2 size={14} aria-hidden="true" />
                   {playwrightPresetApplied
-                    ? "Playwright preset applied"
-                    : "Use Playwright preset"}
+                    ? "Computer Use preset applied"
+                    : "Use Computer Use preset"}
                 </button>
               </div>
             </div>
@@ -1204,16 +1204,16 @@ function ConnectionRow({
           ) : null}
           {isOfficialBrowserUseMcpEndpoint(connector.endpoint) ? (
             <p className="mt-2 text-xs leading-5 text-muted">
-              Starting, continuing, or stopping browser sessions pauses for
-              approval. Session status, activity, costs, and profiles can be
-              read directly. Remote page content remains untrusted.
+              Legacy Browser Use fallback. Keep this disabled after the Computer
+              Use runtime passes your canary tasks. Session mutations remain
+              approval-gated and remote page content remains untrusted.
             </p>
           ) : null}
           {isAsaelPlaywrightMcpEndpoint(connector.endpoint) ? (
             <p className="mt-2 text-xs leading-5 text-muted">
-              Browser state is isolated to the current tenant, actor, and task.
-              Navigation and inspection run directly; interactive actions pause
-              for approval. Remote page content remains untrusted.
+              Primary Computer Use runtime. Browser state is isolated to the
+              current tenant, actor, and task. Navigation and inspection run
+              directly; interactive actions pause for approval.
             </p>
           ) : null}
         </div>

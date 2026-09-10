@@ -73,6 +73,11 @@ import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { readResponseTextLimited } from "@/lib/http/body";
 import {
+  clipVideoMediaAsset,
+  createImageMediaAsset,
+  createVideoMediaAsset,
+} from "@/lib/media/operations";
+import {
   publicMemoryDeletionReceiptV1,
   type MemoryDeletionReceiptV1,
 } from "@/lib/memory/deletion-receipt";
@@ -144,6 +149,34 @@ const webSearchSchema = z.object({
   searchContextSize: z.enum(["low", "medium", "high"]).optional(),
   allowedDomains: z.array(z.string().min(1).max(253)).max(20).optional(),
 }).strict();
+
+const mediaImageGenerateSchema = z.object({
+  prompt: z.string().trim().min(3).max(4_000),
+  aspectRatio: z.enum(["1:1", "16:9", "9:16", "4:3", "3:4"]).default("1:1"),
+}).strict();
+const mediaImageEditSchema = mediaImageGenerateSchema.extend({
+  sourceAssetIds: z.array(z.string().trim().min(1).max(240)).min(1).max(4),
+}).strict();
+const mediaVideoGenerateSchema = z.object({
+  prompt: z.string().trim().min(3).max(4_000),
+  sourceAssetIds: z.array(z.string().trim().min(1).max(240)).max(2).default([]),
+  aspectRatio: z.enum(["16:9", "9:16"]).default("16:9"),
+  resolution: z.enum(["360p", "720p"]).default("360p"),
+}).strict();
+const mediaVideoEditSchema = z.object({
+  prompt: z.string().trim().min(3).max(4_000),
+  sourceAssetId: z.string().trim().min(1).max(240),
+  aspectRatio: z.enum(["16:9", "9:16"]).default("16:9"),
+  resolution: z.enum(["360p", "720p"]).default("360p"),
+}).strict();
+const mediaVideoClipSchema = z.object({
+  sourceAssetId: z.string().trim().min(1).max(240),
+  startSeconds: z.number().finite().min(0).max(86_400),
+  endSeconds: z.number().finite().positive().max(86_400),
+}).strict().refine((value) => value.endSeconds > value.startSeconds && value.endSeconds - value.startSeconds <= 600, {
+  message: "Choose a valid clip range no longer than 10 minutes.",
+  path: ["endSeconds"],
+});
 
 const memoryWriteSchema = z.object({
   title: z.string().min(1).max(240),
@@ -3014,6 +3047,53 @@ async function runTool(
     });
   }
 
+  if (tool.id === "media.image.generate") {
+    const value = mediaImageGenerateSchema.parse(parsed);
+    return mediaToolResult(await createImageMediaAsset({
+      ...mediaToolOwner(context, executionScope, idempotencyKey, abortSignal),
+      ...value,
+      operation: "generate",
+    }));
+  }
+
+  if (tool.id === "media.image.edit") {
+    const value = mediaImageEditSchema.parse(parsed);
+    return mediaToolResult(await createImageMediaAsset({
+      ...mediaToolOwner(context, executionScope, idempotencyKey, abortSignal),
+      ...value,
+      operation: "edit",
+    }));
+  }
+
+  if (tool.id === "media.video.generate") {
+    const value = mediaVideoGenerateSchema.parse(parsed);
+    return mediaToolResult(await createVideoMediaAsset({
+      ...mediaToolOwner(context, executionScope, idempotencyKey, abortSignal),
+      ...value,
+      operation: "generate",
+    }));
+  }
+
+  if (tool.id === "media.video.edit") {
+    const value = mediaVideoEditSchema.parse(parsed);
+    return mediaToolResult(await createVideoMediaAsset({
+      ...mediaToolOwner(context, executionScope, idempotencyKey, abortSignal),
+      prompt: value.prompt,
+      sourceAssetIds: [value.sourceAssetId],
+      aspectRatio: value.aspectRatio,
+      resolution: value.resolution,
+      operation: "edit",
+    }));
+  }
+
+  if (tool.id === "media.video.clip") {
+    const value = mediaVideoClipSchema.parse(parsed);
+    return mediaToolResult(await clipVideoMediaAsset({
+      ...mediaToolOwner(context, executionScope, idempotencyKey, abortSignal),
+      ...value,
+    }));
+  }
+
   if (tool.id === "memory.write") {
     const value = memoryWriteSchema.parse(parsed);
     const service = await writeMemoryService(
@@ -3294,6 +3374,50 @@ async function runTool(
   }
 
   throw new Error(`No handler is registered for ${tool.id}.`);
+}
+
+function mediaToolOwner(
+  context: SecurityContext | undefined,
+  executionScope: ExecutionScope | undefined,
+  receiptId: string | undefined,
+  abortSignal: AbortSignal | undefined,
+) {
+  const tenantId = context?.tenantId?.trim();
+  const actorId = context?.actorId?.trim();
+  if (!tenantId || !actorId || !executionScope) {
+    throw new Error("Media tools require an authenticated, scoped execution.");
+  }
+  const sourceId = receiptId?.trim() || executionScope.correlationId;
+  return {
+    tenantId,
+    actorId,
+    executionScope,
+    sourceStreamId: `tool-execution:${sourceId}`,
+    abortSignal,
+  };
+}
+
+function mediaToolResult(result: Awaited<
+  ReturnType<typeof createImageMediaAsset | typeof createVideoMediaAsset | typeof clipVideoMediaAsset>
+>) {
+  return {
+    kind: result.kind,
+    operation: result.operation,
+    provider: result.provider,
+    model: result.model,
+    ...("responseId" in result && result.responseId
+      ? { responseId: result.responseId }
+      : {}),
+    sourceAssetIds: result.sourceAssetIds,
+    asset: {
+      id: result.asset.id,
+      filename: result.asset.filename,
+      mediaType: result.asset.mediaType,
+      byteCount: result.asset.byteCount,
+      storageKind: result.asset.storageKind,
+    },
+    contentUrl: result.contentUrl,
+  };
 }
 
 function toolAiUsageScope(
@@ -3888,6 +4012,12 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return webSearchSchema.parse(input);
   }
 
+  if (tool.id === "media.image.generate") return mediaImageGenerateSchema.parse(input);
+  if (tool.id === "media.image.edit") return mediaImageEditSchema.parse(input);
+  if (tool.id === "media.video.generate") return mediaVideoGenerateSchema.parse(input);
+  if (tool.id === "media.video.edit") return mediaVideoEditSchema.parse(input);
+  if (tool.id === "media.video.clip") return mediaVideoClipSchema.parse(input);
+
   if (tool.id === "memory.write") {
     return memoryWriteSchema.parse(input);
   }
@@ -4025,6 +4155,14 @@ function describeSideEffects(toolId: string) {
 
   if (toolId === "knowledge.ingest") {
     return ["writes omni_knowledge_documents", "writes omni_knowledge_chunks", "writes compatible memory records"];
+  }
+
+  if (toolId.startsWith("media.")) {
+    return [
+      "creates one actor-private capture asset without overwriting the source",
+      "records exact source-asset lineage and configured provider/model identity",
+      "can be removed through the existing capture-asset controls",
+    ];
   }
 
   if (toolId === "missions.list") {

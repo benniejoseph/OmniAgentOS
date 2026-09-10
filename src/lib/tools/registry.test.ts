@@ -236,4 +236,28 @@ describe("governed native tool schemas", () => {
       reversible: false,
     });
   });
+
+  it("registers private non-destructive image and video production tools", () => {
+    for (const id of [
+      "media.image.generate",
+      "media.image.edit",
+      "media.video.generate",
+      "media.video.edit",
+      "media.video.clip",
+    ]) {
+      expect(getGovernedTool(id)).toMatchObject({
+        category: "media",
+        status: "active",
+        riskLevel: 1,
+        operationClass: "mutation",
+        reversible: true,
+      });
+    }
+    expect(getGovernedTool("media.image.edit")?.description).toContain(
+      "without overwriting originals",
+    );
+    expect(getGovernedTool("media.video.clip")?.description).toContain(
+      "deterministic FFmpeg",
+    );
+  });
 });

@@ -9,8 +9,10 @@ import {
 import {
   ANTHROPIC_FAST_MODEL,
   ANTHROPIC_REASONING_MODEL,
+  COMPUTER_USE_MODEL,
   GEMINI_FAST_MODEL,
   GEMINI_IMAGE_MODEL,
+  GEMINI_VIDEO_MODEL,
   hasAnthropicKey,
   hasGeminiKey,
   hasGoogleMediaKey,
@@ -107,6 +109,24 @@ async function GETHandler(request: Request) {
       deploymentModel: GEMINI_IMAGE_MODEL,
       deploymentConfigured: hasGeminiKey(),
     });
+    const videoRuntime = await resolveSpecializedRuntime({
+      tenantId: securityContext.tenantId,
+      actorId: securityContext.actorId,
+      scope: "video_generation",
+      requiredCapability: "video",
+      deploymentProvider: "google",
+      deploymentModel: GEMINI_VIDEO_MODEL,
+      deploymentConfigured: hasGeminiKey(),
+    });
+    const computerUseRuntime = await resolveSpecializedRuntime({
+      tenantId: securityContext.tenantId,
+      actorId: securityContext.actorId,
+      scope: "computer_use",
+      requiredCapability: "computer_use",
+      deploymentProvider: "openai",
+      deploymentModel: COMPUTER_USE_MODEL,
+      deploymentConfigured: hasOpenAIKey(),
+    });
     const capabilities = settingsCapabilities(snapshot);
     return Response.json(
       {
@@ -122,6 +142,19 @@ async function GETHandler(request: Request) {
           model: imageRuntime.model,
           source: imageRuntime.source,
           configured: imageRuntime.configured,
+        },
+        videoGenerationRoute: {
+          provider: videoRuntime.provider,
+          model: videoRuntime.model,
+          source: videoRuntime.source,
+          configured: videoRuntime.configured,
+        },
+        computerUseRoute: {
+          provider: computerUseRuntime.provider,
+          model: computerUseRuntime.model,
+          source: computerUseRuntime.source,
+          configured: computerUseRuntime.configured,
+          runtime: "isolated_playwright_mcp",
         },
         storageSnapshot: snapshot.storageSnapshot,
       },

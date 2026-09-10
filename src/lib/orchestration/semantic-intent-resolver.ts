@@ -5,7 +5,10 @@ import { searchCapabilities } from "@/lib/capabilities/catalog";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
 import { generateModelText } from "@/lib/models/gateway";
 import type { ModelGenerationResult } from "@/lib/models/types";
-import { escapeUntrustedPromptText } from "@/lib/orchestration/prompts";
+import {
+  escapeUntrustedPromptText,
+  trustedRuntimeClockInstruction,
+} from "@/lib/orchestration/prompts";
 import {
   applySemanticIntentPolicy,
   attachSemanticModelReceipt,
@@ -277,7 +280,7 @@ async function generateCandidate(input: {
   try {
     return await input.dependencies.generateModelText(
       input.runtimeModel.bind({
-        instructions: semanticIntentInstructions(),
+        instructions: `${semanticIntentInstructions()}\n\n${trustedRuntimeClockInstruction()}`,
         input: semanticIntentInput(input.input, input.capabilityCandidates),
         abortSignal: controller.signal,
         reasoningEffort: "minimal",

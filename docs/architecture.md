@@ -200,6 +200,12 @@ conversations, or persisted approval continuations. Approval resumes rehydrate
 only exact actor/run/execution-owned internal evidence and retain the same
 one-turn rule.
 
+The [Computer Use migration](computer-use-migration.md) keeps this isolated
+Playwright and observation boundary as the execution runtime while moving agent
+control to the configurable `computer_use` model scope. Browser Use is a
+temporary connector fallback during the canary; neither path can bypass the
+governed executor, approval policy, scoped session, or untrusted-content rules.
+
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped
 agent principal, intent and outcome contracts, resolved context and harness
