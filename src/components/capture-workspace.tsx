@@ -845,7 +845,6 @@ export function CaptureWorkspace() {
       <WorkspaceLibrary
         title="Everything in this workspace"
         description="Browse files, generated artifacts, images, recordings, transcripts, email, meetings, and connected sources in one versioned and cited view."
-        presentation="atlas"
         limit={100}
         refreshKey={`${assets.length}:${knowledgeStats?.documents || 0}:${processingJobs[0]?.updatedAt || activeJob?.updatedAt || activeJob?.status || "idle"}`}
         className="mt-7"
