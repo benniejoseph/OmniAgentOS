@@ -112,6 +112,16 @@
 .recallControl button i { width: 1.15rem; height: 1.15rem; border-radius: 50%; background: var(--memory-paper-solid); box-shadow: 0 2px 5px oklch(0.1 0.02 220 / .2); transition: transform 150ms ease; }
 .recallControl .switchOn { background: var(--memory-primary); }
 .recallControl .switchOn i { transform: translateX(1.1rem); }
+.cognifyControl { display: grid; gap: .65rem; margin: .8rem 1.1rem 0; border: 1px solid color-mix(in oklab, var(--memory-primary) 25%, var(--memory-line)); border-radius: 1rem; padding: .8rem; background: color-mix(in oklab, var(--memory-mint) 48%, var(--memory-paper)); }
+.cognifyControlHeading { display: flex; align-items: flex-start; gap: .55rem; }
+.cognifyControlHeading > i { display: grid; width: 2rem; height: 2rem; flex: 0 0 auto; place-items: center; border-radius: .65rem; color: var(--memory-primary); background: var(--memory-paper-solid); }
+.cognifyControlHeading > span { display: grid; gap: .12rem; }
+.cognifyControlHeading strong { font-size: .71rem; }
+.cognifyControlHeading small { color: var(--memory-muted); font-size: .61rem; font-weight: 450; line-height: 1.45; }
+.cognifyControl > button { display: inline-flex; min-height: 2.55rem; align-items: center; justify-content: center; gap: .4rem; border: 1px solid color-mix(in oklab, var(--memory-primary) 35%, var(--memory-line)); border-radius: 999px; color: var(--memory-primary); background: var(--memory-paper-solid); font-size: .69rem; font-weight: 760; }
+.cognifyControl > button:not(:disabled):hover { border-color: var(--memory-primary); transform: translateY(-1px); }
+.cognifyControl > button:disabled { cursor: wait; opacity: .65; }
+.cognifyControl > p { color: var(--memory-muted); font-size: .59rem; line-height: 1.45; }
 .recommendations { padding: 1rem 1.1rem 0; }
 .panelHeading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
 .panelHeading p { color: var(--memory-muted); font-size: .62rem; font-weight: 770; letter-spacing: .09em; text-transform: uppercase; }
@@ -132,6 +142,54 @@
 .governance svg { flex: 0 0 auto; color: var(--memory-primary); }
 .universeWrap { padding: 1.2rem clamp(1rem, 3.2vw, 4rem) 0; }
 .universeLoading { display: flex; min-height: 32rem; align-items: center; justify-content: center; gap: .55rem; border: 1px solid var(--memory-line); border-radius: 1.8rem; color: var(--memory-muted); background: var(--memory-paper); font-size: .76rem; }
+.cognitionSection { margin: 1rem; overflow: hidden; border: 1px solid color-mix(in oklab, var(--memory-primary) 30%, var(--memory-line)); border-radius: 1.3rem; background: color-mix(in oklab, var(--memory-mint) 26%, var(--memory-paper-solid)); }
+.reviewSectionHeading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: 1rem; }
+.reviewSectionIcon { display: grid; width: 2.6rem; height: 2.6rem; place-items: center; border-radius: .85rem; color: var(--memory-primary); background: var(--memory-paper-solid); box-shadow: 0 .5rem 1.5rem color-mix(in oklab, var(--memory-primary) 10%, transparent); }
+.reviewSectionHeading > div:nth-child(2) p, .memoryReviewHeading p { color: var(--memory-primary); font-size: .64rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.reviewSectionHeading h3, .memoryReviewHeading h3 { margin-top: .12rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.22rem; font-weight: 610; letter-spacing: -.025em; }
+.reviewSectionHeading > div:nth-child(2) > span { display: block; margin-top: .16rem; color: var(--memory-muted); font-size: .72rem; line-height: 1.45; }
+.reviewSectionActions { display: flex; align-items: center; gap: .45rem; }
+.reviewSectionActions > button { display: inline-flex; min-height: 2.25rem; align-items: center; gap: .3rem; border: 1px solid var(--memory-line); border-radius: 999px; padding: 0 .6rem; color: var(--memory-muted); background: var(--memory-paper-solid); font-size: .62rem; font-weight: 680; }
+.reviewSectionActions > button:not(:disabled):hover { border-color: var(--memory-primary); color: var(--memory-primary); }
+.reviewSectionActions > strong { display: grid; min-width: 3.45rem; min-height: 3.45rem; place-items: center; align-content: center; border: 1px solid var(--memory-line); border-radius: 50%; color: var(--memory-ink); background: var(--memory-paper-solid); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1rem; font-variant-numeric: tabular-nums; }
+.reviewSectionActions > strong small { color: var(--memory-muted); font-family: inherit; font-size: .5rem; font-weight: 500; }
+.cognitionBoundary { display: flex; align-items: center; gap: .45rem; border-block: 1px solid color-mix(in oklab, var(--memory-primary) 20%, var(--memory-line)); padding: .7rem 1rem; color: var(--memory-primary); background: color-mix(in oklab, var(--memory-paper) 70%, transparent); font-size: .7rem; font-weight: 650; line-height: 1.45; }
+.cognitionBoundary svg { flex: 0 0 auto; }
+.inlineReviewError { display: flex; align-items: center; gap: .5rem; margin: .8rem .8rem 0; border: 1px solid color-mix(in oklab, var(--danger) 32%, var(--memory-line)); border-radius: .8rem; padding: .65rem .75rem; color: var(--danger); background: color-mix(in oklab, var(--danger) 7%, var(--memory-paper)); font-size: .68rem; }
+.inlineReviewError span { flex: 1; }
+.inlineReviewError button { min-height: 2.1rem; border: 1px solid currentColor; border-radius: 999px; padding: 0 .65rem; font-weight: 720; }
+.cognitionList { display: grid; gap: .75rem; padding: .8rem; }
+.cognitionList > article { overflow: hidden; border: 1px solid var(--memory-line); border-radius: 1rem; background: var(--memory-paper-solid); content-visibility: auto; contain-intrinsic-size: auto 23rem; }
+.cognitionList article > header { display: flex; min-height: 3.4rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--memory-line); padding: .65rem .9rem; }
+.cognitionList article > header > div { display: grid; min-width: 0; gap: .12rem; }
+.cognitionList article > header span { overflow: hidden; font-size: .78rem; font-weight: 730; text-overflow: ellipsis; white-space: nowrap; }
+.cognitionList article > header small { color: var(--memory-muted); font-size: .63rem; }
+.cognitionList article > header em { display: inline-flex; min-height: 1.7rem; flex: 0 0 auto; align-items: center; border-radius: 999px; padding: 0 .55rem; font-size: .6rem; font-style: normal; font-weight: 720; }
+.cognitionPending { color: var(--warning); background: color-mix(in oklab, var(--warning) 10%, transparent); }
+.cognitionConfirmed { color: var(--success); background: color-mix(in oklab, var(--success) 10%, transparent); }
+.cognitionBody { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(15rem, .85fr); }
+.cognitionSummary, .cognitionEvidence { min-width: 0; padding: 1rem; }
+.cognitionSummary > p, .cognitionEvidence figcaption { color: var(--memory-primary); font-size: .61rem; font-weight: 790; letter-spacing: .07em; text-transform: uppercase; }
+.cognitionSummary > strong { display: block; margin-top: .45rem; font-size: .79rem; font-weight: 590; line-height: 1.6; }
+.cognitionTopics { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .7rem; }
+.cognitionTopics span { border: 1px solid var(--memory-line); border-radius: 999px; padding: .25rem .5rem; color: var(--memory-muted); background: var(--memory-paper); font-size: .61rem; }
+.cognitionEvidence { border-left: 1px solid var(--memory-line); background: color-mix(in oklab, var(--memory-soft) 40%, transparent); }
+.cognitionEvidence blockquote { display: -webkit-box; margin-top: .45rem; overflow: hidden; color: var(--memory-muted); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: .78rem; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+.cognitionEvidence small { display: block; margin-top: .55rem; overflow: hidden; color: var(--memory-muted); font-size: .56rem; text-overflow: ellipsis; white-space: nowrap; }
+.cognitionCounts { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--memory-line); }
+.cognitionCounts div { display: flex; min-height: 3.2rem; align-items: center; justify-content: space-between; gap: .5rem; padding: .65rem .9rem; }
+.cognitionCounts div + div { border-left: 1px solid var(--memory-line); }
+.cognitionCounts dt { color: var(--memory-muted); font-size: .63rem; }
+.cognitionCounts dd { color: var(--memory-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: .92rem; font-weight: 620; font-variant-numeric: tabular-nums; }
+.cognitionAttribution { grid-column: 1 / -1; overflow: hidden; border-top: 1px solid var(--memory-line); padding: .5rem .9rem; color: var(--memory-muted); font-size: .57rem; text-overflow: ellipsis; white-space: nowrap; }
+.cognitionList article > footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; border-top: 1px solid var(--memory-line); padding: .7rem; }
+.cognitionList footer button { display: inline-flex; min-height: 2.45rem; align-items: center; gap: .35rem; border: 1px solid var(--memory-line); border-radius: 999px; padding: 0 .75rem; color: var(--memory-muted); font-size: .67rem; font-weight: 680; }
+.cognitionList footer button:disabled { cursor: wait; opacity: .58; }
+.cognitionList .confirmedFooter { align-items: center; color: var(--success); font-size: .67rem; font-weight: 690; }
+.cognitionList .empty { min-height: 11rem; }
+.memoryReviewSection { border-top: 1px solid var(--memory-line); }
+.memoryReviewHeading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.1rem 1rem 0; }
+.memoryReviewHeading > span { border-radius: 999px; padding: .3rem .55rem; color: var(--memory-muted); background: var(--memory-soft); font-size: .62rem; }
 .reviewList { display: grid; gap: .8rem; padding: 1rem; }
 .reviewList > article { overflow: hidden; border: 1px solid var(--memory-line); border-radius: 1.2rem; background: var(--memory-paper-solid); content-visibility: auto; contain-intrinsic-size: auto 17rem; }
 .reviewList article > header { display: flex; min-height: 2.8rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--memory-line); padding: 0 .9rem; }
@@ -145,7 +203,7 @@
 .reviewClaims span { display: -webkit-box; margin-top: .4rem; overflow: hidden; color: var(--memory-muted); font-size: .7rem; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
 .reviewList article > footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; border-top: 1px solid var(--memory-line); padding: .7rem; }
 .reviewList footer button { display: inline-flex; min-height: 2.35rem; align-items: center; gap: .35rem; border: 1px solid var(--memory-line); border-radius: 999px; padding: 0 .7rem; color: var(--memory-muted); font-size: .65rem; }
-.reviewList footer button:first-child { border-color: transparent; color: var(--primary-ink); background: var(--memory-primary); }
+.reviewList footer .primaryReviewAction, .cognitionList footer .primaryReviewAction { border-color: transparent; color: var(--primary-ink); background: var(--memory-primary); }
 .reviewList footer button:disabled { cursor: wait; opacity: .58; }
 .reviewProgress { display: inline-flex; min-height: 2.35rem; flex: 1 1 auto; align-items: center; gap: .4rem; color: var(--memory-primary); font-size: .66rem; font-weight: 720; }
 .reviewError { display: flex; align-items: flex-start; gap: .45rem; margin: 0 .7rem .7rem; border: 1px solid color-mix(in oklab, var(--danger) 32%, var(--memory-line)); border-radius: .8rem; padding: .65rem .75rem; color: var(--danger); background: color-mix(in oklab, var(--danger) 7%, var(--memory-paper)); font-size: .66rem; line-height: 1.45; }
@@ -207,9 +265,9 @@
   .workspaceGrid { grid-template-columns: minmax(0, 1fr); }
   .memoryGuide { grid-template-columns: 1fr; }
   .steward { position: static; display: grid; grid-template-columns: minmax(16rem, .8fr) 1.2fr; border-radius: 1.7rem; }
-  .steward > header, .autonomy, .learning, .recallControl { grid-column: 1; }
+  .steward > header, .autonomy, .learning, .recallControl, .cognifyControl { grid-column: 1; }
   .recommendations, .scanButton, .governance { grid-column: 2; }
-  .recommendations { grid-row: 1 / span 4; }
+  .recommendations { grid-row: 1 / span 5; }
   .scanButton { align-self: end; }
 }
 @media (max-width: 760px) {
@@ -231,6 +289,8 @@
   .indexHeading, .categoryRail, .filters { position: sticky; z-index: 2; left: 0; width: calc(100vw - 2rem); background: var(--memory-paper-solid); }
   .steward { display: block; }
   .recommendations { padding-top: 1rem; }
+  .cognitionBody { grid-template-columns: 1fr; }
+  .cognitionEvidence { border-top: 1px solid var(--memory-line); border-left: 0; }
   .reviewClaims { grid-template-columns: 1fr; }
   .reviewClaims section + section { border-top: 1px solid var(--memory-line); border-left: 0; }
 }
@@ -245,4 +305,10 @@
   .filters { flex-wrap: wrap; }
   .dialog footer { align-items: stretch; flex-direction: column; }
   .dialog footer button { justify-content: center; }
+  .reviewSectionActions > strong { display: none; }
+  .reviewSectionActions > button { width: 2.4rem; justify-content: center; padding: 0; font-size: 0; }
+  .cognitionCounts { grid-template-columns: 1fr 1fr; }
+  .cognitionCounts div:nth-child(3) { border-top: 1px solid var(--memory-line); border-left: 0; }
+  .cognitionCounts div:nth-child(4) { border-top: 1px solid var(--memory-line); }
+  .cognitionList article > footer button { width: 100%; justify-content: center; }
 }

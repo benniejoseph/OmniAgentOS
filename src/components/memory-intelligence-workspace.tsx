@@ -78,6 +78,34 @@ type ForgetPreview = {
     graphEdgeCount: number;
   };
 };
+type CognificationEvidence = {
+  evidenceUnitId: string;
+  quote: string;
+};
+type CognificationReview = {
+  candidate: {
+    batchId: string;
+    documentId: string;
+    documentTitle?: string;
+    batchIndex: number;
+    batchCount: number;
+    summary: {
+      text: string;
+      confidenceBasisPoints: number;
+      evidence: CognificationEvidence[];
+    };
+    topics: Array<{ label: string }>;
+    claims: Array<{ statement: string }>;
+    entities: Array<{ canonicalLabel: string }>;
+    relations: Array<{ statement: string }>;
+    modelAttribution: {
+      provider: string;
+      model: string;
+    };
+  };
+  status: "pending_review" | "confirmed" | "dismissed";
+  projectedMemoryId?: string | null;
+};
 
 const emptyPage = <T,>(): Page<T> => ({ items: [], total: 0, nextCursor: null });
 const memoryTiers: Array<MemoryTier | "all"> = [
@@ -100,6 +128,11 @@ export function MemoryIntelligenceWorkspace() {
   const [knowledgePage, setKnowledgePage] = useState<Page<KnowledgeIndexItem>>(emptyPage);
   const [reviews, setReviews] = useState<MemoryReconciliationReview[]>([]);
   const [reviewsLoaded, setReviewsLoaded] = useState(false);
+  const [cognitionReviews, setCognitionReviews] = useState<CognificationReview[]>([]);
+  const [cognitionReviewsLoaded, setCognitionReviewsLoaded] = useState(false);
+  const [cognitionReviewsLoading, setCognitionReviewsLoading] = useState(false);
+  const [cognitionReviewsError, setCognitionReviewsError] = useState<string>();
+  const [cognitionQueueFeedback, setCognitionQueueFeedback] = useState<string>();
   const [reviewLimit, setReviewLimit] = useState(20);
   const [universeVisited, setUniverseVisited] = useState(false);
   const [query, setQuery] = useState("");
@@ -125,8 +158,10 @@ export function MemoryIntelligenceWorkspace() {
   const [consent, setConsent] = useState<ConsentStatus>();
   const indexRequestRef = useRef<AbortController | null>(null);
   const reviewsRequestRef = useRef<AbortController | null>(null);
+  const cognitionReviewsRequestRef = useRef<AbortController | null>(null);
   const indexSignatureRef = useRef<Partial<Record<"memory" | "knowledge", string>>>({});
   const reviewSignatureRef = useRef("");
+  const cognitionReviewSignatureRef = useRef("");
 
   const loadOverview = useCallback(async () => {
     setLoading(true);
@@ -254,17 +289,53 @@ export function MemoryIntelligenceWorkspace() {
     }
   }, [reviewLimit]);
 
+  const loadCognitionReviews = useCallback(async (force = false) => {
+    const signature = `source-maps:${reviewLimit}`;
+    if (!force && cognitionReviewSignatureRef.current === signature) return;
+    cognitionReviewsRequestRef.current?.abort();
+    const controller = new AbortController();
+    cognitionReviewsRequestRef.current = controller;
+    setCognitionReviewsLoading(true);
+    try {
+      const response = await fetch(
+        `/api/knowledge/cognification?limit=${reviewLimit}`,
+        { cache: "no-store", signal: controller.signal },
+      );
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error || "Source map proposals could not be loaded.");
+      }
+      setCognitionReviews(Array.isArray(body.reviews) ? body.reviews : []);
+      setCognitionReviewsLoaded(true);
+      setCognitionReviewsError(undefined);
+      cognitionReviewSignatureRef.current = signature;
+    } catch (loadError) {
+      if (!controller.signal.aborted) {
+        setCognitionReviewsError(message(loadError));
+      }
+    } finally {
+      if (cognitionReviewsRequestRef.current === controller) {
+        setCognitionReviewsLoading(false);
+      }
+    }
+  }, [reviewLimit]);
+
   useEffect(() => {
     if (view !== "reviews") {
       reviewsRequestRef.current?.abort();
+      cognitionReviewsRequestRef.current?.abort();
       return;
     }
-    const timer = window.setTimeout(() => void loadReviews(), 0);
+    const timer = window.setTimeout(() => {
+      void loadReviews();
+      void loadCognitionReviews();
+    }, 0);
     return () => {
       window.clearTimeout(timer);
       reviewsRequestRef.current?.abort();
+      cognitionReviewsRequestRef.current?.abort();
     };
-  }, [view, loadReviews]);
+  }, [view, loadCognitionReviews, loadReviews]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -297,6 +368,9 @@ export function MemoryIntelligenceWorkspace() {
   const embeddingCoverage = overview?.summary.knowledgeChunks
     ? Math.round(overview.summary.embeddedChunks / overview.summary.knowledgeChunks * 100)
     : 100;
+  const pendingCognitionReviewCount = cognitionReviews.filter(
+    (review) => review.status === "pending_review",
+  ).length;
   async function resolveReview(
     reviewId: string,
     decision: "confirm_candidate" | "keep_existing" | "keep_both",
@@ -322,6 +396,79 @@ export function MemoryIntelligenceWorkspace() {
       const detail = message(actionError);
       setReviewErrors((current) => ({ ...current, [reviewId]: detail }));
       setAnnouncement(`Review was not changed. ${detail}`);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function resolveCognitionReview(
+    candidateId: string,
+    decision: "confirm" | "dismiss",
+  ) {
+    setBusy(`cognition-review:${candidateId}`);
+    setReviewErrors((current) => {
+      const next = { ...current };
+      delete next[`cognition:${candidateId}`];
+      return next;
+    });
+    try {
+      const response = await fetch("/api/knowledge/cognification", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: candidateId, decision }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error || "The source map decision could not be applied.");
+      }
+      setCognitionReviews((current) => current.filter(
+        (review) => review.candidate.batchId !== candidateId,
+      ));
+      setAnnouncement(decision === "confirm"
+        ? "Source map confirmed. Its reviewed summary is now available to memory and the evidence graph."
+        : "Source map dismissed. It remains outside memory, recall and the evidence graph.");
+      await Promise.all([loadCognitionReviews(true), loadOverview()]);
+    } catch (actionError) {
+      const detail = message(actionError);
+      setReviewErrors((current) => ({
+        ...current,
+        [`cognition:${candidateId}`]: detail,
+      }));
+      setAnnouncement(`Source map was not changed. ${detail}`);
+    } finally {
+      setBusy(undefined);
+    }
+  }
+
+  async function queueCognification() {
+    setBusy("cognify-sources");
+    setError(undefined);
+    setCognitionQueueFeedback("Checking eligible source revisions…");
+    try {
+      const response = await fetch("/api/knowledge/cognification", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ limit: 12 }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error || "Source map processing could not be queued.");
+      }
+      const queuedCount = Array.isArray(body.jobs) ? body.jobs.length : 0;
+      const eligibleCount = Number(body.eligibleDocumentCount || 0);
+      const feedback = queuedCount
+        ? `${queuedCount} ${queuedCount === 1 ? "source" : "sources"} queued. Processing continues in the background; proposals will appear in Reviews.`
+        : eligibleCount
+          ? "Eligible sources are already queued or up to date. New proposals will appear in Reviews."
+          : "No eligible source revisions need a new map right now.";
+      setCognitionQueueFeedback(feedback);
+      setAnnouncement(feedback);
+      cognitionReviewSignatureRef.current = "";
+      if (view === "reviews") await loadCognitionReviews(true);
+    } catch (actionError) {
+      const detail = message(actionError);
+      setCognitionQueueFeedback(`Source maps were not queued. ${detail}`);
+      setError(detail);
     } finally {
       setBusy(undefined);
     }
@@ -626,7 +773,13 @@ export function MemoryIntelligenceWorkspace() {
       <nav className={styles.tabs} aria-label="Memory workspace">
         <Tab active={view === "memory"} onClick={() => selectView("memory")} icon={<Brain size={17} />} label="Memory" count={overview?.summary.durableMemories} />
         <Tab active={view === "knowledge"} onClick={() => selectView("knowledge")} icon={<BookOpen size={17} />} label="Knowledge" count={overview?.summary.knowledgeDocuments} />
-        <Tab active={view === "reviews"} onClick={() => selectView("reviews")} icon={<ShieldCheck size={17} />} label="Reviews" count={overview?.summary.pendingReviews} />
+        <Tab
+          active={view === "reviews"}
+          onClick={() => selectView("reviews")}
+          icon={<ShieldCheck size={17} />}
+          label="Reviews"
+          count={(overview?.summary.pendingReviews || 0) + pendingCognitionReviewCount}
+        />
         <Tab active={view === "universe"} onClick={() => selectView("universe")} icon={<Layers3 size={17} />} label="Universe" />
       </nav>
 
@@ -672,11 +825,17 @@ export function MemoryIntelligenceWorkspace() {
             ) : (
               <ReviewIndex
                 reviews={reviews}
+                cognitionReviews={cognitionReviews}
                 loaded={reviewsLoaded}
+                cognitionLoaded={cognitionReviewsLoaded}
                 loading={reviewsLoading}
+                cognitionLoading={cognitionReviewsLoading}
+                cognitionLoadError={cognitionReviewsError}
                 busy={busy}
                 errors={reviewErrors}
                 onResolve={resolveReview}
+                onResolveCognition={resolveCognitionReview}
+                onReloadCognition={() => void loadCognitionReviews(true)}
                 total={overview?.summary.pendingReviews || reviews.length}
                 onMore={() => setReviewLimit((current) => current + 20)}
               />
@@ -687,8 +846,10 @@ export function MemoryIntelligenceWorkspace() {
             overview={overview}
             consent={consent}
             busy={busy}
+            cognitionFeedback={cognitionQueueFeedback}
             onConsent={() => void toggleConsent()}
             onScan={() => void runMaintenance()}
+            onCognify={() => void queueCognification()}
             onRecommendation={handleRecommendation}
           />
         </div>
@@ -756,7 +917,7 @@ function MemoryGuide() {
     <div>
       <article><BookOpen size={18} /><span><strong>Knowledge</strong><small>Your documents and transcripts. Evidence to search—not automatically treated as personal truth.</small></span></article>
       <article><Brain size={18} /><span><strong>Memory</strong><small>Durable facts, preferences, decisions and experiences Asael may carry into future work.</small></span></article>
-      <article><ShieldCheck size={18} /><span><strong>Reviews</strong><small>The safety gate. Proposed or conflicting claims remain outside active recall until decided.</small></span></article>
+      <article><ShieldCheck size={18} /><span><strong>Reviews</strong><small>The safety gate. Evidence-bound source maps and conflicting claims stay outside recall until you confirm them.</small></span></article>
       <article><GitBranch size={18} /><span><strong>Universe</strong><small>A map of concepts and evidence links. Points are ideas; lines show observed relationships.</small></span></article>
     </div>
   </section>;
@@ -818,29 +979,140 @@ function KnowledgeIndex(props: {
   </>;
 }
 
-function ReviewIndex(props: { reviews: MemoryReconciliationReview[]; loaded: boolean; loading: boolean; busy?: string; errors: Record<string, string>; total: number; onMore: () => void; onResolve: (id: string, decision: "confirm_candidate" | "keep_existing" | "keep_both") => void }) {
+function ReviewIndex(props: {
+  reviews: MemoryReconciliationReview[];
+  cognitionReviews: CognificationReview[];
+  loaded: boolean;
+  cognitionLoaded: boolean;
+  loading: boolean;
+  cognitionLoading: boolean;
+  cognitionLoadError?: string;
+  busy?: string;
+  errors: Record<string, string>;
+  total: number;
+  onMore: () => void;
+  onResolve: (
+    id: string,
+    decision: "confirm_candidate" | "keep_existing" | "keep_both",
+  ) => void;
+  onResolveCognition: (id: string, decision: "confirm" | "dismiss") => void;
+  onReloadCognition: () => void;
+}) {
   const pending = props.reviews.filter((review) => review.status === "pending");
+  const sourceMaps = props.cognitionReviews.filter(
+    (review) => review.status !== "dismissed",
+  );
+  const pendingSourceMaps = sourceMaps.filter(
+    (review) => review.status === "pending_review",
+  );
   return <>
     <IndexHeading eyebrow="Truth review" title="Keep memory accurate and inspectable" detail="Candidates never enter active recall until you make a governed decision." />
-    <div className={styles.reviewList}>
-      {pending.map((review) => {
-        const resolving = props.busy === `review:${review.id}`;
-        return <article key={review.id} aria-busy={resolving}>
-          <header><span>{review.kind === "contradiction" ? "Conflict" : "Proposed memory"}</span><small>{startCase(review.detectionReason)}</small></header>
-          <div className={styles.reviewClaims}><section><p>Candidate</p><strong>{review.candidate.title}</strong><span>{review.candidate.content}</span></section>{review.existing ? <section><p>Current memory</p><strong>{review.existing.title}</strong><span>{review.existing.content}</span></section> : null}</div>
-          {props.errors[review.id] ? <p className={styles.reviewError} role="alert"><CircleAlert size={15} />{props.errors[review.id]}</p> : null}
-          <footer>
-            {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Applying decision…</span> : null}
-            <button type="button" onClick={() => props.onResolve(review.id, "confirm_candidate")} disabled={resolving}><Check size={15} /> Use candidate</button>
-            {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={resolving}>Keep current</button> : <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={resolving}>Dismiss</button>}
-            {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_both")} disabled={resolving}>Keep both</button> : null}
-          </footer>
-        </article>;
-      })}
-      {props.loaded && !props.loading && !pending.length ? <EmptyState icon={<ShieldCheck />} title="Review queue is clear" detail="Mnemosyne will place contradictions and inferred candidates here before they can affect recall." /> : null}
-      {props.loading ? <LoadingRow /> : null}
-    </div>
-    {pending.length < props.total ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load {Math.min(20, props.total - pending.length)} more reviews</button> : null}
+    <section className={styles.cognitionSection} aria-labelledby="source-map-review-title">
+      <header className={styles.reviewSectionHeading}>
+        <div className={styles.reviewSectionIcon}><GitBranch size={18} /></div>
+        <div>
+          <p>Evidence-bound extraction</p>
+          <h3 id="source-map-review-title">Source map proposals</h3>
+          <span>Topics, claims and relationships extracted from your sources with exact supporting quotes.</span>
+        </div>
+        <div className={styles.reviewSectionActions}>
+          <button
+            type="button"
+            onClick={props.onReloadCognition}
+            disabled={props.cognitionLoading || Boolean(props.busy)}
+            aria-label="Refresh source map proposals"
+          >
+            <RefreshCw size={14} className={props.cognitionLoading ? styles.spin : undefined} />
+            Refresh
+          </button>
+          <strong>{pendingSourceMaps.length}<small>pending</small></strong>
+        </div>
+      </header>
+      <p className={styles.cognitionBoundary}>
+        <ShieldCheck size={16} />
+        These proposals cannot affect memory, recall or the Universe until you confirm them.
+      </p>
+      {props.cognitionLoadError ? (
+        <div className={styles.inlineReviewError} role="alert">
+          <CircleAlert size={16} />
+          <span>{props.cognitionLoadError}</span>
+          <button type="button" onClick={props.onReloadCognition} disabled={Boolean(props.busy)}>Try again</button>
+        </div>
+      ) : null}
+      <div className={styles.cognitionList}>
+        {sourceMaps.map((review) => {
+          const candidate = review.candidate;
+          const resolving = props.busy === `cognition-review:${candidate.batchId}`;
+          const pendingDecision = review.status === "pending_review";
+          const evidence = candidate.summary.evidence || [];
+          const actionError = props.errors[`cognition:${candidate.batchId}`];
+          return <article key={candidate.batchId} aria-busy={resolving}>
+            <header>
+              <div>
+                <span>{candidate.documentTitle || `Source ${compactIdentifier(candidate.documentId)}`}</span>
+                <small>Batch {candidate.batchIndex + 1} of {candidate.batchCount}</small>
+              </div>
+              <em className={pendingDecision ? styles.cognitionPending : styles.cognitionConfirmed}>
+                {pendingDecision ? "Awaiting review" : "Confirmed"}
+              </em>
+            </header>
+            <div className={styles.cognitionBody}>
+              <div className={styles.cognitionSummary}>
+                <p>Proposed source summary</p>
+                <strong>{candidate.summary.text}</strong>
+                {candidate.topics.length ? <div className={styles.cognitionTopics}>{candidate.topics.slice(0, 4).map((topic) => <span key={topic.label}>{topic.label}</span>)}</div> : null}
+              </div>
+              {evidence[0] ? <figure className={styles.cognitionEvidence}>
+                <figcaption>Exact evidence · {Math.round(candidate.summary.confidenceBasisPoints / 100)}% confidence</figcaption>
+                <blockquote>“{evidence[0].quote}”</blockquote>
+                <small>{evidence[0].evidenceUnitId}{evidence.length > 1 ? ` · +${evidence.length - 1} more cited ${evidence.length === 2 ? "quote" : "quotes"}` : ""}</small>
+              </figure> : null}
+              <dl className={styles.cognitionCounts}>
+                <div><dt>Topics</dt><dd>{candidate.topics.length}</dd></div>
+                <div><dt>Claims</dt><dd>{candidate.claims.length}</dd></div>
+                <div><dt>Entities</dt><dd>{candidate.entities.length}</dd></div>
+                <div><dt>Links</dt><dd>{candidate.relations.length}</dd></div>
+              </dl>
+              <p className={styles.cognitionAttribution}>Extracted by {startCase(candidate.modelAttribution.provider)} · {candidate.modelAttribution.model}</p>
+            </div>
+            {actionError ? <p className={styles.reviewError} role="alert"><CircleAlert size={15} />{actionError}</p> : null}
+            {pendingDecision ? <footer>
+              {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Applying decision…</span> : null}
+              <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolveCognition(candidate.batchId, "confirm")} disabled={Boolean(props.busy)}><Check size={15} /> Confirm source map</button>
+              <button type="button" onClick={() => props.onResolveCognition(candidate.batchId, "dismiss")} disabled={Boolean(props.busy)}><X size={15} /> Dismiss</button>
+            </footer> : <footer className={styles.confirmedFooter}><Check size={15} /> {review.projectedMemoryId ? "Added to reviewed memory and graph" : "Confirmed for projection"}</footer>}
+          </article>;
+        })}
+        {props.cognitionLoaded && !props.cognitionLoading && !sourceMaps.length && !props.cognitionLoadError ? <EmptyState icon={<GitBranch />} title="No source maps await review" detail="Ask Mnemosyne to cognify eligible sources; proposals will appear here after background processing." /> : null}
+        {props.cognitionLoading ? <LoadingRow /> : null}
+      </div>
+    </section>
+
+    <section className={styles.memoryReviewSection} aria-labelledby="memory-review-title">
+      <header className={styles.memoryReviewHeading}>
+        <div><p>Memory decisions</p><h3 id="memory-review-title">Conflicts and promotions</h3></div>
+        <span>{pending.length} pending</span>
+      </header>
+      <div className={styles.reviewList}>
+        {pending.map((review) => {
+          const resolving = props.busy === `review:${review.id}`;
+          return <article key={review.id} aria-busy={resolving}>
+            <header><span>{review.kind === "contradiction" ? "Conflict" : "Proposed memory"}</span><small>{startCase(review.detectionReason)}</small></header>
+            <div className={styles.reviewClaims}><section><p>Candidate</p><strong>{review.candidate.title}</strong><span>{review.candidate.content}</span></section>{review.existing ? <section><p>Current memory</p><strong>{review.existing.title}</strong><span>{review.existing.content}</span></section> : null}</div>
+            {props.errors[review.id] ? <p className={styles.reviewError} role="alert"><CircleAlert size={15} />{props.errors[review.id]}</p> : null}
+            <footer>
+              {resolving ? <span className={styles.reviewProgress} role="status"><LoaderCircle size={15} className={styles.spin} /> Applying decision…</span> : null}
+              <button className={styles.primaryReviewAction} type="button" onClick={() => props.onResolve(review.id, "confirm_candidate")} disabled={Boolean(props.busy)}><Check size={15} /> Use candidate</button>
+              {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={Boolean(props.busy)}>Keep current</button> : <button type="button" onClick={() => props.onResolve(review.id, "keep_existing")} disabled={Boolean(props.busy)}>Dismiss</button>}
+              {review.existing ? <button type="button" onClick={() => props.onResolve(review.id, "keep_both")} disabled={Boolean(props.busy)}>Keep both</button> : null}
+            </footer>
+          </article>;
+        })}
+        {props.loaded && !props.loading && !pending.length ? <EmptyState icon={<ShieldCheck />} title="Memory review queue is clear" detail="Mnemosyne will place contradictions and inferred memory candidates here before they can affect recall." /> : null}
+        {props.loading ? <LoadingRow /> : null}
+      </div>
+      {pending.length < props.total ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load {Math.min(20, props.total - pending.length)} more reviews</button> : null}
+    </section>
   </>;
 }
 
@@ -853,7 +1125,16 @@ function CategoryRail<T extends string>(props: { active: T | "all"; onSelect: (v
   return <div className={styles.categoryRail}><button type="button" className={props.active === "all" ? styles.activeCategory : undefined} onClick={() => props.onSelect("all")}>All <small>{total.toLocaleString()}</small></button>{props.items.map((item) => <button type="button" key={item.id} className={props.active === item.id ? styles.activeCategory : undefined} onClick={() => props.onSelect(item.id)}>{item.label} <small>{item.count.toLocaleString()}</small></button>)}</div>;
 }
 
-function MnemosynePanel(props: { overview?: MemoryIntelligenceOverview; consent?: ConsentStatus; busy?: string; onConsent: () => void; onScan: () => void; onRecommendation: (item: MemoryStewardRecommendation) => void }) {
+function MnemosynePanel(props: {
+  overview?: MemoryIntelligenceOverview;
+  consent?: ConsentStatus;
+  busy?: string;
+  cognitionFeedback?: string;
+  onConsent: () => void;
+  onScan: () => void;
+  onCognify: () => void;
+  onRecommendation: (item: MemoryStewardRecommendation) => void;
+}) {
   const steward = props.overview?.steward;
   return <aside className={styles.steward}>
     <header><div className={styles.agentOrb}><Bot size={22} /><i /></div><div><p>Memory steward</p><h2>Mnemosyne</h2><span className={steward?.state === "attention" ? styles.attention : styles.healthy}><i /> {steward ? startCase(steward.state) : "Observing"}</span></div><strong style={{ "--score": `${steward?.healthScore || 0}%` } as React.CSSProperties}>{steward?.healthScore ?? "—"}<small>health</small></strong></header>
@@ -861,6 +1142,17 @@ function MnemosynePanel(props: { overview?: MemoryIntelligenceOverview; consent?
     <p className={styles.scoreHelp}>This health score measures indexing coverage, unresolved reviews and ownership—not how intelligent Asael is.</p>
     <div className={styles.learning}><p><Sparkles size={14} /> Learning signals</p><dl><div><dt>Recall uses</dt><dd>{steward?.learningSignals.retrievalUses.toLocaleString() ?? "—"}</dd></div><div><dt>Corrections learned</dt><dd>{steward?.learningSignals.corrections.toLocaleString() ?? "—"}</dd></div><div><dt>Reviews resolved</dt><dd>{steward?.learningSignals.resolvedReviews.toLocaleString() ?? "—"}</dd></div><div><dt>Forget receipts</dt><dd>{steward?.learningSignals.forgetRequests.toLocaleString() ?? "—"}</dd></div></dl></div>
     {props.consent ? <section className={styles.recallControl}><div><strong>Personal automatic recall</strong><span>{props.consent.state === "active" ? "Available when selected in conversation" : "Off until you explicitly enable it"}</span></div><button type="button" className={props.consent.state === "active" ? styles.switchOn : undefined} onClick={props.onConsent} disabled={props.busy === "consent"} aria-pressed={props.consent.state === "active"}><i /></button></section> : null}
+    <section className={styles.cognifyControl}>
+      <div className={styles.cognifyControlHeading}>
+        <i><FileStack size={16} /></i>
+        <span><strong>Source maps</strong><small>Extract quoted topics, claims and links from eligible knowledge.</small></span>
+      </div>
+      <button type="button" onClick={props.onCognify} disabled={Boolean(props.busy)}>
+        {props.busy === "cognify-sources" ? <LoaderCircle size={15} className={styles.spin} /> : <GitBranch size={15} />}
+        {props.busy === "cognify-sources" ? "Queueing sources…" : "Cognify sources"}
+      </button>
+      <p aria-live="polite">{props.cognitionFeedback || "Runs asynchronously. Every proposal still requires review."}</p>
+    </section>
     <section className={styles.recommendations}><div className={styles.panelHeading}><p>Recommendations</p><span>{steward?.recommendations.length || 0}</span></div>{steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || Boolean(props.busy)}><i className={styles[`priority${startCase(item.priority)}`]} /><span><strong>{item.title}</strong><small>{item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} /> : null}</button>) : <div className={styles.allClear}><Check size={16} /> No action needed right now.</div>}</section>
     <button type="button" className={styles.scanButton} onClick={props.onScan} disabled={props.busy === "maintenance"}>{props.busy === "maintenance" ? <LoaderCircle size={16} className={styles.spin} /> : <Sparkles size={16} />} Run lifecycle scan</button>
     <p className={styles.governance}><ShieldCheck size={14} /> Mnemosyne may classify, link and recommend. It cannot silently promote, rewrite or forget truth.</p>
@@ -890,6 +1182,7 @@ function CreateMemoryDialog(props: { busy: boolean; intent: CreateIntent; onClos
 function EmptyState(props: { icon: React.ReactNode; title: string; detail: string }) { return <div className={styles.empty}>{props.icon}<strong>{props.title}</strong><span>{props.detail}</span></div>; }
 function LoadingRow() { return <div className={styles.loadingRow}><LoaderCircle size={17} className={styles.spin} /> Updating index…</div>; }
 function startCase(value: string) { return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+function compactIdentifier(value: string) { return value.length > 18 ? `${value.slice(0, 9)}…${value.slice(-6)}` : value; }
 function relativeDate(value: string) { const milliseconds = Date.now() - new Date(value).getTime(); const days = Math.floor(milliseconds / 86_400_000); if (days < 1) return "Today"; if (days === 1) return "Yesterday"; if (days < 30) return `${days}d ago`; return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(value)); }
 function formatBytes(characters: number) { const bytes = characters * 2; if (bytes < 1024) return `${bytes} B`; if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1_048_576).toFixed(1)} MB`; }
 function message(error: unknown) { return error instanceof Error ? error.message : "Something went wrong."; }
