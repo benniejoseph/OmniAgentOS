@@ -1,0 +1,328 @@
+# ICT Trading Research Agent
+
+**Status:** Research and architecture only; not approved for implementation  
+**Research date:** 2026-09-10  
+**Initial instruments:** Nasdaq-100 exposure and gold exposure
+
+## Purpose
+
+Design a private research workspace that can use user-supplied ICT course transcripts, current market data, dated web research, deterministic feature detection, chart annotations, and reproducible backtests. The first version must assist research; it must not autonomously execute trades or present its output as guaranteed financial advice.
+
+The transcripts describe a discretionary trading methodology. Their predictive value must be established through controlled historical tests and forward shadow evaluation rather than assumed from the source material.
+
+## Recommended decisions
+
+1. Use retrieval-augmented generation (RAG), a reviewed concept graph, and deterministic ICT feature detectors. Do not train a model on raw transcripts merely to make their knowledge available.
+2. Resolve the exact tradable instrument before building any market-data or backtest integration. `NDX`, `NQ`/`MNQ`, `QQQ`, broker-specific `NAS100`/`US100`, `XAU/USD`, and `GC`/`MGC` are not interchangeable.
+3. Use TradingView Lightweight Charts initially unless TradingView explicitly grants a licence that covers this private application. Advanced Charts' free conditions do not cover private or paywalled use.
+4. Use Twelve Data as the initial multi-asset display and research feed. Use the intended broker's own historical feed for CFD validation, or Databento/CME data for execution-quality NQ/MNQ and GC/MGC futures research.
+5. Keep language models outside the historical replay loop. An agent may propose a typed strategy, but a deterministic engine must execute and score it.
+6. Journal every forecast before its outcome is known. Do not move beyond research mode until forward results pass predetermined gates.
+
+## 1. Instrument identity is a hard boundary
+
+The product name shown to a person is not a sufficiently precise data identity.
+
+| User label | Possible instrument | Important differences |
+| --- | --- | --- |
+| NAS100 / US100 | Broker-specific CFD | Vendor price construction, spread, financing, session, leverage and symbol vary by broker. |
+| Nasdaq-100 | `NDX` cash index | Benchmark value; not itself an executable instrument. |
+| Nasdaq futures | `NQ` or `MNQ` | Expiring CME contracts with contract rolls, tick values and nearly continuous sessions. |
+| Nasdaq ETF | `QQQ` | Exchange-traded security with equity sessions and its own tracking behaviour. |
+| Gold spot | `XAU/USD` | Decentralized spot/CFD feed; provider and broker quotes can differ. |
+| Gold futures | `GC` or `MGC` | Expiring COMEX contracts with centralized trades, order book and roll behaviour. |
+
+Nasdaq identifies the cash Nasdaq-100 as `NDX`. CME identifies `NQ` and `MNQ` as its Nasdaq-100 futures products, with MNQ one-tenth the size of NQ. CME identifies `GC` as its 100-troy-ounce benchmark gold contract and `MGC` as its 10-troy-ounce Micro contract. See [Nasdaq's NDX overview](https://indexes.nasdaq.com/Index/Overview/NDX), [CME Nasdaq-100 futures](https://www.cmegroup.com/markets/equities/nasdaq/nasdaq-futures.html), and [CME Gold products](https://www.cmegroup.com/markets/metals/precious/gold-futures.html).
+
+### Required identity record
+
+Every market request, forecast, drawing and backtest must refer to an immutable instrument identity containing:
+
+- Internal instrument ID and asset class.
+- Venue or price-source identity.
+- Provider-specific symbols, including the broker symbol where applicable.
+- Currency, tick size and price precision.
+- Exchange/session calendar and timezone.
+- Contract multiplier, expiry and roll policy for futures.
+- Spread, financing and commission model for CFDs.
+- Whether the value is executable, indicative, midpoint, last trade or index value.
+
+No adapter may infer that `US100`, `NDX`, `NQ` or `QQQ` are equivalent.
+
+## 2. Transcript knowledge: RAG before training
+
+### Current facts
+
+Vector-store workflows support file status, configurable chunking and metadata, which makes source knowledge replaceable and traceable. Fine-tuning is primarily useful for stable behaviour, format, classification and efficiency. OpenAI's current materials separately describe RAG as a way to extend model knowledge and fine-tuning as behavioural customization. OpenAI also announced on 2026-05-08 that its existing fine-tuning platform is winding down for new users, reinforcing the need for a provider-neutral design. See [OpenAI vector-store files](https://platform.openai.com/docs/api-reference/vector-stores-files/generic.svg) and [OpenAI's model-customization update](https://openai.com/index/introducing-improvements-to-the-fine-tuning-api-and-expanding-our-custom-models-program/).
+
+### Recommendation
+
+Use three connected but independently versioned layers:
+
+1. **Evidence layer:** original files, transcript text, timecoded chunks and source hashes.
+2. **Knowledge layer:** reviewed concepts, definitions, examples, conditions, invalidations and contradictions.
+3. **Execution layer:** deterministic, measurable feature definitions derived from approved concepts.
+
+A transcript chunk should retain:
+
+- Course, module, lesson, video and speaker.
+- Start and end timecodes.
+- Original and normalized text.
+- Source-file hash and transcript version.
+- Publication date, ingestion date and user-provided provenance.
+- Extracted concepts, instruments, sessions and timeframes.
+- Extraction confidence and human-review state.
+
+Useful graph relationships include `DEFINES`, `EXAMPLE_OF`, `REQUIRES`, `CONFIRMS`, `INVALIDATES`, `CONTRADICTS`, `APPLIES_TO_SESSION`, `APPLIES_TO_TIMEFRAME`, and `DERIVED_FROM_CHUNK`.
+
+Hybrid lexical and semantic retrieval should return transcript citations down to the timecode. The agent must distinguish a source statement from an app-derived interpretation. Ambiguous terms such as displacement, liquidity sweep or fair-value gap must not become executable rules until a measurable definition has been reviewed and versioned.
+
+Fine-tuning or distillation should be reconsidered only after there is a curated labelled dataset and a fixed evaluation showing a material benefit for a narrow task such as concept extraction, structured annotation generation or classification. It should not be the storage mechanism for transcript knowledge or live market facts.
+
+## 3. Charting options and licence constraints
+
+### Advanced Charts
+
+TradingView states that Advanced Charts is free only when TradingView attribution remains visible and the implementation environment is public, not private or behind a paywall. The library is distributed from restricted repositories, is non-redistributable, and must not be placed in public repositories. See [Advanced Charts introduction](https://www.tradingview.com/charting-library-docs/latest/introduction/) and [installation requirements](https://www.tradingview.com/charting-library-docs/latest/getting_started/quick-start/).
+
+Advanced Charts and Trading Platform do not include market data. The application must implement a Datafeed API backed by its own provider. See [TradingView's Datafeed API](https://www.tradingview.com/charting-library-docs/latest/connecting_data/datafeed-api/).
+
+The embedded libraries also do not provide Pine Script, Strategy Tester, Bar Replay or TradingView.com alerts. Custom indicators must be implemented in JavaScript and backtesting remains the application's responsibility. See [TradingView's unsupported-feature FAQ](https://www.tradingview.com/charting-library-docs/latest/resources/Frequently-Asked-Questions/) and [custom-indicator documentation](https://www.tradingview.com/charting-library-docs/latest/custom_studies/).
+
+Advanced Charts has a rich Drawings API for typed objects including trend lines, rectangles, price ranges, forecasts and labels. See [TradingView's Drawings API](https://www.tradingview.com/charting-library-docs/latest/ui_elements/drawings/drawings-api/).
+
+### Lightweight Charts
+
+TradingView Lightweight Charts is Apache-2.0 licensed, requires the applicable attribution notice, and supports custom drawing and annotation primitives. Official examples include trend lines, rectangles, session highlighting and volume profiles. See the [Lightweight Charts repository](https://github.com/tradingview/lightweight-charts), [plugin documentation](https://tradingview.github.io/lightweight-charts/docs/5.1/plugins/intro), and [official plugin examples](https://tradingview.github.io/lightweight-charts/plugin-examples/).
+
+### Decision gate
+
+- Default to Lightweight Charts for the private first version.
+- Use Advanced Charts only after reviewing the exact licence granted to this application.
+- Keep the application's annotation schema independent of either renderer so the chart library can change without changing forecasts or backtests.
+
+## 4. Market-data strategy
+
+### Twelve Data: suitable first adapter, not the sole source of truth
+
+Twelve Data provides REST OHLC time series and WebSocket price streaming. Its `/time_series` endpoint currently costs one API credit per symbol and returns at most 5,000 records per request. Intraday depth is generally several years while daily data is deeper. See [Twelve Data historical-data guidance](https://support.twelvedata.com/en/articles/5656039-how-to-get-historical-prices), [credit rules](https://support.twelvedata.com/en/articles/5615854-credits), and [current individual pricing](https://twelvedata.com/pricing).
+
+REST and WebSocket have separate quotas. Twelve Data currently documents price updates, but not OHLC, indicators or bid/ask values, through WebSocket. Full WebSocket access requires an eligible plan; trial tiers are more restricted. See [Twelve Data's WebSocket FAQ](https://support.twelvedata.com/en/articles/5194610-websocket-faq).
+
+`XAU/USD` is explicitly supported. Twelve Data describes its commodity and forex prices as aggregated midpoint data rather than broker-executable quotes and warns that decentralized market feeds can differ from broker prices. See [Twelve Data commodities](https://twelvedata.com/commodities) and its [price-deviation explanation](https://support.twelvedata.com/en/articles/11850499-understanding-price-deviations-in-commodities-and-forex-data).
+
+Implementation implications:
+
+- Discover and validate provider symbols; never hard-code an assumed `US100` alias.
+- Cache historical ranges and update incrementally.
+- Build normalized bars server-side from streaming prices only when their semantics are acceptable.
+- Preserve the raw provider payload and a normalized immutable snapshot.
+- Record provider, plan-dependent latency, retrieved time and data completeness.
+- Treat a midpoint research feed as different from the user's executable broker feed.
+
+### Higher-fidelity futures data
+
+Databento provides historical and live CME/CBOT/NYMEX/COMEX datasets with bars, trades, top-of-book and deeper book schemas. Its current CME offering advertises more than 16 years of history, with historical usage and live-data licensing dependent on plan. See [Databento's historical API](https://databento.com/docs/api-reference-historical), [CME dataset coverage](https://databento.com/docs/knowledge-base/datasets), and [current pricing](https://databento.com/pricing/).
+
+Recommendation:
+
+- Use Databento or an equivalent licensed CME feed for serious NQ/MNQ and GC/MGC evaluation.
+- Use the intended broker's own historical prices, spreads and financing for broker CFD validation.
+- Do not use a good result on NQ or GC as proof of equivalent performance on a broker's NAS100 or XAU/USD CFD.
+
+### Macroeconomic and current information
+
+FRED/ALFRED supports real-time periods and vintage dates, allowing retrieval of economic observations as they were known at a historical point rather than using later revisions. See [FRED real-time periods](https://fred.stlouisfed.org/docs/api/fred/realtime_period.html), [series observations](https://fred.stlouisfed.org/docs/api/fred/series_observations.html), and [vintage dates](https://fred.stlouisfed.org/docs/api/fred/series_vintagedates.html).
+
+Current web research should supplement, not replace, market feeds. Every web fact used by an analysis must carry its source URL, publication time, retrieval time and the analysis's market `asOf` time. Retrieved content is untrusted data and cannot alter tool permissions or agent instructions.
+
+## 5. Agent and tool boundary
+
+The model is a research orchestrator, not a price engine, backtest engine or execution gateway.
+
+### Allowed governed tools
+
+| Tool family | Typed responsibility |
+| --- | --- |
+| `clock.now` | Return authoritative server time, timezone and market-session context. |
+| `knowledge.retrieve` | Return reviewed ICT evidence with chunk and timecode citations. |
+| `market.snapshot` | Return immutable, provider-labelled data identified by a snapshot hash. |
+| `market.features` | Run versioned deterministic feature detectors. |
+| `macro.as_of` | Retrieve point-in-time macro observations and release metadata. |
+| `web.research` | Retrieve dated, cited current information as untrusted content. |
+| `backtest.submit` | Validate and enqueue a versioned strategy specification. |
+| `backtest.read` | Read progress and immutable results; never rewrite them. |
+| `chart.propose_annotations` | Submit typed drawing objects for validation and rendering. |
+
+All calls must retain tenant, actor, run, instrument and data-snapshot scope and pass through the governed executor with idempotency and observable events.
+
+### Forbidden model capabilities
+
+The model must not:
+
+- Fabricate, modify or fill missing market bars.
+- Execute arbitrary chart JavaScript or provider SDK code.
+- Place or cancel orders.
+- Read brokerage credentials.
+- Change strategy rules, risk settings or data sources silently.
+- Promote self-learned behaviour directly into the active strategy.
+- Use web search as the authoritative price feed.
+
+### Typed analysis result
+
+Every analysis proposal must include:
+
+- Canonical instrument ID plus display and provider symbols.
+- Data snapshot ID/hash, provider, freshness and `asOf` time.
+- Timeframe and forecast horizon.
+- Bullish, bearish and neutral scenarios.
+- Calibrated probability or explicitly uncalibrated confidence.
+- Entry or observation zone, targets and invalidation.
+- Supporting ICT concepts with transcript timecode citations.
+- Dated market and web evidence.
+- Missing-data and uncertainty warnings.
+- A bounded array of validated chart annotations.
+
+Annotations should be data, not executable code: shape type, time/price anchors, style token, label, source claim ID and visibility range. The renderer must reject unsupported shapes, off-domain coordinates, arbitrary URLs and excessive object counts.
+
+## 6. Deterministic backtesting and leakage controls
+
+The agent may create a candidate strategy specification. A deterministic engine must validate, replay and score it without model calls or live web access inside the replay loop.
+
+[LEAN](https://github.com/QuantConnect/Lean) is a credible engine candidate because it is event-driven and models historical data as a stream bounded by a simulated time frontier. Its model supports extensible fees, fills and slippage. See [LEAN's time-frontier explanation](https://www.quantconnect.com/docs/v2/writing-algorithms/key-concepts/algorithm-engine), [reality-model documentation index](https://www.quantconnect.com/docs/v2/writing-algorithms), and [backtest result semantics](https://www.quantconnect.com/docs/v2/cloud-platform/backtesting/results). A narrower internal engine remains viable if the first scope is deliberately limited.
+
+Every backtest manifest must pin:
+
+- Strategy, ontology and feature-detector versions.
+- Raw dataset and normalized snapshot hashes.
+- Exact instrument/contract and provider mapping.
+- Session calendar, timezone and daylight-saving rules.
+- Futures roll and price-adjustment policy.
+- Bar-close, next-bar and intrabar fill assumptions.
+- Spread, fees, commissions, financing, slippage and latency.
+- Random seed where stochastic modelling exists.
+- Model, prompt and retrieval versions that produced the candidate strategy.
+- Code revision and environment image.
+
+### Leakage and overfitting controls
+
+- Use walk-forward time splits, never random time-series splits.
+- Purge/embargo samples by at least the largest feature lookback plus forecast horizon.
+- Lock a final untouched test period before tuning begins.
+- During an as-of simulation, retrieve only transcripts, news and macro values available by simulated time.
+- If later transcripts are used to formalize a rule and it is tested on earlier prices, label it **retrospective rule evaluation**, not historical forecast performance.
+- Preserve exact futures contracts and define all rolls; do not silently test on a back-adjusted continuous series and claim executable results.
+- Include realistic transaction costs and reject results whose edge disappears under plausible stress.
+- Compare against simple predeclared baselines.
+- Record every parameter search and prevent repeated inspection of the locked holdout.
+- Report uncertainty across regimes, not only one aggregate return.
+
+Evaluation should include probability calibration, directional precision, abstention coverage, expectancy, maximum drawdown, turnover, profit factor, Sharpe/Sortino where appropriate, tail loss, sensitivity to costs, and stability across instruments, sessions and time windows.
+
+The strongest initial evidence should come from an append-only forward shadow journal: forecasts are sealed before outcomes, then scored after the horizon closes.
+
+## 7. Financial-risk controls
+
+The CFTC states that AI cannot predict future or sudden market changes and specifically warns users to account for fees, spreads and subscription costs. It also warns that hypothetical results have inherent limitations and can overstate or understate actual performance. See the [CFTC AI trading advisory](https://www.cftc.gov/LearnAndProtect/AdvisoriesAndArticles/AITradingBots.html) and [CFTC guidance on hypothetical trading systems](https://www.cftc.gov/LearnAndProtect/AdvisoriesAndArticles/fraudadv_tradingsystem.html).
+
+Research-mode controls:
+
+- Label forecasts as research and backtests as hypothetical.
+- Never use certainty, guaranteed-return or urgency language.
+- Display source, assumptions, data freshness and invalidation beside every prediction.
+- Fail closed when data is stale, incomplete or mapped to the wrong instrument.
+- Keep an immutable audit trail of evidence, models, tools, settings and user decisions.
+- Require human review before accepting a newly extracted concept or detector.
+- Treat adaptive learning as a candidate version requiring evaluation and promotion; never mutate active behaviour in place.
+
+If paper or live execution is considered later, it must be a separate authorization boundary with isolated credentials, explicit order approval, position/leverage limits, daily-loss and drawdown caps, volatility/news circuit breakers and a kill switch. Jurisdiction-specific legal review is required before the system is offered to anyone else or represented as personalized advice.
+
+## 8. Staged build order and exit gates
+
+### Stage 0 — identity, scope and licensing
+
+- Choose the actual Nasdaq and gold instruments.
+- Record intended broker and execution feed.
+- Confirm Advanced Charts licence eligibility or select Lightweight Charts.
+- Define forecast horizons, risk language and evaluation metrics.
+
+**Exit gate:** one reviewed instrument registry and one documented chart-library decision.
+
+### Stage 1 — transcript knowledge foundation
+
+- Async transcript ingestion with provenance and timecodes.
+- Reviewed ICT ontology and graph relationships.
+- Hybrid retrieval with citations and contradiction handling.
+- A fixed set of retrieval and concept-extraction evaluations.
+
+**Exit gate:** representative questions return correct, timecoded evidence; ambiguous concepts remain visibly unresolved.
+
+### Stage 2 — market-data plane
+
+- Twelve Data adapter, cache and rate control.
+- Immutable raw and normalized snapshots.
+- Symbol discovery, sessions, clock and data-quality checks.
+- Point-in-time macro adapter.
+
+**Exit gate:** the same snapshot can be replayed deterministically and every displayed bar has an instrument/provider identity.
+
+### Stage 3 — visual research workspace
+
+- Candlestick chart with responsive multi-timeframe navigation.
+- Manual drawings and typed agent annotation rendering.
+- Evidence panel linking each drawing to transcript and market inputs.
+- Save and compare immutable analysis versions.
+
+**Exit gate:** no model-generated executable chart code; drawings survive reload and retain evidence links.
+
+### Stage 4 — deterministic ICT feature detectors
+
+- Convert only reviewed concepts into measurable versioned detectors.
+- Visual overlays and false-positive review workflows.
+- Unit and golden-dataset tests for session, timezone and boundary behaviour.
+
+**Exit gate:** detector output is reproducible from a snapshot hash and definition version.
+
+### Stage 5 — asynchronous backtest service
+
+- Select LEAN or a deliberately scoped internal event-driven engine.
+- Versioned strategy schema, queue, cancellation and progress events.
+- Costs, fills, financing, rolls and downloadable run manifests.
+- Walk-forward and locked-holdout evaluation.
+
+**Exit gate:** identical manifests reproduce identical results and leakage checks pass.
+
+### Stage 6 — bounded trading research agent
+
+- Orchestrate transcript retrieval, snapshots, deterministic features, macro/web research, hypothesis generation and risk critique.
+- Produce scenario-based typed analysis and chart plans.
+- Keep all model/provider choices configurable in Settings.
+
+**Exit gate:** no direct execution path; all claims have evidence or an explicit uncertainty marker.
+
+### Stage 7 — forward shadow evaluation
+
+- Seal predictions before outcomes.
+- Score calibration, performance, abstention and regime stability.
+- Compare agent proposals against deterministic baselines.
+
+**Exit gate:** predeclared sample size, duration and risk-adjusted criteria pass without changing the locked rules.
+
+### Stage 8 — paper trading, separately approved
+
+- Paper-only execution gateway.
+- Explicit approvals, risk caps, stale-data protection and kill switch.
+- Reconcile expected versus simulated fills.
+
+Live execution is outside this research plan and requires a separate decision, threat model, operational readiness review and authorization.
+
+## 9. Decisions required before implementation
+
+1. Is the target Nasdaq product `NDX`, `NQ`/`MNQ`, `QQQ`, or a named broker's NAS100/US100 CFD?
+2. Is the gold product `XAU/USD` from a named broker or `GC`/`MGC` futures?
+3. Which broker feed must the eventual research match?
+4. Does the supplied TradingView access explicitly permit private use, or should the first version use Lightweight Charts?
+5. Are all transcript files lawfully available for private processing, and do they include course/video metadata and dates?
+6. What forecast horizons and sessions should be evaluated first?
+7. What forward-shadow duration and minimum evidence threshold will be required before paper trading is even considered?
+
