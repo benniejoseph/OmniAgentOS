@@ -102,15 +102,52 @@ describe("temporal relation projection queue database scope", () => {
       requestedAt: "2026-09-09T06:55:00.000Z",
     });
   });
+
+  it("does not reuse a request event id when a reset result is identical for different callers", async () => {
+    mocks.sql.mockReset()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        tenant_id: "tenant-queue",
+        owner_actor_id: "actor-queue",
+        generation: 1,
+        requested_at: "2026-09-09T06:50:00.0004Z",
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        tenant_id: "tenant-queue",
+        owner_actor_id: "actor-queue",
+        generation: 1,
+        requested_at: "2026-09-09T06:50:00.0008Z",
+      }]);
+
+    await queueTemporalRelationProjection({
+      tenantId: "tenant-queue",
+      ownerActorId: "actor-queue",
+      executionScope: userScope("queue-request-one"),
+    });
+    await queueTemporalRelationProjection({
+      tenantId: "tenant-queue",
+      ownerActorId: "actor-queue",
+      executionScope: userScope("queue-request-two"),
+    });
+
+    expect(mocks.appendEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.appendEvent.mock.calls[0]?.[0].payload).toEqual(
+      mocks.appendEvent.mock.calls[1]?.[0].payload,
+    );
+    expect(mocks.appendEvent.mock.calls[0]?.[0].id).not.toBe(
+      mocks.appendEvent.mock.calls[1]?.[0].id,
+    );
+  });
 });
 
-function userScope() {
+function userScope(correlationId = "queue-test") {
   return createExecutionScope({
     tenantId: "tenant-queue",
     initiatingActorId: "actor-queue",
     executingPrincipalType: "user",
     executingPrincipalId: "actor-queue",
-    correlationId: "queue-test",
+    correlationId,
     purpose: "api.memory.write",
   });
 }

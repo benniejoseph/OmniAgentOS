@@ -66,6 +66,7 @@ import {
   type KnowledgeDeletionMutationContext,
 } from "@/lib/rag/deletion-events";
 import { invalidateRunsForDeletedContext } from "@/lib/runs/context-invalidation";
+import { buildCaptureKnowledgeSupersessionEvent } from "@/lib/rag/capture-supersession-event";
 
 type RagSqlClient = ReturnType<typeof getSql>;
 
@@ -746,24 +747,10 @@ async function appendCaptureKnowledgeSupersessionEvent(input: {
   executionScope: ExecutionScope;
   sql?: RagSqlClient;
 }) {
-  await appendScopedDomainEvent({
-    id: `knowledge_supersession_${sourceContractSha256({
-      tenantId: input.tenantId,
-      sourceItemId: input.sourceItemId,
-      keepDocumentId: input.keepDocumentId,
-    }).slice(0, 48)}`,
-    streamId: `source:${input.sourceItemId}`,
-    type: "knowledge.source_generation_retired",
-    executionScope: input.executionScope,
-    payload: {
-      schemaVersion: 1,
-      sourceItemId: input.sourceItemId,
-      currentDocumentId: input.keepDocumentId,
-      retiredDocumentCount: input.retiredDocumentCount,
-      retiredMemoryCount: input.retiredMemoryCount,
-      retiredAt: input.retiredAt,
-    },
-  }, input.sql ? { sql: input.sql } : {});
+  await appendScopedDomainEvent(
+    buildCaptureKnowledgeSupersessionEvent(input),
+    input.sql ? { sql: input.sql } : {},
+  );
 }
 
 async function retireKnowledgeEntityEvidence(input: {
