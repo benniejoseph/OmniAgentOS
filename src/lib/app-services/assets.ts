@@ -126,13 +126,47 @@ export async function indexStoredAssetService(caller: AppServiceCaller, input: z
   const owner = { ...exactOwner(caller), executionScope: caller.executionScope! };
   const asset = await getCaptureAsset(value.id, owner);
   if (!asset) throw new CaptureAssetError("Captured file not found.", 404);
+  let supersededIngestJobId: string | undefined;
   if (asset.ingestJobId && asset.status === "queued") {
-    return completeAppServiceCall(authorized, { asset, job: { id: asset.ingestJobId }, duplicate: true });
+    const linkedJob = await getOperationJob(asset.ingestJobId, {
+      tenantId: caller.context.tenantId,
+    });
+    const ownerBoundJob = linkedJob &&
+      linkedJob.payload.actorId === caller.context.actorId &&
+      (linkedJob.type === "capture.asset.process" || linkedJob.type === "knowledge.ingest")
+      ? linkedJob
+      : null;
+    if (ownerBoundJob?.status === "queued" || ownerBoundJob?.status === "running") {
+      return completeAppServiceCall(authorized, {
+        asset,
+        job: projectOperationJobStatus(ownerBoundJob),
+        duplicate: true,
+      });
+    }
+    const completedDocumentId = captureCompletedDocumentId(ownerBoundJob);
+    if (completedDocumentId) {
+      const repaired = await updateCaptureAssetStatus(asset.id, owner, {
+        status: "indexed",
+        extractionStatus: asset.extractionStatus,
+        ingestJobId: asset.ingestJobId,
+        expectedIngestJobId: asset.ingestJobId,
+        knowledgeDocumentId: completedDocumentId,
+      });
+      return completeAppServiceCall(authorized, {
+        asset: repaired,
+        job: projectOperationJobStatus(ownerBoundJob!),
+        duplicate: true,
+        repaired: true,
+      });
+    }
+    supersededIngestJobId = asset.ingestJobId;
   }
   const job = await enqueueCaptureAssetProcessJob({
     ...exactOwner(caller),
     executionScope: caller.executionScope!,
-    idempotencyKey: caller.idempotencyKey,
+    idempotencyKey: supersededIngestJobId
+      ? captureAssetRetryIdempotencyKey(caller, asset.id, supersededIngestJobId)
+      : caller.idempotencyKey,
     request: {
       assetId: asset.id,
       ...(value.title ? { title: value.title } : {}),
@@ -141,6 +175,9 @@ export async function indexStoredAssetService(caller: AppServiceCaller, input: z
     },
   });
   if (asset.ingestJobId === job.id) {
+    if (supersededIngestJobId) {
+      throw new Error("Capture asset retry did not create a fresh processing job.");
+    }
     return completeAppServiceCall(authorized, {
       asset,
       job: projectOperationJobStatus(job),
@@ -151,6 +188,7 @@ export async function indexStoredAssetService(caller: AppServiceCaller, input: z
     status: "queued",
     extractionStatus: "pending",
     ingestJobId: job.id,
+    ...(asset.ingestJobId ? { expectedIngestJobId: asset.ingestJobId } : {}),
     clearExtractionReceipt: true,
   });
   return completeAppServiceCall(authorized, { asset: updated, job: projectOperationJobStatus(job) });
@@ -204,6 +242,34 @@ async function cancelIngestJob(jobId: string | undefined, tenantId: string) {
   if (!jobId) return;
   const job = await getOperationJob(jobId, { tenantId });
   if (job?.dedupeKey) await cancelOperationJobByDedupeKey(job.dedupeKey, "Captured content deleted by its owner.", { tenantId });
+}
+
+function captureCompletedDocumentId(
+  job: Awaited<ReturnType<typeof getOperationJob>>,
+) {
+  if (job?.status !== "completed") return undefined;
+  const result = job.payload.result;
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return undefined;
+  }
+  const documentId = (result as Record<string, unknown>).documentId;
+  return typeof documentId === "string" && /^[a-zA-Z0-9_-]{1,200}$/.test(documentId)
+    ? documentId
+    : undefined;
+}
+
+function captureAssetRetryIdempotencyKey(
+  caller: AppServiceCaller,
+  assetId: string,
+  previousIngestJobId: string,
+) {
+  return `capture-asset-retry:${canonicalJsonSha256({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    assetId,
+    previousIngestJobId,
+    requestId: caller.idempotencyKey || "",
+  })}`;
 }
 
 function exactOwner(caller: AppServiceCaller) { return { tenantId: caller.context.tenantId, actorId: caller.context.actorId }; }

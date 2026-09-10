@@ -1270,8 +1270,18 @@ async function executeKnowledgeIngestJobRequest(
         });
       }
     } catch {
-      // Indexing is the source of truth; a deleted or temporarily unavailable
-      // Capture projection must not turn a completed ingest into a retry.
+      if (captureTarget?.assetId) {
+        await handleCaptureAssetCompletionProjectionFailure({
+          assetId: captureTarget.assetId,
+          tenantId: job.tenantId,
+          actorId,
+          ingestJobId: job.id,
+          knowledgeDocumentId: result.document.id,
+        });
+      }
+      // Recording completion remains a convenience projection. Asset
+      // completion is stricter because the asset is the durable progress
+      // surface used to reconcile an otherwise completed indexing job.
     }
   }
   return {
@@ -1280,6 +1290,46 @@ async function executeKnowledgeIngestJobRequest(
     chunkCount: result.chunks.length,
     memoryCount: result.memories.length,
   };
+}
+
+async function handleCaptureAssetCompletionProjectionFailure(input: {
+  assetId: string;
+  tenantId: string;
+  actorId: string;
+  ingestJobId: string;
+  knowledgeDocumentId: string;
+}) {
+  let current: Awaited<ReturnType<typeof getCaptureAsset>>;
+  try {
+    current = await getCaptureAsset(input.assetId, {
+      tenantId: input.tenantId,
+      actorId: input.actorId,
+    });
+  } catch {
+    throw new Error("Capture asset completion projection could not be finalized.");
+  }
+  assertCaptureAssetCompletionProjectionFailureIsResolved(
+    current,
+    input.ingestJobId,
+    input.knowledgeDocumentId,
+  );
+}
+
+export function assertCaptureAssetCompletionProjectionFailureIsResolved(
+  current: {
+    status?: string;
+    ingestJobId?: string;
+    knowledgeDocumentId?: string;
+  } | null | undefined,
+  ingestJobId: string,
+  knowledgeDocumentId: string,
+) {
+  if (!current || current.ingestJobId !== ingestJobId) return;
+  if (
+    current.status === "indexed" &&
+    current.knowledgeDocumentId === knowledgeDocumentId
+  ) return;
+  throw new Error("Capture asset completion projection could not be finalized.");
 }
 
 async function updateBackgroundJobProgress(
