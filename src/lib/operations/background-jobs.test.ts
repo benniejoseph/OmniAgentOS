@@ -301,6 +301,215 @@ describe("background operation jobs", () => {
     expect(completed?.payload.request).toBeUndefined();
   });
 
+  it("queues source cognition by exact owner, revision, and batch", async () => {
+    const jobs = await import("@/lib/operations/background-jobs");
+    const { createExecutionScope } = await import(
+      "@/lib/security/execution-scope"
+    );
+    const tenantId = "tenant-cognition-queue";
+    const actorId = "owner-cognition-queue";
+    const executionScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "cognition-queue-test",
+      purpose: "knowledge.cognition.request",
+    });
+    const request = {
+      documentId: "knowledge-cognition-document",
+      sourceRevisionId: "source-cognition-revision",
+      retentionExpiresAt: "2026-10-10T00:00:00.000Z",
+      sourcePlanSha256: "a".repeat(64),
+      batchIndex: 0,
+    };
+
+    const first = await jobs.enqueueKnowledgeCognifyJob({
+      tenantId,
+      actorId,
+      executionScope,
+      request,
+    });
+    const repeated = await jobs.enqueueKnowledgeCognifyJob({
+      tenantId,
+      actorId,
+      executionScope,
+      request,
+    });
+
+    expect(repeated.id).toBe(first.id);
+    expect(first).toMatchObject({
+      type: "knowledge.cognify",
+      status: "queued",
+      payload: {
+        actorId,
+        request,
+        executionScope: {
+          tenantId,
+          initiatingActorId: actorId,
+          executingPrincipalType: "system",
+          purpose: "agent.knowledge.cognify.v1",
+        },
+      },
+    });
+  });
+
+  it("resumes a persisted cognition batch without invoking the model again", async () => {
+    const assets = await import("@/lib/capture/assets");
+    const jobs = await import("@/lib/operations/background-jobs");
+    const queue = await import("@/lib/operations/job-queue");
+    const rag = await import("@/lib/rag/store");
+    const runtime = await import("@/lib/knowledge/cognification-runtime");
+    const contract = await import("@/lib/knowledge/cognification-contract");
+    const cognitionStore = await import("@/lib/knowledge/cognification-store");
+    const { createExecutionScope, parsePersistedExecutionScope } = await import(
+      "@/lib/security/execution-scope"
+    );
+    const { contentSha256Hex } = await import("@/lib/sources/text-lineage");
+    const tenantId = "tenant-cognition-resume";
+    const actorId = "owner-cognition-resume";
+    const userScope = createExecutionScope({
+      tenantId,
+      initiatingActorId: actorId,
+      executingPrincipalType: "user",
+      executingPrincipalId: actorId,
+      correlationId: "cognition-resume-capture",
+      purpose: "capture.asset.ingest.test",
+    });
+    const stored = await assets.saveCaptureAsset({
+      tenantId,
+      actorId,
+      executionScope: userScope,
+      filename: "cognition-resume.txt",
+      mediaType: "text/plain",
+      bytes: Buffer.from("Liquidity rests above old highs."),
+    });
+    const assetJob = await jobs.enqueueCaptureAssetProcessJob({
+      tenantId,
+      actorId,
+      executionScope: userScope,
+      idempotencyKey: "cognition-resume-asset",
+      request: { assetId: stored.id, title: "Liquidity lesson" },
+    });
+    await assets.updateCaptureAssetStatus(stored.id, {
+      tenantId,
+      actorId,
+      executionScope: userScope,
+    }, {
+      status: "queued",
+      extractionStatus: "pending",
+      ingestJobId: assetJob.id,
+      clearExtractionReceipt: true,
+    });
+    await expect(jobs.processBackgroundOperationQueue({ tenantId, limit: 1 }))
+      .resolves.toMatchObject({ completed: 1, failed: 0 });
+
+    const completedAsset = await assets.getCaptureAsset(stored.id, {
+      tenantId,
+      actorId,
+    });
+    const source = await rag.getActorOwnedKnowledgeForCognition({
+      tenantId,
+      actorId,
+      documentId: completedAsset!.knowledgeDocumentId!,
+    });
+    expect(source).not.toBeNull();
+    const document = {
+      id: source!.document.id,
+      title: source!.document.title,
+      sourceItemId: source!.sourceItemId,
+      sourceRevisionId: source!.sourceRevisionId,
+      retentionExpiresAt: source!.retentionExpiresAt,
+    };
+    const chunks = source!.chunks.map((chunk) => ({
+      id: chunk.id,
+      index: chunk.chunkIndex,
+      content: chunk.content,
+      evidenceUnitId: chunk.evidenceUnitId!,
+    }));
+    const plan = runtime.partitionCognificationBatches({ document, chunks })[0];
+    const quote = chunks[0].content;
+    const evidence = [{
+      evidenceUnitId: chunks[0].evidenceUnitId,
+      chunkId: chunks[0].id,
+      chunkIndex: 0,
+      quote,
+      quoteSha256: contentSha256Hex(quote),
+      coordinateSpace: "evidence_content" as const,
+      offsetUnit: "utf16_code_unit" as const,
+      startOffset: 0,
+      endOffsetExclusive: quote.length,
+    }];
+    const summaryBody = {
+      text: "A reviewed source-map proposal about liquidity.",
+      confidenceBasisPoints: 9_000,
+      evidence,
+    };
+    const candidate = contract.buildCognificationCandidateBatchV1({
+      batchId: plan.batchId,
+      tenantId,
+      ownerActorId: actorId,
+      documentId: document.id,
+      sourceItemId: document.sourceItemId,
+      sourceRevisionId: document.sourceRevisionId,
+      retentionExpiresAt: document.retentionExpiresAt,
+      batchIndex: plan.batchIndex,
+      batchCount: plan.batchCount,
+      firstChunkIndex: plan.firstChunkIndex,
+      lastChunkIndex: plan.lastChunkIndex,
+      chunkCount: plan.chunkCount,
+      inputCharacterCount: plan.inputCharacterCount,
+      batchInputSha256: plan.batchInputSha256,
+      evidenceUnitIds: [...plan.evidenceUnitIds],
+      ontologyVersionId: "asael-ontology:1",
+      topics: [],
+      claims: [],
+      entities: [],
+      relations: [],
+      summary: {
+        candidateId: contract.deriveCognificationCandidateId(
+          "summary",
+          summaryBody,
+        ),
+        ...summaryBody,
+      },
+      modelAttribution: {
+        provider: "openai",
+        model: "configured-memory-model",
+        routingSource: "tenant_assignment",
+        assignmentScope: "memory",
+        assignmentId: "assignment-memory",
+        assignmentRevision: 1,
+        assignmentConfigurationSha256: "a".repeat(64),
+        credentialSource: "tenant_vault",
+        usageReceiptRecorded: true,
+        usageReceiptId: "usage-cognition-resume",
+      },
+    });
+    const cognitionJob = (await queue.listOperationJobs(5, {
+      tenantId,
+      type: "knowledge.cognify",
+    }))[0];
+    const workerScope = parsePersistedExecutionScope(
+      cognitionJob.payload.executionScope,
+    );
+    expect(workerScope).not.toBeNull();
+    await cognitionStore.saveKnowledgeCognitionFromBackgroundWorker(candidate, {
+      executionScope: workerScope!,
+    });
+    const modelSpy = vi.spyOn(runtime, "cognifyKnowledgeBatch");
+    await expect(jobs.processBackgroundOperationQueue({ tenantId, limit: 1 }))
+      .resolves.toMatchObject({ completed: 1, failed: 0 });
+    expect(modelSpy).not.toHaveBeenCalled();
+    expect(queue.projectOperationJobStatus(
+      (await queue.getOperationJob(cognitionJob.id, { tenantId }))!,
+    )).toMatchObject({
+        status: "completed",
+        result: { cognitionId: candidate.batchId },
+      });
+    modelSpy.mockRestore();
+  });
+
   it("rejects an idempotency key reused for different ingestion content", async () => {
     const jobs = await import("@/lib/operations/background-jobs");
     await jobs.enqueueKnowledgeIngestJob({
