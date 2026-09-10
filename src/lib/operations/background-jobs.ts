@@ -46,9 +46,23 @@ import {
   consolidateAgentRunMemory,
 } from "@/lib/memory/consolidator";
 import { applyRunMemoryFeedback } from "@/lib/memory/store";
+import {
+  cognifyKnowledgeBatch,
+  partitionCognificationBatches,
+  type CognificationBatchPlan,
+} from "@/lib/knowledge/cognification-runtime";
+import {
+  getKnowledgeCognition,
+  saveKnowledgeCognitionFromBackgroundWorker,
+  type KnowledgeCognitionRecord,
+} from "@/lib/knowledge/cognification-store";
 import type { AgentMode } from "@/lib/orchestration/types";
 import { ingestTextDocument } from "@/lib/rag/retriever";
-import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
+import {
+  deleteKnowledgeDocumentsBySourcePrefix,
+  getActorOwnedKnowledgeForCognition,
+  type ActorOwnedCognitionSource,
+} from "@/lib/rag/store";
 import {
   appendRunEvent,
   getAgentRun,
@@ -83,8 +97,12 @@ import { executeAssetObjectMigrationJob } from "@/lib/storage/object-migration";
 import {
   CLAIM_EVIDENCE_PURPOSE_ID,
   CONTEXT_COMPILER_V2_PURPOSE_ID,
+  KNOWLEDGE_COGNIFY_PURPOSE_ID,
 } from "@/lib/sources/purposes";
-import type { SourceItemV1 } from "@/lib/sources/contracts";
+import {
+  sourceContractSha256,
+  type SourceItemV1,
+} from "@/lib/sources/contracts";
 
 export const evaluationJobRequestSchema = z
   .object({
@@ -143,6 +161,21 @@ const memoryConsolidationJobRequestSchema = z
   })
   .strict();
 
+export const knowledgeCognifyJobRequestSchema = z.object({
+  documentId: z.string().trim().min(1).max(320),
+  sourceRevisionId: z.string().trim().min(1).max(320),
+  batchIndex: z.number().int().nonnegative().max(10_000),
+  // Optional only so jobs queued by the immediately preceding release can
+  // finish. Every newly enqueued job is upgraded to the current source plan.
+  sourcePlanSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  retentionExpiresAt: z.string().datetime({ offset: true }).nullable().optional(),
+}).strict();
+
+type CurrentKnowledgeCognifyJobRequest = KnowledgeCognifyJobRequest & {
+  sourcePlanSha256: string;
+  retentionExpiresAt: string | null;
+};
+
 export type EvaluationJobRequest = z.infer<
   typeof evaluationJobRequestSchema
 >;
@@ -152,9 +185,12 @@ export type KnowledgeIngestJobRequest = z.infer<
 export type CaptureAssetProcessJobRequest = z.infer<
   typeof captureAssetProcessJobRequestSchema
 >;
+export type KnowledgeCognifyJobRequest = z.infer<
+  typeof knowledgeCognifyJobRequestSchema
+>;
 
 export class BackgroundJobIdempotencyConflictError extends Error {
-  constructor(type: "capture.asset.process" | "knowledge.ingest" | "evaluation.run") {
+  constructor(type: "capture.asset.process" | "knowledge.ingest" | "knowledge.cognify" | "evaluation.run") {
     super(`The idempotency key is already bound to a different ${type} request.`);
     this.name = "BackgroundJobIdempotencyConflictError";
   }
@@ -296,6 +332,146 @@ export async function enqueueKnowledgeIngestJob({
     throw new BackgroundJobIdempotencyConflictError("knowledge.ingest");
   }
   assertIdempotentRequest(job, requestHash, "knowledge.ingest");
+  return job;
+}
+
+export async function enqueueKnowledgeCognifyJob({
+  tenantId,
+  actorId,
+  executionScope,
+  request,
+}: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  request: KnowledgeCognifyJobRequest;
+}) {
+  const parsed = knowledgeCognifyJobRequestSchema.parse(request);
+  if (!parsed.sourcePlanSha256 || parsed.retentionExpiresAt === undefined) {
+    throw new Error(
+      "New knowledge cognition jobs require the current source plan binding.",
+    );
+  }
+  return enqueueCurrentKnowledgeCognifyJob({
+    tenantId,
+    actorId,
+    executionScope,
+    request: parsed as CurrentKnowledgeCognifyJobRequest,
+  });
+}
+
+/**
+ * Reconciles a complete current source plan and queues only its first batch
+ * without a persisted review candidate. This makes an owner retry resume a
+ * failed later batch while preserving completed work.
+ */
+export async function enqueueKnowledgeCognificationPlan({
+  tenantId,
+  actorId,
+  executionScope,
+  documentId,
+  sourceRevisionId,
+}: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  documentId: string;
+  sourceRevisionId: string;
+}) {
+  const usageActorId = normalizeQueuedActorId(actorId);
+  if (!usageActorId) {
+    throw new Error("Knowledge cognification requires an owner actor.");
+  }
+  requireQueuedExecutionScope(executionScope, tenantId, usageActorId);
+  const source = await getActorOwnedKnowledgeForCognition({
+    tenantId,
+    actorId: usageActorId,
+    documentId,
+  });
+  if (!source || source.sourceRevisionId !== sourceRevisionId) {
+    return null;
+  }
+  const document = cognitionDocument(source);
+  const batches = partitionCognificationBatches({
+    document,
+    chunks: cognitionChunks(source),
+  });
+  const sourcePlanSha256 = cognitionSourcePlanSha256(document, batches);
+  for (const batch of batches) {
+    const existing = await getKnowledgeCognition(batch.batchId, {
+      tenantId,
+      actorId: usageActorId,
+    });
+    if (existing) continue;
+    return enqueueCurrentKnowledgeCognifyJob({
+      tenantId,
+      actorId: usageActorId,
+      executionScope,
+      request: {
+        documentId: document.id,
+        sourceRevisionId: document.sourceRevisionId,
+        retentionExpiresAt: document.retentionExpiresAt,
+        sourcePlanSha256,
+        batchIndex: batch.batchIndex,
+      },
+    });
+  }
+  return null;
+}
+
+async function enqueueCurrentKnowledgeCognifyJob({
+  tenantId,
+  actorId,
+  executionScope,
+  request: parsed,
+}: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  request: CurrentKnowledgeCognifyJobRequest;
+}) {
+  const usageActorId = normalizeQueuedActorId(actorId);
+  if (!usageActorId) {
+    throw new Error("Knowledge cognification requires an owner actor.");
+  }
+  const trustedExecutionScope = requireQueuedExecutionScope(
+    executionScope,
+    tenantId,
+    usageActorId,
+  );
+  const cognitionExecutionScope = deriveExecutionScope(trustedExecutionScope, {
+    executingPrincipalType: "system",
+    executingPrincipalId: "background-operations-worker",
+    causationId: parsed.documentId,
+    purpose: KNOWLEDGE_COGNIFY_PURPOSE_ID,
+  });
+  const requestHash = backgroundRequestHash({
+    ...parsed,
+    actorId: usageActorId,
+  });
+  const job = await enqueueOperationJob({
+    tenantId,
+    type: "knowledge.cognify",
+    dedupeKey: requestDedupeKey("knowledge.cognify", {
+      ...parsed,
+      actorId: usageActorId,
+    }),
+    payload: {
+      request: parsed,
+      actorId: usageActorId,
+      executionScope: cognitionExecutionScope,
+      requestHash,
+      progress: { stage: "queued", batchIndex: parsed.batchIndex },
+    },
+    maxAttempts: 3,
+    priority: 0,
+    requeueTerminal: false,
+    requeueFailed: true,
+  });
+  if (job.payload.actorId !== usageActorId) {
+    throw new BackgroundJobIdempotencyConflictError("knowledge.cognify");
+  }
+  assertIdempotentRequest(job, requestHash, "knowledge.cognify");
   return job;
 }
 
@@ -570,7 +746,8 @@ function executeBackgroundOperationInAccessScope(
     job.type === "asset.object.backfill" ||
     job.type === "capture.asset.process" ||
     job.type === "capture.media.segment.transcribe" ||
-    job.type === "capture.media.recording.process"
+    job.type === "capture.media.recording.process" ||
+    job.type === "knowledge.cognify"
   ) {
     const actorId = typeof job.payload.actorId === "string"
       ? normalizeQueuedActorId(job.payload.actorId)
@@ -954,6 +1131,10 @@ async function executeBackgroundOperation(
     return executeCaptureAssetProcessJob(job, abortSignal);
   }
 
+  if (job.type === "knowledge.cognify") {
+    return executeKnowledgeCognifyJob(job, abortSignal);
+  }
+
   if (job.type === "knowledge.ingest") {
     return executeKnowledgeIngestJobRequest(
       job,
@@ -995,6 +1176,214 @@ async function executeBackgroundOperation(
   }
 
   throw new Error(`Unsupported background operation type: ${job.type}`);
+}
+
+async function executeKnowledgeCognifyJob(
+  job: OperationJobRecord,
+  abortSignal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const request = knowledgeCognifyJobRequestSchema.parse(job.payload.request);
+  const actorId = normalizeQueuedActorId(
+    typeof job.payload.actorId === "string" ? job.payload.actorId : undefined,
+  );
+  if (!actorId) {
+    throw new Error("Knowledge cognification job is missing its owner actor.");
+  }
+  const executionScope = parsePersistedExecutionScope(
+    job.payload.executionScope,
+  );
+  if (
+    !executionScope ||
+    executionScope.tenantId !== job.tenantId ||
+    executionScope.initiatingActorId !== actorId ||
+    executionScope.purpose !== KNOWLEDGE_COGNIFY_PURPOSE_ID
+  ) {
+    throw new Error("Knowledge cognification job scope is invalid.");
+  }
+
+  await updateBackgroundJobProgress(job, abortSignal, {
+    stage: "reading_evidence",
+    batchIndex: request.batchIndex,
+  });
+  const source = await getActorOwnedKnowledgeForCognition({
+    tenantId: job.tenantId,
+    actorId,
+    documentId: request.documentId,
+  });
+  abortSignal.throwIfAborted();
+  if (!source || source.sourceRevisionId !== request.sourceRevisionId) {
+    return {
+      resourceId: request.documentId,
+      documentId: request.documentId,
+      sourceRevisionId: request.sourceRevisionId,
+      status: "superseded",
+      reason: "The actor-owned source revision is no longer current or eligible.",
+    };
+  }
+
+  const document = cognitionDocument(source);
+  const chunks = cognitionChunks(source);
+  const batches = partitionCognificationBatches({ document, chunks });
+  const sourcePlanSha256 = cognitionSourcePlanSha256(document, batches);
+  if (
+    (request.sourcePlanSha256 &&
+      request.sourcePlanSha256 !== sourcePlanSha256) ||
+    (request.retentionExpiresAt !== undefined &&
+      request.retentionExpiresAt !== document.retentionExpiresAt)
+  ) {
+    return {
+      resourceId: request.documentId,
+      documentId: request.documentId,
+      sourceRevisionId: request.sourceRevisionId,
+      status: "superseded",
+      reason: "The source cognition plan changed after this job was queued.",
+    };
+  }
+  if (!batches[request.batchIndex]) {
+    throw new Error("Knowledge cognition batch is outside the current source plan.");
+  }
+
+  const batch = batches[request.batchIndex];
+  let saved = await getKnowledgeCognition(batch.batchId, {
+    tenantId: job.tenantId,
+    actorId,
+  });
+  if (saved) {
+    assertPersistedCognitionMatchesPlan(saved, batch, document);
+    await updateBackgroundJobProgress(job, abortSignal, {
+      stage: "resuming_persisted_review",
+      batchIndex: request.batchIndex,
+      batchCount: batches.length,
+    });
+  } else {
+    await updateBackgroundJobProgress(job, abortSignal, {
+      stage: "extracting_candidates",
+      batchIndex: request.batchIndex,
+      batchCount: batches.length,
+    });
+    const candidate = await cognifyKnowledgeBatch({
+      tenantId: job.tenantId,
+      actorId,
+      document,
+      chunks,
+      batchIndex: request.batchIndex,
+      executionScope,
+      abortSignal,
+    });
+    abortSignal.throwIfAborted();
+
+    await updateBackgroundJobProgress(job, abortSignal, {
+      stage: "saving_review",
+      batchIndex: request.batchIndex,
+      batchCount: batches.length,
+    });
+    saved = await saveKnowledgeCognitionFromBackgroundWorker(candidate, {
+      executionScope,
+    });
+  }
+  const nextBatchIndex = request.batchIndex + 1;
+  const nextJob = nextBatchIndex < batches.length
+    ? await enqueueKnowledgeCognifyJob({
+        tenantId: job.tenantId,
+        actorId,
+        executionScope,
+        request: {
+          documentId: request.documentId,
+          sourceRevisionId: request.sourceRevisionId,
+          retentionExpiresAt: document.retentionExpiresAt,
+          sourcePlanSha256,
+          batchIndex: nextBatchIndex,
+        },
+      })
+    : undefined;
+  return {
+    resourceId: saved.candidate.batchId,
+    cognitionId: saved.candidate.batchId,
+    documentId: request.documentId,
+    sourceRevisionId: request.sourceRevisionId,
+    batchIndex: request.batchIndex,
+    batchCount: batches.length,
+    status: saved.status,
+    ...(nextJob ? { nextJobId: nextJob.id } : {}),
+  };
+}
+
+function cognitionDocument(source: ActorOwnedCognitionSource) {
+  return {
+    id: source.document.id,
+    title: source.document.title,
+    sourceItemId: source.sourceItemId,
+    sourceRevisionId: source.sourceRevisionId,
+    retentionExpiresAt: source.retentionExpiresAt,
+  };
+}
+
+function cognitionChunks(source: ActorOwnedCognitionSource) {
+  return source.chunks.map((chunk) => {
+    if (!chunk.evidenceUnitId) {
+      throw new Error("Knowledge cognition source is missing canonical evidence.");
+    }
+    return {
+      id: chunk.id,
+      index: chunk.chunkIndex,
+      content: chunk.content,
+      evidenceUnitId: chunk.evidenceUnitId,
+    };
+  });
+}
+
+function cognitionSourcePlanSha256(
+  document: ReturnType<typeof cognitionDocument>,
+  batches: readonly CognificationBatchPlan[],
+) {
+  return sourceContractSha256({
+    schemaVersion: 1,
+    documentId: document.id,
+    sourceItemId: document.sourceItemId,
+    sourceRevisionId: document.sourceRevisionId,
+    retentionExpiresAt: document.retentionExpiresAt,
+    batches: batches.map((batch) => ({
+      batchId: batch.batchId,
+      batchIndex: batch.batchIndex,
+      batchInputSha256: batch.batchInputSha256,
+      evidenceUnitIds: [...batch.evidenceUnitIds],
+    })),
+  });
+}
+
+function assertPersistedCognitionMatchesPlan(
+  record: KnowledgeCognitionRecord,
+  batch: CognificationBatchPlan,
+  document: {
+    id: string;
+    sourceItemId: string;
+    sourceRevisionId: string;
+    retentionExpiresAt: string | null;
+  },
+) {
+  const candidate = record.candidate;
+  if (
+    candidate.documentId !== document.id ||
+    candidate.sourceItemId !== document.sourceItemId ||
+    candidate.sourceRevisionId !== document.sourceRevisionId ||
+    candidate.retentionExpiresAt !== document.retentionExpiresAt ||
+    candidate.batchId !== batch.batchId ||
+    candidate.batchIndex !== batch.batchIndex ||
+    candidate.batchCount !== batch.batchCount ||
+    candidate.firstChunkIndex !== batch.firstChunkIndex ||
+    candidate.lastChunkIndex !== batch.lastChunkIndex ||
+    candidate.chunkCount !== batch.chunkCount ||
+    candidate.inputCharacterCount !== batch.inputCharacterCount ||
+    candidate.batchInputSha256 !== batch.batchInputSha256 ||
+    candidate.evidenceUnitIds.length !== batch.evidenceUnitIds.length ||
+    candidate.evidenceUnitIds.some((id, index) =>
+      id !== batch.evidenceUnitIds[index]
+    )
+  ) {
+    throw new Error(
+      "Persisted knowledge cognition does not match the current source plan.",
+    );
+  }
 }
 
 async function executeCaptureAssetProcessJob(
@@ -1221,6 +1610,7 @@ async function executeKnowledgeIngestJobRequest(
               allowedPurposeIds: [
                 CLAIM_EVIDENCE_PURPOSE_ID,
                 CONTEXT_COMPILER_V2_PURPOSE_ID,
+                KNOWLEDGE_COGNIFY_PURPOSE_ID,
               ].sort(),
               retentionPolicyId: "retention.capture.owner-controlled",
               extractorId: parsed.structuredUnits?.length
@@ -1284,6 +1674,28 @@ async function executeKnowledgeIngestJobRequest(
       // surface used to reconcile an otherwise completed indexing job.
     }
   }
+  let cognition: Record<string, unknown> = { status: "not_eligible" };
+  if (actorId && result.document.sourceRevisionId) {
+    try {
+      const cognitionJob = await enqueueKnowledgeCognificationPlan({
+        tenantId: job.tenantId,
+        actorId,
+        executionScope: sourceExecutionScope,
+        documentId: result.document.id,
+        sourceRevisionId: result.document.sourceRevisionId,
+      });
+      cognition = {
+        status: !cognitionJob || cognitionJob.status === "completed"
+          ? "already_processed"
+          : "queued",
+        ...(cognitionJob ? { jobId: cognitionJob.id } : {}),
+      };
+    } catch {
+      // Source indexing is canonical and must not be rolled back because its
+      // optional semantic proposal stage could not be queued.
+      cognition = { status: "queue_failed" };
+    }
+  }
   return {
     resourceId: result.document.id,
     documentId: result.document.id,
@@ -1291,6 +1703,7 @@ async function executeKnowledgeIngestJobRequest(
     memoryCount: result.memories.length,
     retiredDocumentCount: result.retired.documents,
     retiredMemoryCount: result.retired.memories,
+    cognition,
   };
 }
 
@@ -1438,7 +1851,7 @@ function summarizeBackgroundResults(results: BackgroundJobResult[]) {
 }
 
 function requestDedupeKey(
-  type: "capture.asset.process" | "knowledge.ingest" | "evaluation.run",
+  type: "capture.asset.process" | "knowledge.ingest" | "knowledge.cognify" | "evaluation.run",
   request: Record<string, unknown>,
 ) {
   const digest = createHash("sha256")
@@ -1457,7 +1870,7 @@ function backgroundRequestHash(request: Record<string, unknown>) {
 function assertIdempotentRequest(
   job: OperationJobRecord,
   requestHash: string,
-  type: "capture.asset.process" | "knowledge.ingest" | "evaluation.run",
+  type: "capture.asset.process" | "knowledge.ingest" | "knowledge.cognify" | "evaluation.run",
 ) {
   if (
     typeof job.payload.requestHash === "string" &&
