@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { captureActorReadOrder } from "@/lib/capture/actor-scope";
-import { listCaptureAssets } from "@/lib/capture/assets";
-import { listCaptureRecordingsForRequest } from "@/lib/capture/recordings";
+import type { CaptureAsset, CaptureRecording } from "@/lib/capture/types";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import {
   parseWorkspaceLibraryItem,
@@ -9,10 +8,12 @@ import {
   type WorkspaceLibraryKind,
   type WorkspaceLibraryScope,
 } from "@/lib/library/contracts";
-import { listMissionArtifacts, listMissions } from "@/lib/missions/store";
-import { listProjectCollections, listProjects } from "@/lib/projects/store";
+import type { MissionLedger } from "@/lib/missions/types";
+import type { ProjectLedger } from "@/lib/projects/types";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { redactSensitive } from "@/lib/security/context";
+import { readJsonFile } from "@/lib/storage/json";
+import { getDataPath } from "@/lib/storage/paths";
 
 type SourceVisibility = WorkspaceLibraryScope["visibility"] | "agent_private";
 
@@ -33,9 +34,16 @@ export type WorkspaceLibraryResult = Readonly<{
   totalIsLowerBound: boolean;
   nextOffset: number | null;
   countsByKind: Readonly<Partial<Record<WorkspaceLibraryKind, number>>>;
-}>; 
+  countsAreLowerBound: boolean;
+}>;
 
 type SqlRow = Record<string, unknown>;
+type LocalCaptureAssetLedger = {
+  assets: Array<CaptureAsset & { contentPath?: string }>;
+};
+type LocalCaptureRecordingLedger = {
+  recordings: CaptureRecording[];
+};
 
 export async function listWorkspaceLibrary(
   input: WorkspaceLibraryQuery,
@@ -46,15 +54,18 @@ export async function listWorkspaceLibrary(
     : await listLocalLibraryCandidates(query);
   const kinds = query.kinds.length ? new Set(query.kinds) : undefined;
   const searchTerms = tokenize(query.query);
-  const filtered = batch.items
-    .filter((item) => !kinds || kinds.has(item.kind))
+  const facetCandidates = batch.items
     .filter((item) => !query.projectId || item.links.some(
       (link) => link.kind === "project" && link.id === query.projectId,
     ))
-    .filter((item) => matchesSearch(item, searchTerms))
-    .sort(compareLibraryItems);
+    .filter((item) => matchesSearch(item, searchTerms));
   const countsByKind: Partial<Record<WorkspaceLibraryKind, number>> = {};
-  for (const item of filtered) countsByKind[item.kind] = (countsByKind[item.kind] || 0) + 1;
+  for (const item of facetCandidates) {
+    countsByKind[item.kind] = (countsByKind[item.kind] || 0) + 1;
+  }
+  const filtered = facetCandidates
+    .filter((item) => !kinds || kinds.has(item.kind))
+    .sort(compareLibraryItems);
   const page = filtered.slice(query.offset, query.offset + query.limit);
   const hasMore = filtered.length > query.offset + query.limit || batch.hasMore;
   const nextOffset = hasMore ? query.offset + page.length : null;
@@ -64,6 +75,7 @@ export async function listWorkspaceLibrary(
     totalIsLowerBound: hasMore,
     nextOffset: page.length ? nextOffset : null,
     countsByKind: Object.freeze(countsByKind),
+    countsAreLowerBound: batch.countsAreLowerBound,
   });
 }
 
@@ -76,10 +88,7 @@ async function listDatabaseLibraryCandidates(
     input.requestActorBinding,
     input.actorId,
   );
-  const candidateLimit = Math.min(
-    Math.max(input.offset + input.limit + 1, 100),
-    10_101,
-  );
+  const candidateLimit = libraryCandidateLimit(input);
   const searchPattern = `%${input.query}%`;
   const scopedSql = getSql();
 
@@ -87,12 +96,12 @@ async function listDatabaseLibraryCandidates(
   // Hosted runtimes intentionally use a one-connection pool, so five separate
   // reservations would add avoidable pooler and scope round trips.
   return scopedSql.transaction(async (sql: typeof scopedSql) => {
+    // Resolve narrow, independently bounded id windows before hydrating rows.
+    // This preserves index-friendly ordering and prevents large file bodies,
+    // transcripts, or generated payloads from entering a global sort.
     const resultRows = await sql`
-      WITH capture_rows AS MATERIALIZED (
-        SELECT asset.*, document.title AS knowledge_title,
-          document.id AS knowledge_document_id_joined,
-          document.source_revision_id,
-          document.content_hash AS knowledge_content_sha256
+      WITH capture_result_ids AS MATERIALIZED (
+        SELECT asset.tenant_id, asset.id
         FROM omni_capture_assets asset
         LEFT JOIN omni_knowledge_documents document
           ON document.tenant_id = asset.tenant_id
@@ -100,6 +109,24 @@ async function listDatabaseLibraryCandidates(
         WHERE asset.tenant_id = ${input.tenantId}
           AND asset.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND COALESCE(asset.metadata->>'internalKind', '') = ''
+          AND ${input.projectId || ""} = ''
+          AND (
+            ${input.kinds.length} = 0
+            OR CASE
+              WHEN asset.media_type ILIKE 'image/%' THEN 'image'
+              WHEN asset.media_type ILIKE 'audio/%' THEN 'audio'
+              WHEN asset.media_type ILIKE 'video/%' THEN 'video'
+              WHEN asset.media_type ILIKE '%spreadsheet%'
+                OR asset.media_type ILIKE '%excel%'
+                OR asset.media_type = 'text/csv' THEN 'spreadsheet'
+              WHEN asset.media_type ILIKE '%presentation%'
+                OR asset.media_type ILIKE '%powerpoint%' THEN 'presentation'
+              WHEN asset.media_type ILIKE 'text/%'
+                OR asset.media_type = 'application/pdf'
+                OR asset.media_type ILIKE '%word%' THEN 'document'
+              ELSE 'file'
+            END = ANY(${[...input.kinds]}::text[])
+          )
           AND (
             ${input.query} = ''
             OR asset.filename ILIKE ${searchPattern}
@@ -107,14 +134,103 @@ async function listDatabaseLibraryCandidates(
           )
         ORDER BY asset.updated_at DESC, asset.id ASC
         LIMIT ${candidateLimit}
+      ), capture_facet_ids AS MATERIALIZED (
+        SELECT asset.tenant_id, asset.id
+        FROM omni_capture_assets asset
+        LEFT JOIN omni_knowledge_documents document
+          ON document.tenant_id = asset.tenant_id
+          AND document.id = asset.knowledge_document_id
+        WHERE asset.tenant_id = ${input.tenantId}
+          AND asset.actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND COALESCE(asset.metadata->>'internalKind', '') = ''
+          AND ${input.projectId || ""} = ''
+          AND (
+            ${input.query} = ''
+            OR asset.filename ILIKE ${searchPattern}
+            OR COALESCE(document.title, '') ILIKE ${searchPattern}
+          )
+        ORDER BY asset.updated_at DESC, asset.id ASC
+        LIMIT ${candidateLimit}
+      ), capture_ids AS MATERIALIZED (
+        SELECT tenant_id, id FROM capture_result_ids
+        UNION
+        SELECT tenant_id, id FROM capture_facet_ids
+      ), capture_rows AS MATERIALIZED (
+        SELECT asset.id, asset.tenant_id, asset.actor_id, asset.filename,
+          asset.media_type, asset.byte_count, asset.content_sha256,
+          asset.status, asset.extraction_status, asset.tags,
+          asset.created_at, asset.updated_at,
+          document.title AS knowledge_title,
+          document.id AS knowledge_document_id_joined,
+          document.source_revision_id
+        FROM capture_ids candidate
+        JOIN omni_capture_assets asset
+          ON asset.tenant_id = candidate.tenant_id
+          AND asset.id = candidate.id
+        LEFT JOIN omni_knowledge_documents document
+          ON document.tenant_id = asset.tenant_id
+          AND document.id = asset.knowledge_document_id
+      ), recording_result_ids AS MATERIALIZED (
+        SELECT recording.tenant_id, recording.id
+        FROM omni_capture_recordings recording
+        LEFT JOIN omni_knowledge_documents document
+          ON document.tenant_id = recording.tenant_id
+          AND document.id = recording.knowledge_document_id
+        WHERE recording.tenant_id = ${input.tenantId}
+          AND recording.actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND ${input.projectId || ""} = ''
+          AND (
+            ${input.kinds.length} = 0
+            OR 'recording' = ANY(${[...input.kinds]}::text[])
+            OR (
+              'transcript' = ANY(${[...input.kinds]}::text[])
+              AND (
+                COALESCE(recording.transcript, '') <> ''
+                OR document.id IS NOT NULL
+                OR document.source_revision_id IS NOT NULL
+              )
+            )
+          )
+          AND (
+            ${input.query} = ''
+            OR recording.title ILIKE ${searchPattern}
+            OR recording.transcript ILIKE ${searchPattern}
+          )
+        ORDER BY recording.updated_at DESC, recording.id ASC
+        LIMIT ${candidateLimit}
+      ), recording_facet_ids AS MATERIALIZED (
+        SELECT recording.tenant_id, recording.id
+        FROM omni_capture_recordings recording
+        WHERE recording.tenant_id = ${input.tenantId}
+          AND recording.actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND ${input.projectId || ""} = ''
+          AND (
+            ${input.query} = ''
+            OR recording.title ILIKE ${searchPattern}
+            OR recording.transcript ILIKE ${searchPattern}
+          )
+        ORDER BY recording.updated_at DESC, recording.id ASC
+        LIMIT ${candidateLimit}
+      ), recording_ids AS MATERIALIZED (
+        SELECT tenant_id, id FROM recording_result_ids
+        UNION
+        SELECT tenant_id, id FROM recording_facet_ids
       ), recording_rows AS MATERIALIZED (
-        SELECT recording.*, LEFT(recording.transcript, 600) AS transcript_preview,
+        SELECT recording.id, recording.tenant_id, recording.actor_id,
+          recording.title, recording.status, recording.tags,
+          recording.duration_ms, recording.byte_count,
+          recording.segment_count, recording.created_at,
+          recording.updated_at, LEFT(recording.transcript, 600)
+            AS transcript_preview,
           document.id AS knowledge_document_id_joined,
           document.source_revision_id,
           document.content_hash AS knowledge_content_sha256,
           COALESCE(revision_count.version_count, 1)::integer
             AS transcript_version_count
-        FROM omni_capture_recordings recording
+        FROM recording_ids candidate
+        JOIN omni_capture_recordings recording
+          ON recording.tenant_id = candidate.tenant_id
+          AND recording.id = candidate.id
         LEFT JOIN omni_knowledge_documents document
           ON document.tenant_id = recording.tenant_id
           AND document.id = recording.knowledge_document_id
@@ -124,21 +240,8 @@ async function listDatabaseLibraryCandidates(
           WHERE revision.tenant_id = recording.tenant_id
             AND revision.source_item_id = document.source_item_id
         ) revision_count ON TRUE
-        WHERE recording.tenant_id = ${input.tenantId}
-          AND recording.actor_id IN (${canonicalActorId}, ${exactActorId})
-          AND (
-            ${input.query} = ''
-            OR recording.title ILIKE ${searchPattern}
-            OR recording.transcript ILIKE ${searchPattern}
-          )
-        ORDER BY recording.updated_at DESC, recording.id ASC
-        LIMIT ${candidateLimit}
-      ), project_rows AS MATERIALIZED (
-        SELECT artifact.*, project.actor_id AS owner_actor_id,
-          project.title AS project_title,
-          mapping.workspace_id AS canonical_workspace_id,
-          mapping.project_id AS canonical_project_id,
-          mapping.work_item_id AS canonical_work_item_id
+      ), project_result_ids AS MATERIALIZED (
+        SELECT artifact.tenant_id, artifact.id
         FROM omni_project_artifacts artifact
         JOIN omni_projects project
           ON project.tenant_id = artifact.tenant_id
@@ -151,6 +254,15 @@ async function listDatabaseLibraryCandidates(
         WHERE artifact.tenant_id = ${input.tenantId}
           AND project.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND (
+            ${input.projectId || ""} = ''
+            OR COALESCE(mapping.project_id, artifact.project_id) =
+              ${input.projectId || ""}
+          )
+          AND (
+            ${input.kinds.length} = 0
+            OR 'generated_artifact' = ANY(${[...input.kinds]}::text[])
+          )
+          AND (
             ${input.query} = ''
             OR artifact.title ILIKE ${searchPattern}
             OR artifact.content ILIKE ${searchPattern}
@@ -158,13 +270,65 @@ async function listDatabaseLibraryCandidates(
           )
         ORDER BY artifact.updated_at DESC, artifact.id ASC
         LIMIT ${candidateLimit}
-      ), mission_rows AS MATERIALIZED (
-        SELECT artifact.*, mission.title AS mission_title,
-          COALESCE(task_mapping.workspace_id, mission_mapping.workspace_id)
-            AS canonical_workspace_id,
-          COALESCE(task_mapping.project_id, mission_mapping.project_id)
-            AS canonical_project_id,
-          task_mapping.work_item_id AS canonical_work_item_id
+      ), project_facet_ids AS MATERIALIZED (
+        SELECT artifact.tenant_id, artifact.id
+        FROM omni_project_artifacts artifact
+        JOIN omni_projects project
+          ON project.tenant_id = artifact.tenant_id
+          AND project.id = artifact.project_id
+        LEFT JOIN omni_work_compatibility_mappings mapping
+          ON mapping.tenant_id = artifact.tenant_id
+          AND mapping.source_kind = 'legacy_project_task'
+          AND mapping.source_id = artifact.task_id
+          AND mapping.state = 'active'
+        WHERE artifact.tenant_id = ${input.tenantId}
+          AND project.actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND (
+            ${input.projectId || ""} = ''
+            OR COALESCE(mapping.project_id, artifact.project_id) =
+              ${input.projectId || ""}
+          )
+          AND (
+            ${input.query} = ''
+            OR artifact.title ILIKE ${searchPattern}
+            OR artifact.content ILIKE ${searchPattern}
+            OR project.title ILIKE ${searchPattern}
+          )
+        ORDER BY artifact.updated_at DESC, artifact.id ASC
+        LIMIT ${candidateLimit}
+      ), project_ids AS MATERIALIZED (
+        SELECT tenant_id, id FROM project_result_ids
+        UNION
+        SELECT tenant_id, id FROM project_facet_ids
+      ), project_rows AS MATERIALIZED (
+        SELECT artifact.id, artifact.tenant_id, artifact.project_id,
+          artifact.task_id, artifact.status, artifact.title,
+          LEFT(artifact.content, 600) AS content,
+          encode(sha256(convert_to(artifact.content, 'UTF8')), 'hex')
+            AS content_sha256,
+          octet_length(convert_to(artifact.content, 'UTF8'))
+            AS content_byte_count,
+          artifact.memory_id, artifact.evidence_refs,
+          artifact.created_at, artifact.updated_at,
+          project.actor_id AS owner_actor_id,
+          project.title AS project_title,
+          mapping.workspace_id AS canonical_workspace_id,
+          mapping.project_id AS canonical_project_id,
+          mapping.work_item_id AS canonical_work_item_id
+        FROM project_ids candidate
+        JOIN omni_project_artifacts artifact
+          ON artifact.tenant_id = candidate.tenant_id
+          AND artifact.id = candidate.id
+        JOIN omni_projects project
+          ON project.tenant_id = artifact.tenant_id
+          AND project.id = artifact.project_id
+        LEFT JOIN omni_work_compatibility_mappings mapping
+          ON mapping.tenant_id = artifact.tenant_id
+          AND mapping.source_kind = 'legacy_project_task'
+          AND mapping.source_id = artifact.task_id
+          AND mapping.state = 'active'
+      ), mission_result_ids AS MATERIALIZED (
+        SELECT artifact.tenant_id, artifact.id
         FROM omni_mission_artifacts artifact
         JOIN omni_missions mission
           ON mission.tenant_id = artifact.tenant_id
@@ -183,6 +347,30 @@ async function listDatabaseLibraryCandidates(
         WHERE artifact.tenant_id = ${input.tenantId}
           AND artifact.actor_id IN (${canonicalActorId}, ${exactActorId})
           AND (
+            ${input.projectId || ""} = ''
+            OR COALESCE(task_mapping.project_id, mission_mapping.project_id) =
+              ${input.projectId || ""}
+          )
+          AND (
+            ${input.kinds.length} = 0
+            OR CASE
+              WHEN artifact.kind ILIKE '%image%' THEN 'image'
+              WHEN artifact.kind ILIKE '%transcript%' THEN 'transcript'
+              WHEN artifact.mime_type ILIKE 'image/%' THEN 'image'
+              WHEN artifact.mime_type ILIKE 'audio/%' THEN 'audio'
+              WHEN artifact.mime_type ILIKE 'video/%' THEN 'video'
+              WHEN artifact.mime_type ILIKE '%spreadsheet%'
+                OR artifact.mime_type ILIKE '%excel%'
+                OR artifact.mime_type = 'text/csv' THEN 'spreadsheet'
+              WHEN artifact.mime_type ILIKE '%presentation%'
+                OR artifact.mime_type ILIKE '%powerpoint%' THEN 'presentation'
+              WHEN artifact.mime_type ILIKE 'text/%'
+                OR artifact.mime_type = 'application/pdf'
+                OR artifact.mime_type ILIKE '%word%' THEN 'document'
+              ELSE 'generated_artifact'
+            END = ANY(${[...input.kinds]}::text[])
+          )
+          AND (
             ${input.query} = ''
             OR artifact.title ILIKE ${searchPattern}
             OR mission.title ILIKE ${searchPattern}
@@ -190,13 +378,106 @@ async function listDatabaseLibraryCandidates(
           )
         ORDER BY artifact.updated_at DESC, artifact.id ASC
         LIMIT ${candidateLimit}
-      ), source_candidates AS MATERIALIZED (
-        SELECT source_item.*
+      ), mission_facet_ids AS MATERIALIZED (
+        SELECT artifact.tenant_id, artifact.id
+        FROM omni_mission_artifacts artifact
+        JOIN omni_missions mission
+          ON mission.tenant_id = artifact.tenant_id
+          AND mission.actor_id = artifact.actor_id
+          AND mission.id = artifact.mission_id
+        LEFT JOIN omni_work_compatibility_mappings task_mapping
+          ON task_mapping.tenant_id = artifact.tenant_id
+          AND task_mapping.source_kind = 'legacy_mission_task'
+          AND task_mapping.source_id = artifact.task_id
+          AND task_mapping.state = 'active'
+        LEFT JOIN omni_work_compatibility_mappings mission_mapping
+          ON mission_mapping.tenant_id = artifact.tenant_id
+          AND mission_mapping.source_kind = 'legacy_mission'
+          AND mission_mapping.source_id = artifact.mission_id
+          AND mission_mapping.state = 'active'
+        WHERE artifact.tenant_id = ${input.tenantId}
+          AND artifact.actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND (
+            ${input.projectId || ""} = ''
+            OR COALESCE(task_mapping.project_id, mission_mapping.project_id) =
+              ${input.projectId || ""}
+          )
+          AND (
+            ${input.query} = ''
+            OR artifact.title ILIKE ${searchPattern}
+            OR mission.title ILIKE ${searchPattern}
+            OR artifact.data::TEXT ILIKE ${searchPattern}
+          )
+        ORDER BY artifact.updated_at DESC, artifact.id ASC
+        LIMIT ${candidateLimit}
+      ), mission_ids AS MATERIALIZED (
+        SELECT tenant_id, id FROM mission_result_ids
+        UNION
+        SELECT tenant_id, id FROM mission_facet_ids
+      ), mission_rows AS MATERIALIZED (
+        SELECT artifact.id, artifact.tenant_id, artifact.actor_id,
+          artifact.mission_id, artifact.task_id, artifact.kind,
+          artifact.title, artifact.mime_type,
+          jsonb_strip_nulls(jsonb_build_object(
+            'summary', LEFT(artifact.data->>'summary', 600),
+            'report', LEFT(artifact.data->>'report', 600),
+            'text', LEFT(artifact.data->>'text', 600),
+            'content', LEFT(artifact.data->>'content', 600),
+            'message', LEFT(artifact.data->>'message', 600)
+          )) AS data,
+          encode(sha256(convert_to(artifact.data::TEXT, 'UTF8')), 'hex')
+            AS data_sha256,
+          octet_length(convert_to(artifact.data::TEXT, 'UTF8'))
+            AS data_byte_count,
+          artifact.created_at, artifact.updated_at,
+          mission.title AS mission_title,
+          COALESCE(task_mapping.workspace_id, mission_mapping.workspace_id)
+            AS canonical_workspace_id,
+          COALESCE(task_mapping.project_id, mission_mapping.project_id)
+            AS canonical_project_id,
+          task_mapping.work_item_id AS canonical_work_item_id
+        FROM mission_ids candidate
+        JOIN omni_mission_artifacts artifact
+          ON artifact.tenant_id = candidate.tenant_id
+          AND artifact.id = candidate.id
+        JOIN omni_missions mission
+          ON mission.tenant_id = artifact.tenant_id
+          AND mission.actor_id = artifact.actor_id
+          AND mission.id = artifact.mission_id
+        LEFT JOIN omni_work_compatibility_mappings task_mapping
+          ON task_mapping.tenant_id = artifact.tenant_id
+          AND task_mapping.source_kind = 'legacy_mission_task'
+          AND task_mapping.source_id = artifact.task_id
+          AND task_mapping.state = 'active'
+        LEFT JOIN omni_work_compatibility_mappings mission_mapping
+          ON mission_mapping.tenant_id = artifact.tenant_id
+          AND mission_mapping.source_kind = 'legacy_mission'
+          AND mission_mapping.source_id = artifact.mission_id
+          AND mission_mapping.state = 'active'
+      ), source_result_ids AS MATERIALIZED (
+        SELECT source_item.tenant_id, source_item.id
         FROM omni_source_items source_item
         WHERE source_item.tenant_id = ${input.tenantId}
           AND source_item.owner_actor_id IN (${canonicalActorId}, ${exactActorId})
           AND source_item.visibility <> 'agent_private'
           AND source_item.connection_id <> 'first_party.capture'
+          AND (
+            ${input.projectId || ""} = ''
+            OR source_item.project_id = ${input.projectId || ""}
+          )
+          AND (
+            ${input.kinds.length} = 0
+            OR CASE
+              WHEN source_item.source_kind = 'calendar_event' THEN 'meeting'
+              WHEN source_item.source_kind = 'capture' THEN 'document'
+              WHEN source_item.source_kind IN (
+                'document', 'spreadsheet', 'presentation', 'email',
+                'message', 'webpage', 'image', 'audio', 'video', 'record',
+                'file'
+              ) THEN source_item.source_kind
+              ELSE 'file'
+            END = ANY(${[...input.kinds]}::text[])
+          )
           AND (
             ${input.query} = ''
             OR to_tsvector(
@@ -221,14 +502,62 @@ async function listDatabaseLibraryCandidates(
           )
         ORDER BY source_item.updated_at DESC, source_item.id ASC
         LIMIT ${candidateLimit}
+      ), source_facet_ids AS MATERIALIZED (
+        SELECT source_item.tenant_id, source_item.id
+        FROM omni_source_items source_item
+        WHERE source_item.tenant_id = ${input.tenantId}
+          AND source_item.owner_actor_id IN (${canonicalActorId}, ${exactActorId})
+          AND source_item.visibility <> 'agent_private'
+          AND source_item.connection_id <> 'first_party.capture'
+          AND (
+            ${input.projectId || ""} = ''
+            OR source_item.project_id = ${input.projectId || ""}
+          )
+          AND (
+            ${input.query} = ''
+            OR to_tsvector(
+              'simple',
+              source_item.source_kind || ' ' || source_item.connection_id ||
+              ' ' || source_item.id
+            ) @@ plainto_tsquery('simple', ${input.query})
+            OR EXISTS (
+              SELECT 1
+              FROM omni_knowledge_documents candidate_document
+              WHERE candidate_document.tenant_id = source_item.tenant_id
+                AND candidate_document.source_item_id = source_item.id
+                AND candidate_document.source_revision_id =
+                  source_item.current_revision_id
+                AND to_tsvector('simple', candidate_document.title) @@
+                  plainto_tsquery('simple', ${input.query})
+            )
+          )
+          AND (
+            source_item.retention_expires_at IS NULL
+            OR source_item.retention_expires_at > CURRENT_TIMESTAMP
+          )
+        ORDER BY source_item.updated_at DESC, source_item.id ASC
+        LIMIT ${candidateLimit}
+      ), source_ids AS MATERIALIZED (
+        SELECT tenant_id, id FROM source_result_ids
+        UNION
+        SELECT tenant_id, id FROM source_facet_ids
       ), source_rows AS MATERIALIZED (
-        SELECT source_item.*, revision.content_sha256,
+        SELECT source_item.id, source_item.tenant_id,
+          source_item.owner_actor_id, source_item.workspace_id,
+          source_item.project_id, source_item.mission_id,
+          source_item.connection_id, source_item.visibility,
+          source_item.source_kind, source_item.current_revision_id,
+          source_item.adapter_id, source_item.created_at,
+          source_item.updated_at, revision.content_sha256,
           revision.content_byte_length, revision.media_type,
           revision.created_at AS revision_created_at,
           document.id AS knowledge_document_id_joined,
           document.title AS knowledge_title,
           COALESCE(revision_count.version_count, 1)::integer AS version_count
-        FROM source_candidates source_item
+        FROM source_ids candidate
+        JOIN omni_source_items source_item
+          ON source_item.tenant_id = candidate.tenant_id
+          AND source_item.id = candidate.id
         JOIN omni_source_revisions revision
           ON revision.tenant_id = source_item.tenant_id
           AND revision.source_item_id = source_item.id
@@ -254,7 +583,21 @@ async function listDatabaseLibraryCandidates(
         COALESCE((SELECT jsonb_agg(to_jsonb(item)) FROM mission_rows item), '[]'::jsonb)
           AS mission_rows,
         COALESCE((SELECT jsonb_agg(to_jsonb(item)) FROM source_rows item), '[]'::jsonb)
-          AS source_rows
+          AS source_rows,
+        (
+          (SELECT COUNT(*) FROM capture_result_ids) >= ${candidateLimit}
+          OR (SELECT COUNT(*) FROM recording_result_ids) >= ${candidateLimit}
+          OR (SELECT COUNT(*) FROM project_result_ids) >= ${candidateLimit}
+          OR (SELECT COUNT(*) FROM mission_result_ids) >= ${candidateLimit}
+          OR (SELECT COUNT(*) FROM source_result_ids) >= ${candidateLimit}
+        ) AS result_window_full,
+        (
+          (SELECT COUNT(*) FROM capture_facet_ids) >= ${candidateLimit}
+          OR (SELECT COUNT(*) FROM recording_facet_ids) >= ${candidateLimit}
+          OR (SELECT COUNT(*) FROM project_facet_ids) >= ${candidateLimit}
+          OR (SELECT COUNT(*) FROM mission_facet_ids) >= ${candidateLimit}
+          OR (SELECT COUNT(*) FROM source_facet_ids) >= ${candidateLimit}
+        ) AS facet_window_full
     `;
     const result = resultRows[0] || {};
     const captureRows = jsonRows(result.capture_rows);
@@ -270,66 +613,115 @@ async function listDatabaseLibraryCandidates(
         ...missionRows.map(missionArtifactLibraryItem),
         ...sourceRows.map(sourceItemLibraryItem),
       ],
-      hasMore: [captureRows, recordingRows, projectRows, missionRows, sourceRows]
-        .some((rows) => rows.length === candidateLimit),
+      hasMore: booleanValue(result.result_window_full),
+      countsAreLowerBound: booleanValue(result.facet_window_full),
     };
-  }) as Promise<{ items: WorkspaceLibraryItem[]; hasMore: boolean }>;
+  }) as Promise<{
+    items: WorkspaceLibraryItem[];
+    hasMore: boolean;
+    countsAreLowerBound: boolean;
+  }>;
 }
 
 async function listLocalLibraryCandidates(
   input: NormalizedWorkspaceLibraryQuery,
 ) {
-  const owner = {
-    tenantId: input.tenantId,
-    actorId: input.actorId,
-    requestActorBinding: input.requestActorBinding,
-  };
-  const assets = await listCaptureAssets(owner, 100);
-  const recordings = await listCaptureRecordingsForRequest(owner, 100);
-  const projects = await listProjects(100, owner);
-  const collections = await listProjectCollections(
-    projects.map((project) => project.id),
-    { tenantId: input.tenantId },
+  const [canonicalActorId, exactActorId] = captureActorReadOrder(
+    input.actorId,
+    input.requestActorBinding,
+    input.actorId,
   );
-  const missions = await listMissions(100, owner);
-  const missionArtifacts = [] as Array<{ missionTitle: string; artifact: Awaited<ReturnType<typeof listMissionArtifacts>>[number] }>;
-  for (const mission of missions) {
-    for (const artifact of await listMissionArtifacts(mission.id, owner, 100)) {
-      missionArtifacts.push({ missionTitle: mission.title, artifact });
-    }
-  }
+  const readableActorIds = new Set([canonicalActorId, exactActorId]);
+  const [assetLedger, captureLedger, projectLedger, missionLedger] =
+    await Promise.all([
+      readJsonFile<LocalCaptureAssetLedger>(
+        getDataPath("capture-assets.json"),
+        { assets: [] },
+      ),
+      readJsonFile<LocalCaptureRecordingLedger>(
+        getDataPath("capture-recordings.json"),
+        { recordings: [] },
+      ),
+      readJsonFile<ProjectLedger>(getDataPath("projects.json"), {
+        projects: [],
+        tasks: [],
+        artifacts: [],
+      }),
+      readJsonFile<MissionLedger>(getDataPath("missions.json"), {
+        missions: [],
+        tasks: [],
+        attempts: [],
+        artifacts: [],
+      }),
+    ]);
+  const assets = assetLedger.assets.filter((asset) =>
+    asset.tenantId === input.tenantId &&
+    readableActorIds.has(asset.actorId) &&
+    !optionalText(asset.metadata.internalKind)
+  );
+  const recordings = captureLedger.recordings.filter((recording) =>
+    recording.tenantId === input.tenantId &&
+    readableActorIds.has(recording.actorId)
+  );
+  const projects = projectLedger.projects.filter((project) =>
+    project.tenantId === input.tenantId &&
+    readableActorIds.has(project.actorId)
+  );
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const missions = missionLedger.missions.filter((mission) =>
+    mission.tenantId === input.tenantId &&
+    readableActorIds.has(mission.actorId)
+  );
+  const missionById = new Map(missions.map((mission) => [mission.id, mission]));
   const items = [
-    ...assets.map((asset) => captureAssetLibraryItem({ ...asset, tenant_id: input.tenantId, actor_id: input.actorId }, input.actorId)),
+    ...assets.map((asset) => captureAssetLibraryItem(asset, exactActorId)),
     ...recordings.flatMap((recording) => captureRecordingLibraryItems({
       ...recording,
-      tenant_id: input.tenantId,
-      actor_id: input.actorId,
-      language: "en-US",
-      tags: [],
-      byte_count: 0,
-      transcript_preview: "",
-      source: "capture",
+      transcript_preview: recording.transcript.slice(0, 600),
       created_at: recording.startedAt,
       updated_at: recording.updatedAt,
     })),
-    ...projects.flatMap((project) =>
-      (collections.artifactsByProject.get(project.id) || []).map((artifact) =>
-        projectArtifactLibraryItem({
-          ...artifact,
-          tenant_id: input.tenantId,
-          owner_actor_id: input.actorId,
-          project_title: project.title,
-        }),
-      ),
-    ),
-    ...missionArtifacts.map(({ missionTitle, artifact }) => missionArtifactLibraryItem({
-      ...artifact,
-      tenant_id: input.tenantId,
-      actor_id: input.actorId,
-      mission_title: missionTitle,
-    })),
+    ...projectLedger.artifacts.flatMap((artifact) => {
+      const project = projectById.get(artifact.projectId);
+      return project && artifact.tenantId === input.tenantId
+        ? [projectArtifactLibraryItem({
+            ...artifact,
+            owner_actor_id: project.actorId,
+            project_title: project.title,
+          })]
+        : [];
+    }),
+    ...missionLedger.artifacts.flatMap((artifact) => {
+      const mission = missionById.get(artifact.missionId);
+      return mission && artifact.tenantId === input.tenantId &&
+          artifact.actorId === mission.actorId
+        ? [missionArtifactLibraryItem({
+            ...artifact,
+            mission_title: mission.title,
+          })]
+        : [];
+    }),
   ];
-  return { items, hasMore: false };
+  const kinds = input.kinds.length ? new Set(input.kinds) : undefined;
+  const searchTerms = tokenize(input.query);
+  const scoped = items
+    .filter((item) => !input.projectId || item.links.some(
+      (link) => link.kind === "project" && link.id === input.projectId,
+    ))
+    .filter((item) => matchesSearch(item, searchTerms))
+    .sort(compareLibraryItems);
+  const resultItems = kinds
+    ? scoped.filter((item) => kinds.has(item.kind))
+    : scoped;
+  const candidateLimit = libraryCandidateLimit(input);
+  return {
+    // The local ledger is already fully resident in memory. Returning its
+    // complete scoped view keeps facets exact while the outer query still
+    // applies the requested page window.
+    items: scoped,
+    hasMore: resultItems.length > candidateLimit,
+    countsAreLowerBound: false,
+  };
 }
 
 export function captureAssetLibraryItem(
@@ -473,7 +865,7 @@ export function projectArtifactLibraryItem(row: SqlRow): WorkspaceLibraryItem {
   const workItemId = optionalText(row.canonical_work_item_id ?? row.task_id ?? row.taskId);
   const workspaceId = optionalText(row.canonical_workspace_id);
   const content = safeText(row.content, 600, "");
-  const contentSha256 = sha256(undefined, text(row.content));
+  const contentSha256 = sha256(row.content_sha256, text(row.content));
   const status = text(row.status, "failed");
   return parseWorkspaceLibraryItem({
     schemaVersion: 1,
@@ -498,7 +890,10 @@ export function projectArtifactLibraryItem(row: SqlRow): WorkspaceLibraryItem {
       versionId: `version:project_artifact:${id}:${contentSha256}`,
       versionNumber: 1,
       contentSha256,
-      byteCount: Buffer.byteLength(text(row.content), "utf8"),
+      byteCount: integer(
+        row.content_byte_count,
+        Buffer.byteLength(text(row.content), "utf8"),
+      ),
       mediaType: "text/markdown",
       sourceRevisionId: null,
       createdAt: timestamp(row.created_at ?? row.createdAt),
@@ -528,7 +923,7 @@ export function missionArtifactLibraryItem(row: SqlRow): WorkspaceLibraryItem {
   const workItemId = optionalText(row.canonical_work_item_id ?? row.task_id ?? row.taskId);
   const data = jsonObject(row.data);
   const serializedData = JSON.stringify(data);
-  const contentSha256 = sha256(undefined, serializedData);
+  const contentSha256 = sha256(row.data_sha256, serializedData);
   const mediaType = mimeType(row.mime_type ?? row.mimeType, "application/json");
   return parseWorkspaceLibraryItem({
     schemaVersion: 1,
@@ -554,7 +949,10 @@ export function missionArtifactLibraryItem(row: SqlRow): WorkspaceLibraryItem {
       versionId: `version:mission_artifact:${id}:${contentSha256}`,
       versionNumber: 1,
       contentSha256,
-      byteCount: Buffer.byteLength(serializedData, "utf8"),
+      byteCount: integer(
+        row.data_byte_count,
+        Buffer.byteLength(serializedData, "utf8"),
+      ),
       mediaType,
       sourceRevisionId: null,
       createdAt: timestamp(row.created_at ?? row.createdAt),
@@ -670,6 +1068,13 @@ function normalizeQuery(input: WorkspaceLibraryQuery): NormalizedWorkspaceLibrar
     limit,
     offset,
   });
+}
+
+function libraryCandidateLimit(input: NormalizedWorkspaceLibraryQuery) {
+  return Math.min(
+    Math.max(input.offset + input.limit + 1, 100),
+    10_101,
+  );
 }
 
 function privateScope(ownerActorId: string, workspaceId: string | null): WorkspaceLibraryScope {
@@ -853,6 +1258,10 @@ function optionalText(value: unknown) {
 function integer(value: unknown, fallback = 0) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function booleanValue(value: unknown) {
+  return value === true || value === "true";
 }
 
 function timestamp(value: unknown) {

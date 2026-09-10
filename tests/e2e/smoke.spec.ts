@@ -307,8 +307,9 @@ test("capture inbox queues a bulk transcript set", async ({ page }) => {
     },
   ]);
   await expect(page.getByText("2 files in this batch")).toBeVisible();
-  await expect(page.getByText("ict-lesson-01.vtt")).toBeVisible();
-  await expect(page.getByText("ict-lesson-02.srt")).toBeVisible();
+  const uploadQueue = page.getByLabel("Document upload queue");
+  await expect(uploadQueue.getByText("ict-lesson-01.vtt")).toBeVisible();
+  await expect(uploadQueue.getByText("ict-lesson-02.srt")).toBeVisible();
   await page.getByLabel("Tags").fill("ict-course, transcript");
   await page.getByRole("button", { name: "Process 2 files" }).click();
   await expect(page.getByText(/2 files are safely stored or queued/i)).toBeVisible({ timeout: 60_000 });
@@ -326,25 +327,37 @@ test("capture inbox queues a bulk transcript set", async ({ page }) => {
   await expect(durableQueue.getByText("ict-lesson-01.vtt")).toBeVisible();
   await expect(durableQueue.getByText("ict-lesson-02.srt")).toBeVisible();
 
-  const libraryAtlas = page.getByRole("region", { name: "Files in context" });
-  await expect(libraryAtlas).toBeVisible();
-  await expect(libraryAtlas.locator("canvas")).toHaveCount(1, { timeout: 15_000 });
-  await expect(libraryAtlas.getByRole("button", { name: "Zoom in" })).toBeVisible();
-  await expect(libraryAtlas.getByRole("button", { name: "Zoom out" })).toBeVisible();
-  await expect(libraryAtlas.getByRole("button", { name: "Fit" })).toBeVisible();
-  await expect(libraryAtlas.getByRole("button", { name: "Drift" })).toBeVisible();
-  await libraryAtlas.getByRole("button", { name: "Zoom in" }).click();
-  await libraryAtlas.getByRole("button", { name: "Zoom out" }).click();
-  await libraryAtlas.getByRole("button", { name: "Fit" }).click();
-  await libraryAtlas.getByRole("button", { name: /ict-lesson-01\.vtt/ }).click();
-  await expect(libraryAtlas.getByRole("button", { name: "Clear selected asset" })).toBeVisible();
-  await expect(libraryAtlas.getByText("Citation", { exact: true })).toBeVisible();
+  const library = page.getByTestId("workspace-library").last();
+  const libraryBrowser = library.getByTestId("workspace-library-browser");
+  await expect(library).toBeVisible();
+  await expect(library.getByLabel("Search library")).toBeVisible();
+  await expect(library.getByLabel("Asset type")).toBeVisible();
+  await expect(library.getByRole("navigation", { name: "Library collections" })).toBeVisible();
+  await expect(library.getByRole("button", { name: "List view" })).toHaveAttribute("aria-pressed", "true");
+  await libraryBrowser.getByRole("button", { name: /Show details for ict-lesson-01\.vtt/ }).click();
+  const quickLook = libraryBrowser.getByRole("complementary", { name: "Quick look" });
+  await expect(quickLook.getByRole("heading", { name: "ict-lesson-01.vtt" })).toBeVisible();
+  await expect(quickLook.getByRole("button", { name: "Copy citation" })).toBeVisible();
+  await library.getByRole("button", { name: "Grid view" }).click();
+  await expect(library.getByRole("button", { name: "Grid view" })).toHaveAttribute("aria-pressed", "true");
+  await library.getByRole("button", { name: "List view" }).click();
+  await expect(library.locator("canvas")).toHaveCount(0);
 
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await expect(libraryBrowser.getByLabel("Details for ict-lesson-01.vtt", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(durableQueue).toBeVisible();
   await expect(durableQueue.getByText("ict-lesson-01.vtt")).toBeVisible();
-  await expect(libraryAtlas).toBeVisible();
+  await expect(library).toBeVisible();
+  await expect(library.getByLabel("Search library")).toBeVisible();
+  const mobileAssetButton = libraryBrowser.getByRole("button", { name: /Show details for ict-lesson-01\.vtt/ });
+  const mobileAssetRow = mobileAssetButton.locator("..");
+  await expect(mobileAssetRow.locator("span[data-status]")).toBeVisible();
+  const mobileDetails = libraryBrowser.getByLabel("Details for ict-lesson-01.vtt", { exact: true });
+  await expect(mobileDetails).toBeVisible();
+  await expect(mobileDetails.getByRole("button", { name: "Copy citation" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 

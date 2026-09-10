@@ -43,6 +43,7 @@ beforeEach(() => {
     totalIsLowerBound: false,
     nextOffset: null,
     countsByKind: {},
+    countsAreLowerBound: false,
   });
 });
 
