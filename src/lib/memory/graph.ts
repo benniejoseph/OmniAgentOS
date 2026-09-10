@@ -117,7 +117,7 @@ const MEMORY_GRAPH_EDGE_LIMIT = 20_000;
 // Keep each JSON-to-recordset write comfortably below the production database
 // statement deadline. A rebuild remains atomic, but no individual statement
 // has to parse and persist the entire graph projection at once.
-const MEMORY_GRAPH_WRITE_BATCH_SIZE = 250;
+const MEMORY_GRAPH_WRITE_BATCH_SIZE = 25;
 
 const USER_PRIVATE_GRAPH_PURPOSE_IDS = Object.freeze([
   MEMORY_PURPOSE_IDS.correct,
@@ -324,13 +324,29 @@ async function rebuildMemoryGraphForTenant(
           [...aggregate.edges.values()],
           build,
         );
-        await sql`DELETE FROM omni_memory_graph_edges WHERE tenant_id = ${tenantId}`;
-        await sql`DELETE FROM omni_memory_graph_nodes WHERE tenant_id = ${tenantId}`;
-        // A rebuild can contain thousands of graph records. Persist each
-        // collection as one set-based statement so the maintenance worker
-        // does not hold its scoped database connection across thousands of
-        // pooler round-trips. The bulk writers also preserve actor-private
-        // access bindings that the former compatibility inserts omitted.
+        await setGraphDeletionBarriersImmediate(sql);
+        if (options.includeLegacyUnattributed === false) {
+          // System maintenance can rebuild only rows with explicit ownership.
+          // Preserve the tenant's compatibility graph until its legacy source
+          // memories have been bound and can be projected into scoped cohorts.
+          await sql`
+            DELETE FROM omni_memory_graph_edges
+            WHERE tenant_id = ${tenantId}
+              AND access_contract_version = 1
+          `;
+          await sql`
+            DELETE FROM omni_memory_graph_nodes
+            WHERE tenant_id = ${tenantId}
+              AND access_contract_version = 1
+          `;
+        } else {
+          await sql`DELETE FROM omni_memory_graph_edges WHERE tenant_id = ${tenantId}`;
+          await sql`DELETE FROM omni_memory_graph_nodes WHERE tenant_id = ${tenantId}`;
+        }
+        // A rebuild can contain thousands of graph records. Bounded set-based
+        // batches avoid both oversized statements and one round trip per row.
+        // The writers also preserve actor-private access bindings that the
+        // former compatibility inserts omitted.
         await upsertGraphNodes([...aggregate.nodes.values()], sql);
         await upsertGraphEdges([...aggregate.edges.values()], sql);
         await insertGraphBuild(build, sql);
@@ -630,6 +646,7 @@ export async function indexUserPrivateMemoryGraphRecords(
             hashtextextended(${"memory-graph:" + tenantId}, 0)
           )
         `;
+        await setGraphDeletionBarriersImmediate(sql);
         await upsertGraphNodes([...aggregate.nodes.values()], sql);
         await upsertGraphEdges([...aggregate.edges.values()], sql);
       },
@@ -653,10 +670,15 @@ async function indexMemoryGraphRecordsForTenant(
   captureIngestGuard?: CaptureIngestGuard,
 ) {
   if (!records.length) {
-    return getMemoryGraphStats({ tenantId });
+    return { indexedMemoryCount: 0, nodeCount: 0, edgeCount: 0 };
   }
 
   const aggregate = aggregateGraph(records, [], tenantId);
+  const indexed = {
+    indexedMemoryCount: records.length,
+    nodeCount: aggregate.nodes.size,
+    edgeCount: aggregate.edges.size,
+  };
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     await getSql().transaction(async (sql: GraphSqlClient) => {
@@ -668,6 +690,7 @@ async function indexMemoryGraphRecordsForTenant(
           hashtextextended(${"memory-graph:" + tenantId}, 0)
         )
       `;
+      await setGraphDeletionBarriersImmediate(sql);
       await upsertGraphNodes([...aggregate.nodes.values()], sql);
       await upsertGraphEdges([...aggregate.edges.values()], sql);
       await insertGraphBuild(
@@ -684,11 +707,11 @@ async function indexMemoryGraphRecordsForTenant(
         sql,
       );
     });
-    return getMemoryGraphStats({ tenantId });
+    return indexed;
   }
 
   await mutateGraphLedger((ledger) => mergeLedger(ledger, aggregate, source, records.length, tenantId));
-  return getMemoryGraphStats({ tenantId });
+  return indexed;
 }
 
 export async function searchMemoryGraph(
@@ -1443,6 +1466,18 @@ async function upsertGraphNodes(
       sql,
     );
   }
+}
+
+async function setGraphDeletionBarriersImmediate(sql: GraphSqlClient) {
+  // Both graph barriers are initially deferred. Draining them after each
+  // bounded statement avoids accumulating every row-level check at COMMIT
+  // while preserving the same atomic transaction and validation.
+  await sql`
+    SET CONSTRAINTS
+      omni_memory_graph_nodes_validate_deletion_barrier,
+      omni_memory_graph_edges_validate_deletion_barrier
+    IMMEDIATE
+  `;
 }
 
 async function upsertGraphNodeBatch(
