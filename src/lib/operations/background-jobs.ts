@@ -169,7 +169,18 @@ export const knowledgeCognifyJobRequestSchema = z.object({
   // finish. Every newly enqueued job is upgraded to the current source plan.
   sourcePlanSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   retentionExpiresAt: z.string().datetime({ offset: true }).nullable().optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (
+    Boolean(value.sourcePlanSha256) !==
+      (value.retentionExpiresAt !== undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Cognition plan hash and retention binding must be supplied together.",
+      path: ["sourcePlanSha256"],
+    });
+  }
+});
 
 type CurrentKnowledgeCognifyJobRequest = KnowledgeCognifyJobRequest & {
   sourcePlanSha256: string;

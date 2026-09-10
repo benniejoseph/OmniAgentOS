@@ -21,7 +21,10 @@ vi.mock("@/lib/rag/store", async (importOriginal) => ({
   getActorOwnedKnowledgeForCognition: mocks.getSource,
 }));
 
-import { enqueueKnowledgeCognificationPlan } from "@/lib/operations/background-jobs";
+import {
+  enqueueKnowledgeCognificationPlan,
+  knowledgeCognifyJobRequestSchema,
+} from "@/lib/operations/background-jobs";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const tenantId = "tenant-cognition-reconcile";
@@ -111,6 +114,20 @@ describe("knowledge cognition plan reconciliation", () => {
       .not.toBe(first.payload.request.sourcePlanSha256);
     expect(second.payload.request.retentionExpiresAt)
       .toBe("2026-09-20T00:00:00.000Z");
+  });
+
+  it("accepts legacy unbound jobs but rejects partial plan bindings", () => {
+    expect(knowledgeCognifyJobRequestSchema.safeParse({
+      documentId: "knowledge-document",
+      sourceRevisionId: "source-revision",
+      batchIndex: 0,
+    }).success).toBe(true);
+    expect(knowledgeCognifyJobRequestSchema.safeParse({
+      documentId: "knowledge-document",
+      sourceRevisionId: "source-revision",
+      batchIndex: 0,
+      sourcePlanSha256: "a".repeat(64),
+    }).success).toBe(false);
   });
 });
 

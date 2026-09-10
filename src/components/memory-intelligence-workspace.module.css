@@ -122,6 +122,12 @@
 .cognifyControl > button:not(:disabled):hover { border-color: var(--memory-primary); transform: translateY(-1px); }
 .cognifyControl > button:disabled { cursor: wait; opacity: .65; }
 .cognifyControl > p { color: var(--memory-muted); font-size: .59rem; line-height: 1.45; }
+.cognifyJobSummary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--memory-line); border-radius: .75rem; background: color-mix(in oklab, var(--memory-paper-solid) 88%, transparent); }
+.cognifyJobSummary > div { display: grid; gap: .12rem; padding: .5rem .58rem; }
+.cognifyJobSummary > div + div { border-left: 1px solid var(--memory-line); }
+.cognifyJobSummary dt { color: var(--memory-muted); font-size: .56rem; font-weight: 650; }
+.cognifyJobSummary dd { color: var(--memory-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: .84rem; font-weight: 680; font-variant-numeric: tabular-nums; }
+.cognifyJobSummary [data-attention="true"] dd { color: var(--warning); }
 .recommendations { padding: 1rem 1.1rem 0; }
 .panelHeading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
 .panelHeading p { color: var(--memory-muted); font-size: .62rem; font-weight: 770; letter-spacing: .09em; text-transform: uppercase; }
