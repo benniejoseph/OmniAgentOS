@@ -325,6 +325,29 @@ describe("knowledge cognition API", () => {
     }));
   });
 
+  it("requires a fresh proposal after the source retention policy changes", async () => {
+    mocks.getSource.mockResolvedValueOnce({
+      ...source,
+      retentionExpiresAt: "2026-09-20T00:00:00.000Z",
+    });
+
+    const response = await PATCH(new Request(
+      "http://localhost/api/knowledge/cognification",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: batchId, decision: "confirm" }),
+      },
+    ));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "The source policy changed after this proposal was created. Cognify the current source instead.",
+    });
+    expect(mocks.reviewCognition).not.toHaveBeenCalled();
+    expect(mocks.saveMemory).not.toHaveBeenCalled();
+  });
+
   it("dismisses without creating memory or graph state", async () => {
     const response = await PATCH(new Request(
       "http://localhost/api/knowledge/cognification",
