@@ -1237,6 +1237,12 @@ async function executeKnowledgeIngestJobRequest(
         }
       : {}),
     captureIngestGuard,
+    // Captured files can arrive in large batches. Serializing every document
+    // behind the tenant-wide memory-graph advisory lock makes otherwise
+    // independent jobs exhaust the request statement timeout. Queue one
+    // durable, coalesced rebuild instead; the maintenance lane projects the
+    // latest completed batch without dropping graph coverage.
+    deferMemoryGraphIndex: Boolean(captureTarget),
   };
   const result = actorId
     ? await runWithDatabaseActorScope(job.tenantId, [actorId], () =>
