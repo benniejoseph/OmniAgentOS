@@ -1289,6 +1289,8 @@ async function executeKnowledgeIngestJobRequest(
     documentId: result.document.id,
     chunkCount: result.chunks.length,
     memoryCount: result.memories.length,
+    retiredDocumentCount: result.retired.documents,
+    retiredMemoryCount: result.retired.memories,
   };
 }
 

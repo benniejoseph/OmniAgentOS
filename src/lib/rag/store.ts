@@ -4,6 +4,7 @@ import {
   getDatabaseTenantContext,
   getSql,
   hasDatabaseUrl,
+  runWithDatabaseActorScope,
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
@@ -37,6 +38,7 @@ import type {
 import type { MemoryRecord } from "@/lib/memory/types";
 import {
   assertCaptureIngestSource,
+  captureIngestSource,
   lockActiveCaptureIngest,
   type CaptureIngestGuard,
 } from "@/lib/capture/ingest-guard";
@@ -464,6 +466,304 @@ export async function deleteKnowledgeDocumentsBySourcePrefix(sourcePrefix: strin
     await appendKnowledgeDeletionEvent(prefix, mutation);
   }
   return { documents: ids.size, memories };
+}
+
+export async function retireSupersededCaptureKnowledge(input: {
+  captureIngestGuard: CaptureIngestGuard;
+  executionScope: ExecutionScope;
+  keepDocumentId: string;
+}) {
+  const guard = input.captureIngestGuard;
+  const tenantId = normalizeTenantId(guard.tenantId);
+  const source = captureIngestSource(guard);
+  const keepDocumentId = input.keepDocumentId.trim();
+  const scope = parsePersistedExecutionScope(input.executionScope);
+  const exactOwnerUser =
+    scope?.executingPrincipalType === "user" &&
+    scope.executingPrincipalId === guard.actorId;
+  const governedSystem =
+    scope?.executingPrincipalType === "system" &&
+    Boolean(scope.executingPrincipalId);
+  assertCaptureIngestSource(guard, tenantId, source);
+  if (
+    !keepDocumentId ||
+    !scope ||
+    scope.tenantId !== tenantId ||
+    scope.initiatingActorId !== guard.actorId ||
+    (!exactOwnerUser && !governedSystem)
+  ) {
+    throw new Error(
+      "Capture knowledge supersession requires an exact actor-bound execution scope.",
+    );
+  }
+  const retiredAt = new Date().toISOString();
+
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    return runWithDatabaseActorScope(tenantId, [guard.actorId], () =>
+      getSql().transaction(async (sql: RagSqlClient) => {
+        await lockActiveCaptureIngest(sql, guard);
+        await lockKnowledgeMemoryGraph(sql, tenantId);
+        const currentRows = await sql`
+          SELECT document.source_item_id, source_item.current_revision_id
+          FROM omni_knowledge_documents document
+          JOIN omni_source_items source_item
+            ON source_item.tenant_id = document.tenant_id
+           AND source_item.id = document.source_item_id
+          WHERE document.tenant_id = ${tenantId}
+            AND document.id = ${keepDocumentId}
+            AND document.source = ${source}
+            AND document.source_revision_id = source_item.current_revision_id
+            AND source_item.owner_actor_id = ${guard.actorId}
+            AND source_item.connection_id = 'first_party.capture'
+            AND source_item.adapter_id = 'asael.capture'
+          FOR UPDATE OF document, source_item
+        `;
+        if (currentRows.length !== 1) {
+          throw new Error(
+            "Current Capture knowledge document is unavailable in its source scope.",
+          );
+        }
+        const sourceItemId = String(currentRows[0].source_item_id);
+        const currentRevisionId = String(
+          currentRows[0].current_revision_id,
+        );
+        const documentRows = await sql`
+          SELECT id
+          FROM omni_knowledge_documents
+          WHERE tenant_id = ${tenantId}
+            AND source_item_id = ${sourceItemId}
+            AND id <> ${keepDocumentId}
+            AND source_revision_id <> ${currentRevisionId}
+          ORDER BY id COLLATE "C"
+          FOR UPDATE
+        `;
+        const documentIds = documentRows.map((row) => String(row.id));
+        if (!documentIds.length) return { documents: 0, memories: 0 };
+
+        const knowledgeRefs = documentIds.map((id) => `knowledge:${id}`);
+        const memoryRows = await sql`
+          SELECT memory.id
+          FROM omni_memories memory
+          WHERE memory.tenant_id = ${tenantId}
+            AND (
+              memory.evidence_refs && ${knowledgeRefs}::text[]
+              OR EXISTS (
+                SELECT 1
+                FROM unnest(${documentIds}::text[]) document_id
+                WHERE starts_with(
+                  memory.id,
+                  document_id || '_memory_'
+                )
+              )
+            )
+            AND memory.claim_status <> 'forgotten'
+          ORDER BY memory.id COLLATE "C"
+        `;
+        const memoryIds = memoryRows.map((row) => String(row.id));
+        await invalidateKnowledgeMemoryLineage(sql, tenantId, memoryIds, {
+          executionScope: input.executionScope,
+          sourceKind: "capture",
+          sourceReference: source,
+        });
+
+        const evidenceRows = await sql`
+          SELECT evidence_id AS id, owner_actor_id
+          FROM (
+            SELECT DISTINCT evidence.id AS evidence_id,
+              evidence.owner_actor_id
+            FROM omni_knowledge_chunks chunk
+            JOIN omni_evidence_units evidence
+              ON evidence.tenant_id = chunk.tenant_id
+             AND evidence.id = chunk.evidence_unit_id
+            WHERE chunk.tenant_id = ${tenantId}
+              AND chunk.document_id = ANY(${documentIds}::text[])
+              AND chunk.evidence_unit_id IS NOT NULL
+          ) distinct_evidence
+          ORDER BY owner_actor_id COLLATE "C", evidence_id COLLATE "C"
+        `;
+        if (evidenceRows.length) {
+          await retireKnowledgeEntityEvidence({
+            tenantId,
+            evidenceRows,
+            executionScope: input.executionScope,
+            retiredAt,
+            sql,
+          });
+        }
+
+        await sql`
+          DELETE FROM omni_knowledge_chunks
+          WHERE tenant_id = ${tenantId}
+            AND document_id = ANY(${documentIds}::text[])
+        `;
+        await sql`
+          DELETE FROM omni_knowledge_documents
+          WHERE tenant_id = ${tenantId}
+            AND id = ANY(${documentIds}::text[])
+        `;
+        const retired = await retireKnowledgeMemoryRows(
+          sql,
+          tenantId,
+          memoryIds,
+          retiredAt,
+        );
+        await appendCaptureKnowledgeSupersessionEvent({
+          tenantId,
+          sourceItemId,
+          keepDocumentId,
+          retiredDocumentCount: documentIds.length,
+          retiredMemoryCount: retired.length,
+          retiredAt,
+          executionScope: input.executionScope,
+          sql,
+        });
+        return { documents: documentIds.length, memories: retired.length };
+      })
+    );
+  }
+
+  const ledger = await readKnowledgeLedger();
+  const current = ledger.documents.find((document) =>
+    normalizeTenantId(document.tenantId) === tenantId &&
+    document.id === keepDocumentId &&
+    document.source === source
+  );
+  if (!current) {
+    throw new Error(
+      "Current Capture knowledge document is unavailable in its source scope.",
+    );
+  }
+  const currentOutput = ledger.sourceLineage?.adapterOutputs
+    .map((candidate) => sourceAdapterUpsertV1Schema.parse(candidate))
+    .find((output) =>
+      output.sourceItem.sourceItemId === current.sourceItemId
+    );
+  if (
+    !current.sourceItemId ||
+    !current.sourceRevisionId ||
+    !currentOutput ||
+    currentOutput.sourceRevision.sourceRevisionId !==
+      current.sourceRevisionId ||
+    currentOutput.sourceItem.ownerActorId !== guard.actorId ||
+    currentOutput.sourceItem.connectionId !== "first_party.capture" ||
+    currentOutput.adapterId !== "asael.capture"
+  ) {
+    throw new Error(
+      "Current Capture knowledge document is not the canonical source revision.",
+    );
+  }
+  const sourceItemId = current.sourceItemId;
+  const documentIds = new Set(ledger.documents
+    .filter((document) =>
+      normalizeTenantId(document.tenantId) === tenantId &&
+      document.sourceItemId === sourceItemId &&
+      document.sourceRevisionId !== current.sourceRevisionId &&
+      document.id !== keepDocumentId
+    )
+    .map((document) => document.id));
+  if (!documentIds.size) return { documents: 0, memories: 0 };
+
+  const evidenceRows = canonicalFileEvidenceRows(ledger, documentIds);
+  if (exactOwnerUser && evidenceRows.length) {
+    await retireKnowledgeEntityEvidence({
+      tenantId,
+      evidenceRows,
+      executionScope: input.executionScope,
+      retiredAt,
+    });
+  }
+  await updateJsonFile<KnowledgeLedger>(
+    getKnowledgeFile(),
+    { documents: [], chunks: [] },
+    (currentLedger) => ({
+      ...currentLedger,
+      documents: currentLedger.documents.filter((document) =>
+        !documentIds.has(document.id)
+      ),
+      chunks: currentLedger.chunks.filter((chunk) =>
+        !documentIds.has(chunk.documentId)
+      ),
+    }),
+  );
+  let memories = 0;
+  await updateJsonFile<MemoryRecord[]>(
+    getDataPath("memory.json"),
+    [],
+    (items) => items.map((memory) => {
+      if (
+        normalizeTenantId(memory.tenantId) !== tenantId ||
+        memory.claimStatus === "forgotten" ||
+        !(
+          [...documentIds].some((documentId) =>
+            memory.id.startsWith(`${documentId}_memory_`)
+          ) ||
+          memory.evidenceRefs?.some((reference) =>
+            reference.startsWith("knowledge:") &&
+            documentIds.has(reference.slice("knowledge:".length))
+          )
+        )
+      ) return memory;
+      memories += 1;
+      return {
+        ...memory,
+        title: "[retired]",
+        content: "",
+        tags: [],
+        source: "[retired]",
+        embedding: undefined,
+        evidenceRefs: [],
+        supersedesId: undefined,
+        contradictionOfId: undefined,
+        claimStatus: "superseded" as const,
+        validTo: memory.validTo || retiredAt,
+        forgottenAt: undefined,
+        updatedAt: retiredAt,
+      };
+    }),
+  );
+  const { queueMemoryGraphRebuild } = await import("@/lib/memory/graph");
+  await queueMemoryGraphRebuild({ tenantId });
+  await appendCaptureKnowledgeSupersessionEvent({
+    tenantId,
+    sourceItemId,
+    keepDocumentId,
+    retiredDocumentCount: documentIds.size,
+    retiredMemoryCount: memories,
+    retiredAt,
+    executionScope: input.executionScope,
+  });
+  return { documents: documentIds.size, memories };
+}
+
+async function appendCaptureKnowledgeSupersessionEvent(input: {
+  tenantId: string;
+  sourceItemId: string;
+  keepDocumentId: string;
+  retiredDocumentCount: number;
+  retiredMemoryCount: number;
+  retiredAt: string;
+  executionScope: ExecutionScope;
+  sql?: RagSqlClient;
+}) {
+  await appendScopedDomainEvent({
+    id: `knowledge_supersession_${sourceContractSha256({
+      tenantId: input.tenantId,
+      sourceItemId: input.sourceItemId,
+      keepDocumentId: input.keepDocumentId,
+    }).slice(0, 48)}`,
+    streamId: `source:${input.sourceItemId}`,
+    type: "knowledge.source_generation_retired",
+    executionScope: input.executionScope,
+    payload: {
+      schemaVersion: 1,
+      sourceItemId: input.sourceItemId,
+      currentDocumentId: input.keepDocumentId,
+      retiredDocumentCount: input.retiredDocumentCount,
+      retiredMemoryCount: input.retiredMemoryCount,
+      retiredAt: input.retiredAt,
+    },
+  }, input.sql ? { sql: input.sql } : {});
 }
 
 async function retireKnowledgeEntityEvidence(input: {

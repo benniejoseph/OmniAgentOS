@@ -6,7 +6,10 @@ import {
   queueMemoryGraphRebuild,
 } from "@/lib/memory/graph";
 import { saveMemories } from "@/lib/memory/store";
-import { createKnowledgeDocument } from "@/lib/rag/store";
+import {
+  createKnowledgeDocument,
+  retireSupersededCaptureKnowledge,
+} from "@/lib/rag/store";
 import { buildContextPack } from "@/lib/rag/context-engine";
 import { jsonbSafeText, jsonbSafeTruncate } from "@/lib/rag/text-safety";
 import type { KnowledgeSourceType } from "@/lib/rag/types";
@@ -195,6 +198,14 @@ export async function ingestTextDocument({
     })),
     { captureIngestGuard },
   );
+  const retired = captureIngestGuard
+    ? await retireSupersededCaptureKnowledge({
+        captureIngestGuard,
+        executionScope:
+          canonicalSourceWrite?.executionScope || executionScope!,
+        keepDocumentId: knowledge.document.id,
+      })
+    : { documents: 0, memories: 0 };
   abortSignal?.throwIfAborted();
   await onProgress?.({
     stage: "graph",
@@ -214,6 +225,7 @@ export async function ingestTextDocument({
     document: knowledge.document,
     chunks: knowledge.chunks,
     memories: records,
+    retired,
   };
 }
 

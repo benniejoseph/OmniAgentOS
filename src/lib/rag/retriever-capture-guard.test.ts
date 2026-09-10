@@ -7,12 +7,17 @@ const mocks = vi.hoisted(() => ({
   embedTexts: vi.fn(async () => [[0.1, 0.2]]),
   indexMemoryGraphRecords: vi.fn(async () => undefined),
   queueMemoryGraphRebuild: vi.fn(async () => undefined),
+  retireSupersededCaptureKnowledge: vi.fn(async () => ({
+    documents: 0,
+    memories: 0,
+  })),
   saveMemories: vi.fn(),
 }));
 
 vi.mock("@/lib/openai/client", () => ({ embedTexts: mocks.embedTexts }));
 vi.mock("@/lib/rag/store", () => ({
   createKnowledgeDocument: mocks.createKnowledgeDocument,
+  retireSupersededCaptureKnowledge: mocks.retireSupersededCaptureKnowledge,
   searchKnowledge: vi.fn(),
 }));
 vi.mock("@/lib/memory/store", () => ({
@@ -66,6 +71,10 @@ describe("capture ingestion persistence guard", () => {
     }]);
     mocks.indexMemoryGraphRecords.mockReset().mockResolvedValue(undefined);
     mocks.queueMemoryGraphRebuild.mockReset().mockResolvedValue(undefined);
+    mocks.retireSupersededCaptureKnowledge.mockReset().mockResolvedValue({
+      documents: 0,
+      memories: 0,
+    });
     mocks.embedTexts.mockClear();
   });
 
@@ -111,6 +120,14 @@ describe("capture ingestion persistence guard", () => {
       "knowledge.ingest",
       { captureIngestGuard: guard },
     );
+    expect(mocks.retireSupersededCaptureKnowledge).toHaveBeenCalledWith({
+      captureIngestGuard: guard,
+      executionScope: sourceLineage.executionScope,
+      keepDocumentId: "document-a",
+    });
+    expect(
+      mocks.retireSupersededCaptureKnowledge.mock.invocationCallOrder[0],
+    ).toBeLessThan(mocks.indexMemoryGraphRecords.mock.invocationCallOrder[0]);
     expect(progress).toEqual([
       { stage: "chunking" },
       { stage: "embedding", chunkCount: 1 },
