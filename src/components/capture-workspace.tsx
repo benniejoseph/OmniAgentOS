@@ -135,6 +135,9 @@ export function CaptureWorkspace() {
   const [libraryQuery, setLibraryQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [deletingAsset, setDeletingAsset] = useState<string>();
+  const [reindexingAssetIds, setReindexingAssetIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const inputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const completedJobRef = useRef<string | undefined>(undefined);
@@ -342,6 +345,25 @@ export function CaptureWorkspace() {
     if (query && !`${document.title} ${document.source}`.toLowerCase().includes(query)) return false;
     return sourceFilter === "all" || documentSource(document.source) === sourceFilter;
   }), [documents, libraryQuery, sourceFilter]);
+  const filteredAssets = useMemo(() => assets.filter((asset) => {
+    if (sourceFilter !== "all" && sourceFilter !== "capture") return false;
+    const query = libraryQuery.trim().toLowerCase();
+    return !query || [
+      asset.filename,
+      asset.mediaType,
+      asset.extension,
+      asset.status,
+      ...asset.tags,
+    ].join(" ").toLowerCase().includes(query);
+  }), [assets, libraryQuery, sourceFilter]);
+  const reindexableAssets = useMemo(() => filteredAssets
+    .filter((asset) =>
+      asset.manageable === true &&
+      asset.indexable === true &&
+      asset.status !== "queued" &&
+      !reindexingAssetIds.has(asset.id)
+    )
+    .slice(0, 50), [filteredAssets, reindexingAssetIds]);
 
   const batchCounts = useMemo(() => summarizeBatch(batchItems), [batchItems]);
   const durableQueue = useMemo(() => {
@@ -575,6 +597,73 @@ export function CaptureWorkspace() {
     }
   }
 
+  async function reindexAssets(targets: readonly CaptureAsset[]) {
+    if (captureBlocked) {
+      setCaptureNotice({ tone: "error", text: captureBlocked });
+      return;
+    }
+    const eligible = targets.filter((asset) =>
+      asset.manageable === true &&
+      asset.indexable === true &&
+      asset.status !== "queued" &&
+      !reindexingAssetIds.has(asset.id)
+    ).slice(0, 50);
+    if (!eligible.length) {
+      setCaptureNotice({ tone: "warning", text: "Every matching original is already queued or cannot be indexed." });
+      return;
+    }
+    setCaptureNotice(undefined);
+    setReindexingAssetIds((current) => new Set([
+      ...current,
+      ...eligible.map((asset) => asset.id),
+    ]));
+    try {
+      const results = await runCaptureBatch(eligible, async (asset) => {
+        try {
+          const response = await fetch(
+            `/api/capture/assets/${encodeURIComponent(asset.id)}`,
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "idempotency-key": `capture-reindex-${asset.id}-${crypto.randomUUID()}`,
+              },
+              body: "{}",
+            },
+          );
+          const payload = (await response.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          if (!response.ok) {
+            throw new Error(payload.error || `${asset.filename} could not be queued.`);
+          }
+          return { asset, queued: true as const };
+        } catch (error) {
+          return {
+            asset,
+            queued: false as const,
+            error: error instanceof Error ? error.message : `${asset.filename} could not be queued.`,
+          };
+        }
+      });
+      const queued = results.filter((result) => result.queued).length;
+      const failed = results.length - queued;
+      setCaptureNotice({
+        tone: failed ? "warning" : "success",
+        text: failed
+          ? `${queued} original${queued === 1 ? "" : "s"} queued; ${failed} need attention. The existing files were kept.`
+          : `${queued} original${queued === 1 ? " is" : "s are"} queued for fresh extraction, RAG, memory, and graph links.`,
+      });
+      await loadWorkspace();
+    } finally {
+      setReindexingAssetIds((current) => {
+        const next = new Set(current);
+        for (const asset of eligible) next.delete(asset.id);
+        return next;
+      });
+    }
+  }
+
   const googleGrant = oauthGrants.find((grant) => grant.provider === "google" && grant.status !== "revoked");
   const activeSourceCount = googleGrant
     ? 3 + (googleGrant.scopes.some((scope) => scope.endsWith("/auth/photospicker.mediaitems.readonly")) ? 1 : 0)
@@ -761,19 +850,31 @@ export function CaptureWorkspace() {
       <section className="border-t border-line pt-7" aria-labelledby="capture-library-title" data-daybook="section">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Source controls</p><h2 id="capture-library-title" className="mt-2 text-xl font-semibold tracking-tight">Manage originals and the knowledge index.</h2><p className="mt-2 text-sm leading-6 text-muted">These source-specific controls remain here for download, deletion, and indexing. The unified library above is the canonical browse and search view.</p></div>
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <label className="relative min-w-56"><span className="sr-only">Search captured knowledge</span><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" /><input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Search this list" className="min-h-11 w-full rounded-md border border-line bg-surface pl-9 pr-3 text-sm outline-none focus:border-primary" /></label>
             <label><span className="sr-only">Filter by source</span><select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} className="min-h-11 rounded-md border border-line bg-surface px-3 text-sm text-foreground"><option value="all">All sources</option><option value="capture">Capture</option><option value="mail">Email</option><option value="drive">Drive</option><option value="calendar">Calendar</option><option value="photos">Photos</option></select></label>
+            <button
+              type="button"
+              onClick={() => void reindexAssets(reindexableAssets)}
+              disabled={!reindexableAssets.length || Boolean(captureBlocked)}
+              title={captureBlocked || (reindexableAssets.length ? "Refresh extraction, RAG, memory, and graph links for the shown originals." : "No shown originals need re-indexing.")}
+              className="action-button min-h-11 whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {reindexingAssetIds.size ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
+              {reindexingAssetIds.size
+                ? `Queueing ${reindexingAssetIds.size}`
+                : `Re-index ${reindexableAssets.length} shown`}
+            </button>
           </div>
         </div>
 
         <div className="mt-5 grid gap-6 2xl:grid-cols-[minmax(22rem,.72fr)_minmax(0,1.28fr)]">
           <div className="overflow-hidden rounded-xl border border-line bg-surface" data-daybook="panel">
-            <div className="flex items-center justify-between gap-3 border-b border-line bg-surface-raised px-4 py-3"><div><p className="text-sm font-semibold">Original files</p><p className="mt-0.5 text-xs text-muted">Private and retrievable · actions follow stored ownership</p></div><span className="text-xs text-muted">{assets.length}</span></div>
+            <div className="flex items-center justify-between gap-3 border-b border-line bg-surface-raised px-4 py-3"><div><p className="text-sm font-semibold">Original files</p><p className="mt-0.5 text-xs text-muted">Private and retrievable · actions follow stored ownership</p></div><span className="text-xs text-muted">{filteredAssets.length}{filteredAssets.length !== assets.length ? ` / ${assets.length}` : ""}</span></div>
             <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
-              {assets.length ? assets.map((asset) => (
-                <div key={asset.id} className="group px-4 py-3"><div className="flex items-start gap-3"><span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-md bg-background text-primary"><FileText size={16} aria-hidden="true" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{asset.filename}</p><p className="mt-1 truncate text-xs text-muted">{formatBytes(asset.byteCount)} · {asset.storageKind} · {formatTime(asset.updatedAt)}</p><p className={clsx("mt-1 text-xs font-semibold", asset.status === "failed" || asset.status === "unsupported" ? "text-warning" : asset.status === "indexed" ? "text-success" : "text-muted")}>{assetStatusLabel(asset)}</p>{asset.error ? <p className="mt-1 line-clamp-2 text-xs text-danger">{asset.error}</p> : null}{asset.manageable !== true ? <p className="mt-1 text-xs text-muted">Read only · indexing and management remain with its stored owner</p> : captureBlocked ? <p className="mt-1 text-xs text-muted">Read only in your current role</p> : null}</div><div className="flex shrink-0 gap-1">{asset.contentAvailable === true ? <a href={`/api/capture/assets/${encodeURIComponent(asset.id)}?content=1&download=1`} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Download ${asset.filename}`}><Download size={14} /></a> : null}{asset.manageable === true && !captureBlocked ? <button type="button" onClick={() => void deleteAsset(asset.id)} disabled={deletingAsset === asset.id} className="grid size-9 place-items-center rounded-md text-muted hover:bg-danger/10 hover:text-danger" aria-label={`Delete ${asset.filename}`}>{deletingAsset === asset.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}</button> : null}</div></div></div>
-              )) : <p className="px-4 py-8 text-center text-sm text-muted">Uploaded and generated originals will appear here.</p>}
+              {filteredAssets.length ? filteredAssets.map((asset) => (
+                <div key={asset.id} className="group px-4 py-3"><div className="flex items-start gap-3"><span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-md bg-background text-primary"><FileText size={16} aria-hidden="true" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{asset.filename}</p><p className="mt-1 truncate text-xs text-muted">{formatBytes(asset.byteCount)} · {asset.storageKind} · {formatTime(asset.updatedAt)}</p><p className={clsx("mt-1 text-xs font-semibold", asset.status === "failed" || asset.status === "unsupported" ? "text-warning" : asset.status === "indexed" ? "text-success" : "text-muted")}>{assetStatusLabel(asset)}</p>{asset.error ? <p className="mt-1 line-clamp-2 text-xs text-danger">{asset.error}</p> : null}{asset.manageable !== true ? <p className="mt-1 text-xs text-muted">Read only · indexing and management remain with its stored owner</p> : captureBlocked ? <p className="mt-1 text-xs text-muted">Read only in your current role</p> : null}</div><div className="flex shrink-0 gap-1">{asset.manageable === true && asset.indexable === true && !captureBlocked ? <button type="button" onClick={() => void reindexAssets([asset])} disabled={asset.status === "queued" || reindexingAssetIds.has(asset.id)} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50" aria-label={`Re-index ${asset.filename}`}>{reindexingAssetIds.has(asset.id) ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}</button> : null}{asset.contentAvailable === true ? <a href={`/api/capture/assets/${encodeURIComponent(asset.id)}?content=1&download=1`} className="grid size-9 place-items-center rounded-md text-muted hover:bg-background hover:text-foreground" aria-label={`Download ${asset.filename}`}><Download size={14} /></a> : null}{asset.manageable === true && !captureBlocked ? <button type="button" onClick={() => void deleteAsset(asset.id)} disabled={deletingAsset === asset.id} className="grid size-9 place-items-center rounded-md text-muted hover:bg-danger/10 hover:text-danger" aria-label={`Delete ${asset.filename}`}>{deletingAsset === asset.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}</button> : null}</div></div></div>
+              )) : <p className="px-4 py-8 text-center text-sm text-muted">{assets.length ? "No original files match this filter." : "Uploaded and generated originals will appear here."}</p>}
             </div>
           </div>
 
