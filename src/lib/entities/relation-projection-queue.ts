@@ -68,7 +68,14 @@ export async function queueTemporalRelationProjection(input: {
         .toISOString(),
     });
     await appendScopedDomainEvent({
-      id: `entity-relation-projection-requested:${sourceContractSha256(result)}`,
+      // A queue row can return to generation 1 after the projector deletes it.
+      // PostgreSQL timestamps are then truncated to milliseconds by Date, so
+      // two different callers can observe the same queue result. Bind the
+      // request event to its governed caller as well as that mutable result.
+      id: `entity-relation-projection-requested:${sourceContractSha256({
+        result,
+        executionScope: scope,
+      })}`,
       streamId: `entity-relations:${input.ownerActorId}`,
       type: "entity.relation_projection.requested",
       executionScope: scope,

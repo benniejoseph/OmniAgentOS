@@ -189,22 +189,30 @@ function assertIdempotentEventMatch(
     existing.executionScope || existing.payload?._executionScope,
   );
   const requestedScope = requested.executionScope;
-  if (
-    existing.tenantId !== requested.tenantId ||
-    existing.actorId !== requested.actorId ||
-    existing.streamId !== requested.streamId ||
-    existing.type !== requested.type ||
-    existing.correlationId !== requested.correlationId ||
-    existing.causationId !== requested.causationId ||
-    canonicalComparable(existing.payload) !== canonicalComparable(requested.payload) ||
+  const mismatchedFields = [
+    existing.tenantId !== requested.tenantId ? "tenantId" : undefined,
+    existing.actorId !== requested.actorId ? "actorId" : undefined,
+    existing.streamId !== requested.streamId ? "streamId" : undefined,
+    existing.type !== requested.type ? "type" : undefined,
+    existing.correlationId !== requested.correlationId
+      ? "correlationId"
+      : undefined,
+    existing.causationId !== requested.causationId ? "causationId" : undefined,
+    canonicalComparable(existing.payload) !== canonicalComparable(requested.payload)
+      ? "payload"
+      : undefined,
     Boolean(existingScope) !== Boolean(requestedScope) ||
-    (
-      existingScope &&
-      requestedScope &&
-      !executionScopesEqual(existingScope, requestedScope)
-    )
-  ) {
-    throw new Error("Domain event id is already bound to a different event.");
+        (existingScope &&
+          requestedScope &&
+          !executionScopesEqual(existingScope, requestedScope))
+      ? "executionScope"
+      : undefined,
+  ].filter((field): field is string => Boolean(field));
+  if (mismatchedFields.length) {
+    throw new Error(
+      `Domain event id ${existing.id} is already bound to a different event ` +
+        `(mismatched fields: ${mismatchedFields.join(", ")}).`,
+    );
   }
 }
 
