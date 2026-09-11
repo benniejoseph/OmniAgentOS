@@ -4,8 +4,8 @@ import { z } from "zod";
 
 import {
   MARKET_RESEARCH_CONTRACT_VERSION,
-  marketBarsResultSchema,
-  type MarketBarsResult,
+  marketBarsProviderResultSchema,
+  type MarketBarsProviderResult,
   type MarketInterval,
   type MarketInstrumentId,
 } from "@/lib/market-research/contracts";
@@ -31,6 +31,8 @@ const twelveDataResponseSchema = z.object({
   values: z.array(twelveDataValueSchema).optional(),
 }).passthrough();
 
+const maxProviderResponseBytes = 2_000_000;
+
 export class MarketDataCredentialRequiredError extends Error {
   constructor(
     provider = "Twelve Data",
@@ -55,11 +57,24 @@ export class MarketDataProviderError extends Error {
   }
 }
 
+export type TwelveDataBarSnapshot = {
+  result: MarketBarsProviderResult;
+  sourcePayload: unknown;
+};
+
 export async function fetchTwelveDataBars(input: {
   instrumentId: MarketInstrumentId;
   interval: MarketInterval;
   outputSize: number;
-}): Promise<MarketBarsResult> {
+}): Promise<MarketBarsProviderResult> {
+  return (await fetchTwelveDataBarSnapshot(input)).result;
+}
+
+export async function fetchTwelveDataBarSnapshot(input: {
+  instrumentId: MarketInstrumentId;
+  interval: MarketInterval;
+  outputSize: number;
+}): Promise<TwelveDataBarSnapshot> {
   const apiKey = process.env.TWELVE_DATA_API_KEY?.trim();
   if (!apiKey) throw new MarketDataCredentialRequiredError();
   const instrument = marketInstrument(input.instrumentId);
@@ -95,8 +110,10 @@ export async function fetchTwelveDataBars(input: {
   }
   let raw: unknown;
   try {
-    raw = await response.json();
-  } catch {
+    const text = await readBoundedResponseText(response);
+    raw = JSON.parse(text);
+  } catch (error) {
+    if (error instanceof MarketDataProviderError) throw error;
     throw new MarketDataProviderError("Twelve Data returned an unreadable response.");
   }
   const payload = twelveDataResponseSchema.parse(raw);
@@ -123,17 +140,43 @@ export async function fetchTwelveDataBars(input: {
   const asOf = bars.at(-1)?.timestamp;
   if (!asOf) throw new MarketDataProviderError("Twelve Data returned no market bars.");
 
-  return marketBarsResultSchema.parse({
-    contractVersion: MARKET_RESEARCH_CONTRACT_VERSION,
-    instrumentId: input.instrumentId,
-    provider: "twelve_data",
-    providerSymbol: payload.meta.symbol,
-    providerTimezone: payload.meta.timezone,
-    interval: input.interval,
-    retrievedAt: new Date().toISOString(),
-    asOf,
-    bars,
-  });
+  return {
+    result: marketBarsProviderResultSchema.parse({
+      contractVersion: MARKET_RESEARCH_CONTRACT_VERSION,
+      instrumentId: input.instrumentId,
+      provider: "twelve_data",
+      providerSymbol: payload.meta.symbol,
+      providerTimezone: payload.meta.timezone,
+      interval: input.interval,
+      retrievedAt: new Date().toISOString(),
+      asOf,
+      bars,
+    }),
+    sourcePayload: raw,
+  };
+}
+
+async function readBoundedResponseText(response: Response) {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxProviderResponseBytes) {
+    throw new MarketDataProviderError("Twelve Data returned an oversized response.");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let byteCount = 0;
+  let text = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    byteCount += chunk.value.byteLength;
+    if (byteCount > maxProviderResponseBytes) {
+      await reader.cancel();
+      throw new MarketDataProviderError("Twelve Data returned an oversized response.");
+    }
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 function utcTimestamp(value: string) {

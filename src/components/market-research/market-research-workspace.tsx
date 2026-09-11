@@ -381,7 +381,7 @@ function ResearchDesk({
           <header>
             <div>
               <span><ChartCandlestick size={16} /> Provider-labelled price context</span>
-              <small>{bars ? `${bars.providerSymbol} · ${bars.providerTimezone} · ${bars.bars.length} bars` : "No proxy data is shown"}</small>
+              <small>{bars ? `${bars.providerSymbol} · ${bars.providerTimezone} · ${bars.bars.length} bars · ${bars.snapshotSource === "cache" ? "reused" : "new"} snapshot ${bars.snapshotSha256.slice(0, 10)}` : "No proxy data is shown"}</small>
             </div>
             <div className={styles.intervalPicker} aria-label="Chart interval">
               {MARKET_INTERVALS.map((item) => (

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const MARKET_RESEARCH_CONTRACT_VERSION =
-  "market-research-foundation:3" as const;
+  "market-research-foundation:4" as const;
 
 export const MARKET_INSTRUMENT_IDS = [
   "xauusd.spot",
@@ -126,7 +126,7 @@ export const marketBarSchema = z.object({
 
 export type MarketBar = z.infer<typeof marketBarSchema>;
 
-export const marketBarsResultSchema = z.object({
+export const marketBarsProviderResultSchema = z.object({
   contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
   instrumentId: marketInstrumentIdSchema,
   provider: z.enum(MARKET_PRICE_PROVIDERS),
@@ -136,6 +136,16 @@ export const marketBarsResultSchema = z.object({
   retrievedAt: z.string().datetime({ offset: true }),
   asOf: z.string().datetime({ offset: true }),
   bars: z.array(marketBarSchema).max(1_000),
+}).strict();
+
+export type MarketBarsProviderResult = z.infer<
+  typeof marketBarsProviderResultSchema
+>;
+
+export const marketBarsResultSchema = marketBarsProviderResultSchema.extend({
+  snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
+  snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  snapshotSource: z.enum(["provider", "cache"]),
 }).strict();
 
 export type MarketBarsResult = z.infer<typeof marketBarsResultSchema>;
