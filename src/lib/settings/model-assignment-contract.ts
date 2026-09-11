@@ -60,6 +60,13 @@ export const modelAssignmentRoleContracts: Readonly<
     supportedProviders: ["openai", "anthropic"],
     acceptedCapabilities: ["text"],
   }),
+  market_research: assignmentRoleContract({
+    title: "Market research",
+    description: "Evidence-bound macro, news-impact, and trading research",
+    runtimePurpose: "Structured market research and scenario analysis",
+    supportedProviders: ["openai", "google", "anthropic", "aws_bedrock"],
+    acceptedCapabilities: ["text"],
+  }),
   memory: assignmentRoleContract({
     title: "Memory reasoning",
     description: "Semantic recall and context query planning",

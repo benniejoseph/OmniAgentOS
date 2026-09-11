@@ -8,6 +8,7 @@ export const AGENT_PROMPT_CONTRACT_VERSION_ID =
 export type BuiltInAgentId =
   | "atlas"
   | "scout"
+  | "meridian"
   | "forge"
   | "sentinel"
   | "mnemosyne";
@@ -136,7 +137,7 @@ export function trustedRuntimeClockInstruction(input?: {
 }
 
 export function isBuiltInPromptAgentId(value: string): value is BuiltInAgentId {
-  return ["atlas", "scout", "forge", "sentinel", "mnemosyne"].includes(value);
+  return ["atlas", "scout", "meridian", "forge", "sentinel", "mnemosyne"].includes(value);
 }
 
 export function getBuiltInAgentPromptIdentity(agentId: BuiltInAgentId) {

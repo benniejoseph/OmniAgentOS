@@ -281,6 +281,11 @@ const specialtyByAgent: Record<BuiltInAgentId, Readonly<{
     tags: ["research", "sources", "comparison", "citations"],
     toolPolicy: "read_only",
   },
+  meridian: {
+    taskKind: "research",
+    tags: ["markets", "macroeconomics", "ict", "backtests", "calibration"],
+    toolPolicy: "read_only",
+  },
   forge: {
     taskKind: "build",
     tags: ["build", "implementation", "artifact", "automation"],

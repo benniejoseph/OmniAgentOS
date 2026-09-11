@@ -110,6 +110,7 @@ const assignmentLabels: Record<ModelAssignmentScope, { title: string; descriptio
   planner: { title: "Planner", description: "Project and durable workflow planning" },
   verifier: { title: "Verifier", description: "Evidence-bound workflow and Council review" },
   council: { title: "Agent council", description: "Specialist review and synthesis" },
+  market_research: { title: "Market research", description: "Macro, news-impact, and trading scenario analysis" },
   memory: { title: "Memory reasoning", description: "Consolidation and recall decisions" },
   embeddings: { title: "Embeddings", description: "Document and memory vector indexing" },
   vision: { title: "Vision", description: "Image and visual document understanding" },

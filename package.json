@@ -59,6 +59,7 @@
     "clsx": "^2.1.1",
     "ffmpeg-static": "^5.2.0",
     "jszip": "^3.10.1",
+    "lightweight-charts": "^5.2.1",
     "lucide-react": "^1.33.0",
     "mammoth": "^1.12.1",
     "next": "16.3.1",

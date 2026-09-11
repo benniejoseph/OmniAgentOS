@@ -5,6 +5,7 @@ import {
   Bot,
   Building2,
   CalendarDays,
+  ChartCandlestick,
   Cable,
   CheckCircle2,
   CreditCard,
@@ -71,6 +72,13 @@ export const appNav: AppNavItem[] = [
     shortLabel: "Accounts",
     description: "Customer context, evidence, health, risks, and renewal.",
     icon: Building2,
+  },
+  {
+    href: "/app/markets",
+    label: "Markets",
+    shortLabel: "Markets",
+    description: "Evidence-bound market research, event impact, and ICT analysis.",
+    icon: ChartCandlestick,
   },
   {
     href: "/app/agents",
@@ -190,6 +198,7 @@ export const appNavGroups: AppNavGroup[] = [
       appNav.find((item) => item.href === "/app/agents")!,
       appNav.find((item) => item.href === "/app/meetings")!,
       appNav.find((item) => item.href === "/app/accounts")!,
+      appNav.find((item) => item.href === "/app/markets")!,
     ],
   },
   {

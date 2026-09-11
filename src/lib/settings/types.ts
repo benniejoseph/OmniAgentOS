@@ -13,6 +13,7 @@ export const MODEL_ASSIGNMENT_SCOPES = [
   "planner",
   "verifier",
   "council",
+  "market_research",
   "memory",
   "embeddings",
   "vision",

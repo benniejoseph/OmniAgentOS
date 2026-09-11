@@ -1455,6 +1455,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[155],
       up: ensureConversationSummaryEnrichmentsV1,
     },
+    {
+      ...databaseSchemaMigrations[156],
+      up: ensureMarketResearchModelScopeV1,
+    },
   ];
 }
 
@@ -17975,6 +17979,36 @@ async function ensureConfigurableAiModelScopesV1(sql: SqlClient) {
 async function ensureMediaComputerModelScopesV1(sql: SqlClient) {
   await ensureFunctionalModelAssignmentsV1(sql);
   await ensureUnifiedAiUsageLedgerCompatibility(sql);
+}
+
+async function ensureMarketResearchModelScopeV1(sql: SqlClient) {
+  await ensureSettingsControlPlane(sql);
+  await ensureUnifiedAiUsageLedgerCompatibility(sql);
+  await sql`ALTER TABLE omni_model_assignments DROP CONSTRAINT IF EXISTS omni_model_assignments_scope_check`;
+  await sql`ALTER TABLE omni_model_assignments ADD CONSTRAINT omni_model_assignments_scope_check CHECK (scope IN ('main_agent', 'orchestrator', 'planner', 'verifier', 'council', 'market_research', 'memory', 'embeddings', 'vision', 'audio', 'audio_diarization', 'web_search', 'image_generation', 'video_generation', 'computer_use', 'speech_synthesis', 'realtime_transcription'))`;
+  await sql`ALTER TABLE omni_ai_usage DROP CONSTRAINT IF EXISTS omni_ai_usage_assignment_receipt_check`;
+  await sql`
+    ALTER TABLE omni_ai_usage
+    ADD CONSTRAINT omni_ai_usage_assignment_receipt_check CHECK (
+      (
+        assignment_scope IS NULL
+        AND assignment_revision IS NULL
+        AND assignment_configuration_sha256 IS NULL
+      ) OR (
+        assignment_id IS NOT NULL
+        AND assignment_scope IN (
+          'main_agent', 'orchestrator', 'planner', 'verifier', 'council',
+          'market_research', 'memory', 'embeddings', 'vision', 'audio',
+          'audio_diarization', 'web_search', 'image_generation',
+          'video_generation', 'computer_use', 'speech_synthesis',
+          'realtime_transcription'
+        )
+        AND assignment_revision > 0
+        AND assignment_configuration_sha256 ~ '^[a-f0-9]{64}$'
+        AND credential_source = 'tenant_vault'
+      )
+    )
+  `;
 }
 
 async function ensureKnowledgeCognificationCandidatesV1(sql: SqlClient) {

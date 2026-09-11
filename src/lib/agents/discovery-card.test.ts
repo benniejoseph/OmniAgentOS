@@ -71,6 +71,7 @@ describe("P8.5 internal Agent Card", () => {
     expect(cards.map((card) => card.logicalAgentId)).toEqual([
       "atlas",
       "scout",
+      "meridian",
       "forge",
       "sentinel",
       "mnemosyne",

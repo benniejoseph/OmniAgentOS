@@ -583,7 +583,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.settings.show", "Show settings", "Read the current actor's redacted provider, model, assignment, API-key metadata, MCP exposure, vault readiness, and platform settings.", objectSchema({})),
   readTool("app.settings.models.list", "List models", "List the current actor's selectable model catalog without credentials.", objectSchema({})),
   mutationTool("app.settings.assignments.update", "Update model assignment", "Update one model routing assignment; cross-provider fallback requires explicit disclosure consent.", requiredObjectSchema({
-    scope: { type: "string", enum: ["main_agent", "orchestrator", "workflow", "council", "memory", "embeddings", "vision", "audio"] },
+    scope: { type: "string", enum: ["main_agent", "orchestrator", "planner", "verifier", "council", "market_research", "memory", "embeddings", "vision", "audio", "audio_diarization", "web_search", "image_generation", "video_generation", "computer_use", "speech_synthesis", "realtime_transcription"] },
     provider: modelProvider(), modelId: text(1, 240), fallbackProvider: modelProvider(), fallbackModelId: text(1, 240),
     crossProviderFallbackConsent: { type: "boolean", enum: [true] },
   }, ["scope", "provider", "modelId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),

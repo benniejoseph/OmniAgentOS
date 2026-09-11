@@ -15,6 +15,9 @@ describe("functional model assignment contract", () => {
     expect(modelSupportsAssignmentRole("planner", "google", {
       capabilities: ["text", "tools"],
     })).toBe(false);
+    expect(modelSupportsAssignmentRole("market_research", "google", {
+      capabilities: ["text"],
+    })).toBe(true);
     expect(modelSupportsAssignmentRole("embeddings", "openai", {
       capabilities: ["embeddings"],
     })).toBe(true);
@@ -50,6 +53,7 @@ describe("functional model assignment contract", () => {
   it("exposes fallback only where the runtime executes and receipts attempts", () => {
     expect(modelAssignmentRoleSupportsFallback("main_agent")).toBe(true);
     expect(modelAssignmentRoleSupportsFallback("verifier")).toBe(true);
+    expect(modelAssignmentRoleSupportsFallback("market_research")).toBe(true);
     expect(modelAssignmentRoleSupportsFallback("embeddings")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("vision")).toBe(false);
     expect(modelAssignmentRoleSupportsFallback("audio")).toBe(false);
