@@ -1494,6 +1494,33 @@ for the single `conversation.context.compile.v1` purpose. Deleting any source
 turn removes every directly or transitively derived summary before the turn is
 removed, keeping deletion separate from ordinary rebuilding.
 
+### Shadow semantic episode enrichment
+
+The later-learning foundation adds
+`conversation.summary.semantic_enriched` for a completed, immutable semantic
+view of one sealed 12-turn episode. The deterministic hierarchy remains the
+active context authority. The semantic row is actor-private shadow data and
+cannot enter recall, ranking, either knowledge graph, or durable truth.
+
+The event is appended in the same PostgreSQL transaction as the enrichment.
+Its payload contains only opaque enrichment, generation and episode IDs;
+source, deterministic-summary, enrichment and contract SHA-256 bindings;
+bounded source-turn and statement counts; the `shadowOnly` marker; and the
+creation time. It never contains conversation text, generated summary or
+statement text, evidence quotes, model prompts, provider responses,
+credentials, actor identity, or private reasoning. The private enrichment row
+retains the exact ordered turn IDs, verified quote coordinates, Settings-backed
+model attribution and completed AI-usage receipt.
+
+The background worker re-enters the exact tenant and initiating-actor scope,
+re-locks the parent episode, and revalidates every source hash and quote before
+insert. A changed source, deterministic summary, or Settings generation is
+superseded without becoming an error or model write. Source-summary updates
+delete their stale shadow rows before the new parent projection is committed.
+Explicitly rated retrieval outcomes are rebuilt from the existing immutable
+`run.context.receipt` and latest completed-run feedback events; they add no
+parallel event or ranking authority.
+
 ## Memory maintenance lifecycle
 
 P3.6 adds `memory.maintenance.completed`, `memory.lifecycle.pinned`,
