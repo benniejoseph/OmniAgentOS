@@ -245,7 +245,9 @@ export function PersonalConnections({
                   {action === "sync" ? "Syncing…" : "Sync now"}
                 </button>
                 <a
-                  href={provider?.authorizeUrl || "/api/oauth/google/authorize"}
+                  href={withRepairIntent(
+                    provider?.authorizeUrl || "/api/oauth/google/authorize",
+                  )}
                   className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-line bg-background px-3 text-sm font-semibold transition hover:bg-surface-raised"
                 >
                   <RotateCcw size={15} aria-hidden="true" />
@@ -406,6 +408,11 @@ export function PersonalConnections({
       </div>
     </section>
   );
+}
+
+function withRepairIntent(url: string) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}intent=repair`;
 }
 
 function ConnectionStatus({

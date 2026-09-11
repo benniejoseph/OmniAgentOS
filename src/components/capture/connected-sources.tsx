@@ -332,6 +332,10 @@ export function ConnectedSources({
 
   const busy = Boolean(action) || loading;
   const connectUrl = addReturnTo(provider?.authorizeUrl || "/api/oauth/google/authorize");
+  const repairUrl = addReturnTo(
+    provider?.authorizeUrl || "/api/oauth/google/authorize",
+    "repair",
+  );
 
   return (
     <section aria-labelledby="connected-sources-title" className="border-t border-line pt-7">
@@ -349,7 +353,7 @@ export function ConnectedSources({
                 {action === "sync" ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
                 {action === "sync" ? "Syncing…" : "Sync Google"}
               </button>
-              <a href={connectUrl} className="action-button">Manage access</a>
+              <a href={repairUrl} className="action-button">Manage access</a>
               <button type="button" onClick={() => setConfirming("disconnect")} disabled={busy} className="action-button text-muted"><Unplug size={15} aria-hidden="true" />Disconnect</button>
             </>
           ) : connected ? (
@@ -445,9 +449,11 @@ export function ConnectedSources({
   );
 }
 
-function addReturnTo(url: string) {
+function addReturnTo(url: string, intent?: "repair") {
   const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}returnTo=${encodeURIComponent("/app/capture")}`;
+  const params = new URLSearchParams({ returnTo: "/app/capture" });
+  if (intent) params.set("intent", intent);
+  return `${url}${separator}${params.toString()}`;
 }
 
 function sourceLabel(id: string) {

@@ -60,4 +60,12 @@ describe("Google integration UI consistency", () => {
     expect(personalConnections).toContain("await refreshIntegrationViews()");
     expect(connectedSources).toContain("await refreshIntegrationViews()");
   });
+
+  it("forces fresh consent only from explicit repair actions", () => {
+    expect(personalConnections).toContain("withRepairIntent(");
+    expect(personalConnections).toContain("intent=repair");
+    expect(connectedSources).toContain("const repairUrl = addReturnTo(");
+    expect(connectedSources).toContain('addReturnTo(provider?.authorizeUrl || "/api/oauth/google/authorize")');
+    expect(connectedSources).toContain('<a href={repairUrl} className="action-button">Manage access</a>');
+  });
 });
