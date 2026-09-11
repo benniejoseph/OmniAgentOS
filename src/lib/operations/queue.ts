@@ -7,7 +7,11 @@ import {
   listObservabilitySloPolicyChanges,
   type ObservabilitySloPolicyChange,
 } from "@/lib/observability/slo-policy-store";
-import { getOperationJobStats, listOperationJobs } from "@/lib/operations/job-queue";
+import {
+  getOperationJobStats,
+  listTenantWideOperationJobs,
+  projectOperationJobStatus,
+} from "@/lib/operations/job-queue";
 import { inspectOperationsRecovery } from "@/lib/operations/recovery";
 import { listAgentRuns } from "@/lib/runs/store";
 import { publicAgentRun } from "@/lib/runs/public";
@@ -150,7 +154,7 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
     listMcpConnectors(20, { tenantId: options.tenantId }),
     listOpenApiConnectors(20, { tenantId: options.tenantId }),
     getOperationJobStats({ tenantId: options.tenantId }),
-    listOperationJobs(20, { tenantId: options.tenantId }),
+    listTenantWideOperationJobs(20, { tenantId: options.tenantId }),
     inspectOperationsRecovery({ limit: 10, tenantId: options.tenantId }),
     listWorkflowRecoveryEvents(10, { tenantId: options.tenantId }),
   ]);
@@ -186,7 +190,7 @@ export async function getOperationsOverview(options: { tenantId?: string } = {})
       workflows: workflowRuns.map(publicWorkflowRun),
       toolExecutions,
       agentRuns: agentRuns.map(publicAgentRun),
-      operationJobs,
+      operationJobs: operationJobs.map(projectOperationJobStatus),
       recoveryEvents,
       connectors: [...mcpConnectors, ...openApiConnectors]
         .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))

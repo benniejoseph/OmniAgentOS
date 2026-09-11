@@ -10,6 +10,103 @@ beforeAll(async () => {
 });
 
 describe("operation job queue (file mode)", () => {
+  it("redacts actor-private semantic enrichment details from status projections", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const projected = queue.projectOperationJobStatus({
+      id: "semantic-private",
+      tenantId: "tenant-semantic-private",
+      type: "conversation.summary.enrich",
+      status: "failed",
+      payload: {
+        actorId: "private-actor",
+        progress: {
+          stage: "completed",
+          outcome: "enriched",
+          statementCount: 7,
+          sourceTurnCount: 12,
+          privateProgress: "do-not-expose",
+        },
+        result: {
+          status: "enriched",
+          enrichmentId: "private-enrichment-id",
+          sourceSha256: "private-source-hash",
+          reason: "private supersession reason",
+          statementCount: 7,
+          sourceTurnCount: 12,
+        },
+      },
+      priority: 0,
+      attempt: 1,
+      maxAttempts: 3,
+      runAt: "2026-09-11T00:00:00.000Z",
+      lastError: "provider returned private source content",
+      createdAt: "2026-09-11T00:00:00.000Z",
+      updatedAt: "2026-09-11T00:01:00.000Z",
+    });
+
+    expect(projected.progress).toEqual({
+      stage: "completed",
+      shadowOnly: true,
+      outcome: "enriched",
+      statementCount: 7,
+      sourceTurnCount: 12,
+    });
+    expect(projected.result).toEqual({
+      shadowOnly: true,
+      rankingEffect: "none",
+      outcome: "enriched",
+      statementCount: 7,
+      sourceTurnCount: 12,
+    });
+    expect(projected.lastError).toBe(
+      "Semantic summary enrichment did not complete.",
+    );
+    expect(JSON.stringify(projected)).not.toContain("private-enrichment-id");
+    expect(JSON.stringify(projected)).not.toContain("private-source-hash");
+    expect(JSON.stringify(projected)).not.toContain("private supersession reason");
+    expect(JSON.stringify(projected)).not.toContain("provider returned private source content");
+  });
+
+  it("keeps actor-private semantic jobs out of tenant-wide latest surfaces", async () => {
+    const queue = await import("@/lib/operations/job-queue");
+    const tenantId = "tenant-semantic-latest-private";
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-09-11T00:00:00.000Z"));
+      const visible = await queue.enqueueOperationJob({
+        tenantId,
+        type: "workflow.tick",
+        payload: { workflowRunId: "visible-workflow" },
+      });
+      vi.setSystemTime(new Date("2026-09-11T00:01:00.000Z"));
+      for (let index = 0; index < 6; index += 1) {
+        await queue.enqueueOperationJob({
+          tenantId,
+          type: "conversation.summary.enrich",
+          payload: {
+            actorId: `private-actor-${index}`,
+            result: { sourceSha256: `private-hash-${index}` },
+          },
+        });
+      }
+
+      await expect(
+        queue.listTenantWideOperationJobs(5, { tenantId }),
+      ).resolves.toEqual([
+        expect.objectContaining({ id: visible.id, type: "workflow.tick" }),
+      ]);
+      const stats = await queue.getOperationJobStats({ tenantId });
+      expect(stats.total).toBe(7);
+      expect(stats.byStatus.queued).toBe(7);
+      expect(stats.latest).toEqual([
+        expect.objectContaining({ id: visible.id, type: "workflow.tick" }),
+      ]);
+      expect(JSON.stringify(stats)).not.toContain("private-hash");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("enqueues, leases, and completes a job", async () => {
     const queue = await import("@/lib/operations/job-queue");
     const job = await queue.enqueueOperationJob({
