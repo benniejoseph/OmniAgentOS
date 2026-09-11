@@ -10,12 +10,14 @@ import {
   MARKET_RESEARCH_CONTRACT_VERSION,
   marketBarsQuerySchema,
   marketEventBackfillRequestSchema,
+  marketEventBaselinesQuerySchema,
   marketEventReplayRequestSchema,
   marketEventReplaysQuerySchema,
   marketEventsQuerySchema,
   marketResearchOverviewSchema,
   marketTechnicalFeaturesQuerySchema,
 } from "@/lib/market-research/contracts";
+import { buildMarketEventBaselines } from "@/lib/market-research/event-baselines";
 import { listMarketEvents } from "@/lib/market-research/event-store";
 import { listMarketEventReplays } from "@/lib/market-research/event-replay-store";
 import { enqueueMarketEventBackfillJob } from "@/lib/market-research/event-jobs";
@@ -290,6 +292,31 @@ export async function listMarketResearchReplaysService(
   return completeAppServiceCall(authorized, result, {
     resourceCount: result.replays.length,
     occurredAt: result.lastReplayedAt || new Date().toISOString(),
+  });
+}
+
+export async function showMarketResearchBaselinesService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketEventBaselinesQuerySchema>,
+) {
+  const value = marketEventBaselinesQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.baselines.show"),
+  );
+  const replayResult = await listMarketEventReplays({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    instrumentId: value.instrumentId,
+    limit: 500,
+  });
+  const result = buildMarketEventBaselines({
+    ...value,
+    replays: replayResult.replays,
+  });
+  return completeAppServiceCall(authorized, result, {
+    resourceCount: result.groups.length,
+    occurredAt: replayResult.lastReplayedAt || new Date().toISOString(),
   });
 }
 

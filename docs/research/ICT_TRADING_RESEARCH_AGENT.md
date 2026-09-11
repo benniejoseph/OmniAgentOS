@@ -1,6 +1,6 @@
 # ICT Trading Research Agent
 
-**Status:** Stage 0 foundation, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, and deterministic technical primitives implemented; transcript ontology, transcript-authoritative ICT rules, comparable-event calibration, and forward-shadow execution remain pending
+**Status:** Stage 0 foundation, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, deterministic technical primitives, and descriptive comparable-event baselines implemented; transcript ontology, transcript-authoritative ICT rules, calibrated prediction, and forward-shadow execution remain pending
 **Research date:** 2026-09-10; implementation activated 2026-09-11
 **Initial instruments:** Nasdaq-100 exposure and gold exposure
 
@@ -13,6 +13,8 @@ The private `/app/markets` workspace, canonical instrument registry, provider-re
 The current UI exposes four progressively loaded views: Research desk, News impact lab, ICT + Quarterly, and Forecast journal. The chart library is loaded only when verified bars exist, and its data label exposes the shortened snapshot digest plus whether the server created or reused the snapshot. The News Impact Lab can enqueue and track owner-private background imports for official event history and exact XAU/USD price windows. Reviewed BLS, Census, BEA, and Federal Reserve schedules supply exact release times; initial-release FRED observations retain the values available at the historical release. Every replay stores its bounded raw provider response, normalized bars, exact event coordinate, content digests, and deterministic post-event measurements.
 
 The ICT + Quarterly view now runs `market-technical-primitives:1` against one caller-owned immutable snapshot. It reports New-York-time 90-minute/session context, only those calendar opens whose boundary exists inside the snapshot, range position, five-bar swings, three-bar price gaps, range-relative displacement, and 20-bar boundary sweeps. The formulas and output digest are visible. These are neutral reproducible foundations and deliberately claim no transcript authority; order blocks, market-structure shifts, inversions, and other ICT-specific semantics remain unavailable until the user's transcript evidence and reviewed definitions exist.
+
+The News Impact Lab also derives a digest-bound `market-event-baseline:1` projection from the caller's replay cohort. Each exact release family reports its sample size, empirical direction split, 5/15/60/240-minute return distribution, and favorable/adverse excursion medians. A configurable minimum sample distinguishes low-sample rows from a usable descriptive baseline. This is not probability calibration: no historical frequency is presented as a prediction, and the baseline cannot condition on consensus surprise, macro regime, or transcript-reviewed technical context until those inputs exist.
 
 Trading Economics is no longer a dependency. The free-source path uses FRED/ALFRED for durable release history and vintages plus the official BLS calendar for upcoming BLS schedules. Free official sources do not provide a complete historical economist-consensus archive, so that field remains nullable. Scraping an unlicensed commercial calendar is not part of the trusted pipeline.
 

@@ -167,6 +167,31 @@
 .pipeline article small { color: var(--muted); font-size: .57rem; line-height: 1.4; }
 .pipeline article svg { position: absolute; top: 50%; right: .5rem; color: var(--line-strong); transform: translateY(-50%); }
 .pipeline article:last-child svg { display: none; }
+.baselinePanel { margin-top: 1rem; overflow: hidden; border: 1px solid var(--line); border-radius: 1.2rem; background: oklch(from var(--surface) l c h / .82); }
+.baselinePanel > header { display: flex; min-height: 4.5rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: .8rem 1rem; }
+.baselinePanel > header div { display: grid; gap: .15rem; }
+.baselinePanel > header strong { font-size: .76rem; }
+.baselinePanel > header span, .baselinePanel > header small { color: var(--muted); font-size: .61rem; }
+.baselineGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.baselineGrid > article { display: grid; min-width: 0; min-height: 13rem; align-content: start; gap: .75rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 1rem; }
+.baselineGrid > article:nth-child(4n) { border-right: 0; }
+.baselineTitle { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; }
+.baselineTitle span { min-width: 0; }
+.baselineTitle strong, .baselineTitle small { display: block; }
+.baselineTitle strong { font-size: .72rem; }
+.baselineTitle small { margin-top: .15rem; overflow: hidden; color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .52rem; text-overflow: ellipsis; }
+.baselineTitle em { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; padding: .25rem .45rem; color: var(--warning); font-size: .52rem; font-style: normal; font-weight: 730; }
+.baselineGrid > article[data-ready="true"] .baselineTitle em { color: var(--success); }
+.directionBar { display: flex; width: 100%; height: .42rem; overflow: hidden; border-radius: 999px; background: var(--line); }
+.directionBar i { height: 100%; background: var(--success); }
+.directionBar b { height: 100%; background: var(--danger); }
+.baselineStats { display: grid; gap: .45rem; }
+.baselineStats span { display: flex; align-items: baseline; justify-content: space-between; gap: .6rem; }
+.baselineStats small { color: var(--muted); font-size: .56rem; }
+.baselineStats strong { text-align: right; font-size: .61rem; }
+.baselineGrid article > p { margin-top: auto; color: var(--muted); font-size: .58rem; line-height: 1.5; }
+.baselinePanel > footer { border-top: 1px solid var(--line); padding: .8rem 1rem; color: var(--muted); background: var(--surface-raised); font-size: .58rem; line-height: 1.5; }
+.baselineEmpty { display: grid; min-height: 8rem; place-items: center; padding: 1.5rem; color: var(--muted); font-size: .67rem; text-align: center; }
 .eventTable { margin-top: 1rem; overflow: hidden; border: 1px solid var(--line); border-radius: 1.2rem 1.2rem 2.7rem 1.2rem; background: oklch(from var(--surface) l c h / .82); }
 .eventTable > header, .scoreFrame > header { display: flex; min-height: 4rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: 0 1rem; }
 .eventTable > header span, .scoreFrame > header span { font-size: .72rem; font-weight: 760; }
@@ -295,6 +320,9 @@
   .technicalSummary article:nth-child(2), .referenceStrip article:nth-child(2) { border-right: 0; }
   .technicalSummary article:nth-child(-n+2), .referenceStrip article:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .technicalPanels { grid-template-columns: minmax(0, 1fr); }
+  .baselineGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .baselineGrid > article:nth-child(4n) { border-right: 1px solid var(--line); }
+  .baselineGrid > article:nth-child(2n) { border-right: 0; }
 }
 
 @media (max-width: 58rem) {
@@ -324,6 +352,7 @@
   .eventRows article > span:nth-child(4), .eventRows article > span:nth-child(5) { grid-column: 1 / 2; }
   .detectionRows article { grid-template-columns: auto minmax(0, 1fr) auto; }
   .detectionRows article > span:last-child { grid-column: 2 / -1; }
+  .baselinePanel > header { align-items: flex-start; flex-direction: column; }
 }
 
 @media (max-width: 42rem) {
@@ -353,6 +382,8 @@
   .technicalReceipt { align-items: flex-start; flex-direction: column; }
   .detectionRows article { grid-template-columns: auto minmax(0, 1fr); }
   .detectionRows time, .detectionRows article > span:last-child { grid-column: 2; }
+  .baselineGrid { grid-template-columns: minmax(0, 1fr); }
+  .baselineGrid > article, .baselineGrid > article:nth-child(2n), .baselineGrid > article:nth-child(4n) { border-right: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

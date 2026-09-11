@@ -26,6 +26,7 @@ import { PriceChart } from "@/components/market-research/price-chart";
 import {
   MARKET_INTERVALS,
   type MarketBarsResult,
+  type MarketEventBaselinesResult,
   type MarketEventsResult,
   type MarketEventReplaysResult,
   type MarketInstrument,
@@ -60,6 +61,7 @@ export function MarketResearchWorkspace() {
   const [bars, setBars] = useState<MarketBarsResult>();
   const [events, setEvents] = useState<MarketEventsResult>();
   const [replays, setReplays] = useState<MarketEventReplaysResult>();
+  const [baselines, setBaselines] = useState<MarketEventBaselinesResult>();
   const [backfillJob, setBackfillJob] = useState<MarketBackfillJob>();
   const [replayJob, setReplayJob] = useState<MarketBackfillJob>();
   const [features, setFeatures] = useState<MarketTechnicalFeaturesResult>();
@@ -71,6 +73,8 @@ export function MarketResearchWorkspace() {
   const [eventsError, setEventsError] = useState<string>();
   const [replaysLoading, setReplaysLoading] = useState(false);
   const [replayError, setReplayError] = useState<string>();
+  const [baselinesLoading, setBaselinesLoading] = useState(false);
+  const [baselinesError, setBaselinesError] = useState<string>();
   const [featuresLoading, setFeaturesLoading] = useState(false);
   const [featuresError, setFeaturesError] = useState<string>();
 
@@ -211,6 +215,33 @@ export function MarketResearchWorkspace() {
     }
   }, []);
 
+  const loadBaselines = useCallback(async (
+    instrumentId: MarketInstrumentId,
+    signal?: AbortSignal,
+  ) => {
+    setBaselinesLoading(true);
+    setBaselinesError(undefined);
+    try {
+      const query = new URLSearchParams({
+        instrumentId,
+        minimumSampleSize: "20",
+      });
+      const response = await fetch(`/api/market-research/baselines?${query}`, {
+        cache: "no-store",
+        signal,
+      });
+      const payload = await response.json() as MarketEventBaselinesResult & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Comparable-event baselines could not load.");
+      setBaselines(payload);
+    } catch (loadError) {
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      setBaselines(undefined);
+      setBaselinesError(loadError instanceof Error ? loadError.message : "Comparable-event baselines could not load.");
+    } finally {
+      if (!signal?.aborted) setBaselinesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab !== "events" || events) return;
     const controller = new AbortController();
@@ -225,14 +256,17 @@ export function MarketResearchWorkspace() {
     if (activeTab !== "events") return;
     const controller = new AbortController();
     const timer = window.setTimeout(
-      () => void loadReplays(selectedId, controller.signal),
+      () => void Promise.all([
+        loadReplays(selectedId, controller.signal),
+        loadBaselines(selectedId, controller.signal),
+      ]),
       0,
     );
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [activeTab, loadReplays, selectedId]);
+  }, [activeTab, loadBaselines, loadReplays, selectedId]);
 
   const startEventBackfill = useCallback(async () => {
     setEventsError(undefined);
@@ -327,7 +361,10 @@ export function MarketResearchWorkspace() {
         if (!response.ok || !payload.job) throw new Error(payload.error || "Replay progress is unavailable.");
         setReplayJob(payload.job);
         if (payload.job.status === "completed") {
-          await loadReplays(selectedId, controller.signal);
+          await Promise.all([
+            loadReplays(selectedId, controller.signal),
+            loadBaselines(selectedId, controller.signal),
+          ]);
         } else if (payload.job.status === "failed") {
           setReplayError(payload.job.lastError || "Market replay backfill did not complete.");
         }
@@ -340,7 +377,7 @@ export function MarketResearchWorkspace() {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [loadReplays, replayJob, selectedId]);
+  }, [loadBaselines, loadReplays, replayJob, selectedId]);
 
   useEffect(() => {
     if (!selected) return;
@@ -451,8 +488,11 @@ export function MarketResearchWorkspace() {
               error={eventsError}
               backfillJob={backfillJob}
               replays={replays}
+              baselines={baselines}
               replaysLoading={replaysLoading}
+              baselinesLoading={baselinesLoading}
               replayError={replayError}
+              baselinesError={baselinesError}
               replayJob={replayJob}
               onBackfill={startEventBackfill}
               onReplayBackfill={startReplayBackfill}
@@ -601,8 +641,11 @@ function NewsImpactLab({
   error,
   backfillJob,
   replays,
+  baselines,
   replaysLoading,
+  baselinesLoading,
   replayError,
+  baselinesError,
   replayJob,
   onBackfill,
   onReplayBackfill,
@@ -614,8 +657,11 @@ function NewsImpactLab({
   error?: string;
   backfillJob?: MarketBackfillJob;
   replays?: MarketEventReplaysResult;
+  baselines?: MarketEventBaselinesResult;
   replaysLoading: boolean;
+  baselinesLoading: boolean;
   replayError?: string;
+  baselinesError?: string;
   replayJob?: MarketBackfillJob;
   onBackfill: () => void;
   onReplayBackfill: () => void;
@@ -656,6 +702,37 @@ function NewsImpactLab({
           ["05", "Calibrate", "Comparable-event outcomes"],
         ].map(([number, title, detail]) => <article key={number}><span>{number}</span><strong>{title}</strong><small>{detail}</small><ChevronRight size={15} /></article>)}
       </div>
+
+      <section className={styles.baselinePanel}>
+        <header>
+          <div><strong>Comparable-event baseline</strong><span>Historical outcomes grouped by exact release family</span></div>
+          <small>{baselines ? `${baselines.includedReplays} immutable windows · gate ${baselines.minimumSampleSize}/event` : "Descriptive only"}</small>
+        </header>
+        {baselinesError ? <div className={styles.tableNotice} role="alert"><AlertTriangle size={17} /><span>{baselinesError}</span></div> : null}
+        {baselinesLoading ? <div className={styles.replayLoading}><RefreshCw className={styles.spin} size={13} /> Computing deterministic distributions…</div> : null}
+        {baselines?.groups.length ? <div className={styles.baselineGrid}>
+          {baselines.groups.map((baseline) => (
+            <article key={baseline.eventKey} data-ready={baseline.state === "descriptive_baseline"}>
+              <div className={styles.baselineTitle}>
+                <span><strong>{eventKeyLabel(baseline.eventKey)}</strong><small>{baseline.eventKey}</small></span>
+                <em>{baseline.sampleSize} events</em>
+              </div>
+              <div className={styles.directionBar} aria-label={`${Math.round(baseline.empiricalRates.up * 100)} percent up, ${Math.round(baseline.empiricalRates.down * 100)} percent down`}>
+                <i style={{ width: `${baseline.empiricalRates.up * 100}%` }} />
+                <b style={{ width: `${baseline.empiricalRates.down * 100}%` }} />
+              </div>
+              <div className={styles.baselineStats}>
+                <span><small>60m median</small><strong>{baseline.post60m.medianBps === null ? "—" : formatSignedBps(baseline.post60m.medianBps)}</strong></span>
+                <span><small>Middle 50%</small><strong>{formatBaselineRange(baseline.post60m.lowerQuartileBps, baseline.post60m.upperQuartileBps)}</strong></span>
+                <span><small>Observed split</small><strong>{Math.round(baseline.empiricalRates.up * 100)}% up · {Math.round(baseline.empiricalRates.down * 100)}% down</strong></span>
+              </div>
+              <p>{baseline.state === "descriptive_baseline" ? "Descriptive sample gate reached; not a forecast probability." : `${baselines.minimumSampleSize - baseline.sampleSize} more windows needed for the descriptive gate.`}</p>
+            </article>
+          ))}
+        </div> : !baselinesLoading ? <div className={styles.baselineEmpty}>Build immutable event windows to populate comparable release families.</div> : null}
+        <footer>These are outcome distributions, not calibrated predictions. They do not condition on surprise, macro regime, session structure, or transcript-reviewed ICT context.</footer>
+      </section>
+
       <div className={styles.eventTable}>
         <header><span>Historical high-impact releases</span><small>{events?.total ? `${events.total} official dates · ${replays?.replayedEvents || 0}/${replays?.eligibleEvents || 0} ${instrument.shortLabel} windows` : "FRED/ALFRED · owner-private · asynchronous"}</small></header>
         <div className={styles.tableHead}><span>Release</span><span>Date</span><span>Precision</span><span>Values</span><span>Observed move</span><span>Source</span></div>
@@ -703,6 +780,25 @@ function numberProgress(value: unknown) {
 
 function formatSignedBps(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(1)} bps`;
+}
+
+function formatBaselineRange(lower: number | null, upper: number | null) {
+  if (lower === null || upper === null) return "—";
+  return `${formatSignedBps(lower)} to ${formatSignedBps(upper)}`;
+}
+
+function eventKeyLabel(eventKey: string) {
+  const labels: Record<string, string> = {
+    "us.cpi": "Consumer prices",
+    "us.ppi": "Producer prices",
+    "us.employment_situation": "Employment",
+    "us.jolts": "JOLTS",
+    "us.retail_sales": "Retail sales",
+    "us.gdp": "GDP",
+    "us.personal_income_outlays": "Income & outlays",
+    "us.fomc": "FOMC decision",
+  };
+  return labels[eventKey] || eventKey;
 }
 
 function scheduleSourceLabel(source: MarketEventsResult["events"][number]["scheduleSource"]) {
