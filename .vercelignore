@@ -5,9 +5,22 @@ node_modules
 !.env.example
 .omniagent
 coverage
+playwright-report
+test-results
 screenshots
+backups
+artifacts
 apps/flutter
 .design
+out
+build
+supabase/.temp
+*.tsbuildinfo
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
 # Include locally staged, licensed TradingView assets in authorized deployments.
 !public/vendor/tradingview/**
