@@ -30,6 +30,7 @@ import { contentSha256Hex } from "@/lib/sources/text-lineage";
 import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import {
+  getCurrentSemanticEnrichment,
   listCurrentSemanticEnrichments,
   readOwnedSemanticEpisodeSource,
   saveSemanticEnrichmentFromWorker,
@@ -96,6 +97,16 @@ describe("semantic conversation summary store", () => {
       executionScope: workerScope(),
     });
     expect(second).toEqual(first);
+    expect(await getCurrentSemanticEnrichment({
+      tenantId,
+      actorId,
+      enrichmentId: contract.enrichmentId,
+    })).toEqual(first);
+    expect(await getCurrentSemanticEnrichment({
+      tenantId,
+      actorId: "actor:someone-else",
+      enrichmentId: contract.enrichmentId,
+    })).toBeUndefined();
     expect(await listCurrentSemanticEnrichments({
       tenantId,
       actorId,
@@ -192,6 +203,11 @@ describe("semantic conversation summary store", () => {
     await expect(saveSemanticEnrichmentFromWorker(contract, {
       executionScope: workerScope(),
     })).rejects.toBeInstanceOf(SemanticSummaryStaleSourceError);
+    expect(await getCurrentSemanticEnrichment({
+      tenantId,
+      actorId,
+      enrichmentId: contract.enrichmentId,
+    })).toBeUndefined();
     expect(await listCurrentSemanticEnrichments({
       tenantId,
       actorId,
@@ -320,6 +336,9 @@ describe("semantic conversation summary store", () => {
       if (text.includes("INSERT INTO omni_conversation_summary_enrichments")) {
         return [insertedRow];
       }
+      if (text.includes("FROM omni_conversation_summary_enrichments")) {
+        return [insertedRow];
+      }
       throw new Error(`Unexpected SQL: ${text}`);
     });
 
@@ -339,6 +358,44 @@ describe("semantic conversation summary store", () => {
       }),
       { sql },
     );
+    expect(await getCurrentSemanticEnrichment({
+      tenantId,
+      actorId,
+      enrichmentId: contract.enrichmentId,
+    }, { sql: sql as never })).toEqual(saved);
+  });
+
+  it("returns undefined when a PostgreSQL record no longer matches exact turn evidence", async () => {
+    const fixture = await seedThreadLedger();
+    const contract = enrichmentContract(fixture.episode, fixture.turns);
+    const storedRow = enrichmentRow(
+      contract,
+      fixture.episode,
+      "2026-09-11T05:29:00.000Z",
+    );
+    const changedTurns = fixture.turns.map((turn, index) =>
+      index === 1
+        ? { ...turn, content: "Apollo moved away from Friday." }
+        : turn
+    );
+    const sql = fakeSql((text) => {
+      if (text.includes("FROM omni_conversation_summary_enrichments")) {
+        return [storedRow];
+      }
+      if (text.includes("FROM omni_conversation_summaries summary")) {
+        return [summaryRow(fixture.episode)];
+      }
+      if (text.includes("FROM omni_thread_turns turn")) {
+        return changedTurns.map(turnRow);
+      }
+      throw new Error(`Unexpected SQL: ${text}`);
+    });
+
+    await expect(getCurrentSemanticEnrichment({
+      tenantId,
+      actorId,
+      enrichmentId: contract.enrichmentId,
+    }, { sql: sql as never })).resolves.toBeUndefined();
   });
 
   it("resolves a PostgreSQL retry only when the stored contract is identical", async () => {
@@ -375,6 +432,7 @@ describe("semantic conversation summary store", () => {
       contract,
       createdAt: "2026-09-11T05:29:00.000Z",
     });
+    expect(mocks.appendScopedDomainEvent).not.toHaveBeenCalled();
   });
 });
 

@@ -131,6 +131,84 @@ export async function readOwnedSemanticEpisodeSource(
 }
 
 /**
+ * Reads one immutable enrichment only while its complete episode source is
+ * still current. File fallback removes only the exact stale target record.
+ */
+export async function getCurrentSemanticEnrichment(
+  input: {
+    tenantId: string;
+    actorId: string;
+    enrichmentId: string;
+  },
+  options: SqlOptions = {},
+): Promise<SemanticSummaryEnrichmentRecord | undefined> {
+  const tenantId = requiredId(input.tenantId, "tenant id");
+  const actorId = requiredId(input.actorId, "actor id");
+  const enrichmentId = requiredId(input.enrichmentId, "enrichment id");
+
+  if (options.sql || hasDatabaseUrl()) {
+    if (!options.sql) await ensureDatabaseSchema();
+    const operation = async (sql: SemanticSummarySql) => {
+      const rows = await sql`
+        SELECT *
+        FROM omni_conversation_summary_enrichments
+        WHERE tenant_id = ${tenantId}
+          AND id = ${enrichmentId}
+          AND owner_actor_id = ${actorId}
+        LIMIT 1
+      `;
+      if (!rows[0]) return undefined;
+      const record = recordFromRow(rows[0]);
+      const source = await readOwnedEpisodeSourceSql(sql, {
+        tenantId,
+        actorId,
+        episodeSummaryId: record.contract.episodeSummaryId,
+      }, false);
+      return source && recordMatchesCurrentSource(record, source)
+        ? record
+        : undefined;
+    };
+    if (options.sql) return operation(options.sql);
+    return runWithDatabaseActorScope(
+      tenantId,
+      [actorId],
+      () => operation(getSql()),
+    );
+  }
+
+  return withJsonFileLock(threadLedgerFile(), async () => {
+    const threadLedger = await readJsonFile<ThreadLedger>(
+      threadLedgerFile(),
+      emptyThreadLedger,
+    );
+    let current: SemanticSummaryEnrichmentRecord | undefined;
+    await updateJsonFile<SemanticSummaryEnrichmentLedger>(
+      enrichmentLedgerFile(),
+      emptyEnrichmentLedger,
+      (ledger) => {
+        const records = ledger.records.map(parseFileRecord);
+        const index = records.findIndex((record) =>
+          record.contract.tenantId === tenantId &&
+          record.contract.ownerActorId === actorId &&
+          record.contract.enrichmentId === enrichmentId
+        );
+        if (index < 0) return ledger;
+        const target = records[index];
+        if (fileRecordIsCurrent(target, threadLedger)) {
+          current = target;
+          return ledger;
+        }
+        return {
+          schemaVersion: 1,
+          records: records.filter((_, recordIndex) => recordIndex !== index),
+        };
+      },
+    );
+    return current;
+  });
+}
+
+/**
  * Commits a generated shadow contract only from the governed background
  * worker. The current parent and exact turn bodies are revalidated at commit.
  */
@@ -360,6 +438,7 @@ async function saveSemanticEnrichmentSql(
     ON CONFLICT DO NOTHING
     RETURNING *
   `;
+  const created = Boolean(inserted[0]);
   let record = inserted[0] ? recordFromRow(inserted[0]) : undefined;
   if (!record) {
     const existing = await sql`
@@ -394,7 +473,7 @@ async function saveSemanticEnrichmentSql(
     }
   }
   assertContractMatchesCurrentSource(record.contract, source);
-  await appendSemanticEnrichedEvent(sql, scope, record);
+  if (created) await appendSemanticEnrichedEvent(sql, scope, record);
   return record;
 }
 
