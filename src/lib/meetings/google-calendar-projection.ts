@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { ensureDatabaseSchema, getSql } from "@/lib/db/client";
 import type { MeetingParticipant, MeetingRevision } from "@/lib/meetings/contracts";
 import {
   findMeetingBySourceItemId,
@@ -44,7 +45,7 @@ export async function projectGoogleCalendarMeeting(
     sourceRevisionId: string;
   }>,
 ) {
-  const authority = calendarAuthority(input);
+  const authority = await calendarAuthority(input);
   const existing = await findMeetingBySourceItemId(authority, input.sourceItemId);
   const start = calendarTimestamp(input.event.start, "start");
   const end = calendarTimestamp(input.event.end, "end");
@@ -99,7 +100,7 @@ export async function projectGoogleCalendarMeeting(
 }
 
 export async function cancelGoogleCalendarMeeting(input: CalendarProjectionBase) {
-  const authority = calendarAuthority(input);
+  const authority = await calendarAuthority(input);
   const existing = await findMeetingBySourceItemId(authority, input.sourceItemId);
   if (!existing || existing.status === "cancelled") return existing;
   return saveMeeting({
@@ -135,15 +136,16 @@ export async function cancelGoogleCalendarMeeting(input: CalendarProjectionBase)
   });
 }
 
-function calendarAuthority(
+async function calendarAuthority(
   input: CalendarProjectionBase & Partial<Readonly<{ sourceRevisionId: string }>>,
-): MeetingMutationAuthority {
-  const workspaceId = personalWorkspaceId(input.actorId);
+): Promise<MeetingMutationAuthority> {
+  const actor = await resolveCalendarActor(input.tenantId, input.actorId);
+  const workspaceId = personalWorkspaceId(actor.canonicalActorId);
   return {
     tenantId: input.tenantId,
     workspaceId,
-    canonicalActorId: input.actorId,
-    readableActorIds: [input.actorId],
+    canonicalActorId: actor.canonicalActorId,
+    readableActorIds: actor.readableActorIds,
     idempotencyKey: `google-calendar-meeting:${digest({
       sourceItemId: input.sourceItemId,
       providerRevisionId: input.providerRevisionId,
@@ -151,7 +153,7 @@ function calendarAuthority(
     })}`,
     executionScope: createExecutionScope({
       tenantId: input.tenantId,
-      initiatingActorId: input.actorId,
+      initiatingActorId: actor.canonicalActorId,
       executingPrincipalType: "system",
       executingPrincipalId: "connector.google.calendar_projection",
       workspaceId,
@@ -161,6 +163,34 @@ function calendarAuthority(
       capabilityGrantIds: input.sourceExecutionScope.capabilityGrantIds,
       purpose: "connector.google.calendar.project_meeting",
     }),
+  };
+}
+
+async function resolveCalendarActor(tenantId: string, actorId: string) {
+  if (/^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(actorId)) {
+    return {
+      canonicalActorId: actorId,
+      readableActorIds: [actorId],
+    };
+  }
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT auth_user.actor_id
+    FROM omni_auth_users auth_user
+    JOIN omni_auth_memberships membership
+      ON membership.user_id = auth_user.id
+    WHERE membership.tenant_id = ${tenantId}
+      AND LOWER(auth_user.email) = LOWER(${actorId})
+      AND auth_user.status = 'active'
+    LIMIT 1
+  `;
+  const canonicalActorId = String(rows[0]?.actor_id || "");
+  if (!/^actor:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(canonicalActorId)) {
+    throw new Error("Google Calendar owner is not bound to an active canonical user.");
+  }
+  return {
+    canonicalActorId,
+    readableActorIds: [canonicalActorId, actorId],
   };
 }
 
