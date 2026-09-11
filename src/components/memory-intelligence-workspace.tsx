@@ -1304,6 +1304,7 @@ function MemoryQualityMetrics(props: {
   const extraction = quality?.evidenceSupportedExtraction;
   const reviews = quality?.reviewAcceptance;
   const retrieval = quality?.retrievalUsefulness;
+  const outcomes = quality?.retrievalOutcomeUtility;
   const graph = quality?.graphLag;
   return (
     <section className={styles.qualityMetrics} aria-label="Memory quality signals">
@@ -1321,6 +1322,11 @@ function MemoryQualityMetrics(props: {
         <span>Observed recall use</span>
         <strong>{percentageOrPending(retrieval?.usedActiveDurableMemoryRate)}</strong>
         <small>{retrieval ? `${retrieval.observedUseCount.toLocaleString()} uses · observational only` : "Loading recall samples"}</small>
+      </article>
+      <article>
+        <span>Rated context outcomes</span>
+        <strong>{percentageOrPending(outcomes?.usefulRate)}</strong>
+        <small>{outcomes ? `${outcomes.usefulCount} of ${outcomes.contextLinkedRatedRunCount} explicitly rated runs · shadow only, does not tune ranking` : "Loading rated outcomes"}</small>
       </article>
       <article>
         <span>Graph freshness</span>
