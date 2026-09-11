@@ -357,9 +357,12 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
       setAnnouncement("Google Calendar and Meetings are synchronized.");
       await load();
     } catch (syncError) {
-      setCalendarSyncMessage(silent
-        ? "Automatic Calendar sync is unavailable. Check the Google connection in Integrations."
-        : message(syncError));
+      const syncMessage = message(syncError);
+      setCalendarSyncMessage(syncMessage.toLowerCase().includes("already running")
+        ? "Calendar sync is already running in the background."
+        : silent
+          ? "Automatic Calendar sync is unavailable. Check the Google connection in Integrations."
+          : syncMessage);
     } finally {
       calendarSyncingRef.current = false;
       setCalendarSyncing(false);
