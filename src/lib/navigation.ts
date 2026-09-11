@@ -94,10 +94,10 @@ export const appNav: AppNavItem[] = [
     icon: Activity,
   },
   {
-    href: "/app/missions",
-    label: "Missions",
-    shortLabel: "Missions",
-    description: "Durable outcomes, delegated work, and evidence.",
+    href: "/app/projects",
+    label: "Projects",
+    shortLabel: "Projects",
+    description: "Plan, execute, review, and verify durable work.",
     icon: FolderKanban,
   },
   {
@@ -175,7 +175,7 @@ export const appNav: AppNavItem[] = [
 
 // The five-item everyday loop stays reachable on mobile. Everything else is
 // progressively disclosed by the kind of work it supports.
-export const primaryNavHrefs = ["/app", "/app/command", "/app/capture", "/app/missions", "/app/memory"];
+export const primaryNavHrefs = ["/app", "/app/command", "/app/capture", "/app/projects", "/app/memory"];
 export const primaryNavItems = primaryNavHrefs.map((href) => {
   const item = appNav.find((entry) => entry.href === href);
   if (!item) throw new Error(`Missing primary navigation item for ${href}`);

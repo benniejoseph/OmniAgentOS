@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { MissionWorkspace } from "@/components/missions/mission-workspace";
 import { createAppServiceCaller } from "@/lib/app-services/contracts";
 import {
@@ -12,7 +13,13 @@ import { listStreamEvents } from "@/lib/events/store";
 
 export const metadata: Metadata = { title: "Missions" };
 
-export default async function MissionsPage() {
+export default async function MissionsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const query = await searchParams;
+  if (query.legacy !== "1") redirect("/app/projects?view=execution");
   const initial = await loadMissionWorkspace();
   return <MissionWorkspace {...initial} />;
 }

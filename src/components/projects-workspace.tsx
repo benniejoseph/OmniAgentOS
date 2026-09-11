@@ -149,7 +149,7 @@ type WorkspaceTemplate = {
   };
 };
 
-export function ProjectsWorkspace() {
+export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: "overview" | "execution" }) {
   const { session, status: sessionStatus } = useWorkspaceSession();
   const [projects, setProjects] = useState<Project[]>([]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
@@ -182,6 +182,7 @@ export function ProjectsWorkspace() {
   }>();
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Projects are ready.");
+  const [workspaceView, setWorkspaceView] = useState<"overview" | "execution">(initialView);
   const controllerRef = useRef<AbortController | null>(null);
   const templateMutationKeysRef = useRef(new Map<string, string>());
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
@@ -512,6 +513,12 @@ export function ProjectsWorkspace() {
         <div><strong>{allTasks.length ? `${Math.round(closedTasks / allTasks.length * 100)}%` : "—"}</strong><span>work closed</span></div>
       </div>
 
+      <nav className="projects-view-tabs" aria-label="Project workspace views">
+        <button type="button" className={workspaceView === "overview" ? "is-selected" : undefined} aria-current={workspaceView === "overview" ? "page" : undefined} onClick={() => setWorkspaceView("overview")}><FolderKanban size={14} aria-hidden="true" /><span><strong>Plan & context</strong><small>Tasks, outputs, library, and memory</small></span></button>
+        <button type="button" className={workspaceView === "execution" ? "is-selected" : undefined} aria-current={workspaceView === "execution" ? "page" : undefined} onClick={() => setWorkspaceView("execution")}><Bot size={14} aria-hidden="true" /><span><strong>Execution</strong><small>Agent lanes, approvals, and blockers</small></span></button>
+        <Link href="/app/missions?legacy=1"><History size={14} aria-hidden="true" /><span><strong>Legacy history</strong><small>Earlier Mission runs</small></span></Link>
+      </nav>
+
       {showTemplates ? <section className="projects-template-deck" aria-label="Workspace templates">
         <div className="projects-template-heading">
           <div><p className="projects-kicker">Versioned workspace library</p><h2>Templates & deterministic playbooks</h2><p>Each published version is immutable. New projects receive a copy, so later template changes never rewrite active work.</p></div>
@@ -577,7 +584,7 @@ export function ProjectsWorkspace() {
               {selected.status !== "archived" ? <button type="button" onClick={() => void transitionProject("archived")} disabled={actingId === selected.id}><Archive size={14} aria-hidden="true" /> Archive</button> : null}
             </div>
 
-            <section className={clsx("project-execution-deck", `is-${selected.executionStatus}`)} aria-label="Autonomous project execution">
+            {workspaceView === "execution" ? <section className={clsx("project-execution-deck", `is-${selected.executionStatus}`)} aria-label="Autonomous project execution">
               <div className="project-execution-intro">
                 <span className="project-execution-icon"><Bot size={18} aria-hidden="true" /></span>
                 <div><p className="projects-kicker">Agent execution</p><h3>{executionTitle(selected.executionStatus)}</h3><p>{executionDescription(selected.executionStatus, autonomyMode)}</p></div>
@@ -598,11 +605,11 @@ export function ProjectsWorkspace() {
                   <button type="button" onClick={() => void executeProject("sync")} disabled={Boolean(executionBusy)} aria-label="Synchronize workflow progress"><RotateCw size={14} className={executionBusy === "sync" ? "animate-spin" : undefined} aria-hidden="true" /></button>
                 </div>
               </div>
-            </section>
+            </section> : null}
 
             {planRationale ? <div className="project-plan-note"><Sparkles size={15} aria-hidden="true" /><div><strong>Atlas added a plan</strong><p>{planRationale}</p></div></div> : null}
 
-            <div className="project-task-heading"><div><p className="projects-kicker">Execution plan</p><h3>Next moves</h3></div><span>{selected.tasks.filter((task) => !taskIsClosed(task)).length} open</span></div>
+            {workspaceView === "overview" ? <><div className="project-task-heading"><div><p className="projects-kicker">Execution plan</p><h3>Next moves</h3></div><span>{selected.tasks.filter((task) => !taskIsClosed(task)).length} open</span></div>
             <div className="project-task-list">
               {selected.tasks.length ? selected.tasks.map((task, index) => {
                 const agent = agentFor(workItemAssignedAgent(task));
@@ -621,9 +628,9 @@ export function ProjectsWorkspace() {
               }) : <div className="project-task-empty"><Target size={22} aria-hidden="true" /><h3>No plan yet</h3><p>Let Atlas decompose the outcome or add the first task yourself.</p></div>}
             </div>
 
-            {selected.status === "active" ? <form className="project-add-task" onSubmit={addTask}><Plus size={15} aria-hidden="true" /><label className="sr-only" htmlFor="project-task-title">Add project task</label><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Add a task to this plan…" maxLength={240} /><button type="submit" disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : "Add task"}</button></form> : null}
+            {selected.status === "active" ? <form className="project-add-task" onSubmit={addTask}><Plus size={15} aria-hidden="true" /><label className="sr-only" htmlFor="project-task-title">Add project task</label><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Add a task to this plan…" maxLength={240} /><button type="submit" disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : "Add task"}</button></form> : null}</> : <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} />}
 
-            <section className="project-artifact-ledger" aria-label="Project outputs and reviewed outcomes">
+            {workspaceView === "overview" ? <><section className="project-artifact-ledger" aria-label="Project outputs and reviewed outcomes">
               <div className="project-artifact-heading"><div><p className="projects-kicker">Output ledger</p><h3>Verified work becomes memory</h3></div><span><History size={13} aria-hidden="true" /> {canonicalArtifactCount} canonical artifact{canonicalArtifactCount === 1 ? "" : "s"}</span></div>
               {canonicalArtifacts.length ? <div className="project-artifact-layout">
                 <div className="project-artifact-timeline" role="list" aria-label="Artifact timeline">{canonicalArtifacts.map((artifact, index) => {
@@ -659,11 +666,71 @@ export function ProjectsWorkspace() {
               projectId={selected.id}
               projectTitle={selected.title}
             />
+            </> : null}
           </> : <div className="project-canvas-empty"><FolderKanban size={30} aria-hidden="true" /><h2>Create your first project</h2><p>Give an outcome a durable home, then let your agent team turn it into executable work.</p><button type="button" onClick={() => setShowCreate(true)}><Plus size={14} aria-hidden="true" /> New project</button></div>}
         </section>
       </div>
     </main>
   );
+}
+
+const PROJECT_BOARD_COLUMNS = [
+  { id: "ready", label: "Ready", detail: "Clear to begin" },
+  { id: "working", label: "Working", detail: "Agents in motion" },
+  { id: "attention", label: "Needs you", detail: "Approval or intervention" },
+  { id: "closed", label: "Closed", detail: "Finished with a recorded outcome" },
+] as const;
+
+function ProjectExecutionBoard({
+  project,
+  actingId,
+  executionBusy,
+  onMoveTask,
+  onExecute,
+}: {
+  project: Project;
+  actingId: string;
+  executionBusy: string;
+  onMoveTask: (task: ProjectTask) => Promise<void>;
+  onExecute: (action: "configure" | "start" | "pause" | "resume" | "sync" | "approve" | "retry", taskId?: string, silent?: boolean) => Promise<void>;
+}) {
+  const grouped = new Map(PROJECT_BOARD_COLUMNS.map((column) => [column.id, [] as ProjectTask[]]));
+  for (const task of project.tasks) grouped.get(projectBoardColumn(task))!.push(task);
+
+  return <section className="project-board" aria-labelledby="project-board-title">
+    <div className="project-board-heading"><div><p className="projects-kicker">Live work</p><h3 id="project-board-title">Execution board</h3><p>One view of what agents can start, what is moving, and where you are needed.</p></div><span><i /> synchronized from canonical work items</span></div>
+    <div className="project-board-columns">
+      {PROJECT_BOARD_COLUMNS.map((column) => <section key={column.id} className={clsx("project-board-column", `is-${column.id}`)} aria-labelledby={`project-column-${column.id}`}>
+        <header><div><h4 id={`project-column-${column.id}`}>{column.label}</h4><p>{column.detail}</p></div><strong>{grouped.get(column.id)!.length}</strong></header>
+        <div className="project-board-cards">
+          {grouped.get(column.id)!.length ? grouped.get(column.id)!.map((task) => {
+            const agent = agentFor(workItemAssignedAgent(task));
+            const workflowStatus = workItemWorkflowStatus(task);
+            return <article key={task.id} className={clsx("project-board-card", `is-${task.workItem.status.status}`)}>
+              <div className="project-board-card-meta"><span className={clsx("project-task-priority", `is-${task.priority}`)}>{task.priority}</span><small>{canonicalWorkItemStatusLabel(task.workItem.status.status)}</small></div>
+              <h5>{task.title}</h5>
+              {task.detail ? <p>{task.detail}</p> : null}
+              {task.executionError ? <em><AlertTriangle size={11} aria-hidden="true" /> {task.executionError}</em> : null}
+              <dl><div><dt>Agent</dt><dd>{agent.name}</dd></div><div><dt>Evidence</dt><dd>{task.workItem.artifacts.count}</dd></div><div><dt>Cost</dt><dd>{canonicalWorkItemCostLabel(task.workItem.cost)}</dd></div></dl>
+              <footer>
+                {workflowStatus === "waiting_approval" ? <button type="button" className="is-primary" onClick={() => void onExecute("approve", task.id)} disabled={Boolean(executionBusy)}>Approve</button> : workflowStatus === "failed" ? <button type="button" className="is-danger" onClick={() => void onExecute("retry", task.id)} disabled={Boolean(executionBusy)}>Retry</button> : task.workItem.execution.workflowRunId ? <span className="project-task-live"><i /> {workflowLabel(workflowStatus || "queued")}</span> : <Link href={commandHref(project, task)}>Open in Command <ArrowRight size={12} aria-hidden="true" /></Link>}
+                <button type="button" onClick={() => void onMoveTask(task)} disabled={actingId === task.id || project.status !== "active" || ["running", "waiting_approval"].includes(project.executionStatus)}>{taskIsClosed(task) ? "Reopen" : "Advance"}</button>
+              </footer>
+            </article>;
+          }) : <div className="project-board-empty"><Circle size={13} aria-hidden="true" /><span>Nothing here</span></div>}
+        </div>
+      </section>)}
+    </div>
+  </section>;
+}
+
+function projectBoardColumn(task: ProjectTask): typeof PROJECT_BOARD_COLUMNS[number]["id"] {
+  const workflowStatus = workItemWorkflowStatus(task);
+  const status = task.workItem.status.status;
+  if (taskIsClosed(task)) return "closed";
+  if (workflowStatus === "waiting_approval" || workflowStatus === "failed" || ["blocked", "partial"].includes(status)) return "attention";
+  if (["dispatching", "queued", "running", "paused"].includes(workflowStatus || "") || status === "running") return "working";
+  return "ready";
 }
 
 function agentFor(id: string) {
