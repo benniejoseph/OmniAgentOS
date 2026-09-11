@@ -1,8 +1,16 @@
 # ICT Trading Research Agent
 
-**Status:** Research and architecture only; not approved for implementation  
-**Research date:** 2026-09-10  
+**Status:** Stage 0 foundation implemented; data ingestion, detectors, replay, calibration, and forward-shadow execution remain pending
+**Research date:** 2026-09-10; implementation activated 2026-09-11
 **Initial instruments:** Nasdaq-100 exposure and gold exposure
+
+## Current implementation boundary
+
+The private `/app/markets` workspace, canonical instrument registry, provider-readiness API, and server-only Twelve Data bar adapter now exist. `XAU/USD` is the only currently verified provider mapping. The Nasdaq-100 entry remains a reference identity and deliberately refuses to substitute `NDX`, `NQ`/`MNQ`, `QQQ`, or an unspecified `NAS100`/`US100` CFD.
+
+`Meridian` is a built-in, read-only market-research specialist. Its text model uses the separately configurable `market_research` assignment in Settings; the market workspace does not consider a deployment fallback to be an explicit assignment. The application still requires `TWELVE_DATA_API_KEY` and `TRADING_ECONOMICS_API_KEY` for the blocking live-research inputs, with `FRED_API_KEY` recommended for leakage-safe historical release vintages.
+
+The current UI exposes four progressively loaded views: Research desk, News impact lab, ICT + Quarterly, and Forecast journal. The chart library is loaded only when verified bars exist. Unavailable data and uncalibrated probabilities remain visibly unavailable; no sample prices or guessed probabilities are rendered.
 
 ## Purpose
 
@@ -325,4 +333,3 @@ Live execution is outside this research plan and requires a separate decision, t
 5. Are all transcript files lawfully available for private processing, and do they include course/video metadata and dates?
 6. What forecast horizons and sessions should be evaluated first?
 7. What forward-shadow duration and minimum evidence threshold will be required before paper trading is even considered?
-

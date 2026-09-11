@@ -73,6 +73,26 @@ describe("P7.1 agent identity contracts", () => {
     expect(pin.pinSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("publishes Meridian as a read-only market-research identity", () => {
+    const identity = buildBuiltInAgentIdentityV1({
+      agentId: "meridian",
+      tenantId: "tenant-one",
+      controllerActorId: "actor-one",
+    });
+
+    expect(identity.definition).toMatchObject({
+      logicalAgentId: "meridian",
+      name: "Meridian",
+      role: "Market research",
+    });
+    expect(identity.definition.persona.allowedDomains).toContain("ICT model research");
+    expect(identity.principal).toMatchObject({
+      authorityMode: "server_policy",
+      autonomy: "governed",
+      toolGrantIds: [],
+    });
+  });
+
   it("keeps definition edits independent from an unchanged principal", () => {
     const first = buildCustomAgentIdentityV1({
       agent: customAgent(),

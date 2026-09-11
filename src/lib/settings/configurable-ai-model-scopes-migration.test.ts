@@ -38,7 +38,7 @@ describe("configurable AI model scopes migration", () => {
       ),
       "utf8",
     );
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((item) => item.version === 154)).toEqual({
       version: 154,
       name: "media_computer_model_scopes_v1",
       checksum: "a8aa943ab72aed3c2d80a7d6abf46efb206b64ed476a6f674298a6e0eb1343f2",
@@ -47,5 +47,23 @@ describe("configurable AI model scopes migration", () => {
       expect(migration).toContain(`'${value}'`);
     }
     expect(migration).toContain("requires exact predecessor 153");
+  });
+
+  it("adds a separately configurable market-research route", async () => {
+    const migration = await readFile(
+      new URL(
+        "../../../supabase/migrations/20260911150000_market_research_model_scope.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 157,
+      name: "market_research_model_scope_v1",
+      checksum: "f1c276a830957ba8409e6f776f8dce5499324a75db8b7980533bafcbd612b749",
+    });
+    expect(migration).toContain("'market_research'");
+    expect(migration).toContain("version = 156");
+    expect(migration).toContain("credential_source = 'tenant_vault'");
   });
 });

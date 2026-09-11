@@ -11,6 +11,8 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.workspaces.readiness", "read", "workspace"),
   read("app.integrations.overview.show", "read", "integrations_overview"),
   read("app.sources.coverage.show", "read", "source_coverage"),
+  read("app.market_research.overview.show", "read", "market_research"),
+  read("app.market_research.bars.list", "read", "market_snapshot"),
   read("app.library.list", "read", "workspace_library"),
   read("app.memory.readable.show", "read", "memory_overview"),
   read("app.memory.intelligence.show", "read", "memory_intelligence"),
