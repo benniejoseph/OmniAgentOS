@@ -16,8 +16,6 @@ import '../../features/knowledge/knowledge.dart';
 import '../../features/knowledge/knowledge_providers.dart';
 import '../../features/meetings/meetings_providers.dart';
 import '../../features/meetings/meetings_view.dart';
-import '../../features/missions/missions.dart';
-import '../../features/missions/missions_providers.dart';
 import '../../features/projects/projects_providers.dart';
 import '../../features/projects/projects_view.dart';
 import '../../features/results/results_providers.dart';
@@ -56,6 +54,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/devices',
         builder: (_, _) => const DeviceSecurityScreen(),
       ),
+      GoRoute(path: '/missions', redirect: (_, _) => '/projects'),
+      GoRoute(path: '/missions/:id', redirect: (_, _) => '/projects'),
       GoRoute(
         path: '/customers/:id',
         builder: (_, state) => CustomerDetailView(
@@ -81,11 +81,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                     ),
                     '/capture' => CaptureView(
                       controller: ref.watch(captureControllerProvider),
-                    ),
-                    '/missions' => MissionsView(
-                      controller: ref.watch(missionsControllerProvider),
-                      onOpen: (mission) =>
-                          context.push('/missions/${mission.id}'),
                     ),
                     '/projects' => ProjectsView(
                       controller: ref.watch(projectsControllerProvider),
@@ -116,17 +111,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       'Unknown destination ${destination.path}',
                     ),
                   },
-                  routes: destination.path == '/missions'
-                      ? [
-                          GoRoute(
-                            path: ':id',
-                            builder: (_, state) => MissionDetailView(
-                              id: state.pathParameters['id']!,
-                              repository: ref.watch(missionsRepositoryProvider),
-                            ),
-                          ),
-                        ]
-                      : destination.path == '/projects'
+                  routes: destination.path == '/projects'
                       ? [
                           GoRoute(
                             path: ':id',

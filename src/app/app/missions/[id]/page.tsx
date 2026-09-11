@@ -83,6 +83,6 @@ export default async function MissionPage({
       initialEventCursor: latestEvents[0]?.seq || 0,
     };
   });
-  if (!initial) redirect("/app/missions");
+  if (!initial) redirect("/app/projects?view=execution");
   return <MissionWorkspace initialMissionId={id} {...initial} />;
 }

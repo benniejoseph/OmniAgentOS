@@ -44,20 +44,12 @@ const appDestinations = <AppDestination>[
     description: 'Save a note or file to your second brain.',
   ),
   AppDestination(
-    label: 'Missions',
-    path: '/missions',
-    icon: Icons.route_outlined,
-    selectedIcon: Icons.route_rounded,
-    eyebrow: 'DURABLE WORK',
-    description: 'Durable outcomes, delegated work, and evidence.',
-  ),
-  AppDestination(
     label: 'Projects',
     path: '/projects',
     icon: Icons.folder_copy_outlined,
     selectedIcon: Icons.folder_copy_rounded,
-    eyebrow: 'PLANNED OUTCOMES',
-    description: 'Plan, execute, and verify project work.',
+    eyebrow: 'DURABLE WORK',
+    description: 'Plan, execute, review, and verify durable work.',
   ),
   AppDestination(
     label: 'Meetings',
