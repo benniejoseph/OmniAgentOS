@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { highImpactEventCatalog } from "@/lib/market-research/event-catalog";
-import { fetchFredReleaseDates } from "@/lib/market-research/fred";
+import {
+  fetchFredInitialObservations,
+  fetchFredReleaseDates,
+} from "@/lib/market-research/fred";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -34,5 +37,57 @@ describe("FRED high-impact release history", () => {
     const [url] = fetchMock.mock.calls[0] as [URL, RequestInit];
     expect(url.searchParams.get("release_id")).toBe("10");
     expect(url.searchParams.get("api_key")).toBe("test-fred-key");
+  });
+
+  it("requests initial-release-only levels and binds them to their vintage date", async () => {
+    process.env.FRED_API_KEY = "test-fred-key";
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      observations: [
+        {
+          realtime_start: "1999-12-15",
+          realtime_end: "1999-12-31",
+          date: "1999-11-01",
+          value: "168.3",
+        },
+        {
+          realtime_start: "2000-01-14",
+          realtime_end: "9999-12-31",
+          date: "1999-12-01",
+          value: "168.8",
+        },
+        {
+          realtime_start: "2000-02-18",
+          realtime_end: "9999-12-31",
+          date: "2000-01-01",
+          value: ".",
+        },
+      ],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const cpi = highImpactEventCatalog.find(({ eventKey }) =>
+      eventKey === "us.cpi"
+    )!;
+
+    const result = await fetchFredInitialObservations({
+      event: cpi,
+      series: cpi.fredSeries[0],
+      startDate: "2000-01-01",
+      endDate: "2000-12-31",
+    });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        eventKey: "us.cpi",
+        seriesId: "CPIAUCSL",
+        observationDate: "1999-12-01",
+        releaseDate: "2000-01-14",
+        value: 168.8,
+      }),
+    ]);
+    const [url] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.searchParams.get("output_type")).toBe("4");
+    expect(url.searchParams.get("units")).toBe("lin");
+    expect(url.searchParams.get("realtime_start")).toBe("1776-07-04");
+    expect(url.searchParams.get("realtime_end")).toBe("9999-12-31");
   });
 });

@@ -13,8 +13,12 @@ import {
 import {
   saveOfficialMarketEventSchedules,
   saveFredMarketEvents,
+  saveFredInitialObservations,
 } from "@/lib/market-research/event-store";
-import { fetchFredReleaseDates } from "@/lib/market-research/fred";
+import {
+  fetchFredInitialObservations,
+  fetchFredReleaseDates,
+} from "@/lib/market-research/fred";
 import {
   fetchBeaReleaseSchedule,
   fetchCensusReleaseSchedule,
@@ -79,6 +83,7 @@ export async function enqueueMarketEventBackfillJob(input: {
         ),
         importedEvents: 0,
         importedSchedules: 0,
+        importedObservations: 0,
       },
     },
     priority: 1,
@@ -125,6 +130,8 @@ export async function executeMarketEventBackfillJob(input: {
   const totalSources = totalImportSources(definitions);
   let importedEvents = 0;
   let importedSchedules = 0;
+  let importedObservations = 0;
+  let discoveredObservations = 0;
   let discoveredDates = 0;
   for (const [index, definition] of definitions.entries()) {
     input.abortSignal.throwIfAborted();
@@ -136,6 +143,8 @@ export async function executeMarketEventBackfillJob(input: {
       importedEvents,
       importedSchedules,
       discoveredDates,
+      importedObservations,
+      discoveredObservations,
     });
     const dates = await fetchFredReleaseDates({
       event: definition,
@@ -160,6 +169,8 @@ export async function executeMarketEventBackfillJob(input: {
       importedEvents,
       importedSchedules,
       discoveredDates,
+      importedObservations,
+      discoveredObservations,
     });
   }
   const scheduleSources = officialScheduleSources(definitions);
@@ -173,6 +184,8 @@ export async function executeMarketEventBackfillJob(input: {
       importedEvents,
       importedSchedules,
       discoveredDates,
+      importedObservations,
+      discoveredObservations,
     });
     const schedules = await fetchOfficialSchedules({
       source,
@@ -197,13 +210,64 @@ export async function executeMarketEventBackfillJob(input: {
       importedEvents,
       importedSchedules,
       discoveredDates,
+      importedObservations,
+      discoveredObservations,
+    });
+  }
+  const observationSources = definitions.flatMap((definition) =>
+    definition.fredSeries.map((series) => ({ definition, series }))
+  );
+  for (const [observationIndex, source] of observationSources.entries()) {
+    input.abortSignal.throwIfAborted();
+    const completedSources = definitions.length + scheduleSources.length + observationIndex;
+    await input.onProgress({
+      stage: "fetching_initial_release_values",
+      currentEventKey: source.definition.eventKey,
+      currentSeriesId: source.series.seriesId,
+      completedSources,
+      totalSources,
+      importedEvents,
+      importedSchedules,
+      importedObservations,
+      discoveredDates,
+      discoveredObservations,
+    });
+    const observations = await fetchFredInitialObservations({
+      event: source.definition,
+      series: source.series,
+      startDate: request.startDate,
+      endDate: request.endDate,
+      signal: input.abortSignal,
+    });
+    discoveredObservations += observations.length;
+    const saved = await saveFredInitialObservations({
+      tenantId: input.job.tenantId,
+      actorId,
+      executionScope,
+      observations,
+      importId: input.job.id,
+    });
+    importedObservations += saved.inserted;
+    await input.onProgress({
+      stage: "saving_initial_release_values",
+      currentEventKey: source.definition.eventKey,
+      currentSeriesId: source.series.seriesId,
+      completedSources: completedSources + 1,
+      totalSources,
+      importedEvents,
+      importedSchedules,
+      importedObservations,
+      discoveredDates,
+      discoveredObservations,
     });
   }
   return {
     resourceId: "market_event_history",
     importedEvents,
     importedSchedules,
+    importedObservations,
     discoveredDates,
+    discoveredObservations,
     sourcesProcessed: totalSources,
     startDate: request.startDate,
     endDate: request.endDate,
@@ -215,7 +279,8 @@ function totalImportSources(
   definitions: ReturnType<typeof selectedHighImpactEvents>,
 ) {
   return definitions.length +
-    officialScheduleSources(definitions).length;
+    officialScheduleSources(definitions).length +
+    definitions.reduce((count, definition) => count + definition.fredSeries.length, 0);
 }
 
 function officialScheduleSources(

@@ -7,6 +7,7 @@ describe("market event persistence", () => {
 
     expect(source).toContain("'release_date_only', source.source_sha256,\n        NOW()");
     expect(source).toContain("source.payload_sha256, NOW()");
+    expect(source).toContain("market.macro_observation.initial_release_observed");
     expect(source).not.toContain("event.importedAt)}::TIMESTAMPTZ[]");
   });
 });

@@ -142,6 +142,8 @@ export const tenantRootPolicyTables = [
   "omni_market_macro_event_events",
   "omni_market_macro_event_schedules",
   "omni_market_macro_event_schedule_events",
+  "omni_market_macro_observations",
+  "omni_market_macro_observation_events",
   "omni_market_price_snapshots",
   "omni_market_price_snapshot_events",
   "omni_entity_records",
@@ -1480,6 +1482,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[160],
       up: ensureMarketOfficialScheduleSourcesV1,
+    },
+    {
+      ...databaseSchemaMigrations[161],
+      up: ensureMarketMacroObservationsV1,
     },
   ];
 }
@@ -18298,6 +18304,127 @@ async function ensureMarketOfficialScheduleSourcesV1(sql: SqlClient) {
         AND source_sha256 ~ '^[0-9a-f]{64}$' AND imported_at <= NOW()
       , FALSE));
   `);
+}
+
+async function ensureMarketMacroObservationsV1(sql: SqlClient) {
+  await sql.query(`
+    CREATE TABLE IF NOT EXISTS omni_market_macro_observations (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      metric_key TEXT NOT NULL,
+      series_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      unit TEXT NOT NULL,
+      observation_date DATE NOT NULL,
+      release_date DATE NOT NULL,
+      vintage_end DATE NOT NULL,
+      value DOUBLE PRECISION NOT NULL,
+      source TEXT NOT NULL,
+      source_url TEXT NOT NULL,
+      initial_release BOOLEAN NOT NULL,
+      source_sha256 TEXT NOT NULL,
+      imported_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT omni_market_macro_observations_pkey PRIMARY KEY (tenant_id, id),
+      CONSTRAINT omni_market_macro_observations_source_key UNIQUE (
+        tenant_id, owner_actor_id, event_key, series_id, metric_key,
+        observation_date, release_date
+      ),
+      CONSTRAINT omni_market_macro_observations_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^market_observation_[0-9a-f]{48}$'
+        AND btrim(tenant_id) <> '' AND btrim(owner_actor_id) <> ''
+        AND event_key ~ '^[a-z0-9][a-z0-9._-]{1,79}$'
+        AND metric_key ~ '^[a-z][a-z0-9_]{1,79}$'
+        AND series_id ~ '^[A-Z0-9]+$'
+        AND char_length(label) BETWEEN 1 AND 160
+        AND unit IN ('index', 'percent', 'thousands', 'millions', 'billions')
+        AND vintage_end >= release_date
+        AND value <> 'NaN'::DOUBLE PRECISION
+        AND value <> 'Infinity'::DOUBLE PRECISION
+        AND value <> '-Infinity'::DOUBLE PRECISION
+        AND source = 'fred'
+        AND source_url LIKE 'https://fred.stlouisfed.org/series/%'
+        AND initial_release
+        AND source_sha256 ~ '^[0-9a-f]{64}$' AND imported_at <= NOW()
+      , FALSE))
+    );
+    CREATE INDEX IF NOT EXISTS omni_market_macro_observations_owner_release_idx
+      ON omni_market_macro_observations (
+        tenant_id, owner_actor_id, event_key, release_date DESC, metric_key
+      );
+    CREATE TABLE IF NOT EXISTS omni_market_macro_observation_events (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      observation_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      import_id TEXT NOT NULL,
+      payload_sha256 TEXT NOT NULL,
+      occurred_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT omni_market_macro_observation_events_pkey PRIMARY KEY (tenant_id, id),
+      CONSTRAINT omni_market_macro_observation_events_parent_fkey FOREIGN KEY (
+        tenant_id, observation_id
+      ) REFERENCES omni_market_macro_observations (tenant_id, id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_market_macro_observation_events_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^market_observation_ledger_[0-9a-f]{48}$'
+        AND btrim(tenant_id) <> '' AND btrim(owner_actor_id) <> ''
+        AND observation_id ~ '^market_observation_[0-9a-f]{48}$'
+        AND event_type = 'market.macro_observation.initial_release_observed'
+        AND btrim(import_id) <> ''
+        AND payload_sha256 ~ '^[0-9a-f]{64}$' AND occurred_at <= NOW()
+      , FALSE))
+    );
+    CREATE INDEX IF NOT EXISTS omni_market_macro_observation_events_owner_time_idx
+      ON omni_market_macro_observation_events (
+        tenant_id, owner_actor_id, occurred_at DESC, id
+      );
+    ALTER TABLE omni_market_macro_observations ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE omni_market_macro_observations FORCE ROW LEVEL SECURITY;
+    ALTER TABLE omni_market_macro_observation_events ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE omni_market_macro_observation_events FORCE ROW LEVEL SECURITY;
+    CREATE POLICY omni_market_macro_observations_actor_scope
+      ON omni_market_macro_observations FOR ALL TO PUBLIC
+      USING (omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id))
+      WITH CHECK (omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id));
+    CREATE POLICY omni_market_macro_observation_events_actor_scope
+      ON omni_market_macro_observation_events FOR ALL TO PUBLIC
+      USING (omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id))
+      WITH CHECK (omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id));
+    REVOKE ALL ON omni_market_macro_observations FROM PUBLIC;
+    REVOKE ALL ON omni_market_macro_observation_events FROM PUBLIC;
+  `);
+  await sql`
+    DO $grants$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT ON omni_market_macro_observations TO omni_runtime;
+        GRANT SELECT, INSERT ON omni_market_macro_observation_events TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT ON omni_market_macro_observations TO omni_maintenance;
+        GRANT SELECT, INSERT ON omni_market_macro_observation_events TO omni_maintenance;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup') THEN
+        GRANT SELECT ON omni_market_macro_observations TO omni_backup;
+        GRANT SELECT ON omni_market_macro_observation_events TO omni_backup;
+      END IF;
+    END
+    $grants$
+  `;
 }
 
 async function ensureMarketPriceSnapshotV1(sql: SqlClient) {

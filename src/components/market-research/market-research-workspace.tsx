@@ -479,7 +479,7 @@ function NewsImpactLab({
       <div className={styles.pipeline}>
         {[
           ["01", "Normalize", "Provider events → high impact"],
-          ["02", "Freeze", "Consensus and prior vintage"],
+          ["02", "Freeze", "Initial-release FRED vintage"],
           ["03", "Measure", "Pre/post return + volatility"],
           ["04", "Explain", "Macro + ICT evidence"],
           ["05", "Calibrate", "Comparable-event outcomes"],
@@ -499,7 +499,10 @@ function NewsImpactLab({
                   {event.occurredAt ? <small>{formatEventTime(event.occurredAt)}</small> : null}
                 </time>
                 <em data-warning={event.timestampPrecision === "date"}>{event.timestampPrecision === "date" ? "Date only" : "Exact time"}</em>
-                <span><strong>{event.valueStatus === "observed_values" ? "Observed" : "Pending"}</strong><small>{event.consensus === null ? "No free official consensus" : `Consensus ${event.consensus}`}</small></span>
+                <span>
+                  <strong>{event.observations[0] ? formatMacroObservation(event.observations[0]) : "Pending"}</strong>
+                  <small>{event.observations[1] ? formatMacroObservation(event.observations[1]) : event.consensus === null ? "No free official consensus" : `Consensus ${event.consensus}`}</small>
+                </span>
                 <span>
                   <a href={event.sourceUrl} target="_blank" rel="noreferrer">FRED <ArrowRight size={12} /></a>
                   {event.scheduleSourceUrl ? <a href={event.scheduleSourceUrl} target="_blank" rel="noreferrer">{scheduleSourceLabel(event.scheduleSource)} time <ArrowRight size={12} /></a> : null}
@@ -510,7 +513,7 @@ function NewsImpactLab({
         ) : (
           <div className={styles.tableEmpty}><CalendarClock size={24} /><strong>No event history imported yet</strong><p>Import the free official FRED release history in the background. Exact intraday impact remains locked until an authoritative release timestamp and corresponding price window are available.</p></div>
         )}
-        <footer className={styles.eventDisclosure}>Official free sources provide release dates and observed macro data, but not a complete historical survey-consensus archive. Asael will keep consensus empty instead of scraping an unlicensed value or inventing a surprise.</footer>
+        <footer className={styles.eventDisclosure}>Values are immutable initial-release FRED vintages, labeled in their source units. Official free sources do not provide a complete historical survey-consensus archive, so Asael keeps consensus empty instead of scraping an unlicensed value or inventing a surprise.</footer>
       </div>
     </section>
   );
@@ -528,6 +531,24 @@ function scheduleSourceLabel(source: MarketEventsResult["events"][number]["sched
     case "federal_reserve": return "Federal Reserve";
     default: return "Official";
   }
+}
+
+function formatMacroObservation(
+  observation: MarketEventsResult["events"][number]["observations"][number],
+) {
+  const value = new Intl.NumberFormat("en", {
+    maximumFractionDigits: observation.unit === "percent" ? 2 : 3,
+  }).format(observation.value);
+  const suffix = observation.unit === "percent"
+    ? "%"
+    : observation.unit === "thousands"
+      ? "k"
+      : observation.unit === "millions"
+        ? "m"
+        : observation.unit === "billions"
+          ? "bn"
+          : "";
+  return `${observation.label} ${value}${suffix}`;
 }
 
 function formatEventDate(value: string) {
