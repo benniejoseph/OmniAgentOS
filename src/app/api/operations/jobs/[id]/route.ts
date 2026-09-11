@@ -28,6 +28,11 @@ const PUBLIC_SEMANTIC_SUMMARY_STAGES = new Set([
   "saving_enrichment",
   "completed",
 ]);
+const PUBLIC_SEMANTIC_SUMMARY_OUTCOMES = new Set([
+  "enriched",
+  "already_current",
+  "superseded",
+]);
 
 async function GETHandler(
   request: Request,
@@ -111,9 +116,14 @@ function projectSemanticSummaryProgress(
     : "pending";
   const statementCount = safeCount(progress?.statementCount);
   const sourceTurnCount = safeCount(progress?.sourceTurnCount);
+  const outcome = typeof progress?.outcome === "string" &&
+      PUBLIC_SEMANTIC_SUMMARY_OUTCOMES.has(progress.outcome)
+    ? progress.outcome
+    : undefined;
   return {
     stage,
     shadowOnly: true,
+    ...(outcome ? { outcome } : {}),
     ...(statementCount === undefined ? {} : { statementCount }),
     ...(sourceTurnCount === undefined ? {} : { sourceTurnCount }),
   };

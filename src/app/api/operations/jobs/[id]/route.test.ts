@@ -159,6 +159,7 @@ describe("operation job detail route", () => {
         stage: "generating_enrichment",
         shadowOnly: true,
         statementCount: 7,
+        outcome: "private_provider_outcome",
         prompt: "private conversation prompt",
         providerTrace: "private model internals",
       },
@@ -253,7 +254,11 @@ describe("operation job detail route", () => {
       id: job.id,
       type: job.type,
       status: job.status,
-      progress: { stage: "completed", completedAt: "private-detail" },
+      progress: {
+        stage: "completed",
+        outcome: "already_current",
+        completedAt: "private-detail",
+      },
       result: { summary: "private semantic output" },
       priority: 0,
       attempt: 1,
@@ -275,6 +280,7 @@ describe("operation job detail route", () => {
     expect(body.job.progress).toEqual({
       stage: "completed",
       shadowOnly: true,
+      outcome: "already_current",
     });
     expect(JSON.stringify(body)).not.toContain("private semantic output");
   });

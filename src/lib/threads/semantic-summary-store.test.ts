@@ -398,6 +398,37 @@ describe("semantic conversation summary store", () => {
     }, { sql: sql as never })).resolves.toBeUndefined();
   });
 
+  it("validates a 500-item PostgreSQL listing with bounded batch reads", async () => {
+    const fixture = await seedThreadLedger();
+    const contract = enrichmentContract(fixture.episode, fixture.turns);
+    const storedRow = enrichmentRow(
+      contract,
+      fixture.episode,
+      "2026-09-11T05:29:00.000Z",
+    );
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    const sql = fakeSql((text, values) => {
+      calls.push({ text, values });
+      if (text.includes("SELECT enrichment.*")) return [storedRow];
+      if (text.includes("FROM omni_conversation_summaries summary")) {
+        return [summaryRow(fixture.episode)];
+      }
+      if (text.includes("FROM omni_thread_turns turn")) {
+        return fixture.turns.map(turnRow);
+      }
+      throw new Error(`Unexpected SQL: ${text}`);
+    });
+
+    await expect(listCurrentSemanticEnrichments({
+      tenantId,
+      actorId,
+      threadId: thread.id,
+      limit: 500,
+    }, { sql: sql as never })).resolves.toHaveLength(1);
+    expect(calls).toHaveLength(3);
+    expect(calls[0].values.at(-1)).toBe(500);
+  });
+
   it("resolves a PostgreSQL retry only when the stored contract is identical", async () => {
     const fixture = await seedThreadLedger();
     const contract = enrichmentContract(fixture.episode, fixture.turns);

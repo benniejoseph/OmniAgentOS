@@ -33,7 +33,10 @@ vi.mock("@/lib/operations/job-queue", () => ({
   projectOperationJobStatus: routeMocks.projectOperationJobStatus,
 }));
 
-vi.mock("@/lib/threads/semantic-summary-store", () => ({
+vi.mock("@/lib/threads/semantic-summary-store", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/threads/semantic-summary-store")
+  >()),
   listCurrentSemanticEnrichments: routeMocks.listCurrentSemanticEnrichments,
 }));
 
@@ -266,7 +269,9 @@ describe("request-bound thread routes", () => {
         initiatingActorId: actorId,
         executingPrincipalType: "user",
         executingPrincipalId: actorId,
-        correlationId: "semantic-summary-request-a",
+        correlationId: expect.stringMatching(
+          /^conversation_summary_enrichment_[0-9a-f-]{36}$/,
+        ),
         causationId: "summary-sealed-a",
         purpose: "conversation.summary.enrich.queue",
       }),
@@ -295,6 +300,84 @@ describe("request-bound thread routes", () => {
     expect(JSON.stringify(payload)).not.toMatch(
       /private conversation|configured-semantic-model|episodeSummarySha256/i,
     );
+    expect(
+      routeMocks.enqueueSemanticSummaryEnrichmentJob.mock.calls[0][0]
+        .executionScope.correlationId,
+    ).not.toBe("semantic-summary-request-a");
+  });
+
+  it("skips one unsuitable episode without losing other queued work", async () => {
+    routeMocks.getOwnedThread.mockResolvedValue(threadRecord());
+    routeMocks.listConversationSummaries.mockResolvedValue([
+      sealedSummaryRecord({ id: "summary-too-large" }),
+      sealedSummaryRecord({ id: "summary-valid" }),
+    ]);
+    const { SemanticSummaryStaleSourceError } = await import(
+      "@/lib/threads/semantic-summary-store"
+    );
+    routeMocks.enqueueSemanticSummaryEnrichmentJob
+      .mockRejectedValueOnce(new SemanticSummaryStaleSourceError(
+        "The conversation episode is outside the enrichment input budget.",
+      ))
+      .mockResolvedValueOnce(operationJob());
+
+    const response = await POSTThread(
+      new Request("http://localhost/api/threads/thread-a", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "enqueue_semantic_summaries",
+          limit: 2,
+        }),
+      }),
+      { params: Promise.resolve({ id: "thread-a" }) },
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(202);
+    expect(routeMocks.enqueueSemanticSummaryEnrichmentJob).toHaveBeenCalledTimes(2);
+    expect(payload).toMatchObject({
+      semanticEnrichment: { status: "queued", shadowOnly: true },
+      queuedJobCount: 1,
+      skippedEpisodeCount: 1,
+      staleEpisodeCount: 0,
+    });
+  });
+
+  it("exposes only an allowlisted terminal semantic outcome", async () => {
+    routeMocks.getOwnedThread.mockResolvedValue(threadRecord());
+    routeMocks.listConversationSummaries.mockResolvedValue([
+      sealedSummaryRecord(),
+    ]);
+    routeMocks.enqueueSemanticSummaryEnrichmentJob.mockResolvedValue({
+      ...operationJob(),
+      status: "completed",
+      payload: {
+        actorId,
+        progress: {
+          stage: "completed",
+          outcome: "already_current",
+          privateDetail: "must not be projected",
+        },
+      },
+    });
+
+    const response = await POSTThread(
+      new Request("http://localhost/api/threads/thread-a", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "enqueue_semantic_summaries" }),
+      }),
+      { params: Promise.resolve({ id: "thread-a" }) },
+    );
+    const payload = await response.json();
+
+    expect(payload.jobs[0].progress).toEqual({
+      stage: "completed",
+      shadowOnly: true,
+      outcome: "already_current",
+    });
+    expect(JSON.stringify(payload)).not.toContain("must not be projected");
   });
 
   it("keeps deterministic summaries active when no Memory model is configured", async () => {
