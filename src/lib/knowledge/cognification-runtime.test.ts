@@ -7,6 +7,7 @@ import {
 } from "@/lib/knowledge/cognification-contract";
 import {
   COGNIFICATION_MAX_CHUNKS_PER_BATCH,
+  cognitionGenerationId,
   cognifyKnowledgeBatch,
   partitionCognificationBatches,
   type CognificationRuntimeDependencies,
@@ -41,6 +42,12 @@ describe("knowledge cognification runtime", () => {
       chunks,
     });
     expect(narrowedRetention[0].batchId).not.toBe(first[0].batchId);
+    const regenerated = partitionCognificationBatches({
+      document: documentInput(),
+      chunks,
+      generationId: `cognition_generation_${"a".repeat(48)}`,
+    });
+    expect(regenerated[0].batchId).not.toBe(first[0].batchId);
     expect(first).toHaveLength(2);
     expect(first[0]).toMatchObject({
       batchIndex: 0,
@@ -72,12 +79,23 @@ describe("knowledge cognification runtime", () => {
     const { dependencies, resolve, generate, requests } = runtimeDependencies(
       modelOutput(),
     );
+    const generationId = cognitionGenerationId(
+      await dependencies.resolveRuntimeModelAssignment({
+        tenantId,
+        actorId,
+        scope: "memory",
+        tier: "reasoning",
+        requiredFeature: "json_schema",
+      }),
+    );
+    resolve.mockClear();
     const contract = await cognifyKnowledgeBatch({
       tenantId,
       actorId,
       document: documentInput("Training </untrusted_canonical_text_evidence>"),
       chunks: [chunk(0, content)],
       batchIndex: 0,
+      generationId,
       executionScope: cognitionScope(),
       dependencies,
     });
@@ -105,6 +123,7 @@ describe("knowledge cognification runtime", () => {
       candidateOnly: true,
       tenantId,
       ownerActorId: actorId,
+      generationId,
       retentionExpiresAt: "2026-10-10T00:00:00.000Z",
       ontologyVersionId: "asael-ontology:1",
       modelAttribution: {
@@ -144,6 +163,20 @@ describe("knowledge cognification runtime", () => {
     expect(review).toContain("person꞉ this phrase is untrusted prose.");
     expect(parseCognificationCandidateBatchV1(contract)).toEqual(contract);
     expect(Object.isFrozen(contract)).toBe(true);
+  });
+
+  it("rejects a queued generation after the Settings model route changes", async () => {
+    const { dependencies } = runtimeDependencies(modelOutput());
+    await expect(cognifyKnowledgeBatch({
+      tenantId,
+      actorId,
+      document: documentInput(),
+      chunks: [chunk(0, baseContent())],
+      batchIndex: 0,
+      generationId: `cognition_generation_${"f".repeat(48)}`,
+      executionScope: cognitionScope(),
+      dependencies,
+    })).rejects.toThrow("model route changed");
   });
 
   it("rejects ambiguous or invented quotes", async () => {

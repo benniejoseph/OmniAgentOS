@@ -49,6 +49,7 @@ import { applyRunMemoryFeedback } from "@/lib/memory/store";
 import {
   cognifyKnowledgeBatch,
   partitionCognificationBatches,
+  resolveCognitionGenerationId,
   type CognificationBatchPlan,
 } from "@/lib/knowledge/cognification-runtime";
 import {
@@ -169,6 +170,7 @@ export const knowledgeCognifyJobRequestSchema = z.object({
   // finish. Every newly enqueued job is upgraded to the current source plan.
   sourcePlanSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   retentionExpiresAt: z.string().datetime({ offset: true }).nullable().optional(),
+  generationId: z.string().regex(/^cognition_generation_[a-f0-9]{48}$/).optional(),
 }).strict().superRefine((value, context) => {
   if (
     Boolean(value.sourcePlanSha256) !==
@@ -178,6 +180,13 @@ export const knowledgeCognifyJobRequestSchema = z.object({
       code: "custom",
       message: "Cognition plan hash and retention binding must be supplied together.",
       path: ["sourcePlanSha256"],
+    });
+  }
+  if (value.generationId && !value.sourcePlanSha256) {
+    context.addIssue({
+      code: "custom",
+      message: "Cognition generation identity requires a complete source plan binding.",
+      path: ["generationId"],
     });
   }
 });
@@ -403,11 +412,20 @@ export async function enqueueKnowledgeCognificationPlan({
     return null;
   }
   const document = cognitionDocument(source);
+  const generationId = await resolveCognitionGenerationId({
+    tenantId,
+    actorId: usageActorId,
+  });
   const batches = partitionCognificationBatches({
     document,
     chunks: cognitionChunks(source),
+    generationId,
   });
-  const sourcePlanSha256 = cognitionSourcePlanSha256(document, batches);
+  const sourcePlanSha256 = cognitionSourcePlanSha256(
+    document,
+    batches,
+    generationId,
+  );
   for (const batch of batches) {
     const existing = await getKnowledgeCognition(batch.batchId, {
       tenantId,
@@ -421,6 +439,7 @@ export async function enqueueKnowledgeCognificationPlan({
       request: {
         documentId: document.id,
         sourceRevisionId: document.sourceRevisionId,
+        generationId,
         retentionExpiresAt: document.retentionExpiresAt,
         sourcePlanSha256,
         batchIndex: batch.batchIndex,
@@ -1234,8 +1253,18 @@ async function executeKnowledgeCognifyJob(
 
   const document = cognitionDocument(source);
   const chunks = cognitionChunks(source);
-  const batches = partitionCognificationBatches({ document, chunks });
-  const sourcePlanSha256 = cognitionSourcePlanSha256(document, batches);
+  const batches = partitionCognificationBatches({
+    document,
+    chunks,
+    ...(request.generationId
+      ? { generationId: request.generationId }
+      : {}),
+  });
+  const sourcePlanSha256 = cognitionSourcePlanSha256(
+    document,
+    batches,
+    request.generationId,
+  );
   if (
     (request.sourcePlanSha256 &&
       request.sourcePlanSha256 !== sourcePlanSha256) ||
@@ -1278,6 +1307,9 @@ async function executeKnowledgeCognifyJob(
       document,
       chunks,
       batchIndex: request.batchIndex,
+      ...(request.generationId
+        ? { generationId: request.generationId }
+        : {}),
       executionScope,
       abortSignal,
     });
@@ -1301,6 +1333,9 @@ async function executeKnowledgeCognifyJob(
         request: {
           documentId: request.documentId,
           sourceRevisionId: request.sourceRevisionId,
+          ...(request.generationId
+            ? { generationId: request.generationId }
+            : {}),
           retentionExpiresAt: document.retentionExpiresAt,
           sourcePlanSha256,
           batchIndex: nextBatchIndex,
@@ -1346,12 +1381,14 @@ function cognitionChunks(source: ActorOwnedCognitionSource) {
 function cognitionSourcePlanSha256(
   document: ReturnType<typeof cognitionDocument>,
   batches: readonly CognificationBatchPlan[],
+  generationId?: string,
 ) {
   return sourceContractSha256({
     schemaVersion: 1,
     documentId: document.id,
     sourceItemId: document.sourceItemId,
     sourceRevisionId: document.sourceRevisionId,
+    ...(generationId ? { generationId } : {}),
     retentionExpiresAt: document.retentionExpiresAt,
     batches: batches.map((batch) => ({
       batchId: batch.batchId,
@@ -1377,6 +1414,7 @@ function assertPersistedCognitionMatchesPlan(
     candidate.documentId !== document.id ||
     candidate.sourceItemId !== document.sourceItemId ||
     candidate.sourceRevisionId !== document.sourceRevisionId ||
+    candidate.generationId !== batch.generationId ||
     candidate.retentionExpiresAt !== document.retentionExpiresAt ||
     candidate.batchId !== batch.batchId ||
     candidate.batchIndex !== batch.batchIndex ||
