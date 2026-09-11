@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 
 const mocks = vi.hoisted(() => {
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => {
     getActiveGoogleWorkspaceAccess: vi.fn(),
     getOperationJob: vi.fn(),
     listExactCaptureAssetsByMetadata: vi.fn(),
+    listOperationJobs: vi.fn(),
     projectOperationJobStatus: vi.fn((job: { id: string; status: string }) => ({
       id: job.id,
       status: job.status,
@@ -65,6 +67,7 @@ vi.mock("@/lib/operations/background-jobs", () => ({
 vi.mock("@/lib/operations/job-queue", () => ({
   cancelOperationJobByDedupeKey: mocks.cancelOperationJobByDedupeKey,
   getOperationJob: mocks.getOperationJob,
+  listOperationJobs: mocks.listOperationJobs,
   projectOperationJobStatus: mocks.projectOperationJobStatus,
 }));
 
@@ -108,6 +111,8 @@ beforeEach(() => {
       ingestJobId: update.ingestJobId,
     }));
   mocks.listExactCaptureAssetsByMetadata.mockResolvedValue([]);
+  mocks.listOperationJobs.mockResolvedValue([]);
+  mocks.cancelOperationJobByDedupeKey.mockResolvedValue([]);
   mocks.deleteKnowledgeDocumentsBySourcePrefix.mockResolvedValue({
     documents: 0,
     memories: 0,
@@ -338,16 +343,122 @@ describe("Google Photos durable imports", () => {
       String(url) === "https://lh3.googleusercontent.com/private-photo=d"
     )).toHaveLength(1);
   });
+
+  it("charges headerless stream chunks to the shared budget, cancels overflow, and stops transfers", async () => {
+    const handle = await createHandle();
+    const firstBytes = new Uint8Array(13 * 1024 * 1024);
+    const overflowCanceled = vi.fn();
+    let thirdPhotoDownloads = 0;
+    mocks.listExactCaptureAssetsByMetadata.mockResolvedValue([]);
+    fetchMock().mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/sessions/picker-session-a") && init?.method === "GET") {
+        return jsonResponse({ id: "picker-session-a", mediaItemsSet: true });
+      }
+      if (url.includes("/mediaItems?")) {
+        return jsonResponse({ mediaItems: [
+          providerPhoto(),
+          providerPhoto("provider-photo-b", "private-photo-b", "second.jpg"),
+          providerPhoto("provider-photo-c", "private-photo-c", "third.jpg"),
+        ] });
+      }
+      if (url === "https://lh3.googleusercontent.com/private-photo=d") {
+        return new Response(headerlessStream([firstBytes]), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      if (url === "https://lh3.googleusercontent.com/private-photo-b=d") {
+        return new Response(headerlessStream([
+          new Uint8Array(8 * 1024 * 1024),
+          new Uint8Array(4 * 1024 * 1024),
+        ], overflowCanceled), {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      if (url === "https://lh3.googleusercontent.com/private-photo-c=d") {
+        thirdPhotoDownloads += 1;
+        return new Response(photoBytes, {
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      throw new Error(`Unexpected Google Photos request: ${url}`);
+    });
+
+    const result = await importGooglePhotosPickerSelection(
+      identity,
+      handle,
+      executionScope("headerless-cap"),
+    );
+
+    expect(result).toMatchObject({
+      imported: 1,
+      skipped: [
+        { filename: "second.jpg", code: "batch_transfer_limit" },
+        { filename: "third.jpg", code: "batch_transfer_limit" },
+      ],
+      sessionDeleted: false,
+    });
+    expect(overflowCanceled).toHaveBeenCalledOnce();
+    expect(thirdPhotoDownloads).toBe(0);
+    expect(mocks.saveCaptureAsset).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports selected videos as pending without downloading or queuing metadata", async () => {
+    const handle = await createHandle();
+    fetchMock().mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/sessions/picker-session-a") && init?.method === "GET") {
+        return jsonResponse({ id: "picker-session-a", mediaItemsSet: true });
+      }
+      if (url.includes("/mediaItems?")) {
+        return jsonResponse({ mediaItems: [providerVideo()] });
+      }
+      if (url.endsWith("/sessions/picker-session-a") && init?.method === "DELETE") {
+        return jsonResponse({});
+      }
+      throw new Error(`Unexpected Google Photos request: ${url}`);
+    });
+
+    const result = await importGooglePhotosPickerSelection(
+      identity,
+      handle,
+      executionScope("video-pending"),
+    );
+
+    expect(result).toMatchObject({
+      selected: 1,
+      imported: 0,
+      assets: [],
+      metadataOnly: [],
+      skipped: [{ code: "video_import_pending" }],
+      jobs: [],
+      sessionDeleted: true,
+    });
+    expect(mocks.enqueueKnowledgeIngestJob).not.toHaveBeenCalled();
+    expect(mocks.extractCaptureFile).not.toHaveBeenCalled();
+    expect(fetchMock().mock.calls.some(([url]) =>
+      String(url).includes("googleusercontent.com")
+    )).toBe(false);
+  });
 });
 
 describe("Google Photos import deletion", () => {
-  it("deletes only exact-owner imported assets through Capture knowledge deletion", async () => {
+  it("deletes exact-owner assets and legacy video knowledge after validating their jobs", async () => {
     const asset = captureAsset({ ingestJobId: "job-photo-a" });
     mocks.listExactCaptureAssetsByMetadata
       .mockResolvedValueOnce([asset])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
-    mocks.getOperationJob.mockResolvedValue({ dedupeKey: "capture-job-dedupe" });
+    mocks.getOperationJob.mockResolvedValue(captureProcessJob(asset));
+    const videoJob = legacyVideoJob(identity, {
+      id: "job-video-a",
+      dedupeKey: "video-job-dedupe",
+      status: "running",
+    });
+    mocks.listOperationJobs.mockResolvedValue([videoJob]);
+    mocks.cancelOperationJobByDedupeKey
+      .mockResolvedValueOnce([captureProcessJob(asset)])
+      .mockResolvedValueOnce([videoJob]);
     mocks.deleteCaptureAssetWithKnowledge.mockResolvedValue({
       documents: 1,
       memories: 2,
@@ -362,6 +473,7 @@ describe("Google Photos import deletion", () => {
       assets: 1,
       documents: 4,
       memories: 6,
+      jobsCanceled: 2,
     });
     expect(mocks.listExactCaptureAssetsByMetadata).toHaveBeenCalledWith(
       identity,
@@ -375,19 +487,92 @@ describe("Google Photos import deletion", () => {
       asset,
       { ...identity, executionScope: scope },
     );
-    expect(mocks.cancelOperationJobByDedupeKey).toHaveBeenCalledWith(
+    expect(mocks.cancelOperationJobByDedupeKey).toHaveBeenNthCalledWith(
+      1,
       "capture-job-dedupe",
       "Google Photos import deleted by its owner.",
       { tenantId: "tenant-a" },
     );
+    expect(mocks.cancelOperationJobByDedupeKey).toHaveBeenNthCalledWith(
+      2,
+      "video-job-dedupe",
+      "Google Photos import deleted by its owner.",
+      { tenantId: "tenant-a" },
+    );
     expect(mocks.deleteKnowledgeDocumentsBySourcePrefix).toHaveBeenCalledWith(
-      expect.stringMatching(/^google:photos:[a-f0-9]{16}:/),
+      legacyVideoSource(identity),
       {
         tenantId: "tenant-a",
         actorId: "owner-a",
         invalidationScope: scope,
       },
     );
+  });
+
+  it("does not cancel or delete jobs bound to another actor or another asset", async () => {
+    const asset = captureAsset({ ingestJobId: "job-photo-a" });
+    mocks.listExactCaptureAssetsByMetadata
+      .mockResolvedValueOnce([asset])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mocks.getOperationJob.mockResolvedValue(captureProcessJob(asset, {
+      payload: {
+        actorId: "owner-b",
+        executionScope: executionScope("wrong-owner", "owner-b"),
+        request: { assetId: asset.id },
+      },
+    }));
+    mocks.listOperationJobs.mockResolvedValue([
+      legacyVideoJob({ ...identity, actorId: "owner-b" }),
+      legacyVideoJob(identity, {
+        payload: {
+          actorId: "owner-a",
+          executionScope: executionScope("wrong-purpose"),
+          request: {
+            source: legacyVideoSource(identity),
+            metadata: {
+              provider: "google",
+              category: "photos",
+              mediaType: "photo",
+              providerItemKey: providerKey("provider-video-a"),
+            },
+          },
+        },
+      }),
+    ]);
+
+    await expect(deleteImportedGooglePhotos(
+      identity,
+      executionScope("isolated-delete"),
+    )).resolves.toEqual({
+      assets: 1,
+      documents: 0,
+      memories: 0,
+      jobsCanceled: 0,
+    });
+
+    expect(mocks.cancelOperationJobByDedupeKey).not.toHaveBeenCalled();
+    expect(mocks.deleteKnowledgeDocumentsBySourcePrefix).not.toHaveBeenCalled();
+  });
+
+  it("targets a full actor-bound source exactly and never another actor's source", async () => {
+    const otherIdentity = { ...identity, actorId: "owner-b" };
+    const ownerJob = legacyVideoJob(identity, { sourceVersion: "current" });
+    const otherJob = legacyVideoJob(otherIdentity, { sourceVersion: "current" });
+    mocks.listOperationJobs.mockResolvedValue([ownerJob, otherJob]);
+    mocks.deleteKnowledgeDocumentsBySourcePrefix.mockResolvedValue({
+      documents: 1,
+      memories: 1,
+    });
+    mocks.listExactCaptureAssetsByMetadata.mockResolvedValue([]);
+
+    await deleteImportedGooglePhotos(identity, executionScope("full-source-delete"));
+
+    const deletedSource = mocks.deleteKnowledgeDocumentsBySourcePrefix.mock.calls[0]?.[0];
+    expect(deletedSource).toBe(currentVideoSource(identity));
+    expect(deletedSource).toMatch(/^google:photos:[a-f0-9]{64}:[a-f0-9]{40}$/);
+    expect(deletedSource).not.toBe(currentVideoSource(otherIdentity));
+    expect(mocks.deleteKnowledgeDocumentsBySourcePrefix).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -450,6 +635,41 @@ function providerPhoto(
   };
 }
 
+function providerVideo() {
+  return {
+    id: "provider-video-a",
+    type: "VIDEO",
+    createTime: "2026-09-11T06:00:00.000Z",
+    mediaFile: {
+      baseUrl: "https://lh3.googleusercontent.com/private-video",
+      mimeType: "video/mp4",
+      filename: "clip.mp4",
+      mediaFileMetadata: {
+        width: 1920,
+        height: 1080,
+        videoMetadata: { processingStatus: "READY" },
+      },
+    },
+  };
+}
+
+function headerlessStream(chunks: Uint8Array[], onCancel = vi.fn()) {
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = chunks[index++];
+      if (chunk) {
+        controller.enqueue(chunk);
+      } else {
+        controller.close();
+      }
+    },
+    cancel(reason) {
+      onCancel(reason);
+    },
+  }, { highWaterMark: 0 });
+}
+
 function captureAsset(overrides: Record<string, unknown> = {}) {
   return {
     id: "capture_asset_photo_a",
@@ -485,6 +705,98 @@ function executionScope(correlationId = "photos-request", actorId = "owner-a") {
     correlationId,
     purpose: "connector.google_photos.test",
   });
+}
+
+function captureProcessJob(
+  asset: ReturnType<typeof captureAsset>,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id: String(asset.ingestJobId || "job-photo-a"),
+    tenantId: "tenant-a",
+    type: "capture.asset.process",
+    status: "queued",
+    payload: {
+      actorId: "owner-a",
+      executionScope: executionScope("capture-job"),
+      request: { assetId: asset.id },
+    },
+    dedupeKey: "capture-job-dedupe",
+    priority: 1,
+    attempt: 0,
+    maxAttempts: 3,
+    runAt: "2026-09-11T06:00:00.000Z",
+    createdAt: "2026-09-11T06:00:00.000Z",
+    updatedAt: "2026-09-11T06:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function legacyVideoJob(
+  owner = identity,
+  overrides: Record<string, unknown> & {
+    sourceVersion?: "legacy" | "current";
+  } = {},
+) {
+  const sourceVersion = overrides.sourceVersion || "legacy";
+  const source = sourceVersion === "current"
+    ? currentVideoSource(owner)
+    : legacyVideoSource(owner);
+  const jobOverrides = { ...overrides };
+  delete jobOverrides.sourceVersion;
+  return {
+    id: "job-video-a",
+    tenantId: owner.tenantId,
+    type: "knowledge.ingest",
+    status: "completed",
+    payload: {
+      actorId: owner.actorId,
+      executionScope: createExecutionScope({
+        tenantId: owner.tenantId,
+        initiatingActorId: owner.actorId,
+        executingPrincipalType: "user",
+        executingPrincipalId: owner.actorId,
+        correlationId: `video-${owner.actorId}`,
+        purpose: "connector.google_photos.persist_selection",
+      }),
+      request: {
+        source,
+        metadata: {
+          provider: "google",
+          category: "photos",
+          mediaType: "video",
+          providerItemKey: providerKey("provider-video-a"),
+        },
+      },
+    },
+    dedupeKey: `video-job-dedupe-${owner.actorId}`,
+    priority: 1,
+    attempt: 0,
+    maxAttempts: 3,
+    runAt: "2026-09-11T06:00:00.000Z",
+    createdAt: "2026-09-11T06:00:00.000Z",
+    updatedAt: "2026-09-11T06:00:00.000Z",
+    ...jobOverrides,
+  };
+}
+
+function providerKey(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 40);
+}
+
+function legacyVideoSource(owner = identity) {
+  const actorKey = createHash("sha256")
+    .update(`${owner.tenantId}:${owner.actorId}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `google:photos:${actorKey}:${providerKey("provider-video-a")}`;
+}
+
+function currentVideoSource(owner = identity) {
+  const actorKey = createHash("sha256")
+    .update(`${owner.tenantId}\0${owner.actorId}`)
+    .digest("hex");
+  return `google:photos:${actorKey}:${providerKey("provider-video-a")}`;
 }
 
 function jsonResponse(value: unknown, status = 200) {

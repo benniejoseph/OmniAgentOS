@@ -7,7 +7,6 @@ import {
   updateCaptureAssetStatus,
 } from "@/lib/capture/assets";
 import { deleteCaptureAssetWithKnowledge } from "@/lib/capture/deletion";
-import { extractCaptureFile } from "@/lib/capture/files";
 import type { CaptureAsset } from "@/lib/capture/types";
 import { OAuthProviderError } from "@/lib/connectors/oauth-providers";
 import { OAuthCredentialError } from "@/lib/connectors/oauth-store";
@@ -15,12 +14,13 @@ import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspac
 import {
   BackgroundJobIdempotencyConflictError,
   enqueueCaptureAssetProcessJob,
-  enqueueKnowledgeIngestJob,
 } from "@/lib/operations/background-jobs";
 import {
   cancelOperationJobByDedupeKey,
   getOperationJob,
+  listOperationJobs,
   projectOperationJobStatus,
+  type OperationJobRecord,
 } from "@/lib/operations/job-queue";
 import { deleteKnowledgeDocumentsBySourcePrefix } from "@/lib/rag/store";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
@@ -35,13 +35,15 @@ const PICKER_API = "https://photospicker.googleapis.com/v1";
 const DEFAULT_ITEM_LIMIT = 12;
 export const MAX_GOOGLE_PHOTOS_PICKER_ITEMS = 20;
 const MAX_SESSION_LIFETIME_MS = 24 * 60 * 60_000;
-const MAX_PREVIEW_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_IMPORT_BYTES = 24 * 1024 * 1024;
 const GOOGLE_PHOTOS_CAPTURE_SOURCE = "google_photos_picker";
 const GOOGLE_PHOTOS_DELETE_BATCH_SIZE = 100;
 const GOOGLE_PHOTOS_DELETE_BATCH_LIMIT = 100;
+const GOOGLE_PHOTOS_LEGACY_JOB_SCAN_LIMIT = 5_001;
+const GOOGLE_PHOTOS_LEGACY_JOB_SAFE_LIMIT = 5_000;
 
 type PickerIdentity = { tenantId: string; actorId: string };
+type TransferBudget = { remainingBytes: number; exhausted: boolean };
 type PickerHandlePayload = {
   version: 1;
   tenantId: string;
@@ -194,9 +196,13 @@ export async function importGooglePhotosPickerSelection(
   const selection = await listPickedMediaItems(sealed.sessionId, accessToken, signal);
   const jobs: Array<ReturnType<typeof projectOperationJobStatus>> = [];
   const assets: Array<ReturnType<typeof projectImportedCaptureAsset>> = [];
-  const metadataOnly: Array<ReturnType<typeof projectMetadataOnlyImport>> = [];
+  const metadataOnly: never[] = [];
   const skipped: Array<{ filename: string; code: string; reason: string }> = [];
-  let downloadedBytes = 0;
+  const transferBudget: TransferBudget = {
+    remainingBytes: MAX_TOTAL_IMPORT_BYTES,
+    exhausted: false,
+  };
+  let retryableFailure = false;
 
   for (const item of selection.items) {
     signal?.throwIfAborted();
@@ -206,18 +212,15 @@ export async function importGooglePhotosPickerSelection(
         const itemScope = pickerItemExecutionScope(identity, trustedRequestScope, itemKey);
         let asset = await existingImportedCaptureAsset(identity, itemKey);
         if (!asset) {
-          const remainingBytes = MAX_TOTAL_IMPORT_BYTES - downloadedBytes;
-          if (remainingBytes <= 0) {
+          if (transferBudget.exhausted || transferBudget.remainingBytes <= 0) {
             throw aggregateImportLimitError();
           }
-          const maxBytes = Math.min(MAX_CAPTURE_ASSET_BYTES, remainingBytes);
           const downloaded = await downloadSelectedPhoto(
             item,
             accessToken,
-            maxBytes,
+            transferBudget,
             signal,
           );
-          downloadedBytes += downloaded.bytes.byteLength;
           asset = await saveCaptureAsset({
             tenantId: identity.tenantId,
             actorId: identity.actorId,
@@ -260,69 +263,21 @@ export async function importGooglePhotosPickerSelection(
         assets.push(projectImportedCaptureAsset(asset, itemKey, projectedJob.id));
       } catch (error) {
         if (signal?.aborted) throw signal.reason || error;
+        retryableFailure = true;
         skipped.push(importFailure(item, error));
       }
       continue;
     }
 
-    try {
-      let detectedText = "";
-      let visualExtraction: "text_detected" | "metadata_only" = "metadata_only";
-      const remainingBytes = MAX_TOTAL_IMPORT_BYTES - downloadedBytes;
-      if (remainingBytes > 0) {
-        try {
-          const preview = await downloadVideoThumbnail(
-            item,
-            accessToken,
-            Math.min(MAX_PREVIEW_BYTES, remainingBytes),
-            signal,
-          );
-          downloadedBytes += preview.bytes.byteLength;
-          const extracted = await extractCaptureFile(new File(
-            [preview.bytes],
-            previewFilename(item, preview.extension),
-            { type: preview.mimeType },
-          ), {
-            tenantId: identity.tenantId,
-            actorId: identity.actorId,
-            sourceStreamId: `google-photos-picker:${actorSourceKey(identity)}`,
-            operation: "ocr",
-            purpose: "connector.google_photos.extract",
-            credentialSource: "deployment_environment",
-          });
-          detectedText = extracted.content.trim().slice(0, 100_000);
-          visualExtraction = detectedText ? "text_detected" : "metadata_only";
-        } catch (error) {
-          if (signal?.aborted) throw signal.reason || error;
-          // Large video transfer remains out of scope. A bounded thumbnail can
-          // enrich metadata when available, without retaining a provider URL.
-        }
-      }
-      const request = knowledgeRequest(
-        item,
-        identity,
-        itemKey,
-        detectedText,
-        visualExtraction,
-      );
-      const job = await enqueueKnowledgeIngestJob({
-        tenantId: identity.tenantId,
-        actorId: identity.actorId,
-        executionScope: pickerItemExecutionScope(identity, trustedRequestScope, itemKey),
-        idempotencyKey: request.idempotencyKey,
-        request: request.document,
-      });
-      const projectedJob = projectOperationJobStatus(job);
-      jobs.push(projectedJob);
-      metadataOnly.push(projectMetadataOnlyImport(item, itemKey, projectedJob.id));
-    } catch (error) {
-      if (signal?.aborted) throw signal.reason || error;
-      skipped.push(importFailure(item, error));
-    }
+    skipped.push({
+      filename: safeFilename(item.mediaFile.filename),
+      code: "video_import_pending",
+      reason: "Video import is not available yet. No video data was saved.",
+    });
   }
 
   let sessionDeleted = false;
-  if (!skipped.length && !selection.truncated) {
+  if (!retryableFailure && !selection.truncated) {
     try {
       await deleteProviderSession(sealed.sessionId, accessToken, signal);
       sessionDeleted = true;
@@ -348,9 +303,11 @@ export async function deleteImportedGooglePhotos(
   executionScope: ExecutionScope,
 ) {
   const trustedScope = requirePickerExecutionScope(identity, executionScope);
+  const legacyVideoCleanup = await planLegacyVideoCleanup(identity);
   let assetsDeleted = 0;
   let documents = 0;
   let memories = 0;
+  let jobsCanceled = 0;
   let batches = 0;
 
   while (batches < GOOGLE_PHOTOS_DELETE_BATCH_LIMIT) {
@@ -361,7 +318,7 @@ export async function deleteImportedGooglePhotos(
     });
     if (!assets.length) break;
     for (const asset of assets) {
-      await cancelCaptureAssetJob(asset.ingestJobId, identity.tenantId);
+      jobsCanceled += await cancelCaptureAssetJob(asset, identity);
       const forgotten = deletionCounts(await deleteCaptureAssetWithKnowledge(
         asset,
         {
@@ -389,19 +346,102 @@ export async function deleteImportedGooglePhotos(
     );
   }
 
-  const metadataKnowledge = deletionCounts(await deleteKnowledgeDocumentsBySourcePrefix(
-    googlePhotosSourcePrefix(identity),
-    {
-      tenantId: identity.tenantId,
-      actorId: identity.actorId,
-      invalidationScope: trustedScope,
-    },
-  ));
+  for (const job of legacyVideoCleanup.jobs) {
+    if (!job.dedupeKey || !["queued", "running"].includes(job.status)) continue;
+    const canceled = await cancelOperationJobByDedupeKey(
+      job.dedupeKey,
+      "Google Photos import deleted by its owner.",
+      { tenantId: identity.tenantId },
+    );
+    jobsCanceled += canceled.length;
+  }
+
+  for (const source of legacyVideoCleanup.sources) {
+    const metadataKnowledge = deletionCounts(await deleteKnowledgeDocumentsBySourcePrefix(
+      source,
+      {
+        tenantId: identity.tenantId,
+        actorId: identity.actorId,
+        invalidationScope: trustedScope,
+      },
+    ));
+    documents += metadataKnowledge.documents;
+    memories += metadataKnowledge.memories;
+  }
+
   return {
     assets: assetsDeleted,
-    documents: documents + metadataKnowledge.documents,
-    memories: memories + metadataKnowledge.memories,
+    documents,
+    memories,
+    jobsCanceled,
   };
+}
+
+async function planLegacyVideoCleanup(identity: PickerIdentity) {
+  const candidates = await listOperationJobs(
+    GOOGLE_PHOTOS_LEGACY_JOB_SCAN_LIMIT,
+    { tenantId: identity.tenantId, type: "knowledge.ingest" },
+  );
+  if (candidates.length > GOOGLE_PHOTOS_LEGACY_JOB_SAFE_LIMIT) {
+    throw new GooglePhotosPickerError(
+      "Google Photos removal needs a smaller legacy job window before it can continue safely.",
+      409,
+      "photos_delete_incomplete",
+    );
+  }
+  const bindings = candidates
+    .map((job) => legacyVideoJobBinding(job, identity))
+    .filter((value): value is { job: OperationJobRecord; source: string } => Boolean(value));
+  return {
+    jobs: bindings.map((binding) => binding.job),
+    sources: [...new Set(bindings.map((binding) => binding.source))],
+  };
+}
+
+function legacyVideoJobBinding(
+  job: OperationJobRecord,
+  identity: PickerIdentity,
+) {
+  if (
+    job.tenantId !== identity.tenantId ||
+    job.type !== "knowledge.ingest" ||
+    safeText(job.payload.actorId, 500) !== identity.actorId
+  ) return undefined;
+  const scope = exactOwnerJobScope(job.payload.executionScope, identity);
+  if (!scope || scope.purpose !== "connector.google_photos.persist_selection") {
+    return undefined;
+  }
+  const request = record(job.payload.request);
+  const metadata = record(request.metadata);
+  const source = safeText(request.source, 500);
+  const providerItemKey = safeText(metadata.providerItemKey, 80);
+  if (
+    safeText(metadata.provider, 80) !== "google" ||
+    safeText(metadata.category, 80) !== "photos" ||
+    safeText(metadata.mediaType, 80) !== "video" ||
+    !/^[a-f0-9]{40}$/.test(providerItemKey) ||
+    !googlePhotosSourcePrefixes(identity).some((prefix) =>
+      source === `${prefix}${providerItemKey}`
+    )
+  ) return undefined;
+  return { job, source };
+}
+
+function exactOwnerJobScope(value: unknown, identity: PickerIdentity) {
+  let scope: ExecutionScope | undefined;
+  try {
+    scope = parsePersistedExecutionScope(value);
+  } catch {
+    return undefined;
+  }
+  if (
+    !scope ||
+    scope.tenantId !== identity.tenantId ||
+    scope.initiatingActorId !== identity.actorId ||
+    scope.executingPrincipalType !== "user" ||
+    scope.executingPrincipalId !== identity.actorId
+  ) return undefined;
+  return scope;
 }
 
 function deletionCounts(value: unknown) {
@@ -518,7 +558,7 @@ async function listPickedMediaItems(sessionId: string, accessToken: string, sign
 async function downloadSelectedPhoto(
   item: PickedMediaItem,
   accessToken: string,
-  maxBytes: number,
+  transferBudget: TransferBudget,
   signal?: AbortSignal,
 ) {
   const baseUrl = trustedGoogleMediaBaseUrl(item.mediaFile.baseUrl);
@@ -556,16 +596,19 @@ async function downloadSelectedPhoto(
   }
   try {
     return {
-      bytes: await boundedResponseBytes(response, maxBytes),
+      bytes: await boundedResponseBytes(
+        response,
+        MAX_CAPTURE_ASSET_BYTES,
+        transferBudget,
+      ),
       mimeType,
     };
   } catch (error) {
     if (
       error instanceof GooglePhotosPickerError &&
-      error.code === "preview_too_large" &&
-      maxBytes < MAX_CAPTURE_ASSET_BYTES
+      error.code === "batch_transfer_limit"
     ) {
-      throw aggregateImportLimitError();
+      throw error;
     }
     if (
       error instanceof GooglePhotosPickerError &&
@@ -579,38 +622,6 @@ async function downloadSelectedPhoto(
     }
     throw error;
   }
-}
-
-async function downloadVideoThumbnail(
-  item: PickedMediaItem,
-  accessToken: string,
-  maxBytes: number,
-  signal?: AbortSignal,
-) {
-  if (item.type === "VIDEO" && item.mediaFile.mediaFileMetadata?.videoMetadata?.processingStatus !== "READY") {
-    throw new GooglePhotosPickerError("The selected video is still processing.", 409, "video_processing");
-  }
-  const baseUrl = trustedGoogleMediaBaseUrl(item.mediaFile.baseUrl);
-  const downloadUrl = `${baseUrl}=w1600-h1600-no`;
-  let response: Response;
-  try {
-    response = await fetch(downloadUrl, {
-      headers: { authorization: `Bearer ${accessToken}`, accept: "image/*" },
-      redirect: "error",
-      signal: boundedSignal(signal, 30_000),
-    });
-  } catch {
-    throw new GooglePhotosPickerError("A selected photo preview could not be downloaded.", 502, "preview_download_failed");
-  }
-  if (!response.ok) {
-    throw new GooglePhotosPickerError("A selected photo preview could not be downloaded.", 502, "preview_download_failed");
-  }
-  const mimeType = String(response.headers.get("content-type") || "").split(";", 1)[0].toLowerCase();
-  const extension = previewExtension(mimeType);
-  if (!extension) {
-    throw new GooglePhotosPickerError("A selected item has an unsupported preview format.", 415, "unsupported_preview");
-  }
-  return { bytes: await boundedResponseBytes(response, maxBytes), mimeType, extension };
 }
 
 function trustedGoogleMediaBaseUrl(value: string) {
@@ -650,10 +661,20 @@ function aggregateImportLimitError() {
   );
 }
 
-async function boundedResponseBytes(response: Response, maxBytes: number) {
+async function boundedResponseBytes(
+  response: Response,
+  maxBytes: number,
+  transferBudget: TransferBudget,
+) {
   const declared = Number(response.headers.get("content-length") || 0);
   if (declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
     throw new GooglePhotosPickerError("A selected photo exceeds the import limit.", 413, "preview_too_large");
+  }
+  if (declared > transferBudget.remainingBytes) {
+    transferBudget.exhausted = true;
+    await response.body?.cancel().catch(() => undefined);
+    throw aggregateImportLimitError();
   }
   if (!response.body) {
     throw new GooglePhotosPickerError("A selected photo preview was empty.", 502, "empty_preview");
@@ -665,8 +686,22 @@ async function boundedResponseBytes(response: Response, maxBytes: number) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      const availableBeforeChunk = transferBudget.remainingBytes;
+      transferBudget.remainingBytes = Math.max(
+        0,
+        availableBeforeChunk - value.byteLength,
+      );
+      if (value.byteLength > availableBeforeChunk) {
+        transferBudget.exhausted = true;
+        await reader.cancel("Google Photos transfer budget exhausted.").catch(() => undefined);
+        throw aggregateImportLimitError();
+      }
+      if (transferBudget.remainingBytes === 0) {
+        transferBudget.exhausted = true;
+      }
       total += value.byteLength;
       if (total > maxBytes) {
+        await reader.cancel("Google Photos photo size limit exceeded.").catch(() => undefined);
         throw new GooglePhotosPickerError("A selected photo exceeds the import limit.", 413, "preview_too_large");
       }
       chunks.push(value);
@@ -681,55 +716,6 @@ async function boundedResponseBytes(response: Response, maxBytes: number) {
     offset += chunk.byteLength;
   }
   return bytes;
-}
-
-function knowledgeRequest(
-  item: PickedMediaItem,
-  identity: PickerIdentity,
-  itemKey: string,
-  detectedText: string,
-  visualExtraction: "text_detected" | "metadata_only",
-) {
-  const metadata = item.mediaFile.mediaFileMetadata || {};
-  const filename = safeFilename(item.mediaFile.filename);
-  const actorKey = actorSourceKey(identity);
-  const source = `${googlePhotosSourcePrefix(identity)}${itemKey}`;
-  const dimensions = metadata.width && metadata.height
-    ? `${metadata.width} × ${metadata.height}`
-    : "Unknown";
-  const camera = [metadata.cameraMake, metadata.cameraModel].filter(Boolean).join(" ") || "Unknown";
-  const content = [
-    `Google Photos item: ${filename}`,
-    `Media type: ${item.type === "VIDEO" ? "Video" : "Photo"}`,
-    `Created: ${safeTimestamp(item.createTime)}`,
-    `MIME type: ${safeText(item.mediaFile.mimeType, 120) || "Unknown"}`,
-    `Dimensions: ${dimensions}`,
-    `Camera: ${camera}`,
-    detectedText ? `Detected text:\n${detectedText}` : "Detected text: None available",
-  ].join("\n");
-  return {
-    idempotencyKey: `oauth:google:photos:${actorKey}:${itemKey}`,
-    document: {
-      title: filename,
-      content,
-      source,
-      sourceType: "api" as const,
-      tags: ["connected-source", "google", "photos", item.type.toLowerCase()],
-      metadata: {
-        provider: "google",
-        category: "photos",
-        providerItemKey: itemKey,
-        createdAt: safeTimestamp(item.createTime),
-        mediaType: item.type.toLowerCase(),
-        mimeType: safeText(item.mediaFile.mimeType, 120),
-        filename,
-        width: Number(metadata.width || 0),
-        height: Number(metadata.height || 0),
-        visualExtraction,
-      },
-      evidenceRefs: [`google-photos:${itemKey}`],
-    },
-  };
 }
 
 function captureAssetMetadata(item: PickedMediaItem, itemKey: string) {
@@ -773,28 +759,6 @@ function projectImportedCaptureAsset(
   };
 }
 
-function projectMetadataOnlyImport(
-  item: PickedMediaItem,
-  itemKey: string,
-  jobId: string,
-) {
-  const metadata = item.mediaFile.mediaFileMetadata || {};
-  return {
-    filename: safeFilename(item.mediaFile.filename),
-    jobId,
-    metadata: {
-      provider: "google",
-      category: "photos",
-      mediaType: "video",
-      providerItemKey: itemKey,
-      createdAt: safeTimestamp(item.createTime, ""),
-      width: Number(metadata.width || 0),
-      height: Number(metadata.height || 0),
-      transferState: "metadata_only" as const,
-    },
-  };
-}
-
 function providerItemKey(providerItemId: string) {
   return createHash("sha256").update(providerItemId).digest("hex").slice(0, 40);
 }
@@ -825,7 +789,8 @@ async function existingImportedCaptureAsset(
 }
 
 function captureAssetIdempotencyKey(identity: PickerIdentity, itemKey: string) {
-  return `oauth:google:photos:asset:${actorSourceKey(identity)}:${itemKey}`;
+  // Keep the deployed key shape so a retry binds to the original Capture job.
+  return `oauth:google:photos:asset:${legacyActorBindingKey(identity)}:${itemKey}`;
 }
 
 function pickerItemExecutionScope(
@@ -904,16 +869,35 @@ function importFailure(item: PickedMediaItem, error: unknown) {
   };
 }
 
-async function cancelCaptureAssetJob(jobId: string | undefined, tenantId: string) {
-  if (!jobId) return;
-  const job = await getOperationJob(jobId, { tenantId });
-  if (job?.dedupeKey) {
-    await cancelOperationJobByDedupeKey(
-      job.dedupeKey,
-      "Google Photos import deleted by its owner.",
-      { tenantId },
-    );
-  }
+async function cancelCaptureAssetJob(
+  asset: CaptureAsset,
+  identity: PickerIdentity,
+) {
+  if (
+    !asset.ingestJobId ||
+    asset.tenantId !== identity.tenantId ||
+    asset.actorId !== identity.actorId
+  ) return 0;
+  const job = await getOperationJob(asset.ingestJobId, {
+    tenantId: identity.tenantId,
+  });
+  const request = record(job?.payload.request);
+  if (
+    !job ||
+    job.tenantId !== identity.tenantId ||
+    job.type !== "capture.asset.process" ||
+    safeText(job.payload.actorId, 500) !== identity.actorId ||
+    !exactOwnerJobScope(job.payload.executionScope, identity) ||
+    safeText(request.assetId, 500) !== asset.id ||
+    !job.dedupeKey ||
+    !["queued", "running"].includes(job.status)
+  ) return 0;
+  const canceled = await cancelOperationJobByDedupeKey(
+    job.dedupeKey,
+    "Google Photos import deleted by its owner.",
+    { tenantId: identity.tenantId },
+  );
+  return canceled.length;
 }
 
 function parsePickingSession(value: Record<string, unknown>): ProviderPickingSession {
@@ -1116,15 +1100,32 @@ function sessionBinding(identity: PickerIdentity) {
   return `google-photos-picker:${identity.tenantId}:${identity.actorId}`;
 }
 
-function actorSourceKey(identity: PickerIdentity) {
+function actorBindingKey(identity: PickerIdentity) {
+  return createHash("sha256")
+    .update(`${identity.tenantId}\0${identity.actorId}`)
+    .digest("hex");
+}
+
+function googlePhotosSourcePrefix(identity: PickerIdentity) {
+  return `google:photos:${actorBindingKey(identity)}:`;
+}
+
+function legacyGooglePhotosSourcePrefix(identity: PickerIdentity) {
+  return `google:photos:${legacyActorBindingKey(identity)}:`;
+}
+
+function legacyActorBindingKey(identity: PickerIdentity) {
   return createHash("sha256")
     .update(`${identity.tenantId}:${identity.actorId}`)
     .digest("hex")
     .slice(0, 16);
 }
 
-function googlePhotosSourcePrefix(identity: PickerIdentity) {
-  return `google:photos:${actorSourceKey(identity)}:`;
+function googlePhotosSourcePrefixes(identity: PickerIdentity) {
+  return [
+    googlePhotosSourcePrefix(identity),
+    legacyGooglePhotosSourcePrefix(identity),
+  ];
 }
 
 function boundedSignal(signal: AbortSignal | undefined, timeoutMs: number) {
@@ -1148,13 +1149,6 @@ function safePickerUri(value: unknown) {
   } catch {
     return undefined;
   }
-}
-
-function previewExtension(mimeType: string) {
-  if (mimeType === "image/jpeg" || mimeType === "image/jpg") return "jpg";
-  if (mimeType === "image/png") return "png";
-  if (mimeType === "image/webp") return "webp";
-  return undefined;
 }
 
 function originalFilename(item: PickedMediaItem, mimeType: string) {
@@ -1184,11 +1178,6 @@ function normalizedMediaType(value: unknown) {
   return /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/.test(mediaType)
     ? mediaType
     : "";
-}
-
-function previewFilename(item: PickedMediaItem, extension: string) {
-  const base = safeFilename(item.mediaFile.filename).replace(/\.[^.]+$/, "");
-  return `${base || "google-photo"}.${extension}`;
 }
 
 function safeFilename(value: unknown) {
