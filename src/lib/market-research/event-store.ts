@@ -59,7 +59,7 @@ export async function saveFredMarketEvents(input: {
         source.name, 'USD', 'high', 'fred', source.release_id,
         source.source_url, source.release_date, NULL, 'date', NULL, NULL,
         NULL, NULL, 'release_date_only', source.source_sha256,
-        source.imported_at
+        NOW()
       FROM UNNEST(
         ${events.map((event) => event.id)}::TEXT[],
         ${events.map((event) => event.eventKey)}::TEXT[],
@@ -67,11 +67,10 @@ export async function saveFredMarketEvents(input: {
         ${events.map((event) => event.sourceReleaseId)}::INTEGER[],
         ${events.map((event) => event.sourceUrl)}::TEXT[],
         ${events.map((event) => event.releaseDate)}::DATE[],
-        ${events.map((event) => sourceShaById.get(event.id)!)}::TEXT[],
-        ${events.map((event) => event.importedAt)}::TIMESTAMPTZ[]
+        ${events.map((event) => sourceShaById.get(event.id)!)}::TEXT[]
       ) AS source(
         id, event_key, name, release_id, source_url, release_date,
-        source_sha256, imported_at
+        source_sha256
       )
         ON CONFLICT (tenant_id, owner_actor_id, source, source_release_id, release_date)
         DO NOTHING
@@ -87,7 +86,7 @@ export async function saveFredMarketEvents(input: {
         SELECT
           1, source.ledger_id, ${input.tenantId}, ${input.actorId},
           source.market_event_id, 'market.macro_event.imported',
-          ${input.importId}, source.payload_sha256, ${importedAt}
+          ${input.importId}, source.payload_sha256, NOW()
         FROM UNNEST(
           ${insertedIds.map((id) => marketEventLedgerId(input.importId, id))}::TEXT[],
           ${insertedIds}::TEXT[],
