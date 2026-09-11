@@ -1373,14 +1373,14 @@ function MnemosynePanel(props: {
     <section className={styles.cognifyControl}>
       <div className={styles.cognifyControlHeading}>
         <i><FileStack size={16} /></i>
-        <span><strong>Source maps</strong><small>Extract quoted topics, claims and links from eligible knowledge.</small></span>
+        <span><strong>Source maps</strong><small>Build quoted topics, claims and links from eligible knowledge.</small></span>
       </div>
       <button type="button" onClick={props.onCognify} disabled={Boolean(props.busy)}>
         {props.busy === "cognify-sources" ? <LoaderCircle size={15} className={styles.spin} /> : <GitBranch size={15} />}
-        {props.busy === "cognify-sources" ? "Queueing sources…" : "Cognify sources"}
+        {props.busy === "cognify-sources" ? "Queueing sources…" : "Build or refresh maps"}
       </button>
       {props.cognitionJobs.length ? <CognitionJobSummary jobs={props.cognitionJobs} /> : null}
-      <p aria-live="polite">{props.cognitionFeedback || "Runs asynchronously. Every proposal still requires review."}</p>
+      <p aria-live="polite">{props.cognitionFeedback || "Resumes missing work. A new Settings model creates a separate review generation; every proposal still requires review."}</p>
     </section>
     <section className={styles.recommendations}><div className={styles.panelHeading}><p>Recommendations</p><span>{steward?.recommendations.length || 0}</span></div>{steward?.recommendations.length ? steward.recommendations.map((item) => <button type="button" key={item.id} onClick={() => props.onRecommendation(item)} disabled={item.action === "none" || Boolean(props.busy)}><i className={styles[`priority${startCase(item.priority)}`]} /><span><strong>{item.title}</strong><small>{item.detail}</small></span>{item.action !== "none" ? <ArrowRight size={15} /> : null}</button>) : <div className={styles.allClear}><Check size={16} /> No action needed right now.</div>}</section>
     <button type="button" className={styles.scanButton} onClick={props.onScan} disabled={props.busy === "maintenance"}>{props.busy === "maintenance" ? <LoaderCircle size={16} className={styles.spin} /> : <Sparkles size={16} />} Run lifecycle scan</button>
