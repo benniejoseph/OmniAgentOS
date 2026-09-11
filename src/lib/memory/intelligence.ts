@@ -3,9 +3,10 @@ import { sourceContractSha256 } from "@/lib/sources/contracts";
 import type { MemoryCatalogRecord } from "@/lib/memory/store";
 import type { MemoryFormationReason, MemoryTier } from "@/lib/memory/tier-policy";
 import type { KnowledgeDocument } from "@/lib/rag/types";
+import type { PublicMemoryCognitionQualityMetrics } from "@/lib/memory/quality-metrics";
 
 export const MEMORY_INTELLIGENCE_VERSION =
-  "memory-intelligence-observatory:2" as const;
+  "memory-intelligence-observatory:3" as const;
 
 export const MEMORY_CATEGORY_IDS = [
   "preferences",
@@ -110,6 +111,7 @@ export type MemoryIntelligenceOverview = Readonly<{
     label: string;
     count: number;
   }>[];
+  quality?: PublicMemoryCognitionQualityMetrics;
   steward: Readonly<{
     agentId: "mnemosyne";
     name: "Mnemosyne";
@@ -227,6 +229,7 @@ export function buildMemoryIntelligenceOverview(input: {
   resolvedReviews: number;
   deletionBarriers: number;
   lastMaintenanceAt?: string | null;
+  qualityMetrics?: PublicMemoryCognitionQualityMetrics;
   generatedAt?: string;
 }): MemoryIntelligenceOverview {
   const durable = input.memories.filter((memory) =>
@@ -317,6 +320,7 @@ export function buildMemoryIntelligenceOverview(input: {
       knowledgeItems.map((item) => item.category),
       knowledgeCategoryLabel,
     )),
+    ...(input.qualityMetrics ? { quality: input.qualityMetrics } : {}),
     steward: Object.freeze({
       agentId: "mnemosyne",
       name: "Mnemosyne",

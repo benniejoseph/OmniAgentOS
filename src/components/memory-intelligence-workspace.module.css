@@ -149,6 +149,12 @@
 .universeWrap { padding: 1.2rem clamp(1rem, 3.2vw, 4rem) 0; }
 .universeLoading { display: flex; min-height: 32rem; align-items: center; justify-content: center; gap: .55rem; border: 1px solid var(--memory-line); border-radius: 1.8rem; color: var(--memory-muted); background: var(--memory-paper); font-size: .76rem; }
 .cognitionSection { margin: 1rem; overflow: hidden; border: 1px solid color-mix(in oklab, var(--memory-primary) 30%, var(--memory-line)); border-radius: 1.3rem; background: color-mix(in oklab, var(--memory-mint) 26%, var(--memory-paper-solid)); }
+.qualityMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 1rem; overflow: hidden; border: 1px solid var(--memory-line); border-radius: 1.1rem; background: var(--memory-paper-solid); }
+.qualityMetrics article { display: grid; min-width: 0; gap: .35rem; padding: 1rem; }
+.qualityMetrics article + article { border-left: 1px solid var(--memory-line); }
+.qualityMetrics span { color: var(--memory-primary); font-size: .72rem; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; }
+.qualityMetrics strong { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.2rem, 1.7vw, 1.6rem); font-weight: 620; font-variant-numeric: tabular-nums; }
+.qualityMetrics small { overflow: hidden; color: var(--memory-muted); font-size: .72rem; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .reviewSectionHeading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: 1rem; }
 .reviewSectionIcon { display: grid; width: 2.6rem; height: 2.6rem; place-items: center; border-radius: .85rem; color: var(--memory-primary); background: var(--memory-paper-solid); box-shadow: 0 .5rem 1.5rem color-mix(in oklab, var(--memory-primary) 10%, transparent); }
 .reviewSectionHeading > div:nth-child(2) p, .memoryReviewHeading p { color: var(--memory-primary); font-size: .64rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
@@ -161,6 +167,24 @@
 .reviewSectionActions > strong small { color: var(--memory-muted); font-family: inherit; font-size: .5rem; font-weight: 500; }
 .cognitionBoundary { display: flex; align-items: center; gap: .45rem; border-block: 1px solid color-mix(in oklab, var(--memory-primary) 20%, var(--memory-line)); padding: .7rem 1rem; color: var(--memory-primary); background: color-mix(in oklab, var(--memory-paper) 70%, transparent); font-size: .7rem; font-weight: 650; line-height: 1.45; }
 .cognitionBoundary svg { flex: 0 0 auto; }
+.claimGroups { display: grid; gap: .7rem; border-bottom: 1px solid color-mix(in oklab, var(--memory-primary) 20%, var(--memory-line)); padding: .9rem; background: color-mix(in oklab, var(--warning) 4%, var(--memory-paper-solid)); }
+.claimGroups > header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+.claimGroups > header p { color: var(--warning); font-size: .7rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.claimGroups > header h4 { margin-top: .15rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.12rem; font-weight: 620; }
+.claimGroups > header > span { color: var(--memory-muted); font-size: .72rem; }
+.claimGroups > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr)); gap: .65rem; }
+.claimGroups article { overflow: hidden; border: 1px solid color-mix(in oklab, var(--warning) 28%, var(--memory-line)); border-radius: .9rem; background: var(--memory-paper-solid); }
+.claimGroups article > header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; border-bottom: 1px solid var(--memory-line); padding: .65rem .75rem; }
+.claimGroups article > header strong { color: var(--warning); font-size: .78rem; }
+.claimGroups article > header span { color: var(--memory-muted); font-size: .7rem; font-variant-numeric: tabular-nums; }
+.claimGroups ul { display: grid; }
+.claimGroups li { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .55rem; padding: .7rem .75rem; }
+.claimGroups li + li { border-top: 1px solid var(--memory-line); }
+.claimGroups li i { border-radius: 999px; padding: .18rem .42rem; font-size: .62rem; font-style: normal; font-weight: 740; }
+.claimGroups li .currentClaim { color: var(--success); background: color-mix(in oklab, var(--success) 10%, transparent); }
+.claimGroups li .proposedClaim { color: var(--warning); background: color-mix(in oklab, var(--warning) 10%, transparent); }
+.claimGroups li span { min-width: 0; color: var(--memory-ink); font-size: .76rem; line-height: 1.5; }
+.claimGroups article > small { display: block; border-top: 1px solid var(--memory-line); padding: .55rem .75rem; color: var(--memory-muted); font-size: .67rem; line-height: 1.45; }
 .inlineReviewError { display: flex; align-items: center; gap: .5rem; margin: .8rem .8rem 0; border: 1px solid color-mix(in oklab, var(--danger) 32%, var(--memory-line)); border-radius: .8rem; padding: .65rem .75rem; color: var(--danger); background: color-mix(in oklab, var(--danger) 7%, var(--memory-paper)); font-size: .68rem; }
 .inlineReviewError span { flex: 1; }
 .inlineReviewError button { min-height: 2.1rem; border: 1px solid currentColor; border-radius: 999px; padding: 0 .65rem; font-weight: 720; }
@@ -296,6 +320,10 @@
   .steward { display: block; }
   .recommendations { padding-top: 1rem; }
   .cognitionBody { grid-template-columns: 1fr; }
+  .qualityMetrics { grid-template-columns: 1fr 1fr; }
+  .qualityMetrics article + article { border-left: 0; }
+  .qualityMetrics article:nth-child(even) { border-left: 1px solid var(--memory-line); }
+  .qualityMetrics article:nth-child(n+3) { border-top: 1px solid var(--memory-line); }
   .cognitionEvidence { border-top: 1px solid var(--memory-line); border-left: 0; }
   .reviewClaims { grid-template-columns: 1fr; }
   .reviewClaims section + section { border-top: 1px solid var(--memory-line); border-left: 0; }
@@ -314,6 +342,9 @@
   .reviewSectionActions > strong { display: none; }
   .reviewSectionActions > button { width: 2.4rem; justify-content: center; padding: 0; font-size: 0; }
   .cognitionCounts { grid-template-columns: 1fr 1fr; }
+  .qualityMetrics { grid-template-columns: 1fr; }
+  .qualityMetrics article:nth-child(even) { border-left: 0; }
+  .qualityMetrics article + article { border-top: 1px solid var(--memory-line); }
   .cognitionCounts div:nth-child(3) { border-top: 1px solid var(--memory-line); border-left: 0; }
   .cognitionCounts div:nth-child(4) { border-top: 1px solid var(--memory-line); }
   .cognitionList article > footer button { width: 100%; justify-content: center; }

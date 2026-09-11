@@ -264,6 +264,54 @@ describe("knowledge cognition API", () => {
     }));
   });
 
+  it("returns actor-private duplicate claim groups without source identifiers", async () => {
+    const duplicateCandidate = {
+      ...candidate,
+      batchId: `cognition_batch_${"b".repeat(48)}`,
+      contractSha256: "c".repeat(64),
+      documentId: "knowledge-document-duplicate",
+      sourceItemId: "source-item-duplicate",
+      sourceRevisionId: "source-revision-duplicate",
+      claims: [{
+        ...candidate.claims[0],
+        candidateId: `cognition_candidate_${"d".repeat(48)}`,
+      }],
+    };
+    const duplicateRecord = {
+      ...pending,
+      candidate: duplicateCandidate,
+    };
+    mocks.listCognitions.mockReset()
+      .mockResolvedValueOnce([pending, duplicateRecord])
+      .mockResolvedValueOnce([]);
+    mocks.listDocuments.mockResolvedValueOnce([
+      source.document,
+      { ...source.document, id: duplicateCandidate.documentId },
+    ]);
+
+    const response = await GET(new Request(
+      "http://localhost/api/knowledge/cognification",
+    ));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.reviewGroups).toEqual([
+      expect.objectContaining({
+        kind: "duplicate",
+        scoreBasisPoints: 10_000,
+        references: expect.arrayContaining([
+          expect.objectContaining({ statement: quote }),
+          expect.objectContaining({ statement: quote }),
+        ]),
+      }),
+    ]);
+    const serialized = JSON.stringify(body.reviewGroups);
+    expect(serialized).not.toContain(context.tenantId);
+    expect(serialized).not.toContain(context.actorId);
+    expect(serialized).not.toContain("source-revision-duplicate");
+    expect(serialized).not.toContain(duplicateCandidate.contractSha256);
+  });
+
   it("queues only actor-owned current source revisions", async () => {
     const response = await POST(new Request(
       "http://localhost/api/knowledge/cognification",

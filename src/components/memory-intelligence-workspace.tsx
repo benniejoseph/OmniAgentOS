@@ -103,6 +103,20 @@ type CognificationReview = {
   status: "pending_review" | "confirmed" | "dismissed";
   projected?: boolean;
 };
+type CognificationReviewGroup = {
+  id: string;
+  kind: "duplicate" | "contradiction";
+  epistemicKind: "fact" | "procedure" | "opinion" | "prediction";
+  scoreBasisPoints: number;
+  confidenceBasisPoints: number;
+  references: Array<{
+    batchId: string;
+    claimIndex: number;
+    status: "pending_review" | "confirmed";
+    polarity: "affirmed" | "negated";
+    statement: string;
+  }>;
+};
 type CognificationJob = {
   id: string;
   status: "queued" | "running" | "completed" | "failed" | "canceled";
@@ -133,6 +147,7 @@ export function MemoryIntelligenceWorkspace() {
   const [reviews, setReviews] = useState<MemoryReconciliationReview[]>([]);
   const [reviewsLoaded, setReviewsLoaded] = useState(false);
   const [cognitionReviews, setCognitionReviews] = useState<CognificationReview[]>([]);
+  const [cognitionReviewGroups, setCognitionReviewGroups] = useState<CognificationReviewGroup[]>([]);
   const [cognitionReviewsLoaded, setCognitionReviewsLoaded] = useState(false);
   const [cognitionReviewsLoading, setCognitionReviewsLoading] = useState(false);
   const [cognitionReviewsError, setCognitionReviewsError] = useState<string>();
@@ -312,6 +327,9 @@ export function MemoryIntelligenceWorkspace() {
         throw new Error(body.error || "Source map proposals could not be loaded.");
       }
       setCognitionReviews(Array.isArray(body.reviews) ? body.reviews : []);
+      setCognitionReviewGroups(
+        Array.isArray(body.reviewGroups) ? body.reviewGroups : [],
+      );
       setCognitionReviewsLoaded(true);
       setCognitionReviewsError(undefined);
       cognitionReviewSignatureRef.current = signature;
@@ -933,6 +951,8 @@ export function MemoryIntelligenceWorkspace() {
               <ReviewIndex
                 reviews={reviews}
                 cognitionReviews={cognitionReviews}
+                cognitionReviewGroups={cognitionReviewGroups}
+                quality={overview?.quality}
                 loaded={reviewsLoaded}
                 cognitionLoaded={cognitionReviewsLoaded}
                 loading={reviewsLoading}
@@ -1090,6 +1110,8 @@ function KnowledgeIndex(props: {
 function ReviewIndex(props: {
   reviews: MemoryReconciliationReview[];
   cognitionReviews: CognificationReview[];
+  cognitionReviewGroups: CognificationReviewGroup[];
+  quality?: MemoryIntelligenceOverview["quality"];
   loaded: boolean;
   cognitionLoaded: boolean;
   loading: boolean;
@@ -1115,6 +1137,7 @@ function ReviewIndex(props: {
   );
   return <>
     <IndexHeading eyebrow="Truth review" title="Keep memory accurate and inspectable" detail="Candidates never enter active recall until you make a governed decision." />
+    <MemoryQualityMetrics quality={props.quality} />
     <section className={styles.cognitionSection} aria-labelledby="source-map-review-title">
       <header className={styles.reviewSectionHeading}>
         <div className={styles.reviewSectionIcon}><GitBranch size={18} /></div>
@@ -1140,6 +1163,7 @@ function ReviewIndex(props: {
         <ShieldCheck size={16} />
         These proposals cannot affect memory, recall or the Universe until you confirm them.
       </p>
+      <CognitionReviewGroups groups={props.cognitionReviewGroups} />
       {props.cognitionLoadError ? (
         <div className={styles.inlineReviewError} role="alert">
           <CircleAlert size={16} />
@@ -1233,6 +1257,90 @@ function ReviewIndex(props: {
       {pending.length < props.total ? <button className={styles.loadMore} type="button" onClick={props.onMore} disabled={props.loading}>Load {Math.min(20, props.total - pending.length)} more reviews</button> : null}
     </section>
   </>;
+}
+
+function CognitionReviewGroups(props: {
+  groups: CognificationReviewGroup[];
+}) {
+  if (!props.groups.length) return null;
+  return (
+    <section className={styles.claimGroups} aria-labelledby="claim-groups-title">
+      <header>
+        <div>
+          <p>Claim overlap</p>
+          <h4 id="claim-groups-title">Review these statements together</h4>
+        </div>
+        <span>{props.groups.length} {props.groups.length === 1 ? "group" : "groups"}</span>
+      </header>
+      <div>
+        {props.groups.map((group) => (
+          <article key={group.id}>
+            <header>
+              <strong>{group.kind === "contradiction" ? "Likely contradiction" : "Possible duplicate"}</strong>
+              <span>{Math.round(group.scoreBasisPoints / 100)}% overlap</span>
+            </header>
+            <ul>
+              {group.references.slice(0, 4).map((reference) => (
+                <li key={`${reference.batchId}:${reference.claimIndex}`}>
+                  <i className={reference.status === "confirmed" ? styles.currentClaim : styles.proposedClaim}>
+                    {reference.status === "confirmed" ? "Current" : "Proposed"}
+                  </i>
+                  <span>{reference.statement}</span>
+                </li>
+              ))}
+            </ul>
+            <small>This is a deterministic review hint, not a truth decision. Confirm or dismiss the related source maps below.</small>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MemoryQualityMetrics(props: {
+  quality?: MemoryIntelligenceOverview["quality"];
+}) {
+  const quality = props.quality;
+  const extraction = quality?.evidenceSupportedExtraction;
+  const reviews = quality?.reviewAcceptance;
+  const retrieval = quality?.retrievalUsefulness;
+  const graph = quality?.graphLag;
+  return (
+    <section className={styles.qualityMetrics} aria-label="Memory quality signals">
+      <article>
+        <span>Evidence support</span>
+        <strong>{percentageOrPending(extraction?.exactEvidenceCandidateItemRate)}</strong>
+        <small>{extraction ? `${extraction.exactEvidenceCandidateItemCount} of ${extraction.candidateItemSampleCount} extracted items` : "Loading extraction samples"}</small>
+      </article>
+      <article>
+        <span>Review acceptance</span>
+        <strong>{percentageOrPending(reviews?.acceptanceRate)}</strong>
+        <small>{reviews ? `${reviews.reviewedBatchSampleCount} reviewed source maps` : "Loading review samples"}</small>
+      </article>
+      <article>
+        <span>Observed recall use</span>
+        <strong>{percentageOrPending(retrieval?.usedActiveDurableMemoryRate)}</strong>
+        <small>{retrieval ? `${retrieval.observedUseCount.toLocaleString()} uses · observational only` : "Loading recall samples"}</small>
+      </article>
+      <article>
+        <span>Graph freshness</span>
+        <strong>{graph ? startCase(graph.status) : "—"}</strong>
+        <small>{graphLagLabel(graph?.lagMs)}</small>
+      </article>
+    </section>
+  );
+}
+
+function percentageOrPending(value: number | null | undefined) {
+  return typeof value === "number" ? `${Math.round(value * 100)}%` : "No sample";
+}
+
+function graphLagLabel(value: number | null | undefined) {
+  if (typeof value !== "number") return "No completed graph build";
+  if (value < 60_000) return "Updated less than a minute ago";
+  if (value < 3_600_000) return `Updated ${Math.round(value / 60_000)}m ago`;
+  if (value < 86_400_000) return `Updated ${Math.round(value / 3_600_000)}h ago`;
+  return `Updated ${Math.round(value / 86_400_000)}d ago`;
 }
 
 function IndexHeading(props: { eyebrow: string; title: string; detail: string }) {
