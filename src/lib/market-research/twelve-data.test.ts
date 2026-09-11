@@ -121,4 +121,21 @@ describe("Twelve Data market adapter", () => {
     })).rejects.toThrow(/no longer than 72 hours/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("rejects provider bars outside the exact historical request", async () => {
+    process.env.TWELVE_DATA_API_KEY = "test-market-key";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      meta: { symbol: "XAU/USD", timezone: "UTC" },
+      values: [
+        { datetime: "2026-09-10 15:00:00", open: "4000", high: "4002", low: "3998", close: "4001", volume: null },
+      ],
+    })));
+
+    await expect(fetchTwelveDataBarRangeSnapshot({
+      instrumentId: "xauusd.spot",
+      interval: "5min",
+      startAt: "2026-09-10T12:00:00.000Z",
+      endAt: "2026-09-10T14:00:00.000Z",
+    })).rejects.toThrow(/outside the requested historical range/i);
+  });
 });

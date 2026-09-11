@@ -183,6 +183,18 @@ async function fetchTwelveDataSnapshot(input: {
         : finiteNumber(value.volume, "volume"),
     };
   }).sort((left, right) => left.time - right.time);
+  if (new Set(bars.map((bar) => bar.time)).size !== bars.length) {
+    throw new MarketDataProviderError("Twelve Data returned duplicate bar timestamps.");
+  }
+  if (input.request.mode === "range") {
+    const startSeconds = Date.parse(input.request.startAt) / 1_000;
+    const endSeconds = Date.parse(input.request.endAt) / 1_000;
+    if (bars.some((bar) => bar.time < startSeconds || bar.time > endSeconds)) {
+      throw new MarketDataProviderError(
+        "Twelve Data returned bars outside the requested historical range.",
+      );
+    }
+  }
   const asOf = bars.at(-1)?.timestamp;
   if (!asOf) throw new MarketDataProviderError("Twelve Data returned no market bars.");
 
