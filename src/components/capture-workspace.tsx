@@ -515,7 +515,7 @@ export function CaptureWorkspace() {
       setCaptureNotice({
         tone: accepted ? "success" : "error",
         text: accepted
-          ? `${accepted} file${accepted === 1 ? " is" : "s are"} safely stored or queued. Asael will build searchable RAG chunks and linked memory for every successfully processed document.`
+          ? `${accepted} file${accepted === 1 ? " is" : "s are"} safely stored or queued. Asael will build searchable cited passages, then prepare a source map for review.`
           : "None of the selected files could be queued. Review the file-level errors and retry.",
       });
       await loadWorkspace();
@@ -1017,7 +1017,9 @@ function jobDetail(job: CaptureJob) {
 function captureJobStageLabel(job: CaptureJob) {
   if (job.status === "completed") {
     const chunks = Number(job.result?.chunkCount || 0);
-    return chunks > 0 ? `Indexed · ${chunks} cited passage${chunks === 1 ? "" : "s"} · graph linked` : "Indexed and graph linked";
+    return chunks > 0
+      ? `Indexed · ${chunks} cited passage${chunks === 1 ? "" : "s"} · source map queued`
+      : "Indexed · source map queued";
   }
   if (job.status === "failed") return "Processing needs attention";
   if (job.status === "canceled") return "Processing canceled";
@@ -1029,8 +1031,8 @@ function captureJobStageLabel(job: CaptureJob) {
   if (stage === "embedding") return "Building semantic search";
   if (stage === "knowledge") return "Writing the RAG index";
   if (stage === "entities") return "Linking named entities";
-  if (stage === "memory") return "Creating linked memory";
-  if (stage === "graph") return "Updating the knowledge graph";
+  if (stage === "memory") return "Applying the memory policy";
+  if (stage === "graph") return "Finalizing the searchable index";
   if (stage === "processing") return "Background worker starting";
   return "Queued safely for background processing";
 }

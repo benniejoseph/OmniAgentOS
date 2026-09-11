@@ -227,7 +227,7 @@ export function VisualStudio({
       const payload = await response.json().catch(() => ({})) as { job?: CaptureJob; error?: string };
       if (!response.ok || !payload.job) throw new Error(payload.error || "The media could not be queued for indexing.");
       setSaved(true);
-      setMessage({ tone: "success", text: "Media queued for knowledge indexing and linked memory." });
+      setMessage({ tone: "success", text: "Media queued for knowledge indexing and a reviewable source map." });
       onJob(payload.job);
       await onAssetsChanged();
     } catch (error) {

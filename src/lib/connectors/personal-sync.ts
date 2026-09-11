@@ -220,8 +220,8 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             tags: ["connected-source", input.provider, item.kind],
             abortSignal: input.abortSignal,
             // Provider backfills can touch several documents in one bounded
-            // page. Persist RAG and memory immediately, then let the durable
-            // coalescing queue rebuild the large graph outside this sync.
+            // page. Persist canonical evidence immediately; cognition owns
+            // semantic memory while the graph queue remains coalesced.
             deferMemoryGraphIndex: true,
             usageScope: {
               tenantId: input.tenantId,
