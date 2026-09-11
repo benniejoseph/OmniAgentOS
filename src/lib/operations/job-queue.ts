@@ -73,22 +73,107 @@ export type OperationJobStats = {
   latest: Array<ReturnType<typeof projectOperationJobStatus>>;
 };
 
+const ACTOR_PRIVATE_OPERATION_JOB_TYPES = new Set<OperationJobType>([
+  "conversation.summary.enrich",
+]);
+
+const SEMANTIC_SUMMARY_PUBLIC_STAGES = new Set([
+  "queued",
+  "processing",
+  "reading_episode",
+  "generating_enrichment",
+  "saving_enrichment",
+  "completed",
+]);
+
+const SEMANTIC_SUMMARY_PUBLIC_OUTCOMES = new Set([
+  "enriched",
+  "already_current",
+  "superseded",
+]);
+
 export function projectOperationJobStatus(job: OperationJobRecord) {
+  const rawProgress = parseObject(job.payload.progress);
+  const rawResult = parseObject(job.payload.result);
+  const semanticSummaryJob = job.type === "conversation.summary.enrich";
   return {
     id: job.id,
     type: job.type,
     status: job.status,
-    progress: parseObject(job.payload.progress),
-    result: parseObject(job.payload.result),
+    progress: semanticSummaryJob
+      ? projectSemanticSummaryProgress(rawProgress, rawResult)
+      : rawProgress,
+    result: semanticSummaryJob
+      ? projectSemanticSummaryResult(rawProgress, rawResult)
+      : rawResult,
     priority: job.priority,
     attempt: job.attempt,
     maxAttempts: job.maxAttempts,
     runAt: job.runAt,
-    lastError: job.lastError,
+    lastError: semanticSummaryJob && job.lastError
+      ? "Semantic summary enrichment did not complete."
+      : job.lastError,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     completedAt: job.completedAt,
   };
+}
+
+function projectSemanticSummaryProgress(
+  progress: Record<string, unknown> | undefined,
+  result: Record<string, unknown> | undefined,
+) {
+  const stage = semanticSummaryStage(progress?.stage);
+  const outcome = semanticSummaryOutcome(progress?.outcome) ||
+    semanticSummaryOutcome(result?.outcome) ||
+    semanticSummaryOutcome(result?.status);
+  const statementCount = safeSemanticSummaryCount(
+    progress?.statementCount ?? result?.statementCount,
+  );
+  const sourceTurnCount = safeSemanticSummaryCount(
+    progress?.sourceTurnCount ?? result?.sourceTurnCount,
+  );
+  return {
+    stage,
+    shadowOnly: true,
+    ...(outcome ? { outcome } : {}),
+    ...(statementCount === undefined ? {} : { statementCount }),
+    ...(sourceTurnCount === undefined ? {} : { sourceTurnCount }),
+  };
+}
+
+function projectSemanticSummaryResult(
+  progress: Record<string, unknown> | undefined,
+  result: Record<string, unknown> | undefined,
+) {
+  const outcome = semanticSummaryOutcome(progress?.outcome) ||
+    semanticSummaryOutcome(result?.outcome) ||
+    semanticSummaryOutcome(result?.status);
+  const statementCount = safeSemanticSummaryCount(result?.statementCount);
+  const sourceTurnCount = safeSemanticSummaryCount(result?.sourceTurnCount);
+  return {
+    shadowOnly: true,
+    rankingEffect: "none",
+    ...(outcome ? { outcome } : {}),
+    ...(statementCount === undefined ? {} : { statementCount }),
+    ...(sourceTurnCount === undefined ? {} : { sourceTurnCount }),
+  };
+}
+
+function semanticSummaryStage(value: unknown) {
+  const stage = typeof value === "string" ? value.trim() : "";
+  return SEMANTIC_SUMMARY_PUBLIC_STAGES.has(stage) ? stage : "pending";
+}
+
+function semanticSummaryOutcome(value: unknown) {
+  const outcome = typeof value === "string" ? value.trim() : "";
+  return SEMANTIC_SUMMARY_PUBLIC_OUTCOMES.has(outcome) ? outcome : undefined;
+}
+
+function safeSemanticSummaryCount(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? Math.min(value, 10_000)
+    : undefined;
 }
 
 export function operationJobEffectivePriority(
@@ -1144,6 +1229,37 @@ export async function listOperationJobs(
     .slice(0, limit);
 }
 
+/**
+ * Lists jobs that are safe to include on tenant-wide operational surfaces.
+ * Actor-private jobs must only be fetched through an owner-authorized detail
+ * route, even though aggregate status counts remain tenant operational data.
+ */
+export async function listTenantWideOperationJobs(
+  limit = 20,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_operation_jobs
+      WHERE tenant_id = ${tenantId}
+        AND type <> 'conversation.summary.enrich'
+      ORDER BY updated_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map(operationJobFromRow);
+  }
+
+  const ledger = await readJobLedger();
+  return ledger.jobs
+    .filter((job) => jobTenantId(job) === tenantId)
+    .filter((job) => !ACTOR_PRIVATE_OPERATION_JOB_TYPES.has(job.type))
+    .map((job) => ({ ...job, tenantId }))
+    .slice(0, limit);
+}
+
 export async function getOperationJob(
   jobId: string,
   options: { tenantId?: string } = {},
@@ -1514,7 +1630,7 @@ export async function getOperationJobStats(
       runnable: Number(runnableRows[0]?.count || 0),
       delayed: Number(delayedRows[0]?.count || 0),
       expiredLeases: Number(expiredRows[0]?.count || 0),
-      latest: (await listOperationJobs(5, { tenantId })).map(
+      latest: (await listTenantWideOperationJobs(5, { tenantId })).map(
         projectOperationJobStatus,
       ),
     };
@@ -1537,7 +1653,10 @@ export async function getOperationJobStats(
     expiredLeases: jobs.filter(
       (job) => job.status === "running" && job.leaseExpiresAt && Date.parse(job.leaseExpiresAt) <= now,
     ).length,
-    latest: jobs.slice(0, 5).map(projectOperationJobStatus),
+    latest: jobs
+      .filter((job) => !ACTOR_PRIVATE_OPERATION_JOB_TYPES.has(job.type))
+      .slice(0, 5)
+      .map(projectOperationJobStatus),
   };
 }
 
