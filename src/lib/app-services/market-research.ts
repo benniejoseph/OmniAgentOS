@@ -59,7 +59,31 @@ export async function showMarketResearchOverviewService(
     providerReadiness({
       provider: "bls",
       label: "BLS official calendar",
-      purpose: "Free official U.S. release scheduling and exact upcoming times",
+      purpose: "CPI, PPI, employment, and JOLTS release times",
+      setupVariable: "PUBLIC_OFFICIAL_SOURCE",
+      configured: true,
+      blocking: false,
+    }),
+    providerReadiness({
+      provider: "census",
+      label: "U.S. Census calendar",
+      purpose: "Retail sales release times",
+      setupVariable: "PUBLIC_OFFICIAL_SOURCE",
+      configured: true,
+      blocking: false,
+    }),
+    providerReadiness({
+      provider: "bea",
+      label: "BEA release schedule",
+      purpose: "GDP and personal income/outlays release times",
+      setupVariable: "PUBLIC_OFFICIAL_SOURCE",
+      configured: true,
+      blocking: false,
+    }),
+    providerReadiness({
+      provider: "federal_reserve",
+      label: "Federal Reserve calendar",
+      purpose: "FOMC decision dates and statement times",
       setupVariable: "PUBLIC_OFFICIAL_SOURCE",
       configured: true,
       blocking: false,
@@ -222,7 +246,7 @@ export async function backfillMarketResearchEventsService(
 }
 
 function providerReadiness(input: {
-  provider: "twelve_data" | "fred" | "bls";
+  provider: "twelve_data" | "fred" | "bls" | "census" | "bea" | "federal_reserve";
   label: string;
   purpose: string;
   configured: boolean;

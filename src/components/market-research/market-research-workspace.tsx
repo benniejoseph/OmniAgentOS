@@ -469,7 +469,7 @@ function NewsImpactLab({
       <header className={styles.labHeader}>
         <div><p className={styles.eyebrow}>Event study · {instrument.shortLabel}</p><h2>News impact lab</h2><p>Replay high-impact releases against immutable pre- and post-event windows, then compare the observed move with the surprise, revision, liquidity regime, and ICT context.</p></div>
         <div className={styles.labActions}>
-          <div className={styles.labReadiness}><span data-ready={calendar?.configured}><i /> BLS calendar</span><span data-ready={vintage?.configured}><i /> FRED history</span></div>
+          <div className={styles.labReadiness}><span data-ready={calendar?.configured}><i /> Official calendars</span><span data-ready={vintage?.configured}><i /> FRED history</span></div>
           <button type="button" onClick={onBackfill} disabled={Boolean(importing) || vintage?.configured !== true}>
             <History size={15} />
             {importing ? `Importing ${completedSources}/${totalSources || 8}` : events?.total ? "Refresh history" : "Import history"}
@@ -502,7 +502,7 @@ function NewsImpactLab({
                 <span><strong>{event.valueStatus === "observed_values" ? "Observed" : "Pending"}</strong><small>{event.consensus === null ? "No free official consensus" : `Consensus ${event.consensus}`}</small></span>
                 <span>
                   <a href={event.sourceUrl} target="_blank" rel="noreferrer">FRED <ArrowRight size={12} /></a>
-                  {event.scheduleSourceUrl ? <a href={event.scheduleSourceUrl} target="_blank" rel="noreferrer">BLS time <ArrowRight size={12} /></a> : null}
+                  {event.scheduleSourceUrl ? <a href={event.scheduleSourceUrl} target="_blank" rel="noreferrer">{scheduleSourceLabel(event.scheduleSource)} time <ArrowRight size={12} /></a> : null}
                 </span>
               </article>
             ))}
@@ -518,6 +518,16 @@ function NewsImpactLab({
 
 function numberProgress(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function scheduleSourceLabel(source: MarketEventsResult["events"][number]["scheduleSource"]) {
+  switch (source) {
+    case "bls": return "BLS";
+    case "census": return "Census";
+    case "bea": return "BEA";
+    case "federal_reserve": return "Federal Reserve";
+    default: return "Official";
+  }
 }
 
 function formatEventDate(value: string) {

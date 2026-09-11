@@ -14,8 +14,8 @@ import {
   type MarketEvent,
   type MarketEventsResult,
 } from "@/lib/market-research/contracts";
-import type { BlsReleaseScheduleEntry } from "@/lib/market-research/bls";
 import type { FredReleaseDate } from "@/lib/market-research/fred";
+import type { OfficialMarketScheduleEntry } from "@/lib/market-research/official-schedules";
 import {
   assertExecutionScopeTenant,
   type ExecutionScope,
@@ -101,11 +101,11 @@ export async function saveFredMarketEvents(input: {
   return { inserted };
 }
 
-export async function saveBlsMarketEventSchedules(input: {
+export async function saveOfficialMarketEventSchedules(input: {
   tenantId: string;
   actorId: string;
   executionScope: ExecutionScope;
-  entries: readonly BlsReleaseScheduleEntry[];
+  entries: readonly OfficialMarketScheduleEntry[];
   importId: string;
 }) {
   if (!input.entries.length) return { inserted: 0 };
@@ -116,9 +116,9 @@ export async function saveBlsMarketEventSchedules(input: {
   if (!hasDatabaseUrl()) return { inserted: 0 };
   await ensureDatabaseSchema();
   const sourceShaById = new Map(input.entries.map((entry) => {
-    const id = marketScheduleId(entry.eventKey, entry.occurredAt);
+    const id = marketScheduleId(entry.source, entry.eventKey, entry.occurredAt);
     return [id, canonicalJsonSha256({
-      source: "bls",
+      source: entry.source,
       eventKey: entry.eventKey,
       sourceUidSha256: digestFull(entry.sourceUid),
       sourceUrl: entry.sourceUrl,
@@ -136,21 +136,23 @@ export async function saveBlsMarketEventSchedules(input: {
       )
       SELECT
         1, source.id, ${input.tenantId}, ${input.actorId}, source.event_key,
-        source.name, 'USD', 'high', 'bls', source.source_uid_sha256,
+        source.name, 'USD', 'high', source.schedule_source, source.source_uid_sha256,
         source.source_url, source.release_date, source.occurred_at,
-        'America/New_York', source.source_sha256, NOW()
+        source.timezone, source.source_sha256, NOW()
       FROM UNNEST(
-        ${input.entries.map((entry) => marketScheduleId(entry.eventKey, entry.occurredAt))}::TEXT[],
+        ${input.entries.map((entry) => marketScheduleId(entry.source, entry.eventKey, entry.occurredAt))}::TEXT[],
         ${input.entries.map((entry) => entry.eventKey)}::TEXT[],
         ${input.entries.map((entry) => entry.name)}::TEXT[],
+        ${input.entries.map((entry) => entry.source)}::TEXT[],
         ${input.entries.map((entry) => digestFull(entry.sourceUid))}::TEXT[],
         ${input.entries.map((entry) => entry.sourceUrl)}::TEXT[],
         ${input.entries.map((entry) => entry.releaseDate)}::DATE[],
         ${input.entries.map((entry) => entry.occurredAt)}::TIMESTAMPTZ[],
-        ${input.entries.map((entry) => sourceShaById.get(marketScheduleId(entry.eventKey, entry.occurredAt))!)}::TEXT[]
+        ${input.entries.map((entry) => entry.timezone)}::TEXT[],
+        ${input.entries.map((entry) => sourceShaById.get(marketScheduleId(entry.source, entry.eventKey, entry.occurredAt))!)}::TEXT[]
       ) AS source(
-        id, event_key, name, source_uid_sha256, source_url, release_date,
-        occurred_at, source_sha256
+        id, event_key, name, schedule_source, source_uid_sha256, source_url,
+        release_date, occurred_at, timezone, source_sha256
       )
       ON CONFLICT (tenant_id, owner_actor_id, source, event_key, occurred_at)
       DO NOTHING
@@ -213,6 +215,10 @@ export async function listMarketEvents(input: {
       ) schedule ON TRUE
       WHERE events.tenant_id = ${input.tenantId}
         AND events.owner_actor_id = ${input.actorId}
+        AND (
+          events.event_key <> 'us.fomc'
+          OR schedule.occurred_at IS NOT NULL
+        )
       ORDER BY events.release_date DESC, events.event_key ASC
       LIMIT ${input.limit}
     `;
@@ -221,6 +227,17 @@ export async function listMarketEvents(input: {
       FROM omni_market_macro_events
       WHERE tenant_id = ${input.tenantId}
         AND owner_actor_id = ${input.actorId}
+        AND (
+          event_key <> 'us.fomc'
+          OR EXISTS (
+            SELECT 1
+            FROM omni_market_macro_event_schedules schedules
+            WHERE schedules.tenant_id = omni_market_macro_events.tenant_id
+              AND schedules.owner_actor_id = omni_market_macro_events.owner_actor_id
+              AND schedules.event_key = omni_market_macro_events.event_key
+              AND schedules.release_date = omni_market_macro_events.release_date
+          )
+        )
     `;
   return marketEventsResultSchema.parse({
     contractVersion: MARKET_RESEARCH_CONTRACT_VERSION,
@@ -294,8 +311,12 @@ function marketEventLedgerId(importId: string, eventId: string) {
   return `market_event_ledger_${digest(`${importId}:${eventId}`)}`;
 }
 
-function marketScheduleId(eventKey: string, occurredAt: string) {
-  return `market_schedule_${digest(`bls:${eventKey}:${occurredAt}`)}`;
+function marketScheduleId(
+  source: OfficialMarketScheduleEntry["source"],
+  eventKey: string,
+  occurredAt: string,
+) {
+  return `market_schedule_${digest(`${source}:${eventKey}:${occurredAt}`)}`;
 }
 
 function marketScheduleLedgerId(importId: string, scheduleId: string) {

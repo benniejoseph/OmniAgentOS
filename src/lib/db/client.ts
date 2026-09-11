@@ -1477,6 +1477,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[159],
       up: ensureMarketPriceSnapshotV1,
     },
+    {
+      ...databaseSchemaMigrations[160],
+      up: ensureMarketOfficialScheduleSourcesV1,
+    },
   ];
 }
 
@@ -18264,6 +18268,36 @@ async function ensureMarketEventScheduleV1(sql: SqlClient) {
     END
     $grants$
   `;
+}
+
+async function ensureMarketOfficialScheduleSourcesV1(sql: SqlClient) {
+  await sql.query(`
+    ALTER TABLE omni_market_macro_event_schedules
+      DROP CONSTRAINT IF EXISTS omni_market_macro_event_schedules_row_check;
+    ALTER TABLE omni_market_macro_event_schedules
+      ADD CONSTRAINT omni_market_macro_event_schedules_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^market_schedule_[0-9a-f]{48}$'
+        AND btrim(tenant_id) <> '' AND btrim(owner_actor_id) <> ''
+        AND event_key ~ '^[a-z0-9][a-z0-9._-]{1,79}$'
+        AND char_length(name) BETWEEN 1 AND 160
+        AND currency = 'USD' AND impact = 'high'
+        AND source IN ('bls', 'census', 'bea', 'federal_reserve')
+        AND source_uid_sha256 ~ '^[0-9a-f]{64}$'
+        AND (
+          (source = 'bls' AND source_url LIKE 'https://www.bls.gov/%')
+          OR (source = 'census' AND source_url LIKE 'https://www.census.gov/%')
+          OR (source = 'bea' AND source_url LIKE 'https://www.bea.gov/%')
+          OR (
+            source = 'federal_reserve'
+            AND source_url LIKE 'https://www.federalreserve.gov/%'
+          )
+        )
+        AND timezone = 'America/New_York'
+        AND release_date = (occurred_at AT TIME ZONE 'America/New_York')::DATE
+        AND source_sha256 ~ '^[0-9a-f]{64}$' AND imported_at <= NOW()
+      , FALSE));
+  `);
 }
 
 async function ensureMarketPriceSnapshotV1(sql: SqlClient) {
