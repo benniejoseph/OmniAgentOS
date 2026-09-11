@@ -119,6 +119,7 @@ describe("governed native tool schemas", () => {
     for (const id of [
       "google.gmail.search",
       "google.gmail.read",
+      "google.drive.search",
       "google.drive.download",
       "google.docs.read",
       "google.sheets.read",
@@ -175,6 +176,12 @@ describe("governed native tool schemas", () => {
       properties: {
         query: { type: "string", minLength: 1, maxLength: 500 },
         maxResults: { type: "integer", minimum: 1, maximum: 10, default: 5 },
+      },
+    });
+    expect(getGovernedTool("google.drive.search")?.inputSchema).toMatchObject({
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 200 },
+        maxResults: { type: "integer", minimum: 1, maximum: 20, default: 10 },
       },
     });
     expect(getGovernedTool("google.docs.update")?.inputSchema).toMatchObject({

@@ -130,6 +130,28 @@ export const governedTools: ToolDefinition[] = [
     },
   },
   {
+    id: "google.drive.search",
+    name: "Search and List Google Drive Files",
+    description: "Find live files in the connected user's Google Drive by name or full text, or list the most recently modified files. Returns stable IDs and bounded untrusted metadata so Docs, Sheets, Slides, and other Drive files can be read or edited with the exact governed tool.",
+    category: "connector",
+    status: "active",
+    riskLevel: 0,
+    dryRunSupported: true,
+    approvalRequired: false,
+    operationClass: "read_only",
+    reversible: true,
+    inputSchema: objectSchema({
+      query: {
+        type: "string",
+        description: "Optional plain-text name or content search. Omit to list recently modified files.",
+        minLength: 1,
+        maxLength: 200,
+        pattern: "^[^\\u0000-\\u001f\\u007f]+$",
+      },
+      maxResults: { type: "integer", minimum: 1, maximum: 20, default: 10 },
+    }),
+  },
+  {
     id: "google.drive.download",
     name: "Read Google Drive File",
     description: "Fetch one exact non-native Drive file with a bounded untrusted-text preview for text formats; binary or oversized files return safe metadata without entering bytes into the agent transcript. Use the dedicated Docs, Sheets, or Slides read tool for native files.",

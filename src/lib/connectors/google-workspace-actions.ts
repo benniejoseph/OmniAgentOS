@@ -80,6 +80,12 @@ export const googleWorkspaceActionSchemas = Object.freeze({
   }).strict(),
   "google.gmail.read": z.object({ messageId: providerIdSchema }).strict(),
   "google.gmail.trash": z.object({ messageId: providerIdSchema }).strict(),
+  "google.drive.search": z.object({
+    query: z.string().trim().min(1).max(200)
+      .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "Drive search contains unsupported characters.")
+      .optional(),
+    maxResults: z.number().int().min(1).max(20).default(10),
+  }).strict(),
   "google.drive.download": z.object({
     fileId: providerIdSchema,
     maxBytes: z.number().int().min(1).max(MAX_DOWNLOAD_PREVIEW_BYTES).default(64_000),
@@ -293,6 +299,8 @@ export async function executeGoogleWorkspaceAction(
       return readGmailMessageResult(input, provider);
     case "google.gmail.trash":
       return trashGmailMessage(input, effectOptions, provider, "provider_response");
+    case "google.drive.search":
+      return searchDriveFiles(input, provider);
     case "google.drive.download":
       return downloadDriveFile(input, provider);
     case "google.drive.create":
@@ -412,7 +420,7 @@ export async function reconcileGoogleWorkspaceMutation(
 function capabilityForTool(toolId: GoogleWorkspaceActionToolId): GoogleWorkspaceCapability {
   if (toolId === "google.gmail.search" || toolId === "google.gmail.read") return "gmail.read";
   if (toolId === "google.gmail.trash") return "gmail.trash";
-  if (toolId === "google.drive.download") return "drive.read";
+  if (toolId === "google.drive.search" || toolId === "google.drive.download") return "drive.read";
   if (toolId.startsWith("google.drive.")) return "drive.write";
   if (toolId === "google.docs.read") return "docs.read";
   if (toolId === "google.docs.update") return "docs.write";
@@ -692,6 +700,62 @@ async function downloadDriveFile(input: Record<string, unknown>, provider: Provi
     contentTrust: "untrusted_provider_content",
     ...(textPreview === undefined ? {} : { textPreview }),
   };
+}
+
+async function searchDriveFiles(
+  input: Record<string, unknown>,
+  provider: ProviderContext,
+) {
+  const query = typeof input.query === "string" ? input.query : undefined;
+  const maxResults = Number(input.maxResults);
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set("pageSize", String(maxResults));
+  url.searchParams.set("orderBy", "modifiedTime desc");
+  url.searchParams.set("spaces", "drive");
+  url.searchParams.set("supportsAllDrives", "true");
+  url.searchParams.set("includeItemsFromAllDrives", "true");
+  url.searchParams.set(
+    "fields",
+    "files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink,parents,capabilities(canEdit,canDownload))",
+  );
+  url.searchParams.set(
+    "q",
+    query
+      ? `trashed = false and (name contains '${escapeDriveQueryLiteral(query)}' or fullText contains '${escapeDriveQueryLiteral(query)}')`
+      : "trashed = false",
+  );
+  const result = await providerJson(url, provider);
+  const files = array(result?.files).slice(0, maxResults).flatMap((value) => {
+    const file = record(value);
+    const fileId = safeProviderId(file.id);
+    if (!fileId) return [];
+    const capabilities = record(file.capabilities);
+    return [{
+      fileId,
+      name: boundedProviderString(file.name, 255),
+      mimeType: boundedProviderString(file.mimeType, 127),
+      size: optionalProviderByteSize(file.size),
+      createdTime: boundedProviderString(file.createdTime, 64),
+      modifiedTime: boundedProviderString(file.modifiedTime, 64),
+      webViewLink: boundedProviderString(file.webViewLink, 2_000),
+      parentIds: stringArray(file.parents).slice(0, 100).flatMap((parentId) => {
+        const safeId = safeProviderId(parentId);
+        return safeId ? [safeId] : [];
+      }),
+      canEdit: capabilities.canEdit === true,
+      canDownload: capabilities.canDownload === true,
+    }];
+  });
+  return {
+    query: query || "",
+    files,
+    resultCount: files.length,
+    contentTrust: "untrusted_provider_content",
+  };
+}
+
+function escapeDriveQueryLiteral(value: string) {
+  return value.replaceAll("\\", "\\\\").replaceAll("'", "\\'");
 }
 
 async function createDriveFile(input: Record<string, unknown>, options: EffectActionOptions, provider: ProviderContext) {

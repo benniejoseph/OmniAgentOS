@@ -605,8 +605,8 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.settings.api_keys.revoke", "Revoke service API key", "Revoke one exact service API key only when its redacted target digest still matches.", requiredObjectSchema({
     id: opaqueId("Exact service API-key ID."), expectedTargetSha256: sha256("Digest returned by the API-key revocation preview."),
   }, ["id", "expectedTargetSha256"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
-  readTool("app.communications.policies.list", "List contact policies", "List the current actor's governed person and channel communication policies.", objectSchema({})),
-  mutationTool("app.communications.policies.upsert", "Set contact policy", "Create or update one actor-private contact policy with explicit relationship, consent, disclosure, quiet-hours, frequency, and opt-out controls.", requiredObjectSchema({
+  readTool("app.communications.policies.list", "List Gmail and email contact policies", "List the current actor's governed person, Gmail, and email channel communication policies required before sending.", objectSchema({})),
+  mutationTool("app.communications.policies.upsert", "Set Gmail or email contact policy", "Create or update one actor-private Gmail or email contact policy with explicit relationship, consent, disclosure, quiet-hours, frequency, and opt-out controls before sending.", requiredObjectSchema({
     personRef: opaqueId("Stable person reference."), displayName: text(1, 240),
     channel: { type: "string", enum: ["email", "message", "voice"] }, address: text(3, 500),
     relationship: { type: "string", enum: ["personal", "colleague", "customer", "vendor", "other"] },
@@ -621,14 +621,14 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     }, ["enabled", "timeZone", "start", "end"]),
     status: { type: "string", enum: ["active", "paused", "opted_out"] }, optOutReason: text(1, 500),
   }, ["personRef", "displayName", "channel", "address", "relationship", "allowedPurposes", "allowedDisclosure", "consent", "maxDeliveriesPerDay", "quietHours", "status"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
-  readTool("app.communications.drafts.list", "List message drafts", "List actor-private governed communication drafts, including their exact lifecycle state.", objectSchema({})),
-  mutationTool("app.communications.drafts.create", "Create message draft", "Create an immutable actor-private draft under one exact contact policy; this does not contact the recipient.", requiredObjectSchema({
+  readTool("app.communications.drafts.list", "List Gmail and email drafts", "List actor-private governed Gmail and email drafts, including their exact lifecycle state.", objectSchema({})),
+  mutationTool("app.communications.drafts.create", "Create Gmail or email draft", "Create an immutable actor-private Gmail or email draft under one exact contact policy; this does not contact or send to the recipient.", requiredObjectSchema({
     policyId: { type: "string", pattern: "^contact_policy:[0-9a-f-]{36}$", maxLength: 51 },
     purpose: { type: "string", enum: ["informational", "coordination", "follow_up", "support", "commercial"] },
     disclosure: { type: "string", enum: ["public_only", "relationship_context", "confidential"] },
     subject: text(1, 998), body: text(1, 50_000), canonicalThreadId: opaqueId("Optional owned conversation ID."),
   }, ["policyId", "purpose", "disclosure", "subject", "body"]), { reversible: true }),
-  mutationTool("app.communications.deliver", "Deliver approved message", "Deliver only the exact persisted Gmail draft shown for approval. Recipient, subject, body, and immutable digest must all still match; spoken or free-form confirmation is insufficient.", requiredObjectSchema({
+  mutationTool("app.communications.deliver", "Send approved Gmail or email message", "Send and deliver only the exact persisted Gmail or email draft shown for approval. Recipient, subject, body, and immutable digest must all still match; spoken or free-form confirmation is insufficient.", requiredObjectSchema({
     draftId: { type: "string", pattern: "^message_draft:[0-9a-f-]{36}$", maxLength: 50 },
     expectedDraftSha256: sha256("Immutable digest returned with the draft."),
     reviewedRecipient: text(3, 500), reviewedSubject: text(1, 998), reviewedBody: text(1, 50_000),
@@ -654,10 +654,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
       expiresAt: { type: "string", format: "date-time" },
     }, ["merchant", "merchantOrderId", "items", "totals", "shipping", "paymentInstrument", "paymentConstraints", "expiresAt"]),
   }, ["shoppingAgentPrincipalId", "intentSha256", "merchantCheckoutJwt", "terms"]), { reversible: true }),
-  readTool("app.assets.list", "List captured assets", "List actor-readable uploaded assets and recording metadata without copying stored binary content into the transcript.", objectSchema({
+  readTool("app.assets.list", "List captured files and imported Google Photos", "List actor-readable uploaded files, recordings, and photos explicitly imported through Google Photos Picker without copying stored binary content into the transcript.", objectSchema({
     kind: assetKind(), limit: integer(1, 100, 50),
   })),
-  readTool("app.assets.show", "Show captured asset", "Read metadata for one exact uploaded asset or recording without returning stored binary content.", requiredObjectSchema({
+  readTool("app.assets.show", "Show captured file or imported Google Photo", "Read metadata for one exact uploaded file, recording, or photo explicitly imported through Google Photos Picker without returning stored binary content.", requiredObjectSchema({
     kind: assetKind(), id: opaqueId("Exact capture asset or recording ID."),
   }, ["kind", "id"])),
   mutationTool("app.assets.index", "Index captured asset", "Extract or accept a supplied note for one already stored asset, then enqueue it for governed knowledge ingestion without returning binary content.", requiredObjectSchema({
