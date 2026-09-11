@@ -35,6 +35,8 @@ import {
 } from "@/lib/memory/quality-metrics";
 import { listKnowledgeCognitions } from "@/lib/knowledge/cognification-store";
 import { getKnowledgeStats, listKnowledgeDocuments } from "@/lib/rag/store";
+import { projectPublicRetrievalOutcomeAggregateV1 } from "@/lib/rag/retrieval-outcome";
+import { listActorRetrievalOutcomeObservations } from "@/lib/runs/retrieval-outcomes";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { memoryTierSchema } from "@/lib/memory/tier-policy";
 import { getLatestScopedStreamEventAt } from "@/lib/events/store";
@@ -139,6 +141,7 @@ export async function showMemoryIntelligenceService(
     deletionBarriers,
     lastMaintenanceAt,
     cognitionRecords,
+    retrievalOutcomeSamples,
   ] = await Promise.all([
     readMemoryCatalog(caller, requestAccess, "durable"),
     listKnowledgeDocuments(5_000, {
@@ -174,6 +177,17 @@ export async function showMemoryIntelligenceService(
           limit: 250,
         })
       : Promise.resolve([]),
+    actorBinding
+      ? listActorRetrievalOutcomeObservations({
+          tenantId: caller.context.tenantId,
+          ownerActorIds: actorBinding.readableOwnerActorIds,
+          limit: 250,
+        })
+      : Promise.resolve({
+          eligibleRatedRunCount: 0,
+          observations: [],
+          invalidOrExcludedCount: 0,
+        }),
   ]);
   const generatedAt = new Date().toISOString();
   const readableOwnerActorIds = new Set(
@@ -197,6 +211,19 @@ export async function showMemoryIntelligenceService(
         chunks: knowledgeStats.chunks,
       },
       latestGraphBuild: latestGraphBuild || null,
+      retrievalOutcomes: {
+        eligibleRatedRunCount:
+          retrievalOutcomeSamples.eligibleRatedRunCount,
+        invalidOrExcludedCount:
+          retrievalOutcomeSamples.invalidOrExcludedCount,
+        aggregate: projectPublicRetrievalOutcomeAggregateV1({
+          tenantId: caller.context.tenantId,
+          actorIds: readableOwnerActorIds.size
+            ? [...readableOwnerActorIds]
+            : [caller.context.actorId],
+          observations: retrievalOutcomeSamples.observations,
+        }),
+      },
       generatedAt,
     }),
   );

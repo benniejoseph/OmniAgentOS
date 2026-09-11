@@ -149,12 +149,12 @@
 .universeWrap { padding: 1.2rem clamp(1rem, 3.2vw, 4rem) 0; }
 .universeLoading { display: flex; min-height: 32rem; align-items: center; justify-content: center; gap: .55rem; border: 1px solid var(--memory-line); border-radius: 1.8rem; color: var(--memory-muted); background: var(--memory-paper); font-size: .76rem; }
 .cognitionSection { margin: 1rem; overflow: hidden; border: 1px solid color-mix(in oklab, var(--memory-primary) 30%, var(--memory-line)); border-radius: 1.3rem; background: color-mix(in oklab, var(--memory-mint) 26%, var(--memory-paper-solid)); }
-.qualityMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 1rem; overflow: hidden; border: 1px solid var(--memory-line); border-radius: 1.1rem; background: var(--memory-paper-solid); }
+.qualityMetrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); margin: 1rem; overflow: hidden; border: 1px solid var(--memory-line); border-radius: 1.1rem; background: var(--memory-paper-solid); }
 .qualityMetrics article { display: grid; min-width: 0; gap: .35rem; padding: 1rem; }
 .qualityMetrics article + article { border-left: 1px solid var(--memory-line); }
-.qualityMetrics span { color: var(--memory-primary); font-size: .72rem; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; }
+.qualityMetrics span { color: var(--memory-primary); font-size: .74rem; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; }
 .qualityMetrics strong { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.2rem, 1.7vw, 1.6rem); font-weight: 620; font-variant-numeric: tabular-nums; }
-.qualityMetrics small { overflow: hidden; color: var(--memory-muted); font-size: .72rem; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.qualityMetrics small { color: var(--memory-muted); font-size: .76rem; line-height: 1.45; }
 .reviewSectionHeading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: 1rem; }
 .reviewSectionIcon { display: grid; width: 2.6rem; height: 2.6rem; place-items: center; border-radius: .85rem; color: var(--memory-primary); background: var(--memory-paper-solid); box-shadow: 0 .5rem 1.5rem color-mix(in oklab, var(--memory-primary) 10%, transparent); }
 .reviewSectionHeading > div:nth-child(2) p, .memoryReviewHeading p { color: var(--memory-primary); font-size: .64rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }

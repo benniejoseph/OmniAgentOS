@@ -192,11 +192,18 @@ export function projectRetrievalOutcomeObservationV1(input: Readonly<{
  */
 export function projectPublicRetrievalOutcomeAggregateV1(input: Readonly<{
   tenantId: string;
-  actorId: string;
+  actorId?: string;
+  actorIds?: readonly string[];
   observations: readonly RetrievalOutcomeObservationV1[];
 }>): PublicRetrievalOutcomeAggregateV1 {
   const tenantId = requiredId(input.tenantId, "tenant");
-  const actorId = requiredId(input.actorId, "actor");
+  const actorIds = new Set([
+    ...(input.actorId ? [requiredId(input.actorId, "actor")] : []),
+    ...(input.actorIds || []).map((actorId) => requiredId(actorId, "actor")),
+  ]);
+  if (!actorIds.size) {
+    throw new Error("Retrieval outcome aggregate requires an actor scope.");
+  }
   const aggregate = {
     schemaVersion: 1 as const,
     version: RETRIEVAL_OUTCOME_PUBLIC_AGGREGATE_VERSION,
@@ -211,7 +218,7 @@ export function projectPublicRetrievalOutcomeAggregateV1(input: Readonly<{
   };
 
   for (const observation of input.observations) {
-    assertObservation(observation, tenantId, actorId);
+    assertObservation(observation, tenantId, actorIds);
     aggregate.sampleCount = addCount(aggregate.sampleCount, 1);
     if (observation.verdict === "useful") {
       aggregate.feedbackCounts.useful = addCount(
@@ -336,14 +343,14 @@ function evidenceKindCounts(ids: readonly string[]): RetrievalEvidenceKindCounts
 function assertObservation(
   observation: RetrievalOutcomeObservationV1,
   tenantId: string,
-  actorId: string,
+  actorIds: ReadonlySet<string>,
 ) {
   const { observationSha256, ...body } = observation;
   if (
     observation.schemaVersion !== 1 ||
     observation.version !== RETRIEVAL_OUTCOME_OBSERVATION_VERSION ||
     observation.tenantId !== tenantId ||
-    observation.ownerActorId !== actorId ||
+    !actorIds.has(observation.ownerActorId) ||
     observation.coverage !== COVERAGE ||
     observation.interpretation !== INTERPRETATION ||
     observation.shadowOnly !== true ||
