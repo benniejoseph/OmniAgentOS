@@ -1,6 +1,6 @@
 # ICT Trading Research Agent
 
-**Status:** Stage 0 foundation, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, deterministic technical primitives, descriptive comparable-event baselines, and the Stage 7 forward-shadow journal foundation are implemented; transcript ontology, transcript-authoritative ICT rules, sufficient calibration evidence, chart annotations, and deterministic backtesting remain pending
+**Status:** Stage 0 foundation, authorized TradingView Advanced Charts rendering, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, deterministic technical primitives, descriptive comparable-event baselines, and the Stage 7 forward-shadow journal foundation are implemented; saved chart analysis, transcript ontology, transcript-authoritative ICT rules, sufficient calibration evidence, agent annotations, and deterministic backtesting remain pending
 **Research date:** 2026-09-10; implementation activated 2026-09-11
 **Initial instruments:** Nasdaq-100 exposure and gold exposure
 
@@ -10,7 +10,7 @@ The private `/app/markets` workspace, canonical instrument registry, provider-re
 
 `Meridian` is a built-in, read-only market-research specialist. Its text model uses the separately configurable `market_research` assignment in Settings; the market workspace does not consider a deployment fallback to be an explicit assignment. The application requires only `TWELVE_DATA_API_KEY` for market bars and `FRED_API_KEY` for leakage-safe historical release dates and later vintages. The official BLS calendar is a public source and requires no application credential.
 
-The current UI exposes four progressively loaded views: Research desk, News impact lab, ICT + Quarterly, and Forecast journal. The chart library is loaded only when verified bars exist, and its data label exposes the shortened snapshot digest plus whether the server created or reused the snapshot. The News Impact Lab can enqueue and track owner-private background imports for official event history and exact XAU/USD price windows. Reviewed BLS, Census, BEA, and Federal Reserve schedules supply exact release times; initial-release FRED observations retain the values available at the historical release. Every replay stores its bounded raw provider response, normalized bars, exact event coordinate, content digests, and deterministic post-event measurements.
+The current UI exposes four progressively loaded views: Research desk, News impact lab, ICT + Quarterly, and Forecast journal. The Research desk uses the owner's authorized TradingView Advanced Charts v32.2.0 checkout with a client Datafeed over the same immutable Asael snapshot shown in its evidence label; it does not fetch a second or hidden market feed. The renderer stays mounted while the user changes research tabs, supports responsive zoom/pan, indicators, and manual drawing tools, and changes intervals only after Asael loads the corresponding evidence-bound snapshot. The chart library is loaded only when verified bars exist, and its data label exposes the shortened snapshot digest plus whether the server created or reused the snapshot. The News Impact Lab can enqueue and track owner-private background imports for official event history and exact XAU/USD price windows. Reviewed BLS, Census, BEA, and Federal Reserve schedules supply exact release times; initial-release FRED observations retain the values available at the historical release. Every replay stores its bounded raw provider response, normalized bars, exact event coordinate, content digests, and deterministic post-event measurements.
 
 The ICT + Quarterly view now runs `market-technical-primitives:1` against one caller-owned immutable snapshot. It reports New-York-time 90-minute/session context, only those calendar opens whose boundary exists inside the snapshot, range position, five-bar swings, three-bar price gaps, range-relative displacement, and 20-bar boundary sweeps. The formulas and output digest are visible. These are neutral reproducible foundations and deliberately claim no transcript authority; order blocks, market-structure shifts, inversions, and other ICT-specific semantics remain unavailable until the user's transcript evidence and reviewed definitions exist.
 
@@ -32,7 +32,7 @@ The transcripts describe a discretionary trading methodology. Their predictive v
 
 1. Use retrieval-augmented generation (RAG), a reviewed concept graph, and deterministic ICT feature detectors. Do not train a model on raw transcripts merely to make their knowledge available.
 2. Resolve the exact tradable instrument before building any market-data or backtest integration. `NDX`, `NQ`/`MNQ`, `QQQ`, broker-specific `NAS100`/`US100`, `XAU/USD`, and `GC`/`MGC` are not interchangeable.
-3. Use TradingView Lightweight Charts initially unless TradingView explicitly grants a licence that covers this private application. Advanced Charts' free conditions do not cover private or paywalled use.
+3. Use the owner's authorized TradingView Advanced Charts v32.2.0 repository access, while keeping its licensed files out of the public application repository. Repository access is technically confirmed; the owner remains responsible for retaining the private-use licence or approval associated with that access.
 4. Use Twelve Data as the initial multi-asset display and research feed. Use the intended broker's own historical feed for CFD validation, or Databento/CME data for execution-quality NQ/MNQ and GC/MGC futures research.
 5. Keep language models outside the historical replay loop. An agent may propose a typed strategy, but a deterministic engine must execute and score it.
 6. Journal every forecast before its outcome is known. Do not move beyond research mode until forward results pass predetermined gates.
@@ -101,7 +101,7 @@ Fine-tuning or distillation should be reconsidered only after there is a curated
 
 ### Advanced Charts
 
-TradingView states that Advanced Charts is free only when TradingView attribution remains visible and the implementation environment is public, not private or behind a paywall. The library is distributed from restricted repositories, is non-redistributable, and must not be placed in public repositories. See [Advanced Charts introduction](https://www.tradingview.com/charting-library-docs/latest/introduction/) and [installation requirements](https://www.tradingview.com/charting-library-docs/latest/getting_started/quick-start/).
+TradingView states that Advanced Charts is free only when TradingView attribution remains visible and the implementation environment is public, not private or behind a paywall. The library is distributed from restricted repositories, is non-redistributable, and must not be placed in public repositories. See [Advanced Charts introduction](https://www.tradingview.com/charting-library-docs/latest/introduction/) and [installation requirements](https://www.tradingview.com/charting-library-docs/latest/getting_started/quick-start/). The owner supplied and technically confirmed access to the restricted repository on 2026-09-11. Asael pins v32.2.0 at commit `f936c921ba510ba20ac51a71b8b4c5c03c043dbc`, excludes every licensed artifact from public Git, and stages those assets only from the authorized checkout during a local release.
 
 Advanced Charts and Trading Platform do not include market data. The application must implement a Datafeed API backed by its own provider. See [TradingView's Datafeed API](https://www.tradingview.com/charting-library-docs/latest/connecting_data/datafeed-api/).
 
@@ -115,9 +115,9 @@ TradingView Lightweight Charts is Apache-2.0 licensed, requires the applicable a
 
 ### Decision gate
 
-- Default to Lightweight Charts for the private first version.
-- Use Advanced Charts only after reviewing the exact licence granted to this application.
-- Keep the application's annotation schema independent of either renderer so the chart library can change without changing forecasts or backtests.
+- Advanced Charts is now the selected renderer based on the owner's restricted-repository access; retain the associated private-use approval and required attribution.
+- Never commit, mirror, package, or redistribute its library files through the public OmniAgentOS repository.
+- Keep the application's future annotation schema independent of the renderer so drawings, forecasts, and backtests remain portable.
 
 ## 4. Market-data strategy
 
@@ -261,7 +261,7 @@ If paper or live execution is considered later, it must be a separate authorizat
 
 - Choose the actual Nasdaq and gold instruments.
 - Record intended broker and execution feed.
-- Confirm Advanced Charts licence eligibility or select Lightweight Charts.
+- Retain evidence of the private-use approval associated with the authorized Advanced Charts access.
 - Define forecast horizons, risk language and evaluation metrics.
 
 **Exit gate:** one reviewed instrument registry and one documented chart-library decision.
@@ -341,7 +341,7 @@ Live execution is outside this research plan and requires a separate decision, t
 1. Is the target Nasdaq product `NDX`, `NQ`/`MNQ`, `QQQ`, or a named broker's NAS100/US100 CFD?
 2. Is the gold product `XAU/USD` from a named broker or `GC`/`MGC` futures?
 3. Which broker feed must the eventual research match?
-4. Does the supplied TradingView access explicitly permit private use, or should the first version use Lightweight Charts?
+4. TradingView repository access is confirmed and Advanced Charts is integrated. Retain the corresponding private-use approval; access alone must not be treated as a general redistribution licence.
 5. Are all transcript files lawfully available for private processing, and do they include course/video metadata and dates?
 6. What forecast horizons and sessions should be evaluated first?
 7. What forward-shadow duration and minimum evidence threshold will be required before paper trading is even considered?

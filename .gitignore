@@ -45,6 +45,10 @@ screenshots/
 # vercel
 .vercel
 
+# TradingView Advanced Charts is licensed and non-redistributable. The release
+# sync script stages the authorized files locally; never commit them.
+/public/vendor/tradingview/
+
 # supabase cli
 /supabase/.temp/
 

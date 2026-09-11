@@ -1,96 +1,243 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import type { UTCTimestamp } from "lightweight-charts";
+import { AlertTriangle, RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
-import type { MarketBar } from "@/lib/market-research/contracts";
 import styles from "@/components/market-research/market-research-workspace.module.css";
+import type {
+  MarketBarsResult,
+  MarketInstrument,
+} from "@/lib/market-research/contracts";
+import {
+  createAsaelTradingViewDatafeed,
+  marketIntervalToTradingViewResolution,
+  TRADINGVIEW_LIBRARY_PATH,
+  TRADINGVIEW_LIBRARY_SCRIPT,
+  TRADINGVIEW_LIBRARY_VERSION,
+  type AsaelTradingViewDatafeed,
+  type TradingViewMarketSnapshot,
+} from "@/lib/market-research/tradingview-datafeed";
 
-export function PriceChart({ bars }: { bars: readonly MarketBar[] }) {
+type TradingViewWidget = {
+  chartReady: () => Promise<void>;
+  activeChart: () => { resetData: () => void };
+  setSymbol: (
+    symbol: string,
+    resolution: string,
+    callback: () => void,
+  ) => void;
+  remove: () => void;
+};
+
+type TradingViewWidgetConstructor = new (options: {
+  container: HTMLElement;
+  datafeed: AsaelTradingViewDatafeed;
+  library_path: string;
+  symbol: string;
+  interval: string;
+  locale: "en";
+  timezone: string;
+  autosize: true;
+  fullscreen: false;
+  theme: "dark";
+  disabled_features: string[];
+  enabled_features: string[];
+  loading_screen: { backgroundColor: string; foregroundColor: string };
+  overrides: Record<string, boolean | string | number>;
+}) => TradingViewWidget;
+
+type TradingViewWindow = Window & {
+  TradingView?: { widget: TradingViewWidgetConstructor };
+};
+
+let chartLibraryPromise: Promise<TradingViewWidgetConstructor> | undefined;
+
+export function PriceChart({
+  instrument,
+  bars,
+}: {
+  instrument: MarketInstrument;
+  bars: MarketBarsResult;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
-
+  const widgetRef = useRef<TradingViewWidget | undefined>(undefined);
+  const readyRef = useRef(false);
+  const activeSnapshotRef = useRef<TradingViewMarketSnapshot>({ instrument, bars });
+  const appliedSnapshotRef = useRef({
+    instrumentId: instrument.instrumentId,
+    snapshotId: bars.snapshotId,
+    interval: bars.interval,
+  });
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || bars.length === 0) return;
+    if (!container) return;
     let disposed = false;
-    let resizeObserver: ResizeObserver | undefined;
-    let cleanupChart = () => {};
+    readyRef.current = false;
+    setStatus("loading");
 
-    void import("lightweight-charts").then((charts) => {
+    void loadTradingViewLibrary().then((Widget) => {
       if (disposed) return;
-      const root = getComputedStyle(document.documentElement);
-      const chart = charts.createChart(container, {
-        autoSize: true,
-        layout: {
-          background: { type: charts.ColorType.Solid, color: "transparent" },
-          textColor: root.getPropertyValue("--muted").trim() || "#8aa29f",
-          attributionLogo: true,
-          fontFamily: "var(--font-geist-sans), ui-sans-serif, system-ui",
+      const snapshot = activeSnapshotRef.current;
+      appliedSnapshotRef.current = {
+        instrumentId: snapshot.instrument.instrumentId,
+        snapshotId: snapshot.bars.snapshotId,
+        interval: snapshot.bars.interval,
+      };
+      const widget = new Widget({
+        container,
+        datafeed: createAsaelTradingViewDatafeed(() => activeSnapshotRef.current),
+        library_path: TRADINGVIEW_LIBRARY_PATH,
+        symbol: snapshot.instrument.instrumentId,
+        interval: marketIntervalToTradingViewResolution(snapshot.bars.interval),
+        locale: "en",
+        timezone: snapshot.instrument.assetClass === "equity_index"
+          ? "America/New_York"
+          : "Etc/UTC",
+        autosize: true,
+        fullscreen: false,
+        theme: "dark",
+        disabled_features: [
+          "header_symbol_search",
+          "symbol_search_hot_key",
+          "header_resolutions",
+          "show_interval_dialog_on_key_press",
+          "header_compare",
+          "header_saveload",
+          "header_undo_redo",
+          "timeframes_toolbar",
+        ],
+        enabled_features: [
+          "chart_scroll",
+          "chart_zoom",
+          "handle_scale",
+          "handle_scroll",
+        ],
+        loading_screen: {
+          backgroundColor: "#101d21",
+          foregroundColor: "#72d7bd",
         },
-        grid: {
-          vertLines: { color: "rgba(126, 180, 170, 0.10)" },
-          horzLines: { color: "rgba(126, 180, 170, 0.10)" },
-        },
-        crosshair: { mode: charts.CrosshairMode.Normal },
-        rightPriceScale: {
-          borderColor: "rgba(126, 180, 170, 0.22)",
-          scaleMargins: { top: 0.12, bottom: 0.1 },
-        },
-        timeScale: {
-          borderColor: "rgba(126, 180, 170, 0.22)",
-          timeVisible: true,
-          secondsVisible: false,
-          rightOffset: 4,
-        },
-        handleScroll: {
-          mouseWheel: true,
-          pressedMouseMove: true,
-          horzTouchDrag: true,
-          vertTouchDrag: true,
-        },
-        handleScale: {
-          axisPressedMouseMove: true,
-          mouseWheel: true,
-          pinch: true,
+        overrides: {
+          "paneProperties.background": "#101d21",
+          "paneProperties.backgroundType": "solid",
+          "paneProperties.vertGridProperties.color": "rgba(126, 180, 170, 0.08)",
+          "paneProperties.horzGridProperties.color": "rgba(126, 180, 170, 0.08)",
+          "scalesProperties.textColor": "#9ab0ad",
+          "scalesProperties.lineColor": "rgba(126, 180, 170, 0.20)",
+          "mainSeriesProperties.candleStyle.upColor": "#72d7bd",
+          "mainSeriesProperties.candleStyle.downColor": "#ef8d86",
+          "mainSeriesProperties.candleStyle.borderUpColor": "#72d7bd",
+          "mainSeriesProperties.candleStyle.borderDownColor": "#ef8d86",
+          "mainSeriesProperties.candleStyle.wickUpColor": "#72d7bd",
+          "mainSeriesProperties.candleStyle.wickDownColor": "#ef8d86",
         },
       });
-      const series = chart.addSeries(charts.CandlestickSeries, {
-        upColor: "#72d7bd",
-        downColor: "#ef8d86",
-        borderUpColor: "#72d7bd",
-        borderDownColor: "#ef8d86",
-        wickUpColor: "#72d7bd",
-        wickDownColor: "#ef8d86",
+      widgetRef.current = widget;
+      return widget.chartReady().then(() => {
+        if (disposed) return;
+        readyRef.current = true;
+        setStatus("ready");
       });
-      series.setData(bars.map((bar) => ({
-        time: bar.time as UTCTimestamp,
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-      })));
-      chart.timeScale().fitContent();
-      resizeObserver = new ResizeObserver(() => chart.resize(
-        container.clientWidth,
-        container.clientHeight,
-      ));
-      resizeObserver.observe(container);
-      cleanupChart = () => chart.remove();
+    }).catch(() => {
+      if (!disposed) setStatus("error");
     });
 
     return () => {
       disposed = true;
-      resizeObserver?.disconnect();
-      cleanupChart();
+      readyRef.current = false;
+      widgetRef.current?.remove();
+      widgetRef.current = undefined;
+      container.replaceChildren();
     };
-  }, [bars]);
+  }, [attempt]);
+
+  useEffect(() => {
+    activeSnapshotRef.current = { instrument, bars };
+    const widget = widgetRef.current;
+    if (!widget || !readyRef.current) return;
+    const applied = appliedSnapshotRef.current;
+    if (
+      bars.snapshotId === applied.snapshotId &&
+      bars.interval === applied.interval &&
+      instrument.instrumentId === applied.instrumentId
+    ) return;
+    const resolution = marketIntervalToTradingViewResolution(bars.interval);
+    appliedSnapshotRef.current = {
+      instrumentId: instrument.instrumentId,
+      snapshotId: bars.snapshotId,
+      interval: bars.interval,
+    };
+    if (
+      applied.interval !== bars.interval ||
+      applied.instrumentId !== instrument.instrumentId
+    ) {
+      widget.setSymbol(instrument.instrumentId, resolution, () => undefined);
+      return;
+    }
+    widget.activeChart().resetData();
+  }, [bars, instrument]);
 
   return (
-    <div
-      ref={containerRef}
-      className={styles.chartCanvas}
-      role="img"
-      aria-label={`Interactive candlestick chart with ${bars.length} provider bars`}
-    />
+    <div className={styles.advancedChart} data-state={status}>
+      <div
+        ref={containerRef}
+        className={styles.chartCanvas}
+        role="region"
+        aria-label={`TradingView Advanced Chart for ${instrument.label} with ${bars.bars.length} evidence-bound provider bars`}
+        aria-busy={status === "loading"}
+      />
+      {status === "loading" ? (
+        <div className={styles.chartLibraryState} aria-live="polite">
+          <RefreshCw className={styles.spin} size={14} />
+          Loading TradingView Advanced Charts
+        </div>
+      ) : null}
+      {status === "error" ? (
+        <div className={styles.chartLibraryError} role="alert">
+          <AlertTriangle size={19} />
+          <strong>Advanced Chart could not load</strong>
+          <p>The licensed TradingView v{TRADINGVIEW_LIBRARY_VERSION} assets are unavailable in this release.</p>
+          <button type="button" onClick={() => setAttempt((value) => value + 1)}>
+            <RefreshCw size={14} /> Retry
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
+}
+
+function loadTradingViewLibrary() {
+  const tradingViewWindow = window as unknown as TradingViewWindow;
+  const existingConstructor = tradingViewWindow.TradingView?.widget;
+  if (existingConstructor) return Promise.resolve(existingConstructor);
+  if (chartLibraryPromise) return chartLibraryPromise;
+
+  chartLibraryPromise = new Promise<TradingViewWidgetConstructor>((resolve, reject) => {
+    const existingScript = document.querySelector<HTMLScriptElement>(
+      `script[src="${TRADINGVIEW_LIBRARY_SCRIPT}"]`,
+    );
+    const script = existingScript || document.createElement("script");
+    const settle = () => {
+      const constructor = (window as unknown as TradingViewWindow).TradingView?.widget;
+      if (constructor) resolve(constructor);
+      else {
+        chartLibraryPromise = undefined;
+        reject(new Error("TradingView Advanced Charts did not initialize."));
+      }
+    };
+    script.addEventListener("load", settle, { once: true });
+    script.addEventListener("error", () => {
+      chartLibraryPromise = undefined;
+      script.remove();
+      reject(new Error("TradingView Advanced Charts assets could not load."));
+    }, { once: true });
+    if (!existingScript) {
+      script.src = TRADINGVIEW_LIBRARY_SCRIPT;
+      script.async = true;
+      script.dataset.asaelVendor = `tradingview-${TRADINGVIEW_LIBRARY_VERSION}`;
+      document.head.append(script);
+    }
+  });
+  return chartLibraryPromise;
 }

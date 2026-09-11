@@ -100,7 +100,15 @@
   oklch(0.12 0.021 207);
   background-size: 52px 52px;
 }
-.chartCanvas { width: 100%; height: clamp(24rem, 47vw, 40rem); }
+.advancedChart { position: relative; width: 100%; height: clamp(24rem, 47vw, 40rem); }
+.chartCanvas { width: 100%; height: 100%; }
+.chartLibraryState, .chartUpdating { position: absolute; z-index: 3; display: inline-flex; align-items: center; gap: .42rem; border: 1px solid var(--market-line); border-radius: 999px; color: var(--market-mint); background: oklch(0.12 0.021 207 / .9); box-shadow: 0 .7rem 2rem oklch(0.06 0.02 207 / .3); backdrop-filter: blur(12px); font-size: .61rem; }
+.chartLibraryState { top: 50%; left: 50%; padding: .55rem .75rem; transform: translate(-50%, -50%); }
+.chartUpdating { top: .7rem; right: .7rem; padding: .45rem .65rem; }
+.chartLibraryError { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; align-content: center; gap: .45rem; padding: 2rem; color: var(--market-gold); background: oklch(0.12 0.021 207 / .96); text-align: center; }
+.chartLibraryError strong { color: white; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.2rem; font-weight: 620; }
+.chartLibraryError p { max-width: 32rem; color: oklch(0.67 0.035 178); font-size: .69rem; line-height: 1.6; }
+.chartLibraryError button { display: inline-flex; min-height: 2.4rem; align-items: center; gap: .35rem; margin-top: .25rem; border: 1px solid var(--market-line); border-radius: 999px; padding: 0 .8rem; color: var(--market-mint); font-size: .64rem; font-weight: 740; }
 .chartEmpty, .chartLoading { display: grid; min-height: clamp(24rem, 47vw, 40rem); place-items: center; align-content: center; gap: .55rem; padding: 2rem; color: oklch(0.67 0.035 178); text-align: center; }
 .chartEmpty svg { color: var(--market-gold); }
 .chartEmpty strong { color: white; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.2rem; font-weight: 620; }
@@ -345,7 +353,7 @@
 
 @media (min-width: 105rem) {
   .workspace { grid-template-columns: minmax(0, 1fr) 27rem; }
-  .chartBody, .chartCanvas, .chartEmpty, .chartLoading { min-height: 42rem; height: 42rem; }
+  .chartBody, .advancedChart, .chartEmpty, .chartLoading { min-height: 42rem; height: 42rem; }
 }
 
 @media (max-width: 75rem) {
@@ -412,7 +420,7 @@
   .metric, .metric:nth-child(2), .detectorGrid article, .detectorGrid article:nth-child(even), .guardrailList p, .guardrailList p:nth-child(even) { border-right: 0; border-bottom: 1px solid var(--market-line); }
   .metric:last-child, .detectorGrid article:last-child, .guardrailList p:last-child { border-bottom: 0; }
   .chartPanel > header { align-items: flex-start; flex-direction: column; }
-  .chartBody, .chartCanvas, .chartEmpty, .chartLoading { min-height: 27rem; height: 27rem; }
+  .chartBody, .advancedChart, .chartEmpty, .chartLoading { min-height: 27rem; height: 27rem; }
   .analysisRail { display: grid; }
   .labHeader h2 { font-size: 2.5rem; }
   .scoreFrame > div { grid-template-columns: minmax(0, 1fr); }

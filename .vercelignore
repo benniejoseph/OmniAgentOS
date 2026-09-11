@@ -8,3 +8,6 @@ coverage
 screenshots
 apps/flutter
 .design
+
+# Include locally staged, licensed TradingView assets in authorized deployments.
+!public/vendor/tradingview/**
