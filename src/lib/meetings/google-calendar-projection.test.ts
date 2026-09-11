@@ -53,7 +53,10 @@ describe("Google Calendar meeting projection", () => {
         tenantId: "personal",
         canonicalActorId: actorId,
         workspaceId: "workspace:personal:11111111-1111-4111-8111-111111111111",
-        executionScope: expect.objectContaining({ purpose: "connector.google.calendar.project_meeting" }),
+        executionScope: expect.objectContaining({
+          executingPrincipalId: "connector.google.calendar_projection",
+          purpose: "meeting.write",
+        }),
       }),
       draft: expect.objectContaining({
         title: "Product review",
