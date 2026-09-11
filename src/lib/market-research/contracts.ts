@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const MARKET_RESEARCH_CONTRACT_VERSION =
-  "market-research-foundation:5" as const;
+  "market-research-foundation:6" as const;
 
 export const MARKET_INSTRUMENT_IDS = [
   "xauusd.spot",
@@ -154,6 +154,77 @@ export const marketBarsResultSchema = marketBarsProviderResultSchema.extend({
 export type MarketBarsResult = z.infer<typeof marketBarsResultSchema>;
 
 const marketDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+export const marketEventReplayRequestSchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  interval: z.enum(MARKET_INTERVALS).default("5min"),
+  startDate: marketDateSchema.default("2000-01-01"),
+  endDate: marketDateSchema,
+  maxEvents: z.number().int().min(1).max(24).default(12),
+}).strict().refine(
+  (value) => value.startDate <= value.endDate,
+  { message: "Market replay start date must not follow the end date." },
+);
+
+export type MarketEventReplayRequest = z.infer<
+  typeof marketEventReplayRequestSchema
+>;
+
+const replayPointSchema = z.object({
+  timestamp: z.string().datetime({ offset: true }),
+  close: z.number().finite(),
+  returnBps: z.number().finite(),
+}).strict();
+
+export const marketEventReplaySchema = z.object({
+  id: z.string().regex(/^market_replay_[a-f0-9]{48}$/),
+  eventId: z.string().regex(/^market_event_[a-f0-9]{48}$/),
+  eventKey: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
+  instrumentId: marketInstrumentIdSchema,
+  provider: z.enum(MARKET_PRICE_PROVIDERS),
+  providerSymbol: z.string().min(1).max(80),
+  interval: z.enum(MARKET_INTERVALS),
+  occurredAt: z.string().datetime({ offset: true }),
+  windowStart: z.string().datetime({ offset: true }),
+  windowEnd: z.string().datetime({ offset: true }),
+  retrievedAt: z.string().datetime({ offset: true }),
+  barCount: z.number().int().min(1).max(1_000),
+  snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  baseline: z.object({
+    timestamp: z.string().datetime({ offset: true }),
+    close: z.number().finite(),
+  }).strict(),
+  post5m: replayPointSchema.nullable(),
+  post15m: replayPointSchema.nullable(),
+  post60m: replayPointSchema.nullable(),
+  post240m: replayPointSchema.nullable(),
+  pre60mRangeBps: z.number().finite().nonnegative().nullable(),
+  post60mRangeBps: z.number().finite().nonnegative().nullable(),
+  maxFavorableBps: z.number().finite().nonnegative().nullable(),
+  maxAdverseBps: z.number().finite().nonnegative().nullable(),
+  direction: z.enum(["up", "down", "flat", "insufficient_data"]),
+}).strict();
+
+export type MarketEventReplay = z.infer<typeof marketEventReplaySchema>;
+
+export const marketEventReplaysQuerySchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  limit: z.number().int().min(1).max(500).default(100),
+}).strict();
+
+export const marketEventReplaysResultSchema = z.object({
+  contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
+  instrumentId: marketInstrumentIdSchema,
+  replays: z.array(marketEventReplaySchema).max(500),
+  eligibleEvents: z.number().int().nonnegative(),
+  replayedEvents: z.number().int().nonnegative(),
+  remainingEvents: z.number().int().nonnegative(),
+  lastReplayedAt: z.string().datetime({ offset: true }).nullable(),
+}).strict();
+
+export type MarketEventReplaysResult = z.infer<
+  typeof marketEventReplaysResultSchema
+>;
 
 export const marketMacroObservationSchema = z.object({
   id: z.string().regex(/^market_observation_[a-f0-9]{48}$/),

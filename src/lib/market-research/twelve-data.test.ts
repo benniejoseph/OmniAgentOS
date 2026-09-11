@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  fetchTwelveDataBarRangeSnapshot,
   fetchTwelveDataBars,
   MarketDataCredentialRequiredError,
 } from "@/lib/market-research/twelve-data";
@@ -80,5 +81,44 @@ describe("Twelve Data market adapter", () => {
       interval: "15min",
       outputSize: 100,
     })).rejects.toThrow(/oversized response/i);
+  });
+
+  it("requests an exact UTC range without applying an output-size cap", async () => {
+    process.env.TWELVE_DATA_API_KEY = "test-market-key";
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      meta: { symbol: "XAU/USD", timezone: "UTC" },
+      values: [
+        { datetime: "2026-09-10 13:00:00", open: "4000", high: "4002", low: "3998", close: "4001", volume: null },
+        { datetime: "2026-09-10 12:55:00", open: "3999", high: "4001", low: "3997", close: "4000", volume: null },
+      ],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const snapshot = await fetchTwelveDataBarRangeSnapshot({
+      instrumentId: "xauusd.spot",
+      interval: "5min",
+      startAt: "2026-09-10T12:00:00.000Z",
+      endAt: "2026-09-10T14:00:00.000Z",
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.searchParams.get("start_date")).toBe("2026-09-10 12:00:00");
+    expect(url.searchParams.get("end_date")).toBe("2026-09-10 14:00:00");
+    expect(url.searchParams.has("outputsize")).toBe(false);
+    expect(snapshot.result.bars.map((bar) => bar.close)).toEqual([4000, 4001]);
+  });
+
+  it("rejects oversized or reversed historical ranges before provider access", async () => {
+    process.env.TWELVE_DATA_API_KEY = "test-market-key";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchTwelveDataBarRangeSnapshot({
+      instrumentId: "xauusd.spot",
+      interval: "5min",
+      startAt: "2026-09-01T00:00:00.000Z",
+      endAt: "2026-09-10T00:00:00.000Z",
+    })).rejects.toThrow(/no longer than 72 hours/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
