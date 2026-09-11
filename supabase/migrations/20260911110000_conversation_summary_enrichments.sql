@@ -373,6 +373,30 @@ WITH CHECK (
   )
 );
 
+DROP POLICY IF EXISTS omni_conversation_summary_events_actor_scope
+  ON public.omni_events;
+CREATE POLICY omni_conversation_summary_events_actor_scope
+ON public.omni_events
+AS RESTRICTIVE FOR ALL TO PUBLIC
+USING (
+  public.omni_system_scope_enabled()
+  OR left(stream_id, 21) <> 'conversation-summary:'
+  OR public.omni_actor_scope_v1_allows_validated(
+    (SELECT public.omni_current_actor_scope_v1()),
+    tenant_id,
+    actor_id
+  )
+)
+WITH CHECK (
+  public.omni_system_scope_enabled()
+  OR left(stream_id, 21) <> 'conversation-summary:'
+  OR public.omni_actor_scope_v1_allows_validated(
+    (SELECT public.omni_current_actor_scope_v1()),
+    tenant_id,
+    actor_id
+  )
+);
+
 REVOKE ALL ON TABLE public.omni_conversation_summary_enrichments FROM PUBLIC;
 REVOKE ALL ON FUNCTION
   public.omni_validate_conversation_summary_enrichment_v1() FROM PUBLIC;
@@ -414,6 +438,11 @@ BEGIN
     WHERE polrelid =
       'public.omni_conversation_summary_enrichments'::regclass
       AND polname = 'omni_conversation_summary_enrichments_actor_scope'
+      AND NOT polpermissive
+  ) <> 1 OR (
+    SELECT count(*) FROM pg_policy
+    WHERE polrelid = 'public.omni_events'::regclass
+      AND polname = 'omni_conversation_summary_events_actor_scope'
       AND NOT polpermissive
   ) <> 1 OR NOT EXISTS (
     SELECT 1 FROM pg_trigger
@@ -479,7 +508,7 @@ INSERT INTO public.omni_schema_version (version, name, checksum, applied_at)
 VALUES (
   156,
   'conversation_summary_enrichments_v1',
-  '4d76c1340b7edf2fae0b5b4cf3ecfa3edf87a128b50659b12b59448320989ffc',
+  '83e7878f29b3ea25df0ecb40bd94521a3e84af93f5eae6a34ad03bd4b9071a37',
   clock_timestamp()
 );
 

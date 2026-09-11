@@ -27,11 +27,11 @@ describe("conversation summary enrichment migration", () => {
       version: 156,
       name: "conversation_summary_enrichments_v1",
       checksum:
-        "4d76c1340b7edf2fae0b5b4cf3ecfa3edf87a128b50659b12b59448320989ffc",
+        "83e7878f29b3ea25df0ecb40bd94521a3e84af93f5eae6a34ad03bd4b9071a37",
     });
     expect(migration).toContain("latest_version IS DISTINCT FROM 155");
     expect(migration).toContain(
-      "'4d76c1340b7edf2fae0b5b4cf3ecfa3edf87a128b50659b12b59448320989ffc'",
+      "'83e7878f29b3ea25df0ecb40bd94521a3e84af93f5eae6a34ad03bd4b9071a37'",
     );
     expect(migration).toContain(
       "CREATE TABLE public.omni_conversation_summary_enrichments",
@@ -72,6 +72,15 @@ describe("conversation summary enrichment migration", () => {
       "omni_conversation_summary_enrichments_actor_scope",
     );
     expect(migration).toContain(
+      "omni_conversation_summary_events_actor_scope",
+    );
+    expect(migration).toContain(
+      "left(stream_id, 21) <> 'conversation-summary:'",
+    );
+    expect(migration).toContain(
+      "omni_actor_scope_v1_allows_validated",
+    );
+    expect(migration).toContain(
       "GRANT SELECT, INSERT ON public.omni_conversation_summary_enrichments",
     );
     expect(migration).toContain(
@@ -89,6 +98,9 @@ describe("conversation summary enrichment migration", () => {
     );
     expect(bootstrap).toContain(
       "async function ensureConversationSummaryEnrichmentsV1",
+    );
+    expect(bootstrap).toContain(
+      "CREATE POLICY omni_conversation_summary_events_actor_scope",
     );
   });
 });

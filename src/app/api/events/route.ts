@@ -1,6 +1,7 @@
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseBoundedInteger } from "@/lib/http/body";
 import { listRecentEvents, listStreamEvents } from "@/lib/events/store";
+import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -24,15 +25,28 @@ async function GETHandler(request: Request) {
   const limit = parseBoundedInteger(url.searchParams.get("limit"), 50, {
     max: 200,
   });
+  const requestActorBinding =
+    canonicalRequestActorBindingFromSecurityContext(context);
+  const privateActorIds =
+    requestActorBinding?.readableOwnerActorIds || [context.actorId];
 
   if (streamId) {
     return Response.json({
       stream: streamId,
-      events: await listStreamEvents(streamId, { tenantId: context.tenantId, limit }),
+      events: await listStreamEvents(streamId, {
+        tenantId: context.tenantId,
+        privateActorIds,
+        limit,
+      }),
     });
   }
 
   return Response.json({
-    events: await listRecentEvents({ tenantId: context.tenantId, limit, type }),
+    events: await listRecentEvents({
+      tenantId: context.tenantId,
+      privateActorIds,
+      limit,
+      type,
+    }),
   });
 }
