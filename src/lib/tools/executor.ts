@@ -60,6 +60,16 @@ import {
   googleCalendarTargetState,
   reconcileGoogleCalendarEvent,
 } from "@/lib/connectors/google-calendar-write";
+import {
+  executeGoogleWorkspaceAction,
+  googleWorkspaceAuditInput,
+  googleWorkspaceEffectResultSchema,
+  googleWorkspaceEffectTarget,
+  isGoogleWorkspaceActionToolId,
+  isGoogleWorkspaceMutationToolId,
+  parseGoogleWorkspaceActionInput,
+  reconcileGoogleWorkspaceMutation,
+} from "@/lib/connectors/google-workspace-actions";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
 import { validateConnectorInput } from "@/lib/connectors/input-validation";
 import {
@@ -566,6 +576,51 @@ export async function executeGovernedTool({
   }
   if (
     !dryRun &&
+    isGoogleWorkspaceMutationToolId(tool.id) &&
+    existingRecord?.status === "executing" &&
+    executionClaimToken &&
+    executionClaimTokenFromRecord(existingRecord) === executionClaimToken &&
+    Boolean(getToolExecutionEffectIntentV2(existingRecord))
+  ) {
+    let parsedGoogleInput: Record<string, unknown>;
+    try {
+      parsedGoogleInput = parseGoogleWorkspaceActionInput(tool.id, input);
+    } catch (error) {
+      return completeClaimedInputValidationFailure(
+        existingRecord,
+        executionClaimToken,
+        error,
+        executionScope,
+        idempotencyKey,
+      );
+    }
+    const scopedGoogleRequest = await resolveToolExecutionScopeRequest({
+      record: existingRecord,
+      toolInput: parsedGoogleInput,
+      requestedScope: executionScope,
+      context,
+      executionClaimToken,
+      mcpSessionScope,
+    });
+    const reconciled = await reconcileExistingGoogleWorkspaceEffect({
+      record: existingRecord,
+      tool,
+      preparedInput: parsedGoogleInput,
+      effectBinding,
+      executionScope: scopedGoogleRequest.executionScope,
+      abortSignal,
+    });
+    if (reconciled) {
+      return { record: reconciled, result: reconciled.output };
+    }
+    // Once a Google mutation may have reached the provider, an inconclusive
+    // read cannot authorize replay: the user may have changed the resource
+    // after the first attempt. Keep the claimed execution pending for later
+    // reconciliation instead of re-emitting the approved effect.
+    return { record: existingRecord, result: null };
+  }
+  if (
+    !dryRun &&
     isSalesforceRecordWriteToolId(tool.id) &&
     existingRecord?.status === "executing" &&
     executionClaimToken &&
@@ -893,6 +948,13 @@ export async function executeGovernedTool({
         effectBinding,
         executionScope: scopedRequest.executionScope,
         abortSignal,
+      })) ?? (await reconcileExistingGoogleWorkspaceEffect({
+        record: existing,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        abortSignal,
       })) ?? (await reconcileExistingSalesforceEffect({
         record: existing,
         tool,
@@ -1025,8 +1087,11 @@ export async function executeGovernedTool({
     riskLevel: decision.riskLevel,
     dryRun,
     approvalRequired: decision.approvalRequired,
-    input:
-      redactSensitive(preparedInput) as Record<string, unknown>,
+    input: (
+      isGoogleWorkspaceActionToolId(tool.id)
+        ? googleWorkspaceAuditInput(tool.id, preparedInput)
+        : redactSensitive(preparedInput)
+    ) as Record<string, unknown>,
     reason: decision.reason,
   };
   let executionRecord = existingRecord;
@@ -1312,6 +1377,13 @@ export async function executeGovernedTool({
         executionScope: scopedRequest.executionScope,
         context,
       })) ?? (await reconcileExistingGoogleCalendarEffect({
+        record: claim.record,
+        tool,
+        preparedInput,
+        effectBinding,
+        executionScope: scopedRequest.executionScope,
+        abortSignal,
+      })) ?? (await reconcileExistingGoogleWorkspaceEffect({
         record: claim.record,
         tool,
         preparedInput,
@@ -2246,6 +2318,92 @@ async function reconcileExistingGoogleCalendarEffect(input: {
   }
 }
 
+async function reconcileExistingGoogleWorkspaceEffect(input: {
+  record: ToolExecutionRecord;
+  tool: ToolDefinition;
+  preparedInput: Record<string, unknown>;
+  effectBinding?: GovernedToolEffectBinding;
+  executionScope?: ExecutionScope;
+  abortSignal?: AbortSignal;
+}): Promise<ToolExecutionRecord | undefined> {
+  if (
+    input.record.status !== "executing" ||
+    !isGoogleWorkspaceMutationToolId(input.tool.id) ||
+    !input.executionScope?.initiatingActorId
+  ) return undefined;
+  const claimToken = executionClaimTokenFromRecord(input.record);
+  if (!claimToken) return undefined;
+  let intent: EffectIntentV2;
+  try {
+    intent = getToolExecutionEffectIntentV2(input.record) as EffectIntentV2;
+    const material = prepareProviderEffectMaterial(
+      input.tool,
+      input.preparedInput,
+      input.record.id,
+    );
+    if (!material) return undefined;
+    const expected = buildProviderEffectIntent({
+      record: input.record,
+      tool: input.tool,
+      material,
+      executionScope: input.executionScope,
+      effectBinding: input.effectBinding,
+    });
+    if (intent.effectIntentSha256 !== expected.effectIntentSha256) {
+      throw new Error(
+        "Google Workspace reconciliation does not match the persisted effect intent.",
+      );
+    }
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  let result;
+  try {
+    result = await reconcileGoogleWorkspaceMutation(
+      input.tool.id,
+      input.preparedInput,
+      {
+        tenantId: input.executionScope.tenantId,
+        actorId: input.executionScope.initiatingActorId,
+        executionId: input.record.id,
+        abortSignal: input.abortSignal,
+      },
+    );
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  if (!result) return undefined;
+  let effectReceipt: ToolExecutionRecord["effectReceipt"];
+  try {
+    effectReceipt = finalizeProviderEffectIntent(input.tool, intent, result);
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+  const terminalRecord: ToolExecutionRecord = {
+    ...input.record,
+    status: "executed",
+    output: redactSensitive(result),
+    effectReceipt,
+    completedAt: new Date().toISOString(),
+  };
+  try {
+    const saved = await completeClaimedToolExecution(
+      terminalRecord,
+      claimToken,
+      { executionScope: input.executionScope },
+    );
+    if (saved) return saved;
+    const current = await getToolExecution(input.record.id, {
+      tenantId: input.executionScope.tenantId,
+    });
+    return current?.status === "executed" && current.effectReceipt
+      ? current
+      : undefined;
+  } catch (error) {
+    throw new EffectReceiptFinalizationError({ cause: error });
+  }
+}
+
 async function reconcileExistingSalesforceEffect(input: {
   record: ToolExecutionRecord;
   tool: ToolDefinition;
@@ -2580,7 +2738,9 @@ function dryRunTool(tool: ToolDefinition, input: Record<string, unknown>) {
     riskLevel: tool.riskLevel,
     wouldExecute: tool.status === "active",
     sideEffects: describeSideEffects(tool.id),
-    normalizedInput: parsed,
+    normalizedInput: isGoogleWorkspaceActionToolId(tool.id)
+      ? googleWorkspaceAuditInput(tool.id, parsed)
+      : parsed,
   };
 }
 
@@ -2611,6 +2771,7 @@ function prepareMemoryWriteEffectContext(input: {
   if (input.tool.id !== "memory.write") {
     if (
       input.tool.id === "calendar.create" ||
+      isGoogleWorkspaceMutationToolId(input.tool.id) ||
       isSalesforceRecordWriteToolId(input.tool.id) ||
       input.tool.id === "http.request" ||
       input.tool.category === "mcp" ||
@@ -3292,6 +3453,23 @@ async function runTool(
     );
   }
 
+  if (isGoogleWorkspaceActionToolId(tool.id)) {
+    const tenantId = executionScope?.tenantId || context?.tenantId;
+    const actorId = executionScope?.initiatingActorId || context?.actorId;
+    const executionId = idempotencyKey || executionScope?.correlationId || randomUUID();
+    if (!tenantId || !actorId) {
+      throw new Error(
+        "Google Workspace actions require an exact tenant and initiating actor.",
+      );
+    }
+    return executeGoogleWorkspaceAction(tool.id, parsed, {
+      tenantId,
+      actorId,
+      executionId,
+      abortSignal,
+    });
+  }
+
   if (tool.category === "mcp") {
     const mcpTool = await getMcpToolById(tool.id, { tenantId: context?.tenantId });
     if (!mcpTool) {
@@ -3499,6 +3677,7 @@ type ProviderEffectMaterial = Readonly<{
   targetType:
     | "http_endpoint"
     | "google_calendar_event"
+    | "google_workspace_resource"
     | "salesforce_record"
     | "mcp_operation"
     | "openapi_operation";
@@ -3577,6 +3756,20 @@ function prepareProviderEffectMaterial(
       expectedTargetStateSha256: canonicalJsonSha256(
         googleCalendarTargetState(parsed, eventId),
       ),
+    });
+  }
+  if (isGoogleWorkspaceMutationToolId(tool.id)) {
+    if (!executionId) return undefined;
+    const parsed = parseGoogleWorkspaceActionInput(tool.id, input);
+    const target = googleWorkspaceEffectTarget(tool.id, parsed, executionId);
+    const inputSha256 = toolInputSha256(parsed);
+    return Object.freeze({
+      inputSha256,
+      approvalBindingSha256: approvalMaterialBindingSha256({
+        targetSha256: target.targetSha256,
+        inputSha256,
+      }),
+      ...target,
     });
   }
   if (tool.id === "http.request") {
@@ -3750,6 +3943,26 @@ function finalizeProviderEffectIntent(
       verificationMethod: "read_after_write",
       verificationState: "verified",
       verificationReasonCode: "state_matched",
+      observedTargetStateSha256: result.observedTargetStateSha256,
+    });
+  }
+  if (isGoogleWorkspaceMutationToolId(tool.id)) {
+    const result = googleWorkspaceEffectResultSchema.parse(resultValue);
+    if (
+      result.toolId !== tool.id ||
+      result.observedTargetStateSha256 !== intent.expectedTargetStateSha256
+    ) {
+      throw new Error(
+        "Google Workspace result does not match its persisted effect intent.",
+      );
+    }
+    return finalizeEffectIntentV2(intent, {
+      providerAcknowledgement: result.providerAcknowledgement,
+      providerAcknowledgementId: result.providerAcknowledgementId,
+      providerAcknowledgementSha256: result.providerAcknowledgementSha256,
+      verificationMethod: "read_after_write",
+      verificationState: result.verificationState,
+      verificationReasonCode: result.verificationReasonCode,
       observedTargetStateSha256: result.observedTargetStateSha256,
     });
   }
@@ -4077,6 +4290,10 @@ function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
     return googleCalendarCreateSchema.parse(input);
   }
 
+  if (isGoogleWorkspaceActionToolId(tool.id)) {
+    return parseGoogleWorkspaceActionInput(tool.id, input);
+  }
+
   if (isSalesforceRecordWriteToolId(tool.id)) {
     return parseSalesforceRecordWriteInput(tool.id, input);
   }
@@ -4209,6 +4426,22 @@ function describeSideEffects(toolId: string) {
       "creates one event in the exact connected user's Google Calendar",
       "uses a deterministic provider event ID to prevent duplicate delivery",
       "requires read-after-write verification before reporting success",
+    ];
+  }
+
+  if (isGoogleWorkspaceMutationToolId(toolId)) {
+    return [
+      "mutates one exact resource owned by the connected Google Workspace actor",
+      "requires persisted human approval and an exact capability-bearing OAuth grant",
+      "persists an effect intent before the provider request and reconciles retries",
+      "requires read-after-write verification before reporting success",
+    ];
+  }
+
+  if (isGoogleWorkspaceActionToolId(toolId)) {
+    return [
+      "reads one bounded resource from the exact connected Google Workspace actor",
+      "treats provider content as untrusted and enforces response-size limits",
     ];
   }
 

@@ -1,12 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  GOOGLE_GMAIL_SEND_SCOPE,
-  refreshOAuthAccess,
-} from "@/lib/connectors/oauth-providers";
-import {
-  getOAuthGrantSecrets,
-  saveOAuthGrant,
-} from "@/lib/connectors/oauth-store";
+import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
 import type { MessageDraft } from "@/lib/communications/contracts";
 import { messageDraftSchema } from "@/lib/communications/contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -77,7 +70,21 @@ export async function deliverGmailDraft(input: MessageDraft, options: {
 }): Promise<GmailDeliveryEffectResult> {
   const draft = messageDraftSchema.parse(input);
   const authorization = await googleAuthorization(options);
-  const prior = await findGmailMessage(draft, authorization.accessToken, options.abortSignal);
+  let prior: Record<string, unknown> | undefined;
+  try {
+    prior = await findGmailMessage(
+      draft,
+      authorization.accessToken,
+      options.abortSignal,
+    );
+  } catch (error) {
+    if (options.mode !== "reconcile") throw error;
+    if (error instanceof GmailDeliveryOutcomeUnknownError) throw error;
+    throw new GmailDeliveryOutcomeUnknownError(
+      "Gmail reconciliation is inconclusive; no duplicate retry was sent.",
+      { cause: error },
+    );
+  }
   if (prior) {
     return verifiedResult(
       draft,
@@ -105,26 +112,34 @@ export async function deliverGmailDraft(input: MessageDraft, options: {
     throw new GmailDeliveryOutcomeUnknownError(undefined, { cause: error });
   }
   if (!response.ok) {
-    if (response.status >= 500 || response.status === 429) {
+    if (response.status >= 500 || response.status === 429 || response.status === 408) {
       throw new GmailDeliveryOutcomeUnknownError(
         `Gmail delivery returned ${response.status}; no duplicate retry was sent.`,
       );
     }
     throw new Error(`Gmail rejected delivery with status ${response.status}.`);
   }
-  const acknowledgement = record(await response.json());
-  const providerMessageId = requiredProviderId(acknowledgement.id, "message");
-  const observed = await readGmailMessage(
-    providerMessageId,
-    authorization.accessToken,
-    options.abortSignal,
-  );
-  if (!observed) {
+  try {
+    const acknowledgement = record(await response.json());
+    const providerMessageId = requiredProviderId(acknowledgement.id, "message");
+    const observed = await readGmailMessage(
+      providerMessageId,
+      authorization.accessToken,
+      options.abortSignal,
+    );
+    if (!observed) {
+      throw new GmailDeliveryOutcomeUnknownError(
+        "Gmail accepted the message but its target state could not be verified.",
+      );
+    }
+    return verifiedResult(draft, observed, "provider_response");
+  } catch (error) {
+    if (error instanceof GmailDeliveryOutcomeUnknownError) throw error;
     throw new GmailDeliveryOutcomeUnknownError(
-      "Gmail accepted the message but its target state could not be verified.",
+      "Gmail accepted the send request but its exact outcome could not be verified; no duplicate retry was sent.",
+      { cause: error },
     );
   }
-  return verifiedResult(draft, observed, "provider_response");
 }
 
 async function findGmailMessage(
@@ -241,30 +256,11 @@ function parseRawMessage(raw: string) {
 }
 
 async function googleAuthorization(input: { tenantId: string; actorId: string }) {
-  const secrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, "google");
-  if (!secrets) throw new Error("Google is not connected for this user.");
-  if (!secrets.grant.scopes.includes(GOOGLE_GMAIL_SEND_SCOPE)) {
-    throw new Error("Reconnect Google to grant governed Gmail send access.");
-  }
-  const current = typeof secrets.tokens.access_token === "string"
-    ? secrets.tokens.access_token
-    : "";
-  if (current && (!secrets.grant.expiresAt || Date.parse(secrets.grant.expiresAt) > Date.now() + 60_000)) {
-    return { accessToken: current };
-  }
-  const refreshToken = typeof secrets.tokens.refresh_token === "string"
-    ? secrets.tokens.refresh_token
-    : "";
-  if (!refreshToken) throw new Error("Google access expired. Reconnect Google.");
-  const refreshed = await refreshOAuthAccess("google", refreshToken);
-  await saveOAuthGrant({
+  return getActiveGoogleWorkspaceAccess({
     tenantId: input.tenantId,
     actorId: input.actorId,
-    provider: "google",
-    tokens: refreshed,
-    authorizationMode: "refresh",
+    capability: "gmail.send",
   });
-  return { accessToken: String(refreshed.access_token) };
 }
 
 function encodeHeader(value: string) {

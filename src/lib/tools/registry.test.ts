@@ -115,6 +115,94 @@ describe("governed native tool schemas", () => {
     }
   });
 
+  it("registers exact-capability Google Workspace reads and approval-gated mutations", () => {
+    for (const id of [
+      "google.gmail.search",
+      "google.gmail.read",
+      "google.drive.download",
+      "google.docs.read",
+      "google.sheets.read",
+      "google.slides.read",
+    ]) {
+      expect(getGovernedTool(id)).toMatchObject({
+        category: "connector",
+        riskLevel: 0,
+        approvalRequired: false,
+        operationClass: "read_only",
+      });
+    }
+    for (const id of [
+      "google.gmail.trash",
+      "google.drive.create",
+      "google.drive.move",
+      "google.drive.rename",
+      "google.drive.trash",
+    ]) {
+      expect(getGovernedTool(id)).toMatchObject({
+        category: "connector",
+        riskLevel: 2,
+        approvalRequired: true,
+        operationClass: "mutation",
+        reversible: true,
+      });
+    }
+    for (const id of [
+      "google.drive.update",
+      "google.docs.update",
+      "google.sheets.update",
+      "google.slides.update",
+      "calendar.update",
+      "calendar.delete",
+    ]) {
+      expect(getGovernedTool(id)).toMatchObject({
+        category: "connector",
+        riskLevel: 2,
+        approvalRequired: true,
+        operationClass: "mutation",
+        reversible: false,
+      });
+    }
+    expect(getGovernedTool("app.communications.deliver")).toMatchObject({
+      riskLevel: 2,
+      approvalRequired: true,
+    });
+    expect(getGovernedTool("google.gmail.trash")?.description).toMatch(/never permanently deletes/i);
+    expect(getGovernedTool("calendar.delete")?.inputSchema).toMatchObject({
+      properties: { eventId: { minLength: 1, maxLength: 1_024 } },
+    });
+    expect(getGovernedTool("google.gmail.search")?.inputSchema).toMatchObject({
+      required: ["query"],
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 500 },
+        maxResults: { type: "integer", minimum: 1, maximum: 10, default: 5 },
+      },
+    });
+    expect(getGovernedTool("google.docs.update")?.inputSchema).toMatchObject({
+      required: [
+        "documentId",
+        "text",
+        "expectedCurrentSha256",
+        "expectedStructureSha256",
+      ],
+    });
+    expect(getGovernedTool("google.drive.create")?.inputSchema).toMatchObject({
+      properties: { contentBase64: { maxLength: 213_342 } },
+    });
+    expect(getGovernedTool("google.sheets.update")?.inputSchema).toMatchObject({
+      properties: {
+        values: {
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            minItems: 1,
+            maxItems: 100,
+            items: { type: ["string", "number", "boolean"] },
+          },
+        },
+      },
+    });
+  });
+
   it("keeps workflow control bounded and approval-gated at signals", () => {
     expect(getGovernedTool("app.workflows.start")).toMatchObject({
       riskLevel: 1,
