@@ -107,6 +107,7 @@ export function ConnectedSources({
   const [confirming, setConfirming] = useState<string>();
   const [message, setMessage] = useState<{ tone: "success" | "warning" | "error"; text: string }>();
   const [photoSession, setPhotoSession] = useState<PhotoPickerSession>();
+  const [photoImportContinuation, setPhotoImportContinuation] = useState(false);
 
   const sourceAccess = useMemo(
     () => googleSourceAccess(grant?.scopes || []),
@@ -203,6 +204,7 @@ export function ConnectedSources({
       };
       if (!response.ok) throw new Error(payload.error || "Google could not be disconnected.");
       setPhotoSession(undefined);
+      setPhotoImportContinuation(false);
       setConfirming(undefined);
       setMessage({
         tone: payload.providerRevocation === "failed" ? "error" : "success",
@@ -231,6 +233,10 @@ export function ConnectedSources({
         error?: string;
       };
       if (!response.ok) throw new Error(payload.error || `${id} data could not be removed.`);
+      if (id === "photos") {
+        setPhotoSession(undefined);
+        setPhotoImportContinuation(false);
+      }
       setConfirming(undefined);
       setMessage({ tone: "success", text: `${sourceLabel(id)} data was removed from knowledge and linked memory.` });
       await refreshIntegrationViews();
@@ -258,6 +264,7 @@ export function ConnectedSources({
       };
       if (!response.ok || !payload.session?.pickerUri) throw new Error(payload.error || "Google Photos could not be opened.");
       setPhotoSession(payload.session);
+      setPhotoImportContinuation(false);
       if (pickerWindow) {
         pickerWindow.opener = null;
         pickerWindow.location.replace(payload.session.pickerUri);
@@ -290,8 +297,9 @@ export function ConnectedSources({
       });
       const payload = (await response.json().catch(() => ({}))) as {
         imported?: number;
-        skipped?: Array<{ filename: string; reason: string }>;
+        skipped?: Array<{ filename: string; code: string; reason: string }>;
         selectionTruncated?: boolean;
+        sessionDeleted?: boolean;
         jobs?: Array<{
           id: string;
           status: "queued" | "running" | "completed" | "failed" | "canceled";
@@ -302,13 +310,28 @@ export function ConnectedSources({
       };
       if (!response.ok) throw new Error(payload.error || "Selected photos could not be imported.");
       if (payload.jobs?.[0]) onJob?.(payload.jobs[0]);
-      setPhotoSession(undefined);
+      const needsContinuation = payload.sessionDeleted !== true;
+      if (needsContinuation) {
+        setPhotoSession(latest);
+        setPhotoImportContinuation(true);
+      } else {
+        setPhotoSession(undefined);
+        setPhotoImportContinuation(false);
+      }
       const skippedCount = Array.isArray(payload.skipped)
         ? payload.skipped.length
         : 0;
+      const transferLimited = payload.skipped?.some((item) => item.code === "batch_transfer_limit") === true;
+      const continuationCopy = needsContinuation
+        ? transferLimited
+          ? " Continue import to process the remaining photos."
+          : skippedCount
+            ? " Retry the skipped items or cancel this selection when you are done."
+            : " Your photos are saved; continue once to finish the Google session, or cancel it."
+        : "";
       setMessage({
-        tone: "success",
-        text: `${payload.imported || 0} photo${payload.imported === 1 ? "" : "s"} saved for indexing${skippedCount ? ` · ${skippedCount} skipped` : ""}${payload.selectionTruncated ? " · selection limit reached" : ""}.`,
+        tone: needsContinuation ? "warning" : "success",
+        text: `${payload.imported || 0} photo${payload.imported === 1 ? "" : "s"} saved for indexing${skippedCount ? ` · ${skippedCount} skipped` : ""}${payload.selectionTruncated ? " · selection limit reached" : ""}.${continuationCopy}`,
       });
       await refreshIntegrationViews();
     } catch (importError) {
@@ -326,6 +349,7 @@ export function ConnectedSources({
       await fetch(`/api/oauth/google/photos/sessions/${encodeURIComponent(photoSession.handle)}`, { method: "DELETE" });
     } finally {
       setPhotoSession(undefined);
+      setPhotoImportContinuation(false);
       setAction(undefined);
     }
   }
@@ -429,14 +453,14 @@ export function ConnectedSources({
         <div className="mt-4 flex flex-col gap-3 border-l-2 border-primary bg-primary/5 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="flex items-center gap-2 text-sm font-semibold"><Images size={16} aria-hidden="true" />Google Photos selection</p>
-            <p className="mt-1 text-xs leading-5 text-muted">{photoSession.mediaItemsSet ? "Your selection is ready to import." : "Choose photos in the Google window, then return here."}</p>
+            <p className="mt-1 text-xs leading-5 text-muted">{photoImportContinuation ? "Part of this selection is already saved. Continue safely without downloading completed photos again." : photoSession.mediaItemsSet ? "Your selection is ready to import." : "Choose photos in the Google window, then return here."}</p>
           </div>
           <div className="flex flex-wrap gap-2">
             {photoSession.pickerUri ? <a href={photoSession.pickerUri} target="_blank" rel="noreferrer" className="action-button">Open picker</a> : null}
             <button type="button" onClick={() => void cancelPhotoSelection()} disabled={Boolean(action)} className="action-button">Cancel</button>
             <button type="button" onClick={() => void importSelectedPhotos()} disabled={Boolean(action)} className="primary-button">
               {action === "photos:import" ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-              {photoSession.mediaItemsSet ? "Import selected" : "Check selection"}
+              {photoImportContinuation ? "Continue import" : photoSession.mediaItemsSet ? "Import selected" : "Check selection"}
             </button>
           </div>
         </div>
