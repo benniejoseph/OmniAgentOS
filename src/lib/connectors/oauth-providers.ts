@@ -1,14 +1,34 @@
 import { createHash, randomBytes } from "node:crypto";
 import { getAppBaseUrl } from "@/lib/config";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
+import { GOOGLE_WORKSPACE_OAUTH_SCOPES } from "@/lib/connectors/google-workspace-capabilities";
+
+export {
+  GOOGLE_GMAIL_SEND_SCOPE,
+  GOOGLE_PHOTOS_PICKER_SCOPE,
+} from "@/lib/connectors/google-workspace-capabilities";
+export { GOOGLE_CALENDAR_EVENTS_SCOPE as GOOGLE_CALENDAR_WRITE_SCOPE } from "@/lib/connectors/google-workspace-capabilities";
 
 export type OAuthProvider = "google" | "salesforce";
-export const GOOGLE_PHOTOS_PICKER_SCOPE =
-  "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
-export const GOOGLE_CALENDAR_WRITE_SCOPE =
-  "https://www.googleapis.com/auth/calendar.events";
-export const GOOGLE_GMAIL_SEND_SCOPE =
-  "https://www.googleapis.com/auth/gmail.send";
+export type OAuthProviderFailureCode =
+  | "token_exchange_failed"
+  | "refresh_rejected"
+  | "provider_rate_limited"
+  | "provider_unavailable"
+  | "owner_verification_failed";
+
+export class OAuthProviderError extends Error {
+  readonly status = 502;
+
+  constructor(
+    message: string,
+    readonly code: OAuthProviderFailureCode,
+    readonly reconnectRequired: boolean,
+  ) {
+    super(message);
+    this.name = "OAuthProviderError";
+  }
+}
 
 const oauthReturnPaths = new Set([
   "/app/accounts",
@@ -23,13 +43,7 @@ export const oauthProviders = {
     tokenUrl: "https://oauth2.googleapis.com/token",
     clientIdEnv: "GOOGLE_OAUTH_CLIENT_ID",
     clientSecretEnv: "GOOGLE_OAUTH_CLIENT_SECRET",
-    scopes: [
-      "https://www.googleapis.com/auth/gmail.readonly",
-      GOOGLE_GMAIL_SEND_SCOPE,
-      GOOGLE_CALENDAR_WRITE_SCOPE,
-      "https://www.googleapis.com/auth/drive.readonly",
-      GOOGLE_PHOTOS_PICKER_SCOPE,
-    ],
+    scopes: GOOGLE_WORKSPACE_OAUTH_SCOPES,
   },
   salesforce: {
     label: "Salesforce",
@@ -45,7 +59,14 @@ export const oauthProviders = {
 export function isOAuthProvider(value: string): value is OAuthProvider {
   return value === "google" || value === "salesforce";
 }
-export function oauthConfigured(provider: OAuthProvider) { const config = oauthProviders[provider]; return Boolean(process.env[config.clientIdEnv]?.trim() && process.env[config.clientSecretEnv]?.trim()); }
+export function oauthConfigured(provider: OAuthProvider) {
+  const config = oauthProviders[provider];
+  return Boolean(
+    process.env[config.clientIdEnv]?.trim() &&
+      process.env[config.clientSecretEnv]?.trim() &&
+      (provider !== "google" || googleOwnerEmail()),
+  );
+}
 
 export function createOAuthAuthorization(
   provider: OAuthProvider,
@@ -54,11 +75,18 @@ export function createOAuthAuthorization(
     actorId: string;
     workspaceId?: string;
     returnTo?: string;
+    authorizationIntent?: "connect" | "repair";
   },
 ) {
   const config = oauthProviders[provider];
   const clientId = process.env[config.clientIdEnv]?.trim();
-  if (!clientId || !process.env[config.clientSecretEnv]?.trim()) throw new Error(`${config.label} OAuth is not configured.`);
+  if (
+    !clientId ||
+    !process.env[config.clientSecretEnv]?.trim() ||
+    (provider === "google" && !googleOwnerEmail())
+  ) {
+    throw new Error(`${config.label} OAuth is not configured.`);
+  }
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
   const state = sealJsonPayload(
@@ -82,7 +110,9 @@ export function createOAuthAuthorization(
   if (provider === "google") {
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("include_granted_scopes", "true");
-    url.searchParams.set("prompt", "consent");
+    if (identity.authorizationIntent === "repair") {
+      url.searchParams.set("prompt", "consent");
+    }
   }
   return url.toString();
 }
@@ -128,14 +158,39 @@ export function normalizeOAuthReturnTo(value?: string | null) {
 export async function exchangeOAuthCode(provider: OAuthProvider, code: string, verifier: string) {
   const config = oauthProviders[provider];
   const body = new URLSearchParams({ client_id: process.env[config.clientIdEnv] || "", client_secret: process.env[config.clientSecretEnv] || "", code, code_verifier: verifier, redirect_uri: `${getAppBaseUrl()}/api/oauth/${provider}/callback`, grant_type: "authorization_code" });
-  const response = await fetch(config.tokenUrl, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body, signal: AbortSignal.timeout(15_000) });
-  const result = await response.json() as Record<string, unknown>;
-  if (!response.ok || typeof result.access_token !== "string") throw new Error("OAuth token exchange failed.");
+  let response: Response;
+  try {
+    response = await fetch(config.tokenUrl, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body, signal: AbortSignal.timeout(15_000) });
+  } catch {
+    throw oauthProviderFailure(0, "exchange", config.label);
+  }
+  const result = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok || typeof result.access_token !== "string") {
+    throw oauthProviderFailure(response.status, "exchange");
+  }
   if (
     provider === "salesforce" &&
     !isSalesforceInstanceUrl(result.instance_url)
   ) {
     throw new Error("Salesforce returned an invalid instance authority.");
+  }
+  if (provider === "google") {
+    const identity = await validateGoogleOwner(result).catch(async (error) => {
+      await revokeOAuthAccess(
+        "google",
+        String(result.refresh_token || result.access_token || ""),
+      ).catch(() => false);
+      throw error;
+    });
+    const { id_token: _idToken, ...persistable } = result;
+    void _idToken;
+    return {
+      ...persistable,
+      scope: typeof result.scope === "string"
+        ? result.scope
+        : config.scopes.join(" "),
+      google_account_sub: identity.subject,
+    };
   }
   return result;
 }
@@ -148,14 +203,21 @@ export async function refreshOAuthAccess(provider: OAuthProvider, refreshToken: 
     refresh_token: refreshToken,
     grant_type: "refresh_token",
   });
-  const response = await fetch(config.tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-    body,
-    signal: AbortSignal.timeout(15_000),
-  });
-  const result = await response.json() as Record<string, unknown>;
-  if (!response.ok || typeof result.access_token !== "string") throw new Error(`${config.label} access expired and could not be refreshed. Reconnect the source.`);
+  let response: Response;
+  try {
+    response = await fetch(config.tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body,
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw oauthProviderFailure(0, "refresh", config.label);
+  }
+  const result = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok || typeof result.access_token !== "string") {
+    throw oauthProviderFailure(response.status, "refresh", config.label);
+  }
   if (
     provider === "salesforce" &&
     result.instance_url !== undefined &&
@@ -205,4 +267,92 @@ export function isSalesforceInstanceUrl(value: unknown): value is string {
   } catch {
     return false;
   }
+}
+
+async function validateGoogleOwner(tokens: Record<string, unknown>) {
+  const idToken = typeof tokens.id_token === "string" ? tokens.id_token : "";
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "";
+  const expectedEmail = googleOwnerEmail();
+  if (!idToken || !clientId || !expectedEmail) {
+    throw new OAuthProviderError(
+      "Google could not verify the private workspace owner.",
+      "owner_verification_failed",
+      true,
+    );
+  }
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
+      {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+  } catch {
+    throw oauthProviderFailure(0, "exchange", "Google");
+  }
+  const claims = await response.json().catch(() => ({})) as Record<string, unknown>;
+  const issuer = String(claims.iss || "");
+  const verified = claims.email_verified === true || claims.email_verified === "true";
+  const email = String(claims.email || "").trim().toLowerCase();
+  const subject = String(claims.sub || "").trim();
+  if (
+    !response.ok ||
+    String(claims.aud || "") !== clientId ||
+    !["accounts.google.com", "https://accounts.google.com"].includes(issuer) ||
+    !verified ||
+    Number(claims.exp || 0) * 1_000 <= Date.now() ||
+    email !== expectedEmail ||
+    !/^[A-Za-z0-9_-]{6,255}$/.test(subject)
+  ) {
+    throw new OAuthProviderError(
+      "Google identity is not authorized for this private workspace.",
+      "owner_verification_failed",
+      true,
+    );
+  }
+  return { email, subject };
+}
+
+function googleOwnerEmail() {
+  return (
+    process.env.OMNIAGENT_OWNER_EMAIL ||
+    process.env.OWNER_EMAIL ||
+    process.env.OMNIAGENT_BOOTSTRAP_EMAIL ||
+    ""
+  ).trim().toLowerCase();
+}
+
+function oauthProviderFailure(
+  status: number,
+  operation: "exchange" | "refresh",
+  label = "OAuth",
+) {
+  if (status === 429) {
+    return new OAuthProviderError(
+      `${label} is temporarily rate limited. Try again shortly.`,
+      "provider_rate_limited",
+      false,
+    );
+  }
+  if (status >= 500 || status === 0) {
+    return new OAuthProviderError(
+      `${label} is temporarily unavailable. Try again shortly.`,
+      "provider_unavailable",
+      false,
+    );
+  }
+  if (operation === "refresh") {
+    return new OAuthProviderError(
+      `${label} refresh authorization was rejected. Reconnect the source.`,
+      "refresh_rejected",
+      true,
+    );
+  }
+  return new OAuthProviderError(
+    "OAuth token exchange failed.",
+    "token_exchange_failed",
+    false,
+  );
 }

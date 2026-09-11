@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   claimLease: vi.fn(), getSecrets: vi.fn(), saveGrant: vi.fn(), updateState: vi.fn(), refresh: vi.fn(), ingest: vi.fn(), remove: vi.fn(), mapInbound: vi.fn(), observeDrive: vi.fn(), observeCanonicalDrive: vi.fn(), fetch: vi.fn(),
 }));
-vi.mock("@/lib/connectors/oauth-store", () => ({
+vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/connectors/oauth-store")>(),
   claimOAuthSyncLease: mocks.claimLease,
   getOAuthGrantSecrets: mocks.getSecrets,
   saveOAuthGrant: mocks.saveGrant,
@@ -26,6 +27,12 @@ vi.mock("@/lib/communications/store", () => ({ mapInboundCommunication: mocks.ma
 import { syncPersonalProvider } from "@/lib/connectors/personal-sync";
 import { getDatabaseActorContext } from "@/lib/db/client";
 
+const GOOGLE_SYNC_SCOPES = [
+  "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/drive",
+];
+
 describe("personal OAuth synchronization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -39,9 +46,10 @@ describe("personal OAuth synchronization", () => {
         status: "active",
         authorizationGeneration: 1,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        scopes: [],
+        scopes: GOOGLE_SYNC_SCOPES,
       },
       tokens: { access_token: "access" },
+      credentialState: "active",
       syncCursor: undefined,
     });
     mocks.updateState.mockResolvedValue({ syncStatus: "healthy" });
@@ -419,8 +427,18 @@ describe("personal OAuth synchronization", () => {
     expect(finalCursor).not.toHaveProperty("gmailHistoryId");
     expect(finalCursor).not.toHaveProperty("calendar");
     expect(finalCursor).not.toHaveProperty("driveModifiedAfter");
-    expect(mocks.observeCanonicalDrive).not.toHaveBeenCalled();
-    expect(mocks.observeDrive).not.toHaveBeenCalled();
+    expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: "syncing",
+      releaseLease: true,
+    }));
+    expect(mocks.observeCanonicalDrive).toHaveBeenCalledTimes(1);
+    expect(mocks.observeDrive).toHaveBeenCalledTimes(1);
+    expect(mocks.observeCanonicalDrive.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.updateState.mock.invocationCallOrder.at(-1) || 0,
+    );
+    expect(mocks.observeDrive.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.observeCanonicalDrive.mock.invocationCallOrder[0],
+    );
   });
 
   it("uses small provider pages so maintenance backfills remain resumable", async () => {
@@ -467,9 +485,10 @@ describe("personal OAuth synchronization", () => {
         status: "active",
         authorizationGeneration: 1,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        scopes: [],
+        scopes: GOOGLE_SYNC_SCOPES,
       },
       tokens: { access_token: "access" },
+      credentialState: "active",
       syncCursor: JSON.stringify({ gmailHistoryId: "history-start" }),
     });
     mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
@@ -535,9 +554,10 @@ describe("personal OAuth synchronization", () => {
         status: "active",
         authorizationGeneration: 1,
         expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-        scopes: [],
+        scopes: GOOGLE_SYNC_SCOPES,
       },
       tokens: { access_token: "access" },
+      credentialState: "active",
       syncCursor: JSON.stringify(finalCursor),
     });
     mocks.ingest.mockClear();
@@ -616,6 +636,79 @@ describe("personal OAuth synchronization", () => {
     expect(mocks.observeDrive.mock.invocationCallOrder[0]).toBeGreaterThan(
       mocks.observeCanonicalDrive.mock.invocationCallOrder[0],
     );
+  });
+
+  it("calls only the Google sources granted to this connection", async () => {
+    mocks.getSecrets.mockResolvedValue({
+      grant: {
+        id: "google-grant",
+        tenantId: "personal",
+        actorId: "owner",
+        provider: "google",
+        status: "active",
+        authorizationGeneration: 1,
+        scopes: ["https://www.googleapis.com/auth/gmail.modify"],
+      },
+      tokens: { access_token: "access" },
+      credentialState: "active",
+      syncCursor: undefined,
+    });
+    const requestedUrls: string[] = [];
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.endsWith("/profile")) return json({ historyId: "mail-only" });
+      if (url.includes("/messages?")) return json({ messages: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+    })).resolves.toMatchObject({
+      status: "healthy",
+      sources: [{ source: "mail", status: "healthy" }],
+    });
+    expect(requestedUrls.some((url) => url.includes("calendar"))).toBe(false);
+    expect(requestedUrls.some((url) => url.includes("/drive/"))).toBe(false);
+    expect(mocks.observeCanonicalDrive).not.toHaveBeenCalled();
+    expect(mocks.observeDrive).not.toHaveBeenCalled();
+  });
+
+  it("releases an interrupted lease without converting progress into an auth error", async () => {
+    const abortController = new AbortController();
+    mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/profile")) return json({ historyId: "mail-interrupted" });
+      if (url.includes("/messages?")) return json({ messages: [{ id: "m1" }] });
+      if (url.includes("/messages/m1")) return json({
+        id: "m1",
+        internalDate: "1787695200000",
+        snippet: "interrupted",
+        payload: { headers: [] },
+      });
+      if (url.includes("calendar")) return json({ nextSyncToken: "calendar-interrupted", items: [] });
+      if (url.includes("/drive/v3/files")) return json({ files: [] });
+      throw new Error(`Unexpected URL ${url}`);
+    });
+    mocks.ingest.mockImplementation(async () => {
+      abortController.abort();
+      throw new DOMException("The operation was aborted.", "AbortError");
+    });
+
+    await expect(syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      abortSignal: abortController.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.updateState).toHaveBeenLastCalledWith(expect.objectContaining({
+      status: "syncing",
+      error: undefined,
+      releaseLease: true,
+      sourceSettlements: [],
+    }));
   });
 });
 

@@ -1,9 +1,13 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sealJsonPayload } from "@/lib/security/sealed-payload";
 
 let dataDir = "";
+const previousKeyring = process.env.OMNIAGENT_CREDENTIAL_KEYRING;
+const previousLegacySecret = process.env.OMNIAGENT_EXECUTION_PAYLOAD_SECRET;
 
 beforeAll(async () => {
   dataDir = await mkdtemp(
@@ -11,6 +15,19 @@ beforeAll(async () => {
   );
   process.env.OMNIAGENT_DATA_DIR = dataDir;
   delete process.env.DATABASE_URL;
+  process.env.OMNIAGENT_CREDENTIAL_KEYRING = JSON.stringify({
+    activeKeyId: "oauth-v1",
+    keys: {
+      "oauth-v1": createHash("sha256")
+        .update("oauth-store-test-key")
+        .digest("base64url"),
+    },
+  });
+});
+
+afterAll(() => {
+  restore("OMNIAGENT_CREDENTIAL_KEYRING", previousKeyring);
+  restore("OMNIAGENT_EXECUTION_PAYLOAD_SECRET", previousLegacySecret);
 });
 
 describe("OAuth source synchronization lease", () => {
@@ -25,6 +42,7 @@ describe("OAuth source synchronization lease", () => {
       ...owner,
       tokens: {
         access_token: "test-access-token",
+        refresh_token: "retained-refresh-token",
         scope: "drive.readonly",
         expires_in: 3_600,
       },
@@ -97,6 +115,28 @@ describe("OAuth source synchronization lease", () => {
       owner.actorId,
       owner.provider,
     )).resolves.toMatchObject({
+      grant: { authorizationGeneration: 1, syncStatus: "syncing" },
+      tokens: { refresh_token: "retained-refresh-token" },
+      syncCursor: JSON.stringify({ drivePageToken: "page-2" }),
+    });
+    await expect(store.claimOAuthSyncLease(owner)).resolves.toEqual({
+      status: "busy",
+    });
+
+    await store.saveOAuthGrant({
+      ...owner,
+      authorizationMode: "reauthorize",
+      tokens: {
+        access_token: "expanded-access-token",
+        scope: "drive.readonly gmail.readonly",
+        expires_in: 3_600,
+      },
+    });
+    await expect(store.getOAuthGrantSecrets(
+      owner.tenantId,
+      owner.actorId,
+      owner.provider,
+    )).resolves.toMatchObject({
       grant: { authorizationGeneration: 2, syncStatus: "idle" },
       syncCursor: undefined,
     });
@@ -148,4 +188,96 @@ describe("OAuth source synchronization lease", () => {
       },
     });
   });
+
+  it("rewraps a readable legacy token envelope with the active credential key", async () => {
+    const store = await import("@/lib/connectors/oauth-store");
+    const owner = {
+      tenantId: "tenant-legacy-token",
+      actorId: "actor-legacy-token",
+      provider: "google" as const,
+    };
+    await store.saveOAuthGrant({
+      ...owner,
+      tokens: {
+        access_token: "initial-access-token",
+        scope: "drive.readonly",
+        expires_in: 3_600,
+      },
+    });
+    process.env.OMNIAGENT_EXECUTION_PAYLOAD_SECRET =
+      "legacy-oauth-store-secret-at-least-thirty-two-bytes";
+    const ledgerPath = path.join(dataDir, "oauth-grants.json");
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as {
+      grants: Array<Record<string, unknown>>;
+    };
+    const legacy = sealJsonPayload(
+      { access_token: "legacy-access-token", scope: "drive.readonly" },
+      `oauth-grant:${owner.tenantId}:${owner.actorId}:${owner.provider}`,
+    );
+    const record = ledger.grants.find((grant) =>
+      grant.tenantId === owner.tenantId && grant.actorId === owner.actorId
+    );
+    if (!record) throw new Error("Expected OAuth test grant.");
+    record.sealedTokens = legacy;
+    await writeFile(ledgerPath, JSON.stringify(ledger), "utf8");
+
+    await expect(store.getOAuthGrantSecrets(
+      owner.tenantId,
+      owner.actorId,
+      owner.provider,
+    )).resolves.toMatchObject({
+      tokens: { access_token: "legacy-access-token" },
+    });
+    const rewrapped = await readFile(ledgerPath, "utf8");
+    const rewrappedLedger = JSON.parse(rewrapped) as {
+      grants: Array<{ tenantId?: string; sealedTokens?: { keyId?: string } }>;
+    };
+    expect(rewrappedLedger.grants.find((grant) =>
+      grant.tenantId === owner.tenantId
+    )?.sealedTokens?.keyId).toBe("oauth-v1");
+    expect(rewrapped).not.toContain("legacy-access-token");
+  });
+
+  it("keeps a reauthorization bound to the original verified Google subject", async () => {
+    const store = await import("@/lib/connectors/oauth-store");
+    const owner = {
+      tenantId: "tenant-google-subject",
+      actorId: "actor-google-subject",
+      provider: "google" as const,
+    };
+    await store.saveOAuthGrant({
+      ...owner,
+      tokens: {
+        access_token: "owner-access",
+        google_account_sub: "stable-owner-subject",
+        scope: "drive.readonly",
+        expires_in: 3_600,
+      },
+    });
+
+    await expect(store.saveOAuthGrant({
+      ...owner,
+      tokens: {
+        access_token: "different-access",
+        google_account_sub: "different-google-subject",
+        scope: "drive.readonly",
+        expires_in: 3_600,
+      },
+    })).rejects.toMatchObject({ code: "account_identity_changed" });
+    await expect(store.getOAuthGrantSecrets(
+      owner.tenantId,
+      owner.actorId,
+      owner.provider,
+    )).resolves.toMatchObject({
+      tokens: {
+        access_token: "owner-access",
+        google_account_sub: "stable-owner-subject",
+      },
+    });
+  });
 });
+
+function restore(name: string, value: string | undefined) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}

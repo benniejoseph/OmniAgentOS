@@ -4,6 +4,11 @@ import {
   isOAuthProvider,
   type OAuthProvider,
 } from "@/lib/connectors/oauth-providers";
+import {
+  openOAuthTokens,
+  sealOAuthTokens,
+  type SealedOAuthTokens,
+} from "@/lib/connectors/oauth-token-vault";
 import { oauthGrantActorReadOrder } from "@/lib/connectors/oauth-actor-scope";
 import type { CanonicalRequestActorBindingV1 } from "@/lib/security/canonical-actor";
 import { openJsonPayload, sealJsonPayload } from "@/lib/security/sealed-payload";
@@ -48,7 +53,7 @@ export type OAuthSyncLease = Readonly<{
   expiresAt: string;
 }>;
 type InternalGrant = OAuthGrant & {
-  sealedTokens: ReturnType<typeof sealJsonPayload>;
+  sealedTokens: SealedOAuthTokens;
   sealedSyncCursor?: ReturnType<typeof sealJsonPayload>;
   /** Legacy file-mode compatibility; new cursor writes are sealed. */
   syncCursor?: string;
@@ -58,6 +63,28 @@ type InternalGrant = OAuthGrant & {
 };
 const filePath = () => getDataPath("oauth-grants.json");
 const OAUTH_SYNC_LEASE_MS = 10 * 60_000;
+
+export type OAuthCredentialState =
+  | "active"
+  | "refresh_required"
+  | "reconnect_required";
+
+export class OAuthCredentialError extends Error {
+  readonly status = 401;
+
+  constructor(
+    message: string,
+    readonly code:
+      | "grant_not_found"
+      | "credential_missing"
+      | "account_identity_changed"
+      | "capability_not_granted",
+    readonly reconnectRequired = true,
+  ) {
+    super(message);
+    this.name = "OAuthCredentialError";
+  }
+}
 
 export class OAuthGrantReadConflictError extends Error {
   readonly status = 409;
@@ -71,13 +98,46 @@ export class OAuthGrantReadConflictError extends Error {
 export async function saveOAuthGrant(input: { tenantId: string; actorId: string; provider: OAuthProvider; tokens: Record<string, unknown>; authorizationMode?: "reauthorize" | "refresh" }) {
   const now = new Date().toISOString();
   const authorizationMode = input.authorizationMode || "reauthorize";
-  const existingSecrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, input.provider).catch(() => undefined);
-  const tokens = { ...(existingSecrets?.tokens || {}), ...input.tokens };
+  const existingSecrets = await getOAuthGrantSecrets(
+    input.tenantId,
+    input.actorId,
+    input.provider,
+  );
+  const incomingTokens = Object.fromEntries(
+    Object.entries(input.tokens).filter(([name, value]) =>
+      value !== undefined &&
+      value !== null &&
+      (name !== "refresh_token" || (typeof value === "string" && value.trim()))
+    ),
+  );
+  const tokens = { ...(existingSecrets?.tokens || {}), ...incomingTokens };
+  const existingSubject = tokenString(existingSecrets?.tokens.google_account_sub);
+  const incomingSubject = tokenString(input.tokens.google_account_sub);
+  if (
+    input.provider === "google" &&
+    existingSubject &&
+    incomingSubject &&
+    existingSubject !== incomingSubject
+  ) {
+    throw new OAuthCredentialError(
+      "The Google account identity changed during authorization.",
+      "account_identity_changed",
+    );
+  }
   const expiresIn = Number(tokens.expires_in || 0);
   const expiresAt = expiresIn > 0 ? new Date(Date.now() + expiresIn * 1000).toISOString() : undefined;
-  const scopes = String(tokens.scope || existingSecrets?.grant.scopes.join(" ") || "").split(/\s+/).filter(Boolean);
+  const scopes = [...new Set(
+    String(tokens.scope || existingSecrets?.grant.scopes.join(" ") || "")
+      .split(/\s+/)
+      .filter(Boolean),
+  )].sort();
+  const resetAuthorization = Boolean(
+    existingSecrets &&
+      authorizationMode === "reauthorize" &&
+      !sameStringSet(existingSecrets.grant.scopes, scopes),
+  );
   const id = randomUUID();
-  const sealedTokens = sealJsonPayload(tokens, `oauth-grant:${input.tenantId}:${input.actorId}:${input.provider}`);
+  const sealedTokens = sealOAuthTokens(tokens, oauthGrantBinding(input));
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
     const rows = await getSql()`
@@ -95,37 +155,47 @@ export async function saveOAuthGrant(input: { tenantId: string; actorId: string;
         expires_at = EXCLUDED.expires_at,
         status = 'active',
         authorization_generation = CASE
-          WHEN ${authorizationMode} = 'reauthorize'
+          WHEN ${resetAuthorization}
             THEN omni_oauth_grants.authorization_generation + 1
           ELSE omni_oauth_grants.authorization_generation
         END,
         sync_cursor = CASE
-          WHEN ${authorizationMode} = 'reauthorize'
+          WHEN ${resetAuthorization}
             THEN NULL
           ELSE omni_oauth_grants.sync_cursor
         END,
         sync_status = CASE
-          WHEN ${authorizationMode} = 'reauthorize'
+          WHEN ${resetAuthorization}
             THEN 'idle'
           ELSE omni_oauth_grants.sync_status
         END,
         source_sync_health = CASE
-          WHEN ${authorizationMode} = 'reauthorize'
+          WHEN ${resetAuthorization}
             THEN '{}'::jsonb
           ELSE omni_oauth_grants.source_sync_health
         END,
         sync_error = CASE
-          WHEN ${authorizationMode} = 'reauthorize'
+          WHEN ${resetAuthorization}
             THEN NULL
           ELSE omni_oauth_grants.sync_error
         END,
+        last_synced_at = CASE
+          WHEN ${resetAuthorization}
+            THEN NULL
+          ELSE omni_oauth_grants.last_synced_at
+        END,
+        synced_items = CASE
+          WHEN ${resetAuthorization}
+            THEN 0
+          ELSE omni_oauth_grants.synced_items
+        END,
         sync_lease_owner_id = CASE
-          WHEN ${authorizationMode} = 'reauthorize'
+          WHEN ${resetAuthorization}
             THEN NULL
           ELSE omni_oauth_grants.sync_lease_owner_id
         END,
         sync_lease_expires_at = CASE
-          WHEN ${authorizationMode} = 'reauthorize'
+          WHEN ${resetAuthorization}
             THEN NULL
           ELSE omni_oauth_grants.sync_lease_expires_at
         END,
@@ -137,7 +207,8 @@ export async function saveOAuthGrant(input: { tenantId: string; actorId: string;
   let saved!: InternalGrant;
   await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => {
     const existing = ledger.grants.find((grant) => grant.tenantId === input.tenantId && grant.actorId === input.actorId && grant.provider === input.provider);
-    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, scopes, sealedTokens, sealedSyncCursor: authorizationMode === "refresh" ? existing?.sealedSyncCursor : undefined, syncCursor: authorizationMode === "refresh" ? existing?.syncCursor : undefined, syncStatus: authorizationMode === "refresh" ? existing?.syncStatus || "idle" : "idle", syncError: authorizationMode === "refresh" ? existing?.syncError : undefined, lastSyncedAt: existing?.lastSyncedAt, syncedItems: existing?.syncedItems || 0, sourceCoverage: authorizationMode === "refresh" ? existing?.sourceCoverage || {} : {}, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (authorizationMode === "reauthorize" ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(authorizationMode === "refresh" ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
+    const preserveSyncState = Boolean(existing && !resetAuthorization);
+    saved = { id: existing?.id || id, tenantId: input.tenantId, actorId: input.actorId, provider: input.provider, scopes, sealedTokens, sealedSyncCursor: preserveSyncState ? existing?.sealedSyncCursor : undefined, syncCursor: preserveSyncState ? existing?.syncCursor : undefined, syncStatus: preserveSyncState ? existing?.syncStatus || "idle" : "idle", syncError: preserveSyncState ? existing?.syncError : undefined, lastSyncedAt: preserveSyncState ? existing?.lastSyncedAt : undefined, syncedItems: preserveSyncState ? existing?.syncedItems || 0 : 0, sourceCoverage: preserveSyncState ? existing?.sourceCoverage || {} : {}, status: "active", authorizationGeneration: existing ? Math.max(1, Number(existing.authorizationGeneration || 1)) + (resetAuthorization ? 1 : 0) : 1, expiresAt, createdAt: existing?.createdAt || now, updatedAt: now, ...(preserveSyncState ? { syncLeaseOwnerId: existing?.syncLeaseOwnerId, syncLeaseExpiresAt: existing?.syncLeaseExpiresAt, syncLeaseGeneration: existing?.syncLeaseGeneration } : { syncLeaseGeneration: existing?.syncLeaseGeneration || 0 }) };
     return { grants: [saved, ...ledger.grants.filter((grant) => grant.id !== existing?.id)].slice(0, 100) };
   });
   return stripTokens(saved);
@@ -239,12 +310,13 @@ export async function listOAuthGrantsForTenant(tenantId: string) {
 
 export async function revokeOAuthGrant(tenantId: string, actorId: string, provider: OAuthProvider) {
   const now = new Date().toISOString();
+  const sealedTokens = sealOAuthTokens({}, oauthGrantBinding({ tenantId, actorId, provider }));
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
-    await getSql()`UPDATE omni_oauth_grants SET status = 'revoked', sealed_tokens = ${sealJsonPayload({}, `oauth-grant:${tenantId}:${actorId}:${provider}`)}::jsonb, sync_cursor = NULL, sync_lease_owner_id = NULL, sync_lease_expires_at = NULL, updated_at = ${now} WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider}`;
+    await getSql()`UPDATE omni_oauth_grants SET status = 'revoked', sealed_tokens = ${sealedTokens}::jsonb, sync_cursor = NULL, sync_lease_owner_id = NULL, sync_lease_expires_at = NULL, updated_at = ${now} WHERE tenant_id = ${tenantId} AND actor_id = ${actorId} AND provider = ${provider}`;
     return;
   }
-  await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", sealedTokens: sealJsonPayload({}, `oauth-grant:${tenantId}:${actorId}:${provider}`), sealedSyncCursor: undefined, syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
+  await updateJsonFile<{ grants: InternalGrant[] }>(filePath(), { grants: [] }, (ledger) => ({ grants: ledger.grants.map((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider ? { ...grant, status: "revoked", sealedTokens, sealedSyncCursor: undefined, syncCursor: undefined, syncLeaseOwnerId: undefined, syncLeaseExpiresAt: undefined, updatedAt: now } : grant) }));
 }
 
 export async function getOAuthGrantSecrets(tenantId: string, actorId: string, provider: OAuthProvider) {
@@ -258,10 +330,14 @@ export async function getOAuthGrantSecrets(tenantId: string, actorId: string, pr
     internal = ledger.grants.find((grant) => grant.tenantId === tenantId && grant.actorId === actorId && grant.provider === provider && grant.status === "active");
   }
   if (!internal) return undefined;
-  const tokens = openJsonPayload(internal.sealedTokens, `oauth-grant:${tenantId}:${actorId}:${provider}`) as Record<string, unknown>;
+  const opened = openOAuthTokens(internal.sealedTokens, oauthGrantBinding(internal));
+  if (opened.needsRewrap) {
+    await rewrapOAuthTokens(internal, opened.tokens);
+  }
   return {
     grant: stripTokens(internal),
-    tokens,
+    tokens: opened.tokens,
+    credentialState: oauthCredentialState(opened.tokens, internal.expiresAt),
     syncCursor: openedSyncCursor(internal),
   };
 }
@@ -476,6 +552,84 @@ function syncCursorBinding(
   owner: Pick<OAuthGrant, "tenantId" | "actorId" | "provider">,
 ) {
   return `oauth-sync-cursor:${owner.tenantId}:${owner.actorId}:${owner.provider}`;
+}
+
+function oauthGrantBinding(
+  owner: Pick<OAuthGrant, "tenantId" | "actorId" | "provider">,
+) {
+  return `oauth-grant:${owner.tenantId}:${owner.actorId}:${owner.provider}`;
+}
+
+function oauthCredentialState(
+  tokens: Record<string, unknown>,
+  accessTokenExpiresAt?: string,
+): OAuthCredentialState {
+  const accessToken = tokenString(tokens.access_token);
+  const expiresAt = accessTokenExpiresAt ? Date.parse(accessTokenExpiresAt) : 0;
+  if (
+    accessToken &&
+    (!accessTokenExpiresAt || (Number.isFinite(expiresAt) && expiresAt > Date.now() + 60_000))
+  ) {
+    return "active";
+  }
+  return tokenString(tokens.refresh_token)
+    ? "refresh_required"
+    : "reconnect_required";
+}
+
+async function rewrapOAuthTokens(
+  grant: InternalGrant,
+  tokens: Record<string, unknown>,
+) {
+  const sealedTokens = sealOAuthTokens(tokens, oauthGrantBinding(grant));
+  if (hasDatabaseUrl()) {
+    try {
+      await getSql()`
+        UPDATE omni_oauth_grants
+        SET sealed_tokens = ${sealedTokens}::jsonb
+        WHERE id = ${grant.id}
+          AND tenant_id = ${grant.tenantId}
+          AND actor_id = ${grant.actorId}
+          AND provider = ${grant.provider}
+          AND status = 'active'
+          AND sealed_tokens = ${grant.sealedTokens}::jsonb
+      `;
+    } catch {
+      // Rotation is opportunistic. A readable retained key remains valid and
+      // the next exact-owner access can retry without blocking the operation.
+    }
+    return;
+  }
+  try {
+    await updateJsonFile<{ grants: InternalGrant[] }>(
+      filePath(),
+      { grants: [] },
+      (ledger) => ({
+        grants: ledger.grants.map((candidate) =>
+          candidate.id === grant.id &&
+          candidate.tenantId === grant.tenantId &&
+          candidate.actorId === grant.actorId &&
+          candidate.provider === grant.provider &&
+          candidate.status === "active" &&
+          JSON.stringify(candidate.sealedTokens) === JSON.stringify(grant.sealedTokens)
+            ? { ...candidate, sealedTokens }
+            : candidate
+        ),
+      }),
+    );
+  } catch {
+    // Preserve the readable retained envelope and retry on a later access.
+  }
+}
+
+function tokenString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]) {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((value) => rightSet.has(value));
 }
 
 const uuidPattern =

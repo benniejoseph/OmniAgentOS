@@ -1,12 +1,20 @@
-import { refreshOAuthAccess, type OAuthProvider } from "@/lib/connectors/oauth-providers";
+import {
+  OAuthProviderError,
+  type OAuthProvider,
+} from "@/lib/connectors/oauth-providers";
 import {
   claimOAuthSyncLease,
   getOAuthGrantSecrets,
   listOAuthGrantsForTenant,
-  saveOAuthGrant,
   updateOAuthSyncState,
+  OAuthCredentialError,
   type OAuthSourceCoverageCheckpoint,
 } from "@/lib/connectors/oauth-store";
+import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
+import {
+  googleSyncSourcesForScopes,
+  type GoogleWorkspaceCapability,
+} from "@/lib/connectors/google-workspace-capabilities";
 import { observeGoogleDriveCanonicalMetadata } from "@/lib/connectors/google-drive-canonical";
 import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
@@ -67,6 +75,14 @@ type GoogleSourceObservation = Readonly<{
   items: SyncItem[];
   cursor: Partial<SyncCursor>;
 }>;
+type GoogleSourceObservationSettlement = Readonly<
+  | {
+      source: PersonalSourceId;
+      status: "fulfilled";
+      value: GoogleSourceObservation;
+    }
+  | { source: PersonalSourceId; status: "rejected"; reason: unknown }
+>;
 type PersonalSourceSettlement = Readonly<{
   source: PersonalSourceId;
   status: "syncing" | "healthy" | "error";
@@ -122,8 +138,12 @@ export function syncPersonalProvider(input: { tenantId: string; actorId: string;
 }
 
 async function syncPersonalProviderWithActorScope(input: { tenantId: string; actorId: string; provider: OAuthProvider; abortSignal?: AbortSignal }) {
+  if (input.provider !== "google") {
+    throw new Error("Personal synchronization supports Google connections only.");
+  }
   const secrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, input.provider);
   if (!secrets) throw new Error("Connected source not found.");
+  const grantedSources = googleSyncSourcesForScopes(secrets.grant.scopes);
   const claim = await claimOAuthSyncLease(input);
   if (claim.status !== "claimed") {
     throw new Error("Connected source synchronization is already running.");
@@ -131,6 +151,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
   const lease = claim.lease;
   let driveSidecarAccessToken: string | undefined;
   let driveSidecarsReady = false;
+  let sourceObservationStarted = false;
   const startDriveShadow = (accessToken: string) =>
     observeGoogleDriveShadow({
       accessToken,
@@ -150,15 +171,26 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       abortSignal: input.abortSignal,
     }).catch(() => undefined);
   try {
-    const accessToken = await activeAccessToken(input, secrets.tokens, secrets.grant.expiresAt);
-    driveSidecarAccessToken = accessToken;
     const cursor = parseCursor(secrets.syncCursor);
-    const observations = await observeGoogleSources(
-      accessToken,
-      cursor,
-      input.abortSignal,
-      { tenantId: input.tenantId, actorId: input.actorId, provider: input.provider },
-    );
+    let observations: readonly GoogleSourceObservationSettlement[] = [];
+    if (grantedSources.length) {
+      const { accessToken } = await getActiveGoogleWorkspaceAccess({
+        tenantId: input.tenantId,
+        actorId: input.actorId,
+        capability: sourceCapability(grantedSources[0]),
+      });
+      if (grantedSources.includes("drive")) {
+        driveSidecarAccessToken = accessToken;
+      }
+      sourceObservationStarted = true;
+      observations = await observeGoogleSources(
+        accessToken,
+        cursor,
+        grantedSources,
+        input.abortSignal,
+        { tenantId: input.tenantId, actorId: input.actorId, provider: input.provider },
+      );
+    }
     const sourceExecutionScope = createExecutionScope({
       tenantId: input.tenantId,
       initiatingActorId: input.actorId,
@@ -177,6 +209,9 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
     const sources: PersonalSourceSettlement[] = [];
     for (const observation of observations) {
       if (observation.status === "rejected") {
+        if (isPersonalSyncInterruption(observation.reason, input.abortSignal)) {
+          throw observation.reason;
+        }
         const lastAttemptedAt = new Date().toISOString();
         sources.push({
           source: observation.source,
@@ -308,6 +343,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
           removed: sourceRemoved,
         });
       } catch (error) {
+        if (isPersonalSyncInterruption(error, input.abortSignal)) throw error;
         const lastAttemptedAt = new Date().toISOString();
         sources.push({
           source: observation.source,
@@ -328,7 +364,9 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
     const status = failed.length
       ? failed.length === sources.length ? "error" as const : "partial" as const
       : advancing.length ? "partial" as const : "healthy" as const;
-    driveSidecarsReady = status === "healthy";
+    driveSidecarsReady = sources.some((source) =>
+      source.source === "drive" && source.status !== "error"
+    );
     const error = failed.length
       ? failed.map((source) => `${source.source}: ${source.error}`).join("; ")
       : undefined;
@@ -365,12 +403,26 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       grant,
     };
   } catch (error) {
+    const interrupted = isPersonalSyncInterruption(error, input.abortSignal);
+    const lastAttemptedAt = new Date().toISOString();
     await updateOAuthSyncState({
       ...input,
-      status: "error",
-      error: error instanceof Error ? error.message : "Sync failed.",
+      status: interrupted ? "syncing" : "error",
+      error: interrupted
+        ? undefined
+        : error instanceof Error ? error.message : "Sync failed.",
       lease,
       releaseLease: true,
+      sourceSettlements: interrupted || sourceObservationStarted
+        ? []
+        : grantedSources.map((source) => ({
+            source,
+            schemaVersion: 1 as const,
+            status: "error" as const,
+            backfillState: googleSourceBackfillState(source, parseCursor(secrets.syncCursor)),
+            lastAttemptedAt,
+            failureCode: personalSourceFailureCode(error),
+          })),
     });
     throw error;
   } finally {
@@ -391,78 +443,39 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
   }
 }
 
-async function activeAccessToken(input: { tenantId: string; actorId: string; provider: OAuthProvider }, tokens: Record<string, unknown>, expiresAt?: string) {
-  const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : "";
-  if (accessToken && (!expiresAt || Date.parse(expiresAt) > Date.now() + 60_000)) return accessToken;
-  const refreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token : "";
-  if (!refreshToken) throw new Error("Connected source access expired. Reconnect it to continue syncing.");
-  const refreshed = await refreshOAuthAccess(input.provider, refreshToken);
-  await saveOAuthGrant({
-    ...input,
-    tokens: refreshed,
-    authorizationMode: "refresh",
-  });
-  return String(refreshed.access_token);
-}
-
 async function observeGoogleSources(
   accessToken: string,
   cursor: SyncCursor,
+  sources: readonly PersonalSourceId[],
   signal?: AbortSignal,
   identity?: { tenantId: string; actorId: string; provider: OAuthProvider },
-) {
+): Promise<readonly GoogleSourceObservationSettlement[]> {
   const headers = { authorization: `Bearer ${accessToken}`, accept: "application/json" };
-  const settled = await Promise.allSettled([
-    googleMail(headers, cursor, signal),
-    googleCalendar(headers, cursor, signal),
-    googleDrive(headers, cursor, signal, identity),
-  ] as const);
-  const mail = settled[0].status === "fulfilled"
-    ? {
-        source: "mail" as const,
-        status: "fulfilled" as const,
-        value: {
-          source: "mail" as const,
-          items: settled[0].value.items,
-          cursor: settled[0].value.cursor,
-        } satisfies GoogleSourceObservation,
-      }
-    : {
-        source: "mail" as const,
-        status: "rejected" as const,
-        reason: settled[0].reason,
-      };
-  const calendar = settled[1].status === "fulfilled"
-    ? {
-        source: "calendar" as const,
-        status: "fulfilled" as const,
-        value: {
-          source: "calendar" as const,
-          items: settled[1].value.items,
-          cursor: settled[1].value.cursor,
-        } satisfies GoogleSourceObservation,
-      }
-    : {
-        source: "calendar" as const,
-        status: "rejected" as const,
-        reason: settled[1].reason,
-      };
-  const drive = settled[2].status === "fulfilled"
-    ? {
-        source: "drive" as const,
-        status: "fulfilled" as const,
-        value: {
-          source: "drive" as const,
-          items: settled[2].value.items,
-          cursor: settled[2].value.cursor,
-        } satisfies GoogleSourceObservation,
-      }
-    : {
-        source: "drive" as const,
-        status: "rejected" as const,
-        reason: settled[2].reason,
-      };
-  return [mail, calendar, drive] as const;
+  const requests = sources.map((source) => ({
+    source,
+    promise: source === "mail"
+      ? googleMail(headers, cursor, signal)
+      : source === "calendar"
+        ? googleCalendar(headers, cursor, signal)
+        : googleDrive(headers, cursor, signal, identity),
+  }));
+  const settled = await Promise.allSettled(
+    requests.map((request) => request.promise),
+  );
+  return settled.map((result, index): GoogleSourceObservationSettlement => {
+    const source = requests[index].source;
+    return result.status === "fulfilled"
+      ? {
+          source,
+          status: "fulfilled",
+          value: {
+            source,
+            items: result.value.items,
+            cursor: result.value.cursor,
+          },
+        }
+      : { source, status: "rejected", reason: result.reason };
+  });
 }
 
 async function googleMail(
@@ -1046,6 +1059,16 @@ function googleSourceBackfillState(
 function personalSourceFailureCode(
   error: unknown,
 ): NonNullable<OAuthSourceCoverageCheckpoint["failureCode"]> {
+  if (error instanceof OAuthProviderError) {
+    if (error.code === "provider_rate_limited") return "provider_rate_limited";
+    if (error.code === "provider_unavailable") return "provider_unavailable";
+    return "provider_unauthorized";
+  }
+  if (error instanceof OAuthCredentialError) {
+    return error.code === "capability_not_granted"
+      ? "provider_forbidden"
+      : "provider_unauthorized";
+  }
   const message = error instanceof Error ? error.message : "";
   if (/\b401\b|unauthori[sz]ed|access expired/i.test(message)) {
     return "provider_unauthorized";
@@ -1060,6 +1083,23 @@ function personalSourceFailureCode(
     return "provider_unavailable";
   }
   return "processing_failed";
+}
+
+function sourceCapability(
+  source: PersonalSourceId,
+): GoogleWorkspaceCapability {
+  if (source === "mail") return "gmail.read";
+  if (source === "calendar") return "calendar.events.read";
+  return "drive.read";
+}
+
+function isPersonalSyncInterruption(
+  error: unknown,
+  signal?: AbortSignal,
+) {
+  if (signal?.aborted) return true;
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function safeSourceSyncError(error: unknown) {

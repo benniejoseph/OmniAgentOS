@@ -1,13 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { extractCaptureFile } from "@/lib/capture/files";
-import {
-  GOOGLE_PHOTOS_PICKER_SCOPE,
-  refreshOAuthAccess,
-} from "@/lib/connectors/oauth-providers";
-import {
-  getOAuthGrantSecrets,
-  saveOAuthGrant,
-} from "@/lib/connectors/oauth-store";
+import { OAuthProviderError } from "@/lib/connectors/oauth-providers";
+import { OAuthCredentialError } from "@/lib/connectors/oauth-store";
+import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
 import {
   BackgroundJobIdempotencyConflictError,
   enqueueKnowledgeIngestJob,
@@ -274,57 +269,51 @@ export function googlePhotosPickerErrorResponse(error: unknown) {
 }
 
 async function googlePhotosAccessToken(identity: PickerIdentity) {
-  const secrets = await getOAuthGrantSecrets(identity.tenantId, identity.actorId, "google");
-  if (!secrets) {
-    throw new GooglePhotosPickerError(
-      "Connect Google before choosing photos.",
-      409,
-      "google_not_connected",
-      true,
-    );
-  }
-  if (!secrets.grant.scopes.includes(GOOGLE_PHOTOS_PICKER_SCOPE)) {
-    throw new GooglePhotosPickerError(
-      "Reconnect Google to allow choosing photos.",
-      409,
-      "photos_scope_required",
-      true,
-    );
-  }
-
-  const current = typeof secrets.tokens.access_token === "string"
-    ? secrets.tokens.access_token
-    : "";
-  if (current && (!secrets.grant.expiresAt || Date.parse(secrets.grant.expiresAt) > Date.now() + 60_000)) {
-    return current;
-  }
-  const refreshToken = typeof secrets.tokens.refresh_token === "string"
-    ? secrets.tokens.refresh_token
-    : "";
-  if (!refreshToken) {
-    throw new GooglePhotosPickerError(
-      "Google Photos access expired. Reconnect Google to continue.",
-      409,
-      "google_reconnect_required",
-      true,
-    );
-  }
   try {
-    const refreshed = await refreshOAuthAccess("google", refreshToken);
-    await saveOAuthGrant({
+    const access = await getActiveGoogleWorkspaceAccess({
       tenantId: identity.tenantId,
       actorId: identity.actorId,
-      provider: "google",
-      tokens: refreshed,
-      authorizationMode: "refresh",
+      capability: "photos.pick",
     });
-    return String(refreshed.access_token);
-  } catch {
+    return access.accessToken;
+  } catch (error) {
+    if (
+      error instanceof OAuthCredentialError &&
+      error.code === "grant_not_found"
+    ) {
+      throw new GooglePhotosPickerError(
+        "Connect Google before choosing photos.",
+        409,
+        "google_not_connected",
+        true,
+      );
+    }
+    if (
+      error instanceof OAuthCredentialError &&
+      error.code === "capability_not_granted"
+    ) {
+      throw new GooglePhotosPickerError(
+        "Reconnect Google to allow choosing photos.",
+        409,
+        "photos_scope_required",
+        true,
+      );
+    }
+    if (
+      error instanceof OAuthCredentialError ||
+      error instanceof OAuthProviderError && error.reconnectRequired
+    ) {
+      throw new GooglePhotosPickerError(
+        "Google Photos access expired. Reconnect Google to continue.",
+        409,
+        "google_reconnect_required",
+        true,
+      );
+    }
     throw new GooglePhotosPickerError(
-      "Google Photos access expired. Reconnect Google to continue.",
-      409,
-      "google_reconnect_required",
-      true,
+      "Google Photos is temporarily unavailable. Try again shortly.",
+      502,
+      "photos_request_failed",
     );
   }
 }
