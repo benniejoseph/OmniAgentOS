@@ -1,8 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { enqueueSemanticSummaryEnrichmentJob } from "@/lib/operations/background-jobs";
+import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import { createExecutionScope } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
+import { listCurrentSemanticEnrichments } from "@/lib/threads/semantic-summary-store";
+import {
+  resolveSemanticSummaryGenerationId,
+  SEMANTIC_EPISODE_ENRICHMENT_TURN_COUNT,
+} from "@/lib/threads/semantic-summaries";
 import {
   getOwnedThread,
   listConversationSummaries,
@@ -18,6 +27,27 @@ export const POST = withDatabaseRequestScope(POSTHandler);
 const rebuildSchema = z.object({
   action: z.literal("rebuild_summaries"),
 }).strict();
+
+const enqueueSemanticSummariesSchema = z.object({
+  action: z.literal("enqueue_semantic_summaries"),
+  limit: z.number().int().min(1).max(25).default(8),
+}).strict();
+
+const threadActionSchema = z.discriminatedUnion("action", [
+  rebuildSchema,
+  enqueueSemanticSummariesSchema,
+]);
+
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
+
+const PUBLIC_SEMANTIC_SUMMARY_STAGES = new Set([
+  "queued",
+  "processing",
+  "reading_episode",
+  "generating_enrichment",
+  "saving_enrichment",
+  "completed",
+]);
 
 async function GETHandler(request: Request, route: { params: Promise<{ id: string }> }) {
   const { id } = await route.params;
@@ -62,7 +92,7 @@ async function POSTHandler(
   } catch (error) {
     return jsonBodyErrorResponse(error);
   }
-  const parsed = rebuildSchema.safeParse(body);
+  const parsed = threadActionSchema.safeParse(body);
   if (!parsed.success) {
     return Response.json(
       { error: "Invalid thread summary action", details: parsed.error.flatten() },
@@ -76,7 +106,12 @@ async function POSTHandler(
       action: "write.memory",
       resourceType: "conversation_summary",
       resourceId: id,
-      metadata: { action: parsed.data.action },
+      metadata: {
+        action: parsed.data.action,
+        limit: parsed.data.action === "enqueue_semantic_summaries"
+          ? parsed.data.limit
+          : null,
+      },
     });
   } catch (error) {
     return forbiddenResponse(error);
@@ -89,8 +124,16 @@ async function POSTHandler(
   if (!thread) {
     return Response.json(
       { error: "Thread not found." },
-      { status: 404, headers: { "cache-control": "private, no-store" } },
+      { status: 404, headers: privateNoStoreHeaders },
     );
+  }
+  if (parsed.data.action === "enqueue_semantic_summaries") {
+    return enqueueSemanticSummaries({
+      request,
+      context,
+      thread,
+      limit: parsed.data.limit,
+    });
   }
   const summaries = await rebuildConversationSummaryHierarchy(thread.id, {
     tenantId: context.tenantId,
@@ -99,7 +142,250 @@ async function POSTHandler(
   return Response.json({
     summaries: summaries.map(publicConversationSummary),
     summaryCount: summaries.length,
-  }, { headers: { "cache-control": "private, no-store" } });
+  }, { headers: privateNoStoreHeaders });
+}
+
+async function enqueueSemanticSummaries(input: {
+  request: Request;
+  context: Awaited<ReturnType<typeof authorizeRequest>>;
+  thread: NonNullable<Awaited<ReturnType<typeof getOwnedThread>>>;
+  limit: number;
+}) {
+  const actorBinding = canonicalRequestActorBindingFromSecurityContext(
+    input.context,
+  );
+  if (!actorBinding) {
+    return Response.json({
+      error:
+        "Semantic summary enrichment requires a canonical signed-in user.",
+    }, { status: 409, headers: privateNoStoreHeaders });
+  }
+
+  const summaries = await listConversationSummaries(input.thread.id, {
+    tenantId: input.context.tenantId,
+    levels: ["episode"],
+    limit: 500,
+  });
+  const eligibleEpisodes = summaries
+    .filter((summary) => isEligibleSemanticEpisode({
+      summary,
+      tenantId: input.context.tenantId,
+      threadId: input.thread.id,
+      projectId: input.thread.projectId || null,
+      readableOwnerActorIds: actorBinding.readableOwnerActorIds,
+    }));
+
+  if (!eligibleEpisodes.length) {
+    return deterministicSummaryResponse({
+      semanticStatus: "waiting_for_sealed_episode",
+      eligibleEpisodeCount: 0,
+      message:
+        "Deterministic summaries are active. Semantic enrichment starts after a complete 12-turn episode is available.",
+    });
+  }
+
+  const generationByActor = new Map<string, string>();
+  try {
+    for (const actorId of new Set(
+      eligibleEpisodes.map((summary) => summary.actorId),
+    )) {
+      generationByActor.set(actorId, await resolveSemanticSummaryGenerationId({
+        tenantId: input.context.tenantId,
+        actorId,
+      }));
+    }
+  } catch (error) {
+    if (!isSemanticSummaryModelUnconfigured(error)) throw error;
+    return deterministicSummaryResponse({
+      semanticStatus: "not_configured",
+      eligibleEpisodeCount: eligibleEpisodes.length,
+      message:
+        "Deterministic summaries remain active. Configure the Memory model in Settings to enable optional semantic enrichment.",
+    });
+  }
+
+  const currentEnrichmentKeys = new Set<string>();
+  for (const actorId of generationByActor.keys()) {
+    const current = await listCurrentSemanticEnrichments({
+      tenantId: input.context.tenantId,
+      actorId,
+      threadId: input.thread.id,
+      limit: 500,
+    });
+    for (const record of current) {
+      currentEnrichmentKeys.add(semanticEpisodeKey({
+        episodeSummaryId: record.contract.episodeSummaryId,
+        episodeSourceSha256: record.contract.episodeSourceSha256,
+        deterministicSummarySha256:
+          record.contract.deterministicSummarySha256,
+        generationId: record.contract.generationId,
+      }));
+    }
+  }
+
+  const correlationId = requestCorrelationId(input.request);
+  const queued = [];
+  let upToDateCount = 0;
+  let staleEpisodeCount = 0;
+  const pendingEpisodes = eligibleEpisodes.filter((episode) => {
+    const generationId = generationByActor.get(episode.actorId)!;
+    const current = currentEnrichmentKeys.has(semanticEpisodeKey({
+      episodeSummaryId: episode.id,
+      episodeSourceSha256: episode.sourceSha256,
+      deterministicSummarySha256: episode.summarySha256,
+      generationId,
+    }));
+    if (current) upToDateCount += 1;
+    return !current;
+  });
+  for (const episode of pendingEpisodes.slice(0, input.limit)) {
+    const generationId = generationByActor.get(episode.actorId)!;
+    const request = {
+      episodeSummaryId: episode.id,
+      episodeSourceSha256: episode.sourceSha256,
+      deterministicSummarySha256: episode.summarySha256,
+      generationId,
+    };
+    const job = await enqueueSemanticSummaryEnrichmentJob({
+      tenantId: input.context.tenantId,
+      actorId: episode.actorId,
+      executionScope: createExecutionScope({
+        tenantId: input.context.tenantId,
+        initiatingActorId: episode.actorId,
+        executingPrincipalType: "user",
+        executingPrincipalId: episode.actorId,
+        workspaceId: null,
+        projectId: episode.projectId || null,
+        missionId: null,
+        delegationId: null,
+        correlationId,
+        causationId: episode.id,
+        purpose: "conversation.summary.enrich.queue",
+      }),
+      request,
+    });
+    if (job) queued.push(publicSemanticSummaryJob(job));
+    else staleEpisodeCount += 1;
+  }
+
+  const activeJobCount = queued.filter((job) =>
+    job.status === "queued" || job.status === "running"
+  ).length;
+  return Response.json({
+    deterministicSummariesActive: true,
+    semanticEnrichment: {
+      status: activeJobCount
+        ? "queued"
+        : staleEpisodeCount
+          ? "source_changed"
+          : "up_to_date",
+      shadowOnly: true,
+    },
+    jobs: queued,
+    eligibleEpisodeCount: eligibleEpisodes.length,
+    queuedJobCount: activeJobCount,
+    upToDateCount,
+    staleEpisodeCount,
+    remainingEpisodeCount: Math.max(0, pendingEpisodes.length - input.limit),
+  }, {
+    status: activeJobCount ? 202 : 200,
+    headers: privateNoStoreHeaders,
+  });
+}
+
+function deterministicSummaryResponse(input: {
+  semanticStatus: "not_configured" | "waiting_for_sealed_episode";
+  eligibleEpisodeCount: number;
+  message: string;
+}) {
+  return Response.json({
+    deterministicSummariesActive: true,
+    semanticEnrichment: {
+      status: input.semanticStatus,
+      shadowOnly: true,
+    },
+    jobs: [],
+    eligibleEpisodeCount: input.eligibleEpisodeCount,
+    queuedJobCount: 0,
+    upToDateCount: 0,
+    staleEpisodeCount: 0,
+    remainingEpisodeCount: 0,
+    message: input.message,
+  }, { headers: privateNoStoreHeaders });
+}
+
+function isEligibleSemanticEpisode(input: {
+  summary: ConversationSummaryRecord;
+  tenantId: string;
+  threadId: string;
+  projectId: string | null;
+  readableOwnerActorIds: readonly string[];
+}) {
+  const summary = input.summary;
+  return summary.level === "episode" &&
+    summary.tenantId === input.tenantId &&
+    summary.threadId === input.threadId &&
+    (summary.projectId || null) === input.projectId &&
+    input.readableOwnerActorIds.includes(summary.actorId) &&
+    summary.rebuildable === true &&
+    summary.sourceTurnIds.length === SEMANTIC_EPISODE_ENRICHMENT_TURN_COUNT &&
+    summary.childSummaryIds.length === SEMANTIC_EPISODE_ENRICHMENT_TURN_COUNT &&
+    new Set(summary.sourceTurnIds).size === summary.sourceTurnIds.length;
+}
+
+function semanticEpisodeKey(input: {
+  episodeSummaryId: string;
+  episodeSourceSha256: string;
+  deterministicSummarySha256: string;
+  generationId: string;
+}) {
+  return [
+    input.episodeSummaryId,
+    input.episodeSourceSha256,
+    input.deterministicSummarySha256,
+    input.generationId,
+  ].join("\u0000");
+}
+
+function publicSemanticSummaryJob(
+  job: Parameters<typeof projectOperationJobStatus>[0],
+) {
+  const projected = projectOperationJobStatus(job);
+  const stage = typeof projected.progress?.stage === "string"
+    ? publicSemanticSummaryStage(projected.progress.stage)
+    : "pending";
+  return {
+    id: projected.id,
+    type: projected.type,
+    status: projected.status,
+    progress: { stage, shadowOnly: true },
+    attempt: projected.attempt,
+    maxAttempts: projected.maxAttempts,
+    runAt: projected.runAt,
+    createdAt: projected.createdAt,
+    updatedAt: projected.updatedAt,
+    completedAt: projected.completedAt,
+    ...(projected.status === "failed"
+      ? { failureCode: "semantic_enrichment_failed" }
+      : {}),
+    statusUrl: `/api/operations/jobs/${encodeURIComponent(projected.id)}`,
+  };
+}
+
+function publicSemanticSummaryStage(value: string) {
+  const stage = value.trim();
+  return PUBLIC_SEMANTIC_SUMMARY_STAGES.has(stage) ? stage : "pending";
+}
+
+function requestCorrelationId(request: Request) {
+  return request.headers.get("x-idempotency-key")?.trim().slice(0, 200) ||
+    request.headers.get("x-request-id")?.trim().slice(0, 200) ||
+    `conversation_summary_enrichment_${randomUUID()}`;
+}
+
+function isSemanticSummaryModelUnconfigured(error: unknown) {
+  return error instanceof Error &&
+    error.message === "The semantic summary memory model is not configured.";
 }
 
 function publicConversationSummary(summary: ConversationSummaryRecord) {
