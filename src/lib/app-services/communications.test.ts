@@ -110,6 +110,35 @@ describe("governed communication application service", () => {
     await expect(deliverCommunicationDraftService(caller(), deliveryInput())).rejects.toThrow("not visible");
     expect(mocks.fail).not.toHaveBeenCalled();
   });
+
+  it("keeps a verified send reconcile-only when local receipt persistence fails", async () => {
+    const draft = {
+      id: "message_draft:123e4567-e89b-12d3-a456-426614174000",
+      state: "delivering",
+    };
+    mocks.begin
+      .mockResolvedValueOnce({ state: "deliver", draft })
+      .mockResolvedValueOnce({ state: "reconcile", draft });
+    mocks.deliver
+      .mockResolvedValueOnce({
+        providerMessageId: "gmail-message-1",
+        externalThreadId: "gmail-thread-1",
+        providerAcknowledgement: "provider_response",
+        providerAcknowledgementSha256: "1".repeat(64),
+        observedTargetStateSha256: "2".repeat(64),
+      })
+      .mockRejectedValueOnce(new GmailDeliveryOutcomeUnknownError("not visible yet"));
+    mocks.complete.mockRejectedValueOnce(new Error("receipt database unavailable"));
+
+    await expect(deliverCommunicationDraftService(caller(), deliveryInput()))
+      .rejects.toThrow("receipt database unavailable");
+    await expect(deliverCommunicationDraftService(caller(), deliveryInput()))
+      .rejects.toThrow("not visible yet");
+
+    expect(mocks.deliver.mock.calls.map(([, options]) => options.mode))
+      .toEqual(["deliver", "reconcile"]);
+    expect(mocks.fail).not.toHaveBeenCalled();
+  });
 });
 
 function caller() {

@@ -147,24 +147,12 @@ export async function deliverCommunicationDraftService(
       reconciled: true,
     });
   }
+  let effect: Awaited<ReturnType<typeof deliverGmailDraft>>;
   try {
-    const effect = await deliverGmailDraft(claimed.draft, {
+    effect = await deliverGmailDraft(claimed.draft, {
       tenantId: caller.context.tenantId,
       actorId: caller.context.actorId,
       mode: claimed.state,
-    });
-    const deliveryReceipt = await completeMessageDelivery({
-      draft: claimed.draft,
-      providerMessageId: effect.providerMessageId,
-      externalThreadId: effect.externalThreadId,
-      providerAcknowledgementSha256: effect.providerAcknowledgementSha256,
-      observedTargetStateSha256: effect.observedTargetStateSha256,
-    }, mutationOwner(caller));
-    const draft = await getMessageDraft(value.draftId, owner(caller));
-    return completeAppServiceCall(authorized, {
-      draft,
-      deliveryReceipt,
-      reconciled: effect.providerAcknowledgement === "provider_idempotency_reconciliation",
     });
   } catch (error) {
     if (!(error instanceof GmailDeliveryOutcomeUnknownError)) {
@@ -172,6 +160,22 @@ export async function deliverCommunicationDraftService(
     }
     throw error;
   }
+  // The provider has now verified the exact message. Any local receipt-write
+  // failure must leave the draft in `delivering`, so the next attempt can only
+  // reconcile by Message-ID and can never issue a second send.
+  const deliveryReceipt = await completeMessageDelivery({
+    draft: claimed.draft,
+    providerMessageId: effect.providerMessageId,
+    externalThreadId: effect.externalThreadId,
+    providerAcknowledgementSha256: effect.providerAcknowledgementSha256,
+    observedTargetStateSha256: effect.observedTargetStateSha256,
+  }, mutationOwner(caller));
+  const draft = await getMessageDraft(value.draftId, owner(caller));
+  return completeAppServiceCall(authorized, {
+    draft,
+    deliveryReceipt,
+    reconciled: effect.providerAcknowledgement === "provider_idempotency_reconciliation",
+  });
 }
 
 function owner(caller: AppServiceCaller) {
