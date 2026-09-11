@@ -1,6 +1,6 @@
 # ICT Trading Research Agent
 
-**Status:** Stage 0 foundation, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, deterministic technical primitives, and descriptive comparable-event baselines implemented; transcript ontology, transcript-authoritative ICT rules, calibrated prediction, and forward-shadow execution remain pending
+**Status:** Stage 0 foundation, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, deterministic technical primitives, descriptive comparable-event baselines, and the Stage 7 forward-shadow journal foundation are implemented; transcript ontology, transcript-authoritative ICT rules, sufficient calibration evidence, chart annotations, and deterministic backtesting remain pending
 **Research date:** 2026-09-10; implementation activated 2026-09-11
 **Initial instruments:** Nasdaq-100 exposure and gold exposure
 
@@ -15,6 +15,10 @@ The current UI exposes four progressively loaded views: Research desk, News impa
 The ICT + Quarterly view now runs `market-technical-primitives:1` against one caller-owned immutable snapshot. It reports New-York-time 90-minute/session context, only those calendar opens whose boundary exists inside the snapshot, range position, five-bar swings, three-bar price gaps, range-relative displacement, and 20-bar boundary sweeps. The formulas and output digest are visible. These are neutral reproducible foundations and deliberately claim no transcript authority; order blocks, market-structure shifts, inversions, and other ICT-specific semantics remain unavailable until the user's transcript evidence and reviewed definitions exist.
 
 The News Impact Lab also derives a digest-bound `market-event-baseline:1` projection from the caller's replay cohort. Each exact release family reports its sample size, empirical direction split, 5/15/60/240-minute return distribution, and favorable/adverse excursion medians. A configurable minimum sample distinguishes low-sample rows from a usable descriptive baseline. This is not probability calibration: no historical frequency is presented as a prediction, and the baseline cannot condition on consensus surprise, macro regime, or transcript-reviewed technical context until those inputs exist.
+
+The Forecast Journal now implements the append-only `market-forward-shadow:1` foundation. Meridian resolves the active, catalog-backed `market_research` assignment from Settings, binds one immutable price snapshot plus its deterministic technical and event-baseline digests, and creates exactly one bullish, bearish, and neutral scenario for the next daily or weekly New York window. The first actor/instrument/horizon/window result is permanent; retries reuse it. Its provider, model, assignment ID and revision, configuration digest, and persisted AI-usage receipt are sealed with the forecast. Outcomes are written later as separate immutable receipts after the window closes. Until sufficient forward samples exist, the contract remains `uncalibrated`, exposes no numeric probability, and withholds Brier score. The production canary sealed one daily abstention and one weekly neutral lead on the explicitly configured OpenAI `gpt-6-astra` assignment revision 1. Both remain open until their September 14–18, 2026 windows close.
+
+Production event coverage is currently 60 of 142 eligible exact-time XAU/USD windows across CPI, PPI, Employment Situation, JOLTS, personal income/outlays, retail sales, FOMC, and GDP. Every family still remains below the 20-event descriptive gate, so the UI correctly reports zero qualified groups. More history improves descriptive evidence but does not by itself create a calibrated forecast.
 
 Trading Economics is no longer a dependency. The free-source path uses FRED/ALFRED for durable release history and vintages plus the official BLS calendar for upcoming BLS schedules. Free official sources do not provide a complete historical economist-consensus archive, so that field remains nullable. Scraping an unlicensed commercial calendar is not part of the trusted pipeline.
 
@@ -316,9 +320,11 @@ If paper or live execution is considered later, it must be a separate authorizat
 
 ### Stage 7 — forward shadow evaluation
 
-- Seal predictions before outcomes.
+- Seal predictions before outcomes. **Implemented:** append-only daily and weekly scenarios, exact evidence/model receipts, separately appended deterministic outcomes, and an honest scorecard.
 - Score calibration, performance, abstention and regime stability.
 - Compare agent proposals against deterministic baselines.
+
+**Current gate:** two production forecasts are open and cannot be scored before their windows close. Probability calibration remains blocked by sample size, missing consensus-surprise history, and missing reviewed transcript/regime context; the application must continue to abstain or show uncalibrated scenarios rather than manufacture confidence.
 
 **Exit gate:** predeclared sample size, duration and risk-adjusted criteria pass without changing the locked rules.
 
