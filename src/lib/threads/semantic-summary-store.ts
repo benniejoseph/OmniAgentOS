@@ -332,17 +332,67 @@ export async function listCurrentSemanticEnrichments(
         ORDER BY enrichment.starts_at DESC, enrichment.id COLLATE "C"
         LIMIT ${limit}
       `;
+      if (!rows.length) return [];
+      const records = rows.map(recordFromRow);
+      const episodeIds = records.map(
+        (record) => record.contract.episodeSummaryId,
+      );
+      const summaryRows = await sql`
+        SELECT summary.*
+        FROM omni_conversation_summaries summary
+        JOIN omni_threads thread ON thread.id = summary.thread_id
+        WHERE summary.tenant_id = ${tenantId}
+          AND summary.owner_actor_id = ${actorId}
+          AND summary.thread_id = ${threadId}
+          AND summary.id = ANY(${episodeIds})
+          AND summary.level = 'episode'
+          AND thread.tenant_id = summary.tenant_id
+          AND thread.actor_id = summary.owner_actor_id
+          AND thread.project_id IS NOT DISTINCT FROM summary.project_id
+      `;
+      const episodes = new Map(
+        summaryRows.map((row) => {
+          const episode = conversationSummaryFromRow(row);
+          return [episode.id, episode] as const;
+        }),
+      );
+      const sourceTurnIds = [...new Set(
+        records.flatMap((record) => record.contract.sourceTurnIds),
+      )];
+      const turnRows = await sql`
+        SELECT turn.*
+        FROM omni_thread_turns turn
+        JOIN omni_threads thread ON thread.id = turn.thread_id
+        WHERE turn.tenant_id = ${tenantId}
+          AND turn.thread_id = ${threadId}
+          AND turn.id = ANY(${sourceTurnIds})
+          AND thread.tenant_id = turn.tenant_id
+          AND thread.actor_id = ${actorId}
+      `;
+      const turnsById = new Map(
+        turnRows.map((row) => {
+          const turn = turnFromRow(row);
+          return [turn.id, turn] as const;
+        }),
+      );
       const current: SemanticSummaryEnrichmentRecord[] = [];
-      for (const row of rows) {
-        const record = recordFromRow(row);
-        const source = await readOwnedEpisodeSourceSql(sql, {
-          tenantId,
-          actorId,
-          episodeSummaryId: record.contract.episodeSummaryId,
-        }, false);
-        if (!source) continue;
-        if (!recordMatchesCurrentSource(record, source)) continue;
-        current.push(record);
+      for (const record of records) {
+        const episode = episodes.get(record.contract.episodeSummaryId);
+        if (!episode) continue;
+        try {
+          const turns = orderedTurns(
+            episode,
+            record.contract.sourceTurnIds.flatMap((id) => {
+              const turn = turnsById.get(id);
+              return turn ? [turn] : [];
+            }),
+          );
+          const source = freezeSource({ episode, turns });
+          if (recordMatchesCurrentSource(record, source)) current.push(record);
+        } catch (error) {
+          if (error instanceof SemanticSummaryStaleSourceError) continue;
+          throw error;
+        }
       }
       return current;
     };
@@ -1039,7 +1089,7 @@ function boundedLimit(value: number | undefined) {
   if (value !== undefined && !Number.isFinite(value)) {
     throw new Error("Semantic summary list limit is invalid.");
   }
-  return Math.min(Math.max(Math.round(value || 100), 1), 250);
+  return Math.min(Math.max(Math.round(value || 100), 1), 500);
 }
 
 function compareRecords(

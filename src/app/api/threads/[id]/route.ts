@@ -7,7 +7,10 @@ import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
-import { listCurrentSemanticEnrichments } from "@/lib/threads/semantic-summary-store";
+import {
+  listCurrentSemanticEnrichments,
+  SemanticSummaryStaleSourceError,
+} from "@/lib/threads/semantic-summary-store";
 import {
   resolveSemanticSummaryGenerationId,
   SEMANTIC_EPISODE_ENRICHMENT_TURN_COUNT,
@@ -47,6 +50,11 @@ const PUBLIC_SEMANTIC_SUMMARY_STAGES = new Set([
   "generating_enrichment",
   "saving_enrichment",
   "completed",
+]);
+const PUBLIC_SEMANTIC_SUMMARY_OUTCOMES = new Set([
+  "enriched",
+  "already_current",
+  "superseded",
 ]);
 
 async function GETHandler(request: Request, route: { params: Promise<{ id: string }> }) {
@@ -129,7 +137,6 @@ async function POSTHandler(
   }
   if (parsed.data.action === "enqueue_semantic_summaries") {
     return enqueueSemanticSummaries({
-      request,
       context,
       thread,
       limit: parsed.data.limit,
@@ -146,7 +153,6 @@ async function POSTHandler(
 }
 
 async function enqueueSemanticSummaries(input: {
-  request: Request;
   context: Awaited<ReturnType<typeof authorizeRequest>>;
   thread: NonNullable<Awaited<ReturnType<typeof getOwnedThread>>>;
   limit: number;
@@ -223,10 +229,11 @@ async function enqueueSemanticSummaries(input: {
     }
   }
 
-  const correlationId = requestCorrelationId(input.request);
+  const correlationId = `conversation_summary_enrichment_${randomUUID()}`;
   const queued = [];
   let upToDateCount = 0;
   let staleEpisodeCount = 0;
+  let skippedEpisodeCount = 0;
   const pendingEpisodes = eligibleEpisodes.filter((episode) => {
     const generationId = generationByActor.get(episode.actorId)!;
     const current = currentEnrichmentKeys.has(semanticEpisodeKey({
@@ -246,26 +253,34 @@ async function enqueueSemanticSummaries(input: {
       deterministicSummarySha256: episode.summarySha256,
       generationId,
     };
-    const job = await enqueueSemanticSummaryEnrichmentJob({
-      tenantId: input.context.tenantId,
-      actorId: episode.actorId,
-      executionScope: createExecutionScope({
+    try {
+      const job = await enqueueSemanticSummaryEnrichmentJob({
         tenantId: input.context.tenantId,
-        initiatingActorId: episode.actorId,
-        executingPrincipalType: "user",
-        executingPrincipalId: episode.actorId,
-        workspaceId: null,
-        projectId: episode.projectId || null,
-        missionId: null,
-        delegationId: null,
-        correlationId,
-        causationId: episode.id,
-        purpose: "conversation.summary.enrich.queue",
-      }),
-      request,
-    });
-    if (job) queued.push(publicSemanticSummaryJob(job));
-    else staleEpisodeCount += 1;
+        actorId: episode.actorId,
+        executionScope: createExecutionScope({
+          tenantId: input.context.tenantId,
+          initiatingActorId: episode.actorId,
+          executingPrincipalType: "user",
+          executingPrincipalId: episode.actorId,
+          workspaceId: null,
+          projectId: episode.projectId || null,
+          missionId: null,
+          delegationId: null,
+          correlationId,
+          causationId: episode.id,
+          purpose: "conversation.summary.enrich.queue",
+        }),
+        request,
+      });
+      if (job) queued.push(publicSemanticSummaryJob(job));
+      else staleEpisodeCount += 1;
+    } catch (error) {
+      if (error instanceof SemanticSummaryStaleSourceError) {
+        skippedEpisodeCount += 1;
+        continue;
+      }
+      throw error;
+    }
   }
 
   const activeJobCount = queued.filter((job) =>
@@ -276,7 +291,7 @@ async function enqueueSemanticSummaries(input: {
     semanticEnrichment: {
       status: activeJobCount
         ? "queued"
-        : staleEpisodeCount
+        : staleEpisodeCount || skippedEpisodeCount
           ? "source_changed"
           : "up_to_date",
       shadowOnly: true,
@@ -286,6 +301,7 @@ async function enqueueSemanticSummaries(input: {
     queuedJobCount: activeJobCount,
     upToDateCount,
     staleEpisodeCount,
+    skippedEpisodeCount,
     remainingEpisodeCount: Math.max(0, pendingEpisodes.length - input.limit),
   }, {
     status: activeJobCount ? 202 : 200,
@@ -309,6 +325,7 @@ function deterministicSummaryResponse(input: {
     queuedJobCount: 0,
     upToDateCount: 0,
     staleEpisodeCount: 0,
+    skippedEpisodeCount: 0,
     remainingEpisodeCount: 0,
     message: input.message,
   }, { headers: privateNoStoreHeaders });
@@ -354,11 +371,16 @@ function publicSemanticSummaryJob(
   const stage = typeof projected.progress?.stage === "string"
     ? publicSemanticSummaryStage(projected.progress.stage)
     : "pending";
+  const outcome = publicSemanticSummaryOutcome(projected.progress?.outcome);
   return {
     id: projected.id,
     type: projected.type,
     status: projected.status,
-    progress: { stage, shadowOnly: true },
+    progress: {
+      stage,
+      shadowOnly: true,
+      ...(outcome ? { outcome } : {}),
+    },
     attempt: projected.attempt,
     maxAttempts: projected.maxAttempts,
     runAt: projected.runAt,
@@ -377,10 +399,11 @@ function publicSemanticSummaryStage(value: string) {
   return PUBLIC_SEMANTIC_SUMMARY_STAGES.has(stage) ? stage : "pending";
 }
 
-function requestCorrelationId(request: Request) {
-  return request.headers.get("x-idempotency-key")?.trim().slice(0, 200) ||
-    request.headers.get("x-request-id")?.trim().slice(0, 200) ||
-    `conversation_summary_enrichment_${randomUUID()}`;
+function publicSemanticSummaryOutcome(value: unknown) {
+  return typeof value === "string" &&
+      PUBLIC_SEMANTIC_SUMMARY_OUTCOMES.has(value)
+    ? value
+    : undefined;
 }
 
 function isSemanticSummaryModelUnconfigured(error: unknown) {
