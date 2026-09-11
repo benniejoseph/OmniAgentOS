@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaptureIngestGuard } from "@/lib/capture/ingest-guard";
 import { createExecutionScope } from "@/lib/security/execution-scope";
+import {
+  CLAIM_EVIDENCE_PURPOSE_ID,
+  CONTEXT_COMPILER_V2_PURPOSE_ID,
+} from "@/lib/sources/purposes";
 
 const mocks = vi.hoisted(() => ({
   createKnowledgeDocument: vi.fn(),
@@ -78,8 +82,8 @@ describe("capture ingestion persistence guard", () => {
     mocks.embedTexts.mockClear();
   });
 
-  it("defers graph projection through the durable coalescing queue", async () => {
-    await ingestTextDocument({
+  it("does not duplicate cognition-eligible evidence into raw semantic memory", async () => {
+    const result = await ingestTextDocument({
       tenantId: guard.tenantId,
       title: "Connected source",
       content: "Bounded provider page",
@@ -89,12 +93,12 @@ describe("capture ingestion persistence guard", () => {
     });
 
     expect(mocks.indexMemoryGraphRecords).not.toHaveBeenCalled();
-    expect(mocks.queueMemoryGraphRebuild).toHaveBeenCalledWith({
-      tenantId: guard.tenantId,
-    });
+    expect(mocks.queueMemoryGraphRebuild).not.toHaveBeenCalled();
+    expect(mocks.saveMemories).not.toHaveBeenCalled();
+    expect(result.memories).toEqual([]);
   });
 
-  it("carries the same lock guard through knowledge, memory, and graph writes", async () => {
+  it("carries the same lock guard through canonical knowledge and supersession", async () => {
     const progress: Array<{ stage: string; chunkCount?: number; memoryCount?: number }> = [];
     await ingestTextDocument({
       tenantId: guard.tenantId,
@@ -111,31 +115,48 @@ describe("capture ingestion persistence guard", () => {
     expect(mocks.createKnowledgeDocument).toHaveBeenCalledWith(
       expect.objectContaining({ captureIngestGuard: guard }),
     );
-    expect(mocks.saveMemories).toHaveBeenCalledWith(
-      expect.any(Array),
-      { captureIngestGuard: guard },
-    );
-    expect(mocks.indexMemoryGraphRecords).toHaveBeenCalledWith(
-      expect.any(Array),
-      "knowledge.ingest",
-      { captureIngestGuard: guard },
-    );
+    expect(mocks.saveMemories).not.toHaveBeenCalled();
+    expect(mocks.indexMemoryGraphRecords).not.toHaveBeenCalled();
     expect(mocks.retireSupersededCaptureKnowledge).toHaveBeenCalledWith({
       captureIngestGuard: guard,
       executionScope: sourceLineage.executionScope,
       keepDocumentId: "document-a",
     });
-    expect(
-      mocks.retireSupersededCaptureKnowledge.mock.invocationCallOrder[0],
-    ).toBeLessThan(mocks.indexMemoryGraphRecords.mock.invocationCallOrder[0]);
     expect(progress).toEqual([
       { stage: "chunking" },
       { stage: "embedding", chunkCount: 1 },
       { stage: "knowledge", chunkCount: 1 },
       { stage: "entities", chunkCount: 1 },
       { stage: "memory", chunkCount: 1 },
-      { stage: "graph", chunkCount: 1, memoryCount: 1 },
+      { stage: "graph", chunkCount: 1, memoryCount: 0 },
     ]);
+  });
+
+  it("preserves compatibility memory projection for sources that disallow cognition", async () => {
+    const legacyLineage = {
+      ...sourceLineage,
+      allowedPurposeIds: [
+        CLAIM_EVIDENCE_PURPOSE_ID,
+        CONTEXT_COMPILER_V2_PURPOSE_ID,
+      ],
+    };
+
+    await ingestTextDocument({
+      tenantId: guard.tenantId,
+      title: "Legacy source",
+      content: "Compatibility projection",
+      source: "legacy:document-a",
+      sourceLineage: legacyLineage,
+      deferMemoryGraphIndex: true,
+    });
+
+    expect(mocks.saveMemories).toHaveBeenCalledWith(
+      expect.any(Array),
+      { captureIngestGuard: undefined },
+    );
+    expect(mocks.queueMemoryGraphRebuild).toHaveBeenCalledWith({
+      tenantId: guard.tenantId,
+    });
   });
 
   it("rejects actor-attributed ingestion without canonical source lineage", async () => {

@@ -4154,7 +4154,11 @@ function describeSideEffects(toolId: string) {
   }
 
   if (toolId === "knowledge.ingest") {
-    return ["writes omni_knowledge_documents", "writes omni_knowledge_chunks", "writes compatible memory records"];
+    return [
+      "writes omni_knowledge_documents and immutable source-scoped evidence chunks",
+      "leaves semantic-memory extraction to cognition when the source permits it",
+      "writes compatibility memory records only for legacy sources that do not permit cognition",
+    ];
   }
 
   if (toolId.startsWith("media.")) {
