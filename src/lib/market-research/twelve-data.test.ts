@@ -67,4 +67,18 @@ describe("Twelve Data market adapter", () => {
     const [url] = fetchMock.mock.calls[0] as [URL, RequestInit];
     expect(url.searchParams.get("symbol")).toBe("NDX");
   });
+
+  it("rejects an oversized provider response before parsing it", async () => {
+    process.env.TWELVE_DATA_API_KEY = "test-market-key";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ padding: "x".repeat(2_000_001) }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )));
+
+    await expect(fetchTwelveDataBars({
+      instrumentId: "xauusd.spot",
+      interval: "15min",
+      outputSize: 100,
+    })).rejects.toThrow(/oversized response/i);
+  });
 });

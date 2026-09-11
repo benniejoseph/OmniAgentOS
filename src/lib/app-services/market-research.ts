@@ -16,7 +16,11 @@ import {
 import { listMarketEvents } from "@/lib/market-research/event-store";
 import { enqueueMarketEventBackfillJob } from "@/lib/market-research/event-jobs";
 import { marketInstruments } from "@/lib/market-research/instruments";
-import { fetchMarketBars } from "@/lib/market-research/market-data";
+import { fetchMarketBarSnapshot } from "@/lib/market-research/market-data";
+import {
+  findFreshMarketPriceSnapshot,
+  saveMarketPriceSnapshot,
+} from "@/lib/market-research/price-snapshot-store";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 
@@ -143,10 +147,36 @@ export async function listMarketResearchBarsService(
     caller,
     getAppServiceOperationContract("app.market_research.bars.list"),
   );
-  const result = await fetchMarketBars(value);
+  const cached = await findFreshMarketPriceSnapshot({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    ...value,
+  });
+  const result = cached || await fetchAndPersistMarketBars({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    ...value,
+  });
   return completeAppServiceCall(authorized, result, {
     resourceCount: result.bars.length,
     occurredAt: result.retrievedAt,
+  });
+}
+
+async function fetchAndPersistMarketBars(input: {
+  tenantId: string;
+  actorId: string;
+  instrumentId: Parameters<typeof fetchMarketBarSnapshot>[0]["instrumentId"];
+  interval: Parameters<typeof fetchMarketBarSnapshot>[0]["interval"];
+  outputSize: number;
+}) {
+  const fetched = await fetchMarketBarSnapshot(input);
+  return saveMarketPriceSnapshot({
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    outputSize: input.outputSize,
+    result: fetched.result,
+    sourcePayload: fetched.sourcePayload,
   });
 }
 
