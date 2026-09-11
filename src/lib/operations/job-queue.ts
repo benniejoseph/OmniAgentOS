@@ -18,6 +18,7 @@ export type OperationJobType =
   | "capture.asset.process"
   | "knowledge.ingest"
   | "knowledge.cognify"
+  | "conversation.summary.enrich"
   | "evaluation.run"
   | "asset.object.commit"
   | "asset.object.delete"
@@ -31,6 +32,7 @@ export const BACKGROUND_OPERATION_JOB_TYPES = [
   "capture.asset.process",
   "knowledge.ingest",
   "knowledge.cognify",
+  "conversation.summary.enrich",
   "evaluation.run",
   "asset.object.commit",
   "asset.object.delete",

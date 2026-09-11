@@ -104,6 +104,16 @@ import {
   sourceContractSha256,
   type SourceItemV1,
 } from "@/lib/sources/contracts";
+import {
+  readOwnedSemanticEpisodeSource,
+  saveSemanticEnrichmentFromWorker,
+} from "@/lib/threads/semantic-summary-store";
+import {
+  buildSemanticEpisodeEnrichmentPlan,
+  enrichConversationEpisode,
+  resolveSemanticSummaryGenerationId,
+  SEMANTIC_EPISODE_ENRICHMENT_PURPOSE_ID,
+} from "@/lib/threads/semantic-summaries";
 
 export const evaluationJobRequestSchema = z
   .object({
@@ -191,6 +201,25 @@ export const knowledgeCognifyJobRequestSchema = z.object({
   }
 });
 
+export const semanticSummaryEnrichmentRequestSchema = z.object({
+  episodeSummaryId: z.string().trim().min(1).max(320),
+  episodeSourceSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  deterministicSummarySha256: z.string().regex(/^[a-f0-9]{64}$/),
+  generationId: z.string().regex(
+    /^semantic_summary_generation_[a-f0-9]{48}$/,
+  ),
+}).strict();
+
+const semanticSummaryEnrichmentJobRequestSchema =
+  semanticSummaryEnrichmentRequestSchema.extend({
+    threadId: z.string().trim().min(1).max(320),
+    projectId: z.string().trim().min(1).max(320).nullable(),
+    sourceSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    enrichmentId: z.string().regex(
+      /^semantic_episode_enrichment_[a-f0-9]{48}$/,
+    ),
+  }).strict();
+
 type CurrentKnowledgeCognifyJobRequest = KnowledgeCognifyJobRequest & {
   sourcePlanSha256: string;
   retentionExpiresAt: string | null;
@@ -207,6 +236,9 @@ export type CaptureAssetProcessJobRequest = z.infer<
 >;
 export type KnowledgeCognifyJobRequest = z.infer<
   typeof knowledgeCognifyJobRequestSchema
+>;
+export type SemanticSummaryEnrichmentRequest = z.infer<
+  typeof semanticSummaryEnrichmentRequestSchema
 >;
 
 export class BackgroundJobIdempotencyConflictError extends Error {
@@ -447,6 +479,99 @@ export async function enqueueKnowledgeCognificationPlan({
     });
   }
   return null;
+}
+
+/**
+ * Coalesces repeated requests for one deterministic episode identity. A newer
+ * source or Settings-backed memory generation replaces a queued request; an
+ * active worker finishes its immutable lease and the queue then reruns only
+ * the latest request.
+ */
+export async function enqueueSemanticSummaryEnrichmentJob({
+  tenantId,
+  actorId,
+  executionScope,
+  request,
+}: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  request: SemanticSummaryEnrichmentRequest;
+}) {
+  const parsed = semanticSummaryEnrichmentRequestSchema.parse(request);
+  const usageActorId = normalizeQueuedActorId(actorId);
+  if (!usageActorId) {
+    throw new Error("Semantic summary enrichment requires an owner actor.");
+  }
+  const trustedExecutionScope = requireQueuedExecutionScope(
+    executionScope,
+    tenantId,
+    usageActorId,
+  );
+  const source = await readOwnedSemanticEpisodeSource({
+    tenantId,
+    actorId: usageActorId,
+    episodeSummaryId: parsed.episodeSummaryId,
+  });
+  if (!source) return null;
+  if (
+    source.episode.sourceSha256 !== parsed.episodeSourceSha256 ||
+    source.episode.summarySha256 !== parsed.deterministicSummarySha256 ||
+    !source.episode.threadId ||
+    (trustedExecutionScope.projectId &&
+      trustedExecutionScope.projectId !== (source.episode.projectId || null))
+  ) return null;
+
+  const currentGenerationId = await resolveSemanticSummaryGenerationId({
+    tenantId,
+    actorId: usageActorId,
+  });
+  if (currentGenerationId !== parsed.generationId) return null;
+  const plan = buildSemanticEpisodeEnrichmentPlan({
+    episode: source.episode,
+    turns: source.turns,
+    generationId: parsed.generationId,
+  });
+  const workerScope = deriveExecutionScope(trustedExecutionScope, {
+    executingPrincipalType: "system",
+    executingPrincipalId: "background-operations-worker",
+    workspaceId: null,
+    projectId: source.episode.projectId || null,
+    missionId: null,
+    delegationId: null,
+    causationId: source.episode.id,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purpose: SEMANTIC_EPISODE_ENRICHMENT_PURPOSE_ID,
+  });
+  const queuedRequest = semanticSummaryEnrichmentJobRequestSchema.parse({
+    ...parsed,
+    threadId: source.episode.threadId,
+    projectId: source.episode.projectId || null,
+    sourceSha256: plan.sourceSha256,
+    enrichmentId: plan.enrichmentId,
+  });
+  return enqueueOperationJob({
+    tenantId,
+    type: "conversation.summary.enrich",
+    dedupeKey: semanticSummaryEnrichmentDedupeKey({
+      actorId: usageActorId,
+      episodeSummaryId: parsed.episodeSummaryId,
+    }),
+    payload: {
+      request: queuedRequest,
+      actorId: usageActorId,
+      executionScope: workerScope,
+      requestHash: backgroundRequestHash({
+        ...queuedRequest,
+        actorId: usageActorId,
+      }),
+      progress: { stage: "queued", shadowOnly: true },
+    },
+    maxAttempts: 3,
+    priority: 0,
+    dedupeMode: "coalesce",
+  });
 }
 
 async function enqueueCurrentKnowledgeCognifyJob({
@@ -777,7 +902,8 @@ function executeBackgroundOperationInAccessScope(
     job.type === "capture.asset.process" ||
     job.type === "capture.media.segment.transcribe" ||
     job.type === "capture.media.recording.process" ||
-    job.type === "knowledge.cognify"
+    job.type === "knowledge.cognify" ||
+    job.type === "conversation.summary.enrich"
   ) {
     const actorId = typeof job.payload.actorId === "string"
       ? normalizeQueuedActorId(job.payload.actorId)
@@ -1165,6 +1291,10 @@ async function executeBackgroundOperation(
     return executeKnowledgeCognifyJob(job, abortSignal);
   }
 
+  if (job.type === "conversation.summary.enrich") {
+    return executeSemanticSummaryEnrichmentJob(job, abortSignal);
+  }
+
   if (job.type === "knowledge.ingest") {
     return executeKnowledgeIngestJobRequest(
       job,
@@ -1206,6 +1336,148 @@ async function executeBackgroundOperation(
   }
 
   throw new Error(`Unsupported background operation type: ${job.type}`);
+}
+
+async function executeSemanticSummaryEnrichmentJob(
+  job: OperationJobRecord,
+  abortSignal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const request = semanticSummaryEnrichmentJobRequestSchema.parse(
+    job.payload.request,
+  );
+  const actorId = normalizeQueuedActorId(
+    typeof job.payload.actorId === "string" ? job.payload.actorId : undefined,
+  );
+  if (!actorId) {
+    throw new Error("Semantic summary enrichment job is missing its owner actor.");
+  }
+  const executionScope = parsePersistedExecutionScope(
+    job.payload.executionScope,
+  );
+  if (
+    !executionScope ||
+    executionScope.tenantId !== job.tenantId ||
+    executionScope.initiatingActorId !== actorId ||
+    executionScope.executingPrincipalType !== "system" ||
+    executionScope.executingPrincipalId !== "background-operations-worker" ||
+    executionScope.workspaceId !== null ||
+    executionScope.projectId !== request.projectId ||
+    executionScope.missionId !== null ||
+    executionScope.delegationId !== null ||
+    executionScope.causationId !== request.episodeSummaryId ||
+    executionScope.contextGrantIds.length !== 0 ||
+    executionScope.capabilityGrantIds.length !== 0 ||
+    executionScope.purpose !== SEMANTIC_EPISODE_ENRICHMENT_PURPOSE_ID
+  ) {
+    throw new Error("Semantic summary enrichment job scope is invalid.");
+  }
+
+  await updateBackgroundJobProgress(job, abortSignal, {
+    stage: "reading_episode",
+    shadowOnly: true,
+  });
+  const source = await readOwnedSemanticEpisodeSource({
+    tenantId: job.tenantId,
+    actorId,
+    episodeSummaryId: request.episodeSummaryId,
+  });
+  abortSignal.throwIfAborted();
+  if (!source) {
+    return semanticSummarySupersededResult(
+      request,
+      "The actor-owned episode is no longer current.",
+    );
+  }
+  if (
+    source.episode.threadId !== request.threadId ||
+    (source.episode.projectId || null) !== request.projectId ||
+    source.episode.sourceSha256 !== request.episodeSourceSha256 ||
+    source.episode.summarySha256 !== request.deterministicSummarySha256
+  ) {
+    return semanticSummarySupersededResult(
+      request,
+      "The deterministic episode summary changed after this job was queued.",
+    );
+  }
+
+  const generationId = await resolveSemanticSummaryGenerationId({
+    tenantId: job.tenantId,
+    actorId,
+  });
+  abortSignal.throwIfAborted();
+  if (generationId !== request.generationId) {
+    return semanticSummarySupersededResult(
+      request,
+      "The Settings memory model route changed after this job was queued.",
+    );
+  }
+  const plan = buildSemanticEpisodeEnrichmentPlan({
+    episode: source.episode,
+    turns: source.turns,
+    generationId,
+  });
+  if (
+    plan.sourceSha256 !== request.sourceSha256 ||
+    plan.enrichmentId !== request.enrichmentId
+  ) {
+    return semanticSummarySupersededResult(
+      request,
+      "The exact episode source changed after this job was queued.",
+    );
+  }
+
+  await updateBackgroundJobProgress(job, abortSignal, {
+    stage: "generating_enrichment",
+    shadowOnly: true,
+  });
+  const enrichment = await enrichConversationEpisode({
+    tenantId: job.tenantId,
+    actorId,
+    episode: source.episode,
+    turns: source.turns,
+    generationId,
+    executionScope,
+    correlationId: executionScope.correlationId,
+    causationId: executionScope.causationId || undefined,
+    abortSignal,
+  });
+  abortSignal.throwIfAborted();
+
+  await updateBackgroundJobProgress(job, abortSignal, {
+    stage: "saving_enrichment",
+    shadowOnly: true,
+  });
+  const saved = await saveSemanticEnrichmentFromWorker(enrichment, {
+    executionScope,
+  });
+  abortSignal.throwIfAborted();
+  return {
+    resourceId: saved.contract.enrichmentId,
+    enrichmentId: saved.contract.enrichmentId,
+    episodeSummaryId: saved.contract.episodeSummaryId,
+    generationId: saved.contract.generationId,
+    sourceSha256: saved.contract.sourceSha256,
+    enrichmentSha256: saved.contract.enrichmentSha256,
+    statementCount: saved.contract.statements.length,
+    status: "enriched",
+    shadowOnly: true,
+    rankingEffect: "none",
+  };
+}
+
+function semanticSummarySupersededResult(
+  request: z.infer<typeof semanticSummaryEnrichmentJobRequestSchema>,
+  reason: string,
+) {
+  return {
+    resourceId: request.episodeSummaryId,
+    episodeSummaryId: request.episodeSummaryId,
+    generationId: request.generationId,
+    status: "superseded",
+    reason,
+    shadowOnly: true,
+    rankingEffect: "none",
+  };
 }
 
 async function executeKnowledgeCognifyJob(
@@ -1914,6 +2186,17 @@ function backgroundRequestHash(request: Record<string, unknown>) {
   return createHash("sha256")
     .update(stableStringify(request))
     .digest("hex");
+}
+
+function semanticSummaryEnrichmentDedupeKey(input: {
+  actorId: string;
+  episodeSummaryId: string;
+}) {
+  return `conversation.summary.enrich:${sourceContractSha256({
+    schemaVersion: 1,
+    actorId: input.actorId,
+    episodeSummaryId: input.episodeSummaryId,
+  }).slice(0, 48)}`;
 }
 
 function assertIdempotentRequest(
