@@ -31,10 +31,15 @@ describe("truthful integrations overview", () => {
         ],
         status: "active",
         authorizationGeneration: 2,
+        expiresAt: "2026-09-07T10:00:00.000Z",
         syncStatus: "healthy",
         lastSyncedAt: "2026-09-07T11:45:00.000Z",
         syncedItems: 42,
-        sourceCoverage: {},
+        sourceCoverage: {
+          mail: healthyCheckpoint("2026-09-07T11:45:00.000Z"),
+          calendar: healthyCheckpoint("2026-09-07T11:46:00.000Z"),
+          drive: healthyCheckpoint("2026-09-07T11:47:00.000Z"),
+        },
         createdAt: "2026-09-01T00:00:00.000Z",
         updatedAt: "2026-09-07T11:45:00.000Z",
         manageable: true,
@@ -150,7 +155,16 @@ describe("truthful integrations overview", () => {
         syncError: "rate limit",
         lastSyncedAt: "2026-09-01T00:00:00.000Z",
         syncedItems: 10,
-        sourceCoverage: {},
+        sourceCoverage: {
+          mail: {
+            schemaVersion: 1,
+            status: "error",
+            backfillState: "in_progress",
+            lastAttemptedAt: "2026-09-07T11:00:00.000Z",
+            lastSuccessfulAt: "2026-09-01T00:00:00.000Z",
+            failureCode: "provider_rate_limited",
+          },
+        },
         createdAt: "2026-09-01T00:00:00.000Z",
         updatedAt: "2026-09-07T11:00:00.000Z",
         manageable: false,
@@ -168,15 +182,75 @@ describe("truthful integrations overview", () => {
     const drive = overview.installed.find((item) => item.name === "Google Drive");
     expect(gmail).toMatchObject({
       installation: "retained_read_only",
-      state: "action_required",
+      state: "degraded",
       sync: { status: "error", cursor: { state: "unavailable" } },
-      failure: { state: "present", code: "google_sync_error" },
+      failure: { state: "present", code: "google_provider_rate_limited" },
       cost: { state: "unknown", knownEstimatedCostMicrousd: null },
     });
     expect(drive).toMatchObject({
       state: "action_required",
       permissions: { mode: "no_access", granted: [] },
     });
+  });
+
+  it("projects each Google source independently from its own checkpoint", () => {
+    const overview = projectTruthfulIntegrationsOverview({
+      oauth: { state: "ready", value: [{
+        id: "grant-google",
+        tenantId: "tenant:test",
+        actorId: "owner@example.test",
+        provider: "google",
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.modify",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/drive",
+        ],
+        status: "active",
+        authorizationGeneration: 2,
+        expiresAt: "2026-09-01T00:00:00.000Z",
+        syncStatus: "error",
+        syncError: "mail: private provider detail",
+        lastSyncedAt: "2026-09-01T00:00:00.000Z",
+        sourceCoverage: {
+          mail: {
+            schemaVersion: 1,
+            status: "error",
+            backfillState: "in_progress",
+            lastAttemptedAt: "2026-09-07T11:50:00.000Z",
+            lastSuccessfulAt: "2026-09-07T11:40:00.000Z",
+            failureCode: "provider_unavailable",
+          },
+          calendar: healthyCheckpoint("2026-09-07T11:45:00.000Z"),
+          drive: healthyCheckpoint("2026-09-07T11:46:00.000Z"),
+        },
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-07T11:50:00.000Z",
+        manageable: true,
+      }] },
+      mcp: { state: "ready", value: { connectors: [], tools: [] } },
+      openapi: { state: "ready", value: { connectors: [], operations: [] } },
+      salesforce: { state: "ready", value: { health: salesforceHealth(false), writesConfigured: false } },
+      usage: { state: "ready", value: usageSummary() },
+      oauthConfigured: { google: true, salesforce: false },
+      catalog: connectionCatalog,
+      generatedAt: now,
+    });
+
+    expect(overview.installed.find((item) => item.name === "Gmail")).toMatchObject({
+      connected: true,
+      state: "degraded",
+      sync: { status: "error", lastSuccessfulAt: "2026-09-07T11:40:00.000Z" },
+      failure: { code: "google_provider_unavailable" },
+    });
+    for (const name of ["Google Calendar", "Google Drive"]) {
+      expect(overview.installed.find((item) => item.name === name)).toMatchObject({
+        connected: true,
+        state: "working",
+        sync: { status: "current" },
+        failure: { state: "none" },
+      });
+    }
+    expect(JSON.stringify(overview)).not.toContain("private provider detail");
   });
 
   it("marks failed inventories unavailable instead of presenting them as disconnected", () => {
@@ -224,6 +298,17 @@ function salesforceHealth(connected: boolean): SalesforceSyncHealth {
     lastReplayIdSha256: null,
     actionableError: null,
     evaluatedAt: now,
+  };
+}
+
+function healthyCheckpoint(at: string) {
+  return {
+    schemaVersion: 1 as const,
+    status: "healthy" as const,
+    backfillState: "complete" as const,
+    lastAttemptedAt: at,
+    lastSuccessfulAt: at,
+    failureCode: "none" as const,
   };
 }
 

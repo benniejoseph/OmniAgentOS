@@ -14,7 +14,11 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
   if (!isOAuthProvider(provider)) return Response.json({ error: "Unsupported OAuth provider." }, { status: 404 });
   let security;
   try { security = await authorizeRequest({ request, action: provider === "salesforce" ? "manage.connector" : "write.memory", resourceType: "oauth_grant", metadata: { provider } }); } catch (error) { return forbiddenResponse(error); }
-  const returnTo = normalizeOAuthReturnTo(new URL(request.url).searchParams.get("returnTo"));
+  const requestUrl = new URL(request.url);
+  const returnTo = normalizeOAuthReturnTo(requestUrl.searchParams.get("returnTo"));
+  const authorizationIntent = requestUrl.searchParams.get("intent") === "repair"
+    ? "repair" as const
+    : undefined;
   try {
     if (provider === "salesforce") {
       const access = await resolveSalesforceRequestAccess(security, {
@@ -33,6 +37,7 @@ async function GETHandler(request: Request, context: { params: Promise<{ provide
       tenantId: security.tenantId,
       actorId: security.actorId,
       returnTo,
+      ...(authorizationIntent ? { authorizationIntent } : {}),
     }), 302);
   }
   catch (error) { return Response.json({ error: error instanceof Error ? error.message : "OAuth authorization failed." }, { status: 503 }); }

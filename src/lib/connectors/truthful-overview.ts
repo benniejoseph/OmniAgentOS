@@ -1,12 +1,11 @@
 import { z } from "zod";
 
 import type { ConnectionCatalogItem } from "@/lib/connectors/catalog";
-import {
-  GOOGLE_CALENDAR_WRITE_SCOPE,
-  GOOGLE_GMAIL_SEND_SCOPE,
-  GOOGLE_PHOTOS_PICKER_SCOPE,
-} from "@/lib/connectors/oauth-providers";
-import type { RequestOAuthGrant } from "@/lib/connectors/oauth-store";
+import { hasGoogleWorkspaceCapability } from "@/lib/connectors/google-workspace-capabilities";
+import type {
+  OAuthSourceCoverageCheckpoint,
+  RequestOAuthGrant,
+} from "@/lib/connectors/oauth-store";
 import type {
   OpenApiConnectorRecord,
   OpenApiOperationRecord,
@@ -200,10 +199,11 @@ const googleServices = Object.freeze([
     id: "gmail",
     name: "Gmail",
     category: "communication" as const,
-    requiredScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
-    writeScope: GOOGLE_GMAIL_SEND_SCOPE,
+    source: "mail" as const,
+    readCapability: "gmail.read" as const,
+    writeCapabilities: ["gmail.modify", "gmail.send"] as const,
     grantedRead: "Read mail and message metadata",
-    grantedWrite: "Send reviewed email",
+    grantedWrite: "Modify, trash, and send reviewed mail",
     missingRead: "Gmail read permission",
     sync: true,
   },
@@ -211,11 +211,9 @@ const googleServices = Object.freeze([
     id: "google-calendar",
     name: "Google Calendar",
     category: "automation" as const,
-    requiredScopes: [
-      GOOGLE_CALENDAR_WRITE_SCOPE,
-      "https://www.googleapis.com/auth/calendar.events.readonly",
-    ],
-    writeScope: GOOGLE_CALENDAR_WRITE_SCOPE,
+    source: "calendar" as const,
+    readCapability: "calendar.events.read" as const,
+    writeCapabilities: ["calendar.events.write"] as const,
     grantedRead: "Read calendar events",
     grantedWrite: "Create and update reviewed events",
     missingRead: "Calendar event permission",
@@ -225,10 +223,11 @@ const googleServices = Object.freeze([
     id: "google-drive",
     name: "Google Drive",
     category: "knowledge" as const,
-    requiredScopes: ["https://www.googleapis.com/auth/drive.readonly"],
-    writeScope: null,
-    grantedRead: "Read files and export supported documents",
-    grantedWrite: null,
+    source: "drive" as const,
+    readCapability: "drive.read" as const,
+    writeCapabilities: ["drive.write"] as const,
+    grantedRead: "Read files and export Docs, Sheets, and Slides",
+    grantedWrite: "Create and update reviewed Drive files",
     missingRead: "Drive read permission",
     sync: true,
   },
@@ -236,8 +235,9 @@ const googleServices = Object.freeze([
     id: "google-photos",
     name: "Google Photos",
     category: "knowledge" as const,
-    requiredScopes: [GOOGLE_PHOTOS_PICKER_SCOPE],
-    writeScope: null,
+    source: null,
+    readCapability: "photos.pick" as const,
+    writeCapabilities: [] as const,
     grantedRead: "Select and import user-picked media",
     grantedWrite: null,
     missingRead: "Google Photos picker permission",
@@ -359,60 +359,71 @@ function projectGoogleService(
   configured: boolean,
   nowMs: number,
 ): TruthfulIntegrationsOverview["installed"][number] {
-  const hasRead = service.requiredScopes.some((scope) => grant.scopes.includes(scope));
-  const hasWrite = Boolean(service.writeScope && grant.scopes.includes(service.writeScope));
-  const expired = Boolean(grant.expiresAt && Date.parse(grant.expiresAt) <= nowMs);
+  const hasRead = hasGoogleWorkspaceCapability(
+    grant.scopes,
+    service.readCapability,
+  );
+  const hasWrite = service.writeCapabilities.some((capability) =>
+    hasGoogleWorkspaceCapability(grant.scopes, capability)
+  );
   const manageable = grant.manageable === true;
+  const checkpoint = service.source
+    ? grant.sourceCoverage[service.source]
+    : undefined;
   const freshness = service.sync
-    ? freshnessFrom(grant.lastSyncedAt, GOOGLE_SYNC_STALE_SECONDS, nowMs)
+    ? freshnessFrom(
+        checkpoint?.lastSuccessfulAt,
+        GOOGLE_SYNC_STALE_SECONDS,
+        nowMs,
+      )
     : notApplicableFreshness();
   const syncStatus = !service.sync
     ? "not_applicable" as const
-    : grant.syncStatus === "syncing"
+    : !hasRead || !checkpoint
+      ? "not_started" as const
+      : checkpoint.status === "syncing"
       ? "syncing" as const
-      : grant.syncStatus === "error"
+      : checkpoint.status === "error"
         ? "error" as const
-        : !grant.lastSyncedAt
-          ? "not_started" as const
-          : freshness.state === "unavailable"
-            ? "unavailable" as const
-          : freshness.state === "stale"
-            ? "stale" as const
-            : "current" as const;
+        : freshness.state === "unavailable"
+          ? "unavailable" as const
+        : freshness.state === "stale"
+          ? "stale" as const
+          : "current" as const;
   const cursorState = !service.sync
     ? notApplicableCursor("This user-selected import does not use a background cursor.")
     : !manageable
       ? unavailableCursor("The retained connection's cursor remains visible only to its stored owner.")
-      : grant.syncStatus === "syncing"
+      : checkpoint?.status === "syncing"
         ? cursor("advancing", "The owner-scoped checkpoint is advancing; raw provider cursor values stay private.")
-        : grant.lastSyncedAt
+        : checkpoint?.lastSuccessfulAt
           ? cursor("checkpointed", "A successful owner-scoped checkpoint exists; raw provider cursor values stay private.")
-          : grant.syncStatus === "error"
+          : checkpoint?.status === "error"
             ? cursor("unknown", "No successful checkpoint is visible after the reported sync failure.")
             : cursor("not_started", "No successful checkpoint has been recorded.");
-  const failure = grant.syncStatus === "error"
-    ? presentFailure(
-        "google_sync_error",
-        safeText(grant.syncError, "Google synchronization reported an error."),
-        manageable ? "Retry sync; reconnect Google if the error persists." : "Reconnect from the stored owner account.",
-      )
-    : noFailure();
-  const state = !configured || expired || !hasRead || grant.syncStatus === "error" || syncStatus === "unavailable"
+  const failure = googleSourceFailure(checkpoint, manageable);
+  const sourceNeedsAuthorization = checkpoint?.failureCode === "provider_unauthorized" ||
+    checkpoint?.failureCode === "provider_forbidden";
+  const sourceFailed = checkpoint?.status === "error";
+  const state = !configured || !hasRead || sourceNeedsAuthorization || syncStatus === "unavailable"
     ? "action_required" as const
-    : syncStatus === "stale" || syncStatus === "syncing" || !manageable
+    : sourceFailed || syncStatus === "stale" || syncStatus === "syncing" ||
+        syncStatus === "not_started" || !manageable
       ? "degraded" as const
       : "working" as const;
   const nextAction = !configured
     ? "Configure the Google OAuth application before relying on this connection."
-    : expired
-      ? "Reconnect Google because the current grant has expired."
-      : !hasRead
+    : !hasRead
         ? `Reconnect Google and grant ${service.missingRead.toLowerCase()}.`
         : !manageable
           ? "Use the stored owner account to manage or resynchronize this retained connection."
-          : grant.syncStatus === "error"
-            ? "Retry sync, then reconnect if the failure remains."
-            : syncStatus === "unavailable"
+          : checkpoint?.failureCode === "provider_unauthorized"
+            ? "Reconnect Google because this source rejected the saved authorization."
+          : checkpoint?.failureCode === "provider_forbidden"
+            ? `Reconnect Google and review the ${service.name} permission.`
+          : sourceFailed
+            ? `Retry ${service.name} sync; the other Google sources remain independently usable.`
+          : syncStatus === "unavailable"
               ? "Review the invalid sync timestamp before trusting freshness."
             : syncStatus === "stale" || syncStatus === "not_started"
               ? "Run Google sync now."
@@ -428,7 +439,7 @@ function projectGoogleService(
     installation: manageable ? "installed" : "retained_read_only",
     state,
     configured,
-    connected: grant.status === "active" && !expired,
+    connected: grant.status === "active",
     manageable,
     permissions: {
       mode: !hasRead ? "no_access" : hasWrite ? "write_approval_required" : "read_only",
@@ -438,7 +449,9 @@ function projectGoogleService(
       ],
       missing: [
         ...(!hasRead ? [service.missingRead] : []),
-        ...(service.writeScope && !hasWrite ? [`Optional ${service.name} write permission`] : []),
+        ...(service.writeCapabilities.length && !hasWrite
+          ? [`Optional ${service.name} write permission`]
+          : []),
       ],
       activeOperations: Number(hasRead) + Number(hasWrite),
       pendingReviewOperations: 0,
@@ -448,22 +461,84 @@ function projectGoogleService(
     sync: {
       supported: service.sync,
       status: syncStatus,
-      coverage: !service.sync ? "not_applicable" : !hasRead ? "none" : syncStatus === "error" ? "partial" : grant.lastSyncedAt ? "complete" : "none",
+      coverage: googleSourceCoverage(service.sync, hasRead, checkpoint),
       coverageDetail: !service.sync
         ? "Media is imported only from an explicit user picker; no background source is implied."
         : !hasRead
           ? `${service.name} is outside the granted OAuth scope.`
-          : `The grant records ${grant.syncedItems || 0} items across Google; per-source totals are not retained, so no ${service.name}-only count is inferred.`,
+          : googleSourceCoverageDetail(service.name, checkpoint),
       cursor: cursorState,
-      lastSuccessfulAt: service.sync ? grant.lastSyncedAt || null : null,
+      lastSuccessfulAt: service.sync ? checkpoint?.lastSuccessfulAt || null : null,
       freshness,
     },
     failure,
     cost: unknownCost("Google provider charges are not attributable in Asael; downstream AI processing appears only in the unified consumption ledger."),
     nextAction,
-    updatedAt: grant.updatedAt,
+    updatedAt: checkpoint?.lastAttemptedAt || grant.updatedAt,
     manageHref: "/app/connectors",
   };
+}
+
+function googleSourceFailure(
+  checkpoint: OAuthSourceCoverageCheckpoint | undefined,
+  manageable: boolean,
+): TruthfulIntegrationsOverview["installed"][number]["failure"] {
+  if (checkpoint?.status !== "error") return noFailure();
+  const recoveryOwner = manageable
+    ? "Retry this source from the Google connection."
+    : "Use the stored owner account to repair this source.";
+  if (checkpoint.failureCode === "provider_unauthorized") {
+    return presentFailure(
+      "google_provider_unauthorized",
+      "Google rejected this source's saved authorization.",
+      manageable ? "Reconnect Google from the private owner account." : recoveryOwner,
+    );
+  }
+  if (checkpoint.failureCode === "provider_forbidden") {
+    return presentFailure(
+      "google_provider_forbidden",
+      "The saved Google grant does not permit this source operation.",
+      manageable ? "Review and grant this source's Google permission." : recoveryOwner,
+    );
+  }
+  const message = checkpoint.failureCode === "provider_rate_limited"
+    ? "Google temporarily rate limited this source."
+    : checkpoint.failureCode === "provider_unavailable"
+      ? "This Google source was temporarily unavailable."
+      : "This Google source could not finish its last processing attempt.";
+  return presentFailure(
+    `google_${checkpoint.failureCode || "processing_failed"}`,
+    message,
+    recoveryOwner,
+  );
+}
+
+function googleSourceCoverage(
+  supported: boolean,
+  granted: boolean,
+  checkpoint?: OAuthSourceCoverageCheckpoint,
+): TruthfulIntegrationsOverview["installed"][number]["sync"]["coverage"] {
+  if (!supported) return "not_applicable";
+  if (!granted || !checkpoint) return "none";
+  if (checkpoint.backfillState === "complete") return "complete";
+  if (checkpoint.backfillState === "in_progress") return "partial";
+  return "unknown";
+}
+
+function googleSourceCoverageDetail(
+  serviceName: string,
+  checkpoint?: OAuthSourceCoverageCheckpoint,
+) {
+  if (!checkpoint) {
+    return `${serviceName} has no source-specific synchronization checkpoint yet.`;
+  }
+  if (checkpoint.backfillState === "complete") {
+    return `${serviceName} records a complete owner-scoped backfill checkpoint; raw provider cursors and content stay private.`;
+  }
+  if (checkpoint.backfillState === "in_progress") {
+    return `${serviceName} is advancing a bounded backfill; completed pages remain checkpointed between runs.`;
+  }
+  return `${serviceName} has a source checkpoint, but its complete backfill coverage is not established yet.`;
 }
 
 function projectMcpConnector(
