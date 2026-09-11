@@ -14,6 +14,7 @@ import type {
 import {
   buildMemoryCognitionQualityMetrics,
   MEMORY_COGNITION_QUALITY_METRICS_VERSION,
+  publicMemoryCognitionQualityMetrics,
 } from "@/lib/memory/quality-metrics";
 import type { MemoryCatalogRecord } from "@/lib/memory/store";
 import type { MemoryGraphBuildRecord } from "@/lib/memory/types";
@@ -78,6 +79,10 @@ describe("memory cognition quality metrics", () => {
     expect(Object.isFrozen(metrics.retrievalUsefulness)).toBe(true);
     expect(Object.isFrozen(metrics.graphLag)).toBe(true);
     expect(JSON.parse(JSON.stringify(metrics))).toEqual(metrics);
+    const publicMetrics = publicMemoryCognitionQualityMetrics(metrics);
+    expect(publicMetrics).not.toHaveProperty("scope");
+    expect(JSON.stringify(publicMetrics)).not.toContain(tenantId);
+    expect(JSON.stringify(publicMetrics)).not.toContain(actorId);
   });
 
   it("projects exact-evidence, review, observed-use, and graph-lag samples", () => {

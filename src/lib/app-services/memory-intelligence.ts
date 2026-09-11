@@ -29,6 +29,11 @@ import {
   listMemoryCatalog,
   type MemoryCatalogClass,
 } from "@/lib/memory/store";
+import {
+  buildMemoryCognitionQualityMetrics,
+  publicMemoryCognitionQualityMetrics,
+} from "@/lib/memory/quality-metrics";
+import { listKnowledgeCognitions } from "@/lib/knowledge/cognification-store";
 import { getKnowledgeStats, listKnowledgeDocuments } from "@/lib/rag/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { memoryTierSchema } from "@/lib/memory/tier-policy";
@@ -133,6 +138,7 @@ export async function showMemoryIntelligenceService(
     privateReviewStats,
     deletionBarriers,
     lastMaintenanceAt,
+    cognitionRecords,
   ] = await Promise.all([
     readMemoryCatalog(caller, requestAccess, "durable"),
     listKnowledgeDocuments(5_000, {
@@ -161,7 +167,39 @@ export async function showMemoryIntelligenceService(
       caller.context.tenantId,
       actorBinding?.readableOwnerActorIds || [caller.context.actorId],
     ),
+    actorBinding
+      ? listKnowledgeCognitions({
+          tenantId: caller.context.tenantId,
+          actorId: caller.context.actorId,
+          limit: 250,
+        })
+      : Promise.resolve([]),
   ]);
+  const generatedAt = new Date().toISOString();
+  const readableOwnerActorIds = new Set(
+    actorBinding?.readableOwnerActorIds || [],
+  );
+  const qualityMetrics = publicMemoryCognitionQualityMetrics(
+    buildMemoryCognitionQualityMetrics({
+      cognition: {
+        tenantId: caller.context.tenantId,
+        actorId: caller.context.actorId,
+        records: cognitionRecords,
+      },
+      durableMemories: memories.filter((memory) =>
+        Boolean(
+          memory.accessBinding &&
+          readableOwnerActorIds.has(memory.accessBinding.ownerActorId),
+        )
+      ),
+      knowledgeCounts: {
+        documents: knowledgeStats.documents,
+        chunks: knowledgeStats.chunks,
+      },
+      latestGraphBuild: latestGraphBuild || null,
+      generatedAt,
+    }),
+  );
   const overview = buildMemoryIntelligenceOverview({
     memories,
     documents,
@@ -174,6 +212,8 @@ export async function showMemoryIntelligenceService(
     resolvedReviews: legacyReviewStats.resolved + privateReviewStats.resolved,
     deletionBarriers,
     lastMaintenanceAt,
+    qualityMetrics,
+    generatedAt,
   });
   return completeAppServiceCall(authorized, { overview }, {
     resourceCount: memories.length + documents.length,

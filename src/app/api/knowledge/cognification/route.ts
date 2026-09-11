@@ -23,6 +23,10 @@ import {
   type KnowledgeCognitionRecord,
 } from "@/lib/knowledge/cognification-store";
 import {
+  projectKnowledgeCognitionReviewGroups,
+  type KnowledgeCognitionReviewGroup,
+} from "@/lib/knowledge/cognition-review-groups";
+import {
   buildUserPrivateMemoryAccessBindingV1,
   MEMORY_PURPOSE_IDS,
 } from "@/lib/memory/access-binding";
@@ -102,14 +106,38 @@ async function GETHandler(request: Request) {
     }),
   ]);
   const eligibleDocumentIds = new Set(eligibleDocuments.map(({ id }) => id));
-  const reviews = [...pending, ...confirmed.filter((item) =>
+  const eligiblePending = pending.filter((item) =>
+    eligibleDocumentIds.has(item.candidate.documentId)
+  );
+  const eligibleConfirmed = confirmed.filter((item) =>
+    eligibleDocumentIds.has(item.candidate.documentId)
+  );
+  const groupingRecords = eligiblePending.slice(0, 64);
+  groupingRecords.push(...eligibleConfirmed.slice(
+    0,
+    Math.max(0, 64 - groupingRecords.length),
+  ));
+  const reviewGroups = projectKnowledgeCognitionReviewGroups({
+    tenantId: context.tenantId,
+    actorId: context.actorId,
+    records: groupingRecords,
+  });
+  const groupingRecordByBatchId = new Map(groupingRecords.map((record) => [
+    record.candidate.batchId,
+    record,
+  ]));
+  const reviews = [...eligiblePending, ...eligibleConfirmed.filter((item) =>
     !item.projectedMemoryId
   )]
-    .filter((item) => eligibleDocumentIds.has(item.candidate.documentId))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, limit)
     .map(publicCognitionRecord);
-  return Response.json({ reviews }, { headers: privateNoStoreHeaders });
+  return Response.json({
+    reviews,
+    reviewGroups: reviewGroups.map((group) =>
+      publicCognitionReviewGroup(group, groupingRecordByBatchId)
+    ),
+  }, { headers: privateNoStoreHeaders });
 }
 
 async function POSTHandler(request: Request) {
@@ -500,6 +528,33 @@ function publicCognitionRecord(record: KnowledgeCognitionRecord) {
         model: candidate.modelAttribution.model,
       },
     },
+  };
+}
+
+function publicCognitionReviewGroup(
+  group: KnowledgeCognitionReviewGroup,
+  records: ReadonlyMap<string, KnowledgeCognitionRecord>,
+) {
+  return {
+    id: group.groupId,
+    kind: group.kind,
+    epistemicKind: group.epistemicKind,
+    scoreBasisPoints: group.scoreBasisPoints,
+    confidenceBasisPoints: group.confidenceBasisPoints,
+    references: group.references.map((reference) => {
+      const record = records.get(reference.batchId);
+      const claim = record?.candidate.claims[reference.claimIndex];
+      if (!claim || claim.candidateId !== reference.claimCandidateId) {
+        throw new Error("A cognition review group lost its claim reference.");
+      }
+      return {
+        batchId: reference.batchId,
+        claimIndex: reference.claimIndex,
+        status: reference.status,
+        polarity: reference.polarity,
+        statement: claim.statement,
+      };
+    }),
   };
 }
 

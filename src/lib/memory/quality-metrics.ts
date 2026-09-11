@@ -55,6 +55,10 @@ export type MemoryCognitionQualityMetrics = Readonly<{
   }>;
 }>;
 
+export type PublicMemoryCognitionQualityMetrics = Readonly<
+  Omit<MemoryCognitionQualityMetrics, "scope">
+>;
+
 export type BuildMemoryCognitionQualityMetricsInput = Readonly<{
   cognition: Readonly<{
     tenantId: string;
@@ -196,6 +200,20 @@ export function buildMemoryCognitionQualityMetrics(
       tenantId,
       generatedAtMs,
     ),
+  });
+}
+
+/** Removes internal tenant/actor binding before returning metrics to a UI. */
+export function publicMemoryCognitionQualityMetrics(
+  metrics: MemoryCognitionQualityMetrics,
+): PublicMemoryCognitionQualityMetrics {
+  return Object.freeze({
+    version: metrics.version,
+    generatedAt: metrics.generatedAt,
+    evidenceSupportedExtraction: metrics.evidenceSupportedExtraction,
+    reviewAcceptance: metrics.reviewAcceptance,
+    retrievalUsefulness: metrics.retrievalUsefulness,
+    graphLag: metrics.graphLag,
   });
 }
 
