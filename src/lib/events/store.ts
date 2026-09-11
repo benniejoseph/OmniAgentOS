@@ -64,6 +64,7 @@ type EventLedger = {
 };
 
 const FILE_TRANSIENT_EVENT_CAP = 5_000;
+const ACTOR_PRIVATE_EVENT_STREAM_PREFIX = "conversation-summary:";
 const DURABLE_BINDING_EVENT_TYPES = new Set([
   "run.scope_bound",
   "tool.scope_bound",
@@ -292,6 +293,11 @@ export async function listStreamEvents(
   options: {
     tenantId?: string;
     actorId?: string;
+    /**
+     * Defense-in-depth scope for actor-private event namespaces. Ordinary
+     * tenant event streams remain visible to their existing readers.
+     */
+    privateActorIds?: readonly string[];
     afterSeq?: number;
     limit?: number;
     order?: "asc" | "desc";
@@ -300,6 +306,7 @@ export async function listStreamEvents(
   const limit = Math.min(Math.max(options.limit || 500, 1), 2_000);
   const afterSeq = Math.max(Math.trunc(options.afterSeq || 0), 0);
   const order = options.order === "desc" ? "desc" : "asc";
+  const privateActorIds = normalizePrivateActorIds(options.privateActorIds);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -312,6 +319,13 @@ export async function listStreamEvents(
     if (options.actorId) {
       params.push(options.actorId);
       predicates.push(`actor_id = $${params.length}`);
+    }
+    if (
+      privateActorIds &&
+      streamId.startsWith(ACTOR_PRIVATE_EVENT_STREAM_PREFIX)
+    ) {
+      params.push(privateActorIds);
+      predicates.push(`actor_id = ANY($${params.length}::text[])`);
     }
     params.push(limit);
     const rows = await getSql().query(
@@ -331,7 +345,8 @@ export async function listStreamEvents(
         event.streamId === streamId &&
         event.seq > afterSeq &&
         (!options.tenantId || event.tenantId === normalizeTenantId(options.tenantId)) &&
-        (!options.actorId || event.actorId === options.actorId),
+        (!options.actorId || event.actorId === options.actorId) &&
+        isVisibleWithinPrivateActorScope(event, privateActorIds),
     )
     .sort((left, right) => left.seq - right.seq);
   if (order === "desc") events.reverse();
@@ -434,11 +449,14 @@ export async function listRecentEvents(
   options: {
     tenantId: string;
     actorId?: string;
+    /** Actor aliases permitted to read actor-private event namespaces. */
+    privateActorIds?: readonly string[];
     limit?: number;
     type?: string;
   } = { tenantId: "default" },
 ): Promise<DomainEvent[]> {
   const limit = Math.min(Math.max(options.limit || 50, 1), 500);
+  const privateActorIds = normalizePrivateActorIds(options.privateActorIds);
 
   if (hasDatabaseUrl()) {
     await ensureDatabaseSchema();
@@ -451,6 +469,18 @@ export async function listRecentEvents(
     if (options.type) {
       parameters.push(options.type);
       predicates.push(`type = $${parameters.length}`);
+    }
+    if (privateActorIds) {
+      parameters.push(ACTOR_PRIVATE_EVENT_STREAM_PREFIX);
+      const prefixParameter = parameters.length;
+      parameters.push(ACTOR_PRIVATE_EVENT_STREAM_PREFIX.length);
+      const prefixLengthParameter = parameters.length;
+      parameters.push(privateActorIds);
+      const actorIdsParameter = parameters.length;
+      predicates.push(
+        `(left(stream_id, $${prefixLengthParameter}) <> $${prefixParameter} ` +
+          `OR actor_id = ANY($${actorIdsParameter}::text[]))`,
+      );
     }
     parameters.push(limit);
     const rows = await getSql().query(
@@ -469,7 +499,8 @@ export async function listRecentEvents(
       (event) =>
         event.tenantId === normalizeTenantId(options.tenantId) &&
         (!options.actorId || event.actorId === options.actorId) &&
-        (!options.type || event.type === options.type),
+        (!options.type || event.type === options.type) &&
+        isVisibleWithinPrivateActorScope(event, privateActorIds),
     )
     .sort((left, right) => right.seq - left.seq)
     .slice(0, limit);
@@ -516,6 +547,32 @@ async function readLedger() {
 
 function getEventsFile() {
   return getDataPath("events.json");
+}
+
+function isVisibleWithinPrivateActorScope(
+  event: Pick<DomainEvent, "streamId" | "actorId">,
+  privateActorIds?: readonly string[],
+) {
+  return !privateActorIds ||
+    !event.streamId.startsWith(ACTOR_PRIVATE_EVENT_STREAM_PREFIX) ||
+    privateActorIds.includes(event.actorId);
+}
+
+function normalizePrivateActorIds(value?: readonly string[]) {
+  if (value === undefined) return undefined;
+  const normalized = [...new Set(value.map((actorId) => actorId.trim()))]
+    .filter(Boolean);
+  if (!normalized.length || normalized.length > 8) {
+    throw new Error(
+      "Private event reads require one to eight readable actor ids.",
+    );
+  }
+  if (normalized.some((actorId) =>
+    actorId.length > 320 || actorId.includes("\0")
+  )) {
+    throw new Error("Private event reads received an invalid actor id.");
+  }
+  return normalized;
 }
 
 function normalizeTenantId(value?: string) {

@@ -19155,6 +19155,30 @@ async function ensureConversationSummaryEnrichmentsV1(sql: SqlClient) {
       OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id)
     );
 
+    DROP POLICY IF EXISTS omni_conversation_summary_events_actor_scope
+      ON omni_events;
+    CREATE POLICY omni_conversation_summary_events_actor_scope
+    ON omni_events
+    AS RESTRICTIVE FOR ALL TO PUBLIC
+    USING (
+      omni_system_scope_enabled()
+      OR left(stream_id, 21) <> 'conversation-summary:'
+      OR omni_actor_scope_v1_allows_validated(
+        (SELECT omni_current_actor_scope_v1()),
+        tenant_id,
+        actor_id
+      )
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR left(stream_id, 21) <> 'conversation-summary:'
+      OR omni_actor_scope_v1_allows_validated(
+        (SELECT omni_current_actor_scope_v1()),
+        tenant_id,
+        actor_id
+      )
+    );
+
     REVOKE ALL ON TABLE omni_conversation_summary_enrichments FROM PUBLIC;
     REVOKE ALL ON FUNCTION
       omni_validate_conversation_summary_enrichment_v1() FROM PUBLIC;

@@ -32,6 +32,83 @@ describe("event store (file mode)", () => {
     expect(aOnly[0].tenantId).toBe("tenant-a");
   });
 
+  it("keeps conversation summary events inside readable actor aliases", async () => {
+    const store = await import("@/lib/events/store");
+    const tenantId = "tenant-private-summary";
+    const streamId = "conversation-summary:episode-private";
+    await store.appendDomainEvent({
+      streamId,
+      type: "conversation.summary.enriched",
+      tenantId,
+      actorId: "actor:canonical-owner",
+      payload: { enrichmentId: "canonical-private" },
+    });
+    await store.appendDomainEvent({
+      streamId,
+      type: "conversation.summary.rebuilt",
+      tenantId,
+      actorId: "legacy-owner@example.test",
+      payload: { summaryId: "legacy-private" },
+    });
+    await store.appendDomainEvent({
+      streamId,
+      type: "conversation.summary.enriched",
+      tenantId,
+      actorId: "sibling@example.test",
+      payload: { enrichmentId: "sibling-private" },
+    });
+
+    const visible = await store.listStreamEvents(streamId, {
+      tenantId,
+      privateActorIds: [
+        "actor:canonical-owner",
+        "legacy-owner@example.test",
+      ],
+    });
+
+    expect(visible.map((event) => event.actorId)).toEqual([
+      "actor:canonical-owner",
+      "legacy-owner@example.test",
+    ]);
+    expect(JSON.stringify(visible)).not.toContain("sibling-private");
+  });
+
+  it("filters only private summary events from mixed recent tenant reads", async () => {
+    const store = await import("@/lib/events/store");
+    const tenantId = "tenant-mixed-events";
+    await store.appendDomainEvent({
+      streamId: "conversation-summary:owned-episode",
+      type: "conversation.summary.enriched",
+      tenantId,
+      actorId: "actor:owner",
+    });
+    await store.appendDomainEvent({
+      streamId: "conversation-summary:sibling-episode",
+      type: "conversation.summary.enriched",
+      tenantId,
+      actorId: "actor:sibling",
+      payload: { enrichmentId: "private-sibling-enrichment" },
+    });
+    await store.appendDomainEvent({
+      streamId: "project:shared-tenant-event",
+      type: "project.updated",
+      tenantId,
+      actorId: "actor:sibling",
+      payload: { projectId: "ordinary-tenant-event" },
+    });
+
+    const visible = await store.listRecentEvents({
+      tenantId,
+      privateActorIds: ["actor:owner"],
+    });
+
+    expect(visible.map((event) => event.streamId)).toEqual([
+      "project:shared-tenant-event",
+      "conversation-summary:owned-episode",
+    ]);
+    expect(JSON.stringify(visible)).not.toContain("private-sibling-enrichment");
+  });
+
   it("reads only the latest event timestamp for explicit actor aliases", async () => {
     const store = await import("@/lib/events/store");
     await store.appendDomainEvent({
