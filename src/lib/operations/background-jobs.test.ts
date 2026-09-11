@@ -12,7 +12,7 @@ beforeAll(async () => {
 });
 
 describe("background operation jobs", () => {
-  it("processes a stored transcript through extraction, RAG, memory, and graph stages", async () => {
+  it("processes a stored transcript into cited knowledge and a cognition plan", async () => {
     const assets = await import("@/lib/capture/assets");
     const jobs = await import("@/lib/operations/background-jobs");
     const queue = await import("@/lib/operations/job-queue");
@@ -71,7 +71,7 @@ describe("background operation jobs", () => {
       type: "capture.asset.process",
       status: "completed",
       progress: { stage: "completed" },
-      result: { chunkCount: 1, memoryCount: 1 },
+      result: { chunkCount: 1, memoryCount: 0 },
     });
     expect(completed?.payload.request).toBeUndefined();
     await expect(assets.getCaptureAsset(stored.id, {
@@ -427,7 +427,19 @@ describe("background operation jobs", () => {
       content: chunk.content,
       evidenceUnitId: chunk.evidenceUnitId!,
     }));
-    const plan = runtime.partitionCognificationBatches({ document, chunks })[0];
+    const cognitionJob = (await queue.listOperationJobs(5, {
+      tenantId,
+      type: "knowledge.cognify",
+    }))[0];
+    const cognitionRequest = jobs.knowledgeCognifyJobRequestSchema.parse(
+      cognitionJob.payload.request,
+    );
+    expect(cognitionRequest.generationId).toBeDefined();
+    const plan = runtime.partitionCognificationBatches({
+      document,
+      chunks,
+      generationId: cognitionRequest.generationId,
+    })[0];
     const quote = chunks[0].content;
     const evidence = [{
       evidenceUnitId: chunks[0].evidenceUnitId,
@@ -452,6 +464,7 @@ describe("background operation jobs", () => {
       documentId: document.id,
       sourceItemId: document.sourceItemId,
       sourceRevisionId: document.sourceRevisionId,
+      generationId: cognitionRequest.generationId,
       retentionExpiresAt: document.retentionExpiresAt,
       batchIndex: plan.batchIndex,
       batchCount: plan.batchCount,
@@ -486,10 +499,6 @@ describe("background operation jobs", () => {
         usageReceiptId: "usage-cognition-resume",
       },
     });
-    const cognitionJob = (await queue.listOperationJobs(5, {
-      tenantId,
-      type: "knowledge.cognify",
-    }))[0];
     const workerScope = parsePersistedExecutionScope(
       cognitionJob.payload.executionScope,
     );

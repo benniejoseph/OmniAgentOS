@@ -9,6 +9,7 @@ import {
 } from "@/lib/entities/ontology";
 import {
   buildCognificationCandidateBatchV1,
+  cognitionGenerationIdSchema,
   deriveCognificationBatchId,
   deriveCognificationCandidateId,
   type CognificationCandidateBatchV1,
@@ -21,7 +22,10 @@ import {
   parsePersistedExecutionScope,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
-import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
+import {
+  resolveRuntimeModelAssignment,
+  type RuntimeModelResolution,
+} from "@/lib/settings/runtime-models";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 import { KNOWLEDGE_COGNIFY_PURPOSE_ID } from "@/lib/sources/purposes";
 import { contentSha256Hex } from "@/lib/sources/text-lineage";
@@ -30,6 +34,8 @@ export const COGNIFICATION_MAX_DOCUMENT_CHUNKS = 2_048;
 export const COGNIFICATION_MAX_DOCUMENT_CHARACTERS = 1_000_000;
 export const COGNIFICATION_MAX_CHUNKS_PER_BATCH = 12;
 export const COGNIFICATION_MAX_CHARACTERS_PER_BATCH = 18_000;
+export const COGNIFICATION_GENERATION_CONTRACT_ID =
+  "knowledge-cognification-generation:1" as const;
 
 const contractIdSchema = z.string().trim().min(1).max(320).regex(
   /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/,
@@ -101,6 +107,7 @@ export type CognificationDocumentInput = Readonly<
 export type CognificationChunkInput = Readonly<z.infer<typeof chunkInputSchema>>;
 export type CognificationBatchPlan = Readonly<{
   batchId: string;
+  generationId?: string;
   batchIndex: number;
   batchCount: number;
   firstChunkIndex: number;
@@ -123,14 +130,80 @@ const defaultDependencies: CognificationRuntimeDependencies = {
 };
 
 /**
+ * Content-free identity for the Settings-backed route and extractor contract.
+ * Credential availability and secrets are deliberately excluded so only an
+ * intentional model/configuration change creates a new review generation.
+ */
+export function cognitionGenerationId(
+  runtime: Pick<
+    RuntimeModelResolution,
+    | "scope"
+    | "source"
+    | "provider"
+    | "model"
+    | "fallbackProvider"
+    | "fallbackModel"
+    | "allowCrossProviderFallback"
+    | "assignmentId"
+    | "assignmentRevision"
+    | "assignmentConfigurationSha256"
+  >,
+) {
+  if (runtime.scope !== "memory") {
+    throw new Error("The cognition generation identity requires memory routing.");
+  }
+  return cognitionGenerationIdSchema.parse(
+    `cognition_generation_${sourceContractSha256({
+      contractId: COGNIFICATION_GENERATION_CONTRACT_ID,
+      scope: runtime.scope,
+      routingSource: runtime.source,
+      provider: runtime.provider || null,
+      model: runtime.model || null,
+      fallbackProvider: runtime.fallbackProvider || null,
+      fallbackModel: runtime.fallbackModel || null,
+      allowCrossProviderFallback: runtime.allowCrossProviderFallback,
+      assignmentId: runtime.assignmentId || null,
+      assignmentRevision: runtime.assignmentRevision || null,
+      assignmentConfigurationSha256:
+        runtime.assignmentConfigurationSha256 || null,
+    }).slice(0, 48)}`,
+  );
+}
+
+export async function resolveCognitionGenerationId(input: {
+  tenantId: string;
+  actorId: string;
+  dependencies?: Pick<
+    CognificationRuntimeDependencies,
+    "resolveRuntimeModelAssignment"
+  >;
+}) {
+  const resolution = await (
+    input.dependencies?.resolveRuntimeModelAssignment ||
+    defaultDependencies.resolveRuntimeModelAssignment
+  )({
+    tenantId: input.tenantId,
+    actorId: input.actorId,
+    scope: "memory",
+    tier: "reasoning",
+    requiredFeature: "json_schema",
+  });
+  return cognitionGenerationId(resolution);
+}
+
+/**
  * Partitions one complete ordered document using fixed count and character
  * ceilings. The same source revision always produces the same batch IDs.
  */
 export function partitionCognificationBatches(input: {
   document: CognificationDocumentInput;
   chunks: readonly CognificationChunkInput[];
+  generationId?: string;
 }): readonly CognificationBatchPlan[] {
   const document = documentInputSchema.parse(input.document);
+  const generationId = input.generationId === undefined
+    ? undefined
+    : cognitionGenerationIdSchema.parse(input.generationId);
   if (
     !input.chunks.length ||
     input.chunks.length > COGNIFICATION_MAX_DOCUMENT_CHUNKS
@@ -187,6 +260,7 @@ export function partitionCognificationBatches(input: {
       documentId: document.id,
       sourceItemId: document.sourceItemId,
       sourceRevisionId: document.sourceRevisionId,
+      ...(generationId ? { generationId } : {}),
       chunks: batchChunks.map((chunk) => ({
         id: chunk.id,
         index: chunk.index,
@@ -199,11 +273,13 @@ export function partitionCognificationBatches(input: {
         documentId: document.id,
         sourceItemId: document.sourceItemId,
         sourceRevisionId: document.sourceRevisionId,
+        ...(generationId ? { generationId } : {}),
         retentionExpiresAt: document.retentionExpiresAt,
         batchIndex,
         batchInputSha256,
       }),
       batchIndex,
+      ...(generationId ? { generationId } : {}),
       batchCount,
       firstChunkIndex: batchChunks[0].index,
       lastChunkIndex: batchChunks[batchChunks.length - 1].index,
@@ -229,6 +305,7 @@ export async function cognifyKnowledgeBatch(input: {
   document: CognificationDocumentInput;
   chunks: readonly CognificationChunkInput[];
   batchIndex: number;
+  generationId?: string;
   executionScope: ExecutionScope;
   correlationId?: string;
   causationId?: string;
@@ -252,13 +329,6 @@ export async function cognifyKnowledgeBatch(input: {
   if (!Number.isInteger(input.batchIndex) || input.batchIndex < 0) {
     throw new Error("Cognification batch index is invalid.");
   }
-  const batches = partitionCognificationBatches({
-    document,
-    chunks: input.chunks,
-  });
-  const batch = batches[input.batchIndex];
-  if (!batch) throw new Error("Cognification batch index is out of range.");
-
   const dependencies = { ...defaultDependencies, ...input.dependencies };
   const runtimeModel = await dependencies.resolveRuntimeModelAssignment({
     tenantId,
@@ -270,6 +340,25 @@ export async function cognifyKnowledgeBatch(input: {
   if (!runtimeModel.configured) {
     throw new Error("The memory cognition model assignment is not configured.");
   }
+  const expectedGenerationId = input.generationId === undefined
+    ? undefined
+    : cognitionGenerationIdSchema.parse(input.generationId);
+  const activeGenerationId = cognitionGenerationId(runtimeModel);
+  if (
+    expectedGenerationId &&
+    expectedGenerationId !== activeGenerationId
+  ) {
+    throw new Error(
+      "The memory cognition model route changed after this generation was queued.",
+    );
+  }
+  const batches = partitionCognificationBatches({
+    document,
+    chunks: input.chunks,
+    ...(expectedGenerationId ? { generationId: expectedGenerationId } : {}),
+  });
+  const batch = batches[input.batchIndex];
+  if (!batch) throw new Error("Cognification batch index is out of range.");
 
   const request = runtimeModel.bind({
     name: "knowledge_cognification_candidate_batch_v1",
@@ -396,6 +485,7 @@ export async function cognifyKnowledgeBatch(input: {
     documentId: document.id,
     sourceItemId: document.sourceItemId,
     sourceRevisionId: document.sourceRevisionId,
+    ...(expectedGenerationId ? { generationId: expectedGenerationId } : {}),
     retentionExpiresAt: document.retentionExpiresAt,
     batchIndex: batch.batchIndex,
     batchCount: batch.batchCount,

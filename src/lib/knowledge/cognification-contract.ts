@@ -21,6 +21,9 @@ const candidateIdSchema = z.string().regex(
   /^cognition_candidate_[a-f0-9]{48}$/,
 );
 const batchIdSchema = z.string().regex(/^cognition_batch_[a-f0-9]{48}$/);
+export const cognitionGenerationIdSchema = z.string().regex(
+  /^cognition_generation_[a-f0-9]{48}$/,
+);
 const boundedTextSchema = (maximum: number) =>
   z.string().trim().min(1).max(maximum);
 const confidenceBasisPointsSchema = z.number().int().min(0).max(10_000);
@@ -145,6 +148,7 @@ const cognificationCandidateBatchBodyV1Schema = z.object({
   documentId: contractIdSchema,
   sourceItemId: contractIdSchema,
   sourceRevisionId: contractIdSchema,
+  generationId: cognitionGenerationIdSchema.optional(),
   retentionExpiresAt: nullableTimestampSchema,
   batchIndex: z.number().int().nonnegative(),
   batchCount: z.number().int().positive().max(10_000),
@@ -223,6 +227,7 @@ export function deriveCognificationBatchId(input: {
   documentId: string;
   sourceItemId: string;
   sourceRevisionId: string;
+  generationId?: string;
   retentionExpiresAt: string | null;
   batchIndex: number;
   batchInputSha256: string;
@@ -325,6 +330,7 @@ function validateBatchShape(
       documentId: value.documentId,
       sourceItemId: value.sourceItemId,
       sourceRevisionId: value.sourceRevisionId,
+      ...(value.generationId ? { generationId: value.generationId } : {}),
       retentionExpiresAt: value.retentionExpiresAt,
       batchIndex: value.batchIndex,
       batchInputSha256: value.batchInputSha256,

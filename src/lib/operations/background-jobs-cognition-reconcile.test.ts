@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   enqueueOperationJob: vi.fn(),
   getCognition: vi.fn(),
   getSource: vi.fn(),
+  resolveGeneration: vi.fn(),
 }));
 
 vi.mock("@/lib/operations/job-queue", async (importOriginal) => ({
@@ -19,6 +20,13 @@ vi.mock("@/lib/knowledge/cognification-store", async (importOriginal) => ({
 vi.mock("@/lib/rag/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/rag/store")>()),
   getActorOwnedKnowledgeForCognition: mocks.getSource,
+}));
+
+vi.mock("@/lib/knowledge/cognification-runtime", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/lib/knowledge/cognification-runtime")
+  >()),
+  resolveCognitionGenerationId: mocks.resolveGeneration,
 }));
 
 import {
@@ -41,6 +49,9 @@ const executionScope = createExecutionScope({
 describe("knowledge cognition plan reconciliation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.resolveGeneration.mockResolvedValue(
+      `cognition_generation_${"a".repeat(48)}`,
+    );
     mocks.enqueueOperationJob.mockImplementation(async (input) => ({
       id: `job-${input.payload.request.batchIndex}`,
       tenantId,
@@ -76,6 +87,7 @@ describe("knowledge cognition plan reconciliation", () => {
       payload: {
         request: {
           batchIndex: 1,
+          generationId: `cognition_generation_${"a".repeat(48)}`,
           retentionExpiresAt: "2026-10-10T00:00:00.000Z",
           sourcePlanSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         },
@@ -116,6 +128,37 @@ describe("knowledge cognition plan reconciliation", () => {
       .toBe("2026-09-20T00:00:00.000Z");
   });
 
+  it("creates a new review generation when the configured model route changes", async () => {
+    mocks.getCognition.mockResolvedValue(null);
+    mocks.getSource.mockResolvedValue(source("2026-10-10T00:00:00.000Z"));
+    mocks.resolveGeneration
+      .mockResolvedValueOnce(`cognition_generation_${"a".repeat(48)}`)
+      .mockResolvedValueOnce(`cognition_generation_${"b".repeat(48)}`);
+
+    await enqueueKnowledgeCognificationPlan({
+      tenantId,
+      actorId,
+      executionScope,
+      documentId: "knowledge-document",
+      sourceRevisionId: "source-revision",
+    });
+    await enqueueKnowledgeCognificationPlan({
+      tenantId,
+      actorId,
+      executionScope,
+      documentId: "knowledge-document",
+      sourceRevisionId: "source-revision",
+    });
+
+    const first = mocks.enqueueOperationJob.mock.calls[0][0];
+    const second = mocks.enqueueOperationJob.mock.calls[1][0];
+    expect(second.payload.request.generationId)
+      .not.toBe(first.payload.request.generationId);
+    expect(second.payload.request.sourcePlanSha256)
+      .not.toBe(first.payload.request.sourcePlanSha256);
+    expect(second.dedupeKey).not.toBe(first.dedupeKey);
+  });
+
   it("accepts legacy unbound jobs but rejects partial plan bindings", () => {
     expect(knowledgeCognifyJobRequestSchema.safeParse({
       documentId: "knowledge-document",
@@ -127,6 +170,12 @@ describe("knowledge cognition plan reconciliation", () => {
       sourceRevisionId: "source-revision",
       batchIndex: 0,
       sourcePlanSha256: "a".repeat(64),
+    }).success).toBe(false);
+    expect(knowledgeCognifyJobRequestSchema.safeParse({
+      documentId: "knowledge-document",
+      sourceRevisionId: "source-revision",
+      batchIndex: 0,
+      generationId: `cognition_generation_${"a".repeat(48)}`,
     }).success).toBe(false);
   });
 });
