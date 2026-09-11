@@ -13,9 +13,17 @@ import {
   Trash2,
   Unplug,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clsx } from "clsx";
 
+import {
+  closeGooglePhotosPickerSession,
+  googlePhotosSessionDeadlineElapsed,
+  nextGooglePhotosSessionWakeDelayMs,
+  withGooglePhotosPollDeadline,
+  type ClientGooglePhotosPickerSession,
+  type GooglePhotosPickerSession,
+} from "@/components/capture/google-photos-session";
 import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
 
 const INTEGRATION_STATUS_CHANGED_EVENT = "asael:integration-status-changed";
@@ -41,15 +49,6 @@ export type OAuthGrantItem = {
   manageable?: boolean;
 };
 
-type PhotoPickerSession = {
-  handle: string;
-  pickerUri?: string;
-  expiresAt: string;
-  mediaItemsSet: boolean;
-  pollAfterMs: number;
-  timeoutAfterMs: number;
-};
-
 type Props = {
   providers: OAuthProviderItem[];
   grants: OAuthGrantItem[];
@@ -64,6 +63,16 @@ type Props = {
     lastError?: string;
   }) => void;
 };
+
+class GooglePhotosPickerSessionRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "GooglePhotosPickerSessionRequestError";
+  }
+}
 
 const sourceRows = [
   {
@@ -106,7 +115,9 @@ export function ConnectedSources({
   const [action, setAction] = useState<string>();
   const [confirming, setConfirming] = useState<string>();
   const [message, setMessage] = useState<{ tone: "success" | "warning" | "error"; text: string }>();
-  const [photoSession, setPhotoSession] = useState<PhotoPickerSession>();
+  const [photoSession, setPhotoSession] = useState<ClientGooglePhotosPickerSession>();
+  const photoSessionRef = useRef<ClientGooglePhotosPickerSession | undefined>(undefined);
+  const mountedRef = useRef(false);
   const [photoImportContinuation, setPhotoImportContinuation] = useState(false);
 
   const sourceAccess = useMemo(
@@ -118,6 +129,39 @@ export function ConnectedSources({
     window.dispatchEvent(new Event(INTEGRATION_STATUS_CHANGED_EVENT));
     await onRefresh().catch(() => undefined);
   }, [onRefresh]);
+
+  const storePhotoSession = useCallback((session?: ClientGooglePhotosPickerSession) => {
+    photoSessionRef.current = session;
+    setPhotoSession(session);
+  }, []);
+
+  const clearPhotoSession = useCallback(() => {
+    storePhotoSession(undefined);
+    setPhotoImportContinuation(false);
+  }, [storePhotoSession]);
+
+  const closeActivePhotoSession = useCallback(async () => {
+    const activeSession = photoSessionRef.current;
+    if (!activeSession) return;
+
+    await closeGooglePhotosPickerSession(activeSession.handle);
+    if (photoSessionRef.current?.handle === activeSession.handle) {
+      clearPhotoSession();
+    }
+  }, [clearPhotoSession]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      const activeSession = photoSessionRef.current;
+      photoSessionRef.current = undefined;
+      if (activeSession) {
+        void closeGooglePhotosPickerSession(activeSession.handle, { keepalive: true })
+          .catch(() => undefined);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const callback = readOAuthCallbackNotice(window.location.href);
@@ -135,31 +179,117 @@ export function ConnectedSources({
       cache: "no-store",
     });
     const payload = (await response.json().catch(() => ({}))) as {
-      session?: PhotoPickerSession;
+      session?: GooglePhotosPickerSession;
       error?: string;
     };
-    if (!response.ok || !payload.session) throw new Error(payload.error || "Google Photos selection could not be checked.");
-    const session = {
+    if (!response.ok || !payload.session) {
+      throw new GooglePhotosPickerSessionRequestError(
+        payload.error || "Google Photos selection could not be checked.",
+        response.status,
+      );
+    }
+    const current = photoSessionRef.current;
+    if (!current || current.handle !== handle) {
+      throw new Error("This Google Photos selection is no longer active.");
+    }
+    if (!mountedRef.current) {
+      throw new Error("This Google Photos selection was closed when the page changed.");
+    }
+    const session = withGooglePhotosPollDeadline({
       ...payload.session,
       pickerUri: payload.session.pickerUri ||
-        (photoSession?.handle === handle ? photoSession.pickerUri : undefined),
-    };
-    setPhotoSession((current) =>
-      current?.handle === handle
-        ? { ...session, pickerUri: session.pickerUri || current.pickerUri }
-        : current
-    );
+        current.pickerUri,
+    }, current);
+    if (googlePhotosSessionDeadlineElapsed(session)) {
+      try {
+        await closeGooglePhotosPickerSession(handle);
+      } finally {
+        if (photoSessionRef.current?.handle === handle) clearPhotoSession();
+      }
+      throw new Error("This Google Photos selection expired. Start a new selection to continue.");
+    }
+    storePhotoSession(session);
     return session;
-  }, [photoSession]);
+  }, [clearPhotoSession, storePhotoSession]);
+
+  const expirePhotoSession = useCallback(async (handle: string) => {
+    if (photoSessionRef.current?.handle !== handle) return;
+    try {
+      await closeGooglePhotosPickerSession(handle);
+      if (photoSessionRef.current?.handle === handle) {
+        clearPhotoSession();
+        setMessage({
+          tone: "warning",
+          text: "The Google Photos selection expired and was closed. Start a new selection to continue.",
+        });
+      }
+    } catch (closeError) {
+      if (photoSessionRef.current?.handle === handle) {
+        clearPhotoSession();
+        setMessage({
+          tone: "error",
+          text: closeError instanceof Error
+            ? closeError.message
+            : "The Google Photos selection expired, but its closure could not be confirmed.",
+        });
+      }
+    }
+  }, [clearPhotoSession]);
 
   useEffect(() => {
-    if (actionDisabledReason || !photoSession || photoSession.mediaItemsSet) return;
-    const delay = Math.min(Math.max(photoSession.pollAfterMs || 3_000, 2_000), 10_000);
-    const timer = window.setTimeout(() => {
-      void refreshPhotoSession(photoSession.handle).catch(() => undefined);
-    }, delay);
-    return () => window.clearTimeout(timer);
-  }, [actionDisabledReason, photoSession, refreshPhotoSession]);
+    if (!photoSession) return;
+    const handle = photoSession.handle;
+    let canceled = false;
+    let timer: number | undefined;
+
+    const scheduleNextCheck = () => {
+      const activeSession = photoSessionRef.current;
+      if (canceled || !activeSession || activeSession.handle !== handle) return;
+      const nowMs = Date.now();
+      const delay = actionDisabledReason
+        ? Math.max(0, activeSession.clientPollDeadlineAt - nowMs)
+        : nextGooglePhotosSessionWakeDelayMs(activeSession, nowMs);
+      timer = window.setTimeout(() => {
+        void checkSession();
+      }, delay);
+    };
+
+    const checkSession = async () => {
+      const activeSession = photoSessionRef.current;
+      if (canceled || !activeSession || activeSession.handle !== handle) return;
+      if (googlePhotosSessionDeadlineElapsed(activeSession)) {
+        await expirePhotoSession(handle);
+        return;
+      }
+
+      if (!actionDisabledReason && !activeSession.mediaItemsSet) {
+        try {
+          await refreshPhotoSession(handle);
+        } catch (refreshError) {
+          if (canceled) return;
+          if (refreshError instanceof GooglePhotosPickerSessionRequestError &&
+            (refreshError.status === 404 || refreshError.status === 410)) {
+            if (photoSessionRef.current?.handle === handle) clearPhotoSession();
+            setMessage({ tone: "warning", text: "The Google Photos selection is no longer active." });
+            return;
+          }
+          setMessage({
+            tone: "error",
+            text: refreshError instanceof Error
+              ? refreshError.message
+              : "Google Photos selection could not be checked.",
+          });
+        }
+      }
+      scheduleNextCheck();
+    };
+
+    scheduleNextCheck();
+    return () => {
+      canceled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [actionDisabledReason, clearPhotoSession, expirePhotoSession, photoSession, refreshPhotoSession]);
 
   function blockUnavailableAction() {
     if (!actionDisabledReason) return false;
@@ -197,14 +327,14 @@ export function ConnectedSources({
     setAction("disconnect");
     setMessage(undefined);
     try {
+      await closeActivePhotoSession();
       const response = await fetch("/api/oauth/google", { method: "DELETE" });
       const payload = (await response.json().catch(() => ({}))) as {
         error?: string;
         providerRevocation?: "revoked" | "not_needed" | "failed";
       };
       if (!response.ok) throw new Error(payload.error || "Google could not be disconnected.");
-      setPhotoSession(undefined);
-      setPhotoImportContinuation(false);
+      clearPhotoSession();
       setConfirming(undefined);
       setMessage({
         tone: payload.providerRevocation === "failed" ? "error" : "success",
@@ -225,6 +355,7 @@ export function ConnectedSources({
     setAction(`remove:${id}`);
     setMessage(undefined);
     try {
+      if (id === "photos") await closeActivePhotoSession();
       const response = id === "photos"
         ? await fetch("/api/oauth/google/photos", { method: "DELETE" })
         : await fetch(`/api/knowledge?source=${encodeURIComponent(prefix)}`, { method: "DELETE" });
@@ -233,10 +364,7 @@ export function ConnectedSources({
         error?: string;
       };
       if (!response.ok) throw new Error(payload.error || `${id} data could not be removed.`);
-      if (id === "photos") {
-        setPhotoSession(undefined);
-        setPhotoImportContinuation(false);
-      }
+      if (id === "photos") clearPhotoSession();
       setConfirming(undefined);
       setMessage({ tone: "success", text: `${sourceLabel(id)} data was removed from knowledge and linked memory.` });
       await refreshIntegrationViews();
@@ -252,28 +380,55 @@ export function ConnectedSources({
     setAction("photos:create");
     setMessage(undefined);
     const pickerWindow = window.open("about:blank", "asael-google-photos");
+    let createdSession: ClientGooglePhotosPickerSession | undefined;
     try {
+      await closeActivePhotoSession();
       const response = await fetch("/api/oauth/google/photos/sessions", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ maxItemCount: 12 }),
       });
       const payload = (await response.json().catch(() => ({}))) as {
-        session?: PhotoPickerSession;
+        session?: GooglePhotosPickerSession;
         error?: string;
       };
       if (!response.ok || !payload.session?.pickerUri) throw new Error(payload.error || "Google Photos could not be opened.");
-      setPhotoSession(payload.session);
+      createdSession = withGooglePhotosPollDeadline(payload.session);
+      if (googlePhotosSessionDeadlineElapsed(createdSession)) {
+        await closeGooglePhotosPickerSession(createdSession.handle);
+        createdSession = undefined;
+        throw new Error("Google returned an expired Photos selection. Try again.");
+      }
+      if (!mountedRef.current) {
+        await closeGooglePhotosPickerSession(createdSession.handle, { keepalive: true });
+        createdSession = undefined;
+        return;
+      }
+      storePhotoSession(createdSession);
       setPhotoImportContinuation(false);
       if (pickerWindow) {
         pickerWindow.opener = null;
-        pickerWindow.location.replace(payload.session.pickerUri);
+        pickerWindow.location.replace(createdSession.pickerUri || payload.session.pickerUri);
       } else {
         setMessage({ tone: "error", text: "Your browser blocked the photo picker. Use Open picker below." });
       }
     } catch (photoError) {
       pickerWindow?.close();
-      setMessage({ tone: "error", text: photoError instanceof Error ? photoError.message : "Google Photos could not be opened." });
+      let surfacedError = photoError;
+      if (createdSession) {
+        try {
+          await closeGooglePhotosPickerSession(createdSession.handle);
+          if (photoSessionRef.current?.handle === createdSession.handle) clearPhotoSession();
+        } catch (closeError) {
+          surfacedError = closeError;
+          if (mountedRef.current && photoSessionRef.current?.handle !== createdSession.handle) {
+            storePhotoSession(createdSession);
+          }
+        }
+      }
+      if (mountedRef.current) {
+        setMessage({ tone: "error", text: surfacedError instanceof Error ? surfacedError.message : "Google Photos could not be opened." });
+      }
     } finally {
       setAction(undefined);
     }
@@ -312,11 +467,10 @@ export function ConnectedSources({
       if (payload.jobs?.[0]) onJob?.(payload.jobs[0]);
       const needsContinuation = payload.sessionDeleted !== true;
       if (needsContinuation) {
-        setPhotoSession(latest);
+        storePhotoSession(latest);
         setPhotoImportContinuation(true);
       } else {
-        setPhotoSession(undefined);
-        setPhotoImportContinuation(false);
+        clearPhotoSession();
       }
       const skippedCount = Array.isArray(payload.skipped)
         ? payload.skipped.length
@@ -345,11 +499,18 @@ export function ConnectedSources({
     if (blockUnavailableAction()) return;
     if (!photoSession) return;
     setAction("photos:cancel");
+    setMessage(undefined);
     try {
-      await fetch(`/api/oauth/google/photos/sessions/${encodeURIComponent(photoSession.handle)}`, { method: "DELETE" });
+      await closeActivePhotoSession();
+      setMessage({ tone: "success", text: "Google Photos selection canceled." });
+    } catch (cancelError) {
+      setMessage({
+        tone: "error",
+        text: cancelError instanceof Error
+          ? cancelError.message
+          : "Google Photos could not confirm that the selection was canceled.",
+      });
     } finally {
-      setPhotoSession(undefined);
-      setPhotoImportContinuation(false);
       setAction(undefined);
     }
   }

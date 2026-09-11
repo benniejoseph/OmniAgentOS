@@ -711,8 +711,9 @@ function captureProcessJob(
   asset: ReturnType<typeof captureAsset>,
   overrides: Record<string, unknown> = {},
 ) {
+  const ingestJobId = "ingestJobId" in asset ? asset.ingestJobId : undefined;
   return {
-    id: String(asset.ingestJobId || "job-photo-a"),
+    id: String(ingestJobId || "job-photo-a"),
     tenantId: "tenant-a",
     type: "capture.asset.process",
     status: "queued",
