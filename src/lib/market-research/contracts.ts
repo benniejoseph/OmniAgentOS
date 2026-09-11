@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const MARKET_RESEARCH_CONTRACT_VERSION =
-  "market-research-foundation:4" as const;
+  "market-research-foundation:5" as const;
 
 export const MARKET_INSTRUMENT_IDS = [
   "xauusd.spot",
@@ -22,6 +22,9 @@ export const MARKET_RESEARCH_PROVIDERS = [
   ...MARKET_PRICE_PROVIDERS,
   "fred",
   "bls",
+  "census",
+  "bea",
+  "federal_reserve",
 ] as const;
 export type MarketResearchProvider = (typeof MARKET_RESEARCH_PROVIDERS)[number];
 
@@ -164,7 +167,12 @@ export const marketEventSchema = z.object({
   releaseDate: marketDateSchema,
   occurredAt: z.string().datetime({ offset: true }).nullable(),
   timestampPrecision: z.enum(["date", "instant"]),
-  scheduleSource: z.literal("bls").nullable(),
+  scheduleSource: z.enum([
+    "bls",
+    "census",
+    "bea",
+    "federal_reserve",
+  ]).nullable(),
   scheduleSourceUrl: z.string().url().max(1_000).nullable(),
   actual: z.number().finite().nullable(),
   consensus: z.number().finite().nullable(),

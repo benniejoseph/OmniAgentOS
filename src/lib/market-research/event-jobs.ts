@@ -11,10 +11,17 @@ import {
   selectedHighImpactEvents,
 } from "@/lib/market-research/event-catalog";
 import {
-  saveBlsMarketEventSchedules,
+  saveOfficialMarketEventSchedules,
   saveFredMarketEvents,
 } from "@/lib/market-research/event-store";
 import { fetchFredReleaseDates } from "@/lib/market-research/fred";
+import {
+  fetchBeaReleaseSchedule,
+  fetchCensusReleaseSchedule,
+  fetchFederalReserveReleaseSchedule,
+  type OfficialMarketScheduleEntry,
+  type OfficialMarketScheduleSource,
+} from "@/lib/market-research/official-schedules";
 import {
   enqueueOperationJob,
   type OperationJobRecord,
@@ -155,23 +162,26 @@ export async function executeMarketEventBackfillJob(input: {
       discoveredDates,
     });
   }
-  if (definitions.some((definition) => definition.blsSchedule)) {
+  const scheduleSources = officialScheduleSources(definitions);
+  for (const [sourceIndex, source] of scheduleSources.entries()) {
     input.abortSignal.throwIfAborted();
     await input.onProgress({
       stage: "fetching_official_schedule",
-      completedSources: definitions.length,
+      currentScheduleSource: source,
+      completedSources: definitions.length + sourceIndex,
       totalSources,
       importedEvents,
       importedSchedules,
       discoveredDates,
     });
-    const schedules = await fetchBlsReleaseSchedule({
-      events: definitions,
+    const schedules = await fetchOfficialSchedules({
+      source,
+      definitions,
       startDate: request.startDate,
       endDate: request.endDate,
       signal: input.abortSignal,
     });
-    const savedSchedules = await saveBlsMarketEventSchedules({
+    const savedSchedules = await saveOfficialMarketEventSchedules({
       tenantId: input.job.tenantId,
       actorId,
       executionScope,
@@ -181,7 +191,8 @@ export async function executeMarketEventBackfillJob(input: {
     importedSchedules += savedSchedules.inserted;
     await input.onProgress({
       stage: "saving_official_schedule",
-      completedSources: totalSources,
+      currentScheduleSource: source,
+      completedSources: definitions.length + sourceIndex + 1,
       totalSources,
       importedEvents,
       importedSchedules,
@@ -204,7 +215,46 @@ function totalImportSources(
   definitions: ReturnType<typeof selectedHighImpactEvents>,
 ) {
   return definitions.length +
-    (definitions.some((definition) => definition.blsSchedule) ? 1 : 0);
+    officialScheduleSources(definitions).length;
+}
+
+function officialScheduleSources(
+  definitions: ReturnType<typeof selectedHighImpactEvents>,
+): OfficialMarketScheduleSource[] {
+  const keys = new Set(definitions.map(({ eventKey }) => eventKey));
+  return [
+    ...(definitions.some((definition) => definition.blsSchedule) ? ["bls" as const] : []),
+    ...(keys.has("us.retail_sales") ? ["census" as const] : []),
+    ...(keys.has("us.gdp") || keys.has("us.personal_income_outlays")
+      ? ["bea" as const]
+      : []),
+    ...(keys.has("us.fomc") ? ["federal_reserve" as const] : []),
+  ];
+}
+
+async function fetchOfficialSchedules(input: {
+  source: OfficialMarketScheduleSource;
+  definitions: ReturnType<typeof selectedHighImpactEvents>;
+  startDate: string;
+  endDate: string;
+  signal: AbortSignal;
+}): Promise<OfficialMarketScheduleEntry[]> {
+  const request = {
+    events: input.definitions,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    signal: input.signal,
+  };
+  switch (input.source) {
+    case "bls":
+      return fetchBlsReleaseSchedule(request);
+    case "census":
+      return fetchCensusReleaseSchedule(request);
+    case "bea":
+      return fetchBeaReleaseSchedule(request);
+    case "federal_reserve":
+      return fetchFederalReserveReleaseSchedule(request);
+  }
 }
 
 function digest(value: string) {

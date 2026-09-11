@@ -3,18 +3,18 @@ import "server-only";
 import { z } from "zod";
 
 import type { HighImpactEventDefinition } from "@/lib/market-research/event-catalog";
+import {
+  officialMarketScheduleEntrySchema,
+  zonedDateTimeToIso,
+} from "@/lib/market-research/official-schedules";
 
-const calendarEntrySchema = z.object({
-  eventKey: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
-  name: z.string().min(1).max(160),
-  sourceUid: z.string().min(1).max(300),
-  sourceUrl: z.string().url(),
-  releaseDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  occurredAt: z.string().datetime({ offset: true }),
-  timezone: z.literal("America/New_York"),
+const blsReleaseScheduleEntrySchema = officialMarketScheduleEntrySchema.extend({
+  source: z.literal("bls"),
 }).strict();
 
-export type BlsReleaseScheduleEntry = z.infer<typeof calendarEntrySchema>;
+export type BlsReleaseScheduleEntry = z.infer<
+  typeof blsReleaseScheduleEntrySchema
+>;
 
 export class BlsProviderError extends Error {
   constructor(message: string) {
@@ -95,7 +95,8 @@ export function parseBlsCalendar(
           local.second,
         )).toISOString()
       : zonedDateTimeToIso(local, "America/New_York");
-    entries.push(calendarEntrySchema.parse({
+    entries.push(blsReleaseScheduleEntrySchema.parse({
+      source: "bls",
       eventKey: definition.eventKey,
       name: definition.name,
       sourceUid,
@@ -134,48 +135,4 @@ function parseCalendarDateTime(value: string) {
     minute: Number(value.slice(11, 13)),
     second: Number(value.slice(13, 15)),
   };
-}
-
-function zonedDateTimeToIso(
-  target: ReturnType<typeof parseCalendarDateTime>,
-  timeZone: string,
-) {
-  const targetEpoch = Date.UTC(
-    target.year,
-    target.month - 1,
-    target.day,
-    target.hour,
-    target.minute,
-    target.second,
-  );
-  let guess = targetEpoch;
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const parts = Object.fromEntries(
-      formatter.formatToParts(new Date(guess))
-        .filter((part) => part.type !== "literal")
-        .map((part) => [part.type, Number(part.value)]),
-    );
-    const representedEpoch = Date.UTC(
-      parts.year,
-      parts.month - 1,
-      parts.day,
-      parts.hour === 24 ? 0 : parts.hour,
-      parts.minute,
-      parts.second,
-    );
-    const delta = targetEpoch - representedEpoch;
-    guess += delta;
-    if (delta === 0) break;
-  }
-  return new Date(guess).toISOString();
 }
