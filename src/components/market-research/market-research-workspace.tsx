@@ -29,6 +29,8 @@ import {
   type MarketEventBaselinesResult,
   type MarketEventsResult,
   type MarketEventReplaysResult,
+  type MarketForecastHorizon,
+  type MarketForecastJournalResult,
   type MarketInstrument,
   type MarketInstrumentId,
   type MarketInterval,
@@ -77,6 +79,10 @@ export function MarketResearchWorkspace() {
   const [baselinesError, setBaselinesError] = useState<string>();
   const [featuresLoading, setFeaturesLoading] = useState(false);
   const [featuresError, setFeaturesError] = useState<string>();
+  const [journal, setJournal] = useState<MarketForecastJournalResult>();
+  const [journalLoading, setJournalLoading] = useState(false);
+  const [journalError, setJournalError] = useState<string>();
+  const [journalAction, setJournalAction] = useState<MarketForecastHorizon | "score">();
 
   const loadOverview = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -239,6 +245,30 @@ export function MarketResearchWorkspace() {
       setBaselinesError(loadError instanceof Error ? loadError.message : "Comparable-event baselines could not load.");
     } finally {
       if (!signal?.aborted) setBaselinesLoading(false);
+    }
+  }, []);
+
+  const loadJournal = useCallback(async (
+    instrumentId: MarketInstrumentId,
+    signal?: AbortSignal,
+  ) => {
+    setJournalLoading(true);
+    setJournalError(undefined);
+    try {
+      const query = new URLSearchParams({ instrumentId, limit: "40" });
+      const response = await fetch(`/api/market-research/journal?${query}`, {
+        cache: "no-store",
+        signal,
+      });
+      const payload = await response.json() as MarketForecastJournalResult & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Forecast journal could not load.");
+      setJournal(payload);
+    } catch (loadError) {
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      setJournal(undefined);
+      setJournalError(loadError instanceof Error ? loadError.message : "Forecast journal could not load.");
+    } finally {
+      if (!signal?.aborted) setJournalLoading(false);
     }
   }, []);
 
@@ -405,6 +435,63 @@ export function MarketResearchWorkspace() {
     };
   }, [activeTab, bars?.snapshotId, loadFeatures]);
 
+  useEffect(() => {
+    if (activeTab !== "journal") return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => void loadJournal(selectedId, controller.signal),
+      0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeTab, loadJournal, selectedId]);
+
+  const generateForecast = useCallback(async (horizon: MarketForecastHorizon) => {
+    setJournalAction(horizon);
+    setJournalError(undefined);
+    try {
+      const response = await fetch("/api/market-research/journal/generate", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `market-forecast-${selectedId}-${horizon}-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({ instrumentId: selectedId, horizon }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Market scenario could not be generated.");
+      await loadJournal(selectedId);
+    } catch (actionError) {
+      setJournalError(actionError instanceof Error ? actionError.message : "Market scenario could not be generated.");
+    } finally {
+      setJournalAction(undefined);
+    }
+  }, [loadJournal, selectedId]);
+
+  const scoreDueForecasts = useCallback(async () => {
+    setJournalAction("score");
+    setJournalError(undefined);
+    try {
+      const response = await fetch("/api/market-research/journal/score", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `market-forecast-score-${selectedId}-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({ instrumentId: selectedId, maxForecasts: 2 }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Due scenarios could not be scored.");
+      await loadJournal(selectedId);
+    } catch (actionError) {
+      setJournalError(actionError instanceof Error ? actionError.message : "Due scenarios could not be scored.");
+    } finally {
+      setJournalAction(undefined);
+    }
+  }, [loadJournal, selectedId]);
+
   return (
     <main className={styles.shell}>
       <header className={styles.hero}>
@@ -508,7 +595,18 @@ export function MarketResearchWorkspace() {
               error={featuresError || barsError}
             />
           ) : null}
-          {activeTab === "journal" ? <ForecastJournal instrument={selected} overview={overview} /> : null}
+          {activeTab === "journal" ? (
+            <ForecastJournal
+              instrument={selected}
+              overview={overview}
+              journal={journal}
+              loading={journalLoading}
+              error={journalError}
+              action={journalAction}
+              onGenerate={generateForecast}
+              onScore={scoreDueForecasts}
+            />
+          ) : null}
         </>
       ) : loading ? <WorkspaceSkeleton /> : null}
     </main>
@@ -966,26 +1064,118 @@ function formatFeatureTime(value: string) {
   }).format(new Date(value));
 }
 
-function ForecastJournal({ instrument, overview }: { instrument: MarketInstrument; overview?: MarketResearchOverview }) {
+function ForecastJournal({
+  instrument,
+  overview,
+  journal,
+  loading,
+  error,
+  action,
+  onGenerate,
+  onScore,
+}: {
+  instrument: MarketInstrument;
+  overview?: MarketResearchOverview;
+  journal?: MarketForecastJournalResult;
+  loading: boolean;
+  error?: string;
+  action?: MarketForecastHorizon | "score";
+  onGenerate: (horizon: MarketForecastHorizon) => void;
+  onScore: () => void;
+}) {
   const forecast = overview?.engineTracks.find((track) => track.id === "scenario_forecast");
+  const ready = forecast?.state === "foundation";
   return (
     <section className={styles.lab}>
       <header className={styles.labHeader}>
         <div><p className={styles.eyebrow}>Forward shadow · {instrument.shortLabel}</p><h2>Forecast journal</h2><p>Daily and weekly scenarios are frozen before the trading window, then scored after expiry. Misses, invalidations, and abstentions remain visible.</p></div>
-        <span className={styles.stateBadge} data-state={forecast?.state}>{forecast?.state === "planned" ? "Planned" : "Blocked by setup"}</span>
+        <span className={styles.stateBadge} data-state={forecast?.state}>{ready ? "Active foundation" : "Blocked by setup"}</span>
       </header>
+      <div className={styles.journalActions}>
+        <div>
+          <strong>Seal the next research window</strong>
+          <p>Meridian uses the configured model and exact immutable evidence. Repeated requests for the same window reuse its first sealed result.</p>
+        </div>
+        <span>
+          <button type="button" disabled={!ready || Boolean(action)} onClick={() => onGenerate("daily")}>
+            {action === "daily" ? <RefreshCw className={styles.spin} size={14} /> : <Sparkles size={14} />} Daily scenario
+          </button>
+          <button type="button" disabled={!ready || Boolean(action)} onClick={() => onGenerate("weekly")}>
+            {action === "weekly" ? <RefreshCw className={styles.spin} size={14} /> : <CalendarClock size={14} />} Weekly scenario
+          </button>
+          <button type="button" disabled={!journal?.scorecard.due || Boolean(action)} onClick={onScore}>
+            {action === "score" ? <RefreshCw className={styles.spin} size={14} /> : <Gauge size={14} />} Score due
+          </button>
+        </span>
+      </div>
+      {error ? <div className={styles.inlineError} role="alert"><AlertTriangle size={15} />{error}</div> : null}
       <div className={styles.journalLayout}>
         <div className={styles.scoreFrame}>
-          <header><span><Gauge size={17} /> Calibration scorecard</span><small>Minimum evidence gate</small></header>
-          <div><Metric label="Directional accuracy" value="—" detail="No resolved forecasts" /><Metric label="Brier score" value="—" detail="Probability calibration" /><Metric label="Coverage" value="—" detail="Abstention-aware" /></div>
+          <header><span><Gauge size={17} /> Forward scorecard</span><small>{journal?.scorecard.resolved || 0} resolved · {journal?.scorecard.due || 0} due</small></header>
+          <div>
+            <Metric label="Directional accuracy" value={formatRatio(journal?.scorecard.directionalAccuracy)} detail={`${journal?.scorecard.directionalSampleSize || 0} directional calls`} />
+            <Metric label="Brier score" value="Withheld" detail="No calibrated probabilities" />
+            <Metric label="Coverage" value={formatRatio(journal?.scorecard.coverage)} detail="Resolved, excluding abstentions" />
+          </div>
         </div>
-        <div className={styles.journalEmpty}><History size={26} /><strong>No frozen forecasts</strong><p>The journal starts only after feeds, detector versions, and the Meridian model assignment are active. Past scenarios cannot be rewritten after their cutoff.</p></div>
+        <div className={styles.journalProtocol}>
+          <ShieldCheck size={22} />
+          <strong>Hindsight-resistant by construction</strong>
+          <p>The scenario body, evidence digests, Settings assignment revision, and model usage receipt are sealed together. Outcomes are appended separately.</p>
+          <span>Uncalibrated · research only</span>
+        </div>
+      </div>
+      <div className={styles.forecastList} aria-busy={loading}>
+        {loading && !journal ? <div className={styles.journalEmpty}><RefreshCw className={styles.spin} size={24} /><strong>Reading sealed scenarios</strong><p>The journal remains usable while chart and news panels load independently.</p></div> : null}
+        {!loading && !journal?.entries.length ? <div className={styles.journalEmpty}><History size={26} /><strong>No frozen forecasts yet</strong><p>Create the next daily or weekly research window. The first result is permanent and cannot be rewritten after seeing the outcome.</p></div> : null}
+        {(journal?.entries || []).map((entry) => (
+          <article className={styles.forecastCard} key={entry.forecast.id} data-stance={entry.forecast.stance}>
+            <header>
+              <div>
+                <span>{entry.forecast.horizon} · {entry.resolutionState}</span>
+                <strong>{entry.forecast.stance === "abstain" ? "Abstain" : `${entry.forecast.stance} lead`}</strong>
+                <small>{formatForecastWindow(entry.forecast.windowStart, entry.forecast.windowEnd)}</small>
+              </div>
+              <em>{entry.forecast.evidenceStrength} evidence</em>
+            </header>
+            <p className={styles.forecastSummary}>{entry.forecast.summary}</p>
+            <div className={styles.scenarioGrid}>
+              {entry.forecast.scenarios.map((scenario) => (
+                <section key={scenario.direction} data-direction={scenario.direction}>
+                  <span>#{scenario.rank} · {scenario.direction}</span>
+                  <p>{scenario.thesis}</p>
+                  <small>{scenario.observationZone ? `Observe ${formatPrice(scenario.observationZone.low, instrument.instrumentId)}–${formatPrice(scenario.observationZone.high, instrument.instrumentId)}` : "No justified observation zone"}</small>
+                </section>
+              ))}
+            </div>
+            <footer>
+              <span><ShieldCheck size={13} /> Sealed {formatFeatureTime(entry.forecast.sealedAt)}</span>
+              <span>{entry.outcome ? `${entry.outcome.actualDirection} · ${formatSignedBps(entry.outcome.returnBps)}` : entry.resolutionState === "due" ? "Outcome ready to score" : "Window has not closed"}</span>
+              <span>{entry.forecast.evidence.baselineReplayCount} event windows · {entry.forecast.evidence.baselineQualifiedGroups} qualified groups</span>
+            </footer>
+          </article>
+        ))}
       </div>
       <div className={styles.guardrailList}>
         {(overview?.guardrails || []).map((guardrail) => <p key={guardrail}><Check size={14} />{guardrail}</p>)}
       </div>
     </section>
   );
+}
+
+function formatRatio(value?: number | null) {
+  return value === null || value === undefined ? "—" : `${Math.round(value * 1_000) / 10}%`;
+}
+
+function formatForecastWindow(start: string, end: string) {
+  const formatter = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+  return `${formatter.format(new Date(start))} → ${formatter.format(new Date(end))}`;
 }
 
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {

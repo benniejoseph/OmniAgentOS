@@ -89,14 +89,15 @@ export async function fetchTwelveDataBarRangeSnapshot(input: {
 }): Promise<TwelveDataBarSnapshot> {
   const startAt = new Date(input.startAt);
   const endAt = new Date(input.endAt);
+  const maximumRangeHours = input.interval === "1h" ? 8 * 24 : 72;
   if (
     !Number.isFinite(startAt.getTime()) ||
     !Number.isFinite(endAt.getTime()) ||
     startAt >= endAt ||
-    endAt.getTime() - startAt.getTime() > 72 * 60 * 60 * 1_000
+    endAt.getTime() - startAt.getTime() > maximumRangeHours * 60 * 60 * 1_000
   ) {
     throw new MarketDataProviderError(
-      "A historical market range must be valid, ordered, and no longer than 72 hours.",
+      `A historical ${input.interval} market range must be valid, ordered, and no longer than ${maximumRangeHours} hours.`,
     );
   }
   return fetchTwelveDataSnapshot({

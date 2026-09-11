@@ -16,6 +16,18 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
     minimumSampleSize: integer(5, 100, 20),
   }, ["instrumentId"])),
+  readTool("app.market_research.journal.list", "List forward market research", "Read the caller's immutable daily and weekly forward-shadow scenarios, separate outcome receipts, and abstention-aware scorecard.", requiredObjectSchema({
+    instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
+    limit: integer(1, 100, 40),
+  }, ["instrumentId"])),
+  mutationTool("app.market_research.journal.generate", "Generate forward market research", "Use the Settings-selected Meridian model to produce and permanently seal one research-only daily or weekly ordinal scenario before its market window. No calibrated probability or trade execution is produced.", requiredObjectSchema({
+    instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
+    horizon: { type: "string", enum: ["daily", "weekly"] },
+  }, ["instrumentId", "horizon"])),
+  mutationTool("app.market_research.journal.score", "Score due market research", "Resolve a bounded number of expired forward-shadow scenarios against immutable provider bars and append separate outcome receipts.", requiredObjectSchema({
+    instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
+    maxForecasts: integer(1, 4, 2),
+  }, ["instrumentId"])),
   readTool("app.memory.intelligence.show", "Show memory intelligence", "Read the authorized memory and knowledge overview or a bounded categorized index without changing retrieval ranking or memory state.", objectSchema({
     view: { type: "string", enum: ["overview", "memory", "knowledge"], default: "overview" },
     query: text(0, 4_000),

@@ -404,6 +404,174 @@ export type MarketEventBaselinesResult = z.infer<
   typeof marketEventBaselinesResultSchema
 >;
 
+export const MARKET_FORWARD_SHADOW_VERSION =
+  "market-forward-shadow:1" as const;
+
+export const marketForecastHorizonSchema = z.enum(["daily", "weekly"]);
+export type MarketForecastHorizon = z.infer<
+  typeof marketForecastHorizonSchema
+>;
+
+export const marketForecastDirectionSchema = z.enum([
+  "bullish",
+  "bearish",
+  "neutral",
+]);
+export type MarketForecastDirection = z.infer<
+  typeof marketForecastDirectionSchema
+>;
+
+const marketForecastPriceZoneSchema = z.object({
+  low: z.number().finite(),
+  high: z.number().finite(),
+}).strict().refine((value) => value.low <= value.high, {
+  message: "Market forecast price-zone bounds are invalid.",
+});
+
+export const marketForecastScenarioSchema = z.object({
+  direction: marketForecastDirectionSchema,
+  rank: z.number().int().min(1).max(3),
+  thesis: z.string().trim().min(1).max(1_200),
+  observationZone: marketForecastPriceZoneSchema.nullable(),
+  targets: z.array(z.number().finite()).max(3),
+  invalidation: z.object({
+    price: z.number().finite(),
+    rationale: z.string().trim().min(1).max(500),
+  }).strict().nullable(),
+  supportingFeatureIds: z.array(
+    z.string().regex(/^market_feature_[a-f0-9]{48}$/),
+  ).max(12),
+}).strict();
+
+export const marketForecastModelAttributionSchema = z.object({
+  provider: z.string().trim().min(1).max(80),
+  model: z.string().trim().min(1).max(240),
+  assignmentScope: z.literal("market_research"),
+  assignmentId: z.string().trim().min(1).max(240),
+  assignmentRevision: z.number().int().positive(),
+  assignmentConfigurationSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  usageReceiptId: z.string().uuid(),
+  usageReceiptRecorded: z.literal(true),
+}).strict();
+
+export const marketForwardForecastSchema = z.object({
+  id: z.string().regex(/^market_forecast_[a-f0-9]{48}$/),
+  contractVersion: z.literal(MARKET_FORWARD_SHADOW_VERSION),
+  instrumentId: marketInstrumentIdSchema,
+  horizon: marketForecastHorizonSchema,
+  windowStart: z.string().datetime({ offset: true }),
+  windowEnd: z.string().datetime({ offset: true }),
+  sealedAt: z.string().datetime({ offset: true }),
+  researchMode: z.literal(true),
+  probabilityState: z.literal("uncalibrated"),
+  stance: z.enum(["bullish", "bearish", "neutral", "abstain"]),
+  evidenceStrength: z.enum(["insufficient", "limited", "developing"]),
+  summary: z.string().trim().min(1).max(1_600),
+  scenarios: z.array(marketForecastScenarioSchema).length(3),
+  warnings: z.array(z.string().trim().min(1).max(600)).min(1).max(10),
+  evidence: z.object({
+    snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
+    snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    snapshotAsOf: z.string().datetime({ offset: true }),
+    detectorVersion: z.literal(MARKET_TECHNICAL_DETECTOR_VERSION),
+    technicalResultSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    baselineVersion: z.literal(MARKET_EVENT_BASELINE_VERSION),
+    baselineResultSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    baselineReplayCount: z.number().int().nonnegative(),
+    baselineQualifiedGroups: z.number().int().nonnegative(),
+    macroEventIds: z.array(
+      z.string().regex(/^market_event_[a-f0-9]{48}$/),
+    ).max(24),
+    macroEventsSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict(),
+  modelAttribution: marketForecastModelAttributionSchema,
+  forecastSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict().superRefine((value, context) => {
+  if (value.windowStart >= value.windowEnd || value.sealedAt >= value.windowStart) {
+    context.addIssue({
+      code: "custom",
+      message: "A market forecast must be sealed before its ordered window.",
+    });
+  }
+  const directions = value.scenarios.map((scenario) => scenario.direction);
+  const ranks = value.scenarios.map((scenario) => scenario.rank);
+  if (new Set(directions).size !== 3 || new Set(ranks).size !== 3) {
+    context.addIssue({
+      code: "custom",
+      message: "A market forecast requires one uniquely ranked scenario per direction.",
+    });
+  }
+});
+
+export type MarketForwardForecast = z.infer<typeof marketForwardForecastSchema>;
+
+export const marketForecastOutcomeSchema = z.object({
+  id: z.string().regex(/^market_forecast_outcome_[a-f0-9]{48}$/),
+  forecastId: z.string().regex(/^market_forecast_[a-f0-9]{48}$/),
+  resolvedAt: z.string().datetime({ offset: true }),
+  provider: z.enum(MARKET_PRICE_PROVIDERS),
+  providerSymbol: z.string().trim().min(1).max(80),
+  interval: z.enum(MARKET_INTERVALS),
+  sourcePayloadSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  firstPrice: z.number().finite(),
+  lastPrice: z.number().finite(),
+  returnBps: z.number().finite(),
+  actualDirection: marketForecastDirectionSchema,
+  stanceHit: z.boolean().nullable(),
+  scenarioRankHit: z.number().int().min(1).max(3),
+  maxFavorableBps: z.number().finite().nonnegative().nullable(),
+  maxAdverseBps: z.number().finite().nonnegative().nullable(),
+  brierScore: z.null(),
+  outcomeSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+export type MarketForecastOutcome = z.infer<
+  typeof marketForecastOutcomeSchema
+>;
+
+export const marketForecastJournalEntrySchema = z.object({
+  forecast: marketForwardForecastSchema,
+  resolutionState: z.enum(["open", "due", "resolved"]),
+  outcome: marketForecastOutcomeSchema.nullable(),
+}).strict();
+
+export const marketForecastJournalQuerySchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  limit: z.number().int().min(1).max(100).default(40),
+}).strict();
+
+export const marketForecastJournalResultSchema = z.object({
+  contractVersion: z.literal(MARKET_FORWARD_SHADOW_VERSION),
+  instrumentId: marketInstrumentIdSchema,
+  entries: z.array(marketForecastJournalEntrySchema).max(100),
+  scorecard: z.object({
+    total: z.number().int().nonnegative(),
+    resolved: z.number().int().nonnegative(),
+    due: z.number().int().nonnegative(),
+    abstentions: z.number().int().nonnegative(),
+    directionalAccuracy: z.number().finite().min(0).max(1).nullable(),
+    directionalSampleSize: z.number().int().nonnegative(),
+    coverage: z.number().finite().min(0).max(1).nullable(),
+    brierScore: z.null(),
+    probabilityState: z.literal("uncalibrated"),
+  }).strict(),
+}).strict();
+
+export type MarketForecastJournalResult = z.infer<
+  typeof marketForecastJournalResultSchema
+>;
+
+export const marketForecastGenerateRequestSchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  horizon: marketForecastHorizonSchema,
+}).strict();
+
+export const marketForecastScoreRequestSchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  maxForecasts: z.number().int().min(1).max(4).default(2),
+}).strict();
+
 export const marketMacroObservationSchema = z.object({
   id: z.string().regex(/^market_observation_[a-f0-9]{48}$/),
   metricKey: z.string().regex(/^[a-z][a-z0-9_]{1,79}$/),

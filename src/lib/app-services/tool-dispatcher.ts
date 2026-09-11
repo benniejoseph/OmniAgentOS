@@ -16,6 +16,9 @@ import {
 import { showTruthfulIntegrationsService } from "@/lib/app-services/integrations";
 import { showSourceCoverageService } from "@/lib/app-services/source-coverage";
 import {
+  generateMarketForecastService,
+  listMarketForecastJournalService,
+  scoreDueMarketForecastsService,
   showMarketResearchBaselinesService,
   showMarketResearchFeaturesService,
 } from "@/lib/app-services/market-research";
@@ -232,6 +235,9 @@ export async function executeFirstPartyAppTool(input: {
     "app.sources.coverage.show": () => showSourceCoverageService(caller, input.toolInput as never),
     "app.market_research.features.show": () => showMarketResearchFeaturesService(caller, input.toolInput as never),
     "app.market_research.baselines.show": () => showMarketResearchBaselinesService(caller, input.toolInput as never),
+    "app.market_research.journal.list": () => listMarketForecastJournalService(caller, input.toolInput as never),
+    "app.market_research.journal.generate": () => generateMarketForecastService(caller, input.toolInput as never),
+    "app.market_research.journal.score": () => scoreDueMarketForecastsService(caller, input.toolInput as never),
     "app.memory.intelligence.show": () => showMemoryIntelligenceService(caller, input.toolInput as never),
     "app.memory.shared.list": () => listSharedMemoryService(caller, input.toolInput as never),
     "app.memory.shared.write": () => writeSharedMemoryService(caller, input.toolInput as never),

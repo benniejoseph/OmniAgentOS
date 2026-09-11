@@ -14,12 +14,28 @@ import {
   marketEventReplayRequestSchema,
   marketEventReplaysQuerySchema,
   marketEventsQuerySchema,
+  marketForecastGenerateRequestSchema,
+  marketForecastJournalQuerySchema,
+  marketForecastScoreRequestSchema,
   marketResearchOverviewSchema,
   marketTechnicalFeaturesQuerySchema,
 } from "@/lib/market-research/contracts";
 import { buildMarketEventBaselines } from "@/lib/market-research/event-baselines";
 import { listMarketEvents } from "@/lib/market-research/event-store";
 import { listMarketEventReplays } from "@/lib/market-research/event-replay-store";
+import { generateMarketForwardForecast } from "@/lib/market-research/forward-shadow-agent";
+import {
+  buildMarketForecastWindow,
+  forecastWindowInterval,
+  scoreMarketForwardForecast,
+} from "@/lib/market-research/forward-shadow";
+import {
+  findMarketForecastForWindow,
+  listDueMarketForecasts,
+  listMarketForecastJournal,
+  saveMarketForecastOutcome,
+  saveMarketForwardForecast,
+} from "@/lib/market-research/forward-shadow-store";
 import { enqueueMarketEventBackfillJob } from "@/lib/market-research/event-jobs";
 import { enqueueMarketEventReplayBackfillJob } from "@/lib/market-research/replay-jobs";
 import { marketInstruments } from "@/lib/market-research/instruments";
@@ -30,6 +46,7 @@ import {
   saveMarketPriceSnapshot,
 } from "@/lib/market-research/price-snapshot-store";
 import { buildMarketTechnicalFeatures } from "@/lib/market-research/technical-features";
+import { fetchTwelveDataBarRangeSnapshot } from "@/lib/market-research/twelve-data";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 
@@ -148,14 +165,18 @@ export async function showMarketResearchOverviewService(
       {
         id: "scenario_forecast",
         label: "Daily + weekly scenarios",
-        state: phase === "configuration_required" ? "blocked" : "planned",
-        note: "Probabilities remain unavailable until backtests and calibration establish an evidence baseline.",
+        state: phase === "configuration_required" ? "blocked" : "foundation",
+        note: phase === "configuration_required"
+          ? "A validated market model and both research feeds are required."
+          : "Meridian can seal daily and weekly ordinal scenarios. Numeric probabilities remain unavailable until calibration passes.",
       },
       {
         id: "forward_shadow",
         label: "Forward-shadow journal",
-        state: "planned",
-        note: "Every pre-market scenario will be frozen before outcome scoring to prevent hindsight edits.",
+        state: phase === "configuration_required" ? "blocked" : "foundation",
+        note: phase === "configuration_required"
+          ? "The append-only journal activates with the market research foundation."
+          : "Every pre-market scenario is immutable and outcome scoring is stored as a separate append-only receipt.",
       },
     ],
     guardrails: [
@@ -339,6 +360,153 @@ export async function backfillMarketResearchReplaysService(
   return completeAppServiceCall(authorized, { job: projectOperationJobStatus(job) });
 }
 
+export async function listMarketForecastJournalService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketForecastJournalQuerySchema>,
+) {
+  const value = marketForecastJournalQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.journal.list"),
+  );
+  const result = await listMarketForecastJournal({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    ...value,
+  });
+  return completeAppServiceCall(authorized, result, {
+    resourceCount: result.entries.length,
+  });
+}
+
+export async function generateMarketForecastService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketForecastGenerateRequestSchema>,
+) {
+  const value = marketForecastGenerateRequestSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.journal.generate"),
+  );
+  const requestedAt = new Date().toISOString();
+  const window = buildMarketForecastWindow({ horizon: value.horizon });
+  const existing = await findMarketForecastForWindow({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    ...value,
+    windowStart: window.start,
+  });
+  if (existing) {
+    return completeAppServiceCall(authorized, { forecast: existing, reused: true }, {
+      resourceCount: 1,
+      occurredAt: existing.sealedAt,
+    });
+  }
+  const interval = forecastWindowInterval(value.horizon);
+  const snapshot = await findFreshMarketPriceSnapshot({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    instrumentId: value.instrumentId,
+    interval,
+    outputSize: 480,
+  }) || await fetchAndPersistMarketBars({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    instrumentId: value.instrumentId,
+    interval,
+    outputSize: 480,
+  });
+  const features = buildMarketTechnicalFeatures(snapshot);
+  const replayResult = await listMarketEventReplays({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    instrumentId: value.instrumentId,
+    limit: 500,
+  });
+  const baselines = buildMarketEventBaselines({
+    instrumentId: value.instrumentId,
+    minimumSampleSize: 20,
+    replays: replayResult.replays,
+  });
+  const eventResult = await listMarketEvents({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    limit: 500,
+  });
+  const startDate = newYorkDate(window.start);
+  const endDate = newYorkDate(window.end);
+  const macroEvents = eventResult.events.filter((event) =>
+    event.releaseDate >= startDate && event.releaseDate <= endDate
+  ).slice(0, 24);
+  const forecast = await generateMarketForwardForecast({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    executionScope: caller.executionScope!,
+    ...value,
+    window,
+    requestedAt,
+    features,
+    baselines,
+    macroEvents,
+  });
+  const saved = await saveMarketForwardForecast({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    executionScope: caller.executionScope!,
+    idempotencyKey: caller.idempotencyKey!,
+    forecast,
+  });
+  return completeAppServiceCall(authorized, {
+    forecast: saved.forecast,
+    reused: !saved.inserted,
+  }, {
+    resourceCount: 1,
+    occurredAt: saved.forecast.sealedAt,
+  });
+}
+
+export async function scoreDueMarketForecastsService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketForecastScoreRequestSchema>,
+) {
+  const value = marketForecastScoreRequestSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.journal.score"),
+  );
+  const due = await listDueMarketForecasts({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    instrumentId: value.instrumentId,
+    limit: value.maxForecasts,
+  });
+  const outcomes = [];
+  for (const forecast of due) {
+    const snapshot = await fetchTwelveDataBarRangeSnapshot({
+      instrumentId: forecast.instrumentId,
+      interval: forecastWindowInterval(forecast.horizon),
+      startAt: forecast.windowStart,
+      endAt: forecast.windowEnd,
+    });
+    const outcome = scoreMarketForwardForecast({
+      forecast,
+      result: snapshot.result,
+      sourcePayload: snapshot.sourcePayload,
+    });
+    const saved = await saveMarketForecastOutcome({
+      tenantId: caller.context.tenantId,
+      actorId: caller.context.actorId,
+      executionScope: caller.executionScope!,
+      idempotencyKey: `${caller.idempotencyKey!}:${forecast.id}`,
+      outcome,
+    });
+    outcomes.push(saved.outcome);
+  }
+  return completeAppServiceCall(authorized, { outcomes }, {
+    resourceCount: outcomes.length,
+  });
+}
+
 function providerReadiness(input: {
   provider: "twelve_data" | "fred" | "bls" | "census" | "bea" | "federal_reserve";
   label: string;
@@ -355,4 +523,16 @@ function providerReadiness(input: {
 
 function hasEnvironmentValue(name: string) {
   return Boolean(process.env[name]?.trim());
+}
+
+function newYorkDate(value: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value || "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
