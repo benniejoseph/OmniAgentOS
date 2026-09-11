@@ -150,9 +150,11 @@
 .labHeader > div:first-child > p:last-child { max-width: 56rem; margin-top: .7rem; color: var(--muted); font-size: .76rem; line-height: 1.65; }
 .labReadiness { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .4rem; }
 .labActions { display: grid; justify-items: end; gap: .65rem; }
-.labActions > button { display: inline-flex; min-height: 2.55rem; align-items: center; gap: .42rem; border: 1px solid color-mix(in srgb, var(--primary) 34%, var(--line)); border-radius: 999px; padding: 0 .9rem; color: var(--primary-foreground); background: var(--primary); font-size: .62rem; font-weight: 780; box-shadow: 0 .7rem 1.6rem oklch(from var(--primary) l c h / .16); transition: transform 160ms ease, opacity 160ms ease; }
-.labActions > button:hover:not(:disabled) { transform: translateY(-1px); }
-.labActions > button:disabled { cursor: not-allowed; opacity: .55; }
+.labButtons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .45rem; }
+.labButtons > button { display: inline-flex; min-height: 2.55rem; align-items: center; gap: .42rem; border: 1px solid color-mix(in srgb, var(--primary) 34%, var(--line)); border-radius: 999px; padding: 0 .9rem; color: var(--primary-foreground); background: var(--primary); font-size: .62rem; font-weight: 780; box-shadow: 0 .7rem 1.6rem oklch(from var(--primary) l c h / .16); transition: transform 160ms ease, opacity 160ms ease; }
+.labButtons > button:last-child { color: var(--primary); background: var(--surface); box-shadow: none; }
+.labButtons > button:hover:not(:disabled) { transform: translateY(-1px); }
+.labButtons > button:disabled { cursor: not-allowed; opacity: .55; }
 .labReadiness span, .stateBadge { display: inline-flex; min-height: 2.35rem; align-items: center; gap: .35rem; border: 1px solid var(--line); border-radius: 999px; padding: 0 .7rem; color: var(--muted); background: var(--surface); font-size: .6rem; font-weight: 710; }
 .labReadiness i { width: .4rem; height: .4rem; border-radius: 50%; background: var(--warning); }
 .labReadiness span[data-ready="true"] i { background: var(--success); }
@@ -169,14 +171,14 @@
 .eventTable > header, .scoreFrame > header { display: flex; min-height: 4rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: 0 1rem; }
 .eventTable > header span, .scoreFrame > header span { font-size: .72rem; font-weight: 760; }
 .eventTable > header small, .scoreFrame > header small { color: var(--muted); font-size: .58rem; }
-.tableHead { display: grid; grid-template-columns: 2fr repeat(4, 1fr); min-height: 2.8rem; align-items: center; border-bottom: 1px solid var(--line); color: var(--muted); background: var(--surface-raised); font-size: .57rem; font-weight: 740; text-transform: uppercase; }
+.tableHead { display: grid; grid-template-columns: 2fr repeat(5, 1fr); min-height: 2.8rem; align-items: center; border-bottom: 1px solid var(--line); color: var(--muted); background: var(--surface-raised); font-size: .57rem; font-weight: 740; text-transform: uppercase; }
 .tableHead span { padding: 0 1rem; }
 .tableEmpty, .journalEmpty { display: grid; min-height: 21rem; place-items: center; align-content: center; gap: .45rem; padding: 2rem; color: var(--muted); text-align: center; }
 .tableEmpty svg, .journalEmpty svg { color: var(--primary); }
 .tableEmpty strong, .journalEmpty strong { color: var(--foreground); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.1rem; font-weight: 620; }
 .tableEmpty p, .journalEmpty p { max-width: 34rem; font-size: .68rem; line-height: 1.6; }
 .tableNotice { display: flex; align-items: center; gap: .55rem; border-bottom: 1px solid color-mix(in srgb, var(--danger) 18%, var(--line)); padding: .85rem 1rem; color: var(--danger); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); font-size: .64rem; }
-.eventRows article { display: grid; grid-template-columns: 2fr repeat(4, 1fr); min-height: 4.4rem; align-items: center; border-bottom: 1px solid var(--line); font-size: .64rem; }
+.eventRows article { display: grid; grid-template-columns: 2fr repeat(5, 1fr); min-height: 4.4rem; align-items: center; border-bottom: 1px solid var(--line); font-size: .64rem; }
 .eventRows article:last-child { border-bottom: 0; }
 .eventRows article > * { min-width: 0; padding: .7rem 1rem; }
 .eventRows strong, .eventRows small { display: block; }
@@ -186,6 +188,9 @@
 .eventRows em[data-warning="true"] { color: var(--warning); }
 .eventRows a { display: inline-flex; align-items: center; gap: .25rem; color: var(--primary); font-size: .58rem; font-weight: 760; }
 .eventRows article > span:last-child { display: flex; flex-wrap: wrap; gap: .3rem .65rem; }
+.replayMove[data-direction="up"] strong { color: var(--success); }
+.replayMove[data-direction="down"] strong { color: var(--danger); }
+.replayLoading { display: flex; align-items: center; gap: .45rem; border-bottom: 1px solid var(--line); padding: .65rem 1rem; color: var(--muted); font-size: .58rem; }
 .eventDisclosure { border-top: 1px solid var(--line); padding: .85rem 1rem; color: var(--muted); background: var(--surface-raised); font-size: .56rem; line-height: 1.55; }
 .spin { animation: market-spin 900ms linear infinite; }
 @keyframes market-spin { to { transform: rotate(360deg); } }
@@ -266,7 +271,7 @@
   .eventRows article { grid-template-columns: minmax(0, 1fr) auto; gap: .15rem .6rem; padding: .75rem 1rem; }
   .eventRows article > * { padding: .18rem 0; }
   .eventRows article > span:first-child { grid-column: 1 / -1; }
-  .eventRows article > span:nth-child(4) { grid-column: 1 / 2; }
+  .eventRows article > span:nth-child(4), .eventRows article > span:nth-child(5) { grid-column: 1 / 2; }
 }
 
 @media (max-width: 42rem) {
@@ -279,7 +284,8 @@
   .metricStrip, .detectorGrid, .guardrailList { grid-template-columns: minmax(0, 1fr); }
   .labActions { width: 100%; justify-items: stretch; }
   .labReadiness { justify-content: flex-start; }
-  .labActions > button { justify-content: center; }
+  .labButtons { display: grid; justify-content: stretch; }
+  .labButtons > button { justify-content: center; }
   .metric, .metric:nth-child(2), .detectorGrid article, .detectorGrid article:nth-child(even), .guardrailList p, .guardrailList p:nth-child(even) { border-right: 0; border-bottom: 1px solid var(--market-line); }
   .metric:last-child, .detectorGrid article:last-child, .guardrailList p:last-child { border-bottom: 0; }
   .chartPanel > header { align-items: flex-start; flex-direction: column; }

@@ -146,6 +146,8 @@ export const tenantRootPolicyTables = [
   "omni_market_macro_observation_events",
   "omni_market_price_snapshots",
   "omni_market_price_snapshot_events",
+  "omni_market_event_replays",
+  "omni_market_event_replay_events",
   "omni_entity_records",
   "omni_entity_aliases",
   "omni_entity_resolutions",
@@ -1486,6 +1488,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[161],
       up: ensureMarketMacroObservationsV1,
+    },
+    {
+      ...databaseSchemaMigrations[162],
+      up: ensureMarketEventReplaysV1,
     },
   ];
 }
@@ -18550,6 +18556,146 @@ async function ensureMarketPriceSnapshotV1(sql: SqlClient) {
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup') THEN
         GRANT SELECT ON omni_market_price_snapshots TO omni_backup;
         GRANT SELECT ON omni_market_price_snapshot_events TO omni_backup;
+      END IF;
+    END
+    $grants$
+  `;
+}
+
+async function ensureMarketEventReplaysV1(sql: SqlClient) {
+  await sql.query(`
+    CREATE TABLE IF NOT EXISTS omni_market_event_replays (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      contract_version TEXT NOT NULL,
+      market_event_id TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      instrument_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_symbol TEXT NOT NULL,
+      provider_timezone TEXT NOT NULL,
+      interval TEXT NOT NULL,
+      occurred_at TIMESTAMPTZ NOT NULL,
+      window_start TIMESTAMPTZ NOT NULL,
+      window_end TIMESTAMPTZ NOT NULL,
+      retrieved_at TIMESTAMPTZ NOT NULL,
+      bar_count INTEGER NOT NULL,
+      source_payload_sha256 TEXT NOT NULL,
+      snapshot_sha256 TEXT NOT NULL,
+      source_payload JSONB NOT NULL,
+      normalized_bars JSONB NOT NULL,
+      metrics JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT omni_market_event_replays_pkey PRIMARY KEY (tenant_id, id),
+      CONSTRAINT omni_market_event_replays_parent_fkey FOREIGN KEY (
+        tenant_id, market_event_id
+      ) REFERENCES omni_market_macro_events (tenant_id, id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_market_event_replays_snapshot_key UNIQUE (
+        tenant_id, owner_actor_id, market_event_id, instrument_id, interval,
+        snapshot_sha256
+      ),
+      CONSTRAINT omni_market_event_replays_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^market_replay_[0-9a-f]{48}$'
+        AND btrim(tenant_id) <> '' AND btrim(owner_actor_id) <> ''
+        AND contract_version ~ '^market-research-foundation:[0-9]+$'
+        AND market_event_id ~ '^market_event_[0-9a-f]{48}$'
+        AND event_key ~ '^[a-z0-9][a-z0-9._-]{1,79}$'
+        AND instrument_id ~ '^[a-z0-9][a-z0-9._-]{2,119}$'
+        AND provider = 'twelve_data'
+        AND char_length(provider_symbol) BETWEEN 1 AND 80
+        AND char_length(provider_timezone) BETWEEN 1 AND 120
+        AND interval IN ('5min', '15min', '1h')
+        AND window_start < occurred_at AND window_end > occurred_at
+        AND window_end - window_start <= INTERVAL '72 hours'
+        AND retrieved_at <= created_at + INTERVAL '5 minutes'
+        AND bar_count BETWEEN 1 AND 1000
+        AND source_payload_sha256 ~ '^[0-9a-f]{64}$'
+        AND snapshot_sha256 ~ '^[0-9a-f]{64}$'
+        AND jsonb_typeof(source_payload) = 'object'
+        AND pg_column_size(source_payload) <= 2097152
+        AND jsonb_typeof(normalized_bars) = 'array'
+        AND jsonb_array_length(normalized_bars) = bar_count
+        AND pg_column_size(normalized_bars) <= 2097152
+        AND jsonb_typeof(metrics) = 'object'
+        AND pg_column_size(metrics) <= 32768
+        AND created_at <= NOW()
+      , FALSE))
+    );
+    CREATE INDEX IF NOT EXISTS omni_market_event_replays_owner_lookup_idx
+      ON omni_market_event_replays (
+        tenant_id, owner_actor_id, instrument_id, interval, occurred_at DESC, id
+      );
+    CREATE TABLE IF NOT EXISTS omni_market_event_replay_events (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      replay_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      import_id TEXT NOT NULL,
+      payload_sha256 TEXT NOT NULL,
+      occurred_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT omni_market_event_replay_events_pkey PRIMARY KEY (tenant_id, id),
+      CONSTRAINT omni_market_event_replay_events_parent_fkey FOREIGN KEY (
+        tenant_id, replay_id
+      ) REFERENCES omni_market_event_replays (tenant_id, id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_market_event_replay_events_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^market_replay_ledger_[0-9a-f]{48}$'
+        AND btrim(tenant_id) <> '' AND btrim(owner_actor_id) <> ''
+        AND replay_id ~ '^market_replay_[0-9a-f]{48}$'
+        AND event_type = 'market.event_replay.observed'
+        AND btrim(import_id) <> ''
+        AND payload_sha256 ~ '^[0-9a-f]{64}$'
+        AND occurred_at <= NOW()
+      , FALSE))
+    );
+    CREATE INDEX IF NOT EXISTS omni_market_event_replay_events_owner_time_idx
+      ON omni_market_event_replay_events (
+        tenant_id, owner_actor_id, occurred_at DESC, id
+      );
+    ALTER TABLE omni_market_event_replays ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE omni_market_event_replays FORCE ROW LEVEL SECURITY;
+    ALTER TABLE omni_market_event_replay_events ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE omni_market_event_replay_events FORCE ROW LEVEL SECURITY;
+    CREATE POLICY omni_market_event_replays_actor_scope
+      ON omni_market_event_replays FOR ALL TO PUBLIC
+      USING (omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id))
+      WITH CHECK (omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id));
+    CREATE POLICY omni_market_event_replay_events_actor_scope
+      ON omni_market_event_replay_events FOR ALL TO PUBLIC
+      USING (omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id))
+      WITH CHECK (omni_system_scope_enabled()
+        OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+        OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id));
+    REVOKE ALL ON omni_market_event_replays FROM PUBLIC;
+    REVOKE ALL ON omni_market_event_replay_events FROM PUBLIC;
+  `);
+  await sql`
+    DO $grants$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT ON omni_market_event_replays TO omni_runtime;
+        GRANT SELECT, INSERT ON omni_market_event_replay_events TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT ON omni_market_event_replays TO omni_maintenance;
+        GRANT SELECT, INSERT ON omni_market_event_replay_events TO omni_maintenance;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup') THEN
+        GRANT SELECT ON omni_market_event_replays TO omni_backup;
+        GRANT SELECT ON omni_market_event_replay_events TO omni_backup;
       END IF;
     END
     $grants$

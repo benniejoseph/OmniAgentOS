@@ -736,9 +736,9 @@ describe("ordered database schema versions", () => {
       checksum: "6eeab2482987d833ab99862640348951d6d798d732cb91df91791ac29b098679",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 162,
-      name: "market_macro_observations_v1",
-      checksum: "5d34d958b2ea0f8155ec2a2a97e819c761d1cb528cec0b127030133cb65a376a",
+      version: 163,
+      name: "market_event_replays_v1",
+      checksum: "c2ebe40a5d108a32f4ea6dc80283da69467d9e7a88564ddd51a4d8b9a85a69e3",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
