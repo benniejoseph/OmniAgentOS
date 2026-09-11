@@ -278,6 +278,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
                 tenantId: input.tenantId,
               })
             : undefined;
+          let projectedExistingCalendar = false;
           if (
             item.calendarEvent &&
             existingCalendarDocument?.sourceItemId &&
@@ -296,6 +297,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
               sourceExecutionScope,
               providerRevisionId: item.providerRevisionId || item.id,
             });
+            projectedExistingCalendar = true;
           }
           const ingest = () => ingestTextDocument({
             idempotencyKey,
@@ -349,6 +351,7 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
           }
           if (
             item.calendarEvent &&
+            !projectedExistingCalendar &&
             knowledge?.document?.sourceItemId &&
             knowledge.document.sourceRevisionId
           ) {

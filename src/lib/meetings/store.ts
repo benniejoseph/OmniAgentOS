@@ -132,8 +132,26 @@ export async function listMeetings(
           ORDER BY scheduled_start_at DESC, meeting_id
           LIMIT ${limit}
         `;
-    return Object.freeze(rows.map(meetingFromRow));
+    return Object.freeze(dedupeCalendarMeetings(rows.map(meetingFromRow)));
   });
+}
+
+function dedupeCalendarMeetings(meetings: MeetingRevision[]) {
+  const selected = new Map<string, MeetingRevision>();
+  for (const meeting of meetings) {
+    const calendarSourceId = meeting.sourceLinks.find(
+      (link) => link.kind === "calendar_event",
+    )?.sourceId;
+    const key = calendarSourceId ? `calendar:${calendarSourceId}` : `meeting:${meeting.meetingId}`;
+    const existing = selected.get(key);
+    if (!existing || Date.parse(meeting.revisedAt) > Date.parse(existing.revisedAt)) {
+      selected.set(key, meeting);
+    }
+  }
+  return [...selected.values()].sort((left, right) =>
+    Date.parse(right.scheduledStartAt) - Date.parse(left.scheduledStartAt) ||
+    left.meetingId.localeCompare(right.meetingId)
+  );
 }
 
 export async function getMeeting(
