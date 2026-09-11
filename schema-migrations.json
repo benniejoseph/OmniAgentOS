@@ -783,5 +783,10 @@
     "version": 157,
     "name": "market_research_model_scope_v1",
     "checksum": "f1c276a830957ba8409e6f776f8dce5499324a75db8b7980533bafcbd612b749"
+  },
+  {
+    "version": 158,
+    "name": "market_event_history_v1",
+    "checksum": "400f5ed02eba25002cb34e124aa9cd7d4930225ecdbe68887a2b08bd3d6b5d12"
   }
 ]

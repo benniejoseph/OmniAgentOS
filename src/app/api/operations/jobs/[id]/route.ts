@@ -18,6 +18,7 @@ const ACTOR_OWNED_OPERATION_JOB_TYPES = new Set([
   "capture.media.recording.process",
   "knowledge.cognify",
   "conversation.summary.enrich",
+  "market.events.backfill",
 ]);
 
 const PUBLIC_SEMANTIC_SUMMARY_STAGES = new Set([

@@ -4,28 +4,33 @@ import { marketBarSchema } from "@/lib/market-research/contracts";
 import { marketInstrument, marketInstruments } from "@/lib/market-research/instruments";
 
 describe("market research foundation", () => {
-  it("keeps the Nasdaq benchmark separate from CFDs, futures, and ETFs", () => {
-    const nasdaq = marketInstrument("nasdaq100.reference");
+  it("binds NAS100 to the explicit TraderMade research CFD", () => {
+    const nasdaq = marketInstrument("nas100.tradermade_cfd");
 
-    expect(nasdaq.canonicalSymbol).toBe("NDX");
+    expect(nasdaq.canonicalSymbol).toBe("NAS100");
     expect(nasdaq.aliases).toEqual(expect.arrayContaining(["NAS100", "US100"]));
     expect(nasdaq.providerMapping).toMatchObject({
-      symbol: null,
-      status: "discovery_required",
+      provider: "trader_made",
+      symbol: "NAS100",
+      status: "verified",
     });
     expect(nasdaq.identityWarning).toContain("NQ/MNQ");
     expect(nasdaq.identityWarning).toContain("QQQ");
   });
 
-  it("admits only the explicitly verified XAU/USD provider mapping", () => {
+  it("admits both explicitly named research feeds without conflating them", () => {
     const verified = marketInstruments.filter((instrument) =>
       instrument.providerMapping.status === "verified"
     );
 
-    expect(verified).toHaveLength(1);
+    expect(verified).toHaveLength(2);
     expect(verified[0]).toMatchObject({
       instrumentId: "xauusd.spot",
       providerMapping: { provider: "twelve_data", symbol: "XAU/USD" },
+    });
+    expect(verified[1]).toMatchObject({
+      instrumentId: "nas100.tradermade_cfd",
+      providerMapping: { provider: "trader_made", symbol: "NAS100" },
     });
   });
 

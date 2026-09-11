@@ -9,10 +9,15 @@ import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import {
   MARKET_RESEARCH_CONTRACT_VERSION,
   marketBarsQuerySchema,
+  marketEventBackfillRequestSchema,
+  marketEventsQuerySchema,
   marketResearchOverviewSchema,
 } from "@/lib/market-research/contracts";
+import { listMarketEvents } from "@/lib/market-research/event-store";
+import { enqueueMarketEventBackfillJob } from "@/lib/market-research/event-jobs";
 import { marketInstruments } from "@/lib/market-research/instruments";
-import { fetchTwelveDataBars } from "@/lib/market-research/twelve-data";
+import { fetchMarketBars } from "@/lib/market-research/market-data";
+import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 
 export async function showMarketResearchOverviewService(
@@ -40,11 +45,11 @@ export async function showMarketResearchOverviewService(
       blocking: true,
     }),
     providerReadiness({
-      provider: "trading_economics",
-      label: "Trading Economics",
-      purpose: "High-impact calendar, actuals, consensus, and revisions",
-      setupVariable: "TRADING_ECONOMICS_API_KEY",
-      configured: hasEnvironmentValue("TRADING_ECONOMICS_API_KEY"),
+      provider: "trader_made",
+      label: "TraderMade",
+      purpose: "NAS100 CFD history and eventual worker-hosted quote stream",
+      setupVariable: "TRADERMADE_REST_API_KEY",
+      configured: hasEnvironmentValue("TRADERMADE_REST_API_KEY"),
       blocking: true,
     }),
     providerReadiness({
@@ -53,13 +58,21 @@ export async function showMarketResearchOverviewService(
       purpose: "Release-vintage macro series for leakage-safe historical replay",
       setupVariable: "FRED_API_KEY",
       configured: hasEnvironmentValue("FRED_API_KEY"),
+      blocking: true,
+    }),
+    providerReadiness({
+      provider: "bls",
+      label: "BLS official calendar",
+      purpose: "Free official U.S. release scheduling and exact upcoming times",
+      setupVariable: "PUBLIC_OFFICIAL_SOURCE",
+      configured: true,
       blocking: false,
     }),
   ] as const;
   const blockingProvidersReady = providers
     .filter((provider) => provider.blocking)
     .every((provider) => provider.configured);
-  const historicalReplayReady = blockingProvidersReady && providers[2].configured;
+  const historicalReplayReady = blockingProvidersReady;
   const phase = !modelAssigned || !blockingProvidersReady
     ? "configuration_required"
     : historicalReplayReady
@@ -92,8 +105,8 @@ export async function showMarketResearchOverviewService(
         label: "High-impact event replay",
         state: historicalReplayReady ? "foundation" : "blocked",
         note: historicalReplayReady
-          ? "Providers are available for the historical event and release-vintage pipeline."
-          : "Needs the economic calendar, market history, and release-vintage feeds.",
+          ? "Official FRED release history is available for immutable event backfill."
+          : "Needs both target price feeds and the FRED/ALFRED history feed.",
       },
       {
         id: "ict_detectors",
@@ -120,7 +133,7 @@ export async function showMarketResearchOverviewService(
       "Research only: Meridian cannot place, modify, or manage trades.",
       "No missing price bar, event value, or probability may be invented or silently filled.",
       "Every result must bind its instrument, provider, snapshot, as-of time, and evidence lineage.",
-      "NDX, NQ/MNQ, QQQ, and broker NAS100/US100 CFDs are never treated as interchangeable.",
+      "TraderMade NAS100, NDX, NQ/MNQ, QQQ, and broker US100 CFDs are never treated as interchangeable.",
     ],
   });
   return completeAppServiceCall(authorized, overview, {
@@ -138,15 +151,56 @@ export async function listMarketResearchBarsService(
     caller,
     getAppServiceOperationContract("app.market_research.bars.list"),
   );
-  const result = await fetchTwelveDataBars(value);
+  const result = await fetchMarketBars(value);
   return completeAppServiceCall(authorized, result, {
     resourceCount: result.bars.length,
     occurredAt: result.retrievedAt,
   });
 }
 
+export async function listMarketResearchEventsService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketEventsQuerySchema>,
+) {
+  const value = marketEventsQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.events.list"),
+  );
+  const result = await listMarketEvents({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    limit: value.limit,
+  });
+  return completeAppServiceCall(authorized, result, {
+    resourceCount: result.events.length,
+    occurredAt: result.lastImportedAt || new Date().toISOString(),
+  });
+}
+
+export async function backfillMarketResearchEventsService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketEventBackfillRequestSchema>,
+) {
+  const value = marketEventBackfillRequestSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.events.backfill"),
+  );
+  const job = await enqueueMarketEventBackfillJob({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    executionScope: caller.executionScope!,
+    idempotencyKey: caller.idempotencyKey!,
+    request: value,
+  });
+  return completeAppServiceCall(authorized, {
+    job: projectOperationJobStatus(job),
+  });
+}
+
 function providerReadiness(input: {
-  provider: "twelve_data" | "trading_economics" | "fred";
+  provider: "twelve_data" | "trader_made" | "fred" | "bls";
   label: string;
   purpose: string;
   configured: boolean;
