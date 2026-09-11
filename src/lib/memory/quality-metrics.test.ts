@@ -66,6 +66,22 @@ describe("memory cognition quality metrics", () => {
         observedUseCount: 0,
         usedActiveDurableMemoryRate: null,
       },
+      retrievalOutcomeUtility: {
+        coverage: "explicit_selection_only",
+        interpretation: "explicit_completed_run_feedback_correlation_not_causal",
+        shadowOnly: true,
+        rankingEffect: "none",
+        eligibleRatedRunCount: 0,
+        contextLinkedRatedRunCount: 0,
+        usefulCount: 0,
+        needsWorkCount: 0,
+        usefulRate: null,
+        selectedContextCount: 0,
+        actualContextExposureCount: 0,
+        selectedContextRetentionRate: null,
+        actualEvidenceKindCounts: { memory: 0, knowledge: 0, graph: 0 },
+        invalidOrExcludedCount: 0,
+      },
       graphLag: {
         buildSampleCount: 0,
         latestBuildAt: null,
@@ -77,6 +93,7 @@ describe("memory cognition quality metrics", () => {
     expect(Object.isFrozen(metrics.evidenceSupportedExtraction)).toBe(true);
     expect(Object.isFrozen(metrics.reviewAcceptance)).toBe(true);
     expect(Object.isFrozen(metrics.retrievalUsefulness)).toBe(true);
+    expect(Object.isFrozen(metrics.retrievalOutcomeUtility)).toBe(true);
     expect(Object.isFrozen(metrics.graphLag)).toBe(true);
     expect(JSON.parse(JSON.stringify(metrics))).toEqual(metrics);
     const publicMetrics = publicMemoryCognitionQualityMetrics(metrics);
@@ -176,6 +193,51 @@ describe("memory cognition quality metrics", () => {
       ...common,
       latestGraphBuild: graphBuild({ createdAt: "2026-09-11T12:01:00.000Z" }),
     }).graphLag).toMatchObject({ lagMs: 0, status: "current" });
+  });
+
+  it("reports explicit rated context outcomes without tuning retrieval", () => {
+    const metrics = buildMemoryCognitionQualityMetrics({
+      cognition: { tenantId, actorId, records: [] },
+      durableMemories: [],
+      knowledgeCounts: { documents: 0, chunks: 0 },
+      latestGraphBuild: null,
+      retrievalOutcomes: {
+        eligibleRatedRunCount: 3,
+        invalidOrExcludedCount: 1,
+        aggregate: {
+          schemaVersion: 1,
+          version: "retrieval-outcome-public-aggregate:1",
+          sampleCount: 2,
+          feedbackCounts: { useful: 1, needsWork: 1 },
+          receiptTotals: { candidate: 9, included: 5, actual: 4, dropped: 1 },
+          actualKindTotals: { memory: 1, knowledge: 2, graph: 1 },
+          coverage: "explicit_selection_only",
+          interpretation:
+            "explicit_completed_run_feedback_correlation_not_causal",
+          shadowOnly: true,
+          rankingEffect: "none",
+        },
+      },
+      generatedAt,
+    });
+
+    expect(metrics.retrievalOutcomeUtility).toEqual({
+      coverage: "explicit_selection_only",
+      interpretation: "explicit_completed_run_feedback_correlation_not_causal",
+      shadowOnly: true,
+      rankingEffect: "none",
+      eligibleRatedRunCount: 3,
+      contextLinkedRatedRunCount: 2,
+      usefulCount: 1,
+      needsWorkCount: 1,
+      usefulRate: 0.5,
+      selectedContextCount: 5,
+      actualContextExposureCount: 4,
+      selectedContextRetentionRate: 0.8,
+      actualEvidenceKindCounts: { memory: 1, knowledge: 2, graph: 1 },
+      invalidOrExcludedCount: 1,
+    });
+    expect(metrics.retrievalOutcomeUtility.rankingEffect).toBe("none");
   });
 
   it("rejects mixed actor or tenant samples", () => {

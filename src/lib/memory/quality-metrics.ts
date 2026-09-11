@@ -5,10 +5,11 @@ import type {
 } from "@/lib/knowledge/cognification-contract";
 import type { MemoryCatalogRecord } from "@/lib/memory/store";
 import type { MemoryGraphBuildRecord } from "@/lib/memory/types";
+import type { PublicRetrievalOutcomeAggregateV1 } from "@/lib/rag/retrieval-outcome";
 import { contentSha256Hex } from "@/lib/sources/text-lineage";
 
 export const MEMORY_COGNITION_QUALITY_METRICS_VERSION =
-  "memory-cognition-quality-metrics:1" as const;
+  "memory-cognition-quality-metrics:2" as const;
 
 export const MEMORY_GRAPH_STALE_AFTER_MS = 86_400_000;
 
@@ -47,6 +48,26 @@ export type MemoryCognitionQualityMetrics = Readonly<{
     observedUseCount: number;
     usedActiveDurableMemoryRate: number | null;
   }>;
+  retrievalOutcomeUtility: Readonly<{
+    coverage: "explicit_selection_only";
+    interpretation: "explicit_completed_run_feedback_correlation_not_causal";
+    shadowOnly: true;
+    rankingEffect: "none";
+    eligibleRatedRunCount: number;
+    contextLinkedRatedRunCount: number;
+    usefulCount: number;
+    needsWorkCount: number;
+    usefulRate: number | null;
+    selectedContextCount: number;
+    actualContextExposureCount: number;
+    selectedContextRetentionRate: number | null;
+    actualEvidenceKindCounts: Readonly<{
+      memory: number;
+      knowledge: number;
+      graph: number;
+    }>;
+    invalidOrExcludedCount: number;
+  }>;
   graphLag: Readonly<{
     buildSampleCount: 0 | 1;
     latestBuildAt: string | null;
@@ -71,6 +92,11 @@ export type BuildMemoryCognitionQualityMetricsInput = Readonly<{
     chunks: number;
   }>;
   latestGraphBuild: Readonly<MemoryGraphBuildRecord> | null;
+  retrievalOutcomes?: Readonly<{
+    eligibleRatedRunCount: number;
+    invalidOrExcludedCount: number;
+    aggregate: PublicRetrievalOutcomeAggregateV1;
+  }>;
   generatedAt: string;
 }>;
 
@@ -150,6 +176,9 @@ export function buildMemoryCognitionQualityMetrics(
     (total, memory) => saturatedAdd(total, normalizedUseCount(memory.useCount)),
     0,
   );
+  const retrievalOutcomeUtility = buildRetrievalOutcomeUtility(
+    input.retrievalOutcomes,
+  );
 
   return Object.freeze({
     version: MEMORY_COGNITION_QUALITY_METRICS_VERSION,
@@ -195,6 +224,7 @@ export function buildMemoryCognitionQualityMetrics(
         eligibleMemories.length,
       ),
     }),
+    retrievalOutcomeUtility,
     graphLag: graphLagMetrics(
       input.latestGraphBuild,
       tenantId,
@@ -213,7 +243,103 @@ export function publicMemoryCognitionQualityMetrics(
     evidenceSupportedExtraction: metrics.evidenceSupportedExtraction,
     reviewAcceptance: metrics.reviewAcceptance,
     retrievalUsefulness: metrics.retrievalUsefulness,
+    retrievalOutcomeUtility: metrics.retrievalOutcomeUtility,
     graphLag: metrics.graphLag,
+  });
+}
+
+function buildRetrievalOutcomeUtility(
+  input: BuildMemoryCognitionQualityMetricsInput["retrievalOutcomes"],
+): MemoryCognitionQualityMetrics["retrievalOutcomeUtility"] {
+  const aggregate = input?.aggregate;
+  const eligibleRatedRunCount = requiredCount(
+    input?.eligibleRatedRunCount || 0,
+    "eligible rated run count",
+  );
+  const invalidOrExcludedCount = requiredCount(
+    input?.invalidOrExcludedCount || 0,
+    "invalid or excluded retrieval outcome count",
+  );
+  const contextLinkedRatedRunCount = requiredCount(
+    aggregate?.sampleCount || 0,
+    "context-linked rated run count",
+  );
+  const usefulCount = requiredCount(
+    aggregate?.feedbackCounts.useful || 0,
+    "useful retrieval outcome count",
+  );
+  const needsWorkCount = requiredCount(
+    aggregate?.feedbackCounts.needsWork || 0,
+    "needs-work retrieval outcome count",
+  );
+  if (
+    aggregate &&
+    (aggregate.coverage !== "explicit_selection_only" ||
+      aggregate.interpretation !==
+        "explicit_completed_run_feedback_correlation_not_causal" ||
+      aggregate.shadowOnly !== true ||
+      aggregate.rankingEffect !== "none")
+  ) {
+    throw new Error("Retrieval outcome aggregate is not shadow-only.");
+  }
+  if (
+    usefulCount + needsWorkCount !== contextLinkedRatedRunCount ||
+    contextLinkedRatedRunCount + invalidOrExcludedCount !== eligibleRatedRunCount
+  ) {
+    throw new Error("Retrieval outcome sample counts are inconsistent.");
+  }
+  const selectedContextCount = requiredCount(
+    aggregate?.receiptTotals.included || 0,
+    "selected context count",
+  );
+  const actualContextExposureCount = requiredCount(
+    aggregate?.receiptTotals.actual || 0,
+    "actual context exposure count",
+  );
+  if (actualContextExposureCount > selectedContextCount) {
+    throw new Error("Retrieval outcome exposure exceeds selected context.");
+  }
+  const actualEvidenceKindCounts = Object.freeze({
+    memory: requiredCount(
+      aggregate?.actualKindTotals.memory || 0,
+      "actual memory outcome count",
+    ),
+    knowledge: requiredCount(
+      aggregate?.actualKindTotals.knowledge || 0,
+      "actual knowledge outcome count",
+    ),
+    graph: requiredCount(
+      aggregate?.actualKindTotals.graph || 0,
+      "actual graph outcome count",
+    ),
+  });
+  if (
+    Object.values(actualEvidenceKindCounts).reduce(
+      (total, value) => total + value,
+      0,
+    ) !== actualContextExposureCount
+  ) {
+    throw new Error("Retrieval outcome evidence-kind counts are inconsistent.");
+  }
+  return Object.freeze({
+    coverage: "explicit_selection_only" as const,
+    interpretation:
+      "explicit_completed_run_feedback_correlation_not_causal" as const,
+    shadowOnly: true as const,
+    rankingEffect: "none" as const,
+    eligibleRatedRunCount,
+    contextLinkedRatedRunCount,
+    usefulCount,
+    needsWorkCount,
+    usefulRate: boundedRate(usefulCount, contextLinkedRatedRunCount),
+    selectedContextCount,
+    actualContextExposureCount,
+    selectedContextRetentionRate: boundedRate(
+      actualContextExposureCount,
+      selectedContextCount,
+    ),
+    actualEvidenceKindCounts,
+    invalidOrExcludedCount,
   });
 }
 
