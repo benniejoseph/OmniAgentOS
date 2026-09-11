@@ -116,7 +116,10 @@ describe("bounded-local knowledge cognition retention", () => {
       limit: 2,
     })).resolves.toEqual({
       removedCandidateCount: 2,
-      projectedMemoryIds: ["memory-from-expired-cognition"],
+      projectedMemories: [{
+        id: "memory-from-expired-cognition",
+        ownerActorId: actorId,
+      }],
       moreAvailable: true,
     });
 
@@ -140,7 +143,7 @@ describe("bounded-local knowledge cognition retention", () => {
       limit: 100_000,
     })).resolves.toEqual({
       removedCandidateCount: 1,
-      projectedMemoryIds: [],
+      projectedMemories: [],
       moreAvailable: false,
     });
     expect((await listKnowledgeCognitions({ tenantId, actorId }))
@@ -163,7 +166,7 @@ describe("bounded-local knowledge cognition retention", () => {
       asOf: "2026-09-10T00:00:00.000Z",
     })).resolves.toEqual({
       removedCandidateCount: 0,
-      projectedMemoryIds: [],
+      projectedMemories: [],
       moreAvailable: false,
     });
     await expect(purgeExpiredKnowledgeCognitionsBoundedLocal({
