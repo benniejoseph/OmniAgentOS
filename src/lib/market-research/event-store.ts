@@ -11,10 +11,14 @@ import {
   MARKET_RESEARCH_CONTRACT_VERSION,
   marketEventSchema,
   marketEventsResultSchema,
+  marketMacroObservationSchema,
   type MarketEvent,
   type MarketEventsResult,
 } from "@/lib/market-research/contracts";
-import type { FredReleaseDate } from "@/lib/market-research/fred";
+import type {
+  FredInitialObservation,
+  FredReleaseDate,
+} from "@/lib/market-research/fred";
 import type { OfficialMarketScheduleEntry } from "@/lib/market-research/official-schedules";
 import {
   assertExecutionScopeTenant,
@@ -182,6 +186,90 @@ export async function saveOfficialMarketEventSchedules(input: {
   return { inserted };
 }
 
+export async function saveFredInitialObservations(input: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  observations: readonly FredInitialObservation[];
+  importId: string;
+}) {
+  if (!input.observations.length) return { inserted: 0 };
+  assertExecutionScopeTenant(input.executionScope, input.tenantId);
+  if (input.executionScope.initiatingActorId !== input.actorId) {
+    throw new Error("Market observation import actor does not match its execution scope.");
+  }
+  if (!hasDatabaseUrl()) return { inserted: 0 };
+  await ensureDatabaseSchema();
+  const sourceShaById = new Map(input.observations.map((observation) => {
+    const id = marketObservationId(observation);
+    return [id, canonicalJsonSha256({
+      source: "fred",
+      ...observation,
+      initialRelease: true,
+    })] as const;
+  }));
+  const inserted = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const rows = await sql`
+      INSERT INTO omni_market_macro_observations (
+        schema_version, id, tenant_id, owner_actor_id, event_key,
+        metric_key, series_id, label, unit, observation_date, release_date,
+        vintage_end, value, source, source_url, initial_release,
+        source_sha256, imported_at
+      )
+      SELECT
+        1, source.id, ${input.tenantId}, ${input.actorId}, source.event_key,
+        source.metric_key, source.series_id, source.label, source.unit,
+        source.observation_date, source.release_date, source.vintage_end,
+        source.value, 'fred', source.source_url, TRUE, source.source_sha256,
+        NOW()
+      FROM UNNEST(
+        ${input.observations.map(marketObservationId)}::TEXT[],
+        ${input.observations.map((item) => item.eventKey)}::TEXT[],
+        ${input.observations.map((item) => item.metricKey)}::TEXT[],
+        ${input.observations.map((item) => item.seriesId)}::TEXT[],
+        ${input.observations.map((item) => item.label)}::TEXT[],
+        ${input.observations.map((item) => item.unit)}::TEXT[],
+        ${input.observations.map((item) => item.observationDate)}::DATE[],
+        ${input.observations.map((item) => item.releaseDate)}::DATE[],
+        ${input.observations.map((item) => item.vintageEnd)}::DATE[],
+        ${input.observations.map((item) => item.value)}::DOUBLE PRECISION[],
+        ${input.observations.map((item) => item.sourceUrl)}::TEXT[],
+        ${input.observations.map((item) => sourceShaById.get(marketObservationId(item))!)}::TEXT[]
+      ) AS source(
+        id, event_key, metric_key, series_id, label, unit, observation_date,
+        release_date, vintage_end, value, source_url, source_sha256
+      )
+      ON CONFLICT (
+        tenant_id, owner_actor_id, event_key, series_id, metric_key,
+        observation_date, release_date
+      ) DO NOTHING
+      RETURNING id
+    `;
+    if (rows.length) {
+      const insertedIds = rows.map((row) => String(row.id));
+      await sql`
+        INSERT INTO omni_market_macro_observation_events (
+          schema_version, id, tenant_id, owner_actor_id, observation_id,
+          event_type, import_id, payload_sha256, occurred_at
+        )
+        SELECT
+          1, source.ledger_id, ${input.tenantId}, ${input.actorId},
+          source.observation_id,
+          'market.macro_observation.initial_release_observed',
+          ${input.importId}, source.payload_sha256, NOW()
+        FROM UNNEST(
+          ${insertedIds.map((id) => marketObservationLedgerId(input.importId, id))}::TEXT[],
+          ${insertedIds}::TEXT[],
+          ${insertedIds.map((id) => sourceShaById.get(id)!)}::TEXT[]
+        ) AS source(ledger_id, observation_id, payload_sha256)
+        ON CONFLICT (tenant_id, id) DO NOTHING
+      `;
+    }
+    return rows.length;
+  }) as number;
+  return { inserted };
+}
+
 export async function listMarketEvents(input: {
   tenantId: string;
   actorId: string;
@@ -201,7 +289,8 @@ export async function listMarketEvents(input: {
         events.*,
         schedule.occurred_at AS schedule_occurred_at,
         schedule.source AS schedule_source,
-        schedule.source_url AS schedule_source_url
+        schedule.source_url AS schedule_source_url,
+        COALESCE(observations.items, '[]'::JSONB) AS observations
       FROM omni_market_macro_events events
       LEFT JOIN LATERAL (
         SELECT occurred_at, source, source_url
@@ -213,6 +302,26 @@ export async function listMarketEvents(input: {
         ORDER BY schedules.imported_at DESC, schedules.id DESC
         LIMIT 1
       ) schedule ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT JSONB_AGG(JSONB_BUILD_OBJECT(
+          'id', observed.id,
+          'metricKey', observed.metric_key,
+          'seriesId', observed.series_id,
+          'label', observed.label,
+          'unit', observed.unit,
+          'observationDate', observed.observation_date,
+          'releaseDate', observed.release_date,
+          'vintageEnd', observed.vintage_end,
+          'value', observed.value,
+          'sourceUrl', observed.source_url,
+          'initialRelease', observed.initial_release
+        ) ORDER BY observed.metric_key, observed.series_id) AS items
+        FROM omni_market_macro_observations observed
+        WHERE observed.tenant_id = events.tenant_id
+          AND observed.owner_actor_id = events.owner_actor_id
+          AND observed.event_key = events.event_key
+          AND observed.release_date = events.release_date
+      ) observations ON TRUE
       WHERE events.tenant_id = ${input.tenantId}
         AND events.owner_actor_id = ${input.actorId}
         AND (
@@ -269,11 +378,15 @@ function marketEventFromFred(item: FredReleaseDate, importedAt: string): MarketE
     previous: null,
     revised: null,
     valueStatus: "release_date_only",
+    observations: [],
     importedAt,
   });
 }
 
 function marketEventFromRow(row: Record<string, unknown>): MarketEvent {
+  const observations = Array.isArray(row.observations)
+    ? row.observations.map((item) => marketMacroObservationSchema.parse(item))
+    : [];
   return marketEventSchema.parse({
     id: String(row.id),
     eventKey: String(row.event_key),
@@ -298,7 +411,8 @@ function marketEventFromRow(row: Record<string, unknown>): MarketEvent {
     consensus: nullableNumber(row.consensus),
     previous: nullableNumber(row.previous),
     revised: nullableNumber(row.revised),
-    valueStatus: String(row.value_status),
+    valueStatus: observations.length ? "observed_values" : String(row.value_status),
+    observations,
     importedAt: new Date(String(row.imported_at)).toISOString(),
   });
 }
@@ -321,6 +435,21 @@ function marketScheduleId(
 
 function marketScheduleLedgerId(importId: string, scheduleId: string) {
   return `market_schedule_ledger_${digest(`${importId}:${scheduleId}`)}`;
+}
+
+function marketObservationId(observation: FredInitialObservation) {
+  return `market_observation_${digest([
+    "fred",
+    observation.eventKey,
+    observation.seriesId,
+    observation.metricKey,
+    observation.observationDate,
+    observation.releaseDate,
+  ].join(":"))}`;
+}
+
+function marketObservationLedgerId(importId: string, observationId: string) {
+  return `market_observation_ledger_${digest(`${importId}:${observationId}`)}`;
 }
 
 function digest(value: string) {

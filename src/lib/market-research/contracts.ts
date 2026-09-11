@@ -155,6 +155,24 @@ export type MarketBarsResult = z.infer<typeof marketBarsResultSchema>;
 
 const marketDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+export const marketMacroObservationSchema = z.object({
+  id: z.string().regex(/^market_observation_[a-f0-9]{48}$/),
+  metricKey: z.string().regex(/^[a-z][a-z0-9_]{1,79}$/),
+  seriesId: z.string().regex(/^[A-Z0-9]+$/),
+  label: z.string().min(1).max(160),
+  unit: z.enum(["index", "percent", "thousands", "millions", "billions"]),
+  observationDate: marketDateSchema,
+  releaseDate: marketDateSchema,
+  vintageEnd: marketDateSchema,
+  value: z.number().finite(),
+  sourceUrl: z.string().url().max(1_000),
+  initialRelease: z.literal(true),
+}).strict();
+
+export type MarketMacroObservation = z.infer<
+  typeof marketMacroObservationSchema
+>;
+
 export const marketEventSchema = z.object({
   id: z.string().regex(/^market_event_[a-f0-9]{48}$/),
   eventKey: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
@@ -179,6 +197,7 @@ export const marketEventSchema = z.object({
   previous: z.number().finite().nullable(),
   revised: z.number().finite().nullable(),
   valueStatus: z.enum(["release_date_only", "observed_values"]),
+  observations: z.array(marketMacroObservationSchema).max(12),
   importedAt: z.string().datetime({ offset: true }),
 }).strict();
 
