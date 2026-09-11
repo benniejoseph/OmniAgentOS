@@ -20,12 +20,11 @@ import {
 
 type TradingViewWidget = {
   chartReady: () => Promise<void>;
-  activeChart: () => { resetData: () => void };
-  setSymbol: (
-    symbol: string,
-    resolution: string,
-    callback: () => void,
-  ) => void;
+  activeChart: () => {
+    resetData: () => void;
+    setSymbol: (symbol: string) => Promise<boolean>;
+    setResolution: (resolution: string) => Promise<boolean>;
+  };
   remove: () => void;
 };
 
@@ -172,7 +171,17 @@ export function PriceChart({
       applied.interval !== bars.interval ||
       applied.instrumentId !== instrument.instrumentId
     ) {
-      widget.setSymbol(instrument.instrumentId, resolution, () => undefined);
+      const chart = widget.activeChart();
+      void (async () => {
+        if (applied.instrumentId !== instrument.instrumentId) {
+          await chart.setSymbol(instrument.instrumentId);
+        }
+        if (applied.interval !== bars.interval) {
+          await chart.setResolution(resolution);
+        }
+      })().catch(() => {
+        if (widgetRef.current === widget) setStatus("error");
+      });
       return;
     }
     widget.activeChart().resetData();
