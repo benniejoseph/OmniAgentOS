@@ -20,6 +20,12 @@ import { observeGoogleDriveShadow } from "@/lib/connectors/google-drive-shadow";
 import { extractCaptureFile } from "@/lib/capture/files";
 import { ingestTextDocument } from "@/lib/rag/retriever";
 import { deleteKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
+import { getKnowledgeDocumentByIdempotencyKey } from "@/lib/rag/store";
+import {
+  cancelGoogleCalendarMeeting,
+  projectGoogleCalendarMeeting,
+  type GoogleCalendarMeetingEvent,
+} from "@/lib/meetings/google-calendar-projection";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { mapInboundCommunication } from "@/lib/communications/store";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
@@ -30,6 +36,7 @@ type SyncCursor = {
   calendarPageToken?: string;
   calendarTimeMin?: string;
   calendarTimeMax?: string;
+  calendarMeetingProjectionVersion?: 1;
   gmailHistoryId?: string;
   gmailPageToken?: string;
   gmailPendingHistoryId?: string;
@@ -68,6 +75,7 @@ type SyncItem = {
     content: string;
     receivedAt: string;
   };
+  calendarEvent?: GoogleCalendarMeetingEvent;
 };
 type PersonalSourceId = SyncItem["kind"];
 type GoogleSourceObservation = Readonly<{
@@ -129,7 +137,7 @@ export async function syncDuePersonalProviders(options: {
   return results;
 }
 
-export function syncPersonalProvider(input: { tenantId: string; actorId: string; provider: OAuthProvider; abortSignal?: AbortSignal }) {
+export function syncPersonalProvider(input: { tenantId: string; actorId: string; provider: OAuthProvider; sources?: PersonalSourceId[]; abortSignal?: AbortSignal }) {
   return runWithDatabaseActorScope(
     input.tenantId,
     [input.actorId],
@@ -137,13 +145,15 @@ export function syncPersonalProvider(input: { tenantId: string; actorId: string;
   );
 }
 
-async function syncPersonalProviderWithActorScope(input: { tenantId: string; actorId: string; provider: OAuthProvider; abortSignal?: AbortSignal }) {
+async function syncPersonalProviderWithActorScope(input: { tenantId: string; actorId: string; provider: OAuthProvider; sources?: PersonalSourceId[]; abortSignal?: AbortSignal }) {
   if (input.provider !== "google") {
     throw new Error("Personal synchronization supports Google connections only.");
   }
   const secrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, input.provider);
   if (!secrets) throw new Error("Connected source not found.");
-  const grantedSources = googleSyncSourcesForScopes(secrets.grant.scopes);
+  const grantedSources = googleSyncSourcesForScopes(secrets.grant.scopes).filter((source) =>
+    !input.sources?.length || input.sources.includes(source)
+  );
   const claim = await claimOAuthSyncLease(input);
   if (claim.status !== "claimed") {
     throw new Error("Connected source synchronization is already running.");
@@ -171,7 +181,10 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
       abortSignal: input.abortSignal,
     }).catch(() => undefined);
   try {
-    const cursor = parseCursor(secrets.syncCursor);
+    const cursor = prepareCalendarMeetingProjectionCursor(
+      parseCursor(secrets.syncCursor),
+      grantedSources,
+    );
     let observations: readonly GoogleSourceObservationSettlement[] = [];
     if (grantedSources.length) {
       const { accessToken } = await getActiveGoogleWorkspaceAccess({
@@ -231,6 +244,21 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
         for (const item of observation.value.items) {
           const idempotencyKey = `oauth:${input.provider}:${item.kind}:${item.id}`;
           if (item.deleted) {
+            if (item.kind === "calendar") {
+              const existingDocument = await getKnowledgeDocumentByIdempotencyKey(
+                idempotencyKey,
+                { tenantId: input.tenantId },
+              );
+              if (existingDocument?.sourceItemId) {
+                await cancelGoogleCalendarMeeting({
+                  tenantId: input.tenantId,
+                  actorId: input.actorId,
+                  sourceItemId: existingDocument.sourceItemId,
+                  sourceExecutionScope,
+                  providerRevisionId: item.providerRevisionId || item.id,
+                });
+              }
+            }
             await deleteKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
               tenantId: input.tenantId,
               executionScope: sourceExecutionScope,
@@ -279,8 +307,9 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
               capturedAt,
             },
           });
+          let knowledge;
           try {
-            await ingest();
+            knowledge = await ingest();
           } catch (error) {
             if (!isReplaceableKnowledgeConflict(error)) throw error;
             // Knowledge ids are stable for a provider item. If the provider
@@ -292,7 +321,22 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
               executionScope: sourceExecutionScope,
             });
             input.abortSignal?.throwIfAborted();
-            await ingest();
+            knowledge = await ingest();
+          }
+          if (
+            item.calendarEvent &&
+            knowledge?.document?.sourceItemId &&
+            knowledge.document.sourceRevisionId
+          ) {
+            await projectGoogleCalendarMeeting({
+              tenantId: input.tenantId,
+              actorId: input.actorId,
+              event: item.calendarEvent,
+              sourceItemId: knowledge.document.sourceItemId,
+              sourceRevisionId: knowledge.document.sourceRevisionId,
+              sourceExecutionScope,
+              providerRevisionId: item.providerRevisionId || item.id,
+            });
           }
           if (item.communication) {
             await mapInboundCommunication(item.communication, {
@@ -668,13 +712,34 @@ async function googleCalendar(
           calendarPageToken: nextPageToken,
           calendarTimeMin: cursor.calendar ? undefined : timeMin,
           calendarTimeMax: cursor.calendar ? undefined : timeMax,
+          calendarMeetingProjectionVersion: cursor.calendarMeetingProjectionVersion,
         }
       : {
           calendar: String(payload.nextSyncToken || cursor.calendar || "") || undefined,
           calendarPageToken: undefined,
           calendarTimeMin: undefined,
           calendarTimeMax: undefined,
+          calendarMeetingProjectionVersion: 1 as const,
         },
+  };
+}
+
+function prepareCalendarMeetingProjectionCursor(
+  cursor: SyncCursor,
+  sources: readonly PersonalSourceId[],
+): SyncCursor {
+  if (
+    !sources.includes("calendar") ||
+    cursor.calendarMeetingProjectionVersion === 1 ||
+    cursor.calendarPageToken ||
+    !cursor.calendar
+  ) return cursor;
+  return {
+    ...cursor,
+    calendar: undefined,
+    calendarPageToken: undefined,
+    calendarTimeMin: undefined,
+    calendarTimeMax: undefined,
   };
 }
 
@@ -850,7 +915,34 @@ function googleEvent(value: Record<string, unknown>): SyncItem {
     sourceCreatedAt,
     sourceUpdatedAt,
     capturedAt: sourceUpdatedAt,
+    calendarEvent: deleted ? undefined : {
+      eventId: String(value.id),
+      title: String(value.summary || "Calendar event"),
+      description: String(value.description || ""),
+      status: String(value.status || "confirmed"),
+      start: String(start.dateTime || start.date || ""),
+      end: String(end.dateTime || end.date || ""),
+      timezone: String(start.timeZone || end.timeZone || "UTC"),
+      location: String(value.location || ""),
+      organizer: calendarPerson(organizer, "organizer"),
+      attendees: array(value.attendees).map((item) =>
+        calendarPerson(record(item), "required")
+      ),
+    },
     content: [`Event: ${String(value.summary || "Untitled")}`, `Status: ${String(value.status || "")}`, `Start: ${String(start.dateTime || start.date || "")}`, `End: ${String(end.dateTime || end.date || "")}`, `Timezone: ${String(start.timeZone || end.timeZone || "")}`, `Location: ${String(value.location || "")}`, `Organizer: ${String(organizer.email || "")}`, `Meeting: ${String(value.hangoutLink || conference.conferenceId || "")}`, `Recurrence: ${array(value.recurrence).map(String).join("; ")}`, `Description: ${String(value.description || "")}`, `Attendees: ${array(value.attendees).map((item) => { const attendee = record(item); return `${String(attendee.email || "")} (${String(attendee.responseStatus || "unknown")})`; }).filter(Boolean).join(", ")}`].join("\n"),
+  };
+}
+
+function calendarPerson(
+  value: Record<string, unknown>,
+  role: "organizer" | "required",
+) {
+  return {
+    email: String(value.email || ""),
+    displayName: String(value.displayName || value.email || (role === "organizer" ? "Organizer" : "Attendee")),
+    role,
+    responseStatus: String(value.responseStatus || (role === "organizer" ? "accepted" : "unknown")),
+    optional: Boolean(value.optional),
   };
 }
 

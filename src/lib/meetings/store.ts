@@ -156,6 +156,29 @@ export async function getMeeting(
   });
 }
 
+export async function findMeetingBySourceItemId(
+  authority: MeetingReadAuthority,
+  sourceItemId: string,
+) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  const valid = validateReadAuthority(authority);
+  const sourceId = requiredId(sourceItemId, "source item");
+  return runWithDatabaseActorScope(valid.tenantId, valid.readableActorIds, async () => {
+    const rows = await getSql()`
+      SELECT meeting_snapshot
+      FROM omni_meetings
+      WHERE tenant_id = ${valid.tenantId}
+        AND workspace_id = ${valid.workspaceId}
+        AND meeting_snapshot -> 'sourceLinks' @>
+          ${JSON.stringify([{ sourceId }])}::JSONB
+      ORDER BY scheduled_start_at DESC, meeting_id
+      LIMIT 1
+    `;
+    return rows[0] ? meetingFromRow(rows[0]) : undefined;
+  });
+}
+
 export async function readMeetingLinkedSources(
   authority: MeetingReadAuthority,
   meeting: MeetingRevision,

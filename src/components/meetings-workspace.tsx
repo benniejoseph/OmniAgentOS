@@ -18,6 +18,7 @@ import {
   MapPin,
   MessageSquareText,
   Plus,
+  RefreshCw,
   Save,
   ShieldCheck,
   Sparkles,
@@ -252,7 +253,11 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
   const [commitmentBusyId, setCommitmentBusyId] = useState<string>();
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Meetings are ready.");
+  const [calendarSyncing, setCalendarSyncing] = useState(false);
+  const [calendarSyncMessage, setCalendarSyncMessage] = useState("Calendar updates automatically while this page is open.");
+  const [calendarSyncedAt, setCalendarSyncedAt] = useState<string>();
   const controllerRef = useRef<AbortController | null>(null);
+  const calendarSyncingRef = useRef(false);
   const mutationKeyRef = useRef("");
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
 
@@ -335,6 +340,40 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
     // The authenticated session and requested route own the read boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionStatus, session, initialMeetingId]);
+
+  async function syncCalendar(silent = false) {
+    if (!available || sessionStatus !== "ready" || calendarSyncingRef.current) return;
+    calendarSyncingRef.current = true;
+    setCalendarSyncing(true);
+    if (!silent) setCalendarSyncMessage("Checking Google Calendar for changes…");
+    try {
+      const payload = await readJson("/api/oauth/google/sync?source=calendar", { method: "POST" });
+      const calendar = ((payload.sources || []) as Array<{ source?: string; status?: string; imported?: number }>).find((source) => source.source === "calendar");
+      const syncedAt = new Date().toISOString();
+      setCalendarSyncedAt(syncedAt);
+      setCalendarSyncMessage(calendar?.status === "error"
+        ? "Google Calendar could not be refreshed. Check Integrations."
+        : `${calendar?.imported || 0} calendar change${calendar?.imported === 1 ? "" : "s"} synchronized.`);
+      setAnnouncement("Google Calendar and Meetings are synchronized.");
+      await load();
+    } catch (syncError) {
+      setCalendarSyncMessage(silent
+        ? "Automatic Calendar sync is unavailable. Check the Google connection in Integrations."
+        : message(syncError));
+    } finally {
+      calendarSyncingRef.current = false;
+      setCalendarSyncing(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!available || sessionStatus !== "ready") return;
+    const initial = window.setTimeout(() => void syncCalendar(true), 700);
+    const interval = window.setInterval(() => void syncCalendar(true), 5 * 60_000);
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); };
+    // Calendar refresh follows the authenticated actor and is internally lease-fenced.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [available, sessionStatus, session]);
 
   const mediaPollingKey = linkedSources.map((source) =>
     source.media && ["queued", "processing", "waiting"].includes(
@@ -550,6 +589,9 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
           <p>One durable record for the people, consent, media, decisions, and follow-through around every conversation.</p>
         </div>
         <div className={styles.heroActions}>
+          <button type="button" className={styles.secondaryButton} onClick={() => void syncCalendar()} disabled={calendarSyncing}>
+            {calendarSyncing ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} Sync Calendar
+          </button>
           <Link href="/app/capture" className={styles.secondaryButton}><FileAudio size={16} /> Open Capture</Link>
           {workspaceContext?.canWrite !== false ? (
             <button type="button" className={styles.primaryButton} onClick={openCreate}>
@@ -558,6 +600,11 @@ export function MeetingsWorkspace({ initialMeetingId }: { initialMeetingId?: str
           ) : null}
         </div>
       </header>
+
+      <div className={styles.calendarSyncStatus} role="status">
+        <span><i data-active={calendarSyncing ? "true" : "false"} /> <strong>Google Calendar</strong> · {calendarSyncMessage}</span>
+        <small>{calendarSyncedAt ? `Last checked ${formatTimestamp(calendarSyncedAt)}` : "On open · every 5 minutes while open · background every 30 minutes · nightly safety run"}</small>
+      </div>
 
       <section className={styles.metrics} aria-label="Meeting overview">
         <Metric value={upcoming} label="upcoming" detail="scheduled conversations" />
@@ -1258,6 +1305,7 @@ function initials(name: string) { return name.split(/\s+/).filter(Boolean).slice
 function formatDateRange(start: string, end: string) { const first = new Date(start); const last = new Date(end); return `${first.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })} · ${formatTime(start)}–${formatTime(end === start ? last.toISOString() : end)}`; }
 function formatTime(value: string) { return new Date(value).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); }
 function formatCompactDate(value: string) { return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: new Date(value).getFullYear() === new Date().getFullYear() ? undefined : "numeric" }); }
+function formatTimestamp(value: string) { return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }); }
 function formatDuration(ms: number) { const minutes = Math.round(ms / 60_000); return minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes} min`; }
 function formatMediaTimestamp(ms: number) { const seconds = Math.max(0, Math.floor(ms / 1_000)); const hours = Math.floor(seconds / 3_600); const minutes = Math.floor((seconds % 3_600) / 60); const remainder = seconds % 60; return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}` : `${minutes}:${String(remainder).padStart(2, "0")}`; }
 function formatBytes(bytes: number) { if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`; return `${(bytes / 1024 ** 2).toFixed(1)} MB`; }

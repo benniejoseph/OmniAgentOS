@@ -1473,6 +1473,30 @@ export function knowledgeDocumentId(tenantId: string, idempotencyKey: string) {
   return `knowledge_${createHash("sha256").update(`${normalizeTenantId(tenantId)}:${idempotencyKey}`).digest("hex").slice(0, 40)}`;
 }
 
+export async function getKnowledgeDocumentByIdempotencyKey(
+  idempotencyKey: string,
+  options: { tenantId?: string } = {},
+) {
+  const tenantId = normalizeTenantId(options.tenantId);
+  const documentId = knowledgeDocumentId(tenantId, idempotencyKey);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT *
+      FROM omni_knowledge_documents
+      WHERE tenant_id = ${tenantId}
+        AND id = ${documentId}
+      LIMIT 1
+    `;
+    return rows[0] ? documentFromRow(rows[0]) : undefined;
+  }
+  const ledger = await readKnowledgeLedger();
+  const document = ledger.documents.find((candidate) =>
+    normalizeTenantId(candidate.tenantId) === tenantId && candidate.id === documentId
+  );
+  return document ? sanitizeKnowledgeDocument(document) : undefined;
+}
+
 export async function listKnowledgeDocuments(limit = 20, options: { tenantId?: string } = {}) {
   const tenantId = normalizeTenantId(options.tenantId);
 

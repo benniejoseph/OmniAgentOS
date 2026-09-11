@@ -48,7 +48,25 @@
 .primaryButton { color: var(--primary-ink); background: var(--primary); box-shadow: 0 .6rem 1.8rem oklch(from var(--primary) l c h / .17); }
 .secondaryButton, .addButton { border: 1px solid var(--line); color: var(--foreground); background: oklch(from var(--surface) l c h / .82); }
 .primaryButton:hover, .secondaryButton:hover, .addButton:hover, .picker button:hover { transform: translateY(-1px); }
-.primaryButton:disabled, .picker button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
+.primaryButton:disabled, .secondaryButton:disabled, .picker button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
+
+.calendarSyncStatus {
+  display: flex;
+  min-height: 3.2rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px dashed var(--line);
+  color: var(--muted);
+  font-size: .65rem;
+}
+.calendarSyncStatus span { display: flex; align-items: center; gap: .3rem; }
+.calendarSyncStatus strong { color: var(--foreground); }
+.calendarSyncStatus i { width: .42rem; height: .42rem; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px oklch(from var(--success) l c h / .09); }
+.calendarSyncStatus i[data-active="true"] { background: var(--primary); animation: sync-pulse 1.4s ease-in-out infinite; }
+.calendarSyncStatus small { text-align: right; }
+
+@keyframes sync-pulse { 50% { opacity: .35; transform: scale(.82); } }
 
 .metrics {
   display: grid;
@@ -262,6 +280,8 @@
   .shell { padding: .85rem; }
   .hero { min-height: 0; flex-direction: column; align-items: stretch; padding-top: 1.5rem; }
   .heroActions > * { flex: 1; }
+  .calendarSyncStatus { align-items: flex-start; flex-direction: column; padding-block: .75rem; }
+  .calendarSyncStatus small { text-align: left; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .metrics > div:nth-child(2) { border-right: 0; }
   .metrics > div:nth-child(-n + 2) { border-bottom: 1px dashed var(--line); }
