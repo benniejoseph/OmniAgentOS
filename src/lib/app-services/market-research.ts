@@ -10,11 +10,15 @@ import {
   MARKET_RESEARCH_CONTRACT_VERSION,
   marketBarsQuerySchema,
   marketEventBackfillRequestSchema,
+  marketEventReplayRequestSchema,
+  marketEventReplaysQuerySchema,
   marketEventsQuerySchema,
   marketResearchOverviewSchema,
 } from "@/lib/market-research/contracts";
 import { listMarketEvents } from "@/lib/market-research/event-store";
+import { listMarketEventReplays } from "@/lib/market-research/event-replay-store";
 import { enqueueMarketEventBackfillJob } from "@/lib/market-research/event-jobs";
+import { enqueueMarketEventReplayBackfillJob } from "@/lib/market-research/replay-jobs";
 import { marketInstruments } from "@/lib/market-research/instruments";
 import { fetchMarketBarSnapshot } from "@/lib/market-research/market-data";
 import {
@@ -243,6 +247,45 @@ export async function backfillMarketResearchEventsService(
   return completeAppServiceCall(authorized, {
     job: projectOperationJobStatus(job),
   });
+}
+
+export async function listMarketResearchReplaysService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketEventReplaysQuerySchema>,
+) {
+  const value = marketEventReplaysQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.replays.list"),
+  );
+  const result = await listMarketEventReplays({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    ...value,
+  });
+  return completeAppServiceCall(authorized, result, {
+    resourceCount: result.replays.length,
+    occurredAt: result.lastReplayedAt || new Date().toISOString(),
+  });
+}
+
+export async function backfillMarketResearchReplaysService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketEventReplayRequestSchema>,
+) {
+  const value = marketEventReplayRequestSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.replays.backfill"),
+  );
+  const job = await enqueueMarketEventReplayBackfillJob({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    executionScope: caller.executionScope!,
+    idempotencyKey: caller.idempotencyKey!,
+    request: value,
+  });
+  return completeAppServiceCall(authorized, { job: projectOperationJobStatus(job) });
 }
 
 function providerReadiness(input: {

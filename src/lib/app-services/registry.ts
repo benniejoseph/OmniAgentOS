@@ -15,6 +15,8 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.market_research.bars.list", "read", "market_snapshot"),
   read("app.market_research.events.list", "read", "market_event_history"),
   mutation("app.market_research.events.backfill", "manage.workflow", "market_event_history", "market-macro-event-events.v1"),
+  read("app.market_research.replays.list", "read", "market_event_replay"),
+  mutation("app.market_research.replays.backfill", "manage.workflow", "market_event_replay", "market-event-replay-events.v1"),
   read("app.library.list", "read", "workspace_library"),
   read("app.memory.readable.show", "read", "memory_overview"),
   read("app.memory.intelligence.show", "read", "memory_intelligence"),

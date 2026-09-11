@@ -27,6 +27,7 @@ import {
   MARKET_INTERVALS,
   type MarketBarsResult,
   type MarketEventsResult,
+  type MarketEventReplaysResult,
   type MarketInstrument,
   type MarketInstrumentId,
   type MarketInterval,
@@ -57,13 +58,17 @@ export function MarketResearchWorkspace() {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
   const [bars, setBars] = useState<MarketBarsResult>();
   const [events, setEvents] = useState<MarketEventsResult>();
+  const [replays, setReplays] = useState<MarketEventReplaysResult>();
   const [backfillJob, setBackfillJob] = useState<MarketBackfillJob>();
+  const [replayJob, setReplayJob] = useState<MarketBackfillJob>();
   const [loading, setLoading] = useState(true);
   const [barsLoading, setBarsLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [barsError, setBarsError] = useState<string>();
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState<string>();
+  const [replaysLoading, setReplaysLoading] = useState(false);
+  const [replayError, setReplayError] = useState<string>();
 
   const loadOverview = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -155,6 +160,29 @@ export function MarketResearchWorkspace() {
     }
   }, []);
 
+  const loadReplays = useCallback(async (
+    instrumentId: MarketInstrumentId,
+    signal?: AbortSignal,
+  ) => {
+    setReplaysLoading(true);
+    setReplayError(undefined);
+    try {
+      const query = new URLSearchParams({ instrumentId, limit: "100" });
+      const response = await fetch(`/api/market-research/replays?${query}`, {
+        cache: "no-store",
+        signal,
+      });
+      const payload = await response.json() as MarketEventReplaysResult & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Market replays could not load.");
+      setReplays(payload);
+    } catch (loadError) {
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      setReplayError(loadError instanceof Error ? loadError.message : "Market replays could not load.");
+    } finally {
+      if (!signal?.aborted) setReplaysLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab !== "events" || events) return;
     const controller = new AbortController();
@@ -164,6 +192,19 @@ export function MarketResearchWorkspace() {
       controller.abort();
     };
   }, [activeTab, events, loadEvents]);
+
+  useEffect(() => {
+    if (activeTab !== "events") return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => void loadReplays(selectedId, controller.signal),
+      0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeTab, loadReplays, selectedId]);
 
   const startEventBackfill = useCallback(async () => {
     setEventsError(undefined);
@@ -188,6 +229,33 @@ export function MarketResearchWorkspace() {
       setEventsError(queueError instanceof Error ? queueError.message : "Market event history could not be queued.");
     }
   }, []);
+
+  const startReplayBackfill = useCallback(async () => {
+    setReplayError(undefined);
+    try {
+      const response = await fetch("/api/market-research/replays", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `market-replays-${selectedId}-${Date.now()}`,
+        },
+        body: JSON.stringify({
+          instrumentId: selectedId,
+          interval: "5min",
+          startDate: "2000-01-01",
+          endDate: new Date().toISOString().slice(0, 10),
+          maxEvents: 12,
+        }),
+      });
+      const payload = await response.json() as { job?: MarketBackfillJob; error?: string };
+      if (!response.ok || !payload.job) {
+        throw new Error(payload.error || "Market replay backfill could not be queued.");
+      }
+      setReplayJob(payload.job);
+    } catch (queueError) {
+      setReplayError(queueError instanceof Error ? queueError.message : "Market replay backfill could not be queued.");
+    }
+  }, [selectedId]);
 
   useEffect(() => {
     if (!backfillJob || !["queued", "running"].includes(backfillJob.status)) return;
@@ -217,6 +285,34 @@ export function MarketResearchWorkspace() {
       window.clearTimeout(timer);
     };
   }, [backfillJob, loadEvents]);
+
+  useEffect(() => {
+    if (!replayJob || !["queued", "running"].includes(replayJob.status)) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/operations/jobs/${replayJob.id}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const payload = await response.json() as { job?: MarketBackfillJob; error?: string };
+        if (!response.ok || !payload.job) throw new Error(payload.error || "Replay progress is unavailable.");
+        setReplayJob(payload.job);
+        if (payload.job.status === "completed") {
+          await loadReplays(selectedId, controller.signal);
+        } else if (payload.job.status === "failed") {
+          setReplayError(payload.job.lastError || "Market replay backfill did not complete.");
+        }
+      } catch (pollError) {
+        if (pollError instanceof DOMException && pollError.name === "AbortError") return;
+        setReplayError(pollError instanceof Error ? pollError.message : "Replay progress is unavailable.");
+      }
+    }, 2_000);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [loadReplays, replayJob, selectedId]);
 
   useEffect(() => {
     if (!selected) return;
@@ -313,7 +409,12 @@ export function MarketResearchWorkspace() {
               loading={eventsLoading}
               error={eventsError}
               backfillJob={backfillJob}
+              replays={replays}
+              replaysLoading={replaysLoading}
+              replayError={replayError}
+              replayJob={replayJob}
               onBackfill={startEventBackfill}
+              onReplayBackfill={startReplayBackfill}
             />
           ) : null}
           {activeTab === "technicals" ? <TechnicalLab instrument={selected} overview={overview} /> : null}
@@ -449,7 +550,12 @@ function NewsImpactLab({
   loading,
   error,
   backfillJob,
+  replays,
+  replaysLoading,
+  replayError,
+  replayJob,
   onBackfill,
+  onReplayBackfill,
 }: {
   instrument: MarketInstrument;
   overview?: MarketResearchOverview;
@@ -457,23 +563,38 @@ function NewsImpactLab({
   loading: boolean;
   error?: string;
   backfillJob?: MarketBackfillJob;
+  replays?: MarketEventReplaysResult;
+  replaysLoading: boolean;
+  replayError?: string;
+  replayJob?: MarketBackfillJob;
   onBackfill: () => void;
+  onReplayBackfill: () => void;
 }) {
   const calendar = overview?.providers.find((provider) => provider.provider === "bls");
   const vintage = overview?.providers.find((provider) => provider.provider === "fred");
   const importing = backfillJob && ["queued", "running"].includes(backfillJob.status);
   const completedSources = numberProgress(backfillJob?.progress?.completedSources);
   const totalSources = numberProgress(backfillJob?.progress?.totalSources);
+  const replaying = replayJob && ["queued", "running"].includes(replayJob.status);
+  const completedEvents = numberProgress(replayJob?.progress?.completedEvents);
+  const totalEvents = numberProgress(replayJob?.progress?.totalEvents);
+  const replayByEventId = new Map((replays?.replays || []).map((replay) => [replay.eventId, replay]));
   return (
     <section className={styles.lab}>
       <header className={styles.labHeader}>
         <div><p className={styles.eyebrow}>Event study · {instrument.shortLabel}</p><h2>News impact lab</h2><p>Replay high-impact releases against immutable pre- and post-event windows, then compare the observed move with the surprise, revision, liquidity regime, and ICT context.</p></div>
         <div className={styles.labActions}>
           <div className={styles.labReadiness}><span data-ready={calendar?.configured}><i /> Official calendars</span><span data-ready={vintage?.configured}><i /> FRED history</span></div>
-          <button type="button" onClick={onBackfill} disabled={Boolean(importing) || vintage?.configured !== true}>
-            <History size={15} />
-            {importing ? `Importing ${completedSources}/${totalSources || 8}` : events?.total ? "Refresh history" : "Import history"}
-          </button>
+          <div className={styles.labButtons}>
+            <button type="button" onClick={onBackfill} disabled={Boolean(importing) || vintage?.configured !== true}>
+              <History size={15} />
+              {importing ? `Importing ${completedSources}/${totalSources || 8}` : events?.total ? "Refresh history" : "Import history"}
+            </button>
+            <button type="button" onClick={onReplayBackfill} disabled={Boolean(replaying) || instrument.providerMapping.status !== "verified" || !events?.total}>
+              <ChartCandlestick size={15} />
+              {replaying ? `Replaying ${completedEvents}/${totalEvents || 12}` : replays?.remainingEvents ? "Build next 12 replays" : "Replays current"}
+            </button>
+          </div>
         </div>
       </header>
       <div className={styles.pipeline}>
@@ -486,13 +607,16 @@ function NewsImpactLab({
         ].map(([number, title, detail]) => <article key={number}><span>{number}</span><strong>{title}</strong><small>{detail}</small><ChevronRight size={15} /></article>)}
       </div>
       <div className={styles.eventTable}>
-        <header><span>Historical high-impact releases</span><small>{events?.total ? `${events.total} official release dates · latest import ${formatDateTime(events.lastImportedAt)}` : "FRED/ALFRED · owner-private · asynchronous"}</small></header>
-        <div className={styles.tableHead}><span>Release</span><span>Date</span><span>Precision</span><span>Values</span><span>Source</span></div>
+        <header><span>Historical high-impact releases</span><small>{events?.total ? `${events.total} official dates · ${replays?.replayedEvents || 0}/${replays?.eligibleEvents || 0} ${instrument.shortLabel} windows` : "FRED/ALFRED · owner-private · asynchronous"}</small></header>
+        <div className={styles.tableHead}><span>Release</span><span>Date</span><span>Precision</span><span>Values</span><span>Observed move</span><span>Source</span></div>
         {error ? <div className={styles.tableNotice} role="alert"><AlertTriangle size={17} /><span>{error}</span></div> : null}
+        {replayError ? <div className={styles.tableNotice} role="alert"><AlertTriangle size={17} /><span>{replayError}</span></div> : null}
+        {replaysLoading ? <div className={styles.replayLoading}><RefreshCw className={styles.spin} size={13} /> Loading immutable price windows…</div> : null}
         {loading ? <div className={styles.tableEmpty}><RefreshCw className={styles.spin} size={24} /><strong>Loading event history</strong></div> : events?.events.length ? (
           <div className={styles.eventRows}>
-            {events.events.map((event) => (
-              <article key={event.id}>
+            {events.events.map((event) => {
+              const replay = replayByEventId.get(event.id);
+              return <article key={event.id}>
                 <span><strong>{event.name}</strong><small>{event.eventKey}</small></span>
                 <time dateTime={event.occurredAt || event.releaseDate}>
                   {formatEventDate(event.releaseDate)}
@@ -503,12 +627,16 @@ function NewsImpactLab({
                   <strong>{event.observations[0] ? formatMacroObservation(event.observations[0]) : "Pending"}</strong>
                   <small>{event.observations[1] ? formatMacroObservation(event.observations[1]) : event.consensus === null ? "No free official consensus" : `Consensus ${event.consensus}`}</small>
                 </span>
+                <span className={styles.replayMove} data-direction={replay?.direction}>
+                  <strong>{replay?.post60m ? `${formatSignedBps(replay.post60m.returnBps)} · 60m` : event.occurredAt ? "Window pending" : "Needs exact time"}</strong>
+                  <small>{replay?.post5m ? `${formatSignedBps(replay.post5m.returnBps)} at 5m · ${replay.post60mRangeBps?.toFixed(1) || "—"} bps range` : "No price outcome yet"}</small>
+                </span>
                 <span>
                   <a href={event.sourceUrl} target="_blank" rel="noreferrer">FRED <ArrowRight size={12} /></a>
                   {event.scheduleSourceUrl ? <a href={event.scheduleSourceUrl} target="_blank" rel="noreferrer">{scheduleSourceLabel(event.scheduleSource)} time <ArrowRight size={12} /></a> : null}
                 </span>
-              </article>
-            ))}
+              </article>;
+            })}
           </div>
         ) : (
           <div className={styles.tableEmpty}><CalendarClock size={24} /><strong>No event history imported yet</strong><p>Import the free official FRED release history in the background. Exact intraday impact remains locked until an authoritative release timestamp and corresponding price window are available.</p></div>
@@ -521,6 +649,10 @@ function NewsImpactLab({
 
 function numberProgress(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatSignedBps(value: number) {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(1)} bps`;
 }
 
 function scheduleSourceLabel(source: MarketEventsResult["events"][number]["scheduleSource"]) {
@@ -565,16 +697,6 @@ function formatEventTime(value: string) {
     hour: "numeric",
     minute: "2-digit",
     timeZoneName: "short",
-  }).format(new Date(value));
-}
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) return "never";
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
   }).format(new Date(value));
 }
 

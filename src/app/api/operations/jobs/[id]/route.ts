@@ -19,6 +19,7 @@ const ACTOR_OWNED_OPERATION_JOB_TYPES = new Set([
   "knowledge.cognify",
   "conversation.summary.enrich",
   "market.events.backfill",
+  "market.replays.backfill",
 ]);
 
 const PUBLIC_SEMANTIC_SUMMARY_STAGES = new Set([
