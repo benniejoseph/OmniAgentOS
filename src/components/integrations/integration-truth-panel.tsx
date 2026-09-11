@@ -29,6 +29,13 @@ import type { TruthfulIntegrationsOverview } from "@/lib/connectors/truthful-ove
 import styles from "./integrations-workspace.module.css";
 
 const OVERVIEW_VERSION = "p11.7-truthful-integrations:1";
+const INTEGRATION_STATUS_CHANGED_EVENT = "asael:integration-status-changed";
+
+type OAuthCallbackNotice = {
+  status: "connected" | "denied" | "failed";
+  title: string;
+  detail: string;
+};
 
 type InstalledIntegration = TruthfulIntegrationsOverview["installed"][number];
 
@@ -36,6 +43,7 @@ export function IntegrationTruthPanel({ children }: { children?: ReactNode }) {
   const [overview, setOverview] = useState<TruthfulIntegrationsOverview>();
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string>();
+  const [oauthNotice, setOAuthNotice] = useState<OAuthCallbackNotice>();
 
   const load = useCallback(async () => {
     setState("loading");
@@ -51,17 +59,31 @@ export function IntegrationTruthPanel({ children }: { children?: ReactNode }) {
 
   useEffect(() => {
     let active = true;
+    const callback = readOAuthCallbackNotice(window.location.href);
+    if (callback) {
+      window.history.replaceState(window.history.state, "", callback.cleanUrl);
+    }
     void fetchIntegrationOverview().then((loaded) => {
       if (!active) return;
+      if (callback) setOAuthNotice(callback.notice);
       setOverview(loaded);
       setState("ready");
     }).catch((loadError: unknown) => {
       if (!active) return;
+      if (callback) setOAuthNotice(callback.notice);
       setState("error");
       setError(loadError instanceof Error ? loadError.message : "Integration access could not be loaded.");
     });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    const refreshOverview = () => { void load(); };
+    window.addEventListener(INTEGRATION_STATUS_CHANGED_EVENT, refreshOverview);
+    return () => {
+      window.removeEventListener(INTEGRATION_STATUS_CHANGED_EVENT, refreshOverview);
+    };
+  }, [load]);
 
   const unavailableSources = overview
     ? Object.entries(overview.inventory).filter(([, source]) => source.state === "unavailable")
@@ -82,6 +104,30 @@ export function IntegrationTruthPanel({ children }: { children?: ReactNode }) {
             Refresh status
           </button>
         </header>
+
+        {oauthNotice ? (
+          <div
+            className={clsx(
+              "mt-3 flex items-start gap-2 rounded-lg border px-3 py-2.5 text-sm",
+              oauthNotice.status === "connected"
+                ? "border-primary/30 bg-primary/8 text-foreground"
+                : oauthNotice.status === "denied"
+                  ? "border-warning/40 bg-warning/8 text-foreground"
+                  : "border-danger/40 bg-danger/8 text-danger",
+            )}
+            role={oauthNotice.status === "failed" ? "alert" : "status"}
+          >
+            {oauthNotice.status === "connected" ? (
+              <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-primary" aria-hidden="true" />
+            ) : (
+              <AlertTriangle size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            )}
+            <p>
+              <strong className="block">{oauthNotice.title}</strong>
+              <span className="mt-0.5 block text-muted">{oauthNotice.detail}</span>
+            </p>
+          </div>
+        ) : null}
 
         {state === "error" ? (
           <div className={styles.truthError} role="alert">
@@ -240,7 +286,7 @@ function IntegrationSourceRow({ integration }: { integration: InstalledIntegrati
         </div>
       </div>
       <dl className={styles.sourceFacts}>
-        <div><dt>Access</dt><dd>{permissionLabel(integration.permissions.mode)}</dd></div>
+        <div><dt>Access</dt><dd>{permissionLabel(integration)}</dd></div>
         <div><dt>Sync</dt><dd>{syncLabel(integration.sync.status)}</dd></div>
         <div><dt>Coverage</dt><dd>{coverageLabel(integration.sync.coverage)}</dd></div>
         <div><dt>Last verified</dt><dd>{freshnessLabel(integration.sync.freshness)}</dd></div>
@@ -321,8 +367,17 @@ function systemDescription(integration: InstalledIntegration) {
   return "An owner-connected source available to Asael.";
 }
 
-function permissionLabel(mode: InstalledIntegration["permissions"]["mode"]) {
-  return ({ no_access: "No access", read_only: "Read only", read_write: "Read and write", write_approval_required: "Writes need approval", unclassified: "Access not classified" })[mode];
+function permissionLabel(integration: InstalledIntegration) {
+  if (integration.kind === "google_service" && integration.name.toLowerCase().includes("photo")) {
+    return integration.permissions.mode === "no_access" ? "No access" : "User-picked only";
+  }
+  return ({
+    no_access: "No access",
+    read_only: "Read only",
+    read_write: "Read + write",
+    write_approval_required: "Read + governed actions",
+    unclassified: "Access not classified",
+  })[integration.permissions.mode];
 }
 
 function syncLabel(syncState: InstalledIntegration["sync"]["status"]) {
@@ -387,4 +442,35 @@ async function fetchIntegrationOverview() {
     throw new Error("Integration access returned an unsupported contract.");
   }
   return payload.overview;
+}
+
+function readOAuthCallbackNotice(value: string): {
+  notice: OAuthCallbackNotice;
+  cleanUrl: string;
+} | undefined {
+  const url = new URL(value);
+  const status = url.searchParams.get("oauth");
+  if (status !== "connected" && status !== "denied" && status !== "failed") {
+    return undefined;
+  }
+  const notice: OAuthCallbackNotice = status === "connected"
+    ? {
+        status,
+        title: "Google connected",
+        detail: "The granted permissions and sync status are shown below.",
+      }
+    : status === "denied"
+      ? {
+          status,
+          title: "Google connection was not completed",
+          detail: "No new access was granted. You can connect again when ready.",
+        }
+      : {
+          status,
+          title: "Google could not be connected",
+          detail: "Try again. If it keeps failing, check the Google OAuth configuration.",
+        };
+  url.searchParams.delete("oauth");
+  url.searchParams.delete("provider");
+  return { notice, cleanUrl: url.toString() };
 }

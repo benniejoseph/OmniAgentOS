@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Cloud,
   HardDrive,
+  Images,
   Loader2,
   Mail,
   RefreshCw,
@@ -15,6 +16,10 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { clsx } from "clsx";
+
+import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
+
+const INTEGRATION_STATUS_CHANGED_EVENT = "asael:integration-status-changed";
 
 type OAuthProvider = {
   id: string;
@@ -56,27 +61,6 @@ type PersonalConnectionsProps = {
   onRefresh: () => Promise<void>;
 };
 
-const permissions = [
-  {
-    scope: "https://www.googleapis.com/auth/gmail.readonly",
-    label: "Gmail",
-    detail: "Messages and metadata, read-only",
-    icon: Mail,
-  },
-  {
-    scope: "https://www.googleapis.com/auth/calendar.events.readonly",
-    label: "Calendar",
-    detail: "Events and schedules, read-only",
-    icon: CalendarDays,
-  },
-  {
-    scope: "https://www.googleapis.com/auth/drive.readonly",
-    label: "Drive",
-    detail: "Files and document content, read-only",
-    icon: HardDrive,
-  },
-] as const;
-
 export function PersonalConnections({
   payload,
   loading,
@@ -103,14 +87,17 @@ export function PersonalConnections({
   const [message, setMessage] = useState<
     { tone: "success" | "error"; text: string } | undefined
   >();
-  const grantedPermissions = useMemo(
-    () =>
-      permissions.filter((permission) =>
-        grant?.scopes.includes(permission.scope),
-      ),
-    [grant?.scopes],
+  const permissions = useMemo(
+    () => googlePermissionViews(grant?.scopes || provider?.scopes || []),
+    [grant?.scopes, provider?.scopes],
   );
+  const grantedPermissions = permissions.filter((permission) => permission.granted);
   const lastSuccessfulSyncAt = latestSuccessfulSyncAt(grant);
+
+  async function refreshIntegrationViews() {
+    window.dispatchEvent(new Event(INTEGRATION_STATUS_CHANGED_EVENT));
+    await onRefresh().catch(() => undefined);
+  }
 
   function blockUnavailableAction() {
     if (!actionDisabledReason) return false;
@@ -141,13 +128,13 @@ export function PersonalConnections({
         tone: "success",
         text: `Sync complete · ${imported} imported${removed ? ` · ${removed} removed` : ""}`,
       });
-      await onRefresh();
+      await refreshIntegrationViews();
     } catch (syncError) {
       setMessage({
         tone: "error",
         text: syncError instanceof Error ? syncError.message : "Google sync failed.",
       });
-      await onRefresh();
+      await refreshIntegrationViews();
     } finally {
       setAction(undefined);
     }
@@ -170,7 +157,7 @@ export function PersonalConnections({
       }
       setConfirmDisconnect(false);
       setMessage({ tone: "success", text: "Google disconnected from Asael." });
-      await onRefresh();
+      await refreshIntegrationViews();
     } catch (disconnectError) {
       setMessage({
         tone: "error",
@@ -192,8 +179,8 @@ export function PersonalConnections({
       const result = await response.json().catch(() => ({})) as { error?: string; deleted?: { documents?: number; memories?: number } };
       if (!response.ok) throw new Error(result.error || "Imported Google data could not be removed.");
       setConfirmDeleteData(false);
-      setMessage({ tone: "success", text: `Removed ${result.deleted?.documents || 0} Google knowledge items and forgot ${result.deleted?.memories || 0} derived memories. The read-only connection remains active.` });
-      await onRefresh();
+      setMessage({ tone: "success", text: `Removed ${result.deleted?.documents || 0} Google knowledge items and forgot ${result.deleted?.memories || 0} derived memories. The Google connection remains active.` });
+      await refreshIntegrationViews();
     } catch (deleteError) {
       setMessage({ tone: "error", text: deleteError instanceof Error ? deleteError.message : "Imported Google data could not be removed." });
     } finally { setAction(undefined); }
@@ -223,7 +210,7 @@ export function PersonalConnections({
                   Google workspace
                 </h2>
                 <p className="mt-0.5 text-sm text-muted">
-                  Gmail, Calendar and Drive become searchable context for Asael.
+                  Gmail, Calendar, Drive, and user-picked Photos connect through one account.
                 </p>
               </div>
               <ConnectionStatus
@@ -280,7 +267,7 @@ export function PersonalConnections({
                 className="inline-flex min-h-11 items-center rounded-md border border-line bg-background px-3 text-sm font-semibold text-muted"
                 title={actionDisabledReason}
               >
-                Read only
+                Managed by owner
               </span>
             ) : provider?.configured && !actionDisabledReason ? (
               <a
@@ -387,7 +374,7 @@ export function PersonalConnections({
             <span>
               Permissions
               <span className="ml-2 font-normal text-muted">
-                {grantedPermissions.length || permissions.length} read-only sources
+                {connected ? grantedPermissions.length : permissions.length} source permissions
               </span>
             </span>
             <ChevronDown
@@ -396,8 +383,8 @@ export function PersonalConnections({
               aria-hidden="true"
             />
           </summary>
-          <div className="grid gap-3 pb-1 pt-3 md:grid-cols-3">
-            {(connected ? grantedPermissions : permissions).map((permission) => {
+          <div className="grid gap-3 pb-1 pt-3 sm:grid-cols-2 xl:grid-cols-4">
+            {permissions.map((permission) => {
               const PermissionIcon = permission.icon;
               return (
                 <div key={permission.label} className="flex items-start gap-3">
@@ -407,7 +394,7 @@ export function PersonalConnections({
                   <div>
                     <p className="flex items-center gap-1.5 text-sm font-semibold">
                       {permission.label}
-                      {connected ? <Check size={13} className="text-primary" aria-hidden="true" /> : null}
+                      {connected && permission.granted ? <Check size={13} className="text-primary" aria-hidden="true" /> : null}
                     </p>
                     <p className="mt-0.5 text-xs leading-5 text-muted">{permission.detail}</p>
                   </div>
@@ -441,7 +428,7 @@ function ConnectionStatus({
     : !connected
       ? "Not connected"
       : manageable !== true
-        ? "Read only"
+        ? "Managed by owner"
       : syncStatus === "error"
         ? "Needs attention"
         : syncStatus === "syncing"
@@ -497,6 +484,68 @@ function latestSuccessfulSyncAt(grant?: OAuthGrant) {
     if (!latest || candidateTime > Date.parse(latest)) return candidate;
     return latest;
   }, undefined);
+}
+
+function googlePermissionViews(scopes: readonly string[]) {
+  const capabilities = googleWorkspaceCapabilitiesForScopes(scopes);
+  const gmailRead = capabilities.has("gmail.read");
+  const gmailSend = capabilities.has("gmail.send");
+  const gmailModify = capabilities.has("gmail.modify");
+  const gmailTrash = capabilities.has("gmail.trash");
+  const calendarRead = capabilities.has("calendar.events.read");
+  const calendarWrite = capabilities.has("calendar.events.write");
+  const driveRead = capabilities.has("drive.read");
+  const driveWrite = capabilities.has("drive.write");
+  const photosPicked = capabilities.has("photos.pick");
+
+  return [
+    {
+      id: "gmail",
+      label: "Gmail",
+      detail: gmailModify && gmailTrash
+        ? "Read + send + trash · recoverable deletion moves messages to Trash."
+        : gmailRead && gmailSend
+          ? "Read + send · messages cannot be moved to Trash."
+          : gmailRead
+            ? "Read only · messages and metadata; no sending or deletion."
+            : gmailSend
+              ? "Send only · inbox content is not readable."
+              : "Not granted · Gmail is unavailable.",
+      icon: Mail,
+      granted: gmailRead || gmailSend,
+    },
+    {
+      id: "calendar",
+      label: "Calendar",
+      detail: calendarWrite
+        ? "Read + write · view, create, update, and delete events."
+        : calendarRead
+          ? "Read only · view events and schedules; no event changes."
+          : "Not granted · Calendar is unavailable.",
+      icon: CalendarDays,
+      granted: calendarRead,
+    },
+    {
+      id: "drive",
+      label: "Drive",
+      detail: driveRead && driveWrite
+        ? "Full read + write · view and change all accessible Drive files."
+        : driveRead
+          ? "Read only · view and export files; no Drive changes."
+          : "Not granted · Drive is unavailable.",
+      icon: HardDrive,
+      granted: driveRead,
+    },
+    {
+      id: "photos",
+      label: "Photos",
+      detail: photosPicked
+        ? "User-picked only · import only items you choose in Google Photos Picker."
+        : "Not granted · Photos is never browsed or synced in the background.",
+      icon: Images,
+      granted: photosPicked,
+    },
+  ] as const;
 }
 
 function formatDate(value?: string) {
