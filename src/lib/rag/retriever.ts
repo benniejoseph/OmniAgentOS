@@ -25,6 +25,7 @@ import {
   buildCanonicalTextSourceWrite,
   type TextSourceLineageInput,
 } from "@/lib/sources/text-lineage";
+import { KNOWLEDGE_COGNIFY_PURPOSE_ID } from "@/lib/sources/purposes";
 import type { AiUsageScope } from "@/lib/usage/types";
 import type { CaptureIngestGuard } from "@/lib/capture/ingest-guard";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
@@ -159,45 +160,54 @@ export async function ingestTextDocument({
 
   await onProgress?.({ stage: "memory", chunkCount: chunks.length });
   abortSignal?.throwIfAborted();
-  const records = await saveMemories(
-    chunks.map((chunk) => ({
-      id: idempotencyKey
-        ? `${knowledge.document.id}_memory_${chunk.index}`
-        : undefined,
-      tenantId,
-      type: "knowledge",
-      title:
-        chunks.length > 1
-          ? `${safeTitle} (${chunk.index + 1}/${chunks.length})`
-          : safeTitle,
-      content: chunk.content,
-      source: safeSource,
-      tags: ["rag", ...safeTags],
-      scope: "workspace",
-      importance: 0.72,
-      assertedBy: "import",
-      evidenceRefs: [
-        `knowledge:${knowledge.document.id}`,
-        ...(knowledge.lineage?.evidenceUnitIdsByChunkIndex[chunk.index]
-          ? [
-              `evidence:${knowledge.lineage.evidenceUnitIdsByChunkIndex[chunk.index]}`,
-            ]
-          : []),
-        ...evidenceRefs.map((reference) => String(redactSensitive(reference)).trim().slice(0, 500)).filter(Boolean),
-      ],
-      embedding: embeddings?.[chunk.index],
-      ...((canonicalSourceWrite || executionScope)
-        ? {
-            executionScope:
-              canonicalSourceWrite?.executionScope || executionScope,
-            ...(canonicalSourceWrite
-              ? { formationOrigin: "source_observation" as const }
-              : {}),
-          }
-        : {}),
-    })),
-    { captureIngestGuard },
+  const cognitionOwnsSemanticMemory = Boolean(
+    canonicalSourceWrite?.adapterOutput.sourceItem.allowedPurposeIds.includes(
+      KNOWLEDGE_COGNIFY_PURPOSE_ID,
+    ),
   );
+  const records = cognitionOwnsSemanticMemory
+    ? []
+    : await saveMemories(
+        chunks.map((chunk) => ({
+          id: idempotencyKey
+            ? `${knowledge.document.id}_memory_${chunk.index}`
+            : undefined,
+          tenantId,
+          type: "knowledge",
+          title:
+            chunks.length > 1
+              ? `${safeTitle} (${chunk.index + 1}/${chunks.length})`
+              : safeTitle,
+          content: chunk.content,
+          source: safeSource,
+          tags: ["rag", ...safeTags],
+          scope: "workspace",
+          importance: 0.72,
+          assertedBy: "import",
+          evidenceRefs: [
+            `knowledge:${knowledge.document.id}`,
+            ...(knowledge.lineage?.evidenceUnitIdsByChunkIndex[chunk.index]
+              ? [
+                  `evidence:${knowledge.lineage.evidenceUnitIdsByChunkIndex[chunk.index]}`,
+                ]
+              : []),
+            ...evidenceRefs
+              .map((reference) => String(redactSensitive(reference)).trim().slice(0, 500))
+              .filter(Boolean),
+          ],
+          embedding: embeddings?.[chunk.index],
+          ...((canonicalSourceWrite || executionScope)
+            ? {
+                executionScope:
+                  canonicalSourceWrite?.executionScope || executionScope,
+                ...(canonicalSourceWrite
+                  ? { formationOrigin: "source_observation" as const }
+                  : {}),
+              }
+            : {}),
+        })),
+      { captureIngestGuard },
+    );
   const retired = captureIngestGuard
     ? await retireSupersededCaptureKnowledge({
         captureIngestGuard,
@@ -213,12 +223,14 @@ export async function ingestTextDocument({
     memoryCount: records.length,
   });
   abortSignal?.throwIfAborted();
-  if (deferMemoryGraphIndex) {
-    await queueMemoryGraphRebuild({ tenantId });
-  } else {
-    await indexMemoryGraphRecords(records, "knowledge.ingest", {
-      captureIngestGuard,
-    });
+  if (records.length > 0) {
+    if (deferMemoryGraphIndex) {
+      await queueMemoryGraphRebuild({ tenantId });
+    } else {
+      await indexMemoryGraphRecords(records, "knowledge.ingest", {
+        captureIngestGuard,
+      });
+    }
   }
 
   return {
