@@ -65,7 +65,10 @@ type StoreOptions = Readonly<{
 
 export type BoundedLocalKnowledgeCognitionPurgeResult = Readonly<{
   removedCandidateCount: number;
-  projectedMemoryIds: readonly string[];
+  projectedMemories: readonly Readonly<{
+    id: string;
+    ownerActorId: string;
+  }>[];
   moreAvailable: boolean;
 }>;
 
@@ -411,7 +414,7 @@ export async function purgeExpiredKnowledgeCognitionsBoundedLocal(input: {
   const emptyResult = (): BoundedLocalKnowledgeCognitionPurgeResult =>
     Object.freeze({
       removedCandidateCount: 0,
-      projectedMemoryIds: Object.freeze([] as string[]),
+      projectedMemories: Object.freeze([]),
       moreAvailable: false,
     });
   if (hasDatabaseUrl()) return emptyResult();
@@ -438,14 +441,20 @@ export async function purgeExpiredKnowledgeCognitionsBoundedLocal(input: {
       if (!removed.length) return ledger;
 
       const removedKeys = new Set(removed.map(cognitionRecordKey));
-      const projectedMemoryIds = [...new Set(
-        removed.flatMap((record) =>
-          record.projectedMemoryId ? [record.projectedMemoryId] : []
-        ),
-      )];
+      const projectedMemories = [...new Map(
+        removed.flatMap((record) => record.projectedMemoryId
+          ? [[
+              `${record.candidate.ownerActorId}\u0000${record.projectedMemoryId}`,
+              Object.freeze({
+                id: record.projectedMemoryId,
+                ownerActorId: record.candidate.ownerActorId,
+              }),
+            ] as const]
+          : []),
+      ).values()];
       result = Object.freeze({
         removedCandidateCount: removed.length,
-        projectedMemoryIds: Object.freeze(projectedMemoryIds),
+        projectedMemories: Object.freeze(projectedMemories),
         moreAvailable: expired.length > removed.length,
       });
       return {

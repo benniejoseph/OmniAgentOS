@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+  databaseMemoryAccessScopeFromExecutionScope,
+} from "@/lib/db/memory-access-scope";
+import {
   ensureDatabaseSchema,
   getSql,
   hasDatabaseUrl,
@@ -7,6 +10,9 @@ import {
   runWithDatabaseTenantScope,
 } from "@/lib/db/client";
 import { rebuildMemoryGraphSystemScoped } from "@/lib/memory/graph";
+import { forgetMemoryWithReceipt } from "@/lib/memory/store";
+import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
+import { purgeExpiredKnowledgeCognitionsBoundedLocal } from "@/lib/knowledge/cognification-store";
 import { retireEntityMemoryLineage } from "@/lib/entities/store";
 import { queueTemporalRelationProjection } from "@/lib/entities/relation-projection-queue";
 import { createExecutionScope } from "@/lib/security/execution-scope";
@@ -110,14 +116,53 @@ export async function sweepExpiredSensitiveData(input: {
     const deleted = emptyDeletedCounts();
     deleted.expiredAccessRequests = accessRequests.expired;
     deleted.accessRequests = accessRequests.deleted;
+    // The bounded-local cognition ledger cannot enumerate tenants safely. An
+    // all-tenant request therefore continues to cover the stores that support
+    // unscoped retention without purging one arbitrary cognition tenant while
+    // reporting all-tenant coverage.
+    const batchLimit = input.allTenants ? 0 : retentionBatchSize();
+    const cognitionSweep = input.allTenants
+      ? null
+      : await purgeExpiredKnowledgeCognitionsBoundedLocal({
+          tenantId: input.tenantId,
+          limit: batchLimit,
+        });
+    if (cognitionSweep) {
+      deleted.knowledgeCognitionCandidates =
+        cognitionSweep.removedCandidateCount;
+      for (const projected of cognitionSweep.projectedMemories) {
+        const executionScope = createExecutionScope({
+          tenantId: input.tenantId,
+          initiatingActorId: projected.ownerActorId,
+          executingPrincipalType: "system",
+          executingPrincipalId: "retention-sweep",
+          correlationId: `retention-cognition:${randomUUID()}`,
+          purpose: "memory.forget.v1",
+        });
+        const result = await forgetMemoryWithReceipt(projected.id, {
+          tenantId: input.tenantId,
+          executionScope,
+          accessScope: databaseMemoryAccessScopeFromExecutionScope(
+            executionScope,
+            {
+              purposeId: MEMORY_PURPOSE_IDS.forget,
+              auditPurpose: "security.retention.local-cognition-forget",
+            },
+          ),
+        });
+        if (result?.deletionDisposition === "committed") {
+          deleted.memories += 1;
+        }
+      }
+    }
     return {
       backend: "bounded_local",
       scope,
       tenantId: input.allTenants ? undefined : input.tenantId,
       policy,
       deleted,
-      batchLimit: 0,
-      moreAvailable: false,
+      batchLimit,
+      moreAvailable: cognitionSweep?.moreAvailable || false,
       completedAt: new Date().toISOString(),
     };
   }
