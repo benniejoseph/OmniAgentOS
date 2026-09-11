@@ -21,7 +21,7 @@ export default async function MissionsPage({
   const query = await searchParams;
   if (query.legacy !== "1") redirect("/app/projects?view=execution");
   const initial = await loadMissionWorkspace();
-  return <MissionWorkspace {...initial} />;
+  return <MissionWorkspace legacyHistory {...initial} />;
 }
 
 async function loadMissionWorkspace() {

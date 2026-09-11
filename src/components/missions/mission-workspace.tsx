@@ -298,6 +298,7 @@ export function MissionWorkspace({
   initialMissionReadContract,
   initialEventCursor = 0,
   initialAsOf = 0,
+  legacyHistory = false,
 }: {
   initialMissionId?: string;
   initialMissions?: MissionSummaryView[];
@@ -306,6 +307,7 @@ export function MissionWorkspace({
   initialMissionReadContract?: "readable_v1";
   initialEventCursor?: number;
   initialAsOf?: number;
+  legacyHistory?: boolean;
 }) {
   const pathname = usePathname();
   const { session, status: sessionStatus, refresh: refreshSession } = useWorkspaceSession();
@@ -390,12 +392,12 @@ export function MissionWorkspace({
   const selectedTask = selectedDetail?.tasks.find((task) => task.id === selectedTaskId);
   const createPermissionBlocked = permissionMessage(session, sessionStatus, "run.agent");
   const taskPermissionBlocked = permissionMessage(session, sessionStatus, "manage.workflow");
-  const createActionBlocked = missionCreateActionBlocked({
+  const createActionBlocked = legacyHistory ? "Earlier Mission runs are read-only. Create new durable work in Projects." : missionCreateActionBlocked({
     contract: missionReadContract,
     loading,
     permissionBlocked: createPermissionBlocked,
   });
-  const taskActionBlocked = missionTaskActionBlocked({
+  const taskActionBlocked = legacyHistory ? "Earlier Mission tasks are read-only. Continue new work in Projects." : missionTaskActionBlocked({
     mission: selectedMission,
     contract: missionReadContract,
     loading,
@@ -1362,13 +1364,11 @@ export function MissionWorkspace({
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
       <header className={styles.header}>
         <div className={styles.titleGroup}>
-          <div className={styles.titleLine}><span className={styles.titleIcon}><SquareKanban size={18} aria-hidden="true" /></span><div className={styles.titleCopy}><span className={styles.eyebrow}>Connected work</span><h1>Missions</h1></div></div>
-          <p>Move durable outcomes through linked tasks, agents, decisions, and evidence.</p>
+          <div className={styles.titleLine}><span className={styles.titleIcon}><SquareKanban size={18} aria-hidden="true" /></span><div className={styles.titleCopy}><span className={styles.eyebrow}>{legacyHistory ? "Read-only archive" : "Connected work"}</span><h1>{legacyHistory ? "Mission history" : "Missions"}</h1></div></div>
+          <p>{legacyHistory ? "Earlier Mission runs remain available for their task history, decisions, and evidence. Start all new durable work in Projects." : "Move durable outcomes through linked tasks, agents, decisions, and evidence."}</p>
         </div>
         <div className={styles.headerActions}>
-          <Link href="/app/connectors" title="Manage connected capabilities"><Zap size={14} aria-hidden="true" /> {capabilities.length} tools</Link>
-          <button type="button" className={styles.secondaryButton} onClick={() => setShowCreate(true)} disabled={Boolean(createActionBlocked)} title={createActionBlocked}><Plus size={14} aria-hidden="true" /> Mission</button>
-          {selectionMode === "exact" ? <button type="button" className={styles.primaryButton} onClick={() => setShowTaskCreate(true)} disabled={Boolean(taskActionBlocked)} title={taskActionBlocked}><Plus size={14} aria-hidden="true" /> Task</button> : null}
+          {legacyHistory ? <Link href="/app/projects?view=execution"><ArrowRight size={14} aria-hidden="true" /> Back to Projects</Link> : <><Link href="/app/connectors" title="Manage connected capabilities"><Zap size={14} aria-hidden="true" /> {capabilities.length} tools</Link><button type="button" className={styles.secondaryButton} onClick={() => setShowCreate(true)} disabled={Boolean(createActionBlocked)} title={createActionBlocked}><Plus size={14} aria-hidden="true" /> Mission</button>{selectionMode === "exact" ? <button type="button" className={styles.primaryButton} onClick={() => setShowTaskCreate(true)} disabled={Boolean(taskActionBlocked)} title={taskActionBlocked}><Plus size={14} aria-hidden="true" /> Task</button> : null}</>}
         </div>
       </header>
 
@@ -1377,7 +1377,7 @@ export function MissionWorkspace({
       <div className={clsx(styles.workspace, railCollapsed && styles.workspaceRailCollapsed)}>
         <aside className={clsx(styles.rail, railCollapsed && styles.railCollapsed)} aria-label="Mission selector">
           <div className={styles.railHeading}>
-            <span className={styles.railLabel}>{railCollapsed ? "" : <><b>Mission library</b><small>{visibleMissions.length}</small></>}</span>
+            <span className={styles.railLabel}>{railCollapsed ? "" : <><b>{legacyHistory ? "Earlier runs" : "Mission library"}</b><small>{visibleMissions.length}</small></>}</span>
             <button type="button" onClick={() => setRailCollapsed((current) => !current)} aria-label={railCollapsed ? "Expand mission selector" : "Collapse mission selector"} title={railCollapsed ? "Expand missions" : "Collapse missions"}>
               {railCollapsed ? <PanelLeftOpen size={15} aria-hidden="true" /> : <PanelLeftClose size={15} aria-hidden="true" />}
             </button>
@@ -1409,7 +1409,7 @@ export function MissionWorkspace({
               <label className={styles.filterField}><UserRound size={13} aria-hidden="true" /><span className="sr-only">Filter by assignee</span><select value={assigneeFilter} onChange={(event) => setAssigneeFilter(event.currentTarget.value)}><option value="all">All agents</option><option value="unassigned">Unassigned</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
               <label className={styles.filterField}><CircleDot size={13} aria-hidden="true" /><span className="sr-only">Filter by task state</span><select value={taskFilter} onChange={(event) => setTaskFilter(event.currentTarget.value as TaskFilter)}><option value="all">All states</option><option value="open">Open work</option><option value="attention">Needs attention</option><option value="done">Closed</option></select></label>
               <div className={styles.viewSwitch} role="group" aria-label="Mission view"><ViewButton active={view === "board"} label="Board" onClick={() => setView("board")} icon={<Columns3 size={14} />} /><ViewButton active={view === "canvas"} label="Canvas" onClick={() => setView("canvas")} icon={<GitBranch size={14} />} /><ViewButton active={view === "list"} label="List" onClick={() => setView("list")} icon={<LayoutList size={14} />} /></div>
-              <button type="button" className={styles.toolbarAdd} onClick={() => setShowTaskCreate(true)} disabled={Boolean(taskActionBlocked)} title={taskActionBlocked}><Plus size={14} aria-hidden="true" /> New task</button>
+              {!legacyHistory ? <button type="button" className={styles.toolbarAdd} onClick={() => setShowTaskCreate(true)} disabled={Boolean(taskActionBlocked)} title={taskActionBlocked}><Plus size={14} aria-hidden="true" /> New task</button> : null}
             </div>
             {detailLoading && !selectedDetail ? <CanvasSkeleton /> : <div className={styles.viewFrame} key={view}>
               {view === "board" ? <TaskBoard columns={BOARD_COLUMNS} groupedTasks={groupedTasks} allTasks={tasks} detail={selectedDetail} agents={agentNameMap} asOf={asOf} mobileColumn={mobileColumn} onMobileColumnChange={setMobileColumn} onSelectTask={(task) => setSelectedTaskId(task.id)} onCreateTask={() => setShowTaskCreate(true)} createDisabledReason={taskActionBlocked} />
