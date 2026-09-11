@@ -9,6 +9,18 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.sources.coverage.show", "Show source coverage", "Read connected knowledge domains, bounded backfill completeness, last verified freshness, and explicit source blind spots without inferring absence as a negative fact.", objectSchema({
     workspaceId: opaqueId("Optional exact workspace ID for Workspace-scoped integrations."),
   })),
+  readTool("app.market_research.features.show", "Show market technical features", "Run the frozen deterministic technical foundation against one exact caller-owned immutable market snapshot. The result is digest-bound and makes no transcript-authority claim.", requiredObjectSchema({
+    snapshotId: { type: "string", pattern: "^market_snapshot_[a-f0-9]{48}$", maxLength: 64 },
+  }, ["snapshotId"])),
+  readTool("app.memory.intelligence.show", "Show memory intelligence", "Read the authorized memory and knowledge overview or a bounded categorized index without changing retrieval ranking or memory state.", objectSchema({
+    view: { type: "string", enum: ["overview", "memory", "knowledge"], default: "overview" },
+    query: text(0, 4_000),
+    category: text(0, 80),
+    tier: { type: "string", enum: ["working", "episodic", "semantic", "procedural", "preference", "decision", "commitment", "summary", "all"], default: "all" },
+    state: { type: "string", enum: ["active", "candidate", "superseded", "contradicted", "archived", "all"], default: "all" },
+    cursor: text(0, 1_000),
+    limit: integer(1, 100, 40),
+  })),
   readTool("app.memory.shared.list", "List shared knowledge", "List durable knowledge from one explicitly selected project or workspace membership scope.", requiredObjectSchema({
     scope: { type: "string", enum: ["project", "workspace"] },
     projectId: opaqueId("Required when scope is project."),

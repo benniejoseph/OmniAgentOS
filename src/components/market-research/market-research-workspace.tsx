@@ -32,6 +32,7 @@ import {
   type MarketInstrumentId,
   type MarketInterval,
   type MarketResearchOverview,
+  type MarketTechnicalFeaturesResult,
 } from "@/lib/market-research/contracts";
 import styles from "@/components/market-research/market-research-workspace.module.css";
 
@@ -61,6 +62,7 @@ export function MarketResearchWorkspace() {
   const [replays, setReplays] = useState<MarketEventReplaysResult>();
   const [backfillJob, setBackfillJob] = useState<MarketBackfillJob>();
   const [replayJob, setReplayJob] = useState<MarketBackfillJob>();
+  const [features, setFeatures] = useState<MarketTechnicalFeaturesResult>();
   const [loading, setLoading] = useState(true);
   const [barsLoading, setBarsLoading] = useState(false);
   const [error, setError] = useState<string>();
@@ -69,6 +71,8 @@ export function MarketResearchWorkspace() {
   const [eventsError, setEventsError] = useState<string>();
   const [replaysLoading, setReplaysLoading] = useState(false);
   const [replayError, setReplayError] = useState<string>();
+  const [featuresLoading, setFeaturesLoading] = useState(false);
+  const [featuresError, setFeaturesError] = useState<string>();
 
   const loadOverview = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -180,6 +184,30 @@ export function MarketResearchWorkspace() {
       setReplayError(loadError instanceof Error ? loadError.message : "Market replays could not load.");
     } finally {
       if (!signal?.aborted) setReplaysLoading(false);
+    }
+  }, []);
+
+  const loadFeatures = useCallback(async (
+    snapshotId: string,
+    signal?: AbortSignal,
+  ) => {
+    setFeaturesLoading(true);
+    setFeaturesError(undefined);
+    try {
+      const query = new URLSearchParams({ snapshotId });
+      const response = await fetch(`/api/market-research/features?${query}`, {
+        cache: "no-store",
+        signal,
+      });
+      const payload = await response.json() as MarketTechnicalFeaturesResult & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Technical features could not load.");
+      setFeatures(payload);
+    } catch (loadError) {
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      setFeatures(undefined);
+      setFeaturesError(loadError instanceof Error ? loadError.message : "Technical features could not load.");
+    } finally {
+      if (!signal?.aborted) setFeaturesLoading(false);
     }
   }, []);
 
@@ -327,6 +355,19 @@ export function MarketResearchWorkspace() {
     };
   }, [interval, loadBars, selected]);
 
+  useEffect(() => {
+    if (activeTab !== "technicals" || !bars?.snapshotId) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => void loadFeatures(bars.snapshotId, controller.signal),
+      0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeTab, bars?.snapshotId, loadFeatures]);
+
   return (
     <main className={styles.shell}>
       <header className={styles.hero}>
@@ -417,7 +458,16 @@ export function MarketResearchWorkspace() {
               onReplayBackfill={startReplayBackfill}
             />
           ) : null}
-          {activeTab === "technicals" ? <TechnicalLab instrument={selected} overview={overview} /> : null}
+          {activeTab === "technicals" ? (
+            <TechnicalLab
+              instrument={selected}
+              overview={overview}
+              bars={bars}
+              features={features}
+              loading={featuresLoading || barsLoading}
+              error={featuresError || barsError}
+            />
+          ) : null}
           {activeTab === "journal" ? <ForecastJournal instrument={selected} overview={overview} /> : null}
         </>
       ) : loading ? <WorkspaceSkeleton /> : null}
@@ -700,28 +750,124 @@ function formatEventTime(value: string) {
   }).format(new Date(value));
 }
 
-function TechnicalLab({ instrument, overview }: { instrument: MarketInstrument; overview?: MarketResearchOverview }) {
+function TechnicalLab({
+  instrument,
+  overview,
+  bars,
+  features,
+  loading,
+  error,
+}: {
+  instrument: MarketInstrument;
+  overview?: MarketResearchOverview;
+  bars?: MarketBarsResult;
+  features?: MarketTechnicalFeaturesResult;
+  loading: boolean;
+  error?: string;
+}) {
   const detectorState = overview?.engineTracks.find((track) => track.id === "ict_detectors")?.state;
-  const detectors = [
-    ["Quarterly opens", "Yearly, monthly, weekly, daily, 90-minute and session partitions"],
-    ["Dealing range", "External/internal liquidity and premium/discount arrays"],
-    ["Displacement", "Versioned impulse and market-structure shift conditions"],
-    ["FVG / IFVG", "Three-candle imbalance, inversion, mitigation, and invalidation"],
-    ["Order blocks", "Strict displacement-linked candidate and mitigation rules"],
-    ["Time + session", "Asia, London, New York and macro-release proximity"],
-  ];
+  const current = features?.snapshot.id === bars?.snapshotId ? features : undefined;
+  const recentDetections = current?.detections.slice(0, 16) || [];
   return (
     <section className={styles.lab}>
       <header className={styles.labHeader}>
-        <div><p className={styles.eyebrow}>Deterministic structure · {instrument.shortLabel}</p><h2>ICT + Quarterly engine</h2><p>Technical evidence is deliberately limited to reviewed Quarterly Theory and core ICT definitions. Generic indicators are not mixed into the signal vocabulary.</p></div>
-        <span className={styles.stateBadge} data-state={detectorState}>{detectorState === "foundation" ? "Ready to implement" : "Waiting for bars"}</span>
+        <div><p className={styles.eyebrow}>Deterministic structure · {instrument.shortLabel}</p><h2>ICT + Quarterly engine</h2><p>Reproducible market-structure primitives run against one immutable price snapshot. Transcript-specific ICT rules stay separate until their exact definitions and source timecodes are reviewed.</p></div>
+        <span className={styles.stateBadge} data-state={detectorState}>{current ? "Reproducible v1" : detectorState === "foundation" ? "Loading foundation" : "Waiting for bars"}</span>
       </header>
-      <div className={styles.detectorGrid}>
-        {detectors.map(([title, detail], index) => <article key={title}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{title}</strong><p>{detail}</p></div><em>Definition pending review</em></article>)}
-      </div>
+
+      {error ? <div className={styles.technicalNotice} role="alert"><AlertTriangle size={18} /><span>{error}</span></div> : null}
+      {loading && !current ? <div className={styles.technicalLoading}><RefreshCw className={styles.spin} size={20} /><strong>Running deterministic features</strong><span>Reading the exact immutable snapshot; no model call is involved.</span></div> : null}
+      {!loading && !current && !error ? <div className={styles.technicalLoading}><ChartCandlestick size={20} /><strong>No verified snapshot</strong><span>Load provider-labelled bars in the Research desk to run this engine.</span></div> : null}
+
+      {current ? (
+        <>
+          <div className={styles.technicalReceipt}>
+            <span><ShieldCheck size={15} /> Snapshot <strong>{current.snapshot.sha256.slice(0, 12)}</strong></span>
+            <span>{current.detectorVersion}</span>
+            <span>{current.snapshot.barCount} × {current.snapshot.interval} bars</span>
+            <span>As of {formatTime(current.snapshot.asOf)}</span>
+            <span>Result <strong>{current.resultSha256.slice(0, 12)}</strong></span>
+          </div>
+
+          <div className={styles.technicalSummary}>
+            <article><small>Dealing range</small><strong>{current.range.zone}</strong><span>{current.range.positionPercent.toFixed(1)}% of last {current.range.lookbackBars} bars</span></article>
+            <article><small>90-minute quarter</small><strong>Q{current.timeContext.ninetyMinuteQuarter}</strong><span>{sessionLabel(current.timeContext.session)} · {current.timeContext.localTime} ET</span></article>
+            <article><small>Active price gaps</small><strong>{current.counts.activeFairValueGaps}</strong><span>Three-bar foundation definition</span></article>
+            <article><small>Sweeps / displacement</small><strong>{current.counts.liquiditySweeps} / {current.counts.displacements}</strong><span>Within this exact snapshot</span></article>
+          </div>
+
+          <div className={styles.referenceStrip}>
+            {current.timeContext.references.map((reference) => (
+              <article key={reference.id} data-available={reference.status === "available"}>
+                <small>{reference.label}</small>
+                <strong>{reference.open === null ? "Outside snapshot" : formatPrice(reference.open, instrument.instrumentId)}</strong>
+                <span>{reference.period}</span>
+              </article>
+            ))}
+          </div>
+
+          <div className={styles.technicalPanels}>
+            <section className={styles.detectionPanel}>
+              <header><div><strong>Latest detected structure</strong><span>{current.detections.length} bounded observations</span></div><small>Newest first</small></header>
+              {recentDetections.length ? <div className={styles.detectionRows}>
+                {recentDetections.map((detection) => (
+                  <article key={detection.id} data-direction={detection.direction}>
+                    <i />
+                    <span><strong>{detectionLabel(detection.kind)}</strong><small>{detection.direction} · {detection.state}</small></span>
+                    <time dateTime={detection.timestamp}>{formatFeatureTime(detection.timestamp)}</time>
+                    <span><strong>{formatPrice(detection.price, instrument.instrumentId)}</strong><small>{detection.zoneLow !== null && detection.zoneHigh !== null ? `${formatPrice(detection.zoneLow, instrument.instrumentId)}–${formatPrice(detection.zoneHigh, instrument.instrumentId)}` : `strength ${detection.strength.toFixed(2)}`}</small></span>
+                  </article>
+                ))}
+              </div> : <div className={styles.detectionEmpty}>No feature crossed its frozen threshold in this snapshot.</div>}
+            </section>
+
+            <section className={styles.definitionPanel}>
+              <header><strong>Frozen definitions</strong><small>Deterministic foundation</small></header>
+              <div>
+                {current.definitions.map((definition, index) => (
+                  <article key={definition.id}>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <div><strong>{definition.label}</strong><p>{definition.formula}</p><small>{definition.id}</small></div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </div>
+        </>
+      ) : null}
+
       <div className={styles.boundaryNote}><ShieldCheck size={18} /><div><strong>Transcript evidence boundary</strong><p>Each detected feature will cite the reviewed concept definition and transcript chunk that supports it. Transcript claims do not become executable rules until their definition is explicit and testable.</p></div></div>
     </section>
   );
+}
+
+function detectionLabel(kind: MarketTechnicalFeaturesResult["detections"][number]["kind"]) {
+  switch (kind) {
+    case "swing_high": return "Swing high";
+    case "swing_low": return "Swing low";
+    case "fair_value_gap": return "Price gap";
+    case "displacement": return "Displacement";
+    case "liquidity_sweep": return "Boundary sweep";
+  }
+}
+
+function sessionLabel(session: MarketTechnicalFeaturesResult["timeContext"]["session"]) {
+  switch (session) {
+    case "asia_evening": return "Asia evening";
+    case "london_open": return "London open";
+    case "new_york_am": return "New York AM";
+    case "new_york_pm": return "New York PM";
+    case "off_hours": return "Off hours";
+  }
+}
+
+function formatFeatureTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function ForecastJournal({ instrument, overview }: { instrument: MarketInstrument; overview?: MarketResearchOverview }) {

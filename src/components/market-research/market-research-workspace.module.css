@@ -195,6 +195,52 @@
 .spin { animation: market-spin 900ms linear infinite; }
 @keyframes market-spin { to { transform: rotate(360deg); } }
 
+.technicalNotice, .technicalLoading { display: flex; min-height: 5rem; align-items: center; gap: .7rem; margin-top: 1rem; border: 1px solid var(--line); border-radius: 1rem; padding: 1rem; background: var(--surface); }
+.technicalNotice { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 25%, var(--line)); }
+.technicalLoading { color: var(--primary); }
+.technicalLoading strong { color: var(--foreground); font-size: .78rem; }
+.technicalLoading span, .technicalNotice span { color: var(--muted); font-size: .68rem; line-height: 1.5; }
+.technicalReceipt { display: flex; min-height: 3.5rem; align-items: center; flex-wrap: wrap; gap: .45rem 1rem; margin-top: 1rem; border: 1px solid var(--line); border-radius: 1rem; padding: .7rem 1rem; color: var(--muted); background: oklch(from var(--surface) l c h / .82); font-family: var(--font-geist-mono), monospace; font-size: .61rem; }
+.technicalReceipt span { display: inline-flex; align-items: center; gap: .35rem; }
+.technicalReceipt span:first-child { color: var(--primary); }
+.technicalReceipt strong { color: var(--foreground); font-weight: 760; }
+.technicalSummary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 1rem; overflow: hidden; border: 1px solid var(--line); border-radius: 1.2rem 1.2rem 2.7rem 1.2rem; background: oklch(from var(--surface) l c h / .82); }
+.technicalSummary article { display: grid; min-height: 8.5rem; align-content: center; gap: .25rem; border-right: 1px solid var(--line); padding: 1rem; }
+.technicalSummary article:last-child { border-right: 0; }
+.technicalSummary small { color: var(--muted); font-size: .63rem; font-weight: 720; text-transform: uppercase; }
+.technicalSummary strong { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.7rem, 3vw, 2.5rem); font-weight: 580; letter-spacing: -.04em; text-transform: capitalize; }
+.technicalSummary span { color: var(--muted); font-size: .66rem; line-height: 1.45; }
+.referenceStrip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 1rem; border-block: 1px solid var(--line); }
+.referenceStrip article { display: grid; min-height: 6.2rem; align-content: center; gap: .2rem; border-right: 1px solid var(--line); padding: .8rem 1rem; }
+.referenceStrip article:last-child { border-right: 0; }
+.referenceStrip small { color: var(--muted); font-size: .61rem; }
+.referenceStrip strong { color: var(--warning); font-size: .82rem; }
+.referenceStrip article[data-available="true"] strong { color: var(--success); }
+.referenceStrip span { overflow: hidden; color: var(--muted); font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
+.technicalPanels { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(22rem, .75fr); gap: 1rem; margin-top: 1rem; }
+.detectionPanel, .definitionPanel { overflow: hidden; border: 1px solid var(--line); border-radius: 1.2rem; background: oklch(from var(--surface) l c h / .82); }
+.detectionPanel > header, .definitionPanel > header { display: flex; min-height: 4.2rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: .8rem 1rem; }
+.detectionPanel > header div { display: grid; gap: .15rem; }
+.detectionPanel > header strong, .definitionPanel > header strong { font-size: .76rem; }
+.detectionPanel > header span, .detectionPanel > header small, .definitionPanel > header small { color: var(--muted); font-size: .6rem; }
+.detectionRows article { display: grid; min-height: 4.5rem; grid-template-columns: auto minmax(9rem, 1fr) minmax(7rem, .7fr) minmax(9rem, .8fr); align-items: center; gap: .65rem; border-bottom: 1px solid var(--line); padding: .65rem 1rem; }
+.detectionRows article:last-child { border-bottom: 0; }
+.detectionRows i { width: .52rem; height: .52rem; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 .28rem oklch(from var(--muted) l c h / .09); }
+.detectionRows article[data-direction="bullish"] i { background: var(--success); box-shadow: 0 0 0 .28rem oklch(from var(--success) l c h / .1); }
+.detectionRows article[data-direction="bearish"] i { background: var(--danger); box-shadow: 0 0 0 .28rem oklch(from var(--danger) l c h / .1); }
+.detectionRows span, .detectionRows strong, .detectionRows small { min-width: 0; }
+.detectionRows strong, .detectionRows small { display: block; }
+.detectionRows strong { font-size: .69rem; text-transform: capitalize; }
+.detectionRows small { margin-top: .12rem; overflow: hidden; color: var(--muted); font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
+.detectionRows time { color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .58rem; }
+.detectionEmpty { display: grid; min-height: 12rem; place-items: center; padding: 2rem; color: var(--muted); font-size: .68rem; text-align: center; }
+.definitionPanel > div article { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .75rem; border-bottom: 1px solid var(--line); padding: .9rem 1rem; }
+.definitionPanel > div article:last-child { border-bottom: 0; }
+.definitionPanel article > span { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: 50%; color: var(--primary); background: oklch(from var(--primary) l c h / .09); font-family: var(--font-geist-mono), monospace; font-size: .57rem; }
+.definitionPanel article strong { font-size: .7rem; }
+.definitionPanel article p { margin-top: .2rem; color: var(--muted); font-size: .62rem; line-height: 1.55; }
+.definitionPanel article small { display: block; margin-top: .35rem; color: var(--primary); font-family: var(--font-geist-mono), monospace; font-size: .52rem; }
+
 .detectorGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 1.2rem 1.2rem 2.7rem 1.2rem; margin-top: 1rem; overflow: hidden; background: oklch(from var(--surface) l c h / .8); }
 .detectorGrid article { display: grid; min-height: 7.5rem; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .8rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 1rem; }
 .detectorGrid article:nth-child(even) { border-right: 0; }
@@ -245,6 +291,10 @@
   .analysisRail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .agentBrief { border-radius: 1.4rem; }
   .quickState span:first-child { display: none; }
+  .technicalSummary, .referenceStrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .technicalSummary article:nth-child(2), .referenceStrip article:nth-child(2) { border-right: 0; }
+  .technicalSummary article:nth-child(-n+2), .referenceStrip article:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .technicalPanels { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 58rem) {
@@ -272,6 +322,8 @@
   .eventRows article > * { padding: .18rem 0; }
   .eventRows article > span:first-child { grid-column: 1 / -1; }
   .eventRows article > span:nth-child(4), .eventRows article > span:nth-child(5) { grid-column: 1 / 2; }
+  .detectionRows article { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .detectionRows article > span:last-child { grid-column: 2 / -1; }
 }
 
 @media (max-width: 42rem) {
@@ -295,6 +347,12 @@
   .scoreFrame > div { grid-template-columns: minmax(0, 1fr); }
   .scoreFrame .metric { min-height: 5.5rem; border-right: 0; border-bottom: 1px solid var(--line); }
   .scoreFrame .metric:last-child { border-bottom: 0; }
+  .technicalSummary, .referenceStrip { grid-template-columns: minmax(0, 1fr); }
+  .technicalSummary article, .technicalSummary article:nth-child(2), .referenceStrip article, .referenceStrip article:nth-child(2) { border-right: 0; border-bottom: 1px solid var(--line); }
+  .technicalSummary article:last-child, .referenceStrip article:last-child { border-bottom: 0; }
+  .technicalReceipt { align-items: flex-start; flex-direction: column; }
+  .detectionRows article { grid-template-columns: auto minmax(0, 1fr); }
+  .detectionRows time, .detectionRows article > span:last-child { grid-column: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {
