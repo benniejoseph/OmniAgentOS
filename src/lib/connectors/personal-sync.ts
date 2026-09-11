@@ -273,6 +273,30 @@ async function syncPersonalProviderWithActorScope(input: { tenantId: string; act
             );
           }
           const capturedAt = item.capturedAt;
+          const existingCalendarDocument = item.calendarEvent
+            ? await getKnowledgeDocumentByIdempotencyKey(idempotencyKey, {
+                tenantId: input.tenantId,
+              })
+            : undefined;
+          if (
+            item.calendarEvent &&
+            existingCalendarDocument?.sourceItemId &&
+            existingCalendarDocument.sourceRevisionId
+          ) {
+            // Calendar-to-Meeting projection is deliberately independent of
+            // the heavier embedding/canonicalization repair below. Existing
+            // Calendar evidence can therefore make the Meetings page current
+            // immediately, even while knowledge backfill continues.
+            await projectGoogleCalendarMeeting({
+              tenantId: input.tenantId,
+              actorId: input.actorId,
+              event: item.calendarEvent,
+              sourceItemId: existingCalendarDocument.sourceItemId,
+              sourceRevisionId: existingCalendarDocument.sourceRevisionId,
+              sourceExecutionScope,
+              providerRevisionId: item.providerRevisionId || item.id,
+            });
+          }
           const ingest = () => ingestTextDocument({
             idempotencyKey,
             tenantId: input.tenantId,

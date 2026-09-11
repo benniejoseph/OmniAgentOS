@@ -715,6 +715,54 @@ describe("personal OAuth synchronization", () => {
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("projects existing Calendar evidence before the heavier knowledge refresh", async () => {
+    mocks.getDocument.mockResolvedValue({
+      sourceItemId: "source-item-existing",
+      sourceRevisionId: "source-revision-existing",
+    });
+    mocks.fetch.mockResolvedValue(json({
+      nextSyncToken: "calendar-complete",
+      items: [{
+        id: "event-existing",
+        etag: "event-existing-v1",
+        created: "2026-09-10T10:00:00Z",
+        updated: "2026-09-11T09:00:00Z",
+        summary: "Existing calendar meeting",
+        status: "confirmed",
+        start: { dateTime: "2026-09-12T10:00:00Z" },
+        end: { dateTime: "2026-09-12T11:00:00Z" },
+      }],
+    }));
+    const order: string[] = [];
+    mocks.projectCalendar.mockImplementation(async () => {
+      order.push("project");
+      return {};
+    });
+    mocks.ingest.mockImplementation(async () => {
+      order.push("ingest");
+      return {
+        document: {
+          sourceItemId: "source-item-existing",
+          sourceRevisionId: "source-revision-existing",
+        },
+      };
+    });
+
+    await syncPersonalProvider({
+      tenantId: "personal",
+      actorId: "owner",
+      provider: "google",
+      sources: ["calendar"],
+    });
+
+    expect(order[0]).toBe("project");
+    expect(mocks.projectCalendar).toHaveBeenCalledWith(expect.objectContaining({
+      sourceItemId: "source-item-existing",
+      sourceRevisionId: "source-revision-existing",
+      providerRevisionId: "event-existing-v1",
+    }));
+  });
+
   it("releases an interrupted lease without converting progress into an auth error", async () => {
     const abortController = new AbortController();
     mocks.fetch.mockImplementation(async (input: string | URL | Request) => {
