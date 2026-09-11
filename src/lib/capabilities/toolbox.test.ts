@@ -9,8 +9,54 @@ import {
 } from "@/lib/capabilities/toolbox";
 import type { CapabilityDescriptor } from "@/lib/capabilities/types";
 import type { ToolDefinition } from "@/lib/tools/types";
+import { getGovernedTools } from "@/lib/tools/registry";
 
 describe("progressive agent toolbox", () => {
+  it("keeps Google Workspace and imported Photos tools discoverable from Command language", async () => {
+    const dependencies = {
+      listNative: getGovernedTools,
+      search: vi.fn(async () => ({
+        capabilities: [],
+        query: "",
+        total: 0,
+        limit: 50,
+        hasMore: false,
+      })),
+      resolveMcp: vi.fn(async () => null),
+      resolveOpenApi: vi.fn(async () => null),
+    };
+
+    const drive = await loadProgressiveAgentTools(
+      { tenantId: "tenant-private", query: "find and edit my Google Drive document" },
+      dependencies,
+    );
+    expect(drive.definitions.map((item) => item.id)).toEqual(expect.arrayContaining([
+      "google.drive.search",
+      "google.docs.read",
+      "google.docs.update",
+    ]));
+
+    const mail = await loadProgressiveAgentTools(
+      { tenantId: "tenant-private", query: "read my Gmail and send an email" },
+      dependencies,
+    );
+    expect(mail.definitions.map((item) => item.id)).toEqual(expect.arrayContaining([
+      "google.gmail.search",
+      "google.gmail.read",
+      "app.communications.drafts.create",
+      "app.communications.deliver",
+    ]));
+
+    const photos = await loadProgressiveAgentTools(
+      { tenantId: "tenant-private", query: "show my imported Google Photos" },
+      dependencies,
+    );
+    expect(photos.definitions.map((item) => item.id)).toEqual(expect.arrayContaining([
+      "app.assets.list",
+      "app.assets.show",
+    ]));
+  });
+
   it("caps model-facing tools while retaining relevant native and external tools", async () => {
     const nativeDefinitions = Array.from({ length: 50 }, (_, index) => tool({
       id: index === 49 ? "app.memory.shared.list" : `app.unrelated.tool-${index}`,

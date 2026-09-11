@@ -197,6 +197,51 @@ describe("governed Google Workspace actions", () => {
       .searchParams.get("supportsAllDrives")).toBe("true");
   });
 
+  it("finds live Drive files with bounded metadata and the read capability", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({
+      files: [{
+        id: "document_1",
+        name: "O'Brien plan",
+        mimeType: "application/vnd.google-apps.document",
+        size: "1234",
+        createdTime: "2026-09-01T10:00:00.000Z",
+        modifiedTime: "2026-09-11T10:00:00.000Z",
+        webViewLink: "https://docs.google.com/document/d/document_1/edit",
+        parents: ["folder_1", "../../unsafe"],
+        capabilities: { canEdit: true, canDownload: false },
+      }],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await executeGoogleWorkspaceAction(
+      "google.drive.search",
+      { query: "O'Brien", maxResults: 5 },
+      owner,
+    );
+
+    expect(access.getActive).toHaveBeenCalledWith(expect.objectContaining({
+      capability: "drive.read",
+    }));
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.searchParams.get("q")).toBe(
+      "trashed = false and (name contains 'O\\'Brien' or fullText contains 'O\\'Brien')",
+    );
+    expect(url.searchParams.get("pageSize")).toBe("5");
+    expect(result).toMatchObject({
+      query: "O'Brien",
+      resultCount: 1,
+      contentTrust: "untrusted_provider_content",
+      files: [{
+        fileId: "document_1",
+        name: "O'Brien plan",
+        size: 1234,
+        parentIds: ["folder_1"],
+        canEdit: true,
+        canDownload: false,
+      }],
+    });
+  });
+
   it("returns metadata instead of copying oversized Drive bytes into the transcript", async () => {
     const fetchMock = vi.fn().mockResolvedValue(json({
       id: "file_1",
