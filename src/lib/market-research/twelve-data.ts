@@ -75,6 +75,47 @@ export async function fetchTwelveDataBarSnapshot(input: {
   interval: MarketInterval;
   outputSize: number;
 }): Promise<TwelveDataBarSnapshot> {
+  return fetchTwelveDataSnapshot({
+    ...input,
+    request: { mode: "recent", outputSize: input.outputSize },
+  });
+}
+
+export async function fetchTwelveDataBarRangeSnapshot(input: {
+  instrumentId: MarketInstrumentId;
+  interval: MarketInterval;
+  startAt: string;
+  endAt: string;
+}): Promise<TwelveDataBarSnapshot> {
+  const startAt = new Date(input.startAt);
+  const endAt = new Date(input.endAt);
+  if (
+    !Number.isFinite(startAt.getTime()) ||
+    !Number.isFinite(endAt.getTime()) ||
+    startAt >= endAt ||
+    endAt.getTime() - startAt.getTime() > 72 * 60 * 60 * 1_000
+  ) {
+    throw new MarketDataProviderError(
+      "A historical market range must be valid, ordered, and no longer than 72 hours.",
+    );
+  }
+  return fetchTwelveDataSnapshot({
+    ...input,
+    request: {
+      mode: "range",
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+    },
+  });
+}
+
+async function fetchTwelveDataSnapshot(input: {
+  instrumentId: MarketInstrumentId;
+  interval: MarketInterval;
+  request:
+    | { mode: "recent"; outputSize: number }
+    | { mode: "range"; startAt: string; endAt: string };
+}): Promise<TwelveDataBarSnapshot> {
   const apiKey = process.env.TWELVE_DATA_API_KEY?.trim();
   if (!apiKey) throw new MarketDataCredentialRequiredError();
   const instrument = marketInstrument(input.instrumentId);
@@ -90,7 +131,12 @@ export async function fetchTwelveDataBarSnapshot(input: {
   const url = new URL("https://api.twelvedata.com/time_series");
   url.searchParams.set("symbol", mapping.symbol);
   url.searchParams.set("interval", input.interval);
-  url.searchParams.set("outputsize", String(input.outputSize));
+  if (input.request.mode === "recent") {
+    url.searchParams.set("outputsize", String(input.request.outputSize));
+  } else {
+    url.searchParams.set("start_date", providerRangeTimestamp(input.request.startAt));
+    url.searchParams.set("end_date", providerRangeTimestamp(input.request.endAt));
+  }
   url.searchParams.set("timezone", "UTC");
   url.searchParams.set("format", "JSON");
 
@@ -154,6 +200,10 @@ export async function fetchTwelveDataBarSnapshot(input: {
     }),
     sourcePayload: raw,
   };
+}
+
+function providerRangeTimestamp(value: string) {
+  return new Date(value).toISOString().replace("T", " ").replace(".000Z", "");
 }
 
 async function readBoundedResponseText(response: Response) {
