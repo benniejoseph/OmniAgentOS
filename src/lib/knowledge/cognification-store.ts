@@ -63,6 +63,15 @@ type StoreOptions = Readonly<{
   sql?: CognificationSql;
 }>;
 
+export type BoundedLocalKnowledgeCognitionPurgeResult = Readonly<{
+  removedCandidateCount: number;
+  projectedMemoryIds: readonly string[];
+  moreAvailable: boolean;
+}>;
+
+const BOUNDED_LOCAL_COGNITION_PURGE_DEFAULT_LIMIT = 500;
+const BOUNDED_LOCAL_COGNITION_PURGE_MAX_LIMIT = 5_000;
+
 const emptyLedger: KnowledgeCognitionLedger = Object.freeze({
   schemaVersion: 1,
   records: Object.freeze([]),
@@ -371,6 +380,83 @@ export async function purgeKnowledgeCognitionsForDocuments(input: {
     },
   );
   return purged;
+}
+
+/**
+ * Physically removes a deterministic batch of expired cognition contracts from
+ * the bounded-local ledger. PostgreSQL retention is governed by its database
+ * purge function, so this primitive deliberately stays side-effect free when a
+ * database is configured. Linked memories are returned for the retention
+ * coordinator to scrub through the memory store's own governed path.
+ */
+export async function purgeExpiredKnowledgeCognitionsBoundedLocal(input: {
+  tenantId: string;
+  asOf?: string;
+  limit?: number;
+}): Promise<BoundedLocalKnowledgeCognitionPurgeResult> {
+  const tenantId = requiredId(input.tenantId, "tenant id");
+  const asOf = input.asOf === undefined
+    ? new Date().toISOString()
+    : requiredTimestamp(input.asOf, "purge cutoff");
+  const requestedLimit = input.limit === undefined
+    ? BOUNDED_LOCAL_COGNITION_PURGE_DEFAULT_LIMIT
+    : input.limit;
+  if (!Number.isFinite(requestedLimit)) {
+    throw new Error("Knowledge cognition purge limit is invalid.");
+  }
+  const limit = Math.min(
+    Math.max(Math.trunc(requestedLimit), 1),
+    BOUNDED_LOCAL_COGNITION_PURGE_MAX_LIMIT,
+  );
+  const emptyResult = (): BoundedLocalKnowledgeCognitionPurgeResult =>
+    Object.freeze({
+      removedCandidateCount: 0,
+      projectedMemoryIds: Object.freeze([] as string[]),
+      moreAvailable: false,
+    });
+  if (hasDatabaseUrl()) return emptyResult();
+
+  let result = emptyResult();
+  await updateJsonFile<KnowledgeCognitionLedger>(
+    cognitionFile(),
+    emptyLedger,
+    (ledger) => {
+      const records = ledger.records.map(parseRecord);
+      const expired = records
+        .filter((record) =>
+          record.candidate.tenantId === tenantId &&
+          record.candidate.retentionExpiresAt !== null &&
+          record.candidate.retentionExpiresAt <= asOf
+        )
+        .sort((left, right) =>
+          left.candidate.retentionExpiresAt!.localeCompare(
+            right.candidate.retentionExpiresAt!,
+          ) ||
+          left.candidate.batchId.localeCompare(right.candidate.batchId)
+        );
+      const removed = expired.slice(0, limit);
+      if (!removed.length) return ledger;
+
+      const removedKeys = new Set(removed.map(cognitionRecordKey));
+      const projectedMemoryIds = [...new Set(
+        removed.flatMap((record) =>
+          record.projectedMemoryId ? [record.projectedMemoryId] : []
+        ),
+      )];
+      result = Object.freeze({
+        removedCandidateCount: removed.length,
+        projectedMemoryIds: Object.freeze(projectedMemoryIds),
+        moreAvailable: expired.length > removed.length,
+      });
+      return {
+        schemaVersion: 1,
+        records: records.filter((record) =>
+          !removedKeys.has(cognitionRecordKey(record))
+        ),
+      };
+    },
+  );
+  return result;
 }
 
 export async function reviewKnowledgeCognition(input: {
@@ -961,6 +1047,10 @@ function parseReviewMetadata(value: unknown): KnowledgeCognitionReviewMetadata {
 function candidateCount(candidate: CognificationCandidateBatchV1) {
   return candidate.topics.length + candidate.claims.length +
     candidate.entities.length + candidate.relations.length + 1;
+}
+
+function cognitionRecordKey(record: KnowledgeCognitionRecord) {
+  return `${record.candidate.tenantId}\u0000${record.candidate.ownerActorId}\u0000${record.candidate.batchId}`;
 }
 
 function jsonValue(value: unknown) {
