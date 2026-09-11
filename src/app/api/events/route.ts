@@ -6,6 +6,7 @@ import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const GET = withDatabaseRequestScope(GETHandler);
+const privateNoStoreHeaders = { "cache-control": "private, no-store" };
 
 async function GETHandler(request: Request) {
   let context;
@@ -31,22 +32,28 @@ async function GETHandler(request: Request) {
     requestActorBinding?.readableOwnerActorIds || [context.actorId];
 
   if (streamId) {
-    return Response.json({
-      stream: streamId,
-      events: await listStreamEvents(streamId, {
+    return Response.json(
+      {
+        stream: streamId,
+        events: await listStreamEvents(streamId, {
+          tenantId: context.tenantId,
+          privateActorIds,
+          limit,
+        }),
+      },
+      { headers: privateNoStoreHeaders },
+    );
+  }
+
+  return Response.json(
+    {
+      events: await listRecentEvents({
         tenantId: context.tenantId,
         privateActorIds,
         limit,
+        type,
       }),
-    });
-  }
-
-  return Response.json({
-    events: await listRecentEvents({
-      tenantId: context.tenantId,
-      privateActorIds,
-      limit,
-      type,
-    }),
-  });
+    },
+    { headers: privateNoStoreHeaders },
+  );
 }

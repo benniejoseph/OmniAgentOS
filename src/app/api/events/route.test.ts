@@ -70,6 +70,7 @@ describe("domain event route", () => {
     ));
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(routeMocks.listStreamEvents).toHaveBeenCalledWith(
       "conversation-summary:episode-one",
       {
