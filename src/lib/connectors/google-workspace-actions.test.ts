@@ -396,6 +396,24 @@ describe("governed Google Workspace actions", () => {
     expect(result).toBeUndefined();
   });
 
+  it("refuses ambiguous RAW strings that exact reads cannot distinguish from formulas", () => {
+    expect(() => parseGoogleWorkspaceActionInput("google.sheets.update", {
+      spreadsheetId: "spreadsheet_1",
+      range: "Sheet1!A1",
+      values: [["=1+1"]],
+      expectedCurrentSha256: "0".repeat(64),
+    })).toThrow(/cannot accept strings beginning with '='.*formulas/i);
+
+    expect(parseGoogleWorkspaceActionInput("google.sheets.update", {
+      spreadsheetId: "spreadsheet_1",
+      range: "Sheet1!A1",
+      values: [[""]],
+      expectedCurrentSha256: "0".repeat(64),
+    })).toMatchObject({ values: [[""]] });
+
+    expect(access.getActive).not.toHaveBeenCalled();
+  });
+
   it("allows viewer-shared Docs and Slides to be read without revision IDs", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json({

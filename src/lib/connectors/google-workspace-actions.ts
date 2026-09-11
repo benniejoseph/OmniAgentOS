@@ -44,9 +44,17 @@ const sheetCellSchema = z.union([
   z.number().finite(),
   z.boolean(),
 ]);
+const sheetWriteCellSchema = z.union([
+  z.string().max(50_000).refine((value) => !value.startsWith("="), {
+    message:
+      "RAW Sheets updates cannot accept strings beginning with '=' because exact verification cannot distinguish them from formulas.",
+  }),
+  z.number().finite(),
+  z.boolean(),
+]);
 const sheetReadValuesSchema = z.array(z.array(sheetCellSchema).max(100)).max(50);
 const sheetValuesSchema = z.array(
-  z.array(sheetCellSchema).min(1).max(100),
+  z.array(sheetWriteCellSchema).min(1).max(100),
 ).min(1).max(50)
   .superRefine((rows, context) => {
     const cells = rows.reduce((total, row) => total + row.length, 0);

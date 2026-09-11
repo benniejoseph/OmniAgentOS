@@ -214,7 +214,14 @@ export const governedTools: ToolDefinition[] = [
             type: "array",
             minItems: 1,
             maxItems: 100,
-            items: { type: ["string", "number", "boolean"] },
+            items: {
+              description: "A RAW cell value. Strings beginning with '=' are refused because they are indistinguishable from formulas during exact verification.",
+              anyOf: [
+                { type: "string", maxLength: 50_000, pattern: "^(?:[^=]|$)" },
+                { type: "number" },
+                { type: "boolean" },
+              ],
+            },
           },
         },
         expectedCurrentSha256: sha256Schema("Digest returned by google.sheets.read."),
