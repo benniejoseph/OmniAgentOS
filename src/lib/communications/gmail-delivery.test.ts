@@ -26,6 +26,7 @@ import { GOOGLE_GMAIL_SEND_SCOPE } from "@/lib/connectors/oauth-providers";
 describe("governed Gmail delivery", () => {
   beforeEach(() => {
     oauth.get.mockResolvedValue({
+      credentialState: "active",
       grant: {
         scopes: [GOOGLE_GMAIL_SEND_SCOPE],
         expiresAt: "2099-01-01T00:00:00.000Z",
@@ -92,6 +93,83 @@ describe("governed Gmail delivery", () => {
       actorId: "user-a",
       mode: "reconcile",
     })).rejects.toBeInstanceOf(GmailDeliveryOutcomeUnknownError);
+  });
+
+  it("treats an unreadable success acknowledgement as an unknown sent outcome", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(new Response("not-json", { status: 200 })));
+
+    await expect(deliverGmailDraft(sampleDraft(), {
+      tenantId: "tenant-a",
+      actorId: "user-a",
+      mode: "deliver",
+    })).rejects.toBeInstanceOf(GmailDeliveryOutcomeUnknownError);
+  });
+
+  it("reconciles an HTTP 408 send outcome without issuing a second POST", async () => {
+    const draft = sampleDraft();
+    const raw = Buffer.from(buildGmailRawMessage(draft), "utf8").toString("base64url");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(new Response("", { status: 408 }))
+      .mockResolvedValueOnce(jsonResponse({ messages: [{ id: "gmail-message-1" }] }))
+      .mockResolvedValueOnce(jsonResponse({
+        id: "gmail-message-1",
+        threadId: "gmail-thread-1",
+        raw,
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(deliverGmailDraft(draft, {
+      tenantId: "tenant-a",
+      actorId: "user-a",
+      mode: "deliver",
+    })).rejects.toBeInstanceOf(GmailDeliveryOutcomeUnknownError);
+    const reconciled = await deliverGmailDraft(draft, {
+      tenantId: "tenant-a",
+      actorId: "user-a",
+      mode: "reconcile",
+    });
+
+    expect(reconciled.providerAcknowledgement)
+      .toBe("provider_idempotency_reconciliation");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"))
+      .toHaveLength(1);
+  });
+
+  it("treats a post-send verification network loss as unknown instead of retryable", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ messages: [] }))
+      .mockResolvedValueOnce(jsonResponse({ id: "gmail-message-1" }))
+      .mockRejectedValueOnce(new Error("network response lost")));
+
+    await expect(deliverGmailDraft(sampleDraft(), {
+      tenantId: "tenant-a",
+      actorId: "user-a",
+      mode: "deliver",
+    })).rejects.toBeInstanceOf(GmailDeliveryOutcomeUnknownError);
+  });
+
+  it.each([
+    ["network loss", () => Promise.reject(new Error("network lost"))],
+    ["provider failure", () => Promise.resolve(new Response("", { status: 503 }))],
+    ["invalid JSON", () => Promise.resolve(new Response("not-json", { status: 200 }))],
+  ])("keeps an inconclusive reconcile lookup pending after %s", async (_label, response) => {
+    const fetchMock = vi.fn(response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(deliverGmailDraft(sampleDraft(), {
+      tenantId: "tenant-a",
+      actorId: "user-a",
+      mode: "reconcile",
+    })).rejects.toBeInstanceOf(GmailDeliveryOutcomeUnknownError);
+    const calls = fetchMock.mock.calls as unknown as Array<[
+      string | URL | Request,
+      RequestInit?,
+    ]>;
+    expect(calls.some(([, init]) => init?.method === "POST"))
+      .toBe(false);
   });
 });
 

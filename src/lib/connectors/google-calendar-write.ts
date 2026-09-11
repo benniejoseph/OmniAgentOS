@@ -1,19 +1,17 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import {
-  GOOGLE_CALENDAR_WRITE_SCOPE,
-  refreshOAuthAccess,
-} from "@/lib/connectors/oauth-providers";
-import {
-  getOAuthGrantSecrets,
-  saveOAuthGrant,
-} from "@/lib/connectors/oauth-store";
+import { getActiveGoogleWorkspaceAccess } from "@/lib/connectors/google-workspace-access";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 const dateTimeSchema = z.string().datetime({ offset: true });
 
 export const googleCalendarCreateSchema = z.object({
-  calendarId: z.string().trim().min(1).max(240).optional().default("primary"),
+  calendarId: z.string().trim().min(1).max(500)
+    .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), {
+      message: "Google Calendar ID contains unsupported characters.",
+    })
+    .optional()
+    .default("primary"),
   summary: z.string().trim().min(1).max(1_000),
   description: z.string().max(8_000).optional(),
   location: z.string().max(1_000).optional(),
@@ -139,30 +137,11 @@ export async function reconcileGoogleCalendarEvent(inputValue: unknown, options:
 }
 
 async function googleAuthorization(input: { tenantId: string; actorId: string }) {
-  const secrets = await getOAuthGrantSecrets(input.tenantId, input.actorId, "google");
-  if (!secrets) throw new Error("Google is not connected for this user.");
-  if (!secrets.grant.scopes.includes(GOOGLE_CALENDAR_WRITE_SCOPE)) {
-    throw new Error("Reconnect Google to grant calendar event write access.");
-  }
-  const current = typeof secrets.tokens.access_token === "string"
-    ? secrets.tokens.access_token
-    : "";
-  if (current && (!secrets.grant.expiresAt || Date.parse(secrets.grant.expiresAt) > Date.now() + 60_000)) {
-    return { accessToken: current };
-  }
-  const refreshToken = typeof secrets.tokens.refresh_token === "string"
-    ? secrets.tokens.refresh_token
-    : "";
-  if (!refreshToken) throw new Error("Google access expired. Reconnect Google.");
-  const refreshed = await refreshOAuthAccess("google", refreshToken);
-  await saveOAuthGrant({
+  return getActiveGoogleWorkspaceAccess({
     tenantId: input.tenantId,
     actorId: input.actorId,
-    provider: "google",
-    tokens: refreshed,
-    authorizationMode: "refresh",
+    capability: "calendar.events.write",
   });
-  return { accessToken: String(refreshed.access_token) };
 }
 
 async function readGoogleCalendarEvent(input: {

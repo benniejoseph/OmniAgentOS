@@ -10,7 +10,8 @@ const oauth = vi.hoisted(() => ({
   saveOAuthGrant: vi.fn(),
 }));
 
-vi.mock("@/lib/connectors/oauth-store", () => ({
+vi.mock("@/lib/connectors/oauth-store", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/connectors/oauth-store")>(),
   getOAuthGrantSecrets: oauth.getOAuthGrantSecrets,
   saveOAuthGrant: oauth.saveOAuthGrant,
 }));
@@ -30,6 +31,7 @@ describe("governed Google Calendar effect receipts", () => {
     delete process.env.DATABASE_URL;
     vi.clearAllMocks();
     oauth.getOAuthGrantSecrets.mockResolvedValue({
+      credentialState: "active",
       grant: {
         id: "grant-calendar",
         tenantId: "tenant-calendar",
@@ -160,17 +162,34 @@ describe("governed Google Calendar effect receipts", () => {
       toolId: "calendar.create",
       input: eventInput,
       dryRun: false,
-      approved: true,
       context,
       executionScope: scope,
       effectBinding,
       idempotencyKey: "workflow:calendar:create-once",
     } as const;
 
-    await expect(executor.executeGovernedTool(request))
+    const pending = await executor.executeGovernedTool(request);
+    expect(pending.record.status).toBe("approval_required");
+    const claimToken = "calendar-workflow-claim";
+    const claim = await store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId,
+      approvedBy: "calendar-reviewer",
+      approvedRole: "admin",
+      claimToken,
+    });
+    const claimedRequest = {
+      ...request,
+      input: store.openToolExecutionInput(claim.record!),
+      approved: true,
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+    } as const;
+
+    await expect(executor.executeGovernedTool(claimedRequest))
       .rejects.toBeInstanceOf(executor.EffectReceiptFinalizationError);
     const retained = await store.getToolExecution(
-      `idem_${(await import("node:crypto")).createHash("sha256").update(`${tenantId}\0${request.idempotencyKey}`).digest("hex")}`,
+      pending.record.id,
       { tenantId },
     );
     expect(retained?.status).toBe("executing");
@@ -180,7 +199,10 @@ describe("governed Google Calendar effect receipts", () => {
       executionKind: "workflow",
     });
 
-    const reconciled = await executor.executeGovernedTool(request);
+    const reconciled = await executor.executeGovernedTool({
+      ...claimedRequest,
+      existingRecord: retained,
+    });
     expect(postCount).toBe(1);
     expect(getCount).toBe(2);
     expect(reconciled.record).toMatchObject({
