@@ -52,7 +52,12 @@ async function POSTHandler(request: Request) {
       headers: privateNoStoreHeaders,
     });
   } catch (error) {
-    console.error("Market forecast generation failed.", error instanceof Error ? error.name : "UnknownError");
+    console.error("Market forecast generation failed.", {
+      name: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error
+        ? error.message.slice(0, 1_000)
+        : "A non-Error value was thrown.",
+    });
     return Response.json({
       error: "Market scenario generation failed. Check the configured model and exact price feed, then try again.",
     }, { status: 503, headers: privateNoStoreHeaders });
