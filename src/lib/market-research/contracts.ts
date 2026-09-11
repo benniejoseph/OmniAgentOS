@@ -336,6 +336,74 @@ export type MarketEventReplaysResult = z.infer<
   typeof marketEventReplaysResultSchema
 >;
 
+export const MARKET_EVENT_BASELINE_VERSION =
+  "market-event-baseline:1" as const;
+
+export const marketEventBaselinesQuerySchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  minimumSampleSize: z.number().int().min(5).max(100).default(20),
+}).strict();
+
+const marketReturnDistributionSchema = z.object({
+  sampleSize: z.number().int().nonnegative(),
+  meanBps: z.number().finite().nullable(),
+  medianBps: z.number().finite().nullable(),
+  lowerQuartileBps: z.number().finite().nullable(),
+  upperQuartileBps: z.number().finite().nullable(),
+}).strict();
+
+export const marketEventBaselineSchema = z.object({
+  eventKey: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
+  sampleSize: z.number().int().positive(),
+  state: z.enum(["low_sample", "descriptive_baseline"]),
+  firstOccurredAt: z.string().datetime({ offset: true }),
+  lastOccurredAt: z.string().datetime({ offset: true }),
+  directions: z.object({
+    up: z.number().int().nonnegative(),
+    down: z.number().int().nonnegative(),
+    flat: z.number().int().nonnegative(),
+  }).strict(),
+  empiricalRates: z.object({
+    up: z.number().finite().min(0).max(1),
+    down: z.number().finite().min(0).max(1),
+    flat: z.number().finite().min(0).max(1),
+  }).strict(),
+  post5m: marketReturnDistributionSchema,
+  post15m: marketReturnDistributionSchema,
+  post60m: marketReturnDistributionSchema,
+  post240m: marketReturnDistributionSchema,
+  excursions: z.object({
+    sampleSize: z.number().int().nonnegative(),
+    medianFavorableBps: z.number().finite().nonnegative().nullable(),
+    medianAdverseBps: z.number().finite().nonnegative().nullable(),
+  }).strict(),
+}).strict().superRefine((value, context) => {
+  const directionTotal = value.directions.up + value.directions.down + value.directions.flat;
+  if (directionTotal !== value.sampleSize) {
+    context.addIssue({
+      code: "custom",
+      message: "Market event baseline direction counts must equal its sample size.",
+    });
+  }
+});
+
+export type MarketEventBaseline = z.infer<typeof marketEventBaselineSchema>;
+
+export const marketEventBaselinesResultSchema = z.object({
+  contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
+  baselineVersion: z.literal(MARKET_EVENT_BASELINE_VERSION),
+  instrumentId: marketInstrumentIdSchema,
+  minimumSampleSize: z.number().int().min(5).max(100),
+  includedReplays: z.number().int().nonnegative(),
+  groups: z.array(marketEventBaselineSchema).max(50),
+  resultSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  interpretation: z.literal("descriptive_not_predictive"),
+}).strict();
+
+export type MarketEventBaselinesResult = z.infer<
+  typeof marketEventBaselinesResultSchema
+>;
+
 export const marketMacroObservationSchema = z.object({
   id: z.string().regex(/^market_observation_[a-f0-9]{48}$/),
   metricKey: z.string().regex(/^[a-z][a-z0-9_]{1,79}$/),

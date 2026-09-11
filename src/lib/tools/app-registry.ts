@@ -12,6 +12,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.market_research.features.show", "Show market technical features", "Run the frozen deterministic technical foundation against one exact caller-owned immutable market snapshot. The result is digest-bound and makes no transcript-authority claim.", requiredObjectSchema({
     snapshotId: { type: "string", pattern: "^market_snapshot_[a-f0-9]{48}$", maxLength: 64 },
   }, ["snapshotId"])),
+  readTool("app.market_research.baselines.show", "Show market event baselines", "Read deterministic descriptive outcome distributions for the caller's immutable event-replay cohort. Historical frequencies are explicitly not predictive probabilities.", requiredObjectSchema({
+    instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
+    minimumSampleSize: integer(5, 100, 20),
+  }, ["instrumentId"])),
   readTool("app.memory.intelligence.show", "Show memory intelligence", "Read the authorized memory and knowledge overview or a bounded categorized index without changing retrieval ranking or memory state.", objectSchema({
     view: { type: "string", enum: ["overview", "memory", "knowledge"], default: "overview" },
     query: text(0, 4_000),
