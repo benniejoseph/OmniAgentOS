@@ -16,6 +16,10 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { clsx } from "clsx";
 
+import { googleWorkspaceCapabilitiesForScopes } from "@/lib/connectors/google-workspace-capabilities";
+
+const INTEGRATION_STATUS_CHANGED_EVENT = "asael:integration-status-changed";
+
 export type OAuthProviderItem = {
   id: string;
   label: string;
@@ -65,24 +69,18 @@ const sourceRows = [
   {
     id: "mail",
     label: "Email",
-    detail: "Messages, people, decisions and attachments from Gmail.",
-    scope: "https://www.googleapis.com/auth/gmail.readonly",
     prefix: "google:mail:",
     icon: Mail,
   },
   {
     id: "drive",
     label: "Drive",
-    detail: "Google Docs, Sheets, PDFs and files you can access.",
-    scope: "https://www.googleapis.com/auth/drive.readonly",
     prefix: "google:drive:",
     icon: HardDrive,
   },
   {
     id: "calendar",
     label: "Calendar",
-    detail: "Events, schedules, attendees and meeting context.",
-    scope: "https://www.googleapis.com/auth/calendar.events.readonly",
     prefix: "google:calendar:",
     icon: CalendarDays,
   },
@@ -107,13 +105,29 @@ export function ConnectedSources({
       : disabledReason;
   const [action, setAction] = useState<string>();
   const [confirming, setConfirming] = useState<string>();
-  const [message, setMessage] = useState<{ tone: "success" | "error"; text: string }>();
+  const [message, setMessage] = useState<{ tone: "success" | "warning" | "error"; text: string }>();
   const [photoSession, setPhotoSession] = useState<PhotoPickerSession>();
 
-  const photosGranted = useMemo(
-    () => grant?.scopes.includes("https://www.googleapis.com/auth/photospicker.mediaitems.readonly") || false,
+  const sourceAccess = useMemo(
+    () => googleSourceAccess(grant?.scopes || []),
     [grant?.scopes],
   );
+
+  const refreshIntegrationViews = useCallback(async () => {
+    window.dispatchEvent(new Event(INTEGRATION_STATUS_CHANGED_EVENT));
+    await onRefresh().catch(() => undefined);
+  }, [onRefresh]);
+
+  useEffect(() => {
+    const callback = readOAuthCallbackNotice(window.location.href);
+    if (!callback) return;
+    let active = true;
+    window.history.replaceState(window.history.state, "", callback.cleanUrl);
+    void refreshIntegrationViews().finally(() => {
+      if (active) setMessage(callback.message);
+    });
+    return () => { active = false; };
+  }, [refreshIntegrationViews]);
 
   const refreshPhotoSession = useCallback(async (handle: string) => {
     const response = await fetch(`/api/oauth/google/photos/sessions/${encodeURIComponent(handle)}`, {
@@ -168,9 +182,10 @@ export function ConnectedSources({
         tone: "success",
         text: `Google is up to date · ${payload.imported || 0} imported${payload.removed ? ` · ${payload.removed} removed` : ""}.`,
       });
-      await onRefresh();
+      await refreshIntegrationViews();
     } catch (syncError) {
       setMessage({ tone: "error", text: syncError instanceof Error ? syncError.message : "Google sync failed." });
+      await refreshIntegrationViews();
     } finally {
       setAction(undefined);
     }
@@ -195,7 +210,7 @@ export function ConnectedSources({
           ? "Google is disconnected from Asael, but Google did not confirm remote revocation. Remove Asael from your Google account security page if needed."
           : "Google has been disconnected. Existing indexed data remains until you remove it.",
       });
-      await onRefresh();
+      await refreshIntegrationViews();
     } catch (disconnectError) {
       setMessage({ tone: "error", text: disconnectError instanceof Error ? disconnectError.message : "Google could not be disconnected." });
     } finally {
@@ -218,7 +233,7 @@ export function ConnectedSources({
       if (!response.ok) throw new Error(payload.error || `${id} data could not be removed.`);
       setConfirming(undefined);
       setMessage({ tone: "success", text: `${sourceLabel(id)} data was removed from knowledge and linked memory.` });
-      await onRefresh();
+      await refreshIntegrationViews();
     } catch (removeError) {
       setMessage({ tone: "error", text: removeError instanceof Error ? removeError.message : `${sourceLabel(id)} data could not be removed.` });
     } finally {
@@ -295,7 +310,7 @@ export function ConnectedSources({
         tone: "success",
         text: `${payload.imported || 0} photo${payload.imported === 1 ? "" : "s"} saved for indexing${skippedCount ? ` · ${skippedCount} skipped` : ""}${payload.selectionTruncated ? " · selection limit reached" : ""}.`,
       });
-      await onRefresh();
+      await refreshIntegrationViews();
     } catch (importError) {
       setMessage({ tone: "error", text: importError instanceof Error ? importError.message : "Selected photos could not be imported." });
     } finally {
@@ -324,7 +339,7 @@ export function ConnectedSources({
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Connected sources</p>
           <h2 id="connected-sources-title" className="mt-2 text-xl font-semibold tracking-tight">Bring your working world into one index.</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">Google access stays read-only. Asael stores indexed copies with provenance so you can use them in Command context and remove them later.</p>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">Sync reads permitted sources into a private index. Gmail, Calendar, and Drive changes use separately governed actions; Photos includes only the items you choose.</p>
           {grant ? <p className={clsx("mt-2 text-xs font-semibold", grant.syncStatus === "error" ? "text-danger" : "text-muted")}>{grant.syncStatus === "error" ? grant.syncError || "The last Google sync needs attention." : grant.lastSyncedAt ? `Last synced ${formatSourceTime(grant.lastSyncedAt)} · ${grant.syncedItems || 0} items imported` : "Connected · waiting for the first sync"}</p> : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -342,7 +357,7 @@ export function ConnectedSources({
               className="rounded-md border border-line bg-surface-raised px-3 py-2 text-sm font-semibold text-muted"
               title={actionDisabledReason}
             >
-              Read only
+              Managed by owner
             </span>
           ) : provider?.configured && !actionDisabledReason ? (
             <a href={connectUrl} className="primary-button">Connect Google</a>
@@ -370,23 +385,20 @@ export function ConnectedSources({
         {[...sourceRows, {
           id: "photos" as const,
           label: "Photos",
-          detail: "Only photos you explicitly choose with Google Photos Picker.",
-          scope: "https://www.googleapis.com/auth/photospicker.mediaitems.readonly" as const,
           prefix: "google:photos:" as const,
           icon: Images,
         }].map((source) => {
           const Icon = source.icon;
-          const sourceConnected = source.id === "photos"
-            ? photosGranted
-            : grant?.scopes.includes(source.scope) || false;
+          const access = sourceAccess[source.id];
+          const sourceConnected = access.granted;
           const removing = action === `remove:${source.id}`;
           return (
             <div key={source.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b border-line px-4 py-4 last:border-b-0 sm:grid-cols-[minmax(12rem,.8fr)_minmax(16rem,1.4fr)_auto] sm:items-center">
               <div className="flex min-w-0 items-center gap-3">
                 <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-surface-raised text-primary"><Icon size={18} aria-hidden="true" /></span>
-                <div className="min-w-0"><p className="font-semibold">{source.label}</p><p className={clsx("mt-0.5 text-xs", sourceConnected ? "text-success" : "text-muted")}>{sourceConnected ? "Connected" : connected && source.id === "photos" ? "Reconnect to enable" : "Not connected"}</p></div>
+                <div className="min-w-0"><p className="font-semibold">{source.label}</p><p className={clsx("mt-0.5 text-xs", sourceConnected ? "text-success" : "text-muted")}>{sourceConnected ? access.label : connected ? "Not granted" : "Not connected"}</p></div>
               </div>
-              <p className="hidden text-sm leading-6 text-muted sm:block">{source.detail}</p>
+              <p className="hidden text-sm leading-6 text-muted sm:block">{access.detail}</p>
               <div className="flex flex-wrap justify-end gap-2">
                 {source.id === "photos" && sourceConnected && !actionDisabledReason ? (
                   <button type="button" onClick={() => void beginPhotoSelection()} disabled={busy} className="action-button">
@@ -426,7 +438,7 @@ export function ConnectedSources({
         </div>
       ) : null}
 
-      {message ? <p role={message.tone === "error" ? "alert" : "status"} className={clsx("mt-3 text-sm", message.tone === "error" ? "text-danger" : "text-success")}>{message.text}</p> : null}
+      {message ? <p role={message.tone === "error" ? "alert" : "status"} className={clsx("mt-3 text-sm", message.tone === "error" ? "text-danger" : message.tone === "warning" ? "text-warning" : "text-success")}>{message.text}</p> : null}
       {actionDisabledReason ? <p className="mt-3 text-xs text-muted">{actionDisabledReason}</p> : null}
       <p className="mt-3 flex items-center gap-2 text-xs text-muted"><ShieldCheck size={14} aria-hidden="true" />Connect and disconnect apply to the Google account. Removing a category deletes only its indexed copies and linked memories.</p>
     </section>
@@ -450,4 +462,83 @@ function formatSourceTime(value: string) {
   return Number.isNaN(date.getTime())
     ? "recently"
     : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function googleSourceAccess(scopes: readonly string[]) {
+  const capabilities = googleWorkspaceCapabilitiesForScopes(scopes);
+  const gmailRead = capabilities.has("gmail.read");
+  const gmailSend = capabilities.has("gmail.send");
+  const gmailModify = capabilities.has("gmail.modify");
+  const gmailTrash = capabilities.has("gmail.trash");
+  const calendarRead = capabilities.has("calendar.events.read");
+  const calendarWrite = capabilities.has("calendar.events.write");
+  const driveRead = capabilities.has("drive.read");
+  const driveWrite = capabilities.has("drive.write");
+  const photosPicked = capabilities.has("photos.pick");
+
+  return {
+    mail: {
+      granted: gmailRead || gmailSend,
+      label: gmailModify && gmailTrash
+        ? "Read + send + trash"
+        : gmailRead && gmailSend
+          ? "Read + send"
+          : gmailRead ? "Read only" : gmailSend ? "Send only" : "Not granted",
+      detail: gmailModify && gmailTrash
+        ? "Read and send Gmail messages; recoverable deletion moves them to Trash."
+        : gmailRead && gmailSend
+          ? "Read and send Gmail messages; moving messages to Trash is not granted."
+          : gmailRead
+            ? "Read Gmail messages and attachments; sending and deletion are not granted."
+            : gmailSend
+              ? "Send Gmail messages; inbox content is not readable."
+              : "Gmail content and actions are unavailable.",
+    },
+    calendar: {
+      granted: calendarRead,
+      label: calendarWrite ? "Read + write" : calendarRead ? "Read only" : "Not granted",
+      detail: calendarWrite
+        ? "View, create, update, and delete Calendar events through governed actions."
+        : calendarRead
+          ? "View Calendar events and schedules; event changes are not granted."
+          : "Calendar events are unavailable.",
+    },
+    drive: {
+      granted: driveRead,
+      label: driveRead && driveWrite
+        ? "Full read + write"
+        : driveRead ? "Read only" : "Not granted",
+      detail: driveRead && driveWrite
+        ? "View and change all accessible Drive files through governed actions."
+        : driveRead
+          ? "View and export accessible Drive files; file changes are not granted."
+          : "Drive files are unavailable.",
+    },
+    photos: {
+      granted: photosPicked,
+      label: photosPicked ? "User-picked only" : "Not granted",
+      detail: photosPicked
+        ? "Import only photos and videos you explicitly choose in Google Photos Picker."
+        : "Asael cannot browse or sync your Photos library in the background.",
+    },
+  } as const;
+}
+
+function readOAuthCallbackNotice(value: string): {
+  message: { tone: "success" | "warning" | "error"; text: string };
+  cleanUrl: string;
+} | undefined {
+  const url = new URL(value);
+  const status = url.searchParams.get("oauth");
+  if (status !== "connected" && status !== "denied" && status !== "failed") {
+    return undefined;
+  }
+  const message = status === "connected"
+    ? { tone: "success" as const, text: "Google connected. Granted permissions and source status are refreshed below." }
+    : status === "denied"
+      ? { tone: "warning" as const, text: "Google connection was not completed. No new access was granted." }
+      : { tone: "error" as const, text: "Google could not be connected. Try again, then check OAuth configuration if it keeps failing." };
+  url.searchParams.delete("oauth");
+  url.searchParams.delete("provider");
+  return { message, cleanUrl: url.toString() };
 }
