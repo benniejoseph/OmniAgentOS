@@ -137,6 +137,7 @@ export const tenantRootPolicyTables = [
   "omni_memory_lifecycle_states",
   "omni_memory_promotion_reviews",
   "omni_conversation_summaries",
+  "omni_conversation_summary_enrichments",
   "omni_entity_records",
   "omni_entity_aliases",
   "omni_entity_resolutions",
@@ -1449,6 +1450,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[154],
       up: ensureKnowledgeCognificationCandidatesV1,
+    },
+    {
+      ...databaseSchemaMigrations[155],
+      up: ensureConversationSummaryEnrichmentsV1,
     },
   ];
 }
@@ -18800,6 +18805,382 @@ async function ensureKnowledgeCognificationCandidatesV1(sql: SqlClient) {
         REVOKE ALL ON TABLE omni_knowledge_cognition_candidates
           FROM omni_backup;
         GRANT SELECT ON omni_knowledge_cognition_candidates TO omni_backup;
+      END IF;
+    END
+    $grants$;
+  `);
+}
+
+async function ensureConversationSummaryEnrichmentsV1(sql: SqlClient) {
+  await sql.query(`
+    CREATE TABLE IF NOT EXISTS omni_conversation_summary_enrichments (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'shadow',
+      generation_id TEXT NOT NULL,
+      episode_summary_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      project_id TEXT,
+      bucket_index INTEGER NOT NULL,
+      source_turn_ids TEXT[] NOT NULL,
+      episode_source_sha256 TEXT NOT NULL,
+      episode_summary_sha256 TEXT NOT NULL,
+      source_sha256 TEXT NOT NULL,
+      enrichment_sha256 TEXT NOT NULL,
+      input_character_count INTEGER NOT NULL,
+      starts_at TIMESTAMPTZ NOT NULL,
+      ends_at TIMESTAMPTZ NOT NULL,
+      model_provider TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      model_routing_source TEXT NOT NULL,
+      model_assignment_id TEXT,
+      model_assignment_revision BIGINT,
+      model_configuration_sha256 TEXT,
+      model_credential_source TEXT,
+      model_usage_receipt_id TEXT NOT NULL,
+      contract_sha256 TEXT NOT NULL,
+      contract JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT omni_conversation_summary_enrichments_pkey
+        PRIMARY KEY (tenant_id, id),
+      CONSTRAINT omni_conversation_summary_enrichments_parent_fkey
+        FOREIGN KEY (episode_summary_id)
+        REFERENCES omni_conversation_summaries (id)
+        ON UPDATE RESTRICT ON DELETE CASCADE,
+      CONSTRAINT omni_conversation_summary_enrichments_generation_source_key
+        UNIQUE (tenant_id, owner_actor_id, generation_id, source_sha256),
+      CONSTRAINT omni_conversation_summary_enrichments_row_check
+      CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^semantic_episode_enrichment_[0-9a-f]{48}$'
+        AND generation_id ~ '^semantic_summary_generation_[0-9a-f]{48}$'
+        AND btrim(tenant_id) <> ''
+        AND btrim(owner_actor_id) <> ''
+        AND btrim(episode_summary_id) <> ''
+        AND btrim(thread_id) <> ''
+        AND mode = 'shadow'
+        AND bucket_index >= 0
+        AND cardinality(source_turn_ids) = 12
+        AND episode_source_sha256 ~ '^[0-9a-f]{64}$'
+        AND episode_summary_sha256 ~ '^[0-9a-f]{64}$'
+        AND source_sha256 ~ '^[0-9a-f]{64}$'
+        AND enrichment_sha256 ~ '^[0-9a-f]{64}$'
+        AND contract_sha256 ~ '^[0-9a-f]{64}$'
+        AND input_character_count BETWEEN 1 AND 64000
+        AND starts_at <= ends_at
+        AND model_provider IN (
+          'openai', 'google', 'anthropic', 'aws_bedrock', 'local'
+        )
+        AND btrim(model_id) <> ''
+        AND model_routing_source IN (
+          'tenant_assignment', 'deployment_environment'
+        )
+        AND (
+          model_credential_source IS NULL
+          OR model_credential_source IN (
+            'tenant_vault', 'deployment_environment'
+          )
+        )
+        AND btrim(model_usage_receipt_id) <> ''
+        AND (
+          (model_assignment_id IS NULL
+            AND model_assignment_revision IS NULL
+            AND model_configuration_sha256 IS NULL)
+          OR (btrim(model_assignment_id) <> ''
+            AND model_assignment_revision BETWEEN 1 AND 9007199254740991
+            AND model_configuration_sha256 ~ '^[0-9a-f]{64}$')
+        )
+        AND jsonb_typeof(contract) = 'object'
+        AND octet_length(contract::TEXT) <= 1048576
+        AND contract ->> 'schemaVersion' = '1'
+        AND contract ->> 'contractKind' = 'semantic_episode_enrichment'
+        AND contract ->> 'level' = 'episode'
+        AND contract ->> 'shadowOnly' = 'true'
+        AND contract ->> 'enrichmentId' = id
+        AND contract ->> 'generationId' = generation_id
+        AND contract ->> 'tenantId' = tenant_id
+        AND contract ->> 'ownerActorId' = owner_actor_id
+        AND contract ->> 'threadId' = thread_id
+        AND ((project_id IS NULL
+              AND contract -> 'projectId' = 'null'::JSONB)
+          OR contract ->> 'projectId' = project_id)
+        AND contract ->> 'episodeSummaryId' = episode_summary_id
+        AND contract ->> 'episodeSourceSha256' = episode_source_sha256
+        AND contract ->> 'deterministicSummarySha256' =
+          episode_summary_sha256
+        AND (contract ->> 'bucketIndex')::INTEGER = bucket_index
+        AND contract -> 'sourceTurnIds' = to_jsonb(source_turn_ids)
+        AND (contract ->> 'inputCharacterCount')::INTEGER =
+          input_character_count
+        AND contract ->> 'sourceSha256' = source_sha256
+        AND contract ->> 'enrichmentSha256' = enrichment_sha256
+        AND (contract ->> 'startsAt')::TIMESTAMPTZ = starts_at
+        AND (contract ->> 'endsAt')::TIMESTAMPTZ = ends_at
+        AND contract #>> '{modelAttribution,provider}' = model_provider
+        AND contract #>> '{modelAttribution,model}' = model_id
+        AND contract #>> '{modelAttribution,routingSource}' =
+          model_routing_source
+        AND contract #>> '{modelAttribution,assignmentScope}' = 'memory'
+        AND contract #>> '{modelAttribution,usageReceiptRecorded}' = 'true'
+        AND contract #>> '{modelAttribution,usageReceiptId}' =
+          model_usage_receipt_id
+        AND contract #>> '{modelAttribution,assignmentId}'
+          IS NOT DISTINCT FROM model_assignment_id
+        AND NULLIF(
+          contract #>> '{modelAttribution,assignmentRevision}', ''
+        )::BIGINT IS NOT DISTINCT FROM model_assignment_revision
+        AND contract #>>
+          '{modelAttribution,assignmentConfigurationSha256}'
+          IS NOT DISTINCT FROM model_configuration_sha256
+        AND contract #>> '{modelAttribution,credentialSource}'
+          IS NOT DISTINCT FROM model_credential_source
+        AND contract ->> 'contractSha256' = contract_sha256
+      , FALSE))
+    );
+
+    CREATE INDEX IF NOT EXISTS
+      omni_conversation_summary_enrichments_episode_idx
+    ON omni_conversation_summary_enrichments (
+      tenant_id, owner_actor_id, episode_summary_id, created_at DESC, id
+    );
+    CREATE INDEX IF NOT EXISTS
+      omni_conversation_summary_enrichments_generation_idx
+    ON omni_conversation_summary_enrichments (
+      tenant_id, owner_actor_id, generation_id, created_at DESC, id
+    );
+
+    CREATE OR REPLACE FUNCTION
+      omni_validate_conversation_summary_enrichment_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      parent_summary public.omni_conversation_summaries%ROWTYPE;
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM
+          'public.omni_conversation_summary_enrichments'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'BEFORE'
+        OR TG_LEVEL IS DISTINCT FROM 'ROW'
+        OR TG_OP IS DISTINCT FROM 'INSERT'
+      THEN
+        RAISE EXCEPTION
+          'Conversation summary enrichment validator context is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF NULLIF(current_setting('omni.tenant_id', TRUE), '')
+          IS DISTINCT FROM NEW.tenant_id
+        OR NOT (
+          public.omni_system_scope_enabled()
+          OR public.omni_actor_scope_v1_allows(
+            NEW.tenant_id, NEW.owner_actor_id
+          )
+          OR public.omni_actor_scope_v1_allows_canonical(
+            NEW.tenant_id, NEW.owner_actor_id
+          )
+        )
+      THEN
+        RAISE EXCEPTION 'Conversation summary enrichment actor scope is invalid'
+          USING ERRCODE = '42501';
+      END IF;
+
+      SELECT summary.* INTO parent_summary
+      FROM public.omni_conversation_summaries summary
+      WHERE summary.id = NEW.episode_summary_id
+      FOR SHARE;
+      IF NOT FOUND
+        OR parent_summary.level IS DISTINCT FROM 'episode'
+        OR parent_summary.tenant_id IS DISTINCT FROM NEW.tenant_id
+        OR parent_summary.owner_actor_id IS DISTINCT FROM NEW.owner_actor_id
+        OR parent_summary.thread_id IS DISTINCT FROM NEW.thread_id
+        OR parent_summary.project_id IS DISTINCT FROM NEW.project_id
+        OR parent_summary.bucket_index IS DISTINCT FROM NEW.bucket_index
+        OR parent_summary.source_turn_ids IS DISTINCT FROM NEW.source_turn_ids
+        OR parent_summary.source_sha256 IS DISTINCT FROM
+          NEW.episode_source_sha256
+        OR parent_summary.summary_sha256 IS DISTINCT FROM
+          NEW.episode_summary_sha256
+        OR parent_summary.starts_at IS DISTINCT FROM NEW.starts_at
+        OR parent_summary.ends_at IS DISTINCT FROM NEW.ends_at
+        OR parent_summary.rebuildable IS DISTINCT FROM TRUE
+      THEN
+        RAISE EXCEPTION
+          'Conversation summary enrichment parent lineage is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      IF cardinality(NEW.source_turn_ids) <> (
+        SELECT count(DISTINCT source_turn_id)
+        FROM unnest(NEW.source_turn_ids) source_turn_id
+      ) THEN
+        RAISE EXCEPTION
+          'Conversation summary enrichment lineage contains duplicates'
+          USING ERRCODE = '23514';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM public.omni_ai_usage usage
+        WHERE usage.id = NEW.model_usage_receipt_id
+          AND usage.tenant_id = NEW.tenant_id
+          AND usage.actor_id = NEW.owner_actor_id
+          AND usage.operation = 'structured_generation'
+          AND usage.purpose = 'conversation.summary.enrich.v1'
+          AND usage.status = 'completed'
+          AND usage.provider = NEW.model_provider
+          AND usage.model = NEW.model_id
+          AND usage.assignment_id IS NOT DISTINCT FROM
+            NEW.model_assignment_id
+          AND usage.assignment_revision::BIGINT IS NOT DISTINCT FROM
+            NEW.model_assignment_revision
+          AND usage.assignment_configuration_sha256 IS NOT DISTINCT FROM
+            NEW.model_configuration_sha256
+          AND usage.credential_source IS NOT DISTINCT FROM
+            NEW.model_credential_source
+          AND ((NEW.model_routing_source = 'tenant_assignment'
+                AND usage.assignment_scope = 'memory')
+            OR (NEW.model_routing_source = 'deployment_environment'
+                AND usage.assignment_scope IS NULL))
+      ) THEN
+        RAISE EXCEPTION
+          'Conversation summary enrichment usage receipt is invalid'
+          USING ERRCODE = '23514';
+      END IF;
+      RETURN NEW;
+    END
+    $function$;
+
+    CREATE OR REPLACE FUNCTION
+      omni_delete_stale_conversation_summary_enrichments_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF TG_RELID IS DISTINCT FROM
+          'public.omni_conversation_summaries'::regclass
+        OR TG_WHEN IS DISTINCT FROM 'BEFORE'
+        OR TG_LEVEL IS DISTINCT FROM 'ROW'
+        OR TG_OP IS DISTINCT FROM 'UPDATE'
+      THEN
+        RAISE EXCEPTION
+          'Conversation summary enrichment cleanup context is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF ROW(OLD.source_sha256, OLD.summary_sha256, OLD.source_turn_ids)
+          IS DISTINCT FROM
+        ROW(NEW.source_sha256, NEW.summary_sha256, NEW.source_turn_ids)
+      THEN
+        DELETE FROM public.omni_conversation_summary_enrichments enrichment
+        WHERE enrichment.episode_summary_id = OLD.id;
+      END IF;
+      RETURN NEW;
+    END
+    $function$;
+
+    CREATE OR REPLACE FUNCTION
+      omni_protect_conversation_summary_enrichment_v1()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    VOLATILE
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    BEGIN
+      IF TG_OP NOT IN ('UPDATE', 'TRUNCATE') THEN
+        RAISE EXCEPTION
+          'Conversation summary enrichment guard context is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      RAISE EXCEPTION 'Conversation summary enrichment history is immutable'
+        USING ERRCODE = '55000';
+    END
+    $function$;
+
+    DROP TRIGGER IF EXISTS omni_conversation_summary_enrichments_validate
+      ON omni_conversation_summary_enrichments;
+    CREATE TRIGGER omni_conversation_summary_enrichments_validate
+    BEFORE INSERT ON omni_conversation_summary_enrichments
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_validate_conversation_summary_enrichment_v1();
+    DROP TRIGGER IF EXISTS omni_conversation_summary_enrichments_protect
+      ON omni_conversation_summary_enrichments;
+    CREATE TRIGGER omni_conversation_summary_enrichments_protect
+    BEFORE UPDATE ON omni_conversation_summary_enrichments
+    FOR EACH ROW
+    EXECUTE FUNCTION omni_protect_conversation_summary_enrichment_v1();
+    DROP TRIGGER IF EXISTS omni_conversation_summary_enrichments_no_truncate
+      ON omni_conversation_summary_enrichments;
+    CREATE TRIGGER omni_conversation_summary_enrichments_no_truncate
+    BEFORE TRUNCATE ON omni_conversation_summary_enrichments
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION omni_protect_conversation_summary_enrichment_v1();
+    DROP TRIGGER IF EXISTS omni_conversation_summary_enrichment_stale
+      ON omni_conversation_summaries;
+    CREATE TRIGGER omni_conversation_summary_enrichment_stale
+    BEFORE UPDATE OF source_sha256, summary_sha256, source_turn_ids
+    ON omni_conversation_summaries
+    FOR EACH ROW
+    EXECUTE FUNCTION
+      omni_delete_stale_conversation_summary_enrichments_v1();
+
+    ALTER TABLE omni_conversation_summary_enrichments
+      ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE omni_conversation_summary_enrichments
+      FORCE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS omni_tenant_isolation
+      ON omni_conversation_summary_enrichments;
+    CREATE POLICY omni_tenant_isolation
+    ON omni_conversation_summary_enrichments
+    AS PERMISSIVE FOR ALL TO PUBLIC
+    USING (omni_tenant_visible(tenant_id))
+    WITH CHECK (omni_tenant_visible(tenant_id));
+    DROP POLICY IF EXISTS omni_conversation_summary_enrichments_actor_scope
+      ON omni_conversation_summary_enrichments;
+    CREATE POLICY omni_conversation_summary_enrichments_actor_scope
+    ON omni_conversation_summary_enrichments
+    AS RESTRICTIVE FOR ALL TO PUBLIC
+    USING (
+      omni_system_scope_enabled()
+      OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id)
+    )
+    WITH CHECK (
+      omni_system_scope_enabled()
+      OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id)
+      OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id)
+    );
+
+    REVOKE ALL ON TABLE omni_conversation_summary_enrichments FROM PUBLIC;
+    REVOKE ALL ON FUNCTION
+      omni_validate_conversation_summary_enrichment_v1() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION
+      omni_delete_stale_conversation_summary_enrichments_v1() FROM PUBLIC;
+    REVOKE ALL ON FUNCTION
+      omni_protect_conversation_summary_enrichment_v1() FROM PUBLIC;
+    DO $grants$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        REVOKE ALL ON TABLE omni_conversation_summary_enrichments
+          FROM omni_runtime;
+        GRANT SELECT, INSERT ON omni_conversation_summary_enrichments
+          TO omni_runtime;
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance'
+      ) THEN
+        REVOKE ALL ON TABLE omni_conversation_summary_enrichments
+          FROM omni_maintenance;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup') THEN
+        REVOKE ALL ON TABLE omni_conversation_summary_enrichments
+          FROM omni_backup;
+        GRANT SELECT ON omni_conversation_summary_enrichments
+          TO omni_backup;
       END IF;
     END
     $grants$;
