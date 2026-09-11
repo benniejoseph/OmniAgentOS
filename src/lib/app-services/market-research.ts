@@ -14,6 +14,7 @@ import {
   marketEventReplaysQuerySchema,
   marketEventsQuerySchema,
   marketResearchOverviewSchema,
+  marketTechnicalFeaturesQuerySchema,
 } from "@/lib/market-research/contracts";
 import { listMarketEvents } from "@/lib/market-research/event-store";
 import { listMarketEventReplays } from "@/lib/market-research/event-replay-store";
@@ -23,8 +24,10 @@ import { marketInstruments } from "@/lib/market-research/instruments";
 import { fetchMarketBarSnapshot } from "@/lib/market-research/market-data";
 import {
   findFreshMarketPriceSnapshot,
+  readMarketPriceSnapshot,
   saveMarketPriceSnapshot,
 } from "@/lib/market-research/price-snapshot-store";
+import { buildMarketTechnicalFeatures } from "@/lib/market-research/technical-features";
 import { projectOperationJobStatus } from "@/lib/operations/job-queue";
 import { resolveRuntimeModelAssignment } from "@/lib/settings/runtime-models";
 
@@ -137,7 +140,7 @@ export async function showMarketResearchOverviewService(
         label: "ICT + Quarterly detectors",
         state: blockingProvidersReady ? "foundation" : "blocked",
         note: blockingProvidersReady
-          ? "Ready for deterministic detector implementation against immutable bars."
+          ? "Versioned deterministic primitives are available against immutable bars; transcript-authoritative ICT rules remain review-gated."
           : "Needs verified market bars before deterministic features can be evaluated.",
       },
       {
@@ -188,6 +191,27 @@ export async function listMarketResearchBarsService(
   return completeAppServiceCall(authorized, result, {
     resourceCount: result.bars.length,
     occurredAt: result.retrievedAt,
+  });
+}
+
+export async function showMarketResearchFeaturesService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketTechnicalFeaturesQuerySchema>,
+) {
+  const value = marketTechnicalFeaturesQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.features.show"),
+  );
+  const snapshot = await readMarketPriceSnapshot({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    snapshotId: value.snapshotId,
+  });
+  const result = buildMarketTechnicalFeatures(snapshot);
+  return completeAppServiceCall(authorized, result, {
+    resourceCount: result.detections.length,
+    occurredAt: result.snapshot.asOf,
   });
 }
 

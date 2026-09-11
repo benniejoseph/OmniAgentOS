@@ -31,6 +31,33 @@ export class MarketPriceSnapshotStoreUnavailableError extends Error {
   }
 }
 
+export class MarketPriceSnapshotNotFoundError extends Error {
+  constructor() {
+    super("The requested immutable market price snapshot was not found.");
+    this.name = "MarketPriceSnapshotNotFoundError";
+  }
+}
+
+export async function readMarketPriceSnapshot(input: {
+  tenantId: string;
+  actorId: string;
+  snapshotId: string;
+}): Promise<MarketBarsResult> {
+  assertOwnerScope(input.tenantId, input.actorId);
+  if (!hasDatabaseUrl()) throw new MarketPriceSnapshotStoreUnavailableError();
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT *
+    FROM omni_market_price_snapshots
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.actorId}
+      AND id = ${input.snapshotId}
+    LIMIT 1
+  `;
+  if (!rows[0]) throw new MarketPriceSnapshotNotFoundError();
+  return marketSnapshotFromRow(rows[0], "cache");
+}
+
 export async function findFreshMarketPriceSnapshot(input: {
   tenantId: string;
   actorId: string;

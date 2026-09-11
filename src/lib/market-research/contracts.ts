@@ -155,6 +155,116 @@ export type MarketBarsResult = z.infer<typeof marketBarsResultSchema>;
 
 const marketDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+export const MARKET_TECHNICAL_DETECTOR_VERSION =
+  "market-technical-primitives:1" as const;
+
+export const marketTechnicalFeaturesQuerySchema = z.object({
+  snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
+}).strict();
+
+export const marketTechnicalReferenceSchema = z.object({
+  id: z.enum(["ninety_minute", "day", "week", "month"]),
+  label: z.string().min(1).max(80),
+  period: z.string().min(1).max(120),
+  open: z.number().finite().nullable(),
+  status: z.enum(["available", "outside_snapshot"]),
+}).strict();
+
+export const marketTechnicalDetectionSchema = z.object({
+  id: z.string().regex(/^market_feature_[a-f0-9]{48}$/),
+  definitionId: z.enum([
+    "foundation.swing.v1",
+    "foundation.fvg.v1",
+    "foundation.displacement.v1",
+    "foundation.liquidity_sweep.v1",
+  ]),
+  kind: z.enum([
+    "swing_high",
+    "swing_low",
+    "fair_value_gap",
+    "displacement",
+    "liquidity_sweep",
+  ]),
+  direction: z.enum(["bullish", "bearish", "neutral"]),
+  timestamp: z.string().datetime({ offset: true }),
+  price: z.number().finite(),
+  zoneLow: z.number().finite().nullable(),
+  zoneHigh: z.number().finite().nullable(),
+  strength: z.number().finite().nonnegative(),
+  state: z.enum(["observed", "active", "mitigated"]),
+}).strict().superRefine((value, context) => {
+  if (
+    value.zoneLow !== null &&
+    value.zoneHigh !== null &&
+    value.zoneLow > value.zoneHigh
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Technical feature price-zone bounds are invalid.",
+    });
+  }
+});
+
+export const marketTechnicalDefinitionSchema = z.object({
+  id: marketTechnicalDetectionSchema.shape.definitionId,
+  label: z.string().min(1).max(100),
+  formula: z.string().min(1).max(600),
+  reviewState: z.literal("deterministic_foundation"),
+  transcriptAuthority: z.literal("not_claimed"),
+}).strict();
+
+export const marketTechnicalFeaturesResultSchema = z.object({
+  contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
+  detectorVersion: z.literal(MARKET_TECHNICAL_DETECTOR_VERSION),
+  snapshot: z.object({
+    id: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    instrumentId: marketInstrumentIdSchema,
+    provider: z.enum(MARKET_PRICE_PROVIDERS),
+    providerSymbol: z.string().min(1).max(80),
+    interval: z.enum(MARKET_INTERVALS),
+    firstBarAt: z.string().datetime({ offset: true }),
+    asOf: z.string().datetime({ offset: true }),
+    barCount: z.number().int().min(1).max(1_000),
+  }).strict(),
+  timeContext: z.object({
+    timezone: z.literal("America/New_York"),
+    localDate: marketDateSchema,
+    localTime: z.string().regex(/^\d{2}:\d{2}$/),
+    ninetyMinuteQuarter: z.number().int().min(1).max(16),
+    session: z.enum([
+      "asia_evening",
+      "london_open",
+      "new_york_am",
+      "new_york_pm",
+      "off_hours",
+    ]),
+    references: z.array(marketTechnicalReferenceSchema).length(4),
+  }).strict(),
+  range: z.object({
+    lookbackBars: z.number().int().min(1).max(96),
+    low: z.number().finite(),
+    high: z.number().finite(),
+    equilibrium: z.number().finite(),
+    latestClose: z.number().finite(),
+    positionPercent: z.number().finite().min(0).max(100),
+    zone: z.enum(["premium", "equilibrium", "discount"]),
+  }).strict(),
+  definitions: z.array(marketTechnicalDefinitionSchema).length(4),
+  detections: z.array(marketTechnicalDetectionSchema).max(120),
+  counts: z.object({
+    activeFairValueGaps: z.number().int().nonnegative(),
+    displacements: z.number().int().nonnegative(),
+    liquiditySweeps: z.number().int().nonnegative(),
+    swingPoints: z.number().int().nonnegative(),
+  }).strict(),
+  resultSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+export type MarketTechnicalFeaturesResult = z.infer<
+  typeof marketTechnicalFeaturesResultSchema
+>;
+
 export const marketEventReplayRequestSchema = z.object({
   instrumentId: marketInstrumentIdSchema,
   interval: z.enum(MARKET_INTERVALS).default("5min"),
