@@ -26,6 +26,7 @@ import { PriceChart } from "@/components/market-research/price-chart";
 import {
   MARKET_INTERVALS,
   type MarketBarsResult,
+  type MarketEventsResult,
   type MarketInstrument,
   type MarketInstrumentId,
   type MarketInterval,
@@ -34,6 +35,13 @@ import {
 import styles from "@/components/market-research/market-research-workspace.module.css";
 
 type WorkspaceTab = "overview" | "events" | "technicals" | "journal";
+
+type MarketBackfillJob = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed" | "canceled";
+  progress?: Record<string, unknown>;
+  lastError?: string;
+};
 
 const tabs: Array<{ id: WorkspaceTab; label: string; description: string }> = [
   { id: "overview", label: "Research desk", description: "Live context and readiness" },
@@ -48,10 +56,14 @@ export function MarketResearchWorkspace() {
   const [interval, setInterval] = useState<MarketInterval>("15min");
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
   const [bars, setBars] = useState<MarketBarsResult>();
+  const [events, setEvents] = useState<MarketEventsResult>();
+  const [backfillJob, setBackfillJob] = useState<MarketBackfillJob>();
   const [loading, setLoading] = useState(true);
   const [barsLoading, setBarsLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [barsError, setBarsError] = useState<string>();
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState<string>();
 
   const loadOverview = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -84,9 +96,11 @@ export function MarketResearchWorkspace() {
   const selected = useMemo(() => overview?.instruments.find((instrument) =>
     instrument.instrumentId === selectedId
   ), [overview, selectedId]);
-  const marketProviderReady = overview?.providers.find((provider) =>
-    provider.provider === "twelve_data"
-  )?.configured === true;
+  const marketProviderReady = selected?.providerMapping.provider
+    ? overview?.providers.find((provider) =>
+        provider.provider === selected.providerMapping.provider
+      )?.configured === true
+    : false;
 
   const loadBars = useCallback(async (
     instrument: MarketInstrument,
@@ -121,6 +135,88 @@ export function MarketResearchWorkspace() {
       if (!signal?.aborted) setBarsLoading(false);
     }
   }, [marketProviderReady]);
+
+  const loadEvents = useCallback(async (signal?: AbortSignal) => {
+    setEventsLoading(true);
+    setEventsError(undefined);
+    try {
+      const response = await fetch("/api/market-research/events?limit=100", {
+        cache: "no-store",
+        signal,
+      });
+      const payload = await response.json() as MarketEventsResult & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Market event history could not load.");
+      setEvents(payload);
+    } catch (loadError) {
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      setEventsError(loadError instanceof Error ? loadError.message : "Market event history could not load.");
+    } finally {
+      if (!signal?.aborted) setEventsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== "events" || events) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => void loadEvents(controller.signal), 0);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeTab, events, loadEvents]);
+
+  const startEventBackfill = useCallback(async () => {
+    setEventsError(undefined);
+    try {
+      const response = await fetch("/api/market-research/events", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `market-events-${Date.now()}`,
+        },
+        body: JSON.stringify({
+          startDate: "2000-01-01",
+          endDate: new Date().toISOString().slice(0, 10),
+        }),
+      });
+      const payload = await response.json() as { job?: MarketBackfillJob; error?: string };
+      if (!response.ok || !payload.job) {
+        throw new Error(payload.error || "Market event history could not be queued.");
+      }
+      setBackfillJob(payload.job);
+    } catch (queueError) {
+      setEventsError(queueError instanceof Error ? queueError.message : "Market event history could not be queued.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!backfillJob || !["queued", "running"].includes(backfillJob.status)) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/operations/jobs/${backfillJob.id}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const payload = await response.json() as { job?: MarketBackfillJob; error?: string };
+        if (!response.ok || !payload.job) throw new Error(payload.error || "Import progress is unavailable.");
+        setBackfillJob(payload.job);
+        if (payload.job.status === "completed") {
+          setEvents(undefined);
+          await loadEvents(controller.signal);
+        } else if (payload.job.status === "failed") {
+          setEventsError(payload.job.lastError || "Historical event import did not complete.");
+        }
+      } catch (pollError) {
+        if (pollError instanceof DOMException && pollError.name === "AbortError") return;
+        setEventsError(pollError instanceof Error ? pollError.message : "Import progress is unavailable.");
+      }
+    }, 2_000);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [backfillJob, loadEvents]);
 
   useEffect(() => {
     if (!selected) return;
@@ -201,6 +297,7 @@ export function MarketResearchWorkspace() {
             <ResearchDesk
               instrument={selected}
               overview={overview}
+              events={events}
               bars={bars}
               barsLoading={barsLoading}
               barsError={barsError}
@@ -208,7 +305,17 @@ export function MarketResearchWorkspace() {
               onIntervalChange={setInterval}
             />
           ) : null}
-          {activeTab === "events" ? <NewsImpactLab instrument={selected} overview={overview} /> : null}
+          {activeTab === "events" ? (
+            <NewsImpactLab
+              instrument={selected}
+              overview={overview}
+              events={events}
+              loading={eventsLoading}
+              error={eventsError}
+              backfillJob={backfillJob}
+              onBackfill={startEventBackfill}
+            />
+          ) : null}
           {activeTab === "technicals" ? <TechnicalLab instrument={selected} overview={overview} /> : null}
           {activeTab === "journal" ? <ForecastJournal instrument={selected} overview={overview} /> : null}
         </>
@@ -220,6 +327,7 @@ export function MarketResearchWorkspace() {
 function ResearchDesk({
   instrument,
   overview,
+  events,
   bars,
   barsLoading,
   barsError,
@@ -228,6 +336,7 @@ function ResearchDesk({
 }: {
   instrument: MarketInstrument;
   overview?: MarketResearchOverview;
+  events?: MarketEventsResult;
   bars?: MarketBarsResult;
   barsLoading: boolean;
   barsError?: string;
@@ -240,7 +349,9 @@ function ResearchDesk({
   const changePercent = change !== undefined && previous?.close
     ? change / previous.close * 100
     : undefined;
-  const provider = overview?.providers.find((item) => item.provider === "twelve_data");
+  const provider = overview?.providers.find((item) =>
+    item.provider === instrument.providerMapping.provider
+  );
 
   return (
     <section className={styles.workspace}>
@@ -262,7 +373,7 @@ function ResearchDesk({
         <div className={styles.metricStrip}>
           <Metric label="Daily probability" value="Not scored" detail="Calibration required" />
           <Metric label="Weekly probability" value="Not scored" detail="Calibration required" />
-          <Metric label="High-impact events" value="Unavailable" detail="Calendar not connected" />
+          <Metric label="High-impact releases" value={events ? String(events.total) : "Open lab"} detail="Official history" />
           <Metric label="ICT confluence" value="Not run" detail="Detector foundation" />
         </div>
 
@@ -315,13 +426,13 @@ function ResearchDesk({
         </section>
 
         <section className={styles.providerPanel}>
-          <header><span><Database size={16} /> Research inputs</span><small>{overview?.providers.filter((item) => item.configured).length || 0}/3 connected</small></header>
+          <header><span><Database size={16} /> Research inputs</span><small>{overview?.providers.filter((item) => item.configured).length || 0}/{overview?.providers.length || 4} connected</small></header>
           <div>
             {(overview?.providers || []).map((item) => (
               <article key={item.provider}>
                 <i data-ready={item.configured}>{item.configured ? <Check size={12} /> : <CircleDashed size={12} />}</i>
                 <span><strong>{item.label}</strong><small>{item.purpose}</small></span>
-                <em>{item.configured ? "Connected" : item.blocking ? "Required" : "Recommended"}</em>
+                <em>{item.configured ? "Configured" : item.blocking ? "Required" : "Recommended"}</em>
               </article>
             ))}
           </div>
@@ -331,14 +442,39 @@ function ResearchDesk({
   );
 }
 
-function NewsImpactLab({ instrument, overview }: { instrument: MarketInstrument; overview?: MarketResearchOverview }) {
-  const calendar = overview?.providers.find((provider) => provider.provider === "trading_economics");
+function NewsImpactLab({
+  instrument,
+  overview,
+  events,
+  loading,
+  error,
+  backfillJob,
+  onBackfill,
+}: {
+  instrument: MarketInstrument;
+  overview?: MarketResearchOverview;
+  events?: MarketEventsResult;
+  loading: boolean;
+  error?: string;
+  backfillJob?: MarketBackfillJob;
+  onBackfill: () => void;
+}) {
+  const calendar = overview?.providers.find((provider) => provider.provider === "bls");
   const vintage = overview?.providers.find((provider) => provider.provider === "fred");
+  const importing = backfillJob && ["queued", "running"].includes(backfillJob.status);
+  const completedSources = numberProgress(backfillJob?.progress?.completedSources);
+  const totalSources = numberProgress(backfillJob?.progress?.totalSources);
   return (
     <section className={styles.lab}>
       <header className={styles.labHeader}>
         <div><p className={styles.eyebrow}>Event study · {instrument.shortLabel}</p><h2>News impact lab</h2><p>Replay high-impact releases against immutable pre- and post-event windows, then compare the observed move with the surprise, revision, liquidity regime, and ICT context.</p></div>
-        <div className={styles.labReadiness}><span data-ready={calendar?.configured}><i /> Calendar</span><span data-ready={vintage?.configured}><i /> Vintages</span></div>
+        <div className={styles.labActions}>
+          <div className={styles.labReadiness}><span data-ready={calendar?.configured}><i /> BLS calendar</span><span data-ready={vintage?.configured}><i /> FRED history</span></div>
+          <button type="button" onClick={onBackfill} disabled={Boolean(importing) || vintage?.configured !== true}>
+            <History size={15} />
+            {importing ? `Importing ${completedSources}/${totalSources || 8}` : events?.total ? "Refresh history" : "Import history"}
+          </button>
+        </div>
       </header>
       <div className={styles.pipeline}>
         {[
@@ -350,12 +486,51 @@ function NewsImpactLab({ instrument, overview }: { instrument: MarketInstrument;
         ].map(([number, title, detail]) => <article key={number}><span>{number}</span><strong>{title}</strong><small>{detail}</small><ChevronRight size={15} /></article>)}
       </div>
       <div className={styles.eventTable}>
-        <header><span>Historical high-impact releases</span><small>Actual, previous, consensus, revision, and market windows</small></header>
-        <div className={styles.tableHead}><span>Release</span><span>Surprise</span><span>Pre-event</span><span>Post-event</span><span>Attribution</span></div>
-        <div className={styles.tableEmpty}><CalendarClock size={24} /><strong>No event history imported yet</strong><p>Connect Trading Economics and FRED/ALFRED, then the backfill worker can build the event study without blocking this page.</p></div>
+        <header><span>Historical high-impact releases</span><small>{events?.total ? `${events.total} official release dates · latest import ${formatDateTime(events.lastImportedAt)}` : "FRED/ALFRED · owner-private · asynchronous"}</small></header>
+        <div className={styles.tableHead}><span>Release</span><span>Date</span><span>Precision</span><span>Values</span><span>Source</span></div>
+        {error ? <div className={styles.tableNotice} role="alert"><AlertTriangle size={17} /><span>{error}</span></div> : null}
+        {loading ? <div className={styles.tableEmpty}><RefreshCw className={styles.spin} size={24} /><strong>Loading event history</strong></div> : events?.events.length ? (
+          <div className={styles.eventRows}>
+            {events.events.map((event) => (
+              <article key={event.id}>
+                <span><strong>{event.name}</strong><small>{event.eventKey}</small></span>
+                <time dateTime={event.releaseDate}>{formatEventDate(event.releaseDate)}</time>
+                <em data-warning={event.timestampPrecision === "date"}>{event.timestampPrecision === "date" ? "Date only" : "Exact time"}</em>
+                <span><strong>{event.valueStatus === "observed_values" ? "Observed" : "Pending"}</strong><small>{event.consensus === null ? "No free official consensus" : `Consensus ${event.consensus}`}</small></span>
+                <a href={event.sourceUrl} target="_blank" rel="noreferrer">FRED <ArrowRight size={12} /></a>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className={styles.tableEmpty}><CalendarClock size={24} /><strong>No event history imported yet</strong><p>Import the free official FRED release history in the background. Exact intraday impact remains locked until an authoritative release timestamp and corresponding price window are available.</p></div>
+        )}
+        <footer className={styles.eventDisclosure}>Official free sources provide release dates and observed macro data, but not a complete historical survey-consensus archive. Asael will keep consensus empty instead of scraping an unlicensed value or inventing a surprise.</footer>
       </div>
     </section>
   );
+}
+
+function numberProgress(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatEventDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00Z`));
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return "never";
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function TechnicalLab({ instrument, overview }: { instrument: MarketInstrument; overview?: MarketResearchOverview }) {
@@ -417,7 +592,7 @@ function ChartEmpty({ mappingRequired, providerReady, error }: { mappingRequired
         ? "Choose the exact broker CFD, cash index, or futures contract before this instrument can be charted or backtested."
         : providerReady
           ? "The provider is configured; refresh the page if the feed remains empty."
-          : "Add the Twelve Data credential to load indicative XAU/USD bars. No sample prices are substituted.")}</p>
+          : "Connect the instrument's named market-data feed. No sample prices or proxy instruments are substituted.")}</p>
     </div>
   );
 }
@@ -464,6 +639,6 @@ function instrumentTypeLabel(instrument: MarketInstrument) {
     equity: "Listed stock",
     etf: "Exchange-traded fund",
     future: "Futures contract",
-    cfd: "Broker CFD",
+    cfd: "Research CFD",
   } as const)[instrument.assetClass];
 }

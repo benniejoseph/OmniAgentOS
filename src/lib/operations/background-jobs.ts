@@ -115,6 +115,7 @@ import {
   resolveSemanticSummaryGenerationId,
   SEMANTIC_EPISODE_ENRICHMENT_PURPOSE_ID,
 } from "@/lib/threads/semantic-summaries";
+import { executeMarketEventBackfillJob } from "@/lib/market-research/event-jobs";
 
 export const evaluationJobRequestSchema = z
   .object({
@@ -924,6 +925,7 @@ function executeBackgroundOperationInAccessScope(
     job.type === "capture.media.segment.transcribe" ||
     job.type === "capture.media.recording.process" ||
     job.type === "knowledge.cognify" ||
+    job.type === "market.events.backfill" ||
     job.type === "conversation.summary.enrich"
   ) {
     const actorId = typeof job.payload.actorId === "string"
@@ -1314,6 +1316,22 @@ async function executeBackgroundOperation(
 
   if (job.type === "conversation.summary.enrich") {
     return executeSemanticSummaryEnrichmentJob(job, abortSignal);
+  }
+
+  if (job.type === "market.events.backfill") {
+    return executeMarketEventBackfillJob({
+      job,
+      abortSignal,
+      onProgress: async (progress) => {
+        const updated = await updateOperationJobPayload(
+          job.id,
+          job.leaseOwner || "",
+          { progress },
+          { tenantId: job.tenantId },
+        );
+        assertLeaseMutation(updated, job.id);
+      },
+    });
   }
 
   if (job.type === "knowledge.ingest") {

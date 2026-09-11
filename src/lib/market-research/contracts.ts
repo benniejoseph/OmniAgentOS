@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 export const MARKET_RESEARCH_CONTRACT_VERSION =
-  "market-research-foundation:1" as const;
+  "market-research-foundation:2" as const;
 
 export const MARKET_INSTRUMENT_IDS = [
   "xauusd.spot",
-  "nasdaq100.reference",
+  "nas100.tradermade_cfd",
 ] as const;
 export const marketInstrumentIdSchema = z.string().trim().min(3).max(120).regex(
   /^[a-z0-9][a-z0-9._-]+$/,
@@ -14,6 +14,16 @@ export type MarketInstrumentId = z.infer<typeof marketInstrumentIdSchema>;
 
 export const MARKET_INTERVALS = ["5min", "15min", "1h"] as const;
 export type MarketInterval = (typeof MARKET_INTERVALS)[number];
+
+export const MARKET_PRICE_PROVIDERS = ["twelve_data", "trader_made"] as const;
+export type MarketPriceProvider = (typeof MARKET_PRICE_PROVIDERS)[number];
+
+export const MARKET_RESEARCH_PROVIDERS = [
+  ...MARKET_PRICE_PROVIDERS,
+  "fred",
+  "bls",
+] as const;
+export type MarketResearchProvider = (typeof MARKET_RESEARCH_PROVIDERS)[number];
 
 export const marketInstrumentSchema = z.object({
   instrumentId: marketInstrumentIdSchema,
@@ -32,7 +42,7 @@ export const marketInstrumentSchema = z.object({
   description: z.string().min(1).max(700),
   identityWarning: z.string().min(1).max(700),
   providerMapping: z.object({
-    provider: z.literal("twelve_data"),
+    provider: z.enum(MARKET_PRICE_PROVIDERS),
     symbol: z.string().min(1).max(80).nullable(),
     status: z.enum(["verified", "discovery_required"]),
     note: z.string().min(1).max(500),
@@ -42,7 +52,7 @@ export const marketInstrumentSchema = z.object({
 export type MarketInstrument = z.infer<typeof marketInstrumentSchema>;
 
 export const marketProviderReadinessSchema = z.object({
-  provider: z.enum(["twelve_data", "trading_economics", "fred"]),
+  provider: z.enum(MARKET_RESEARCH_PROVIDERS),
   label: z.string().min(1).max(120),
   purpose: z.string().min(1).max(300),
   configured: z.boolean(),
@@ -60,7 +70,7 @@ export const marketResearchOverviewSchema = z.object({
     "ready_for_historical_replay",
   ]),
   instruments: z.array(marketInstrumentSchema).min(1),
-  providers: z.array(marketProviderReadinessSchema).length(3),
+  providers: z.array(marketProviderReadinessSchema).min(3).max(8),
   agent: z.object({
     agentId: z.literal("meridian"),
     name: z.literal("Meridian"),
@@ -119,7 +129,7 @@ export type MarketBar = z.infer<typeof marketBarSchema>;
 export const marketBarsResultSchema = z.object({
   contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
   instrumentId: marketInstrumentIdSchema,
-  provider: z.literal("twelve_data"),
+  provider: z.enum(MARKET_PRICE_PROVIDERS),
   providerSymbol: z.string().min(1).max(80),
   providerTimezone: z.string().min(1).max(120),
   interval: z.enum(MARKET_INTERVALS),
@@ -129,3 +139,55 @@ export const marketBarsResultSchema = z.object({
 }).strict();
 
 export type MarketBarsResult = z.infer<typeof marketBarsResultSchema>;
+
+const marketDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+export const marketEventSchema = z.object({
+  id: z.string().regex(/^market_event_[a-f0-9]{48}$/),
+  eventKey: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
+  name: z.string().min(1).max(160),
+  currency: z.literal("USD"),
+  impact: z.literal("high"),
+  source: z.literal("fred"),
+  sourceReleaseId: z.number().int().positive(),
+  sourceUrl: z.string().url().max(1_000),
+  releaseDate: marketDateSchema,
+  occurredAt: z.string().datetime({ offset: true }).nullable(),
+  timestampPrecision: z.enum(["date", "instant"]),
+  actual: z.number().finite().nullable(),
+  consensus: z.number().finite().nullable(),
+  previous: z.number().finite().nullable(),
+  revised: z.number().finite().nullable(),
+  valueStatus: z.enum(["release_date_only", "observed_values"]),
+  importedAt: z.string().datetime({ offset: true }),
+}).strict();
+
+export type MarketEvent = z.infer<typeof marketEventSchema>;
+
+export const marketEventsResultSchema = z.object({
+  contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
+  events: z.array(marketEventSchema).max(500),
+  total: z.number().int().nonnegative(),
+  lastImportedAt: z.string().datetime({ offset: true }).nullable(),
+}).strict();
+
+export type MarketEventsResult = z.infer<typeof marketEventsResultSchema>;
+
+export const marketEventsQuerySchema = z.object({
+  limit: z.number().int().min(1).max(500).default(100),
+}).strict();
+
+export const marketEventBackfillRequestSchema = z.object({
+  startDate: marketDateSchema.default("2000-01-01"),
+  endDate: marketDateSchema,
+  eventKeys: z.array(
+    z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
+  ).min(1).max(20).optional(),
+}).strict().refine(
+  (value) => value.startDate <= value.endDate,
+  { message: "Market event history start date must not follow the end date." },
+);
+
+export type MarketEventBackfillRequest = z.infer<
+  typeof marketEventBackfillRequestSchema
+>;

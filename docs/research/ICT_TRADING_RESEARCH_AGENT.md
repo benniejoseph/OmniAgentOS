@@ -1,16 +1,18 @@
 # ICT Trading Research Agent
 
-**Status:** Stage 0 foundation implemented; data ingestion, detectors, replay, calibration, and forward-shadow execution remain pending
+**Status:** Stage 0 foundation and Stage 1 immutable FRED release-history ingestion implemented; observed-value enrichment, exact event timestamps, impact windows, detectors, replay, calibration, and forward-shadow execution remain pending
 **Research date:** 2026-09-10; implementation activated 2026-09-11
 **Initial instruments:** Nasdaq-100 exposure and gold exposure
 
 ## Current implementation boundary
 
-The private `/app/markets` workspace, canonical instrument registry, provider-readiness API, and server-only Twelve Data bar adapter now exist. `XAU/USD` is the only currently verified provider mapping. The Nasdaq-100 entry remains a reference identity and deliberately refuses to substitute `NDX`, `NQ`/`MNQ`, `QQQ`, or an unspecified `NAS100`/`US100` CFD.
+The private `/app/markets` workspace, canonical instrument registry, provider-readiness API, and server-only market adapters now exist. `XAU/USD` is bound to the indicative Twelve Data spot mapping. `NAS100` is bound specifically to TraderMade's research CFD mapping and remains explicitly distinct from `NDX`, `NQ`/`MNQ`, `QQQ`, and any broker's executable `US100` quote. TraderMade REST availability is entitlement-dependent and the application exposes a normalized plan error rather than substituting another instrument.
 
 `Meridian` is a built-in, read-only market-research specialist. Its text model uses the separately configurable `market_research` assignment in Settings; the market workspace does not consider a deployment fallback to be an explicit assignment. The application still requires `TWELVE_DATA_API_KEY` and `TRADING_ECONOMICS_API_KEY` for the blocking live-research inputs, with `FRED_API_KEY` recommended for leakage-safe historical release vintages.
 
-The current UI exposes four progressively loaded views: Research desk, News impact lab, ICT + Quarterly, and Forecast journal. The chart library is loaded only when verified bars exist. Unavailable data and uncalibrated probabilities remain visibly unavailable; no sample prices or guessed probabilities are rendered.
+The current UI exposes four progressively loaded views: Research desk, News impact lab, ICT + Quarterly, and Forecast journal. The chart library is loaded only when verified bars exist. The News Impact Lab can enqueue and track an owner-private background import for eight curated high-impact U.S. FRED releases from 2000 onward. Imported records retain date-only precision and empty actual/consensus/prior fields until an authoritative observed-value and release-time source is bound. Unavailable data and uncalibrated probabilities remain visibly unavailable; no sample prices, guessed timestamps, consensus values, or probabilities are rendered.
+
+Trading Economics is no longer a dependency. The free-source path uses FRED/ALFRED for durable release history and vintages plus the official BLS calendar for upcoming BLS schedules. Free official sources do not provide a complete historical economist-consensus archive, so that field remains nullable. Scraping an unlicensed commercial calendar is not part of the trusted pipeline.
 
 ## Purpose
 

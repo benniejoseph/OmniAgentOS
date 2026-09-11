@@ -19,6 +19,7 @@ export type OperationJobType =
   | "knowledge.ingest"
   | "knowledge.cognify"
   | "conversation.summary.enrich"
+  | "market.events.backfill"
   | "evaluation.run"
   | "asset.object.commit"
   | "asset.object.delete"
@@ -33,6 +34,7 @@ export const BACKGROUND_OPERATION_JOB_TYPES = [
   "knowledge.ingest",
   "knowledge.cognify",
   "conversation.summary.enrich",
+  "market.events.backfill",
   "evaluation.run",
   "asset.object.commit",
   "asset.object.delete",
@@ -75,6 +77,7 @@ export type OperationJobStats = {
 
 const ACTOR_PRIVATE_OPERATION_JOB_TYPES = new Set<OperationJobType>([
   "conversation.summary.enrich",
+  "market.events.backfill",
 ]);
 
 const SEMANTIC_SUMMARY_PUBLIC_STAGES = new Set([

@@ -50,7 +50,7 @@ describe("Twelve Data market adapter", () => {
 
     process.env.TWELVE_DATA_API_KEY = "test-market-key";
     await expect(fetchTwelveDataBars({
-      instrumentId: "nasdaq100.reference",
+      instrumentId: "nas100.tradermade_cfd",
       interval: "15min",
       outputSize: 100,
     })).rejects.toBeInstanceOf(MarketInstrumentMappingRequiredError);

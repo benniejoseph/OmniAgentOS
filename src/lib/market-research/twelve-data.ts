@@ -32,8 +32,11 @@ const twelveDataResponseSchema = z.object({
 }).passthrough();
 
 export class MarketDataCredentialRequiredError extends Error {
-  constructor() {
-    super("Twelve Data is not configured. Add TWELVE_DATA_API_KEY to the deployment environment.");
+  constructor(
+    provider = "Twelve Data",
+    setupVariable = "TWELVE_DATA_API_KEY",
+  ) {
+    super(`${provider} is not configured. Add ${setupVariable} to the deployment environment.`);
     this.name = "MarketDataCredentialRequiredError";
   }
 }
@@ -61,7 +64,11 @@ export async function fetchTwelveDataBars(input: {
   if (!apiKey) throw new MarketDataCredentialRequiredError();
   const instrument = marketInstrument(input.instrumentId);
   const mapping = instrument.providerMapping;
-  if (mapping.status !== "verified" || !mapping.symbol) {
+  if (
+    mapping.provider !== "twelve_data" ||
+    mapping.status !== "verified" ||
+    !mapping.symbol
+  ) {
     throw new MarketInstrumentMappingRequiredError(input.instrumentId);
   }
 
