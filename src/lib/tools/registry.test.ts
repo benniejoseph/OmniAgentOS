@@ -196,7 +196,13 @@ describe("governed native tool schemas", () => {
           items: {
             minItems: 1,
             maxItems: 100,
-            items: { type: ["string", "number", "boolean"] },
+            items: {
+              anyOf: [
+                { type: "string", maxLength: 50_000, pattern: "^(?:[^=]|$)" },
+                { type: "number" },
+                { type: "boolean" },
+              ],
+            },
           },
         },
       },
