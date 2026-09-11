@@ -38,6 +38,12 @@ Set these through the platform secret/configuration store, never in source contr
 
 Native contract artifacts are committed release inputs under `public/native-contracts/v3` and `public/native-contracts/v4`; v1-v2 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v3 document hashes drift. Keep v4 current and v3 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
 
+### Licensed TradingView chart assets
+
+TradingView Advanced Charts v32.2.0 is a restricted, non-redistributable client dependency. Its files must never be committed to the public OmniAgentOS repository. `npm run sync:tradingview` uses the operator's existing GitHub authorization to clone the exact `v32.2.0` tag, verifies commit `f936c921ba510ba20ac51a71b8b4c5c03c043dbc`, and stages only the required `charting_library` directory under the Git-ignored `public/vendor/tradingview` path. The release marker is also ignored. Do not put a GitHub token in the repository, Vercel environment, script arguments, or logs.
+
+`npm run deploy:production` invokes that sync as its npm pre-script. A direct Vercel chart release must run the sync first and must upload the staged public directory; `.vercelignore` explicitly admits that otherwise Git-ignored path. Before promotion, require HTTP 200 from `/vendor/tradingview/charting_library/charting_library.standalone.js` on the staged deployment and load `/app/markets` in an authenticated browser. The page must show a ready `Financial Chart` iframe, provider-labelled bars, drawing controls, and no TradingView CSP or Datafeed errors. Git-based Vercel builds do not contain this private dependency and are not an approved chart release path unless a separately reviewed private-package installation is configured.
+
 P12.2 requires migration `20260908093000_p12_2_mobile_device_lifecycle.sql`
 (internal schema v145) before publishing the device lifecycle routes. The
 migration validates predecessor v144, installs the constrained revocation/wipe

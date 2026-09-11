@@ -554,18 +554,17 @@ export function MarketResearchWorkspace() {
 
       {selected ? (
         <>
-          {activeTab === "overview" ? (
-            <ResearchDesk
-              instrument={selected}
-              overview={overview}
-              events={events}
-              bars={bars}
-              barsLoading={barsLoading}
-              barsError={barsError}
-              interval={interval}
-              onIntervalChange={setInterval}
-            />
-          ) : null}
+          <ResearchDesk
+            hidden={activeTab !== "overview"}
+            instrument={selected}
+            overview={overview}
+            events={events}
+            bars={bars}
+            barsLoading={barsLoading}
+            barsError={barsError}
+            interval={interval}
+            onIntervalChange={setInterval}
+          />
           {activeTab === "events" ? (
             <NewsImpactLab
               instrument={selected}
@@ -614,6 +613,7 @@ export function MarketResearchWorkspace() {
 }
 
 function ResearchDesk({
+  hidden,
   instrument,
   overview,
   events,
@@ -623,6 +623,7 @@ function ResearchDesk({
   interval,
   onIntervalChange,
 }: {
+  hidden: boolean;
   instrument: MarketInstrument;
   overview?: MarketResearchOverview;
   events?: MarketEventsResult;
@@ -641,9 +642,12 @@ function ResearchDesk({
   const provider = overview?.providers.find((item) =>
     item.provider === instrument.providerMapping.provider
   );
+  const hasMatchingBars = Boolean(
+    bars?.bars.length && bars.instrumentId === instrument.instrumentId,
+  );
 
   return (
-    <section className={styles.workspace}>
+    <section className={styles.workspace} hidden={hidden}>
       <div className={styles.primaryPlane}>
         <div className={styles.instrumentHeader}>
           <div>
@@ -679,16 +683,23 @@ function ResearchDesk({
             </div>
           </header>
           <div className={styles.chartBody}>
-            {barsLoading ? <ChartLoading /> : bars?.bars.length ? <PriceChart bars={bars.bars} /> : (
+            {hasMatchingBars && bars ? (
+              <PriceChart instrument={instrument} bars={bars} />
+            ) : barsLoading ? <ChartLoading /> : (
               <ChartEmpty
                 mappingRequired={instrument.providerMapping.status === "discovery_required"}
                 providerReady={provider?.configured === true}
                 error={barsError}
               />
             )}
+            {barsLoading && hasMatchingBars ? (
+              <div className={styles.chartUpdating} aria-live="polite">
+                <RefreshCw className={styles.spin} size={13} /> Loading evidence-bound {interval} bars
+              </div>
+            ) : null}
           </div>
           <footer>
-            <span>Scroll to zoom · drag to pan · pinch on touch</span>
+            <span>Advanced Charts v32.2.0 · scroll to zoom · drag to pan · drawing tools at left</span>
             <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a>
           </footer>
         </div>
