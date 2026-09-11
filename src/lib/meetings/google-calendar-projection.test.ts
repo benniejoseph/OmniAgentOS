@@ -68,4 +68,100 @@ describe("Google Calendar meeting projection", () => {
       }),
     }));
   });
+
+  it("preserves user-added source links as valid draft inputs when Calendar updates an existing meeting", async () => {
+    mocks.findMeeting.mockResolvedValue({
+      meetingId: "meeting-one",
+      revision: 4,
+      title: "Existing meeting",
+      summary: "Existing summary",
+      status: "scheduled",
+      scheduledStartAt: "2099-09-11T04:30:00.000Z",
+      scheduledEndAt: "2099-09-11T05:30:00.000Z",
+      actualStartAt: null,
+      actualEndAt: null,
+      timezone: "Asia/Kolkata",
+      location: "Google Meet",
+      projectId: null,
+      declaredAccessClass: "owner_private",
+      participants: [],
+      sourceLinks: [
+        {
+          linkId: "recording-one",
+          kind: "recording",
+          sourceId: "source-recording-one",
+          sourceRevisionId: "revision-recording-one",
+          mediaRole: "recording",
+          label: "Meeting recording",
+          sourceHash: "private-store-field",
+          sourceRevisionHash: "private-revision-field",
+          accessClass: "owner_private",
+        },
+        {
+          linkId: "old-calendar-link",
+          kind: "calendar_event",
+          sourceId: "source_item_calendar_one",
+          sourceRevisionId: "old-calendar-revision",
+          mediaRole: "calendar",
+          label: "Google Calendar",
+          sourceHash: "old-source-hash",
+          sourceRevisionHash: "old-revision-hash",
+          accessClass: "owner_private",
+        },
+      ],
+      entityLinks: [],
+      decisions: [],
+      commitments: [],
+      followUps: [],
+    });
+
+    await projectGoogleCalendarMeeting({
+      tenantId: "personal",
+      actorId,
+      sourceItemId: "source_item_calendar_one",
+      sourceRevisionId: "source_revision_calendar_two",
+      providerRevisionId: "etag-two",
+      sourceExecutionScope: createExecutionScope({
+        tenantId: "personal",
+        initiatingActorId: actorId,
+        executingPrincipalType: "system",
+        executingPrincipalId: "connector.google.personal_sync",
+        correlationId: "calendar-sync-two",
+        purpose: "connector.google.personal_sync.ingest",
+      }),
+      event: {
+        eventId: "event-one",
+        title: "Updated product review",
+        description: "Updated agenda.",
+        status: "confirmed",
+        start: "2099-09-11T10:00:00+05:30",
+        end: "2099-09-11T11:00:00+05:30",
+        timezone: "Asia/Kolkata",
+        location: "Google Meet",
+        organizer: { email: "owner@example.com", displayName: "Owner", role: "organizer", responseStatus: "accepted", optional: false },
+        attendees: [],
+      },
+    });
+
+    expect(mocks.saveMeeting).toHaveBeenCalledWith(expect.objectContaining({
+      meetingId: "meeting-one",
+      expectedRevision: 4,
+      draft: expect.objectContaining({
+        sourceLinks: [
+          {
+            linkId: "recording-one",
+            kind: "recording",
+            sourceId: "source-recording-one",
+            sourceRevisionId: "revision-recording-one",
+            mediaRole: "recording",
+            label: "Meeting recording",
+          },
+          expect.objectContaining({
+            kind: "calendar_event",
+            sourceRevisionId: "source_revision_calendar_two",
+          }),
+        ],
+      }),
+    }));
+  });
 });

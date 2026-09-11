@@ -54,7 +54,16 @@ export async function projectGoogleCalendarMeeting(
   const participants = mergeCalendarParticipants(input.event, existing);
   const calendarLinkId = `calendar:${digest(input.sourceItemId).slice(0, 40)}`;
   const sourceLinks = [
-    ...(existing?.sourceLinks || []).filter((link) => link.kind !== "calendar_event"),
+    ...(existing?.sourceLinks || [])
+      .filter((link) => link.kind !== "calendar_event")
+      .map((link) => ({
+        linkId: link.linkId,
+        kind: link.kind,
+        sourceId: link.sourceId,
+        sourceRevisionId: link.sourceRevisionId,
+        mediaRole: link.mediaRole,
+        label: link.label,
+      })),
     {
       linkId: calendarLinkId,
       kind: "calendar_event" as const,
