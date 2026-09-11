@@ -105,6 +105,7 @@ import {
   type SourceItemV1,
 } from "@/lib/sources/contracts";
 import {
+  getCurrentSemanticEnrichment,
   readOwnedSemanticEpisodeSource,
   saveSemanticEnrichmentFromWorker,
 } from "@/lib/threads/semantic-summary-store";
@@ -508,6 +509,18 @@ export async function enqueueSemanticSummaryEnrichmentJob({
     tenantId,
     usageActorId,
   );
+  if (
+    trustedExecutionScope.executingPrincipalType !== "user" ||
+    trustedExecutionScope.executingPrincipalId !== usageActorId ||
+    trustedExecutionScope.workspaceId !== null ||
+    trustedExecutionScope.missionId !== null ||
+    trustedExecutionScope.delegationId !== null ||
+    trustedExecutionScope.contextGrantIds.length !== 0 ||
+    trustedExecutionScope.capabilityGrantIds.length !== 0 ||
+    trustedExecutionScope.purpose !== "conversation.summary.enrich.queue"
+  ) {
+    throw new Error("Semantic summary enrichment queue scope is invalid.");
+  }
   const source = await readOwnedSemanticEpisodeSource({
     tenantId,
     actorId: usageActorId,
@@ -517,10 +530,13 @@ export async function enqueueSemanticSummaryEnrichmentJob({
   if (
     source.episode.sourceSha256 !== parsed.episodeSourceSha256 ||
     source.episode.summarySha256 !== parsed.deterministicSummarySha256 ||
-    !source.episode.threadId ||
-    (trustedExecutionScope.projectId &&
-      trustedExecutionScope.projectId !== (source.episode.projectId || null))
+    !source.episode.threadId
   ) return null;
+  if (
+    trustedExecutionScope.projectId !== (source.episode.projectId || null)
+  ) {
+    throw new Error("Semantic summary enrichment queue project scope is invalid.");
+  }
 
   const currentGenerationId = await resolveSemanticSummaryGenerationId({
     tenantId,
@@ -827,11 +843,16 @@ async function processBackgroundOperationJob(
         resourceId: result.resourceId,
       };
     }
+    const semanticOutcome = semanticSummaryTerminalOutcome(job, result);
     const updated = await updateOperationJobPayload(
       job.id,
       leaseOwner,
       {
-        progress: { stage: "completed", completedAt: new Date().toISOString() },
+        progress: {
+          stage: "completed",
+          completedAt: new Date().toISOString(),
+          ...(semanticOutcome ? { outcome: semanticOutcome } : {}),
+        },
         result,
       },
       { tenantId: job.tenantId },
@@ -1426,6 +1447,40 @@ async function executeSemanticSummaryEnrichmentJob(
     );
   }
 
+  const current = await getCurrentSemanticEnrichment({
+    tenantId: job.tenantId,
+    actorId,
+    enrichmentId: request.enrichmentId,
+  });
+  abortSignal.throwIfAborted();
+  if (current) {
+    if (
+      current.contract.enrichmentId !== request.enrichmentId ||
+      current.contract.episodeSummaryId !== request.episodeSummaryId ||
+      current.contract.generationId !== request.generationId ||
+      current.contract.sourceSha256 !== request.sourceSha256 ||
+      current.contract.episodeSourceSha256 !== request.episodeSourceSha256 ||
+      current.contract.deterministicSummarySha256 !==
+        request.deterministicSummarySha256
+    ) {
+      throw new Error(
+        "Current semantic summary enrichment does not match its queued plan.",
+      );
+    }
+    return {
+      resourceId: current.contract.enrichmentId,
+      enrichmentId: current.contract.enrichmentId,
+      episodeSummaryId: current.contract.episodeSummaryId,
+      generationId: current.contract.generationId,
+      sourceSha256: current.contract.sourceSha256,
+      enrichmentSha256: current.contract.enrichmentSha256,
+      statementCount: current.contract.statements.length,
+      status: "already_current",
+      shadowOnly: true,
+      rankingEffect: "none",
+    };
+  }
+
   await updateBackgroundJobProgress(job, abortSignal, {
     stage: "generating_enrichment",
     shadowOnly: true,
@@ -1478,6 +1533,18 @@ function semanticSummarySupersededResult(
     shadowOnly: true,
     rankingEffect: "none",
   };
+}
+
+function semanticSummaryTerminalOutcome(
+  job: OperationJobRecord,
+  result: Record<string, unknown>,
+) {
+  if (job.type !== "conversation.summary.enrich") return undefined;
+  return result.status === "enriched" ||
+      result.status === "already_current" ||
+      result.status === "superseded"
+    ? result.status
+    : undefined;
 }
 
 async function executeKnowledgeCognifyJob(

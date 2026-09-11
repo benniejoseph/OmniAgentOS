@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   readSource: vi.fn(),
+  getCurrentEnrichment: vi.fn(),
   saveEnrichment: vi.fn(),
   resolveGeneration: vi.fn(),
   enrichEpisode: vi.fn(),
 }));
 
 vi.mock("@/lib/threads/semantic-summary-store", () => ({
+  getCurrentSemanticEnrichment: mocks.getCurrentEnrichment,
   readOwnedSemanticEpisodeSource: mocks.readSource,
   saveSemanticEnrichmentFromWorker: mocks.saveEnrichment,
 }));
@@ -47,6 +49,7 @@ describe("semantic episode enrichment background job", () => {
     process.env.OMNIAGENT_DATA_DIR = dataDirectory;
     delete process.env.DATABASE_URL;
     mocks.resolveGeneration.mockResolvedValue(generationA);
+    mocks.getCurrentEnrichment.mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
@@ -119,7 +122,10 @@ describe("semantic episode enrichment background job", () => {
       executionScope: requestScope(source),
       request: enrichmentRequest(source),
     });
-    const contract = generatedContract(source);
+    const contract = generatedContract(
+      source,
+      queued!.payload.request as Record<string, unknown>,
+    );
     mocks.enrichEpisode.mockResolvedValue(contract);
     mocks.saveEnrichment.mockResolvedValue({
       contract,
@@ -160,7 +166,7 @@ describe("semantic episode enrichment background job", () => {
     expect(completed).toMatchObject({
       status: "completed",
       payload: {
-        progress: { stage: "completed" },
+        progress: { stage: "completed", outcome: "enriched" },
         result: {
           resourceId: contract.enrichmentId,
           status: "enriched",
@@ -199,9 +205,76 @@ describe("semantic episode enrichment background job", () => {
     })).resolves.toMatchObject({
       status: "completed",
       payload: {
+        progress: { stage: "completed", outcome: "superseded" },
         result: {
           status: "superseded",
           generationId: generationA,
+          shadowOnly: true,
+          rankingEffect: "none",
+        },
+      },
+    });
+  });
+
+  it("short-circuits a coalesced rerun after the first lease already saved it", async () => {
+    const source = episodeSource("tenant-retry", "actor-retry", "Stable");
+    mocks.readSource.mockResolvedValue(source);
+    const enqueueInput = {
+      tenantId: source.episode.tenantId,
+      actorId: source.episode.actorId,
+      executionScope: requestScope(source),
+      request: enrichmentRequest(source),
+    };
+    const queued = await enqueueSemanticSummaryEnrichmentJob(enqueueInput);
+    const contract = generatedContract(
+      source,
+      queued!.payload.request as Record<string, unknown>,
+    );
+    let savedRecord: {
+      contract: ReturnType<typeof generatedContract>;
+      episodeSummarySha256: string;
+      createdAt: string;
+    } | undefined;
+    mocks.getCurrentEnrichment.mockImplementation(async () => savedRecord);
+    mocks.enrichEpisode.mockImplementationOnce(async () => {
+      const coalesced = await enqueueSemanticSummaryEnrichmentJob(enqueueInput);
+      expect(coalesced).toMatchObject({ id: queued!.id, status: "running" });
+      return contract;
+    });
+    mocks.saveEnrichment.mockImplementationOnce(async () => {
+      savedRecord = {
+        contract,
+        episodeSummarySha256: source.episode.summarySha256,
+        createdAt: "2026-09-11T12:20:00.000Z",
+      };
+      return savedRecord;
+    });
+
+    await processBackgroundOperationQueue({
+      tenantId: source.episode.tenantId,
+      limit: 1,
+    });
+    await expect(getOperationJob(queued!.id, {
+      tenantId: source.episode.tenantId,
+    })).resolves.toMatchObject({ status: "queued", attempt: 0 });
+
+    await processBackgroundOperationQueue({
+      tenantId: source.episode.tenantId,
+      limit: 1,
+    });
+
+    expect(mocks.enrichEpisode).toHaveBeenCalledTimes(1);
+    expect(mocks.saveEnrichment).toHaveBeenCalledTimes(1);
+    expect(mocks.getCurrentEnrichment).toHaveBeenCalledTimes(2);
+    await expect(getOperationJob(queued!.id, {
+      tenantId: source.episode.tenantId,
+    })).resolves.toMatchObject({
+      status: "completed",
+      payload: {
+        progress: { stage: "completed", outcome: "already_current" },
+        result: {
+          enrichmentId: contract.enrichmentId,
+          status: "already_current",
           shadowOnly: true,
           rankingEffect: "none",
         },
@@ -264,6 +337,21 @@ describe("semantic episode enrichment background job", () => {
       },
     });
     expect(stale).toBeNull();
+
+    await expect(enqueueSemanticSummaryEnrichmentJob({
+      tenantId: source.episode.tenantId,
+      actorId: source.episode.actorId,
+      executionScope: createExecutionScope({
+        tenantId: source.episode.tenantId,
+        initiatingActorId: source.episode.actorId,
+        executingPrincipalType: "user",
+        executingPrincipalId: source.episode.actorId,
+        projectId: null,
+        correlationId: "semantic-summary-missing-project",
+        purpose: "conversation.summary.enrich.queue",
+      }),
+      request: enrichmentRequest(source),
+    })).rejects.toThrow(/queue project scope is invalid/i);
   });
 
   it("fails closed when persisted worker causation or grants are broadened", async () => {
@@ -360,12 +448,17 @@ function requestScope(source: OwnedSemanticEpisodeSource) {
   });
 }
 
-function generatedContract(source: OwnedSemanticEpisodeSource) {
+function generatedContract(
+  source: OwnedSemanticEpisodeSource,
+  request: Record<string, unknown>,
+) {
   return {
-    enrichmentId: `semantic_episode_enrichment_${"c".repeat(48)}`,
+    enrichmentId: String(request.enrichmentId),
     episodeSummaryId: source.episode.id,
     generationId: generationA,
-    sourceSha256: "d".repeat(64),
+    episodeSourceSha256: source.episode.sourceSha256,
+    deterministicSummarySha256: source.episode.summarySha256,
+    sourceSha256: String(request.sourceSha256),
     enrichmentSha256: "e".repeat(64),
     statements: [{ statementId: `semantic_episode_statement_${"f".repeat(48)}` }],
   };
