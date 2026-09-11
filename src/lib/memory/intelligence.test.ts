@@ -141,9 +141,21 @@ describe("memory intelligence projection", () => {
     expect(overview.summary.durableMemories).toBe(2);
     expect(overview.steward.state).toBe("attention");
     expect(overview.steward.learningSignals.retrievalUses).toBe(3);
+    expect(overview.steward.controller).toEqual({
+      contractVersion: "mnemosyne-proposal:1",
+      mode: "deterministic_propose_only",
+      automaticJobExecution: false,
+      automaticTruthMutation: false,
+    });
     expect(overview.summary.graphStatus).toBe("current");
     expect(overview.steward.recommendations.map((item) => item.id))
       .toEqual(expect.arrayContaining(["review", "embedding", "scope"]));
+    expect(overview.steward.recommendations.every((item) =>
+      item.proposalId.startsWith("mnemosyne_proposal_") &&
+      item.contractVersion === "mnemosyne-proposal:1" &&
+      item.controlMode === "deterministic_propose_only" &&
+      item.requiresUserAction
+    )).toBe(true);
   });
 
   it("asks Mnemosyne to repair a failed graph projection", () => {

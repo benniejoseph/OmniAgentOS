@@ -6,7 +6,10 @@ import type { KnowledgeDocument } from "@/lib/rag/types";
 import type { PublicMemoryCognitionQualityMetrics } from "@/lib/memory/quality-metrics";
 
 export const MEMORY_INTELLIGENCE_VERSION =
-  "memory-intelligence-observatory:3" as const;
+  "memory-intelligence-observatory:4" as const;
+
+export const MNEMOSYNE_PROPOSAL_CONTRACT_VERSION =
+  "mnemosyne-proposal:1" as const;
 
 export const MEMORY_CATEGORY_IDS = [
   "preferences",
@@ -68,6 +71,10 @@ export type KnowledgeIndexItem = Readonly<{
 }>;
 
 export type MemoryStewardRecommendation = Readonly<{
+  proposalId: string;
+  contractVersion: typeof MNEMOSYNE_PROPOSAL_CONTRACT_VERSION;
+  controlMode: "deterministic_propose_only";
+  requiresUserAction: true;
   id: "review" | "embedding" | "scope" | "classification" | "graph" | "maintenance";
   priority: "high" | "medium" | "low";
   title: string;
@@ -125,6 +132,12 @@ export type MemoryIntelligenceOverview = Readonly<{
       corrections: number;
       forgetRequests: number;
       resolvedReviews: number;
+    }>;
+    controller: Readonly<{
+      contractVersion: typeof MNEMOSYNE_PROPOSAL_CONTRACT_VERSION;
+      mode: "deterministic_propose_only";
+      automaticJobExecution: false;
+      automaticTruthMutation: false;
     }>;
     recommendations: readonly MemoryStewardRecommendation[];
   }>;
@@ -340,6 +353,12 @@ export function buildMemoryIntelligenceOverview(input: {
         forgetRequests: input.deletionBarriers,
         resolvedReviews: input.resolvedReviews,
       }),
+      controller: Object.freeze({
+        contractVersion: MNEMOSYNE_PROPOSAL_CONTRACT_VERSION,
+        mode: "deterministic_propose_only" as const,
+        automaticJobExecution: false as const,
+        automaticTruthMutation: false as const,
+      }),
       recommendations: Object.freeze(recommendations),
     }),
   });
@@ -487,7 +506,7 @@ function stewardRecommendations(input: {
 }): MemoryStewardRecommendation[] {
   const recommendations: MemoryStewardRecommendation[] = [];
   if (input.pendingReviews) {
-    recommendations.push(Object.freeze({
+    recommendations.push(stewardProposal({
       id: "review",
       priority: "high",
       title: "Resolve proposed memories",
@@ -497,7 +516,7 @@ function stewardRecommendations(input: {
     }));
   }
   if (input.missingEmbeddings) {
-    recommendations.push(Object.freeze({
+    recommendations.push(stewardProposal({
       id: "embedding",
       priority: "high",
       title: "Complete semantic indexing",
@@ -507,7 +526,7 @@ function stewardRecommendations(input: {
     }));
   }
   if (input.legacy) {
-    recommendations.push(Object.freeze({
+    recommendations.push(stewardProposal({
       id: "scope",
       priority: "medium",
       title: "Secure older memories",
@@ -517,7 +536,7 @@ function stewardRecommendations(input: {
     }));
   }
   if (input.unclassified) {
-    recommendations.push(Object.freeze({
+    recommendations.push(stewardProposal({
       id: "classification",
       priority: "medium",
       title: "Improve source classification",
@@ -527,7 +546,7 @@ function stewardRecommendations(input: {
     }));
   }
   if (input.graphStatus === "failed" || input.graphStatus === "unbuilt") {
-    recommendations.push(Object.freeze({
+    recommendations.push(stewardProposal({
       id: "graph",
       priority: "high",
       title: "Repair the evidence map",
@@ -538,7 +557,7 @@ function stewardRecommendations(input: {
       affectedCount: 1,
     }));
   } else if (input.graphStatus === "stale") {
-    recommendations.push(Object.freeze({
+    recommendations.push(stewardProposal({
       id: "graph",
       priority: "medium",
       title: "Refresh the evidence map",
@@ -554,7 +573,7 @@ function stewardRecommendations(input: {
     input.durableCount > 20 &&
     (!Number.isFinite(maintenanceAgeMs) || maintenanceAgeMs > 7 * 24 * 60 * 60 * 1_000)
   ) {
-    recommendations.push(Object.freeze({
+    recommendations.push(stewardProposal({
       id: "maintenance",
       priority: "low",
       title: "Check lifecycle quality",
@@ -564,6 +583,28 @@ function stewardRecommendations(input: {
     }));
   }
   return recommendations;
+}
+
+function stewardProposal(
+  value: Omit<
+    MemoryStewardRecommendation,
+    "proposalId" | "contractVersion" | "controlMode" | "requiresUserAction"
+  >,
+): MemoryStewardRecommendation {
+  const proposalId = `mnemosyne_proposal_${sourceContractSha256({
+    contractVersion: MNEMOSYNE_PROPOSAL_CONTRACT_VERSION,
+    id: value.id,
+    priority: value.priority,
+    action: value.action,
+    affectedCount: value.affectedCount,
+  }).slice(0, 40)}`;
+  return Object.freeze({
+    proposalId,
+    contractVersion: MNEMOSYNE_PROPOSAL_CONTRACT_VERSION,
+    controlMode: "deterministic_propose_only" as const,
+    requiresUserAction: true as const,
+    ...value,
+  });
 }
 
 function memoryGraphHealth(
