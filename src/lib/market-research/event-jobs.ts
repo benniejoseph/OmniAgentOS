@@ -6,10 +6,14 @@ import {
   marketEventBackfillRequestSchema,
   type MarketEventBackfillRequest,
 } from "@/lib/market-research/contracts";
+import { fetchBlsReleaseSchedule } from "@/lib/market-research/bls";
 import {
   selectedHighImpactEvents,
 } from "@/lib/market-research/event-catalog";
-import { saveFredMarketEvents } from "@/lib/market-research/event-store";
+import {
+  saveBlsMarketEventSchedules,
+  saveFredMarketEvents,
+} from "@/lib/market-research/event-store";
 import { fetchFredReleaseDates } from "@/lib/market-research/fred";
 import {
   enqueueOperationJob,
@@ -63,8 +67,11 @@ export async function enqueueMarketEventBackfillJob(input: {
       progress: {
         stage: "queued",
         completedSources: 0,
-        totalSources: selectedHighImpactEvents(request.eventKeys).length,
+        totalSources: totalImportSources(
+          selectedHighImpactEvents(request.eventKeys),
+        ),
         importedEvents: 0,
+        importedSchedules: 0,
       },
     },
     priority: 1,
@@ -108,7 +115,9 @@ export async function executeMarketEventBackfillJob(input: {
   }
 
   const definitions = selectedHighImpactEvents(request.eventKeys);
+  const totalSources = totalImportSources(definitions);
   let importedEvents = 0;
+  let importedSchedules = 0;
   let discoveredDates = 0;
   for (const [index, definition] of definitions.entries()) {
     input.abortSignal.throwIfAborted();
@@ -116,8 +125,9 @@ export async function executeMarketEventBackfillJob(input: {
       stage: "fetching_release_history",
       currentEventKey: definition.eventKey,
       completedSources: index,
-      totalSources: definitions.length,
+      totalSources,
       importedEvents,
+      importedSchedules,
       discoveredDates,
     });
     const dates = await fetchFredReleaseDates({
@@ -139,20 +149,62 @@ export async function executeMarketEventBackfillJob(input: {
       stage: "saving_release_history",
       currentEventKey: definition.eventKey,
       completedSources: index + 1,
-      totalSources: definitions.length,
+      totalSources,
       importedEvents,
+      importedSchedules,
+      discoveredDates,
+    });
+  }
+  if (definitions.some((definition) => definition.blsSchedule)) {
+    input.abortSignal.throwIfAborted();
+    await input.onProgress({
+      stage: "fetching_official_schedule",
+      completedSources: definitions.length,
+      totalSources,
+      importedEvents,
+      importedSchedules,
+      discoveredDates,
+    });
+    const schedules = await fetchBlsReleaseSchedule({
+      events: definitions,
+      startDate: request.startDate,
+      endDate: request.endDate,
+      signal: input.abortSignal,
+    });
+    const savedSchedules = await saveBlsMarketEventSchedules({
+      tenantId: input.job.tenantId,
+      actorId,
+      executionScope,
+      entries: schedules,
+      importId: input.job.id,
+    });
+    importedSchedules += savedSchedules.inserted;
+    await input.onProgress({
+      stage: "saving_official_schedule",
+      completedSources: totalSources,
+      totalSources,
+      importedEvents,
+      importedSchedules,
       discoveredDates,
     });
   }
   return {
     resourceId: "market_event_history",
     importedEvents,
+    importedSchedules,
     discoveredDates,
-    sourcesProcessed: definitions.length,
+    sourcesProcessed: totalSources,
     startDate: request.startDate,
     endDate: request.endDate,
     timestampPrecision: "date",
   };
+}
+
+function totalImportSources(
+  definitions: ReturnType<typeof selectedHighImpactEvents>,
+) {
+  return definitions.length +
+    (definitions.some((definition) => definition.blsSchedule) ? 1 : 0);
 }
 
 function digest(value: string) {

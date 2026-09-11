@@ -426,7 +426,7 @@ function ResearchDesk({
         </section>
 
         <section className={styles.providerPanel}>
-          <header><span><Database size={16} /> Research inputs</span><small>{overview?.providers.filter((item) => item.configured).length || 0}/{overview?.providers.length || 4} connected</small></header>
+          <header><span><Database size={16} /> Research inputs</span><small>{overview?.providers.filter((item) => item.configured).length || 0}/{overview?.providers.length || 3} connected</small></header>
           <div>
             {(overview?.providers || []).map((item) => (
               <article key={item.provider}>
@@ -494,10 +494,16 @@ function NewsImpactLab({
             {events.events.map((event) => (
               <article key={event.id}>
                 <span><strong>{event.name}</strong><small>{event.eventKey}</small></span>
-                <time dateTime={event.releaseDate}>{formatEventDate(event.releaseDate)}</time>
+                <time dateTime={event.occurredAt || event.releaseDate}>
+                  {formatEventDate(event.releaseDate)}
+                  {event.occurredAt ? <small>{formatEventTime(event.occurredAt)}</small> : null}
+                </time>
                 <em data-warning={event.timestampPrecision === "date"}>{event.timestampPrecision === "date" ? "Date only" : "Exact time"}</em>
                 <span><strong>{event.valueStatus === "observed_values" ? "Observed" : "Pending"}</strong><small>{event.consensus === null ? "No free official consensus" : `Consensus ${event.consensus}`}</small></span>
-                <a href={event.sourceUrl} target="_blank" rel="noreferrer">FRED <ArrowRight size={12} /></a>
+                <span>
+                  <a href={event.sourceUrl} target="_blank" rel="noreferrer">FRED <ArrowRight size={12} /></a>
+                  {event.scheduleSourceUrl ? <a href={event.scheduleSourceUrl} target="_blank" rel="noreferrer">BLS time <ArrowRight size={12} /></a> : null}
+                </span>
               </article>
             ))}
           </div>
@@ -521,6 +527,14 @@ function formatEventDate(value: string) {
     day: "numeric",
     timeZone: "UTC",
   }).format(new Date(`${value}T00:00:00Z`));
+}
+
+function formatEventTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date(value));
 }
 
 function formatDateTime(value: string | null | undefined) {

@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 export const MARKET_RESEARCH_CONTRACT_VERSION =
-  "market-research-foundation:2" as const;
+  "market-research-foundation:3" as const;
 
 export const MARKET_INSTRUMENT_IDS = [
   "xauusd.spot",
-  "nas100.tradermade_cfd",
+  "ndx.cash",
 ] as const;
 export const marketInstrumentIdSchema = z.string().trim().min(3).max(120).regex(
   /^[a-z0-9][a-z0-9._-]+$/,
@@ -15,7 +15,7 @@ export type MarketInstrumentId = z.infer<typeof marketInstrumentIdSchema>;
 export const MARKET_INTERVALS = ["5min", "15min", "1h"] as const;
 export type MarketInterval = (typeof MARKET_INTERVALS)[number];
 
-export const MARKET_PRICE_PROVIDERS = ["twelve_data", "trader_made"] as const;
+export const MARKET_PRICE_PROVIDERS = ["twelve_data"] as const;
 export type MarketPriceProvider = (typeof MARKET_PRICE_PROVIDERS)[number];
 
 export const MARKET_RESEARCH_PROVIDERS = [
@@ -154,6 +154,8 @@ export const marketEventSchema = z.object({
   releaseDate: marketDateSchema,
   occurredAt: z.string().datetime({ offset: true }).nullable(),
   timestampPrecision: z.enum(["date", "instant"]),
+  scheduleSource: z.literal("bls").nullable(),
+  scheduleSourceUrl: z.string().url().max(1_000).nullable(),
   actual: z.number().finite().nullable(),
   consensus: z.number().finite().nullable(),
   previous: z.number().finite().nullable(),

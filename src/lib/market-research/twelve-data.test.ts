@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchTwelveDataBars,
   MarketDataCredentialRequiredError,
-  MarketInstrumentMappingRequiredError,
 } from "@/lib/market-research/twelve-data";
 
 afterEach(() => {
@@ -41,18 +40,31 @@ describe("Twelve Data market adapter", () => {
     expect(result.bars.map((bar) => bar.close)).toEqual([4001, 4003]);
   });
 
-  it("fails closed without a credential or an exact provider mapping", async () => {
+  it("fails closed without a credential", async () => {
     await expect(fetchTwelveDataBars({
       instrumentId: "xauusd.spot",
       interval: "15min",
       outputSize: 100,
     })).rejects.toBeInstanceOf(MarketDataCredentialRequiredError);
 
+  });
+
+  it("uses the explicit NDX mapping and explains plan entitlement failures", async () => {
     process.env.TWELVE_DATA_API_KEY = "test-market-key";
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      status: "error",
+      code: 404,
+      message: "This symbol is available starting with the Grow or Venture plan. Consider upgrading now.",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
     await expect(fetchTwelveDataBars({
-      instrumentId: "nas100.tradermade_cfd",
+      instrumentId: "ndx.cash",
       interval: "15min",
       outputSize: 100,
-    })).rejects.toBeInstanceOf(MarketInstrumentMappingRequiredError);
+    })).rejects.toThrow(/recognizes NDX.*time-series entitlement/i);
+
+    const [url] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(url.searchParams.get("symbol")).toBe("NDX");
   });
 });

@@ -6,7 +6,6 @@ import type {
   MarketInstrumentId,
 } from "@/lib/market-research/contracts";
 import { marketInstrument } from "@/lib/market-research/instruments";
-import { fetchTraderMadeBars } from "@/lib/market-research/trader-made";
 import { fetchTwelveDataBars } from "@/lib/market-research/twelve-data";
 
 export function fetchMarketBars(input: {
@@ -15,7 +14,8 @@ export function fetchMarketBars(input: {
   outputSize: number;
 }): Promise<MarketBarsResult> {
   const instrument = marketInstrument(input.instrumentId);
-  return instrument.providerMapping.provider === "trader_made"
-    ? fetchTraderMadeBars(input)
-    : fetchTwelveDataBars(input);
+  if (instrument.providerMapping.provider !== "twelve_data") {
+    throw new Error(`No active market-data adapter is registered for ${instrument.providerMapping.provider}.`);
+  }
+  return fetchTwelveDataBars(input);
 }

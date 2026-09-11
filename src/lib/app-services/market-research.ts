@@ -45,14 +45,6 @@ export async function showMarketResearchOverviewService(
       blocking: true,
     }),
     providerReadiness({
-      provider: "trader_made",
-      label: "TraderMade",
-      purpose: "NAS100 CFD history and eventual worker-hosted quote stream",
-      setupVariable: "TRADERMADE_REST_API_KEY",
-      configured: hasEnvironmentValue("TRADERMADE_REST_API_KEY"),
-      blocking: true,
-    }),
-    providerReadiness({
       provider: "fred",
       label: "FRED / ALFRED",
       purpose: "Release-vintage macro series for leakage-safe historical replay",
@@ -133,7 +125,7 @@ export async function showMarketResearchOverviewService(
       "Research only: Meridian cannot place, modify, or manage trades.",
       "No missing price bar, event value, or probability may be invented or silently filled.",
       "Every result must bind its instrument, provider, snapshot, as-of time, and evidence lineage.",
-      "TraderMade NAS100, NDX, NQ/MNQ, QQQ, and broker US100 CFDs are never treated as interchangeable.",
+      "Twelve Data NDX, NQ/MNQ, QQQ, and broker NAS100/US100 CFDs are never treated as interchangeable.",
     ],
   });
   return completeAppServiceCall(authorized, overview, {
@@ -200,7 +192,7 @@ export async function backfillMarketResearchEventsService(
 }
 
 function providerReadiness(input: {
-  provider: "twelve_data" | "trader_made" | "fred" | "bls";
+  provider: "twelve_data" | "fred" | "bls";
   label: string;
   purpose: string;
   configured: boolean;
