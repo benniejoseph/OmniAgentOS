@@ -23,7 +23,7 @@ export default async function MissionPage({
   const tenantId = session.context?.tenantId;
   const actorId = session.context?.actorId;
   if (!tenantId || !actorId) {
-    return <MissionWorkspace initialMissionId={id} initialMissions={[]} initialCapabilities={[]} />;
+    return <MissionWorkspace legacyHistory initialMissionId={id} initialMissions={[]} initialCapabilities={[]} />;
   }
   const initial = await runWithDatabaseTenantScope(tenantId, async () => {
     // These reads share a deliberately single-slot serverless database pool.
@@ -84,5 +84,5 @@ export default async function MissionPage({
     };
   });
   if (!initial) redirect("/app/projects?view=execution");
-  return <MissionWorkspace initialMissionId={id} {...initial} />;
+  return <MissionWorkspace legacyHistory initialMissionId={id} {...initial} />;
 }
