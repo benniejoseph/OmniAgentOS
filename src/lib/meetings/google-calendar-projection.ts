@@ -161,7 +161,7 @@ async function calendarAuthority(
       causationId: input.sourceExecutionScope.causationId,
       contextGrantIds: input.sourceExecutionScope.contextGrantIds,
       capabilityGrantIds: input.sourceExecutionScope.capabilityGrantIds,
-      purpose: "connector.google.calendar.project_meeting",
+      purpose: "meeting.write",
     }),
   };
 }
