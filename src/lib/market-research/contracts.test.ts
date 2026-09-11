@@ -4,14 +4,14 @@ import { marketBarSchema } from "@/lib/market-research/contracts";
 import { marketInstrument, marketInstruments } from "@/lib/market-research/instruments";
 
 describe("market research foundation", () => {
-  it("binds NAS100 to the explicit TraderMade research CFD", () => {
-    const nasdaq = marketInstrument("nas100.tradermade_cfd");
+  it("binds NAS100 research to the explicit Twelve Data NDX cash index", () => {
+    const nasdaq = marketInstrument("ndx.cash");
 
-    expect(nasdaq.canonicalSymbol).toBe("NAS100");
+    expect(nasdaq.canonicalSymbol).toBe("NDX");
     expect(nasdaq.aliases).toEqual(expect.arrayContaining(["NAS100", "US100"]));
     expect(nasdaq.providerMapping).toMatchObject({
-      provider: "trader_made",
-      symbol: "NAS100",
+      provider: "twelve_data",
+      symbol: "NDX",
       status: "verified",
     });
     expect(nasdaq.identityWarning).toContain("NQ/MNQ");
@@ -29,8 +29,8 @@ describe("market research foundation", () => {
       providerMapping: { provider: "twelve_data", symbol: "XAU/USD" },
     });
     expect(verified[1]).toMatchObject({
-      instrumentId: "nas100.tradermade_cfd",
-      providerMapping: { provider: "trader_made", symbol: "NAS100" },
+      instrumentId: "ndx.cash",
+      providerMapping: { provider: "twelve_data", symbol: "NDX" },
     });
   });
 

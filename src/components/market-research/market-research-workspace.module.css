@@ -185,6 +185,7 @@
 .eventRows em { width: fit-content; border: 1px solid var(--line); border-radius: 999px; padding: .3rem .55rem; color: var(--success); font-size: .54rem; font-style: normal; font-weight: 750; }
 .eventRows em[data-warning="true"] { color: var(--warning); }
 .eventRows a { display: inline-flex; align-items: center; gap: .25rem; color: var(--primary); font-size: .58rem; font-weight: 760; }
+.eventRows article > span:last-child { display: flex; flex-wrap: wrap; gap: .3rem .65rem; }
 .eventDisclosure { border-top: 1px solid var(--line); padding: .85rem 1rem; color: var(--muted); background: var(--surface-raised); font-size: .56rem; line-height: 1.55; }
 .spin { animation: market-spin 900ms linear infinite; }
 @keyframes market-spin { to { transform: rotate(360deg); } }

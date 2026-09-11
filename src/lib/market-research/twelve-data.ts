@@ -102,7 +102,7 @@ export async function fetchTwelveDataBars(input: {
   const payload = twelveDataResponseSchema.parse(raw);
   if (!response.ok || payload.status === "error" || !payload.meta || !payload.values) {
     throw new MarketDataProviderError(
-      providerMessage(payload.message, response.status),
+      providerMessage(payload.message, response.status, mapping.symbol),
     );
   }
 
@@ -156,9 +156,16 @@ function finiteNumber(value: string, field: string) {
   return parsed;
 }
 
-function providerMessage(message: string | undefined, status: number) {
+function providerMessage(
+  message: string | undefined,
+  status: number,
+  providerSymbol: string,
+) {
   if (status === 429) return "Twelve Data rate limit reached. Try again after the provider window resets.";
   if (status === 401 || status === 403) return "Twelve Data rejected the configured credential or entitlement.";
   const safe = message?.replace(/[\r\n\t]+/g, " ").trim().slice(0, 240);
+  if (/available starting with the .*plan|consider upgrading/i.test(safe || "")) {
+    return `Twelve Data recognizes ${providerSymbol}, but the current account does not include its time-series entitlement. ${safe}`;
+  }
   return safe || `Twelve Data returned HTTP ${status}.`;
 }

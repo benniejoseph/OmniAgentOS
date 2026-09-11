@@ -14,6 +14,7 @@ import {
   type MarketEvent,
   type MarketEventsResult,
 } from "@/lib/market-research/contracts";
+import type { BlsReleaseScheduleEntry } from "@/lib/market-research/bls";
 import type { FredReleaseDate } from "@/lib/market-research/fred";
 import {
   assertExecutionScopeTenant,
@@ -100,6 +101,85 @@ export async function saveFredMarketEvents(input: {
   return { inserted };
 }
 
+export async function saveBlsMarketEventSchedules(input: {
+  tenantId: string;
+  actorId: string;
+  executionScope: ExecutionScope;
+  entries: readonly BlsReleaseScheduleEntry[];
+  importId: string;
+}) {
+  if (!input.entries.length) return { inserted: 0 };
+  assertExecutionScopeTenant(input.executionScope, input.tenantId);
+  if (input.executionScope.initiatingActorId !== input.actorId) {
+    throw new Error("Market schedule import actor does not match its execution scope.");
+  }
+  if (!hasDatabaseUrl()) return { inserted: 0 };
+  await ensureDatabaseSchema();
+  const sourceShaById = new Map(input.entries.map((entry) => {
+    const id = marketScheduleId(entry.eventKey, entry.occurredAt);
+    return [id, canonicalJsonSha256({
+      source: "bls",
+      eventKey: entry.eventKey,
+      sourceUidSha256: digestFull(entry.sourceUid),
+      sourceUrl: entry.sourceUrl,
+      releaseDate: entry.releaseDate,
+      occurredAt: entry.occurredAt,
+      timezone: entry.timezone,
+    })] as const;
+  }));
+  const inserted = await getSql().transaction(async (sql: ReturnType<typeof getSql>) => {
+    const rows = await sql`
+      INSERT INTO omni_market_macro_event_schedules (
+        schema_version, id, tenant_id, owner_actor_id, event_key, name,
+        currency, impact, source, source_uid_sha256, source_url,
+        release_date, occurred_at, timezone, source_sha256, imported_at
+      )
+      SELECT
+        1, source.id, ${input.tenantId}, ${input.actorId}, source.event_key,
+        source.name, 'USD', 'high', 'bls', source.source_uid_sha256,
+        source.source_url, source.release_date, source.occurred_at,
+        'America/New_York', source.source_sha256, NOW()
+      FROM UNNEST(
+        ${input.entries.map((entry) => marketScheduleId(entry.eventKey, entry.occurredAt))}::TEXT[],
+        ${input.entries.map((entry) => entry.eventKey)}::TEXT[],
+        ${input.entries.map((entry) => entry.name)}::TEXT[],
+        ${input.entries.map((entry) => digestFull(entry.sourceUid))}::TEXT[],
+        ${input.entries.map((entry) => entry.sourceUrl)}::TEXT[],
+        ${input.entries.map((entry) => entry.releaseDate)}::DATE[],
+        ${input.entries.map((entry) => entry.occurredAt)}::TIMESTAMPTZ[],
+        ${input.entries.map((entry) => sourceShaById.get(marketScheduleId(entry.eventKey, entry.occurredAt))!)}::TEXT[]
+      ) AS source(
+        id, event_key, name, source_uid_sha256, source_url, release_date,
+        occurred_at, source_sha256
+      )
+      ON CONFLICT (tenant_id, owner_actor_id, source, event_key, occurred_at)
+      DO NOTHING
+      RETURNING id
+    `;
+    if (rows.length) {
+      const insertedIds = rows.map((row) => String(row.id));
+      await sql`
+        INSERT INTO omni_market_macro_event_schedule_events (
+          schema_version, id, tenant_id, owner_actor_id, schedule_id,
+          event_type, import_id, payload_sha256, occurred_at
+        )
+        SELECT
+          1, source.ledger_id, ${input.tenantId}, ${input.actorId},
+          source.schedule_id, 'market.macro_event.schedule_observed',
+          ${input.importId}, source.payload_sha256, NOW()
+        FROM UNNEST(
+          ${insertedIds.map((id) => marketScheduleLedgerId(input.importId, id))}::TEXT[],
+          ${insertedIds}::TEXT[],
+          ${insertedIds.map((id) => sourceShaById.get(id)!)}::TEXT[]
+        ) AS source(ledger_id, schedule_id, payload_sha256)
+        ON CONFLICT (tenant_id, id) DO NOTHING
+      `;
+    }
+    return rows.length;
+  }) as number;
+  return { inserted };
+}
+
 export async function listMarketEvents(input: {
   tenantId: string;
   actorId: string;
@@ -115,10 +195,25 @@ export async function listMarketEvents(input: {
   }
   await ensureDatabaseSchema();
   const rows = await getSql()`
-      SELECT * FROM omni_market_macro_events
-      WHERE tenant_id = ${input.tenantId}
-        AND owner_actor_id = ${input.actorId}
-      ORDER BY release_date DESC, event_key ASC
+      SELECT
+        events.*,
+        schedule.occurred_at AS schedule_occurred_at,
+        schedule.source AS schedule_source,
+        schedule.source_url AS schedule_source_url
+      FROM omni_market_macro_events events
+      LEFT JOIN LATERAL (
+        SELECT occurred_at, source, source_url
+        FROM omni_market_macro_event_schedules schedules
+        WHERE schedules.tenant_id = events.tenant_id
+          AND schedules.owner_actor_id = events.owner_actor_id
+          AND schedules.event_key = events.event_key
+          AND schedules.release_date = events.release_date
+        ORDER BY schedules.imported_at DESC, schedules.id DESC
+        LIMIT 1
+      ) schedule ON TRUE
+      WHERE events.tenant_id = ${input.tenantId}
+        AND events.owner_actor_id = ${input.actorId}
+      ORDER BY events.release_date DESC, events.event_key ASC
       LIMIT ${input.limit}
     `;
   const totals = await getSql()`
@@ -150,6 +245,8 @@ function marketEventFromFred(item: FredReleaseDate, importedAt: string): MarketE
     releaseDate: item.releaseDate,
     occurredAt: null,
     timestampPrecision: "date",
+    scheduleSource: null,
+    scheduleSourceUrl: null,
     actual: null,
     consensus: null,
     previous: null,
@@ -170,10 +267,16 @@ function marketEventFromRow(row: Record<string, unknown>): MarketEvent {
     sourceReleaseId: Number(row.source_release_id),
     sourceUrl: String(row.source_url),
     releaseDate: new Date(String(row.release_date)).toISOString().slice(0, 10),
-    occurredAt: row.occurred_at
-      ? new Date(String(row.occurred_at)).toISOString()
+    occurredAt: row.schedule_occurred_at || row.occurred_at
+      ? new Date(String(row.schedule_occurred_at || row.occurred_at)).toISOString()
       : null,
-    timestampPrecision: String(row.timestamp_precision),
+    timestampPrecision: row.schedule_occurred_at
+      ? "instant"
+      : String(row.timestamp_precision),
+    scheduleSource: row.schedule_source ? String(row.schedule_source) : null,
+    scheduleSourceUrl: row.schedule_source_url
+      ? String(row.schedule_source_url)
+      : null,
     actual: nullableNumber(row.actual),
     consensus: nullableNumber(row.consensus),
     previous: nullableNumber(row.previous),
@@ -191,8 +294,20 @@ function marketEventLedgerId(importId: string, eventId: string) {
   return `market_event_ledger_${digest(`${importId}:${eventId}`)}`;
 }
 
+function marketScheduleId(eventKey: string, occurredAt: string) {
+  return `market_schedule_${digest(`bls:${eventKey}:${occurredAt}`)}`;
+}
+
+function marketScheduleLedgerId(importId: string, scheduleId: string) {
+  return `market_schedule_ledger_${digest(`${importId}:${scheduleId}`)}`;
+}
+
 function digest(value: string) {
   return createHash("sha256").update(value).digest("hex").slice(0, 48);
+}
+
+function digestFull(value: string) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function nullableNumber(value: unknown) {
