@@ -135,7 +135,9 @@ export async function cancelGoogleCalendarMeeting(input: CalendarProjectionBase)
   });
 }
 
-function calendarAuthority(input: CalendarProjectionBase): MeetingMutationAuthority {
+function calendarAuthority(
+  input: CalendarProjectionBase & Partial<Readonly<{ sourceRevisionId: string }>>,
+): MeetingMutationAuthority {
   const workspaceId = personalWorkspaceId(input.actorId);
   return {
     tenantId: input.tenantId,
@@ -145,6 +147,7 @@ function calendarAuthority(input: CalendarProjectionBase): MeetingMutationAuthor
     idempotencyKey: `google-calendar-meeting:${digest({
       sourceItemId: input.sourceItemId,
       providerRevisionId: input.providerRevisionId,
+      sourceRevisionId: input.sourceRevisionId || null,
     })}`,
     executionScope: createExecutionScope({
       tenantId: input.tenantId,
