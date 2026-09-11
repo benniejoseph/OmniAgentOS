@@ -53,6 +53,7 @@ import {
   getCaptureAssetContentForRequest,
   getCaptureAssetForRequest,
   listCaptureAssets,
+  listExactCaptureAssetsByMetadata,
   listInternalCaptureAssets,
 } from "@/lib/capture/assets";
 
@@ -403,6 +404,70 @@ describe("Postgres Capture asset collection reads", () => {
     expect(dbMocks.statements[0].text).not.toContain(" OR actor_id = ");
     expect(dbMocks.statements[0].params).toContain(actorId);
     expect(dbMocks.statements[0].params).not.toContain(canonicalActorId);
+  });
+
+  it("keeps connector metadata cleanup on the exact physical owner", async () => {
+    dbMocks.rows.push({
+      ...assetRow("photo-asset", actorId),
+      metadata: {
+        importSource: "google_photos_picker",
+        providerItemKey: "a".repeat(40),
+      },
+    });
+
+    await expect(listExactCaptureAssetsByMetadata({
+      tenantId: "tenant-a",
+      actorId,
+    }, {
+      field: "importSource",
+      value: "google_photos_picker",
+      secondary: {
+        field: "providerItemKey",
+        value: "a".repeat(40),
+      },
+      limit: 3,
+    })).resolves.toEqual([
+      expect.objectContaining({ id: "photo-asset", actorId }),
+    ]);
+
+    expect(dbMocks.statements[0].text).not.toContain(" OR actor_id = ");
+    expect(dbMocks.statements[0].text).toMatch(
+      /tenant_id = \$1 AND actor_id = \$2[\s\S]*?metadata->>\$3 = \$4[\s\S]*?metadata->>\$5 = \$6[\s\S]*?LIMIT \$7/,
+    );
+    expect(dbMocks.statements[0].params).toEqual([
+      "tenant-a",
+      actorId,
+      "importSource",
+      "google_photos_picker",
+      "providerItemKey",
+      "a".repeat(40),
+      3,
+    ]);
+  });
+
+  it("keeps connector metadata cleanup exact in the file fallback", async () => {
+    dbMocks.state.databaseEnabled = false;
+    dbMocks.readJsonFile.mockResolvedValue({
+      assets: [
+        fileAsset("owned-photo", actorId, {
+          importSource: "google_photos_picker",
+        }),
+        fileAsset("canonical-photo", canonicalActorId, {
+          importSource: "google_photos_picker",
+        }),
+        fileAsset("other-source", actorId, { importSource: "other" }),
+      ],
+    });
+
+    await expect(listExactCaptureAssetsByMetadata({
+      tenantId: "tenant-a",
+      actorId,
+    }, {
+      field: "importSource",
+      value: "google_photos_picker",
+    })).resolves.toEqual([
+      expect.objectContaining({ id: "owned-photo", actorId }),
+    ]);
   });
 });
 

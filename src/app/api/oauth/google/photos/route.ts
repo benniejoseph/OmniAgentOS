@@ -2,6 +2,7 @@ import {
   deleteImportedGooglePhotos,
   googlePhotosPickerErrorResponse,
 } from "@/lib/connectors/google-photos-picker";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -15,17 +16,23 @@ async function DELETEHandler(request: Request) {
       request,
       action: "write.memory",
       resourceType: "knowledge",
+      riskLevel: 3,
       metadata: { provider: "google", category: "photos", operation: "delete_source" },
     });
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    security,
+    request,
+    "connector.google_photos.delete_imports",
+  );
 
   try {
     const deleted = await deleteImportedGooglePhotos({
       tenantId: security.tenantId,
       actorId: security.actorId,
-    });
+    }, executionScope);
     return Response.json(
       { deleted, source: "google:photos" },
       { headers: { "cache-control": "private, no-store" } },

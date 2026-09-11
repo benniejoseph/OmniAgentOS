@@ -79,6 +79,16 @@ export type InternalCaptureAssetQuery = {
   limit?: number;
 };
 
+export type ExactCaptureAssetMetadataQuery = {
+  field: string;
+  value: string;
+  secondary?: {
+    field: string;
+    value: string;
+  };
+  limit?: number;
+};
+
 export class CaptureAssetError extends Error {
   constructor(message: string, public readonly status: 400 | 404 | 413 = 400) {
     super(message);
@@ -311,6 +321,65 @@ export async function listInternalCaptureAssets(
       optionalString(item.metadata[scopeField]) === scopeValue
     )
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, boundedLimit)
+    .map(withoutContentPath);
+}
+
+/**
+ * Lists one bounded page of visible Capture assets for one exact physical
+ * owner and one exact metadata marker. Connector cleanup uses this instead of
+ * the request-readable continuity projection so it can never mutate an asset
+ * owned by a canonical or legacy sibling identity.
+ */
+export async function listExactCaptureAssetsByMetadata(
+  owner: Owner,
+  query: ExactCaptureAssetMetadataQuery,
+) {
+  const tenantId = normalizeTenantId(owner.tenantId);
+  const actorId = normalizeActorId(owner.actorId);
+  const field = safeMetadataLookup(query.field, "metadata field");
+  const value = safeText(query.value, 240);
+  if (!value) throw new CaptureAssetError("A metadata value is required.");
+  const secondaryField = query.secondary
+    ? safeMetadataLookup(query.secondary.field, "secondary metadata field")
+    : field;
+  const secondaryValue = query.secondary
+    ? safeText(query.secondary.value, 240)
+    : value;
+  if (!secondaryValue) {
+    throw new CaptureAssetError("A secondary metadata value is required.");
+  }
+  const boundedLimit = Math.min(Math.max(Math.round(query.limit || 100), 1), 250);
+  if (hasDatabaseUrl()) {
+    await ensureDatabaseSchema();
+    const rows = await getSql()`
+      SELECT id, tenant_id, actor_id, filename, media_type, extension, byte_count,
+        content_sha256, storage_kind, status, extraction_status, ingest_job_id,
+        knowledge_document_id, error, extraction_receipt, tags, metadata, created_at,
+        updated_at
+      FROM omni_capture_assets
+      WHERE tenant_id = ${tenantId} AND actor_id = ${actorId}
+        AND jsonb_typeof(metadata) = 'object'
+        AND COALESCE(metadata->>'internalKind', '') = ''
+        AND metadata->>${field} = ${value}
+        AND metadata->>${secondaryField} = ${secondaryValue}
+      ORDER BY created_at ASC, id COLLATE "C" ASC
+      LIMIT ${boundedLimit}
+    `;
+    return rows.map(assetFromRow);
+  }
+  const ledger = await readJsonFile<CaptureAssetLedger>(getAssetLedgerFile(), { assets: [] });
+  return ledger.assets
+    .filter((item) =>
+      item.tenantId === tenantId &&
+      item.actorId === actorId &&
+      !optionalString(item.metadata.internalKind) &&
+      optionalString(item.metadata[field]) === value &&
+      optionalString(item.metadata[secondaryField]) === secondaryValue
+    )
+    .sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+    )
     .slice(0, boundedLimit)
     .map(withoutContentPath);
 }

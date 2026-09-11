@@ -2,6 +2,7 @@ import {
   googlePhotosPickerErrorResponse,
   importGooglePhotosPickerSelection,
 } from "@/lib/connectors/google-photos-picker";
+import { captureExecutionScopeFromSecurityContext } from "@/lib/capture/execution-scope";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
@@ -25,11 +26,17 @@ async function POSTHandler(
   } catch (error) {
     return forbiddenResponse(error);
   }
+  const executionScope = captureExecutionScopeFromSecurityContext(
+    security,
+    request,
+    "connector.google_photos.import_selection",
+  );
 
   try {
     const result = await importGooglePhotosPickerSelection(
       { tenantId: security.tenantId, actorId: security.actorId },
       handle,
+      executionScope,
       request.signal,
     );
     return Response.json(
