@@ -94,6 +94,23 @@
 .intervalPicker { display: flex; border: 1px solid var(--market-line); border-radius: 999px; padding: .18rem; background: oklch(0.12 0.02 205 / .55); }
 .intervalPicker button { min-width: 2.9rem; min-height: 2rem; border-radius: 999px; color: oklch(0.7 0.025 180); font-size: .59rem; font-weight: 720; }
 .intervalPicker button[aria-pressed="true"] { color: var(--market-night); background: var(--market-mint); }
+.layerBar { display: grid; gap: .7rem; border-top: 1px solid var(--market-line); padding: .8rem .3rem 1rem; }
+.layerBar > div:first-child { display: flex; align-items: center; gap: .55rem; color: var(--market-mint); }
+.layerBar > div:first-child > span { display: grid; gap: .08rem; }
+.layerBar > div:first-child strong { color: white; font-size: .68rem; }
+.layerBar > div:first-child small { color: oklch(0.64 0.025 180); font-size: .56rem; }
+.layerChips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.layerChips button { display: inline-flex; min-height: 2.35rem; align-items: center; gap: .38rem; border: 1px solid var(--market-line); border-radius: 999px; padding: 0 .65rem; color: oklch(0.69 0.025 180); background: oklch(0.12 0.02 205 / .58); font-size: .58rem; font-weight: 720; transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease; }
+.layerChips button:hover { border-color: oklch(0.73 0.09 171 / .6); color: white; }
+.layerChips button[aria-pressed="true"] { border-color: oklch(0.73 0.09 171 / .52); color: white; background: oklch(0.3 0.065 177 / .52); }
+.layerChips i { width: .48rem; height: .48rem; border-radius: 50%; background: #9fb4af; box-shadow: 0 0 .55rem currentColor; }
+.layerChips i[data-layer="liquidity"] { background: #f2c078; }
+.layerChips i[data-layer="imbalances"] { background: #72d7bd; }
+.layerChips i[data-layer="blocks"] { background: #88aef1; }
+.layerChips i[data-layer="setups"] { background: #d7a6ff; }
+.layerChips i[data-layer="sessions"] { background: #67868b; }
+.layerChips i[data-layer="gaps"] { background: #ef8d86; }
+.layerChips em { border-left: 1px solid currentColor; padding-left: .38rem; font-family: var(--font-geist-mono), monospace; font-size: .52rem; font-style: normal; opacity: .7; }
 .chartBody { position: relative; min-height: clamp(24rem, 47vw, 40rem); overflow: hidden; border: 1px solid var(--market-line); border-radius: 1rem 1rem 2.3rem 1rem; background:
   linear-gradient(rgba(126, 180, 170, .055) 1px, transparent 1px),
   linear-gradient(90deg, rgba(126, 180, 170, .055) 1px, transparent 1px),
@@ -420,6 +437,9 @@
   .metric, .metric:nth-child(2), .detectorGrid article, .detectorGrid article:nth-child(even), .guardrailList p, .guardrailList p:nth-child(even) { border-right: 0; border-bottom: 1px solid var(--market-line); }
   .metric:last-child, .detectorGrid article:last-child, .guardrailList p:last-child { border-bottom: 0; }
   .chartPanel > header { align-items: flex-start; flex-direction: column; }
+  .layerBar { padding-inline: 0; }
+  .layerChips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: .25rem; }
+  .layerChips button { flex: 0 0 auto; }
   .chartBody, .advancedChart, .chartEmpty, .chartLoading { min-height: 27rem; height: 27rem; }
   .analysisRail { display: grid; }
   .labHeader h2 { font-size: 2.5rem; }

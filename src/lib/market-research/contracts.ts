@@ -155,8 +155,12 @@ export type MarketBarsResult = z.infer<typeof marketBarsResultSchema>;
 
 const marketDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+export const MARKET_TECHNICAL_DETECTOR_VERSIONS = [
+  "market-technical-primitives:1",
+  "market-ict-quarterly-candidates:2",
+] as const;
 export const MARKET_TECHNICAL_DETECTOR_VERSION =
-  "market-technical-primitives:1" as const;
+  "market-ict-quarterly-candidates:2" as const;
 
 export const marketTechnicalFeaturesQuerySchema = z.object({
   snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
@@ -173,10 +177,19 @@ export const marketTechnicalReferenceSchema = z.object({
 export const marketTechnicalDetectionSchema = z.object({
   id: z.string().regex(/^market_feature_[a-f0-9]{48}$/),
   definitionId: z.enum([
-    "foundation.swing.v1",
-    "foundation.fvg.v1",
+    "foundation.swing.v2",
+    "foundation.fvg.v2",
     "foundation.displacement.v1",
     "foundation.liquidity_sweep.v1",
+    "foundation.liquidity_pool.v1",
+    "foundation.session_window.v1",
+    "foundation.calendar_gap.v1",
+    "foundation.quarterly_time.v1",
+    "candidate.order_block.v1",
+    "candidate.market_structure_shift.v1",
+    "candidate.turtle_soup.v1",
+    "candidate.unicorn.v1",
+    "candidate.judas_swing.v1",
   ]),
   kind: z.enum([
     "swing_high",
@@ -184,14 +197,36 @@ export const marketTechnicalDetectionSchema = z.object({
     "fair_value_gap",
     "displacement",
     "liquidity_sweep",
+    "buy_side_liquidity",
+    "sell_side_liquidity",
+    "session_killzone",
+    "opening_gap",
+    "quarterly_open",
+    "order_block",
+    "market_structure_shift",
+    "turtle_soup",
+    "unicorn",
+    "judas_swing",
   ]),
   direction: z.enum(["bullish", "bearish", "neutral"]),
   timestamp: z.string().datetime({ offset: true }),
+  endTimestamp: z.string().datetime({ offset: true }).nullable(),
   price: z.number().finite(),
   zoneLow: z.number().finite().nullable(),
   zoneHigh: z.number().finite().nullable(),
   strength: z.number().finite().nonnegative(),
-  state: z.enum(["observed", "active", "mitigated"]),
+  state: z.enum([
+    "observed",
+    "active",
+    "partially_mitigated",
+    "mitigated",
+    "invalidated",
+  ]),
+  reviewState: z.enum(["deterministic_foundation", "candidate_rule"]),
+  reason: z.string().min(1).max(700),
+  evidenceTimestamps: z.array(
+    z.string().datetime({ offset: true }),
+  ).min(1).max(12),
 }).strict().superRefine((value, context) => {
   if (
     value.zoneLow !== null &&
@@ -209,8 +244,79 @@ export const marketTechnicalDefinitionSchema = z.object({
   id: marketTechnicalDetectionSchema.shape.definitionId,
   label: z.string().min(1).max(100),
   formula: z.string().min(1).max(600),
-  reviewState: z.literal("deterministic_foundation"),
-  transcriptAuthority: z.literal("not_claimed"),
+  reviewState: z.enum(["deterministic_foundation", "candidate_rule"]),
+  transcriptAuthority: z.enum(["not_claimed", "awaiting_review"]),
+}).strict();
+
+export const marketTechnicalLayerIdSchema = z.enum([
+  "liquidity",
+  "imbalances",
+  "blocks",
+  "setups",
+  "sessions",
+  "quarterly",
+  "structure",
+  "gaps",
+]);
+export type MarketTechnicalLayerId = z.infer<
+  typeof marketTechnicalLayerIdSchema
+>;
+
+export const marketTechnicalLayerSchema = z.object({
+  id: marketTechnicalLayerIdSchema,
+  label: z.string().min(1).max(80),
+  description: z.string().min(1).max(300),
+  defaultVisible: z.boolean(),
+  count: z.number().int().nonnegative().max(500),
+}).strict();
+
+const annotationPointSchema = z.object({
+  time: z.number().int().nonnegative(),
+  price: z.number().finite(),
+}).strict();
+
+export const marketTechnicalAnnotationPrimitiveSchema = z.discriminatedUnion(
+  "type",
+  [
+    z.object({
+      type: z.literal("horizontal_line"),
+      point: annotationPointSchema,
+      endTime: z.number().int().nonnegative(),
+    }).strict(),
+    z.object({
+      type: z.literal("vertical_line"),
+      point: annotationPointSchema,
+    }).strict(),
+    z.object({
+      type: z.literal("price_zone"),
+      from: annotationPointSchema,
+      to: annotationPointSchema,
+    }).strict(),
+    z.object({
+      type: z.literal("time_window"),
+      from: annotationPointSchema,
+      to: annotationPointSchema,
+    }).strict(),
+    z.object({
+      type: z.literal("marker"),
+      point: annotationPointSchema,
+      marker: z.enum(["up", "down", "dot"]),
+    }).strict(),
+  ],
+);
+
+export const marketTechnicalAnnotationSchema = z.object({
+  id: z.string().regex(/^market_annotation_[a-f0-9]{48}$/),
+  detectionId: z.string().regex(/^market_feature_[a-f0-9]{48}$/),
+  layerId: marketTechnicalLayerIdSchema,
+  concept: marketTechnicalDetectionSchema.shape.kind,
+  label: z.string().min(1).max(100),
+  detail: z.string().min(1).max(700),
+  direction: marketTechnicalDetectionSchema.shape.direction,
+  state: marketTechnicalDetectionSchema.shape.state,
+  reviewState: marketTechnicalDetectionSchema.shape.reviewState,
+  renderPriority: z.number().int().min(1).max(100),
+  primitive: marketTechnicalAnnotationPrimitiveSchema,
 }).strict();
 
 export const marketTechnicalFeaturesResultSchema = z.object({
@@ -250,10 +356,16 @@ export const marketTechnicalFeaturesResultSchema = z.object({
     positionPercent: z.number().finite().min(0).max(100),
     zone: z.enum(["premium", "equilibrium", "discount"]),
   }).strict(),
-  definitions: z.array(marketTechnicalDefinitionSchema).length(4),
-  detections: z.array(marketTechnicalDetectionSchema).max(120),
+  definitions: z.array(marketTechnicalDefinitionSchema).min(10).max(20),
+  detections: z.array(marketTechnicalDetectionSchema).max(240),
+  layers: z.array(marketTechnicalLayerSchema).length(8),
+  annotations: z.array(marketTechnicalAnnotationSchema).max(120),
   counts: z.object({
     activeFairValueGaps: z.number().int().nonnegative(),
+    validOrderBlocks: z.number().int().nonnegative(),
+    liquidityLevels: z.number().int().nonnegative(),
+    sessionWindows: z.number().int().nonnegative(),
+    setupCandidates: z.number().int().nonnegative(),
     displacements: z.number().int().nonnegative(),
     liquiditySweeps: z.number().int().nonnegative(),
     swingPoints: z.number().int().nonnegative(),
@@ -473,7 +585,7 @@ export const marketForwardForecastSchema = z.object({
     snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
     snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
     snapshotAsOf: z.string().datetime({ offset: true }),
-    detectorVersion: z.literal(MARKET_TECHNICAL_DETECTOR_VERSION),
+    detectorVersion: z.enum(MARKET_TECHNICAL_DETECTOR_VERSIONS),
     technicalResultSha256: z.string().regex(/^[a-f0-9]{64}$/),
     baselineVersion: z.literal(MARKET_EVENT_BASELINE_VERSION),
     baselineResultSha256: z.string().regex(/^[a-f0-9]{64}$/),
