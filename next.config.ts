@@ -39,6 +39,12 @@ const nextConfig: NextConfig = {
             : []),
         ],
       },
+      {
+        source: "/vendor/tradingview/charting_library/sameorigin.html",
+        headers: [
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
+        ],
+      },
     ];
   },
 };
