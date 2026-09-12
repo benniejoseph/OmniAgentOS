@@ -9,9 +9,24 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.sources.coverage.show", "Show source coverage", "Read connected knowledge domains, bounded backfill completeness, last verified freshness, and explicit source blind spots without inferring absence as a negative fact.", objectSchema({
     workspaceId: opaqueId("Optional exact workspace ID for Workspace-scoped integrations."),
   })),
-  readTool("app.market_research.features.show", "Show market technical features", "Run the frozen deterministic technical foundation against one exact caller-owned immutable market snapshot. The result is digest-bound and makes no transcript-authority claim.", requiredObjectSchema({
+  readTool("app.market_research.overview.show", "Show market research desk", "Read canonical instruments, provider readiness, Meridian's configurable model route, engine state, and research guardrails.", objectSchema({})),
+  readTool("app.market_research.bars.list", "Load immutable market bars", "Load or reuse an actor-private, provider-labelled immutable bar snapshot for one canonical research instrument.", requiredObjectSchema({
+    instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
+    interval: { type: "string", enum: ["5min", "15min", "1h"] },
+    outputSize: integer(100, 1_000, 480),
+  }, ["instrumentId"])),
+  readTool("app.market_research.features.show", "Show market technical features", "Run frozen ICT + Quarterly geometry and explicitly review-gated setup candidates against one exact caller-owned immutable market snapshot. The result is digest-bound and makes no transcript-authority claim.", requiredObjectSchema({
     snapshotId: { type: "string", pattern: "^market_snapshot_[a-f0-9]{48}$", maxLength: 64 },
   }, ["snapshotId"])),
+  readTool("app.market_research.analysis.list", "List saved market analyses", "Read the caller's immutable saved chart-analysis versions and private manual-drawing state for one canonical instrument and interval.", requiredObjectSchema({
+    instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
+    interval: { type: "string", enum: ["5min", "15min", "1h"] },
+    limit: integer(1, 40, 10),
+  }, ["instrumentId", "interval"])),
+  mutationTool("app.market_research.analysis.generate", "Generate and save market drawings", "Run the versioned deterministic ICT + Quarterly engine against one exact snapshot and save renderer-neutral drawing annotations. Candidate concepts remain explicitly review-gated and no trade is placed.", requiredObjectSchema({
+    snapshotId: { type: "string", pattern: "^market_snapshot_[a-f0-9]{48}$", maxLength: 64 },
+    visibleLayerIds: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", enum: ["liquidity", "imbalances", "blocks", "setups", "sessions", "quarterly", "structure", "gaps"] } },
+  }, ["snapshotId"]), { reversible: false }),
   readTool("app.market_research.baselines.show", "Show market event baselines", "Read deterministic descriptive outcome distributions for the caller's immutable event-replay cohort. Historical frequencies are explicitly not predictive probabilities.", requiredObjectSchema({
     instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
     minimumSampleSize: integer(5, 100, 20),

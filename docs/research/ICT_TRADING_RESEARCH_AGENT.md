@@ -1,7 +1,7 @@
 # ICT Trading Research Agent
 
-**Status:** Stage 0 foundation, authorized TradingView Advanced Charts rendering, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, deterministic technical primitives, descriptive comparable-event baselines, and the Stage 7 forward-shadow journal foundation are implemented; saved chart analysis, transcript ontology, transcript-authoritative ICT rules, sufficient calibration evidence, agent annotations, and deterministic backtesting remain pending
-**Research date:** 2026-09-10; implementation activated 2026-09-11
+**Status:** Stage 0 foundation, authorized TradingView Advanced Charts rendering, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, renderer-neutral ICT/Quarterly annotations, actor-private saved analysis versions, descriptive comparable-event baselines, and the Stage 7 forward-shadow journal foundation are implemented; transcript ontology, transcript-authoritative ICT rules, sufficient calibration evidence, and deterministic backtesting remain pending
+**Research date:** 2026-09-10; implementation activated 2026-09-11 and annotation/version foundation extended 2026-09-12
 **Initial instruments:** Nasdaq-100 exposure and gold exposure
 
 ## Current implementation boundary
@@ -12,7 +12,7 @@ The private `/app/markets` workspace, canonical instrument registry, provider-re
 
 The current UI exposes four progressively loaded views: Research desk, News impact lab, ICT + Quarterly, and Forecast journal. The Research desk uses the owner's authorized TradingView Advanced Charts v32.2.0 checkout with a client Datafeed over the same immutable Asael snapshot shown in its evidence label; it does not fetch a second or hidden market feed. The renderer stays mounted while the user changes research tabs, supports responsive zoom/pan, indicators, and manual drawing tools, and changes intervals only after Asael loads the corresponding evidence-bound snapshot. The chart library is loaded only when verified bars exist, and its data label exposes the shortened snapshot digest plus whether the server created or reused the snapshot. The News Impact Lab can enqueue and track owner-private background imports for official event history and exact XAU/USD price windows. Reviewed BLS, Census, BEA, and Federal Reserve schedules supply exact release times; initial-release FRED observations retain the values available at the historical release. Every replay stores its bounded raw provider response, normalized bars, exact event coordinate, content digests, and deterministic post-event measurements.
 
-The ICT + Quarterly view now runs `market-technical-primitives:1` against one caller-owned immutable snapshot. It reports New-York-time 90-minute/session context, only those calendar opens whose boundary exists inside the snapshot, range position, five-bar swings, three-bar price gaps, range-relative displacement, and 20-bar boundary sweeps. The formulas and output digest are visible. These are neutral reproducible foundations and deliberately claim no transcript authority; order blocks, market-structure shifts, inversions, and other ICT-specific semantics remain unavailable until the user's transcript evidence and reviewed definitions exist.
+The ICT + Quarterly view now runs `market-ict-quarterly-candidates:2` against one caller-owned immutable snapshot. It reports New-York-time 90-minute/session context, only those day/week/month opens whose exact boundary exists inside the snapshot, range position, strict five-bar swings, lifecycle-aware three-bar FVGs, range-relative displacement, 20-bar boundary sweeps, equal-high/equal-low liquidity, session windows, and observed opening gaps. These deterministic foundations render as renderer-neutral typed annotations in the authorized TradingView chart. Order block, market-structure-shift, Turtle Soup, Unicorn, and Judas Swing formulas are available only as visibly review-gated candidates; they do not claim transcript authority. System overlays are locked and excluded from manual drawing persistence, while the owner's manual TradingView drawings, selected layers, exact snapshot/result digests, and counts can be stored in an append-only actor-private analysis version. The latest matching instrument/interval drawing state restores after reload without deleting manual work.
 
 The News Impact Lab also derives a digest-bound `market-event-baseline:1` projection from the caller's replay cohort. Each exact release family reports its sample size, empirical direction split, 5/15/60/240-minute return distribution, and favorable/adverse excursion medians. A configurable minimum sample distinguishes low-sample rows from a usable descriptive baseline. This is not probability calibration: no historical frequency is presented as a prediction, and the baseline cannot condition on consensus surprise, macro regime, or transcript-reviewed technical context until those inputs exist.
 
@@ -286,17 +286,17 @@ If paper or live execution is considered later, it must be a separate authorizat
 
 ### Stage 3 — visual research workspace
 
-- Candlestick chart with responsive multi-timeframe navigation.
-- Manual drawings and typed agent annotation rendering.
-- Evidence panel linking each drawing to transcript and market inputs.
-- Save and compare immutable analysis versions.
+- Candlestick chart with responsive multi-timeframe navigation. **Implemented.**
+- Manual drawings and typed agent annotation rendering. **Implemented for deterministic foundations and review-gated candidates.**
+- Evidence panel linking each drawing to transcript and market inputs. **Snapshot/result lineage implemented; transcript timecode links remain pending.**
+- Save and compare immutable analysis versions. **Implemented as actor-private append-only versions with a compact comparison ledger.**
 
 **Exit gate:** no model-generated executable chart code; drawings survive reload and retain evidence links.
 
 ### Stage 4 — deterministic ICT feature detectors
 
-- Convert only reviewed concepts into measurable versioned detectors.
-- Visual overlays and false-positive review workflows.
+- Convert only reviewed concepts into measurable versioned detectors. **The neutral foundations are frozen; advanced ICT formulas remain candidates until transcript review.**
+- Visual overlays and false-positive review workflows. **Typed overlays are implemented; transcript-backed promotion/dismissal remains pending.**
 - Unit and golden-dataset tests for session, timezone and boundary behaviour.
 
 **Exit gate:** detector output is reproducible from a snapshot hash and definition version.
@@ -312,8 +312,8 @@ If paper or live execution is considered later, it must be a separate authorizat
 
 ### Stage 6 — bounded trading research agent
 
-- Orchestrate transcript retrieval, snapshots, deterministic features, macro/web research, hypothesis generation and risk critique.
-- Produce scenario-based typed analysis and chart plans.
+- Orchestrate transcript retrieval, snapshots, deterministic features, macro/web research, hypothesis generation and risk critique. **Snapshot, feature, saved-analysis, macro, web, and scenario tools are governed; transcript retrieval remains pending.**
+- Produce scenario-based typed analysis and chart plans. **Scenario and renderer-neutral drawing generation are implemented; advanced definitions remain review-gated.**
 - Keep all model/provider choices configurable in Settings.
 
 **Exit gate:** no direct execution path; all claims have evidence or an explicit uncertainty marker.

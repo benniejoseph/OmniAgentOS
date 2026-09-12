@@ -27,6 +27,7 @@ import { PriceChart } from "@/components/market-research/price-chart";
 import {
   MARKET_INTERVALS,
   type MarketBarsResult,
+  type MarketAnalysisVersionsResult,
   type MarketEventBaselinesResult,
   type MarketEventsResult,
   type MarketEventReplaysResult,
@@ -82,6 +83,9 @@ export function MarketResearchWorkspace() {
   const [featuresLoading, setFeaturesLoading] = useState(false);
   const [featuresError, setFeaturesError] = useState<string>();
   const [visibleTechnicalLayers, setVisibleTechnicalLayers] = useState<MarketTechnicalLayerId[]>([]);
+  const [analysisVersions, setAnalysisVersions] = useState<MarketAnalysisVersionsResult>();
+  const [analysisVersionsLoading, setAnalysisVersionsLoading] = useState(false);
+  const [analysisVersionsError, setAnalysisVersionsError] = useState<string>();
   const [journal, setJournal] = useState<MarketForecastJournalResult>();
   const [journalLoading, setJournalLoading] = useState(false);
   const [journalError, setJournalError] = useState<string>();
@@ -224,6 +228,34 @@ export function MarketResearchWorkspace() {
       setFeaturesError(loadError instanceof Error ? loadError.message : "Technical features could not load.");
     } finally {
       if (!signal?.aborted) setFeaturesLoading(false);
+    }
+  }, []);
+
+  const loadAnalysisVersions = useCallback(async (
+    instrumentId: MarketInstrumentId,
+    requestedInterval: MarketInterval,
+    signal?: AbortSignal,
+  ) => {
+    setAnalysisVersionsLoading(true);
+    setAnalysisVersionsError(undefined);
+    try {
+      const query = new URLSearchParams({
+        instrumentId,
+        interval: requestedInterval,
+        limit: "8",
+      });
+      const response = await fetch(`/api/market-research/analysis?${query}`, {
+        cache: "no-store",
+        signal,
+      });
+      const payload = await response.json() as MarketAnalysisVersionsResult & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Saved analyses could not load.");
+      setAnalysisVersions(payload);
+    } catch (loadError) {
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      setAnalysisVersionsError(loadError instanceof Error ? loadError.message : "Saved analyses could not load.");
+    } finally {
+      if (!signal?.aborted) setAnalysisVersionsLoading(false);
     }
   }, []);
 
@@ -441,6 +473,19 @@ export function MarketResearchWorkspace() {
     };
   }, [activeTab, bars?.snapshotId, loadFeatures]);
 
+  useEffect(() => {
+    if (activeTab !== "technicals") return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => void loadAnalysisVersions(selectedId, interval, controller.signal),
+      0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeTab, interval, loadAnalysisVersions, selectedId]);
+
   const toggleTechnicalLayer = useCallback((layerId: MarketTechnicalLayerId) => {
     setVisibleTechnicalLayers((current) => current.includes(layerId)
       ? current.filter((item) => item !== layerId)
@@ -580,6 +625,7 @@ export function MarketResearchWorkspace() {
             features={features}
             visibleTechnicalLayers={visibleTechnicalLayers}
             onToggleTechnicalLayer={toggleTechnicalLayer}
+            onAnalysisSaved={() => void loadAnalysisVersions(selectedId, interval)}
           />
           {activeTab === "events" ? (
             <NewsImpactLab
@@ -608,6 +654,9 @@ export function MarketResearchWorkspace() {
               features={features}
               loading={featuresLoading || barsLoading}
               error={featuresError || barsError}
+              versions={analysisVersions}
+              versionsLoading={analysisVersionsLoading}
+              versionsError={analysisVersionsError}
             />
           ) : null}
           {activeTab === "journal" ? (
@@ -642,6 +691,7 @@ function ResearchDesk({
   features,
   visibleTechnicalLayers,
   onToggleTechnicalLayer,
+  onAnalysisSaved,
 }: {
   hidden: boolean;
   technicalMode: boolean;
@@ -656,6 +706,7 @@ function ResearchDesk({
   features?: MarketTechnicalFeaturesResult;
   visibleTechnicalLayers: MarketTechnicalLayerId[];
   onToggleTechnicalLayer: (layerId: MarketTechnicalLayerId) => void;
+  onAnalysisSaved: () => void;
 }) {
   const latest = bars?.bars.at(-1);
   const previous = bars?.bars.at(-2);
@@ -741,6 +792,7 @@ function ResearchDesk({
                 bars={bars}
                 features={technicalMode ? matchingFeatures : undefined}
                 visibleLayerIds={technicalMode ? visibleTechnicalLayers : undefined}
+                onAnalysisSaved={onAnalysisSaved}
               />
             ) : barsLoading ? <ChartLoading /> : (
               <ChartEmpty
@@ -1019,6 +1071,9 @@ function TechnicalLab({
   features,
   loading,
   error,
+  versions,
+  versionsLoading,
+  versionsError,
 }: {
   instrument: MarketInstrument;
   overview?: MarketResearchOverview;
@@ -1026,6 +1081,9 @@ function TechnicalLab({
   features?: MarketTechnicalFeaturesResult;
   loading: boolean;
   error?: string;
+  versions?: MarketAnalysisVersionsResult;
+  versionsLoading: boolean;
+  versionsError?: string;
 }) {
   const detectorState = overview?.engineTracks.find((track) => track.id === "ict_detectors")?.state;
   const current = features?.snapshot.id === bars?.snapshotId ? features : undefined;
@@ -1054,7 +1112,7 @@ function TechnicalLab({
           <div className={styles.technicalSummary}>
             <article><small>Dealing range</small><strong>{current.range.zone}</strong><span>{current.range.positionPercent.toFixed(1)}% of last {current.range.lookbackBars} bars</span></article>
             <article><small>90-minute quarter</small><strong>Q{current.timeContext.ninetyMinuteQuarter}</strong><span>{sessionLabel(current.timeContext.session)} · {current.timeContext.localTime} ET</span></article>
-            <article><small>FVG / valid OB</small><strong>{current.counts.activeFairValueGaps} / {current.counts.validOrderBlocks}</strong><span>Lifecycle-aware zones</span></article>
+            <article><small>Valid FVG / OB candidate</small><strong>{current.counts.activeFairValueGaps} / {current.counts.validOrderBlocks}</strong><span>Lifecycle-aware zones · OB review-gated</span></article>
             <article><small>Liquidity / setups</small><strong>{current.counts.liquidityLevels} / {current.counts.setupCandidates}</strong><span>Active levels · review-gated candidates</span></article>
           </div>
 
@@ -1067,6 +1125,12 @@ function TechnicalLab({
               </article>
             ))}
           </div>
+
+          <AnalysisVersionLedger
+            versions={versions}
+            loading={versionsLoading}
+            error={versionsError}
+          />
 
           <div className={styles.technicalPanels}>
             <section className={styles.detectionPanel}>
@@ -1103,6 +1167,43 @@ function TechnicalLab({
   );
 }
 
+function AnalysisVersionLedger({
+  versions,
+  loading,
+  error,
+}: {
+  versions?: MarketAnalysisVersionsResult;
+  loading: boolean;
+  error?: string;
+}) {
+  const latest = versions?.versions[0];
+  const previous = versions?.versions[1];
+  const annotationDelta = latest && previous
+    ? latest.annotationCount - previous.annotationCount
+    : undefined;
+  return (
+    <section className={styles.versionLedger}>
+      <header>
+        <div><strong>Private analysis ledger</strong><small>{versions?.total || 0} immutable versions · latest drawings restore automatically</small></div>
+        {latest ? <span>Δ overlays {annotationDelta === undefined ? "first" : `${annotationDelta >= 0 ? "+" : ""}${annotationDelta}`}</span> : null}
+      </header>
+      {error ? <div className={styles.versionLedgerEmpty}>{error}</div> : loading && !versions ? <div className={styles.versionLedgerEmpty}><RefreshCw className={styles.spin} size={14} /> Loading saved versions</div> : latest ? (
+        <div className={styles.versionRows}>
+          {versions.versions.map((version, index) => (
+            <article key={version.id}>
+              <i>{String(index + 1).padStart(2, "0")}</i>
+              <span><strong>{index === 0 ? "Current saved version" : `Earlier version ${index}`}</strong><small>{formatFeatureTime(version.savedAt)} · snapshot {version.snapshotSha256.slice(0, 10)}</small></span>
+              <span><strong>{version.annotationCount}</strong><small>overlays</small></span>
+              <span><strong>{version.candidateCount}</strong><small>review candidates</small></span>
+              <code>{version.versionSha256.slice(0, 12)}</code>
+            </article>
+          ))}
+        </div>
+      ) : <div className={styles.versionLedgerEmpty}>Draw on the chart, choose the analysis layers, then save the first immutable version.</div>}
+    </section>
+  );
+}
+
 function detectionLabel(kind: MarketTechnicalFeaturesResult["detections"][number]["kind"]) {
   switch (kind) {
     case "swing_high": return "Swing high";
@@ -1115,6 +1216,7 @@ function detectionLabel(kind: MarketTechnicalFeaturesResult["detections"][number
     case "session_killzone": return "Session / kill zone";
     case "opening_gap": return "Opening gap";
     case "quarterly_open": return "Quarterly open";
+    case "reference_open": return "Calendar open";
     case "order_block": return "Order block";
     case "market_structure_shift": return "Market structure shift";
     case "turtle_soup": return "Turtle Soup";

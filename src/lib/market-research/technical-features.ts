@@ -51,6 +51,7 @@ const definitions: MarketTechnicalFeaturesResult["definitions"] = [
   definition("foundation.session_window.v1", "New York-time session windows", "Observed bars are grouped into Asia 20:00–24:00, London 02:00–05:00, New York 07:00–10:00, and New York PM 13:30–16:00 windows in America/New_York."),
   definition("foundation.calendar_gap.v1", "Daily opening gap", "At a New York calendar-date change, the new open and prior close form a gap when their distance is at least 0.20 times the prior 20-bar median range."),
   definition("foundation.quarterly_time.v1", "Ninety-minute time quarter", "New York calendar days are divided from midnight into sixteen fixed 90-minute quarters; a quarter is drawn only where its first bar exists in the immutable snapshot."),
+  definition("foundation.reference_open.v1", "Calendar opening level", "Current New York calendar-day, week, and month opening prices are drawn only when the exact boundary bar exists inside the immutable snapshot."),
   definition("candidate.order_block.v1", "Order-block candidate", "The latest opposite candle within five bars before a displacement qualifies only when a same-direction fair value gap forms within two bars. A later close beyond its distal edge invalidates it.", true),
   definition("candidate.market_structure_shift.v1", "Market-structure-shift candidate", "After a same-bar liquidity sweep, price must close through the latest opposite five-bar swing within six bars with a range-relative directional expansion.", true),
   definition("candidate.turtle_soup.v1", "Turtle Soup candidate", "A 20-bar liquidity sweep that closes back inside its boundary during one configured New York-time session window is marked as a candidate reversal setup.", true),
@@ -80,6 +81,9 @@ export function buildMarketTechnicalFeatures(
   const bars = [...snapshot.bars].sort((left, right) => left.time - right.time);
   if (bars.length < 5) throw new MarketTechnicalInsufficientDataError();
   assertStrictChronology(bars);
+  const latest = bars.at(-1)!;
+  const latestLocal = localParts(latest.timestamp);
+  const references = buildOpeningReferences(bars, latestLocal, snapshot.interval);
 
   const swings = detectSwings(snapshot.snapshotSha256, bars);
   const fairValueGaps = detectFairValueGaps(snapshot.snapshotSha256, bars);
@@ -89,6 +93,7 @@ export function buildMarketTechnicalFeatures(
   const sessions = detectSessionWindows(snapshot.snapshotSha256, bars);
   const gaps = detectOpeningGaps(snapshot.snapshotSha256, bars);
   const quarters = detectQuarterOpens(snapshot.snapshotSha256, bars);
+  const referenceOpens = detectReferenceOpens(snapshot.snapshotSha256, bars, references);
   const blocks = detectOrderBlocks(snapshot.snapshotSha256, bars, displacements, fairValueGaps);
   const shifts = detectMarketStructureShifts(snapshot.snapshotSha256, bars, swings, sweeps);
   const turtles = detectTurtleSoups(snapshot.snapshotSha256, bars, sweeps);
@@ -96,12 +101,10 @@ export function buildMarketTechnicalFeatures(
   const judasSwings = detectJudasSwings(snapshot.snapshotSha256, bars, turtles, displacements);
   const detections = [
     ...swings, ...fairValueGaps, ...displacements, ...sweeps, ...liquidity,
-    ...sessions, ...gaps, ...quarters, ...blocks, ...shifts, ...turtles,
+    ...sessions, ...gaps, ...quarters, ...referenceOpens, ...blocks, ...shifts, ...turtles,
     ...unicorns, ...judasSwings,
   ].sort(compareDetections).slice(0, MAX_DETECTIONS);
 
-  const latest = bars.at(-1)!;
-  const latestLocal = localParts(latest.timestamp);
   const rangeBars = bars.slice(-RANGE_LOOKBACK);
   const rangeLow = Math.min(...rangeBars.map((bar) => bar.low));
   const rangeHigh = Math.max(...rangeBars.map((bar) => bar.high));
@@ -129,7 +132,7 @@ export function buildMarketTechnicalFeatures(
       localTime: `${pad(latestLocal.hour)}:${pad(latestLocal.minute)}`,
       ninetyMinuteQuarter: Math.floor(localMinutes(latestLocal) / 90) + 1,
       session: marketSession(localMinutes(latestLocal)),
-      references: buildOpeningReferences(bars, latestLocal, snapshot.interval),
+      references,
     },
     range: {
       lookbackBars: rangeBars.length,
@@ -381,6 +384,37 @@ function detectQuarterOpens(snapshotSha256: string, bars: MarketBar[]) {
   });
 }
 
+function detectReferenceOpens(
+  snapshotSha256: string,
+  bars: MarketBar[],
+  references: MarketTechnicalFeaturesResult["timeContext"]["references"],
+) {
+  const byTimestamp = new Map(bars.map((bar) => [bar.timestamp, bar]));
+  const latest = bars.at(-1)!;
+  return references.flatMap((reference): Detection[] => {
+    if (
+      reference.id === "ninety_minute" ||
+      reference.status !== "available" ||
+      reference.open === null ||
+      reference.timestamp === null
+    ) return [];
+    const boundaryBar = byTimestamp.get(reference.timestamp);
+    if (!boundaryBar) return [];
+    return [makeDetection({
+      snapshotSha256,
+      definitionId: "foundation.reference_open.v1",
+      kind: "reference_open",
+      direction: "neutral",
+      bar: boundaryBar,
+      endBar: latest,
+      price: reference.open,
+      strength: 0,
+      reason: `${reference.label} from the exact observed boundary · ${reference.period}.`,
+      evidence: [boundaryBar],
+    })];
+  });
+}
+
 function detectOrderBlocks(
   snapshotSha256: string,
   bars: MarketBar[],
@@ -524,7 +558,7 @@ function buildAnnotations(detections: Detection[], latest: MarketBar) {
   const limits: Partial<Record<Detection["kind"], number>> = {
     swing_high: 6, swing_low: 6, fair_value_gap: 16, displacement: 8,
     liquidity_sweep: 8, buy_side_liquidity: 8, sell_side_liquidity: 8,
-    session_killzone: 8, opening_gap: 6, quarterly_open: 12, order_block: 10,
+    session_killzone: 8, opening_gap: 6, quarterly_open: 12, reference_open: 3, order_block: 10,
     market_structure_shift: 8, turtle_soup: 8, unicorn: 6, judas_swing: 6,
   };
   const counts = new Map<Detection["kind"], number>();
@@ -571,6 +605,9 @@ function annotationsFor(item: Detection, latest: MarketBar): Annotation[] {
       annotation({ ...common, label: `${quarterLabel} open`, layerId: "quarterly", renderPriority: 60, primitive: horizontalPrimitive(item, epoch(item.endTimestamp!)) }),
     ];
   }
+  if (item.kind === "reference_open") {
+    return [annotation({ ...common, layerId: "quarterly", renderPriority: 86, primitive: horizontalPrimitive(item, latest.time) })];
+  }
   if (item.kind === "unicorn") return [annotation({ ...common, layerId: "setups", renderPriority: 100, primitive: zonePrimitive(item, latest.time) })];
   const layerId: LayerId = ["turtle_soup", "judas_swing"].includes(item.kind) ? "setups" : item.kind === "liquidity_sweep" ? "liquidity" : "structure";
   return [annotation({
@@ -600,10 +637,10 @@ function buildLayers(annotations: Annotation[]): MarketTechnicalFeaturesResult["
   return [
     { id: "liquidity", label: "Liquidity", description: "Equal highs/lows and exact boundary sweeps.", defaultVisible: true, count: count("liquidity") },
     { id: "imbalances", label: "Valid FVGs", description: "Active and partially mitigated three-bar gaps.", defaultVisible: true, count: count("imbalances") },
-    { id: "blocks", label: "Valid OBs", description: "Non-invalidated displacement + FVG order-block candidates.", defaultVisible: true, count: count("blocks") },
+    { id: "blocks", label: "OB candidates", description: "Non-invalidated displacement + FVG order-block candidates awaiting transcript review.", defaultVisible: true, count: count("blocks") },
     { id: "setups", label: "ICT setups", description: "Turtle Soup, Unicorn, and Judas Swing candidates.", defaultVisible: true, count: count("setups") },
     { id: "sessions", label: "Kill zones", description: "Observed New York-time session ranges.", defaultVisible: true, count: count("sessions") },
-    { id: "quarterly", label: "Quarterly time", description: "Observed 90-minute boundaries and opens.", defaultVisible: true, count: count("quarterly") },
+    { id: "quarterly", label: "Quarterly + opens", description: "Observed 90-minute boundaries plus day, week, and month opens when present.", defaultVisible: true, count: count("quarterly") },
     { id: "structure", label: "Structure", description: "Swings, displacement, and market-structure shifts.", defaultVisible: false, count: count("structure") },
     { id: "gaps", label: "Opening gaps", description: "New York calendar-date opening gaps that remain open.", defaultVisible: true, count: count("gaps") },
   ];
@@ -675,7 +712,14 @@ function openingReference(
   boundary: (entry: { bar: MarketBar; local: LocalParts }) => boolean,
 ) {
   const available = Boolean(entry && boundary(entry));
-  return { id, label, period, open: available ? entry!.bar.open : null, status: available ? "available" as const : "outside_snapshot" as const };
+  return {
+    id,
+    label,
+    period,
+    open: available ? entry!.bar.open : null,
+    timestamp: available ? entry!.bar.timestamp : null,
+    status: available ? "available" as const : "outside_snapshot" as const,
+  };
 }
 
 function localParts(timestamp: string): LocalParts {
@@ -691,9 +735,9 @@ function localParts(timestamp: string): LocalParts {
 }
 
 function marketSession(minutes: number): MarketTechnicalFeaturesResult["timeContext"]["session"] {
-  if (minutes >= 18 * 60) return "asia_evening";
+  if (minutes >= 20 * 60) return "asia_evening";
   if (minutes >= 2 * 60 && minutes < 5 * 60) return "london_open";
-  if (minutes >= 8 * 60 + 30 && minutes < 12 * 60) return "new_york_am";
+  if (minutes >= 7 * 60 && minutes < 10 * 60) return "new_york_am";
   if (minutes >= 13 * 60 + 30 && minutes < 16 * 60) return "new_york_pm";
   return "off_hours";
 }
@@ -703,7 +747,7 @@ function detectionLabel(kind: Detection["kind"]) {
     swing_high: "Swing high", swing_low: "Swing low", fair_value_gap: "Fair value gap",
     displacement: "Displacement", liquidity_sweep: "Liquidity sweep",
     buy_side_liquidity: "Buy-side liquidity", sell_side_liquidity: "Sell-side liquidity",
-    session_killzone: "Session window", opening_gap: "Opening gap", quarterly_open: "Quarterly open",
+    session_killzone: "Session window", opening_gap: "Opening gap", quarterly_open: "Quarterly open", reference_open: "Calendar open",
     order_block: "Order block", market_structure_shift: "Market structure shift",
     turtle_soup: "Turtle Soup", unicorn: "Unicorn", judas_swing: "Judas Swing",
   };

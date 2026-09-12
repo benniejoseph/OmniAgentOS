@@ -8,6 +8,8 @@ import {
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import {
   MARKET_RESEARCH_CONTRACT_VERSION,
+  marketAnalysisGenerateRequestSchema,
+  marketAnalysisVersionsQuerySchema,
   marketBarsQuerySchema,
   marketEventBackfillRequestSchema,
   marketEventBaselinesQuerySchema,
@@ -20,6 +22,10 @@ import {
   marketResearchOverviewSchema,
   marketTechnicalFeaturesQuerySchema,
 } from "@/lib/market-research/contracts";
+import {
+  listMarketAnalysisVersions,
+  saveMarketAnalysisVersion,
+} from "@/lib/market-research/analysis-store";
 import { buildMarketEventBaselines } from "@/lib/market-research/event-baselines";
 import { listMarketEvents } from "@/lib/market-research/event-store";
 import { listMarketEventReplays } from "@/lib/market-research/event-replay-store";
@@ -235,6 +241,58 @@ export async function showMarketResearchFeaturesService(
   return completeAppServiceCall(authorized, result, {
     resourceCount: result.detections.length,
     occurredAt: result.snapshot.asOf,
+  });
+}
+
+export async function listMarketAnalysisVersionsService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketAnalysisVersionsQuerySchema>,
+) {
+  const value = marketAnalysisVersionsQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.analysis.list"),
+  );
+  const result = await listMarketAnalysisVersions({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    ...value,
+  });
+  return completeAppServiceCall(authorized, result, {
+    resourceCount: result.versions.length,
+  });
+}
+
+export async function generateMarketAnalysisVersionService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketAnalysisGenerateRequestSchema>,
+) {
+  const value = marketAnalysisGenerateRequestSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.analysis.generate"),
+  );
+  const snapshot = await readMarketPriceSnapshot({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    snapshotId: value.snapshotId,
+  });
+  const features = buildMarketTechnicalFeatures(snapshot);
+  const saved = await saveMarketAnalysisVersion({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    executionScope: caller.executionScope!,
+    idempotencyKey: caller.idempotencyKey!,
+    features,
+    visibleLayerIds: value.visibleLayerIds,
+    chartState: value.chartState,
+  });
+  return completeAppServiceCall(authorized, {
+    version: saved.version,
+    reused: !saved.inserted,
+  }, {
+    resourceCount: 1,
+    occurredAt: saved.version.savedAt,
   });
 }
 
