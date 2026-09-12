@@ -639,8 +639,8 @@ function buildLayers(annotations: Annotation[]): MarketTechnicalFeaturesResult["
     { id: "imbalances", label: "Valid FVGs", description: "Active and partially mitigated three-bar gaps.", defaultVisible: true, count: count("imbalances") },
     { id: "blocks", label: "OB candidates", description: "Non-invalidated displacement + FVG order-block candidates awaiting transcript review.", defaultVisible: true, count: count("blocks") },
     { id: "setups", label: "ICT setups", description: "Turtle Soup, Unicorn, and Judas Swing candidates.", defaultVisible: true, count: count("setups") },
-    { id: "sessions", label: "Kill zones", description: "Observed New York-time session ranges.", defaultVisible: true, count: count("sessions") },
-    { id: "quarterly", label: "Quarterly + opens", description: "Observed 90-minute boundaries plus day, week, and month opens when present.", defaultVisible: true, count: count("quarterly") },
+    { id: "sessions", label: "Kill zones", description: "Observed New York-time session ranges.", defaultVisible: false, count: count("sessions") },
+    { id: "quarterly", label: "Quarterly + opens", description: "Observed 90-minute boundaries plus day, week, and month opens when present.", defaultVisible: false, count: count("quarterly") },
     { id: "structure", label: "Structure", description: "Swings, displacement, and market-structure shifts.", defaultVisible: false, count: count("structure") },
     { id: "gaps", label: "Opening gaps", description: "New York calendar-date opening gaps that remain open.", defaultVisible: true, count: count("gaps") },
   ];
