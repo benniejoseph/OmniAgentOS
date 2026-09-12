@@ -157,6 +157,7 @@ export function PriceChart({
           "chart_zoom",
           "handle_scale",
           "handle_scroll",
+          "iframe_loading_same_origin",
           "saveload_separate_drawings_storage",
         ],
         loading_screen: {
