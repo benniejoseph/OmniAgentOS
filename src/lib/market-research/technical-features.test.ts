@@ -41,6 +41,8 @@ describe("deterministic market technical primitives", () => {
     expect(result.layers).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "liquidity", defaultVisible: true }),
       expect.objectContaining({ id: "imbalances", defaultVisible: true }),
+      expect.objectContaining({ id: "sessions", defaultVisible: false }),
+      expect.objectContaining({ id: "quarterly", defaultVisible: false }),
       expect.objectContaining({ id: "structure", defaultVisible: false }),
     ]));
     expect(result.annotations).toEqual(expect.arrayContaining([
