@@ -1,12 +1,14 @@
 "use client";
 
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, RefreshCw, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import styles from "@/components/market-research/market-research-workspace.module.css";
 import type {
+  MarketAnalysisVersionsResult,
   MarketBarsResult,
   MarketInstrument,
+  MarketSerializedChartState,
   MarketTechnicalFeaturesResult,
   MarketTechnicalLayerId,
 } from "@/lib/market-research/contracts";
@@ -35,6 +37,8 @@ type TradingViewWidget = {
       options: ChartShapeOptions,
     ) => Promise<string | number>;
     removeEntity: (id: string | number) => void;
+    getLineToolsState: () => TradingViewLineToolsState;
+    applyLineToolsState: (state: TradingViewLineToolsState) => Promise<void>;
   };
   remove: () => void;
 };
@@ -72,6 +76,11 @@ type ChartShapeOptions = {
   zOrder?: "top" | "bottom";
   overrides?: Record<string, boolean | string | number>;
 };
+type TradingViewLineToolsState = {
+  sources: Map<string | number, unknown | null> | null;
+  groups: Map<string, unknown | null>;
+  symbol?: string;
+};
 
 let chartLibraryPromise: Promise<TradingViewWidgetConstructor> | undefined;
 
@@ -80,11 +89,13 @@ export function PriceChart({
   bars,
   features,
   visibleLayerIds,
+  onAnalysisSaved,
 }: {
   instrument: MarketInstrument;
   bars: MarketBarsResult;
   features?: MarketTechnicalFeaturesResult;
   visibleLayerIds?: readonly MarketTechnicalLayerId[];
+  onAnalysisSaved?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<TradingViewWidget | undefined>(undefined);
@@ -98,6 +109,10 @@ export function PriceChart({
     interval: bars.interval,
   });
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [overlayState, setOverlayState] = useState<"idle" | "rendering" | "ready" | "partial">("idle");
+  const [overlayFailureCount, setOverlayFailureCount] = useState(0);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [savedLabel, setSavedLabel] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const container = containerRef.current;
@@ -142,6 +157,7 @@ export function PriceChart({
           "chart_zoom",
           "handle_scale",
           "handle_scroll",
+          "saveload_separate_drawings_storage",
         ],
         loading_screen: {
           backgroundColor: "#101d21",
@@ -163,7 +179,14 @@ export function PriceChart({
         },
       });
       widgetRef.current = widget;
-      return widget.chartReady().then(() => {
+      return widget.chartReady().then(async () => {
+        if (disposed) return;
+        try {
+          const restoredAt = await restoreLatestChartState(widget.activeChart(), snapshot);
+          if (!disposed && restoredAt) setSavedLabel(`Restored ${formatSavedTime(restoredAt)}`);
+        } catch {
+          if (!disposed) setSaveState("error");
+        }
         if (disposed) return;
         readyRef.current = true;
         setStatus("ready");
@@ -211,8 +234,18 @@ export function PriceChart({
         if (applied.interval !== bars.interval) {
           await chart.setResolution(resolution);
         }
+        const snapshot = activeSnapshotRef.current;
+        const restoredAt = await restoreLatestChartState(chart, snapshot);
+        if (
+          widgetRef.current === widget &&
+          activeSnapshotRef.current.instrument.instrumentId === snapshot.instrument.instrumentId &&
+          activeSnapshotRef.current.bars.interval === snapshot.bars.interval
+        ) {
+          setSavedLabel(restoredAt ? `Restored ${formatSavedTime(restoredAt)}` : undefined);
+          setSaveState("idle");
+        }
       })().catch(() => {
-        if (widgetRef.current === widget) setStatus("error");
+        if (widgetRef.current === widget) setSaveState("error");
       });
       return;
     }
@@ -229,19 +262,69 @@ export function PriceChart({
     const previous = systemShapeIdsRef.current;
     systemShapeIdsRef.current = [];
     for (const id of previous) chart.removeEntity(id);
-    if (!features || features.snapshot.id !== bars.snapshotId) return;
+    if (!features || features.snapshot.id !== bars.snapshotId) {
+      queueMicrotask(() => {
+        if (overlayRevisionRef.current !== revision || widgetRef.current !== widget) return;
+        setOverlayState("idle");
+        setOverlayFailureCount(0);
+      });
+      return;
+    }
     const visible = new Set(visibleLayersKey.split(",").filter(Boolean));
     const annotations = features.annotations.filter((item) => visible.has(item.layerId));
-    void renderAnnotations(chart, annotations).then((ids) => {
+    queueMicrotask(() => {
+      if (overlayRevisionRef.current !== revision || widgetRef.current !== widget) return;
+      setOverlayState(annotations.length ? "rendering" : "ready");
+      setOverlayFailureCount(0);
+    });
+    void renderAnnotations(chart, annotations).then(({ ids, failedCount }) => {
       if (overlayRevisionRef.current !== revision || widgetRef.current !== widget) {
         for (const id of ids) chart.removeEntity(id);
         return;
       }
       systemShapeIdsRef.current = ids;
+      setOverlayFailureCount(failedCount);
+      setOverlayState(failedCount ? "partial" : "ready");
     }).catch(() => {
-      if (widgetRef.current === widget) setStatus("error");
+      if (widgetRef.current === widget) {
+        setOverlayFailureCount(annotations.length);
+        setOverlayState("partial");
+      }
     });
   }, [bars.snapshotId, features, status, visibleLayersKey]);
+
+  const saveAnalysis = async () => {
+    const widget = widgetRef.current;
+    if (!widget || !readyRef.current || !features) return;
+    setSaveState("saving");
+    try {
+      const chartState = serializeChartState(widget.activeChart().getLineToolsState());
+      const response = await fetch("/api/market-research/analysis", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `market-analysis-${bars.snapshotId}-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({
+          snapshotId: bars.snapshotId,
+          visibleLayerIds,
+          chartState,
+        }),
+      });
+      const payload = await response.json() as {
+        version?: { savedAt: string };
+        error?: string;
+      };
+      if (!response.ok || !payload.version) {
+        throw new Error(payload.error || "Chart analysis could not be saved.");
+      }
+      setSavedLabel(`Saved ${formatSavedTime(payload.version.savedAt)}`);
+      setSaveState("saved");
+      onAnalysisSaved?.();
+    } catch {
+      setSaveState("error");
+    }
+  };
 
   return (
     <div className={styles.advancedChart} data-state={status}>
@@ -268,8 +351,74 @@ export function PriceChart({
           </button>
         </div>
       ) : null}
+      {features && status === "ready" && overlayState === "rendering" ? (
+        <div className={styles.chartOverlayState} aria-live="polite">
+          <RefreshCw className={styles.spin} size={13} /> Drawing selected concepts
+        </div>
+      ) : null}
+      {features && status === "ready" && overlayState === "partial" ? (
+        <div className={styles.chartOverlayState} data-state="warning" role="status">
+          <AlertTriangle size={13} /> {overlayFailureCount} overlays unavailable; chart controls remain active
+        </div>
+      ) : null}
+      {features && status === "ready" ? (
+        <div className={styles.chartPersistence} data-state={saveState} aria-live="polite">
+          <span>
+            {saveState === "saved" ? <Check size={13} /> : <Save size={13} />}
+            {saveState === "error" ? "Private save unavailable" : savedLabel || "Drawings are private to you"}
+          </span>
+          <button type="button" disabled={saveState === "saving"} onClick={() => void saveAnalysis()}>
+            {saveState === "saving" ? <RefreshCw className={styles.spin} size={13} /> : <Save size={13} />}
+            {saveState === "saving" ? "Saving" : "Save version"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+async function restoreLatestChartState(
+  chart: ReturnType<TradingViewWidget["activeChart"]>,
+  snapshot: TradingViewMarketSnapshot,
+) {
+  const query = new URLSearchParams({
+    instrumentId: snapshot.instrument.instrumentId,
+    interval: snapshot.bars.interval,
+    limit: "1",
+  });
+  const response = await fetch(`/api/market-research/analysis?${query}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) return undefined;
+  const payload = await response.json() as MarketAnalysisVersionsResult;
+  const latest = payload.versions[0];
+  if (!latest) return undefined;
+  await chart.applyLineToolsState(deserializeChartState(latest.chartState));
+  return latest.savedAt;
+}
+
+function serializeChartState(state: TradingViewLineToolsState): MarketSerializedChartState {
+  const serialized = {
+    sources: state.sources ? [...state.sources.entries()] : null,
+    groups: [...state.groups.entries()],
+    ...(state.symbol ? { symbol: state.symbol } : {}),
+  };
+  return JSON.parse(JSON.stringify(serialized)) as MarketSerializedChartState;
+}
+
+function deserializeChartState(state: MarketSerializedChartState): TradingViewLineToolsState {
+  return {
+    sources: state.sources ? new Map(state.sources) : null,
+    groups: new Map(state.groups),
+    ...(state.symbol ? { symbol: state.symbol } : {}),
+  };
+}
+
+function formatSavedTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 async function renderAnnotations(
@@ -277,51 +426,69 @@ async function renderAnnotations(
   annotations: MarketTechnicalFeaturesResult["annotations"],
 ) {
   const ids: Array<string | number> = [];
-  for (const item of annotations) {
-    const style = annotationStyle(item.layerId, item.direction, item.reviewState);
-    const shared = {
-      text: item.label,
-      lock: true,
-      disableSelection: false,
-      disableSave: true,
-      disableUndo: true,
-      showInObjectsTree: true,
-      overrides: style,
-    } satisfies Omit<ChartShapeOptions, "shape">;
-    const primitive = item.primitive;
-    if (primitive.type === "horizontal_line") {
-      ids.push(await chart.createMultipointShape([
-        primitive.point,
-        { time: primitive.endTime, price: primitive.point.price },
-      ], { ...shared, shape: "trend_line" }));
-    } else if (primitive.type === "vertical_line") {
-      ids.push(await chart.createShape(primitive.point, {
-        ...shared,
-        shape: "vertical_line",
-        zOrder: "bottom",
-      }));
-    } else if (primitive.type === "price_zone" || primitive.type === "time_window") {
-      ids.push(await chart.createMultipointShape([
-        primitive.from,
-        primitive.to,
-      ], {
-        ...shared,
-        shape: "rectangle",
-        zOrder: primitive.type === "time_window" ? "bottom" : "top",
-      }));
-    } else {
-      ids.push(await chart.createShape(primitive.point, {
-        ...shared,
-        shape: primitive.marker === "up"
-          ? "arrow_up"
-          : primitive.marker === "down"
-            ? "arrow_down"
-            : "text",
-        zOrder: "top",
-      }));
+  let failedCount = 0;
+  const batchSize = 12;
+  for (let index = 0; index < annotations.length; index += batchSize) {
+    const settled = await Promise.allSettled(
+      annotations.slice(index, index + batchSize).map((item) =>
+        createAnnotation(chart, item)
+      ),
+    );
+    for (const result of settled) {
+      if (result.status === "fulfilled") ids.push(result.value);
+      else failedCount += 1;
     }
   }
-  return ids;
+  return { ids, failedCount };
+}
+
+function createAnnotation(
+  chart: ReturnType<TradingViewWidget["activeChart"]>,
+  item: MarketTechnicalFeaturesResult["annotations"][number],
+) {
+  const style = annotationStyle(item.layerId, item.direction, item.reviewState);
+  const shared = {
+    text: item.label,
+    lock: true,
+    disableSelection: false,
+    disableSave: true,
+    disableUndo: true,
+    showInObjectsTree: true,
+    overrides: style,
+  } satisfies Omit<ChartShapeOptions, "shape">;
+  const primitive = item.primitive;
+  if (primitive.type === "horizontal_line") {
+    return chart.createMultipointShape([
+      primitive.point,
+      { time: primitive.endTime, price: primitive.point.price },
+    ], { ...shared, shape: "trend_line" });
+  }
+  if (primitive.type === "vertical_line") {
+    return chart.createShape(primitive.point, {
+      ...shared,
+      shape: "vertical_line",
+      zOrder: "bottom",
+    });
+  }
+  if (primitive.type === "price_zone" || primitive.type === "time_window") {
+    return chart.createMultipointShape([
+      primitive.from,
+      primitive.to,
+    ], {
+      ...shared,
+      shape: "rectangle",
+      zOrder: primitive.type === "time_window" ? "bottom" : "top",
+    });
+  }
+  return chart.createShape(primitive.point, {
+    ...shared,
+    shape: primitive.marker === "up"
+      ? "arrow_up"
+      : primitive.marker === "down"
+        ? "arrow_down"
+        : "text",
+    zOrder: "top",
+  });
 }
 
 function annotationStyle(

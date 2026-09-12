@@ -16,9 +16,13 @@ import {
 import { showTruthfulIntegrationsService } from "@/lib/app-services/integrations";
 import { showSourceCoverageService } from "@/lib/app-services/source-coverage";
 import {
+  generateMarketAnalysisVersionService,
   generateMarketForecastService,
+  listMarketAnalysisVersionsService,
+  listMarketResearchBarsService,
   listMarketForecastJournalService,
   scoreDueMarketForecastsService,
+  showMarketResearchOverviewService,
   showMarketResearchBaselinesService,
   showMarketResearchFeaturesService,
 } from "@/lib/app-services/market-research";
@@ -233,7 +237,11 @@ export async function executeFirstPartyAppTool(input: {
     "app.workspaces.readiness": () => getWorkspaceReadinessService(caller, input.toolInput as never),
     "app.integrations.overview.show": () => showTruthfulIntegrationsService(caller, input.toolInput as never),
     "app.sources.coverage.show": () => showSourceCoverageService(caller, input.toolInput as never),
+    "app.market_research.overview.show": () => showMarketResearchOverviewService(caller),
+    "app.market_research.bars.list": () => listMarketResearchBarsService(caller, input.toolInput as never),
     "app.market_research.features.show": () => showMarketResearchFeaturesService(caller, input.toolInput as never),
+    "app.market_research.analysis.list": () => listMarketAnalysisVersionsService(caller, input.toolInput as never),
+    "app.market_research.analysis.generate": () => generateMarketAnalysisVersionService(caller, input.toolInput as never),
     "app.market_research.baselines.show": () => showMarketResearchBaselinesService(caller, input.toolInput as never),
     "app.market_research.journal.list": () => listMarketForecastJournalService(caller, input.toolInput as never),
     "app.market_research.journal.generate": () => generateMarketForecastService(caller, input.toolInput as never),

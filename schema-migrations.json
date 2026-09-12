@@ -818,5 +818,15 @@
     "version": 164,
     "name": "market_forward_shadow_v1",
     "checksum": "bb35c6f9f1a39d50cb1b735b338b205f56dbb70359577e746a1a6db18a466517"
+  },
+  {
+    "version": 165,
+    "name": "market_forward_shadow_clock_skew_v1",
+    "checksum": "a639af20d1842a4f106ca4975af46f6562b592932729ab03e1e38d922c2fcea6"
+  },
+  {
+    "version": 166,
+    "name": "market_analysis_versions_v1",
+    "checksum": "ee55253b32cf5838ac8e37a5a4e969e314c82fd2190be7a397e5d2a64eb4b232"
   }
 ]

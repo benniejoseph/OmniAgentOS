@@ -171,6 +171,7 @@ export const marketTechnicalReferenceSchema = z.object({
   label: z.string().min(1).max(80),
   period: z.string().min(1).max(120),
   open: z.number().finite().nullable(),
+  timestamp: z.string().datetime({ offset: true }).nullable(),
   status: z.enum(["available", "outside_snapshot"]),
 }).strict();
 
@@ -185,6 +186,7 @@ export const marketTechnicalDetectionSchema = z.object({
     "foundation.session_window.v1",
     "foundation.calendar_gap.v1",
     "foundation.quarterly_time.v1",
+    "foundation.reference_open.v1",
     "candidate.order_block.v1",
     "candidate.market_structure_shift.v1",
     "candidate.turtle_soup.v1",
@@ -202,6 +204,7 @@ export const marketTechnicalDetectionSchema = z.object({
     "session_killzone",
     "opening_gap",
     "quarterly_open",
+    "reference_open",
     "order_block",
     "market_structure_shift",
     "turtle_soup",
@@ -375,6 +378,89 @@ export const marketTechnicalFeaturesResultSchema = z.object({
 
 export type MarketTechnicalFeaturesResult = z.infer<
   typeof marketTechnicalFeaturesResultSchema
+>;
+
+export const MARKET_ANALYSIS_VERSION = "market-analysis-version:1" as const;
+
+const chartEntityIdSchema = z.union([
+  z.string().min(1).max(240),
+  z.number().int().nonnegative(),
+]);
+
+export const marketSerializedChartStateSchema = z.object({
+  sources: z.array(z.tuple([
+    chartEntityIdSchema,
+    z.unknown().nullable(),
+  ])).max(1_000).nullable(),
+  groups: z.array(z.tuple([
+    z.string().min(1).max(240),
+    z.unknown().nullable(),
+  ])).max(250),
+  symbol: z.string().min(1).max(240).optional(),
+}).strict();
+
+export type MarketSerializedChartState = z.infer<
+  typeof marketSerializedChartStateSchema
+>;
+
+export const marketAnalysisGenerateRequestSchema = z.object({
+  snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
+  visibleLayerIds: z.array(marketTechnicalLayerIdSchema).max(8).optional(),
+  chartState: marketSerializedChartStateSchema.optional(),
+}).strict();
+
+export const marketAnalysisVersionsQuerySchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  interval: z.enum(MARKET_INTERVALS),
+  limit: z.number().int().min(1).max(40).default(10),
+}).strict();
+
+export const marketAnalysisVersionSchema = z.object({
+  id: z.string().regex(/^market_analysis_[a-f0-9]{48}$/),
+  contractVersion: z.literal(MARKET_ANALYSIS_VERSION),
+  instrumentId: marketInstrumentIdSchema,
+  interval: z.enum(MARKET_INTERVALS),
+  snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
+  snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  detectorVersion: z.enum(MARKET_TECHNICAL_DETECTOR_VERSIONS),
+  technicalResultSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  visibleLayerIds: z.array(marketTechnicalLayerIdSchema).max(8),
+  chartStateSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  chartState: marketSerializedChartStateSchema,
+  annotationCount: z.number().int().nonnegative().max(120),
+  detectionCount: z.number().int().nonnegative().max(240),
+  candidateCount: z.number().int().nonnegative().max(240),
+  savedAt: z.string().datetime({ offset: true }),
+  versionSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict().superRefine((value, context) => {
+  if (value.candidateCount > value.detectionCount) {
+    context.addIssue({
+      code: "custom",
+      path: ["candidateCount"],
+      message: "Review-candidate count cannot exceed the detection count.",
+    });
+  }
+});
+
+export type MarketAnalysisVersion = z.infer<
+  typeof marketAnalysisVersionSchema
+>;
+
+export const marketAnalysisSaveResultSchema = z.object({
+  version: marketAnalysisVersionSchema,
+  reused: z.boolean(),
+}).strict();
+
+export const marketAnalysisVersionsResultSchema = z.object({
+  contractVersion: z.literal(MARKET_ANALYSIS_VERSION),
+  instrumentId: marketInstrumentIdSchema,
+  interval: z.enum(MARKET_INTERVALS),
+  versions: z.array(marketAnalysisVersionSchema).max(40),
+  total: z.number().int().nonnegative(),
+}).strict();
+
+export type MarketAnalysisVersionsResult = z.infer<
+  typeof marketAnalysisVersionsResultSchema
 >;
 
 export const marketEventReplayRequestSchema = z.object({

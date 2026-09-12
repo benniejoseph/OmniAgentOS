@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { marketBarSchema } from "@/lib/market-research/contracts";
+import {
+  marketAnalysisGenerateRequestSchema,
+  marketAnalysisVersionSchema,
+  marketBarSchema,
+} from "@/lib/market-research/contracts";
 import { marketInstrument, marketInstruments } from "@/lib/market-research/instruments";
 
 describe("market research foundation", () => {
@@ -44,5 +48,36 @@ describe("market research foundation", () => {
       close: 3_950,
       volume: null,
     })).toThrow(/OHLC bounds/i);
+  });
+
+  it("accepts bounded renderer state and rejects impossible version counts", () => {
+    expect(marketAnalysisGenerateRequestSchema.parse({
+      snapshotId: `market_snapshot_${"a".repeat(48)}`,
+      visibleLayerIds: ["liquidity", "setups"],
+      chartState: {
+        sources: [["manual-drawing-1", { type: "trend_line" }]],
+        groups: [],
+        symbol: "xauusd.spot",
+      },
+    }).visibleLayerIds).toEqual(["liquidity", "setups"]);
+
+    expect(() => marketAnalysisVersionSchema.parse({
+      id: `market_analysis_${"a".repeat(48)}`,
+      contractVersion: "market-analysis-version:1",
+      instrumentId: "xauusd.spot",
+      interval: "15min",
+      snapshotId: `market_snapshot_${"b".repeat(48)}`,
+      snapshotSha256: "c".repeat(64),
+      detectorVersion: "market-ict-quarterly-candidates:2",
+      technicalResultSha256: "d".repeat(64),
+      visibleLayerIds: [],
+      chartStateSha256: "e".repeat(64),
+      chartState: { sources: null, groups: [] },
+      annotationCount: 2,
+      detectionCount: 1,
+      candidateCount: 2,
+      savedAt: "2026-09-12T05:00:00.000Z",
+      versionSha256: "f".repeat(64),
+    })).toThrow(/cannot exceed/i);
   });
 });
