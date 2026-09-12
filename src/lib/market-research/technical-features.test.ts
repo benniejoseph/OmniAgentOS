@@ -11,7 +11,7 @@ describe("deterministic market technical primitives", () => {
     const result = buildMarketTechnicalFeatures(snapshot());
 
     expect(result.snapshot.id).toBe(`market_snapshot_${"a".repeat(48)}`);
-    expect(result.detectorVersion).toBe("market-technical-primitives:1");
+    expect(result.detectorVersion).toBe("market-ict-quarterly-candidates:2");
     expect(result.detections).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: "displacement",
@@ -28,8 +28,33 @@ describe("deterministic market technical primitives", () => {
       }),
     ]));
     expect(result.definitions.every((definition) =>
-      definition.transcriptAuthority === "not_claimed"
+      definition.reviewState === "deterministic_foundation"
+        ? definition.transcriptAuthority === "not_claimed"
+        : definition.transcriptAuthority === "awaiting_review"
     )).toBe(true);
+    expect(result.definitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "candidate.order_block.v1" }),
+      expect.objectContaining({ id: "candidate.turtle_soup.v1" }),
+      expect.objectContaining({ id: "candidate.unicorn.v1" }),
+      expect.objectContaining({ id: "candidate.judas_swing.v1" }),
+    ]));
+    expect(result.layers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "liquidity", defaultVisible: true }),
+      expect.objectContaining({ id: "imbalances", defaultVisible: true }),
+      expect.objectContaining({ id: "structure", defaultVisible: false }),
+    ]));
+    expect(result.annotations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        concept: "fair_value_gap",
+        layerId: "imbalances",
+        primitive: expect.objectContaining({ type: "price_zone" }),
+      }),
+      expect.objectContaining({
+        concept: "session_killzone",
+        layerId: "sessions",
+        primitive: expect.objectContaining({ type: "time_window" }),
+      }),
+    ]));
     expect(result.resultSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 

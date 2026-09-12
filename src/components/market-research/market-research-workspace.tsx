@@ -14,6 +14,7 @@ import {
   Database,
   Gauge,
   History,
+  Layers3,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -36,6 +37,7 @@ import {
   type MarketInterval,
   type MarketResearchOverview,
   type MarketTechnicalFeaturesResult,
+  type MarketTechnicalLayerId,
 } from "@/lib/market-research/contracts";
 import styles from "@/components/market-research/market-research-workspace.module.css";
 
@@ -79,6 +81,7 @@ export function MarketResearchWorkspace() {
   const [baselinesError, setBaselinesError] = useState<string>();
   const [featuresLoading, setFeaturesLoading] = useState(false);
   const [featuresError, setFeaturesError] = useState<string>();
+  const [visibleTechnicalLayers, setVisibleTechnicalLayers] = useState<MarketTechnicalLayerId[]>([]);
   const [journal, setJournal] = useState<MarketForecastJournalResult>();
   const [journalLoading, setJournalLoading] = useState(false);
   const [journalError, setJournalError] = useState<string>();
@@ -212,6 +215,9 @@ export function MarketResearchWorkspace() {
       const payload = await response.json() as MarketTechnicalFeaturesResult & { error?: string };
       if (!response.ok) throw new Error(payload.error || "Technical features could not load.");
       setFeatures(payload);
+      setVisibleTechnicalLayers(
+        payload.layers.filter((layer) => layer.defaultVisible).map((layer) => layer.id),
+      );
     } catch (loadError) {
       if (loadError instanceof DOMException && loadError.name === "AbortError") return;
       setFeatures(undefined);
@@ -435,6 +441,12 @@ export function MarketResearchWorkspace() {
     };
   }, [activeTab, bars?.snapshotId, loadFeatures]);
 
+  const toggleTechnicalLayer = useCallback((layerId: MarketTechnicalLayerId) => {
+    setVisibleTechnicalLayers((current) => current.includes(layerId)
+      ? current.filter((item) => item !== layerId)
+      : [...current, layerId]);
+  }, []);
+
   useEffect(() => {
     if (activeTab !== "journal") return;
     const controller = new AbortController();
@@ -555,7 +567,8 @@ export function MarketResearchWorkspace() {
       {selected ? (
         <>
           <ResearchDesk
-            hidden={activeTab !== "overview"}
+            hidden={activeTab !== "overview" && activeTab !== "technicals"}
+            technicalMode={activeTab === "technicals"}
             instrument={selected}
             overview={overview}
             events={events}
@@ -564,6 +577,9 @@ export function MarketResearchWorkspace() {
             barsError={barsError}
             interval={interval}
             onIntervalChange={setInterval}
+            features={features}
+            visibleTechnicalLayers={visibleTechnicalLayers}
+            onToggleTechnicalLayer={toggleTechnicalLayer}
           />
           {activeTab === "events" ? (
             <NewsImpactLab
@@ -614,6 +630,7 @@ export function MarketResearchWorkspace() {
 
 function ResearchDesk({
   hidden,
+  technicalMode,
   instrument,
   overview,
   events,
@@ -622,8 +639,12 @@ function ResearchDesk({
   barsError,
   interval,
   onIntervalChange,
+  features,
+  visibleTechnicalLayers,
+  onToggleTechnicalLayer,
 }: {
   hidden: boolean;
+  technicalMode: boolean;
   instrument: MarketInstrument;
   overview?: MarketResearchOverview;
   events?: MarketEventsResult;
@@ -632,6 +653,9 @@ function ResearchDesk({
   barsError?: string;
   interval: MarketInterval;
   onIntervalChange: (interval: MarketInterval) => void;
+  features?: MarketTechnicalFeaturesResult;
+  visibleTechnicalLayers: MarketTechnicalLayerId[];
+  onToggleTechnicalLayer: (layerId: MarketTechnicalLayerId) => void;
 }) {
   const latest = bars?.bars.at(-1);
   const previous = bars?.bars.at(-2);
@@ -645,15 +669,18 @@ function ResearchDesk({
   const hasMatchingBars = Boolean(
     bars?.bars.length && bars.instrumentId === instrument.instrumentId,
   );
+  const matchingFeatures = features?.snapshot.id === bars?.snapshotId
+    ? features
+    : undefined;
 
   return (
     <section className={styles.workspace} hidden={hidden}>
       <div className={styles.primaryPlane}>
         <div className={styles.instrumentHeader}>
           <div>
-            <p className={styles.eyebrow}>Canonical research instrument</p>
+            <p className={styles.eyebrow}>{technicalMode ? "Evidence-bound drawing canvas" : "Canonical research instrument"}</p>
             <h2>{instrument.label}</h2>
-            <p>{instrument.identityWarning}</p>
+            <p>{technicalMode ? "System overlays are locked, versioned detector output. Your own TradingView drawings remain separate and editable." : instrument.identityWarning}</p>
           </div>
           <div className={styles.priceReadout}>
             <strong>{latest ? formatPrice(latest.close, instrument.instrumentId) : "—"}</strong>
@@ -667,13 +694,17 @@ function ResearchDesk({
           <Metric label="Daily probability" value="Not scored" detail="Calibration required" />
           <Metric label="Weekly probability" value="Not scored" detail="Calibration required" />
           <Metric label="High-impact releases" value={events ? String(events.total) : "Open lab"} detail="Official history" />
-          <Metric label="ICT confluence" value="Not run" detail="Detector foundation" />
+          <Metric
+            label="ICT structure"
+            value={matchingFeatures ? `${matchingFeatures.counts.setupCandidates} setups` : "Not run"}
+            detail={matchingFeatures ? `${matchingFeatures.annotations.length} typed overlays` : "Open ICT + Quarterly"}
+          />
         </div>
 
         <div className={styles.chartPanel}>
           <header>
             <div>
-              <span><ChartCandlestick size={16} /> Provider-labelled price context</span>
+              <span><ChartCandlestick size={16} /> {technicalMode ? "ICT + Quarterly analysis canvas" : "Provider-labelled price context"}</span>
               <small>{bars ? `${bars.providerSymbol} · ${bars.providerTimezone} · ${bars.bars.length} bars · ${bars.snapshotSource === "cache" ? "reused" : "new"} snapshot ${bars.snapshotSha256.slice(0, 10)}` : "No proxy data is shown"}</small>
             </div>
             <div className={styles.intervalPicker} aria-label="Chart interval">
@@ -682,9 +713,35 @@ function ResearchDesk({
               ))}
             </div>
           </header>
+          {technicalMode && matchingFeatures ? (
+            <div className={styles.layerBar} aria-label="Analysis drawing layers">
+              <div>
+                <Layers3 size={15} />
+                <span><strong>Drawing layers</strong><small>Locked system overlays · manual drawings stay editable</small></span>
+              </div>
+              <div className={styles.layerChips}>
+                {matchingFeatures.layers.map((layer) => (
+                  <button
+                    key={layer.id}
+                    type="button"
+                    aria-pressed={visibleTechnicalLayers.includes(layer.id)}
+                    onClick={() => onToggleTechnicalLayer(layer.id)}
+                    title={layer.description}
+                  >
+                    <i data-layer={layer.id} /> {layer.label} <em>{layer.count}</em>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className={styles.chartBody}>
             {hasMatchingBars && bars ? (
-              <PriceChart instrument={instrument} bars={bars} />
+              <PriceChart
+                instrument={instrument}
+                bars={bars}
+                features={technicalMode ? matchingFeatures : undefined}
+                visibleLayerIds={technicalMode ? visibleTechnicalLayers : undefined}
+              />
             ) : barsLoading ? <ChartLoading /> : (
               <ChartEmpty
                 mappingRequired={instrument.providerMapping.status === "discovery_required"}
@@ -699,7 +756,7 @@ function ResearchDesk({
             ) : null}
           </div>
           <footer>
-            <span>Advanced Charts v32.2.0 · scroll to zoom · drag to pan · drawing tools at left</span>
+            <span>{technicalMode ? "Typed overlays never overwrite manual drawings · select layers above · drawing tools at left" : "Advanced Charts v32.2.0 · scroll to zoom · drag to pan · drawing tools at left"}</span>
             <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">Charts by TradingView</a>
           </footer>
         </div>
@@ -977,7 +1034,7 @@ function TechnicalLab({
     <section className={styles.lab}>
       <header className={styles.labHeader}>
         <div><p className={styles.eyebrow}>Deterministic structure · {instrument.shortLabel}</p><h2>ICT + Quarterly engine</h2><p>Reproducible market-structure primitives run against one immutable price snapshot. Transcript-specific ICT rules stay separate until their exact definitions and source timecodes are reviewed.</p></div>
-        <span className={styles.stateBadge} data-state={detectorState}>{current ? "Reproducible v1" : detectorState === "foundation" ? "Loading foundation" : "Waiting for bars"}</span>
+        <span className={styles.stateBadge} data-state={detectorState}>{current ? "Reproducible v2" : detectorState === "foundation" ? "Loading foundation" : "Waiting for bars"}</span>
       </header>
 
       {error ? <div className={styles.technicalNotice} role="alert"><AlertTriangle size={18} /><span>{error}</span></div> : null}
@@ -997,8 +1054,8 @@ function TechnicalLab({
           <div className={styles.technicalSummary}>
             <article><small>Dealing range</small><strong>{current.range.zone}</strong><span>{current.range.positionPercent.toFixed(1)}% of last {current.range.lookbackBars} bars</span></article>
             <article><small>90-minute quarter</small><strong>Q{current.timeContext.ninetyMinuteQuarter}</strong><span>{sessionLabel(current.timeContext.session)} · {current.timeContext.localTime} ET</span></article>
-            <article><small>Active price gaps</small><strong>{current.counts.activeFairValueGaps}</strong><span>Three-bar foundation definition</span></article>
-            <article><small>Sweeps / displacement</small><strong>{current.counts.liquiditySweeps} / {current.counts.displacements}</strong><span>Within this exact snapshot</span></article>
+            <article><small>FVG / valid OB</small><strong>{current.counts.activeFairValueGaps} / {current.counts.validOrderBlocks}</strong><span>Lifecycle-aware zones</span></article>
+            <article><small>Liquidity / setups</small><strong>{current.counts.liquidityLevels} / {current.counts.setupCandidates}</strong><span>Active levels · review-gated candidates</span></article>
           </div>
 
           <div className={styles.referenceStrip}>
@@ -1018,7 +1075,7 @@ function TechnicalLab({
                 {recentDetections.map((detection) => (
                   <article key={detection.id} data-direction={detection.direction}>
                     <i />
-                    <span><strong>{detectionLabel(detection.kind)}</strong><small>{detection.direction} · {detection.state}</small></span>
+                    <span><strong>{detectionLabel(detection.kind)}</strong><small>{detection.direction} · {detection.state.replaceAll("_", " ")} · {detection.reviewState === "candidate_rule" ? "review candidate" : "foundation"}</small></span>
                     <time dateTime={detection.timestamp}>{formatFeatureTime(detection.timestamp)}</time>
                     <span><strong>{formatPrice(detection.price, instrument.instrumentId)}</strong><small>{detection.zoneLow !== null && detection.zoneHigh !== null ? `${formatPrice(detection.zoneLow, instrument.instrumentId)}–${formatPrice(detection.zoneHigh, instrument.instrumentId)}` : `strength ${detection.strength.toFixed(2)}`}</small></span>
                   </article>
@@ -1041,7 +1098,7 @@ function TechnicalLab({
         </>
       ) : null}
 
-      <div className={styles.boundaryNote}><ShieldCheck size={18} /><div><strong>Transcript evidence boundary</strong><p>Each detected feature will cite the reviewed concept definition and transcript chunk that supports it. Transcript claims do not become executable rules until their definition is explicit and testable.</p></div></div>
+      <div className={styles.boundaryNote}><ShieldCheck size={18} /><div><strong>Review boundary</strong><p>Foundation drawings are reproducible geometry or time partitions. OB, MSS, Turtle Soup, Unicorn, and Judas Swing use visible candidate formulas until your transcript evidence and timecodes are reviewed; the app does not present them as validated signals.</p></div></div>
     </section>
   );
 }
@@ -1053,6 +1110,16 @@ function detectionLabel(kind: MarketTechnicalFeaturesResult["detections"][number
     case "fair_value_gap": return "Price gap";
     case "displacement": return "Displacement";
     case "liquidity_sweep": return "Boundary sweep";
+    case "buy_side_liquidity": return "Buy-side liquidity";
+    case "sell_side_liquidity": return "Sell-side liquidity";
+    case "session_killzone": return "Session / kill zone";
+    case "opening_gap": return "Opening gap";
+    case "quarterly_open": return "Quarterly open";
+    case "order_block": return "Order block";
+    case "market_structure_shift": return "Market structure shift";
+    case "turtle_soup": return "Turtle Soup";
+    case "unicorn": return "Unicorn";
+    case "judas_swing": return "Judas Swing";
   }
 }
 
