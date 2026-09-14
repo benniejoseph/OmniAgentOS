@@ -241,7 +241,7 @@ export async function* runAgent(
   const runtimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(request.tenantId),
     actorId: request.actorId || "",
-    scope: "main_agent",
+    scope: modelAssignmentScopeForAgent(request.agentId),
     tier: deploymentModelRoute.tier,
     requiredFeature: "tools",
     deploymentFallback: {
@@ -3223,7 +3223,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
-    scope: "main_agent",
+    scope: modelAssignmentScopeForAgent(run.agentId),
     tier: resumeTier,
     requiredFeature: "tools",
     deploymentFallback: {
@@ -4084,7 +4084,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
-    scope: "main_agent",
+    scope: modelAssignmentScopeForAgent(run.agentId),
     tier: providerState.tier,
     requiredFeature: "tools",
     deploymentFallback: {
@@ -5393,6 +5393,10 @@ function toolExecutionStatus(status: ToolExecutionRecord["status"]): "executed" 
 
 function normalizeTenantId(value?: string) {
   return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim() || "default";
+}
+
+function modelAssignmentScopeForAgent(agentId?: string) {
+  return agentId === "forge" ? "code_builder" as const : "main_agent" as const;
 }
 
 function agentMcpSessionScope(

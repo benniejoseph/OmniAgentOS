@@ -14,6 +14,7 @@ export const MODEL_ASSIGNMENT_SCOPES = [
   "verifier",
   "council",
   "market_research",
+  "code_builder",
   "memory",
   "embeddings",
   "vision",
