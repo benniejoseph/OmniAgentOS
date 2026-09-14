@@ -359,6 +359,27 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.projects.artifacts.feedback", "Rate project artifact", "Record an explicit verdict and lesson for one exact project artifact and its reflection memory.", requiredObjectSchema({
     projectId: opaqueId("Exact project ID."), artifactId: opaqueId("Exact project-artifact ID."), verdict: { type: "string", enum: ["useful", "needs_work"] }, lesson: text(3, 1_200),
   }, ["projectId", "artifactId", "verdict", "lesson"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
+  readTool("app.projects.builder.show", "Show app builder", "Read the exact project-scoped app-building session, authenticated preview readiness, and typed activity history.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."),
+  }, ["projectId"])),
+  mutationTool("app.projects.builder.create", "Create app workspace", "Provision one reviewed Next.js starter in a persistent, network-restricted Vercel Sandbox for the exact project.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."),
+  }, ["projectId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.projects.builder.tree", "List app files", "List bounded editable files in the exact project build workspace; dependencies, generated output, credentials, and VCS metadata stay excluded.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
+  }, ["projectId", "sessionId"])),
+  readTool("app.projects.builder.file.read", "Read app file", "Read one bounded UTF-8 file and its exact SHA-256 from the project build workspace.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240),
+  }, ["projectId", "sessionId", "path"])),
+  mutationTool("app.projects.builder.file.update", "Update app file", "Replace one inspected application file only when its current SHA-256 still matches; null is accepted only for a new file.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240), expectedSha256: { type: ["string", "null"], pattern: "^[a-f0-9]{64}$" }, content: text(0, 500_000),
+  }, ["projectId", "sessionId", "path", "expectedSha256", "content"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
+  mutationTool("app.projects.builder.command.run", "Run app check", "Run one fixed package-script check or restart the private preview; arbitrary shell commands are not accepted.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, command: { type: "string", enum: ["lint", "typecheck", "test", "build", "start_preview"] },
+  }, ["projectId", "sessionId", "command"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
+  mutationTool("app.projects.builder.stop", "Stop app workspace", "Stop the exact project's build sandbox while retaining its immutable activity receipts.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
+  }, ["projectId", "sessionId"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   mutationTool("app.work_items.create", "Create project work item", "Create one work item in an exact active project.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."),
     title: text(1, 240),
@@ -626,7 +647,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.settings.show", "Show settings", "Read the current actor's redacted provider, model, assignment, API-key metadata, MCP exposure, vault readiness, and platform settings.", objectSchema({})),
   readTool("app.settings.models.list", "List models", "List the current actor's selectable model catalog without credentials.", objectSchema({})),
   mutationTool("app.settings.assignments.update", "Update model assignment", "Update one model routing assignment; cross-provider fallback requires explicit disclosure consent.", requiredObjectSchema({
-    scope: { type: "string", enum: ["main_agent", "orchestrator", "planner", "verifier", "council", "market_research", "memory", "embeddings", "vision", "audio", "audio_diarization", "web_search", "image_generation", "video_generation", "computer_use", "speech_synthesis", "realtime_transcription"] },
+    scope: { type: "string", enum: ["main_agent", "orchestrator", "planner", "verifier", "council", "market_research", "code_builder", "memory", "embeddings", "vision", "audio", "audio_diarization", "web_search", "image_generation", "video_generation", "computer_use", "speech_synthesis", "realtime_transcription"] },
     provider: modelProvider(), modelId: text(1, 240), fallbackProvider: modelProvider(), fallbackModelId: text(1, 240),
     crossProviderFallbackConsent: { type: "boolean", enum: [true] },
   }, ["scope", "provider", "modelId"]), { riskLevel: 2, approvalRequired: true, reversible: true }),

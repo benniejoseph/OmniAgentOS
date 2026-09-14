@@ -10,6 +10,15 @@ import {
   updateWorkItemService,
 } from "@/lib/app-services/projects";
 import {
+  createProjectBuilderService,
+  listProjectBuilderTreeService,
+  readProjectBuilderFileService,
+  runProjectBuilderCommandService,
+  showProjectBuilderService,
+  stopProjectBuilderService,
+  updateProjectBuilderFileService,
+} from "@/lib/app-services/app-builder";
+import {
   getWorkspaceReadinessService,
   getWorkspaceSummaryService,
 } from "@/lib/app-services/workspaces";
@@ -289,6 +298,13 @@ export async function executeFirstPartyAppTool(input: {
     "app.projects.plan": () => planProjectService(caller, input.toolInput as never),
     "app.projects.execution.control": () => controlProjectExecutionService(caller, input.toolInput as never),
     "app.projects.artifacts.feedback": () => recordProjectArtifactFeedbackService(caller, input.toolInput as never),
+    "app.projects.builder.show": () => showProjectBuilderService(caller, input.toolInput as never),
+    "app.projects.builder.create": () => createProjectBuilderService(caller, input.toolInput as never),
+    "app.projects.builder.tree": () => listProjectBuilderTreeService(caller, input.toolInput as never),
+    "app.projects.builder.file.read": () => readProjectBuilderFileService(caller, input.toolInput as never),
+    "app.projects.builder.file.update": () => updateProjectBuilderFileService(caller, input.toolInput as never),
+    "app.projects.builder.command.run": () => runProjectBuilderCommandService(caller, input.toolInput as never),
+    "app.projects.builder.stop": () => stopProjectBuilderService(caller, input.toolInput as never),
     "app.work_items.create": () => createWorkItemService(caller, input.toolInput as never),
     "app.work_items.update": () => updateWorkItemService(caller, input.toolInput as never),
     "app.memory.list": () => listMemoryService(caller, input.toolInput as never),

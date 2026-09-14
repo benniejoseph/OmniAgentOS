@@ -67,6 +67,13 @@ export const modelAssignmentRoleContracts: Readonly<
     supportedProviders: ["openai", "google", "anthropic", "aws_bedrock"],
     acceptedCapabilities: ["text"],
   }),
+  code_builder: assignmentRoleContract({
+    title: "Code builder",
+    description: "Governed application planning, implementation, and verification",
+    runtimePurpose: "Forge application-building turns inside project sandboxes",
+    supportedProviders: ["openai", "google", "anthropic", "aws_bedrock"],
+    acceptedCapabilities: ["tools", "text"],
+  }),
   memory: assignmentRoleContract({
     title: "Memory reasoning",
     description: "Semantic recall and context query planning",

@@ -57,7 +57,7 @@ describe("configurable AI model scopes migration", () => {
       ),
       "utf8",
     );
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((item) => item.version === 157)).toEqual({
       version: 157,
       name: "market_research_model_scope_v1",
       checksum: "f1c276a830957ba8409e6f776f8dce5499324a75db8b7980533bafcbd612b749",
