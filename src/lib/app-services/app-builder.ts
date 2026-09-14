@@ -13,14 +13,18 @@ import {
   builderFileReadInputSchema,
   builderFileUpdateInputSchema,
   builderProjectInputSchema,
+  builderSentinelReviewInputSchema,
   builderSessionCreateInputSchema,
   builderSessionStopInputSchema,
   builderTreeInputSchema,
+  builderVerificationInputSchema,
+  builderVerificationShowInputSchema,
 } from "@/lib/app-builder/contracts";
 import {
   createBuilderSandbox,
   createBuilderSandboxCheckpoint,
   getBuilderPreviewUrl,
+  getBuilderWorkspaceManifest,
   listBuilderFiles,
   readBuilderFile,
   runBuilderCommand,
@@ -33,15 +37,20 @@ import {
   getBuilderCheckpoint,
   getBuilderCheckpointForIdempotency,
   getBuilderSession,
+  getBuilderVerification,
+  getBuilderVerificationForIdempotency,
   getProjectBuilderSession,
   listBuilderActivity,
   listBuilderCheckpoints,
+  listBuilderVerifications,
   recordBuilderCheckpoint,
   recordBuilderActivity,
   recordBuilderWorkspaceChange,
+  recordBuilderVerification,
   setBuilderCurrentCheckpoint,
   transitionBuilderSession,
 } from "@/lib/app-builder/store";
+import { captureBuilderBrowserEvidence } from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -54,10 +63,11 @@ export async function showProjectBuilderService(
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.show"));
   await requireProject(caller, value.projectId);
   const session = await getProjectBuilderSession(value.projectId, owner(caller));
-  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], previewUrl: null }, { resourceCount: 0 });
-  const [activity, checkpoints, previewUrl] = await Promise.all([
+  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], previewUrl: null }, { resourceCount: 0 });
+  const [activity, checkpoints, verifications, previewUrl] = await Promise.all([
     listBuilderActivity(session.id, owner(caller)),
     listBuilderCheckpoints(session.id, owner(caller)),
+    listBuilderVerifications(session.id, owner(caller)),
     session.status === "ready" || session.status === "running"
       ? getBuilderPreviewUrl({
           sandboxName: session.sandboxName,
@@ -72,6 +82,7 @@ export async function showProjectBuilderService(
     session: publicSession(session),
     activity,
     checkpoints: checkpoints.map(publicCheckpoint),
+    verifications: verifications.map(publicVerification),
     previewUrl,
   });
 }
@@ -91,7 +102,8 @@ export async function createProjectBuilderService(
       ? await getBuilderPreviewUrl({ sandboxName: session.sandboxName, tenantId: session.tenantId, ownerActorId: session.ownerActorId, projectId: session.projectId, sessionId: session.id }).catch(() => null)
       : null;
     const checkpoints = await listBuilderCheckpoints(session.id, owner(caller));
-    return completeAppServiceCall(authorized, { session: publicSession(session), activity, checkpoints: checkpoints.map(publicCheckpoint), previewUrl, created: false });
+    const verifications = await listBuilderVerifications(session.id, owner(caller));
+    return completeAppServiceCall(authorized, { session: publicSession(session), activity, checkpoints: checkpoints.map(publicCheckpoint), verifications: verifications.map(publicVerification), previewUrl, created: false });
   }
   try {
     const provisioned = await createBuilderSandbox({
@@ -107,7 +119,7 @@ export async function createProjectBuilderService(
       detail: { installExitCode: provisioned.install.exitCode, installDurationMs: provisioned.install.durationMs },
     });
     const activity = await listBuilderActivity(ready.id, owner(caller));
-    return completeAppServiceCall(authorized, { session: publicSession(ready), activity, checkpoints: [], previewUrl: provisioned.previewUrl, created: true });
+    return completeAppServiceCall(authorized, { session: publicSession(ready), activity, checkpoints: [], verifications: [], previewUrl: provisioned.previewUrl, created: true });
   } catch (error) {
     const code = builderErrorCode(error);
     await transitionBuilderSession({
@@ -241,11 +253,17 @@ export async function createProjectBuilderCheckpointService(
     projectId: session.projectId,
     sessionId: session.id,
   }).catch(() => null);
-  const checkpoints = await listBuilderCheckpoints(session.id, owner(caller));
+  const [activity, checkpoints, verifications] = await Promise.all([
+    listBuilderActivity(session.id, owner(caller)),
+    listBuilderCheckpoints(session.id, owner(caller)),
+    listBuilderVerifications(session.id, owner(caller)),
+  ]);
   return completeAppServiceCall(authorized, {
     session: publicSession(current),
+    activity,
     checkpoint: publicCheckpoint(checkpoint),
     checkpoints: checkpoints.map(publicCheckpoint),
+    verifications: verifications.map(publicVerification),
     previewUrl,
   });
 }
@@ -264,10 +282,17 @@ export async function restoreProjectBuilderCheckpointService(
     throw new Error("The selected App Builder checkpoint has expired.");
   }
   if (session.currentCheckpointId === checkpoint.id) {
+    const [activity, checkpoints, verifications] = await Promise.all([
+      listBuilderActivity(session.id, owner(caller)),
+      listBuilderCheckpoints(session.id, owner(caller)),
+      listBuilderVerifications(session.id, owner(caller)),
+    ]);
     return completeAppServiceCall(authorized, {
       session: publicSession(session),
+      activity,
       checkpoint: publicCheckpoint(checkpoint),
-      checkpoints: (await listBuilderCheckpoints(session.id, owner(caller))).map(publicCheckpoint),
+      checkpoints: checkpoints.map(publicCheckpoint),
+      verifications: verifications.map(publicVerification),
       restored: false,
       previewUrl: await getBuilderPreviewUrl({
         sandboxName: session.sandboxName,
@@ -323,12 +348,137 @@ export async function restoreProjectBuilderCheckpointService(
     ...owner(caller), session, checkpoint,
     eventType: "app_builder.checkpoint.restored", eventKey: idempotencyKey,
   });
+  const [activity, checkpoints, verifications] = await Promise.all([
+    listBuilderActivity(session.id, owner(caller)),
+    listBuilderCheckpoints(session.id, owner(caller)),
+    listBuilderVerifications(session.id, owner(caller)),
+  ]);
   return completeAppServiceCall(authorized, {
     session: publicSession(current),
+    activity,
     checkpoint: publicCheckpoint(checkpoint),
-    checkpoints: (await listBuilderCheckpoints(session.id, owner(caller))).map(publicCheckpoint),
+    checkpoints: checkpoints.map(publicCheckpoint),
+    verifications: verifications.map(publicVerification),
     restored: true,
     previewUrl: restored.previewUrl,
+  });
+}
+
+export async function showProjectBuilderVerificationService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderVerificationShowInputSchema>,
+) {
+  const value = builderVerificationShowInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.verification.show"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const verification = await getBuilderVerification(value.verificationId, session.id, owner(caller));
+  if (!verification) throw new Error("The selected App Builder verification was not found.");
+  return completeAppServiceCall(authorized, { verification: publicVerification(verification) });
+}
+
+export async function runProjectBuilderVerificationService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderVerificationInputSchema>,
+) {
+  const value = builderVerificationInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.verification.run"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  assertExpectedSessionRevision(session, value.expectedSessionRevision);
+  const checkpoint = await getBuilderCheckpoint(value.checkpointId, session.id, owner(caller));
+  if (!checkpoint || session.currentCheckpointId !== checkpoint.id) {
+    throw new Error("Verification requires the exact current App Builder checkpoint.");
+  }
+  const idempotencyKey = requireIdempotency(caller);
+  const existing = await getBuilderVerificationForIdempotency({
+    ...owner(caller), sessionId: session.id, idempotencyKey,
+  });
+  if (existing) return completeAppServiceCall(authorized, { verification: publicVerification(existing), created: false });
+  const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
+  if (workspace.sha256 !== checkpoint.workspaceSha256) {
+    throw new Error("The workspace changed after its checkpoint was sealed.");
+  }
+  const checks = [] as Array<{
+    command: "lint" | "typecheck";
+    status: "passed" | "failed";
+    exitCode: number;
+    durationMs: number;
+    outputSha256: string;
+  }>;
+  for (const command of ["lint", "typecheck"] as const) {
+    const result = await runBuilderCommand({ sandboxName: session.sandboxName, command });
+    checks.push({
+      command,
+      status: result.exitCode === 0 ? "passed" : "failed",
+      exitCode: result.exitCode,
+      durationMs: result.durationMs,
+      outputSha256: createHash("sha256").update(`${result.stdout}\n${result.stderr}`).digest("hex"),
+    });
+  }
+  const previewUrl = await getBuilderPreviewUrl({
+    sandboxName: session.sandboxName,
+    tenantId: session.tenantId,
+    ownerActorId: session.ownerActorId,
+    projectId: session.projectId,
+    sessionId: session.id,
+  });
+  const browserEvidence = await captureBuilderBrowserEvidence({
+    tenantId: session.tenantId,
+    actorId: session.ownerActorId,
+    executionId: `app-builder-verification:${idempotencyKey}`,
+    previewUrl,
+  });
+  const status = checks.some((check) => check.status === "failed")
+    ? "failed" as const
+    : browserEvidence.status === "captured"
+      ? "passed" as const
+      : "incomplete" as const;
+  const verification = await recordBuilderVerification({
+    ...owner(caller), session, checkpoint, idempotencyKey, status, checks, browserEvidence,
+  });
+  await recordBuilderActivity({
+    ...owner(caller), session,
+    eventType: "app_builder.verification.completed",
+    eventKey: idempotencyKey,
+    detail: {
+      verificationId: verification.id,
+      checkpointId: checkpoint.id,
+      workspaceSha256: checkpoint.workspaceSha256,
+      status,
+      checks: checks.map((check) => ({ command: check.command, status: check.status, exitCode: check.exitCode, outputSha256: check.outputSha256 })),
+      browserStatus: browserEvidence.status,
+      captureCount: browserEvidence.captures.length,
+    },
+  });
+  return completeAppServiceCall(authorized, { verification: publicVerification(verification), created: true });
+}
+
+export async function recordProjectBuilderSentinelReviewService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderSentinelReviewInputSchema>,
+) {
+  const value = builderSentinelReviewInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.sentinel.record"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const verification = await getBuilderVerification(value.verificationId, session.id, owner(caller));
+  if (!verification) throw new Error("The App Builder verification was not found for Sentinel review.");
+  const run = await requireBuilderAgentRun(caller, value.projectId, value.sourceRunId, "sentinel");
+  if (!run.prompt.includes(verification.id) || !run.prompt.includes(verification.checkpointId)) {
+    throw new Error("The Sentinel run is not bound to this verification checkpoint.");
+  }
+  await recordBuilderActivity({
+    ...owner(caller), session,
+    eventType: "app_builder.sentinel.reviewed",
+    eventKey: requireIdempotency(caller),
+    detail: {
+      verificationId: verification.id,
+      checkpointId: verification.checkpointId,
+      sourceRunId: run.id,
+      responseSha256: createHash("sha256").update(run.response || "").digest("hex"),
+    },
+  });
+  return completeAppServiceCall(authorized, {
+    verification: publicVerification(verification),
+    sentinel: { runId: run.id, status: run.status },
   });
 }
 
@@ -396,5 +546,10 @@ function publicSession<T extends { tenantId: string; ownerActorId: string; sandb
 
 function publicCheckpoint<T extends { tenantId: string; ownerActorId: string; providerSnapshotId: string }>(checkpoint: T) {
   const { tenantId: _tenantId, ownerActorId: _ownerActorId, providerSnapshotId: _providerSnapshotId, ...safe } = checkpoint;
+  return safe;
+}
+
+function publicVerification<T extends { tenantId: string; ownerActorId: string }>(verification: T) {
+  const { tenantId: _tenantId, ownerActorId: _ownerActorId, ...safe } = verification;
   return safe;
 }

@@ -4,6 +4,7 @@ import { z } from "zod";
 
 export const APP_BUILDER_CONTRACT_VERSION = "app-builder-session:1" as const;
 export const APP_BUILDER_CHECKPOINT_CONTRACT_VERSION = "app-builder-checkpoint:1" as const;
+export const APP_BUILDER_VERIFICATION_CONTRACT_VERSION = "app-builder-verification:1" as const;
 export const APP_BUILDER_TEMPLATE_ID = "nextjs-starter-v1" as const;
 export const APP_BUILDER_ROOT = "/vercel/sandbox/app" as const;
 export const APP_BUILDER_PREVIEW_PORT = 3000 as const;
@@ -72,6 +73,38 @@ export type AppBuilderActivity = Readonly<{
   occurredAt: string;
 }>;
 
+export type AppBuilderVerification = Readonly<{
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  projectId: string;
+  sessionId: string;
+  checkpointId: string;
+  contractVersion: typeof APP_BUILDER_VERIFICATION_CONTRACT_VERSION;
+  workspaceSha256: string;
+  status: "passed" | "failed" | "incomplete";
+  checks: ReadonlyArray<Readonly<{
+    command: "lint" | "typecheck";
+    status: "passed" | "failed";
+    exitCode: number;
+    durationMs: number;
+    outputSha256: string;
+  }>>;
+  browserEvidence: Readonly<{
+    status: "captured" | "unavailable" | "failed";
+    captures: ReadonlyArray<Readonly<{
+      viewport: "desktop" | "mobile";
+      width: number;
+      height: number;
+      screenshotSha256: string;
+      mimeType: string;
+      byteLength: number;
+    }>>;
+    errorCode?: string;
+  }>;
+  createdAt: string;
+}>;
+
 export type AppBuilderFile = Readonly<{
   path: string;
   content: string;
@@ -128,6 +161,19 @@ export const builderCheckpointCreateInputSchema = builderTreeInputSchema.extend(
 export const builderCheckpointRestoreInputSchema = builderTreeInputSchema.extend({
   checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/),
   expectedSessionRevision: z.number().int().positive(),
+}).strict();
+
+export const builderVerificationInputSchema = builderTreeInputSchema.extend({
+  checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/),
+  expectedSessionRevision: z.number().int().positive(),
+}).strict();
+
+export const builderVerificationShowInputSchema = builderTreeInputSchema.extend({
+  verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/),
+}).strict();
+
+export const builderSentinelReviewInputSchema = builderVerificationShowInputSchema.extend({
+  sourceRunId: z.string().uuid(),
 }).strict();
 
 const deniedSegments = new Set([

@@ -5,11 +5,13 @@ import {
   APP_BUILDER_CHECKPOINT_CONTRACT_VERSION,
   APP_BUILDER_CONTRACT_VERSION,
   APP_BUILDER_TEMPLATE_ID,
+  APP_BUILDER_VERIFICATION_CONTRACT_VERSION,
   appBuilderSessionStatusSchema,
   type AppBuilderActivity,
   type AppBuilderCheckpoint,
   type AppBuilderSession,
   type AppBuilderSessionStatus,
+  type AppBuilderVerification,
 } from "@/lib/app-builder/contracts";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
@@ -304,6 +306,83 @@ export async function setBuilderCurrentCheckpoint(input: BuilderOwner & {
   return session;
 }
 
+export async function getBuilderVerification(
+  verificationId: string,
+  sessionId: string,
+  owner: BuilderOwner,
+) {
+  requireBuilderDatabase();
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT * FROM omni_app_builder_verifications
+    WHERE tenant_id = ${owner.tenantId}
+      AND owner_actor_id = ${owner.actorId}
+      AND session_id = ${sessionId}
+      AND id = ${verificationId}
+    LIMIT 1
+  `;
+  return rows[0] ? verificationFromRow(rows[0]) : undefined;
+}
+
+export async function getBuilderVerificationForIdempotency(input: BuilderOwner & {
+  sessionId: string;
+  idempotencyKey: string;
+}) {
+  return getBuilderVerification(
+    builderVerificationId(input, input.idempotencyKey),
+    input.sessionId,
+    input,
+  );
+}
+
+export async function listBuilderVerifications(
+  sessionId: string,
+  owner: BuilderOwner,
+  limit = 10,
+) {
+  requireBuilderDatabase();
+  await ensureDatabaseSchema();
+  const bounded = Math.min(Math.max(limit, 1), 30);
+  const rows = await getSql()`
+    SELECT * FROM omni_app_builder_verifications
+    WHERE tenant_id = ${owner.tenantId}
+      AND owner_actor_id = ${owner.actorId}
+      AND session_id = ${sessionId}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ${bounded}
+  `;
+  return rows.map(verificationFromRow);
+}
+
+export async function recordBuilderVerification(input: BuilderOwner & {
+  session: AppBuilderSession;
+  checkpoint: AppBuilderCheckpoint;
+  idempotencyKey: string;
+  status: AppBuilderVerification["status"];
+  checks: AppBuilderVerification["checks"];
+  browserEvidence: AppBuilderVerification["browserEvidence"];
+}) {
+  const id = builderVerificationId({ ...input, sessionId: input.session.id }, input.idempotencyKey);
+  const rows = await getSql()`
+    INSERT INTO omni_app_builder_verifications (
+      id, tenant_id, owner_actor_id, project_id, session_id, checkpoint_id,
+      contract_version, workspace_sha256, status, checks, browser_evidence, created_at
+    ) VALUES (
+      ${id}, ${input.tenantId}, ${input.actorId}, ${input.session.projectId},
+      ${input.session.id}, ${input.checkpoint.id}, ${APP_BUILDER_VERIFICATION_CONTRACT_VERSION},
+      ${input.checkpoint.workspaceSha256}, ${input.status}, ${input.checks},
+      ${input.browserEvidence}, NOW()
+    )
+    ON CONFLICT (tenant_id, id) DO NOTHING
+    RETURNING *
+  `;
+  const verification = rows[0]
+    ? verificationFromRow(rows[0])
+    : await getBuilderVerification(id, input.session.id, input);
+  if (!verification) throw new Error("Builder verification could not be recorded.");
+  return verification;
+}
+
 async function appendBuilderActivity(input: {
   owner: BuilderOwner;
   session: AppBuilderSession;
@@ -378,11 +457,35 @@ function checkpointFromRow(row: Record<string, unknown>): AppBuilderCheckpoint {
   });
 }
 
+function verificationFromRow(row: Record<string, unknown>): AppBuilderVerification {
+  return Object.freeze({
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    ownerActorId: String(row.owner_actor_id),
+    projectId: String(row.project_id),
+    sessionId: String(row.session_id),
+    checkpointId: String(row.checkpoint_id),
+    contractVersion: APP_BUILDER_VERIFICATION_CONTRACT_VERSION,
+    workspaceSha256: String(row.workspace_sha256),
+    status: String(row.status) as AppBuilderVerification["status"],
+    checks: asVerificationChecks(row.checks),
+    browserEvidence: asBrowserEvidence(row.browser_evidence),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  });
+}
+
 function checkpointId(input: BuilderOwner & { sessionId: string }, idempotencyKey: string) {
   const digest = createHash("sha256")
     .update(`${APP_BUILDER_CHECKPOINT_CONTRACT_VERSION}:${input.tenantId}:${input.actorId}:${input.sessionId}:${idempotencyKey}`)
     .digest("hex");
   return `app_build_checkpoint_${digest.slice(0, 48)}`;
+}
+
+export function builderVerificationId(input: BuilderOwner & { sessionId: string }, idempotencyKey: string) {
+  const digest = createHash("sha256")
+    .update(`${APP_BUILDER_VERIFICATION_CONTRACT_VERSION}:${input.tenantId}:${input.actorId}:${input.sessionId}:${idempotencyKey}`)
+    .digest("hex");
+  return `app_build_verification_${digest.slice(0, 48)}`;
 }
 
 function activityFromRow(row: Record<string, unknown>): AppBuilderActivity {
@@ -398,6 +501,40 @@ function activityFromRow(row: Record<string, unknown>): AppBuilderActivity {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asVerificationChecks(value: unknown): AppBuilderVerification["checks"] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const record = asRecord(item);
+    return Object.freeze({
+      command: String(record.command) as "lint" | "typecheck",
+      status: String(record.status) as "passed" | "failed",
+      exitCode: Number(record.exitCode),
+      durationMs: Number(record.durationMs),
+      outputSha256: String(record.outputSha256),
+    });
+  });
+}
+
+function asBrowserEvidence(value: unknown): AppBuilderVerification["browserEvidence"] {
+  const record = asRecord(value);
+  const captures = Array.isArray(record.captures) ? record.captures.map((item) => {
+    const capture = asRecord(item);
+    return Object.freeze({
+      viewport: String(capture.viewport) as "desktop" | "mobile",
+      width: Number(capture.width),
+      height: Number(capture.height),
+      screenshotSha256: String(capture.screenshotSha256),
+      mimeType: String(capture.mimeType),
+      byteLength: Number(capture.byteLength),
+    });
+  }) : [];
+  return Object.freeze({
+    status: String(record.status) as AppBuilderVerification["browserEvidence"]["status"],
+    captures,
+    ...(typeof record.errorCode === "string" ? { errorCode: record.errorCode } : {}),
+  });
 }
 
 function requireBuilderDatabase() {

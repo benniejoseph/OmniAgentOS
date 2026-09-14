@@ -19,7 +19,7 @@ export const builtInSkills: AgentSkill[] = [
     id: "core.critic", tenantId: "system", actorId: "system", slug: "adversarial-review", name: "Adversarial review",
     description: "Challenge assumptions, unsafe actions, unsupported claims, and incomplete verification.",
     instructions: "Inspect the proposed work for missing evidence, unsafe effects, edge cases, and weak success criteria. Block consequential work when evidence is insufficient.",
-    category: "analysis", status: "active", version: 1, toolIds: ["knowledge.search", "runs.list"], tags: ["review", "safety"], knowledgeTags: [], builtIn: true, createdAt, updatedAt: createdAt,
+    category: "analysis", status: "active", version: 1, toolIds: ["knowledge.search", "runs.list", "app.projects.builder.show", "app.projects.builder.tree", "app.projects.builder.file.read", "app.projects.builder.verification.show"], tags: ["review", "safety"], knowledgeTags: [], builtIn: true, createdAt, updatedAt: createdAt,
   },
   {
     id: "core.memory", tenantId: "system", actorId: "system", slug: "memory-curation", name: "Memory curation",

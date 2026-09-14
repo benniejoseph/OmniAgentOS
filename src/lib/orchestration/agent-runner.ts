@@ -5396,7 +5396,11 @@ function normalizeTenantId(value?: string) {
 }
 
 function modelAssignmentScopeForAgent(agentId?: string) {
-  return agentId === "forge" ? "code_builder" as const : "main_agent" as const;
+  return agentId === "forge"
+    ? "code_builder" as const
+    : agentId === "sentinel"
+      ? "verifier" as const
+      : "main_agent" as const;
 }
 
 function agentMcpSessionScope(

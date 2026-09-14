@@ -49,6 +49,9 @@ describe("project App Builder boundary", () => {
       "app.projects.builder.command.run",
       "app.projects.builder.checkpoint.create",
       "app.projects.builder.checkpoint.restore",
+      "app.projects.builder.verification.show",
+      "app.projects.builder.verification.run",
+      "app.projects.builder.sentinel.record",
       "app.projects.builder.stop",
     ]);
     const operations = new Set<string>(APP_SERVICE_OPERATION_CONTRACTS.map((contract) => contract.operation));
@@ -73,7 +76,7 @@ describe("project App Builder boundary", () => {
     expect(migration).toContain("FORCE ROW LEVEL SECURITY");
     expect(migration).toContain("omni_actor_scope_v1_allows_canonical");
     expect(migration).toContain("app_builder.command.completed");
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 168)).toEqual({
       version: 168,
       name: "app_builder_recovery_v1",
       checksum: "5817c2ae6209f9344439fd536fef3551ed6adca4cafb2811810eaf9ffc6cfd82",
@@ -82,5 +85,17 @@ describe("project App Builder boundary", () => {
     expect(recovery).toContain("omni_app_builder_checkpoints");
     expect(recovery).toContain("app_builder.checkpoint.restored");
     expect(recovery).toContain("FORCE ROW LEVEL SECURITY");
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 169,
+      name: "app_builder_verification_v1",
+      checksum: "42d9291da42daf9b4513f4fe9f3221bae4336d2d20074773a96db70135d9d176",
+    });
+    const verification = await readFile(new URL("../../../supabase/migrations/20260914170000_app_builder_verification.sql", import.meta.url), "utf8");
+    expect(verification).toContain("omni_app_builder_verifications");
+    expect(verification).toContain("app_builder.sentinel.reviewed");
+    expect(verification).toContain("FORCE ROW LEVEL SECURITY");
+    const runner = await readFile(new URL("../orchestration/agent-runner.ts", import.meta.url), "utf8");
+    expect(runner).toContain('agentId === "sentinel"');
+    expect(runner).toContain('? "verifier" as const');
   });
 });

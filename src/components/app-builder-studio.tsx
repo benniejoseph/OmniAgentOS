@@ -28,15 +28,16 @@ type BuildProject = Readonly<{ id: string; title: string; objective: string; sta
 type BuilderSession = Readonly<{ id: string; projectId: string; status: "provisioning" | "ready" | "running" | "failed" | "stopped"; revision: number; currentCheckpointId?: string; templateId: string; lastErrorCode?: string; updatedAt: string }>;
 type BuilderActivity = Readonly<{ id: string; eventType: string; detail: Record<string, unknown>; occurredAt: string }>;
 type BuilderCheckpoint = Readonly<{ id: string; sessionId: string; workspaceSha256: string; fileCount: number; snapshotBytes: number; reason: "manual" | "before_forge" | "after_forge" | "before_sentinel" | "before_restore"; label: string; sourceRunId?: string; sessionRevision: number; createdAt: string; expiresAt?: string }>;
+type BuilderVerification = Readonly<{ id: string; sessionId: string; checkpointId: string; workspaceSha256: string; status: "passed" | "failed" | "incomplete"; checks: ReadonlyArray<{ command: "lint" | "typecheck"; status: "passed" | "failed"; exitCode: number; durationMs: number; outputSha256: string }>; browserEvidence: { status: "captured" | "unavailable" | "failed"; captures: ReadonlyArray<{ viewport: "desktop" | "mobile"; width: number; height: number; screenshotSha256: string; mimeType: string; byteLength: number }>; errorCode?: string }; createdAt: string }>;
 type TreeEntry = Readonly<{ path: string; kind: "file" | "directory"; size?: number }>;
 type BuilderFile = Readonly<{ path: string; content: string; sha256: string; size: number }>;
-type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; previewUrl: string | null }>;
+type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; previewUrl: string | null }>;
 type AgentEvent = { type?: string; runId?: string; text?: string; response?: string; message?: string; label?: string; detail?: string; toolName?: string; status?: string };
 
 const commands = ["lint", "typecheck", "test", "build"] as const;
 
 export function AppBuilderStudio({ project }: { project: BuildProject }) {
-  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], previewUrl: null });
+  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], previewUrl: null });
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [file, setFile] = useState<BuilderFile>();
   const [draft, setDraft] = useState("");
@@ -44,12 +45,14 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const [rail, setRail] = useState<"files" | "checkpoints" | "activity">("files");
   const [prompt, setPrompt] = useState("");
   const [agentOutput, setAgentOutput] = useState("");
+  const [sentinelOutput, setSentinelOutput] = useState("");
   const [commandOutput, setCommandOutput] = useState("");
   const [busy, setBusy] = useState("loading");
   const [error, setError] = useState<string>();
   const session = snapshot.session;
   const ready = session?.status === "ready" || session?.status === "running";
   const dirty = Boolean(file && draft !== file.content);
+  const latestVerification = snapshot.verifications[0];
 
   const loadSession = useCallback(async () => {
     const payload = await readJson<SessionPayload>(`/api/projects/${encodeURIComponent(project.id)}/builder`);
@@ -249,6 +252,70 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     }
   }
 
+  async function verifyWithSentinel() {
+    if (!session || dirty) return;
+    setBusy("sentinel");
+    setSentinelOutput("");
+    setError(undefined);
+    try {
+      const sealed = await createCheckpoint(session, "before_sentinel", `Sentinel review · revision ${session.revision}`);
+      if (!sealed.session) throw new Error("Sentinel could not seal the workspace revision.");
+      const verificationPayload = await mutate<{ verification: BuilderVerification }>(project.id, {
+        action: "verification.run",
+        sessionId: sealed.session.id,
+        checkpointId: sealed.checkpoint.id,
+        expectedSessionRevision: sealed.session.revision,
+      });
+      const verification = verificationPayload.verification;
+      setSnapshot((current) => ({ ...current, verifications: [verification, ...current.verifications.filter((item) => item.id !== verification.id)] }));
+      const response = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "execute",
+          projectId: project.id,
+          message: `Independently review App Builder verification ${verification.id} at checkpoint ${verification.checkpointId} in session ${sealed.session.id}. Use the governed verification receipt and inspect the project files. Project objective: ${project.objective}. Deterministic evidence: ${JSON.stringify(verification)}. Return a concise PASS or BLOCK verdict, specific evidence, and the smallest corrective actions. Never claim to have seen screenshot pixels; only digest metadata is available.`,
+          requestId: crypto.randomUUID(),
+          strategy: "direct",
+          agentId: "sentinel",
+          contextScope: "project",
+          contextSelection: { evidenceIds: [] },
+        }),
+      });
+      if (!response.ok || !response.body) {
+        const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+        throw new Error(String(body.error || body.message || `Sentinel returned ${response.status}`));
+      }
+      let accumulated = "";
+      let runId = "";
+      let completed = false;
+      await readSse(response.body, (agentEvent) => {
+        if (agentEvent.type === "run" && agentEvent.runId) runId = agentEvent.runId;
+        if (agentEvent.type === "delta" && agentEvent.text) accumulated += agentEvent.text;
+        if (agentEvent.type === "done") {
+          completed = true;
+          if (agentEvent.response) accumulated = agentEvent.response;
+        }
+        if (agentEvent.type === "status" && !accumulated) accumulated = [agentEvent.label, agentEvent.detail].filter(Boolean).join(" — ");
+        if (agentEvent.type === "tool") accumulated += `\n${agentEvent.toolName || "Tool"}: ${agentEvent.status || "working"}`;
+        if (agentEvent.type === "error") throw new Error(agentEvent.message || "Sentinel stopped unexpectedly.");
+        setSentinelOutput(accumulated.trim());
+      });
+      if (!completed || !runId) throw new Error("Sentinel did not produce a completed review receipt.");
+      await mutate(project.id, {
+        action: "sentinel.record",
+        sessionId: sealed.session.id,
+        verificationId: verification.id,
+        sourceRunId: runId,
+      });
+      await loadSession();
+    } catch (verificationError) {
+      setError(message(verificationError));
+    } finally {
+      setBusy("");
+    }
+  }
+
   const files = useMemo(() => tree.filter((entry) => entry.kind === "file"), [tree]);
 
   if (busy === "loading") return <section className={styles.loading}><Loader2 className="animate-spin" size={20} /><span>Opening the build studio…</span></section>;
@@ -308,6 +375,13 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
           <p>Describe a complete change. Forge can inspect this workspace, update SHA-fenced files, run focused checks, and refresh the preview.</p>
           {agentOutput ? <div className={styles.agentOutput}>{agentOutput}</div> : <div className={styles.suggestion}><WandSparkles size={15} /><span>Try “Turn this starter into a personal research dashboard with a responsive mobile view.”</span></div>}
           <form onSubmit={askForge}><label htmlFor={`forge-prompt-${project.id}`}>What should Forge build?</label><textarea id={`forge-prompt-${project.id}`} value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} rows={5} maxLength={4_000} placeholder="Describe the outcome, audience, and must-have behavior…" /><button type="submit" disabled={!prompt.trim() || Boolean(busy) || dirty}>{busy === "forge" ? <Loader2 className="animate-spin" size={14} /> : <Send size={14} />} {busy === "forge" ? "Forge is working" : dirty ? "Save file before Forge" : "Build with Forge"}</button></form>
+          <section className={styles.sentinelCard}>
+            <div><span>S</span><div><strong>Sentinel</strong><small>Independent verifier · Settings model</small></div>{latestVerification ? <i data-status={latestVerification.status}>{latestVerification.status}</i> : null}</div>
+            <p>Seal this revision, run focused checks, capture private desktop and mobile evidence, then ask Sentinel for a separate verdict.</p>
+            {latestVerification ? <div className={styles.evidenceStrip}><span>{latestVerification.checks.filter((check) => check.status === "passed").length}/2 checks</span><span>{latestVerification.browserEvidence.captures.length}/2 views</span><code>{latestVerification.workspaceSha256.slice(0, 9)}</code></div> : null}
+            {sentinelOutput ? <div className={styles.sentinelOutput}>{sentinelOutput}</div> : null}
+            <button type="button" onClick={() => void verifyWithSentinel()} disabled={Boolean(busy) || dirty}>{busy === "sentinel" ? <Loader2 className="animate-spin" size={13} /> : <ShieldCheck size={13} />} {busy === "sentinel" ? "Verifying this revision" : dirty ? "Save file before review" : "Verify with Sentinel"}</button>
+          </section>
           <footer><ShieldCheck size={13} /><span>Mutations use governed tools. Consequential actions still pause for approval.</span></footer>
         </aside>
       </div>
