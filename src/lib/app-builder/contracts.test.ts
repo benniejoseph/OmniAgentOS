@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { builderCommandInputSchema, builderFileUpdateInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
+import { builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderFileUpdateInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 import { APP_SERVICE_OPERATION_CONTRACTS, MAIN_AGENT_APP_SERVICE_BINDINGS } from "@/lib/app-services/registry";
 import { databaseSchemaMigrations } from "@/lib/db/client";
@@ -25,6 +25,8 @@ describe("project App Builder boundary", () => {
       content: "export default function Page() { return null }",
     }).success).toBe(true);
     expect(builderCommandInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, command: "rm -rf" }).success).toBe(false);
+    expect(builderCheckpointCreateInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, expectedSessionRevision: 4, reason: "before_forge", label: "Before Forge" }).success).toBe(true);
+    expect(builderCheckpointRestoreInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, checkpointId: `app_build_checkpoint_${"b".repeat(48)}`, expectedSessionRevision: 5 }).success).toBe(true);
   });
 
   it("ships a reviewed credential-free Next.js starter and creates its image-independent workspace root", async () => {
@@ -45,6 +47,8 @@ describe("project App Builder boundary", () => {
       "app.projects.builder.file.read",
       "app.projects.builder.file.update",
       "app.projects.builder.command.run",
+      "app.projects.builder.checkpoint.create",
+      "app.projects.builder.checkpoint.restore",
       "app.projects.builder.stop",
     ]);
     const operations = new Set<string>(APP_SERVICE_OPERATION_CONTRACTS.map((contract) => contract.operation));
@@ -59,7 +63,7 @@ describe("project App Builder boundary", () => {
 
   it("adds the configurable builder model and actor-private persistent schema", async () => {
     expect(modelAssignmentRoleContracts.code_builder).toMatchObject({ title: "Code builder", acceptedCapabilities: ["tools", "text"] });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 167)).toEqual({
       version: 167,
       name: "app_builder_workspaces_v1",
       checksum: "df930dd3d4221b175bcabcbe4670c200798568f95c91a1c04537d509a3b0133c",
@@ -69,5 +73,14 @@ describe("project App Builder boundary", () => {
     expect(migration).toContain("FORCE ROW LEVEL SECURITY");
     expect(migration).toContain("omni_actor_scope_v1_allows_canonical");
     expect(migration).toContain("app_builder.command.completed");
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 168,
+      name: "app_builder_recovery_v1",
+      checksum: "5817c2ae6209f9344439fd536fef3551ed6adca4cafb2811810eaf9ffc6cfd82",
+    });
+    const recovery = await readFile(new URL("../../../supabase/migrations/20260914160000_app_builder_recovery.sql", import.meta.url), "utf8");
+    expect(recovery).toContain("omni_app_builder_checkpoints");
+    expect(recovery).toContain("app_builder.checkpoint.restored");
+    expect(recovery).toContain("FORCE ROW LEVEL SECURITY");
   });
 });

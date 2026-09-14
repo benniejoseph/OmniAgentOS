@@ -17,6 +17,7 @@ import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 
 const SANDBOX_TIMEOUT_MS = 30 * 60 * 1_000;
 const COMMAND_TIMEOUT_MS = 8 * 60 * 1_000;
+const CHECKPOINT_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 const commandTable: Record<Exclude<AppBuilderCommandKind, "start_preview">, readonly [string, readonly string[]]> = {
   lint: ["npm", ["run", "lint"]],
@@ -68,6 +69,12 @@ export async function createBuilderSandbox(input: {
     timeout: SANDBOX_TIMEOUT_MS,
     resources: { vcpus: 2 },
     persistent: true,
+    snapshotExpiration: CHECKPOINT_EXPIRATION_MS,
+    keepLastSnapshots: {
+      count: 10,
+      expiration: CHECKPOINT_EXPIRATION_MS,
+      deleteEvicted: false,
+    },
     networkPolicy: { allow: ["registry.npmjs.org", "*.npmjs.org"] },
     env: { NEXT_TELEMETRY_DISABLED: "1", CI: "1" },
     tags: { product: "asael-builder", session: input.sessionId.slice(-20) },
@@ -184,6 +191,49 @@ export async function stopBuilderSandbox(sandboxName: string) {
   await sandbox.stop();
 }
 
+export async function createBuilderSandboxCheckpoint(input: {
+  sandboxName: string;
+  tenantId: string;
+  ownerActorId: string;
+  projectId: string;
+  sessionId: string;
+}) {
+  const sandbox = await Sandbox.get({ name: input.sandboxName, resume: true });
+  const workspace = await builderWorkspaceManifest(sandbox);
+  const snapshot = await sandbox.snapshot({ expiration: CHECKPOINT_EXPIRATION_MS });
+  const resumed = await Sandbox.get({ name: input.sandboxName, resume: true });
+  await startBuilderPreview(resumed, previewToken(input));
+  return {
+    providerSnapshotId: snapshot.snapshotId,
+    workspaceSha256: workspace.sha256,
+    fileCount: workspace.fileCount,
+    snapshotBytes: Math.max(0, snapshot.sizeBytes || 0),
+    expiresAt: snapshot.expiresAt?.toISOString(),
+    previewUrl: previewUrl(resumed, previewToken(input)),
+  };
+}
+
+export async function restoreBuilderSandboxCheckpoint(input: {
+  sandboxName: string;
+  providerSnapshotId: string;
+  tenantId: string;
+  ownerActorId: string;
+  projectId: string;
+  sessionId: string;
+}) {
+  const sandbox = await Sandbox.get({ name: input.sandboxName });
+  await sandbox.stop().catch(() => undefined);
+  await sandbox.update({ currentSnapshotId: input.providerSnapshotId });
+  const resumed = await Sandbox.get({ name: input.sandboxName, resume: true });
+  await startBuilderPreview(resumed, previewToken(input));
+  const workspace = await builderWorkspaceManifest(resumed);
+  return {
+    workspaceSha256: workspace.sha256,
+    fileCount: workspace.fileCount,
+    previewUrl: previewUrl(resumed, previewToken(input)),
+  };
+}
+
 async function startBuilderPreview(sandbox: Sandbox, token: string) {
   await sandbox.runCommand({ cmd: "pkill", args: ["-f", `next dev.*${APP_BUILDER_APP_PORT}`], timeoutMs: 10_000 }).catch(() => undefined);
   await sandbox.runCommand({ cmd: "pkill", args: ["-f", "asael-preview-proxy.mjs"], timeoutMs: 10_000 }).catch(() => undefined);
@@ -214,6 +264,31 @@ function previewUrl(sandbox: Sandbox, token: string) {
   const url = new URL(sandbox.domain(APP_BUILDER_PREVIEW_PORT));
   url.searchParams.set("asael_preview", token);
   return url.toString();
+}
+
+async function builderWorkspaceManifest(sandbox: Sandbox) {
+  const result = await sandbox.runCommand({
+    cmd: "find",
+    args: [
+      ".", "-maxdepth", "8", "-type", "f",
+      "-not", "-path", "./node_modules/*",
+      "-not", "-path", "./.next/*",
+      "-exec", "sha256sum", "{}", "+",
+    ],
+    cwd: APP_BUILDER_ROOT,
+    timeoutMs: 30_000,
+  });
+  if (result.exitCode !== 0) throw new Error("The builder workspace could not be checkpointed.");
+  const rows = (await result.stdout()).split("\n").filter(Boolean).map((line) => {
+    const match = line.match(/^([a-f0-9]{64})\s+\.\/(.+)$/);
+    if (!match) throw new Error("The builder workspace manifest was malformed.");
+    return { sha256: match[1], path: safeBuilderRelativePath(match[2]) };
+  }).sort((left, right) => left.path.localeCompare(right.path));
+  if (!rows.length || rows.length > 500) throw new Error("The builder workspace manifest is outside its file budget.");
+  return {
+    fileCount: rows.length,
+    sha256: builderFileSha256(rows.map((row) => `${row.path}\u0000${row.sha256}`).join("\n")),
+  };
 }
 
 function commandResult(exitCode: number, stdout: string, stderr: string, durationMs?: number) {

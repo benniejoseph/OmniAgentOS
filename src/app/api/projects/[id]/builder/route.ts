@@ -5,9 +5,11 @@ import {
 } from "@/lib/app-services/contracts";
 import {
   createProjectBuilderService,
+  createProjectBuilderCheckpointService,
   listProjectBuilderTreeService,
   readProjectBuilderFileService,
   runProjectBuilderCommandService,
+  restoreProjectBuilderCheckpointService,
   showProjectBuilderService,
   stopProjectBuilderService,
   updateProjectBuilderFileService,
@@ -27,6 +29,8 @@ const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("create") }).strict(),
   z.object({ action: z.literal("file.update"), sessionId: sessionIdSchema, path: z.string().trim().min(1).max(240), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(), content: z.string().max(500_000) }).strict(),
   z.object({ action: z.literal("command.run"), sessionId: sessionIdSchema, command: z.enum(["lint", "typecheck", "test", "build", "start_preview"]) }).strict(),
+  z.object({ action: z.literal("checkpoint.create"), sessionId: sessionIdSchema, expectedSessionRevision: z.number().int().positive(), reason: z.enum(["manual", "before_forge", "after_forge", "before_sentinel"]), label: z.string().trim().min(1).max(120), sourceRunId: z.string().uuid().optional() }).strict(),
+  z.object({ action: z.literal("checkpoint.restore"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), expectedSessionRevision: z.number().int().positive() }).strict(),
   z.object({ action: z.literal("stop"), sessionId: sessionIdSchema }).strict(),
 ]);
 
@@ -66,9 +70,9 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     context = await authorizeRequest({
       request,
       action: "run.agent",
-      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : "app_builder_session",
+      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : "app_builder_session",
       resourceId: id,
-      riskLevel: action === "create" || action === "stop" ? 2 : 1,
+      riskLevel: action === "create" || action === "stop" || action === "checkpoint.restore" ? 2 : 1,
       nativeMutationCapability: "workspaces.update",
       metadata: { action },
     });
@@ -83,6 +87,10 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
         ? await updateProjectBuilderFileService(caller, { projectId: id, sessionId: parsed.data.sessionId, path: parsed.data.path, expectedSha256: parsed.data.expectedSha256, content: parsed.data.content })
         : action === "command.run"
           ? await runProjectBuilderCommandService(caller, { projectId: id, sessionId: parsed.data.sessionId, command: parsed.data.command })
+          : action === "checkpoint.create"
+            ? await createProjectBuilderCheckpointService(caller, { projectId: id, sessionId: parsed.data.sessionId, expectedSessionRevision: parsed.data.expectedSessionRevision, reason: parsed.data.reason, label: parsed.data.label, sourceRunId: parsed.data.sourceRunId })
+            : action === "checkpoint.restore"
+              ? await restoreProjectBuilderCheckpointService(caller, { projectId: id, sessionId: parsed.data.sessionId, checkpointId: parsed.data.checkpointId, expectedSessionRevision: parsed.data.expectedSessionRevision })
           : await stopProjectBuilderService(caller, { projectId: id, sessionId: parsed.data.sessionId });
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
