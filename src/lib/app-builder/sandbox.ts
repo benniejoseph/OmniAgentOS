@@ -291,6 +291,11 @@ async function builderWorkspaceManifest(sandbox: Sandbox) {
   };
 }
 
+export async function getBuilderWorkspaceManifest(sandboxName: string) {
+  const sandbox = await Sandbox.get({ name: sandboxName, resume: true });
+  return builderWorkspaceManifest(sandbox);
+}
+
 function commandResult(exitCode: number, stdout: string, stderr: string, durationMs?: number) {
   return { exitCode, stdout: boundedBuilderOutput(stdout), stderr: boundedBuilderOutput(stderr), durationMs: durationMs || 0 };
 }

@@ -8,9 +8,12 @@ import {
   createProjectBuilderCheckpointService,
   listProjectBuilderTreeService,
   readProjectBuilderFileService,
+  recordProjectBuilderSentinelReviewService,
   runProjectBuilderCommandService,
+  runProjectBuilderVerificationService,
   restoreProjectBuilderCheckpointService,
   showProjectBuilderService,
+  showProjectBuilderVerificationService,
   stopProjectBuilderService,
   updateProjectBuilderFileService,
 } from "@/lib/app-services/app-builder";
@@ -31,6 +34,8 @@ const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("command.run"), sessionId: sessionIdSchema, command: z.enum(["lint", "typecheck", "test", "build", "start_preview"]) }).strict(),
   z.object({ action: z.literal("checkpoint.create"), sessionId: sessionIdSchema, expectedSessionRevision: z.number().int().positive(), reason: z.enum(["manual", "before_forge", "after_forge", "before_sentinel"]), label: z.string().trim().min(1).max(120), sourceRunId: z.string().uuid().optional() }).strict(),
   z.object({ action: z.literal("checkpoint.restore"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), expectedSessionRevision: z.number().int().positive() }).strict(),
+  z.object({ action: z.literal("verification.run"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), expectedSessionRevision: z.number().int().positive() }).strict(),
+  z.object({ action: z.literal("sentinel.record"), sessionId: sessionIdSchema, verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), sourceRunId: z.string().uuid() }).strict(),
   z.object({ action: z.literal("stop"), sessionId: sessionIdSchema }).strict(),
 ]);
 
@@ -51,6 +56,8 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
       ? await listProjectBuilderTreeService(caller, { projectId: id, sessionId })
       : view === "file"
         ? await readProjectBuilderFileService(caller, { projectId: id, sessionId, path: url.searchParams.get("path") || "" })
+        : view === "verification"
+          ? await showProjectBuilderVerificationService(caller, { projectId: id, sessionId, verificationId: url.searchParams.get("verificationId") || "" })
         : await showProjectBuilderService(caller, { projectId: id });
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
@@ -70,7 +77,7 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     context = await authorizeRequest({
       request,
       action: "run.agent",
-      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : "app_builder_session",
+      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : "app_builder_session",
       resourceId: id,
       riskLevel: action === "create" || action === "stop" || action === "checkpoint.restore" ? 2 : 1,
       nativeMutationCapability: "workspaces.update",
@@ -91,7 +98,11 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
             ? await createProjectBuilderCheckpointService(caller, { projectId: id, sessionId: parsed.data.sessionId, expectedSessionRevision: parsed.data.expectedSessionRevision, reason: parsed.data.reason, label: parsed.data.label, sourceRunId: parsed.data.sourceRunId })
             : action === "checkpoint.restore"
               ? await restoreProjectBuilderCheckpointService(caller, { projectId: id, sessionId: parsed.data.sessionId, checkpointId: parsed.data.checkpointId, expectedSessionRevision: parsed.data.expectedSessionRevision })
-          : await stopProjectBuilderService(caller, { projectId: id, sessionId: parsed.data.sessionId });
+              : action === "verification.run"
+                ? await runProjectBuilderVerificationService(caller, { projectId: id, sessionId: parsed.data.sessionId, checkpointId: parsed.data.checkpointId, expectedSessionRevision: parsed.data.expectedSessionRevision })
+                : action === "sentinel.record"
+                  ? await recordProjectBuilderSentinelReviewService(caller, { projectId: id, sessionId: parsed.data.sessionId, verificationId: parsed.data.verificationId, sourceRunId: parsed.data.sourceRunId })
+                  : await stopProjectBuilderService(caller, { projectId: id, sessionId: parsed.data.sessionId });
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "App Builder operation failed." }, { status: 409, headers: privateNoStoreHeaders });

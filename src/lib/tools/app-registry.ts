@@ -383,6 +383,15 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.projects.builder.checkpoint.restore", "Restore app checkpoint", "Restore one exact sealed workspace revision after automatically preserving the current workspace as a recovery checkpoint.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, checkpointId: { type: "string", pattern: "^app_build_checkpoint_[a-f0-9]{48}$" }, expectedSessionRevision: integer(1, Number.MAX_SAFE_INTEGER),
   }, ["projectId", "sessionId", "checkpointId", "expectedSessionRevision"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
+  readTool("app.projects.builder.verification.show", "Show app verification", "Read one exact checkpoint-bound verification receipt with output digests and private-preview capture metadata; screenshot bytes and preview credentials remain excluded.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, verificationId: { type: "string", pattern: "^app_build_verification_[a-f0-9]{48}$" },
+  }, ["projectId", "sessionId", "verificationId"])),
+  mutationTool("app.projects.builder.verification.run", "Verify app checkpoint", "Run fixed lint and type checks and capture digest-only desktop/mobile evidence through Asael's trusted private browser against the exact current checkpoint.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, checkpointId: { type: "string", pattern: "^app_build_checkpoint_[a-f0-9]{48}$" }, expectedSessionRevision: integer(1, Number.MAX_SAFE_INTEGER),
+  }, ["projectId", "sessionId", "checkpointId", "expectedSessionRevision"]), { riskLevel: 1, approvalRequired: false, reversible: false }),
+  mutationTool("app.projects.builder.sentinel.record", "Record Sentinel review", "Bind one completed project-scoped Sentinel run to the exact verification and checkpoint it independently reviewed.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, verificationId: { type: "string", pattern: "^app_build_verification_[a-f0-9]{48}$" }, sourceRunId: opaqueId("Exact completed Sentinel Agent run ID."),
+  }, ["projectId", "sessionId", "verificationId", "sourceRunId"]), { riskLevel: 1, approvalRequired: false, reversible: false }),
   mutationTool("app.projects.builder.stop", "Stop app workspace", "Stop the exact project's build sandbox while retaining its immutable activity receipts.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
   }, ["projectId", "sessionId"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
