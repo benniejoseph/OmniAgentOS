@@ -1,10 +1,10 @@
 # In-app agent app builder — feasibility and recommended architecture
 
-Status: Phase A implemented on 2026-09-14. GitHub delivery and app deployment authority remain intentionally unavailable.
+Status: Phases A and B implemented on 2026-09-14. GitHub delivery and app deployment authority remain intentionally unavailable.
 
 ## Decision
 
-Asael now has the safe first slice of a private app-building environment: a Build mode inside Projects can create one reviewed TypeScript web-app template in an actor- and project-bound Vercel Sandbox, inspect and digest-fence files, run a fixed check family, and serve an authenticated live preview. Forge can use the same governed operations with its independently configured `code_builder` model assignment. Iterative snapshot recovery, independent Sentinel verification, GitHub branches and pull requests, and app deployment remain later phases. Production deployment remains an explicit reviewed action.
+Asael now has an iterative private app-building environment: Build mode inside Projects creates one reviewed TypeScript web-app template in an actor- and project-bound Vercel Sandbox, inspects and digest-fences files, runs a fixed check family, serves an authenticated live preview, and seals recoverable provider snapshots against exact workspace digests. Forge automatically protects the workspace before a run and seals a completed result against its exact project-bound run. Sentinel independently reads the sealed verification receipt and project files with the actor's configurable `verifier` model assignment. GitHub branches, pull requests, and app deployment remain later phases. Production deployment remains an explicit reviewed action.
 
 Do not make browser or computer use the primary coding interface. Code should be read, patched, tested and versioned through typed repository and sandbox tools. Computer use is useful later for visual QA of the running preview.
 
@@ -20,7 +20,8 @@ Do not make browser or computer use the primary coding interface. Code should be
 | Artifacts | Project results and evidence can be retained and reviewed | Extend for file manifests, diffs, builds and previews |
 | Workspace mutation | Governed tree/read and exact-SHA file update operations exist for the isolated template workspace; Git is unavailable | Phase A delivered; Git pending |
 | Isolated execution | Actor/project/session-scoped Vercel Sandbox with bounded resources and registry-only install access | Phase A delivered |
-| Build verification | Fixed lint, type-check, test, build and live-preview commands with bounded output and typed activity | Phase A delivered |
+| Build verification | Fixed lint, type-check, test, build and live-preview commands with bounded output and typed activity; sealed lint/type-check and private desktop/mobile capture receipts feed an independent Sentinel handoff | Phases A/B delivered |
+| Recovery | Immutable 30-day snapshots, exact workspace manifests, optimistic session revisions, automatic pre-restore safety checkpoints and digest-verified restore | Phase B delivered |
 | Deployment | Authenticated sandbox preview exists; GitHub, Vercel app preview deployment and production release are unavailable | Phases C/D pending |
 
 Forge now receives the governed Phase A builder tool family and resolves its model through the actor's `code_builder` Settings assignment. It may truthfully report only file and command effects represented by builder receipts. It cannot claim Git, pull-request or application-deployment effects because those tools do not exist yet.
@@ -117,12 +118,14 @@ Implementation evidence: the workspace receives no production environment variab
 
 ### Phase B — iterative builder
 
-- Persist safe sandbox identity/snapshot metadata.
-- Continue follow-up edits against the same exact revision.
-- Add browser/computer-use visual QA only against the session preview.
-- Add Forge implementation and Sentinel verification handoff with independent evidence.
+- [x] Persist safe sandbox identity/snapshot metadata without exposing provider snapshot identifiers to the client or model.
+- [x] Continue follow-up edits against the same exact revision and clear the current seal on every file mutation.
+- [x] Add trusted-browser visual capture only against the HMAC-authenticated session preview; persist digests and dimensions rather than pixels or signed URLs.
+- [x] Add Forge pre/post checkpoints and a Sentinel verification handoff with independent, checkpoint-bound evidence.
 
 Exit gate: interruption, retry and agent handoff cannot duplicate effects or lose the reviewed diff.
+
+Implementation evidence: migrations 168 and 169 install exact-actor forced-RLS checkpoint and verification ledgers; checkpoint, verification and Sentinel actions use the same governed application-service boundary and typed activity stream. Forge binds completed result seals to an exact project-scoped run. Sentinel resolves from the Settings `verifier` assignment and receives only the safe verification receipt. A disposable live provider canary changed a source-file digest, restored the sealed snapshot, matched both file and workspace digests exactly, returned HTTP 200 from the resumed private preview, and deleted the sandbox and snapshots. Focused contract, registry, visual-evidence redaction, lint and TypeScript checks pass. The production build is healthy at exact revision `0b7025a4b4d42846074a98cf8aa82d32437e6e33`; the final authenticated click-through remains unrecorded because the workstation was locked during release verification.
 
 ### Phase C — GitHub delivery
 
