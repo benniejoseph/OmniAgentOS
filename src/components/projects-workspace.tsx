@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Circle,
   CircleDollarSign,
+  Code2,
   FileCheck2,
   FolderKanban,
   Gauge,
@@ -36,6 +37,7 @@ import { arsenalAgents } from "@/lib/agents/arsenal";
 import { useWorkspaceSession } from "@/components/app-shell/session-context";
 import { WorkspaceLibrary } from "@/components/workspace-library";
 import { ProjectSharedMemory } from "@/components/project-shared-memory";
+import { AppBuilderStudio } from "@/components/app-builder-studio";
 import {
   canonicalWorkItemCostLabel,
   canonicalWorkItemStatusLabel,
@@ -149,7 +151,7 @@ type WorkspaceTemplate = {
   };
 };
 
-export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: "overview" | "execution" }) {
+export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: "overview" | "execution" | "build" }) {
   const { session, status: sessionStatus } = useWorkspaceSession();
   const [projects, setProjects] = useState<Project[]>([]);
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
@@ -182,7 +184,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
   }>();
   const [error, setError] = useState<string>();
   const [announcement, setAnnouncement] = useState("Projects are ready.");
-  const [workspaceView, setWorkspaceView] = useState<"overview" | "execution">(initialView);
+  const [workspaceView, setWorkspaceView] = useState<"overview" | "execution" | "build">(initialView);
   const controllerRef = useRef<AbortController | null>(null);
   const templateMutationKeysRef = useRef(new Map<string, string>());
   const available = Boolean(session && (!session.authEnabled || session.authenticated));
@@ -515,6 +517,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
 
       <nav className="projects-view-tabs" aria-label="Project workspace views">
         <button type="button" className={workspaceView === "overview" ? "is-selected" : undefined} aria-current={workspaceView === "overview" ? "page" : undefined} onClick={() => setWorkspaceView("overview")}><FolderKanban size={14} aria-hidden="true" /><span><strong>Plan & context</strong><small>Tasks, outputs, library, and memory</small></span></button>
+        <button type="button" className={workspaceView === "build" ? "is-selected" : undefined} aria-current={workspaceView === "build" ? "page" : undefined} onClick={() => setWorkspaceView("build")}><Code2 size={14} aria-hidden="true" /><span><strong>Build</strong><small>Forge, code, checks, and live preview</small></span></button>
         <button type="button" className={workspaceView === "execution" ? "is-selected" : undefined} aria-current={workspaceView === "execution" ? "page" : undefined} onClick={() => setWorkspaceView("execution")}><Bot size={14} aria-hidden="true" /><span><strong>Execution</strong><small>Agent lanes, approvals, and blockers</small></span></button>
         <Link href="/app/missions?legacy=1"><History size={14} aria-hidden="true" /><span><strong>Legacy history</strong><small>Earlier Mission runs</small></span></Link>
       </nav>
@@ -578,11 +581,11 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
               <div className="project-progress-orbit" aria-label={`${selectedClosed} of ${selected.tasks.length} work items closed`} style={{ "--project-progress": `${selectedProgress * 360}deg` } as React.CSSProperties}><div><strong>{selected.tasks.length ? `${Math.round(selectedProgress * 100)}%` : "—"}</strong><span>closed</span></div></div>
             </div>
 
-            <div className="project-toolbar">
+            {workspaceView !== "build" ? <div className="project-toolbar">
               {selected.status === "active" ? <button type="button" className="project-plan-button" onClick={() => void generatePlan()} disabled={planning}><Sparkles size={14} aria-hidden="true" />{planning ? "Atlas is planning…" : selected.tasks.length ? "Extend plan" : "Plan with Atlas"}</button> : null}
               {selected.status === "active" ? <button type="button" onClick={() => void transitionProject("completed")} disabled={actingId === selected.id || (selected.tasks.length > 0 && selected.tasks.some((task) => task.status !== "done"))} title={selected.tasks.length > 0 && selected.tasks.some((task) => task.status !== "done") ? "Close every task first" : undefined}><Check size={14} aria-hidden="true" /> Complete project</button> : <button type="button" onClick={() => void transitionProject("active")} disabled={actingId === selected.id}><Play size={14} aria-hidden="true" /> Reopen project</button>}
               {selected.status !== "archived" ? <button type="button" onClick={() => void transitionProject("archived")} disabled={actingId === selected.id}><Archive size={14} aria-hidden="true" /> Archive</button> : null}
-            </div>
+            </div> : null}
 
             {workspaceView === "execution" ? <section className={clsx("project-execution-deck", `is-${selected.executionStatus}`)} aria-label="Autonomous project execution">
               <div className="project-execution-intro">
@@ -628,7 +631,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
               }) : <div className="project-task-empty"><Target size={22} aria-hidden="true" /><h3>No plan yet</h3><p>Let Atlas decompose the outcome or add the first task yourself.</p></div>}
             </div>
 
-            {selected.status === "active" ? <form className="project-add-task" onSubmit={addTask}><Plus size={15} aria-hidden="true" /><label className="sr-only" htmlFor="project-task-title">Add project task</label><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Add a task to this plan…" maxLength={240} /><button type="submit" disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : "Add task"}</button></form> : null}</> : <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} />}
+            {selected.status === "active" ? <form className="project-add-task" onSubmit={addTask}><Plus size={15} aria-hidden="true" /><label className="sr-only" htmlFor="project-task-title">Add project task</label><input id="project-task-title" value={taskTitle} onChange={(event) => setTaskTitle(event.currentTarget.value)} placeholder="Add a task to this plan…" maxLength={240} /><button type="submit" disabled={addingTask || !taskTitle.trim()}>{addingTask ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : "Add task"}</button></form> : null}</> : workspaceView === "execution" ? <ProjectExecutionBoard project={selected} actingId={actingId} executionBusy={executionBusy} onMoveTask={moveTask} onExecute={executeProject} /> : <AppBuilderStudio key={selected.id} project={selected} />}
 
             {workspaceView === "overview" ? <><section className="project-artifact-ledger" aria-label="Project outputs and reviewed outcomes">
               <div className="project-artifact-heading"><div><p className="projects-kicker">Output ledger</p><h3>Verified work becomes memory</h3></div><span><History size={13} aria-hidden="true" /> {canonicalArtifactCount} canonical artifact{canonicalArtifactCount === 1 ? "" : "s"}</span></div>
