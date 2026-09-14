@@ -113,7 +113,7 @@ Patch application is preferable to unrestricted file writes because it creates a
 
 Exit gate: the same brief produces an inspectable diff, focused checks and a working preview without accessing any production secret.
 
-Implementation evidence: the workspace receives no production environment variables, package installation is restricted to the npm registry and ignores lifecycle scripts, preview access is bound to actor/project/session, every service access revalidates Project ownership, and builder session/activity records are protected by exact-actor forced RLS. Focused contract, registry, model-assignment and database checks pass with affected lint and TypeScript. Wide-monitor and phone browser checks show the Build surface and preview without document-level horizontal overflow. The production canary is the final release gate.
+Implementation evidence: the workspace receives no production environment variables, package installation is restricted to the npm registry and ignores lifecycle scripts, preview access is bound to actor/project/session, every service access revalidates Project ownership, and builder session/activity records are protected by exact-actor forced RLS. Focused contract, registry, model-assignment and database checks pass with affected lint and TypeScript. Wide-monitor and phone browser checks show the Build surface and preview without document-level horizontal overflow. A disposable provider canary on Vercel's current Node 24 image installed the template, exposed nine source files, passed type-check, served the authenticated preview with HTTP 200, and was stopped afterward.
 
 ### Phase B — iterative builder
 

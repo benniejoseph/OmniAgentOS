@@ -72,7 +72,7 @@ export async function createBuilderSandbox(input: {
     env: { NEXT_TELEMETRY_DISABLED: "1", CI: "1" },
     tags: { product: "asael-builder", session: input.sessionId.slice(-20) },
   });
-  await sandbox.mkDir(APP_BUILDER_ROOT);
+  await sandbox.fs.mkdir(APP_BUILDER_ROOT, { recursive: true });
   await sandbox.writeFiles([
     ...appBuilderStarterTemplate.files.map((file) => ({
       path: `${APP_BUILDER_ROOT}/${file.path}`,

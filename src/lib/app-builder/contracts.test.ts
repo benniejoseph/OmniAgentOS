@@ -27,11 +27,13 @@ describe("project App Builder boundary", () => {
     expect(builderCommandInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, command: "rm -rf" }).success).toBe(false);
   });
 
-  it("ships a reviewed credential-free Next.js starter", () => {
+  it("ships a reviewed credential-free Next.js starter and creates its image-independent workspace root", async () => {
     const paths = appBuilderStarterTemplate.files.map((file) => file.path);
     expect(paths).toEqual(expect.arrayContaining(["package.json", "app/page.tsx", "app/globals.css", "tsconfig.json"]));
     const combined = appBuilderStarterTemplate.files.map((file) => file.content).join("\n");
     expect(combined).not.toMatch(/API_KEY|SECRET|PASSWORD|\.env/);
+    const sandboxSource = await readFile(new URL("./sandbox.ts", import.meta.url), "utf8");
+    expect(sandboxSource).toContain("sandbox.fs.mkdir(APP_BUILDER_ROOT, { recursive: true })");
   });
 
   it("registers every builder action through the governed app-service boundary", () => {
