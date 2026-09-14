@@ -189,6 +189,7 @@ export const tenantRootPolicyTables = [
   "omni_projects",
   "omni_project_artifacts",
   "omni_app_builder_sessions",
+  "omni_app_builder_checkpoints",
   "omni_app_builder_events",
   "omni_work_projects",
   "omni_work_project_memberships",
@@ -1510,6 +1511,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[166],
       up: ensureAppBuilderWorkspacesV1,
+    },
+    {
+      ...databaseSchemaMigrations[167],
+      up: ensureAppBuilderRecoveryV1,
     },
   ];
 }
@@ -19330,6 +19335,136 @@ async function ensureAppBuilderWorkspacesV1(sql: SqlClient) {
         WHERE polrelid IN ('omni_app_builder_sessions'::regclass, 'omni_app_builder_events'::regclass)
       ) <> 2 THEN
         RAISE EXCEPTION 'App Builder isolation boundary is invalid' USING ERRCODE = '55000';
+      END IF;
+    END
+    $verify$
+  `;
+}
+
+async function ensureAppBuilderRecoveryV1(sql: SqlClient) {
+  await sql.query(`
+    ALTER TABLE omni_app_builder_sessions
+      ADD COLUMN IF NOT EXISTS current_checkpoint_id TEXT;
+    ALTER TABLE omni_app_builder_sessions
+      DROP CONSTRAINT IF EXISTS omni_app_builder_sessions_row_check;
+    ALTER TABLE omni_app_builder_sessions
+      ADD CONSTRAINT omni_app_builder_sessions_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^app_build_[a-f0-9]{48}$'
+        AND btrim(tenant_id) <> '' AND btrim(owner_actor_id) <> ''
+        AND char_length(project_id) BETWEEN 1 AND 200
+        AND contract_version = 'app-builder-session:1'
+        AND template_id = 'nextjs-starter-v1'
+        AND sandbox_name ~ '^asael-[a-f0-9]{28}$'
+        AND status IN ('provisioning', 'ready', 'running', 'failed', 'stopped')
+        AND revision > 0
+        AND (current_checkpoint_id IS NULL OR current_checkpoint_id ~ '^app_build_checkpoint_[a-f0-9]{48}$')
+        AND (last_error_code IS NULL OR last_error_code ~ '^builder_[a-f0-9]{12}$')
+        AND created_at <= updated_at
+        AND updated_at <= NOW() + INTERVAL '30 seconds'
+        AND ((status = 'stopped' AND stopped_at IS NOT NULL) OR (status <> 'stopped' AND stopped_at IS NULL))
+      , FALSE));
+    CREATE TABLE omni_app_builder_checkpoints (
+      schema_version SMALLINT NOT NULL DEFAULT 1,
+      id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      owner_actor_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      contract_version TEXT NOT NULL,
+      provider_snapshot_id TEXT NOT NULL,
+      workspace_sha256 TEXT NOT NULL,
+      file_count INTEGER NOT NULL,
+      snapshot_bytes BIGINT NOT NULL,
+      reason TEXT NOT NULL,
+      label TEXT NOT NULL,
+      source_run_id TEXT,
+      session_revision INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ,
+      CONSTRAINT omni_app_builder_checkpoints_pkey PRIMARY KEY (tenant_id, id),
+      CONSTRAINT omni_app_builder_checkpoints_actor_key UNIQUE (tenant_id, id, owner_actor_id),
+      CONSTRAINT omni_app_builder_checkpoints_parent_fkey FOREIGN KEY (tenant_id, session_id, owner_actor_id)
+        REFERENCES omni_app_builder_sessions (tenant_id, id, owner_actor_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT omni_app_builder_checkpoints_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^app_build_checkpoint_[a-f0-9]{48}$'
+        AND btrim(tenant_id) <> '' AND btrim(owner_actor_id) <> ''
+        AND char_length(project_id) BETWEEN 1 AND 200
+        AND session_id ~ '^app_build_[a-f0-9]{48}$'
+        AND contract_version = 'app-builder-checkpoint:1'
+        AND char_length(btrim(provider_snapshot_id)) BETWEEN 1 AND 240
+        AND workspace_sha256 ~ '^[a-f0-9]{64}$'
+        AND file_count BETWEEN 1 AND 500
+        AND snapshot_bytes >= 0
+        AND reason IN ('manual', 'before_forge', 'after_forge', 'before_sentinel', 'before_restore')
+        AND char_length(btrim(label)) BETWEEN 1 AND 120
+        AND (source_run_id IS NULL OR char_length(btrim(source_run_id)) BETWEEN 1 AND 240)
+        AND session_revision > 0
+        AND created_at <= NOW() + INTERVAL '30 seconds'
+        AND (expires_at IS NULL OR expires_at > created_at)
+      , FALSE))
+    );
+    CREATE INDEX omni_app_builder_checkpoints_owner_time_idx
+      ON omni_app_builder_checkpoints (tenant_id, owner_actor_id, session_id, created_at DESC, id);
+    ALTER TABLE omni_app_builder_sessions
+      ADD CONSTRAINT omni_app_builder_sessions_current_checkpoint_fkey
+      FOREIGN KEY (tenant_id, current_checkpoint_id, owner_actor_id)
+      REFERENCES omni_app_builder_checkpoints (tenant_id, id, owner_actor_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT;
+    ALTER TABLE omni_app_builder_events
+      DROP CONSTRAINT IF EXISTS omni_app_builder_events_row_check;
+    ALTER TABLE omni_app_builder_events
+      ADD CONSTRAINT omni_app_builder_events_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^app_build_event_[a-f0-9]{48}$'
+        AND btrim(tenant_id) <> '' AND btrim(owner_actor_id) <> ''
+        AND session_id ~ '^app_build_[a-f0-9]{48}$'
+        AND event_type IN (
+          'app_builder.session.provisioning_started', 'app_builder.session.ready',
+          'app_builder.session.failed', 'app_builder.session.stopped',
+          'app_builder.file.updated', 'app_builder.command.completed',
+          'app_builder.checkpoint.created', 'app_builder.checkpoint.restored'
+        )
+        AND jsonb_typeof(detail) = 'object' AND pg_column_size(detail) <= 32768
+        AND payload_sha256 ~ '^[a-f0-9]{64}$'
+        AND occurred_at <= NOW() + INTERVAL '30 seconds'
+      , FALSE));
+    ALTER TABLE omni_app_builder_checkpoints ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE omni_app_builder_checkpoints FORCE ROW LEVEL SECURITY;
+    CREATE POLICY omni_app_builder_checkpoints_actor_scope ON omni_app_builder_checkpoints FOR ALL TO PUBLIC
+      USING (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id) OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id))
+      WITH CHECK (omni_system_scope_enabled() OR omni_actor_scope_v1_allows(tenant_id, owner_actor_id) OR omni_actor_scope_v1_allows_canonical(tenant_id, owner_actor_id));
+    REVOKE ALL ON omni_app_builder_checkpoints FROM PUBLIC;
+  `);
+  await sql`
+    DO $grants$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        GRANT SELECT, INSERT ON omni_app_builder_checkpoints TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        GRANT SELECT, INSERT ON omni_app_builder_checkpoints TO omni_maintenance;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup') THEN
+        GRANT SELECT ON omni_app_builder_checkpoints TO omni_backup;
+      END IF;
+    END
+    $grants$
+  `;
+  await sql`
+    DO $verify$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = 'omni_app_builder_checkpoints'::regclass
+          AND relrowsecurity AND relforcerowsecurity
+      ) OR (
+        SELECT count(*) FROM pg_policy
+        WHERE polrelid = 'omni_app_builder_checkpoints'::regclass
+      ) <> 1 THEN
+        RAISE EXCEPTION 'App Builder checkpoint isolation boundary is invalid' USING ERRCODE = '55000';
       END IF;
     END
     $verify$

@@ -12,6 +12,7 @@ import {
   GitBranch,
   Loader2,
   MonitorPlay,
+  RotateCcw,
   Play,
   RefreshCw,
   Rocket,
@@ -24,22 +25,23 @@ import {
 import styles from "./app-builder-studio.module.css";
 
 type BuildProject = Readonly<{ id: string; title: string; objective: string; status: string }>;
-type BuilderSession = Readonly<{ id: string; projectId: string; status: "provisioning" | "ready" | "running" | "failed" | "stopped"; revision: number; templateId: string; lastErrorCode?: string; updatedAt: string }>;
+type BuilderSession = Readonly<{ id: string; projectId: string; status: "provisioning" | "ready" | "running" | "failed" | "stopped"; revision: number; currentCheckpointId?: string; templateId: string; lastErrorCode?: string; updatedAt: string }>;
 type BuilderActivity = Readonly<{ id: string; eventType: string; detail: Record<string, unknown>; occurredAt: string }>;
+type BuilderCheckpoint = Readonly<{ id: string; sessionId: string; workspaceSha256: string; fileCount: number; snapshotBytes: number; reason: "manual" | "before_forge" | "after_forge" | "before_sentinel" | "before_restore"; label: string; sourceRunId?: string; sessionRevision: number; createdAt: string; expiresAt?: string }>;
 type TreeEntry = Readonly<{ path: string; kind: "file" | "directory"; size?: number }>;
 type BuilderFile = Readonly<{ path: string; content: string; sha256: string; size: number }>;
-type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; previewUrl: string | null }>;
-type AgentEvent = { type?: string; text?: string; response?: string; message?: string; label?: string; detail?: string; toolName?: string; status?: string };
+type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; previewUrl: string | null }>;
+type AgentEvent = { type?: string; runId?: string; text?: string; response?: string; message?: string; label?: string; detail?: string; toolName?: string; status?: string };
 
 const commands = ["lint", "typecheck", "test", "build"] as const;
 
 export function AppBuilderStudio({ project }: { project: BuildProject }) {
-  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], previewUrl: null });
+  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], previewUrl: null });
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [file, setFile] = useState<BuilderFile>();
   const [draft, setDraft] = useState("");
   const [view, setView] = useState<"preview" | "code">("preview");
-  const [rail, setRail] = useState<"files" | "activity">("files");
+  const [rail, setRail] = useState<"files" | "checkpoints" | "activity">("files");
   const [prompt, setPrompt] = useState("");
   const [agentOutput, setAgentOutput] = useState("");
   const [commandOutput, setCommandOutput] = useState("");
@@ -118,6 +120,60 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     }
   }
 
+  async function createCheckpoint(
+    target: BuilderSession,
+    reason: "manual" | "before_forge" | "after_forge" | "before_sentinel",
+    label: string,
+    sourceRunId?: string,
+  ) {
+    const payload = await mutate<SessionPayload & { checkpoint: BuilderCheckpoint }>(project.id, {
+      action: "checkpoint.create",
+      sessionId: target.id,
+      expectedSessionRevision: target.revision,
+      reason,
+      label,
+      ...(sourceRunId ? { sourceRunId } : {}),
+    });
+    setSnapshot(payload);
+    return payload;
+  }
+
+  async function saveCheckpoint() {
+    if (!session || dirty) return;
+    setBusy("checkpoint");
+    setError(undefined);
+    try {
+      await createCheckpoint(session, "manual", `Saved revision ${session.revision}`);
+      setRail("checkpoints");
+    } catch (checkpointError) {
+      setError(message(checkpointError));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function restoreCheckpoint(checkpoint: BuilderCheckpoint) {
+    if (!session || dirty || session.currentCheckpointId === checkpoint.id) return;
+    if (!window.confirm(`Restore “${checkpoint.label}”? Asael will save the current workspace first.`)) return;
+    setBusy(`restore:${checkpoint.id}`);
+    setError(undefined);
+    try {
+      const payload = await mutate<SessionPayload & { restored: boolean }>(project.id, {
+        action: "checkpoint.restore",
+        sessionId: session.id,
+        checkpointId: checkpoint.id,
+        expectedSessionRevision: session.revision,
+      });
+      setSnapshot(payload);
+      if (payload.session) await loadTree(payload.session, file?.path);
+      setView("preview");
+    } catch (restoreError) {
+      setError(message(restoreError));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function runCommand(command: typeof commands[number] | "start_preview") {
     if (!session) return;
     setBusy(command);
@@ -138,11 +194,13 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   async function askForge(event: React.FormEvent) {
     event.preventDefault();
     const request = prompt.trim();
-    if (!request || !session) return;
+    if (!request || !session || dirty) return;
     setBusy("forge");
     setAgentOutput("");
     setError(undefined);
     try {
+      const sealed = await createCheckpoint(session, "before_forge", `Before Forge · ${request.slice(0, 90)}`);
+      if (!sealed.session) throw new Error("The recovery checkpoint did not return an active session.");
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -162,9 +220,15 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
         throw new Error(String(body.error || body.message || `Forge returned ${response.status}`));
       }
       let accumulated = "";
+      let runId = "";
+      let completed = false;
       await readSse(response.body, (agentEvent) => {
+        if (agentEvent.type === "run" && agentEvent.runId) runId = agentEvent.runId;
         if (agentEvent.type === "delta" && agentEvent.text) accumulated += agentEvent.text;
-        if (agentEvent.type === "done" && agentEvent.response) accumulated = agentEvent.response;
+        if (agentEvent.type === "done") {
+          completed = true;
+          if (agentEvent.response) accumulated = agentEvent.response;
+        }
         if (agentEvent.type === "status" && !accumulated) accumulated = [agentEvent.label, agentEvent.detail].filter(Boolean).join(" — ");
         if (agentEvent.type === "tool") accumulated += `\n${agentEvent.toolName || "Tool"}: ${agentEvent.status || "working"}`;
         if (agentEvent.type === "waiting_approval") accumulated += `\n${agentEvent.message || "Forge is waiting for approval in Command."}`;
@@ -172,7 +236,12 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
         setAgentOutput(accumulated.trim());
       });
       setPrompt("");
-      await Promise.all([loadSession(), loadTree(session, file?.path)]);
+      const refreshed = await loadSession();
+      let finalSnapshot = refreshed;
+      if (completed && runId && refreshed.session) {
+        finalSnapshot = await createCheckpoint(refreshed.session, "after_forge", `Forge result · ${request.slice(0, 88)}`, runId);
+      }
+      if (finalSnapshot.session) await loadTree(finalSnapshot.session, file?.path);
     } catch (agentError) {
       setError(message(agentError));
     } finally {
@@ -211,6 +280,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
       <header className={styles.studioHeader}>
         <div><span className={styles.liveDot} /><div><strong>Build studio</strong><small>{session.templateId} · revision {session.revision}</small></div></div>
         <div className={styles.headerActions}>
+          <button type="button" onClick={() => void saveCheckpoint()} disabled={Boolean(busy) || dirty} title={dirty ? "Save the open file before sealing a checkpoint" : "Save a recoverable checkpoint"}><Save size={14} /> Checkpoint</button>
           <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy)} title="Restart preview"><RefreshCw size={14} className={busy === "start_preview" ? "animate-spin" : undefined} /></button>
           {snapshot.previewUrl ? <a href={snapshot.previewUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open preview</a> : null}
           <button type="button" disabled title="GitHub publishing arrives after the build loop is verified"><GitBranch size={14} /> GitHub</button>
@@ -222,8 +292,8 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
 
       <div className={styles.workspace}>
         <aside className={styles.fileRail}>
-          <div className={styles.railTabs} role="tablist"><button type="button" className={rail === "files" ? styles.selected : undefined} onClick={() => setRail("files")}><Files size={14} /> Files</button><button type="button" className={rail === "activity" ? styles.selected : undefined} onClick={() => setRail("activity")}><Activity size={14} /> Activity</button></div>
-          {rail === "files" ? <div className={styles.fileList}>{files.map((entry) => <button type="button" key={entry.path} className={file?.path === entry.path ? styles.selectedFile : undefined} onClick={() => { if (dirty && !window.confirm("Discard the unsaved file change?")) return; void loadFile(session, entry.path); setView("code"); }}><FileCode2 size={13} /><span>{entry.path}</span><small>{formatBytes(entry.size || 0)}</small></button>)}</div> : <div className={styles.activityList}>{snapshot.activity.length ? snapshot.activity.map((item) => <article key={item.id}><i /><div><strong>{eventLabel(item.eventType)}</strong><small>{new Date(item.occurredAt).toLocaleString()}</small>{activityDetail(item)}</div></article>) : <p>No build activity yet.</p>}</div>}
+          <div className={styles.railTabs} role="tablist"><button type="button" className={rail === "files" ? styles.selected : undefined} onClick={() => setRail("files")}><Files size={14} /> Files</button><button type="button" className={rail === "checkpoints" ? styles.selected : undefined} onClick={() => setRail("checkpoints")}><RotateCcw size={14} /> Restore</button><button type="button" className={rail === "activity" ? styles.selected : undefined} onClick={() => setRail("activity")}><Activity size={14} /> Activity</button></div>
+          {rail === "files" ? <div className={styles.fileList}>{files.map((entry) => <button type="button" key={entry.path} className={file?.path === entry.path ? styles.selectedFile : undefined} onClick={() => { if (dirty && !window.confirm("Discard the unsaved file change?")) return; void loadFile(session, entry.path); setView("code"); }}><FileCode2 size={13} /><span>{entry.path}</span><small>{formatBytes(entry.size || 0)}</small></button>)}</div> : rail === "checkpoints" ? <div className={styles.checkpointList}>{snapshot.checkpoints.length ? snapshot.checkpoints.map((checkpoint) => { const current = session.currentCheckpointId === checkpoint.id; return <article key={checkpoint.id} data-current={current || undefined}><div><i /><span>{current ? "Current seal" : checkpointReason(checkpoint.reason)}</span></div><strong>{checkpoint.label}</strong><small>{new Date(checkpoint.createdAt).toLocaleString()} · {checkpoint.fileCount} files</small><code>{checkpoint.workspaceSha256.slice(0, 12)}</code><button type="button" onClick={() => void restoreCheckpoint(checkpoint)} disabled={Boolean(busy) || dirty || current}>{busy === `restore:${checkpoint.id}` ? <Loader2 className="animate-spin" size={12} /> : <RotateCcw size={12} />} {current ? "Current" : "Restore"}</button></article>; }) : <p>No checkpoints yet. Save one before a risky change.</p>}</div> : <div className={styles.activityList}>{snapshot.activity.length ? snapshot.activity.map((item) => <article key={item.id}><i /><div><strong>{eventLabel(item.eventType)}</strong><small>{new Date(item.occurredAt).toLocaleString()}</small>{activityDetail(item)}</div></article>) : <p>No build activity yet.</p>}</div>}
         </aside>
 
         <div className={styles.canvas}>
@@ -237,7 +307,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
           <div className={styles.forgeIdentity}><span>F</span><div><strong>Forge</strong><small>Code builder · Settings model</small></div><i className={busy === "forge" ? styles.thinking : undefined} /></div>
           <p>Describe a complete change. Forge can inspect this workspace, update SHA-fenced files, run focused checks, and refresh the preview.</p>
           {agentOutput ? <div className={styles.agentOutput}>{agentOutput}</div> : <div className={styles.suggestion}><WandSparkles size={15} /><span>Try “Turn this starter into a personal research dashboard with a responsive mobile view.”</span></div>}
-          <form onSubmit={askForge}><label htmlFor={`forge-prompt-${project.id}`}>What should Forge build?</label><textarea id={`forge-prompt-${project.id}`} value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} rows={5} maxLength={4_000} placeholder="Describe the outcome, audience, and must-have behavior…" /><button type="submit" disabled={!prompt.trim() || Boolean(busy)}>{busy === "forge" ? <Loader2 className="animate-spin" size={14} /> : <Send size={14} />} {busy === "forge" ? "Forge is working" : "Build with Forge"}</button></form>
+          <form onSubmit={askForge}><label htmlFor={`forge-prompt-${project.id}`}>What should Forge build?</label><textarea id={`forge-prompt-${project.id}`} value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} rows={5} maxLength={4_000} placeholder="Describe the outcome, audience, and must-have behavior…" /><button type="submit" disabled={!prompt.trim() || Boolean(busy) || dirty}>{busy === "forge" ? <Loader2 className="animate-spin" size={14} /> : <Send size={14} />} {busy === "forge" ? "Forge is working" : dirty ? "Save file before Forge" : "Build with Forge"}</button></form>
           <footer><ShieldCheck size={13} /><span>Mutations use governed tools. Consequential actions still pause for approval.</span></footer>
         </aside>
       </div>
@@ -279,6 +349,7 @@ function emitSse(block: string, onEvent: (event: AgentEvent) => void) {
 
 function message(error: unknown) { return error instanceof Error ? error.message : "App Builder operation failed."; }
 function formatBytes(size: number) { return size < 1_024 ? `${size} B` : `${(size / 1_024).toFixed(size > 10_240 ? 0 : 1)} KB`; }
+function checkpointReason(value: BuilderCheckpoint["reason"]) { return value.replaceAll("_", " "); }
 function eventLabel(value: string) { return value.replace("app_builder.", "").replaceAll("_", " ").replaceAll(".", " · "); }
 function activityDetail(item: BuilderActivity) {
   const detail = item.detail;

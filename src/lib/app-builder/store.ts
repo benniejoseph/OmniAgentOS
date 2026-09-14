@@ -2,10 +2,12 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import {
+  APP_BUILDER_CHECKPOINT_CONTRACT_VERSION,
   APP_BUILDER_CONTRACT_VERSION,
   APP_BUILDER_TEMPLATE_ID,
   appBuilderSessionStatusSchema,
   type AppBuilderActivity,
+  type AppBuilderCheckpoint,
   type AppBuilderSession,
   type AppBuilderSessionStatus,
 } from "@/lib/app-builder/contracts";
@@ -125,6 +127,48 @@ export async function recordBuilderActivity(input: BuilderOwner & {
   return appendBuilderActivity({ owner: input, ...input });
 }
 
+export async function recordBuilderWorkspaceChange(input: BuilderOwner & {
+  session: AppBuilderSession;
+  eventKey: string;
+  detail: Record<string, unknown>;
+}) {
+  let rows = await getSql()`
+    UPDATE omni_app_builder_sessions
+    SET current_checkpoint_id = NULL,
+        revision = revision + 1,
+        updated_at = NOW()
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.actorId}
+      AND project_id = ${input.session.projectId}
+      AND id = ${input.session.id}
+      AND revision = ${input.session.revision}
+    RETURNING *
+  `;
+  if (!rows[0]) {
+    rows = await getSql()`
+      UPDATE omni_app_builder_sessions
+      SET current_checkpoint_id = NULL,
+          revision = revision + 1,
+          updated_at = NOW()
+      WHERE tenant_id = ${input.tenantId}
+        AND owner_actor_id = ${input.actorId}
+        AND project_id = ${input.session.projectId}
+        AND id = ${input.session.id}
+      RETURNING *
+    `;
+  }
+  if (!rows[0]) throw new Error("Builder workspace change could not be recorded.");
+  const session = sessionFromRow(rows[0]);
+  await appendBuilderActivity({
+    owner: input,
+    session,
+    eventType: "app_builder.file.updated",
+    eventKey: input.eventKey,
+    detail: input.detail,
+  });
+  return session;
+}
+
 export async function listBuilderActivity(sessionId: string, owner: BuilderOwner, limit = 40) {
   requireBuilderDatabase();
   await ensureDatabaseSchema();
@@ -138,6 +182,126 @@ export async function listBuilderActivity(sessionId: string, owner: BuilderOwner
     LIMIT ${bounded}
   `;
   return rows.map(activityFromRow);
+}
+
+export async function getBuilderCheckpoint(
+  checkpointId: string,
+  sessionId: string,
+  owner: BuilderOwner,
+) {
+  requireBuilderDatabase();
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT * FROM omni_app_builder_checkpoints
+    WHERE tenant_id = ${owner.tenantId}
+      AND owner_actor_id = ${owner.actorId}
+      AND session_id = ${sessionId}
+      AND id = ${checkpointId}
+    LIMIT 1
+  `;
+  return rows[0] ? checkpointFromRow(rows[0]) : undefined;
+}
+
+export async function getBuilderCheckpointForIdempotency(input: BuilderOwner & {
+  sessionId: string;
+  idempotencyKey: string;
+}) {
+  return getBuilderCheckpoint(
+    checkpointId(input, input.idempotencyKey),
+    input.sessionId,
+    input,
+  );
+}
+
+export async function listBuilderCheckpoints(
+  sessionId: string,
+  owner: BuilderOwner,
+  limit = 20,
+) {
+  requireBuilderDatabase();
+  await ensureDatabaseSchema();
+  const bounded = Math.min(Math.max(limit, 1), 50);
+  const rows = await getSql()`
+    SELECT * FROM omni_app_builder_checkpoints
+    WHERE tenant_id = ${owner.tenantId}
+      AND owner_actor_id = ${owner.actorId}
+      AND session_id = ${sessionId}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ${bounded}
+  `;
+  return rows.map(checkpointFromRow);
+}
+
+export async function recordBuilderCheckpoint(input: BuilderOwner & {
+  session: AppBuilderSession;
+  idempotencyKey: string;
+  providerSnapshotId: string;
+  workspaceSha256: string;
+  fileCount: number;
+  snapshotBytes: number;
+  reason: AppBuilderCheckpoint["reason"];
+  label: string;
+  sourceRunId?: string;
+  expiresAt?: string;
+}) {
+  const id = checkpointId({ ...input, sessionId: input.session.id }, input.idempotencyKey);
+  const rows = await getSql()`
+    INSERT INTO omni_app_builder_checkpoints (
+      id, tenant_id, owner_actor_id, project_id, session_id, contract_version,
+      provider_snapshot_id, workspace_sha256, file_count, snapshot_bytes,
+      reason, label, source_run_id, session_revision, created_at, expires_at
+    ) VALUES (
+      ${id}, ${input.tenantId}, ${input.actorId}, ${input.session.projectId},
+      ${input.session.id}, ${APP_BUILDER_CHECKPOINT_CONTRACT_VERSION},
+      ${input.providerSnapshotId}, ${input.workspaceSha256}, ${input.fileCount},
+      ${input.snapshotBytes}, ${input.reason}, ${input.label},
+      ${input.sourceRunId || null}, ${input.session.revision}, NOW(),
+      ${input.expiresAt || null}
+    )
+    ON CONFLICT (tenant_id, id) DO NOTHING
+    RETURNING *
+  `;
+  const checkpoint = rows[0]
+    ? checkpointFromRow(rows[0])
+    : await getBuilderCheckpoint(id, input.session.id, input);
+  if (!checkpoint) throw new Error("Builder checkpoint could not be recorded.");
+  return checkpoint;
+}
+
+export async function setBuilderCurrentCheckpoint(input: BuilderOwner & {
+  session: AppBuilderSession;
+  checkpoint: AppBuilderCheckpoint;
+  eventType: "app_builder.checkpoint.created" | "app_builder.checkpoint.restored";
+  eventKey: string;
+}) {
+  const rows = await getSql()`
+    UPDATE omni_app_builder_sessions
+    SET current_checkpoint_id = ${input.checkpoint.id},
+        revision = revision + 1,
+        updated_at = NOW()
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.actorId}
+      AND project_id = ${input.session.projectId}
+      AND id = ${input.session.id}
+      AND revision = ${input.session.revision}
+    RETURNING *
+  `;
+  if (!rows[0]) throw new Error("Builder session changed while the checkpoint operation was running. Refresh before retrying.");
+  const session = sessionFromRow(rows[0]);
+  await appendBuilderActivity({
+    owner: input,
+    session,
+    eventType: input.eventType,
+    eventKey: input.eventKey,
+    detail: {
+      checkpointId: input.checkpoint.id,
+      workspaceSha256: input.checkpoint.workspaceSha256,
+      fileCount: input.checkpoint.fileCount,
+      reason: input.checkpoint.reason,
+      sourceRunId: input.checkpoint.sourceRunId || null,
+    },
+  });
+  return session;
 }
 
 async function appendBuilderActivity(input: {
@@ -185,11 +349,40 @@ function sessionFromRow(row: Record<string, unknown>): AppBuilderSession {
     sandboxName: String(row.sandbox_name),
     status,
     revision: Number(row.revision),
+    ...(row.current_checkpoint_id ? { currentCheckpointId: String(row.current_checkpoint_id) } : {}),
     ...(row.last_error_code ? { lastErrorCode: String(row.last_error_code) } : {}),
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at)).toISOString(),
     ...(row.stopped_at ? { stoppedAt: new Date(String(row.stopped_at)).toISOString() } : {}),
   });
+}
+
+function checkpointFromRow(row: Record<string, unknown>): AppBuilderCheckpoint {
+  return Object.freeze({
+    id: String(row.id),
+    tenantId: String(row.tenant_id),
+    ownerActorId: String(row.owner_actor_id),
+    projectId: String(row.project_id),
+    sessionId: String(row.session_id),
+    contractVersion: APP_BUILDER_CHECKPOINT_CONTRACT_VERSION,
+    providerSnapshotId: String(row.provider_snapshot_id),
+    workspaceSha256: String(row.workspace_sha256),
+    fileCount: Number(row.file_count),
+    snapshotBytes: Number(row.snapshot_bytes),
+    reason: String(row.reason) as AppBuilderCheckpoint["reason"],
+    label: String(row.label),
+    ...(row.source_run_id ? { sourceRunId: String(row.source_run_id) } : {}),
+    sessionRevision: Number(row.session_revision),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    ...(row.expires_at ? { expiresAt: new Date(String(row.expires_at)).toISOString() } : {}),
+  });
+}
+
+function checkpointId(input: BuilderOwner & { sessionId: string }, idempotencyKey: string) {
+  const digest = createHash("sha256")
+    .update(`${APP_BUILDER_CHECKPOINT_CONTRACT_VERSION}:${input.tenantId}:${input.actorId}:${input.sessionId}:${idempotencyKey}`)
+    .digest("hex");
+  return `app_build_checkpoint_${digest.slice(0, 48)}`;
 }
 
 function activityFromRow(row: Record<string, unknown>): AppBuilderActivity {

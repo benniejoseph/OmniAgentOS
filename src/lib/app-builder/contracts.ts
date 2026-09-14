@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 export const APP_BUILDER_CONTRACT_VERSION = "app-builder-session:1" as const;
+export const APP_BUILDER_CHECKPOINT_CONTRACT_VERSION = "app-builder-checkpoint:1" as const;
 export const APP_BUILDER_TEMPLATE_ID = "nextjs-starter-v1" as const;
 export const APP_BUILDER_ROOT = "/vercel/sandbox/app" as const;
 export const APP_BUILDER_PREVIEW_PORT = 3000 as const;
@@ -36,10 +37,30 @@ export type AppBuilderSession = Readonly<{
   sandboxName: string;
   status: AppBuilderSessionStatus;
   revision: number;
+  currentCheckpointId?: string;
   lastErrorCode?: string;
   createdAt: string;
   updatedAt: string;
   stoppedAt?: string;
+}>;
+
+export type AppBuilderCheckpoint = Readonly<{
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  projectId: string;
+  sessionId: string;
+  contractVersion: typeof APP_BUILDER_CHECKPOINT_CONTRACT_VERSION;
+  providerSnapshotId: string;
+  workspaceSha256: string;
+  fileCount: number;
+  snapshotBytes: number;
+  reason: "manual" | "before_forge" | "after_forge" | "before_sentinel" | "before_restore";
+  label: string;
+  sourceRunId?: string;
+  sessionRevision: number;
+  createdAt: string;
+  expiresAt?: string;
 }>;
 
 export type AppBuilderActivity = Readonly<{
@@ -88,6 +109,26 @@ export const builderCommandInputSchema = builderTreeInputSchema.extend({
 }).strict();
 
 export const builderSessionStopInputSchema = builderTreeInputSchema;
+
+export const builderCheckpointReasonSchema = z.enum([
+  "manual",
+  "before_forge",
+  "after_forge",
+  "before_sentinel",
+  "before_restore",
+]);
+
+export const builderCheckpointCreateInputSchema = builderTreeInputSchema.extend({
+  expectedSessionRevision: z.number().int().positive(),
+  reason: builderCheckpointReasonSchema,
+  label: z.string().trim().min(1).max(120),
+  sourceRunId: z.string().uuid().optional(),
+}).strict();
+
+export const builderCheckpointRestoreInputSchema = builderTreeInputSchema.extend({
+  checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/),
+  expectedSessionRevision: z.number().int().positive(),
+}).strict();
 
 const deniedSegments = new Set([
   ".git",

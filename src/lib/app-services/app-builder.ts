@@ -8,6 +8,8 @@ import {
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import {
   builderCommandInputSchema,
+  builderCheckpointCreateInputSchema,
+  builderCheckpointRestoreInputSchema,
   builderFileReadInputSchema,
   builderFileUpdateInputSchema,
   builderProjectInputSchema,
@@ -17,22 +19,31 @@ import {
 } from "@/lib/app-builder/contracts";
 import {
   createBuilderSandbox,
+  createBuilderSandboxCheckpoint,
   getBuilderPreviewUrl,
   listBuilderFiles,
   readBuilderFile,
   runBuilderCommand,
+  restoreBuilderSandboxCheckpoint,
   stopBuilderSandbox,
   updateBuilderFile,
 } from "@/lib/app-builder/sandbox";
 import {
   createBuilderSessionRecord,
+  getBuilderCheckpoint,
+  getBuilderCheckpointForIdempotency,
   getBuilderSession,
   getProjectBuilderSession,
   listBuilderActivity,
+  listBuilderCheckpoints,
+  recordBuilderCheckpoint,
   recordBuilderActivity,
+  recordBuilderWorkspaceChange,
+  setBuilderCurrentCheckpoint,
   transitionBuilderSession,
 } from "@/lib/app-builder/store";
 import { getOwnedProject } from "@/lib/projects/store";
+import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 
 export async function showProjectBuilderService(
@@ -43,9 +54,10 @@ export async function showProjectBuilderService(
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.show"));
   await requireProject(caller, value.projectId);
   const session = await getProjectBuilderSession(value.projectId, owner(caller));
-  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], previewUrl: null }, { resourceCount: 0 });
-  const [activity, previewUrl] = await Promise.all([
+  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], previewUrl: null }, { resourceCount: 0 });
+  const [activity, checkpoints, previewUrl] = await Promise.all([
     listBuilderActivity(session.id, owner(caller)),
+    listBuilderCheckpoints(session.id, owner(caller)),
     session.status === "ready" || session.status === "running"
       ? getBuilderPreviewUrl({
           sandboxName: session.sandboxName,
@@ -56,7 +68,12 @@ export async function showProjectBuilderService(
         }).catch(() => null)
       : Promise.resolve(null),
   ]);
-  return completeAppServiceCall(authorized, { session: publicSession(session), activity, previewUrl });
+  return completeAppServiceCall(authorized, {
+    session: publicSession(session),
+    activity,
+    checkpoints: checkpoints.map(publicCheckpoint),
+    previewUrl,
+  });
 }
 
 export async function createProjectBuilderService(
@@ -73,7 +90,8 @@ export async function createProjectBuilderService(
     const previewUrl = session.status === "ready" || session.status === "running"
       ? await getBuilderPreviewUrl({ sandboxName: session.sandboxName, tenantId: session.tenantId, ownerActorId: session.ownerActorId, projectId: session.projectId, sessionId: session.id }).catch(() => null)
       : null;
-    return completeAppServiceCall(authorized, { session: publicSession(session), activity, previewUrl, created: false });
+    const checkpoints = await listBuilderCheckpoints(session.id, owner(caller));
+    return completeAppServiceCall(authorized, { session: publicSession(session), activity, checkpoints: checkpoints.map(publicCheckpoint), previewUrl, created: false });
   }
   try {
     const provisioned = await createBuilderSandbox({
@@ -89,7 +107,7 @@ export async function createProjectBuilderService(
       detail: { installExitCode: provisioned.install.exitCode, installDurationMs: provisioned.install.durationMs },
     });
     const activity = await listBuilderActivity(ready.id, owner(caller));
-    return completeAppServiceCall(authorized, { session: publicSession(ready), activity, previewUrl: provisioned.previewUrl, created: true });
+    return completeAppServiceCall(authorized, { session: publicSession(ready), activity, checkpoints: [], previewUrl: provisioned.previewUrl, created: true });
   } catch (error) {
     const code = builderErrorCode(error);
     await transitionBuilderSession({
@@ -122,12 +140,12 @@ export async function updateProjectBuilderFileService(caller: AppServiceCaller, 
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.file.update"));
   const session = await requireSession(caller, value.projectId, value.sessionId);
   const result = await updateBuilderFile({ sandboxName: session.sandboxName, path: value.path, expectedSha256: value.expectedSha256, content: value.content });
-  await recordBuilderActivity({
-    ...owner(caller), session, eventType: "app_builder.file.updated",
+  const current = await recordBuilderWorkspaceChange({
+    ...owner(caller), session,
     eventKey: requireIdempotency(caller),
     detail: { path: result.path, previousSha256: result.previousSha256, sha256: result.sha256, size: result.size },
   });
-  return completeAppServiceCall(authorized, { update: result });
+  return completeAppServiceCall(authorized, { session: publicSession(current), update: result });
 }
 
 export async function runProjectBuilderCommandService(caller: AppServiceCaller, input: z.input<typeof builderCommandInputSchema>) {
@@ -157,6 +175,161 @@ export async function stopProjectBuilderService(caller: AppServiceCaller, input:
     eventType: "app_builder.session.stopped", eventKey: requireIdempotency(caller), detail: {},
   });
   return completeAppServiceCall(authorized, { session: publicSession(stopped) });
+}
+
+export async function createProjectBuilderCheckpointService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderCheckpointCreateInputSchema>,
+) {
+  const value = builderCheckpointCreateInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.checkpoint.create"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  assertExpectedSessionRevision(session, value.expectedSessionRevision);
+  if (value.reason === "after_forge" && !value.sourceRunId) {
+    throw new Error("A Forge result checkpoint requires its exact completed Agent run.");
+  }
+  if (value.sourceRunId && value.reason !== "after_forge") {
+    throw new Error("Only a Forge result checkpoint may bind an Agent run.");
+  }
+  if (value.sourceRunId) {
+    await requireBuilderAgentRun(caller, value.projectId, value.sourceRunId, value.reason === "after_forge" ? "forge" : undefined);
+  }
+  const idempotencyKey = requireIdempotency(caller);
+  let checkpoint = await getBuilderCheckpointForIdempotency({
+    ...owner(caller),
+    sessionId: session.id,
+    idempotencyKey,
+  });
+  let current = session;
+  let previewUrl: string | null = null;
+  if (!checkpoint) {
+    const captured = await createBuilderSandboxCheckpoint({
+      sandboxName: session.sandboxName,
+      tenantId: session.tenantId,
+      ownerActorId: session.ownerActorId,
+      projectId: session.projectId,
+      sessionId: session.id,
+    });
+    checkpoint = await recordBuilderCheckpoint({
+      ...owner(caller),
+      session,
+      idempotencyKey,
+      providerSnapshotId: captured.providerSnapshotId,
+      workspaceSha256: captured.workspaceSha256,
+      fileCount: captured.fileCount,
+      snapshotBytes: captured.snapshotBytes,
+      reason: value.reason,
+      label: value.label,
+      sourceRunId: value.sourceRunId,
+      expiresAt: captured.expiresAt,
+    });
+    previewUrl = captured.previewUrl;
+  }
+  if (session.currentCheckpointId !== checkpoint.id) {
+    current = await setBuilderCurrentCheckpoint({
+      ...owner(caller),
+      session,
+      checkpoint,
+      eventType: "app_builder.checkpoint.created",
+      eventKey: idempotencyKey,
+    });
+  }
+  previewUrl ||= await getBuilderPreviewUrl({
+    sandboxName: session.sandboxName,
+    tenantId: session.tenantId,
+    ownerActorId: session.ownerActorId,
+    projectId: session.projectId,
+    sessionId: session.id,
+  }).catch(() => null);
+  const checkpoints = await listBuilderCheckpoints(session.id, owner(caller));
+  return completeAppServiceCall(authorized, {
+    session: publicSession(current),
+    checkpoint: publicCheckpoint(checkpoint),
+    checkpoints: checkpoints.map(publicCheckpoint),
+    previewUrl,
+  });
+}
+
+export async function restoreProjectBuilderCheckpointService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderCheckpointRestoreInputSchema>,
+) {
+  const value = builderCheckpointRestoreInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.checkpoint.restore"));
+  let session = await requireSession(caller, value.projectId, value.sessionId);
+  assertExpectedSessionRevision(session, value.expectedSessionRevision);
+  const checkpoint = await getBuilderCheckpoint(value.checkpointId, session.id, owner(caller));
+  if (!checkpoint) throw new Error("The selected App Builder checkpoint was not found.");
+  if (checkpoint.expiresAt && Date.parse(checkpoint.expiresAt) <= Date.now()) {
+    throw new Error("The selected App Builder checkpoint has expired.");
+  }
+  if (session.currentCheckpointId === checkpoint.id) {
+    return completeAppServiceCall(authorized, {
+      session: publicSession(session),
+      checkpoint: publicCheckpoint(checkpoint),
+      checkpoints: (await listBuilderCheckpoints(session.id, owner(caller))).map(publicCheckpoint),
+      restored: false,
+      previewUrl: await getBuilderPreviewUrl({
+        sandboxName: session.sandboxName,
+        tenantId: session.tenantId,
+        ownerActorId: session.ownerActorId,
+        projectId: session.projectId,
+        sessionId: session.id,
+      }).catch(() => null),
+    });
+  }
+  const idempotencyKey = requireIdempotency(caller);
+  const safetyKey = `${idempotencyKey}:before_restore`;
+  let safetyCheckpoint = await getBuilderCheckpointForIdempotency({
+    ...owner(caller), sessionId: session.id, idempotencyKey: safetyKey,
+  });
+  if (!safetyCheckpoint) {
+    const safety = await createBuilderSandboxCheckpoint({
+      sandboxName: session.sandboxName,
+      tenantId: session.tenantId,
+      ownerActorId: session.ownerActorId,
+      projectId: session.projectId,
+      sessionId: session.id,
+    });
+    safetyCheckpoint = await recordBuilderCheckpoint({
+      ...owner(caller), session, idempotencyKey: safetyKey,
+      providerSnapshotId: safety.providerSnapshotId,
+      workspaceSha256: safety.workspaceSha256,
+      fileCount: safety.fileCount,
+      snapshotBytes: safety.snapshotBytes,
+      reason: "before_restore",
+      label: `Before restoring ${checkpoint.label}`.slice(0, 120),
+      expiresAt: safety.expiresAt,
+    });
+  }
+  if (session.currentCheckpointId !== safetyCheckpoint.id) {
+    session = await setBuilderCurrentCheckpoint({
+      ...owner(caller), session, checkpoint: safetyCheckpoint,
+      eventType: "app_builder.checkpoint.created", eventKey: safetyKey,
+    });
+  }
+  const restored = await restoreBuilderSandboxCheckpoint({
+    sandboxName: session.sandboxName,
+    providerSnapshotId: checkpoint.providerSnapshotId,
+    tenantId: session.tenantId,
+    ownerActorId: session.ownerActorId,
+    projectId: session.projectId,
+    sessionId: session.id,
+  });
+  if (restored.workspaceSha256 !== checkpoint.workspaceSha256) {
+    throw new Error("The restored workspace did not match the sealed checkpoint digest.");
+  }
+  const current = await setBuilderCurrentCheckpoint({
+    ...owner(caller), session, checkpoint,
+    eventType: "app_builder.checkpoint.restored", eventKey: idempotencyKey,
+  });
+  return completeAppServiceCall(authorized, {
+    session: publicSession(current),
+    checkpoint: publicCheckpoint(checkpoint),
+    checkpoints: (await listBuilderCheckpoints(session.id, owner(caller))).map(publicCheckpoint),
+    restored: true,
+    previewUrl: restored.previewUrl,
+  });
 }
 
 async function requireSession(caller: AppServiceCaller, projectId: string, sessionId: string) {
@@ -189,7 +362,39 @@ function builderErrorCode(error: unknown) {
   return `builder_${createHash("sha256").update(error instanceof Error ? error.message : "unknown").digest("hex").slice(0, 12)}`;
 }
 
+function assertExpectedSessionRevision(session: { revision: number }, expected: number) {
+  if (session.revision !== expected) {
+    throw new Error("The App Builder session changed. Refresh before applying this operation.");
+  }
+}
+
+async function requireBuilderAgentRun(
+  caller: AppServiceCaller,
+  projectId: string,
+  runId: string,
+  expectedAgentId?: string,
+) {
+  const [run, scope] = await Promise.all([
+    getAgentRun(runId, { tenantId: caller.context.tenantId }),
+    getAgentRunExecutionScope(runId, { tenantId: caller.context.tenantId }),
+  ]);
+  if (
+    !run || run.ownerActorId !== caller.context.actorId ||
+    !scope || scope.initiatingActorId !== caller.context.actorId ||
+    scope.projectId !== projectId ||
+    (expectedAgentId && (run.agentId !== expectedAgentId || run.status !== "completed"))
+  ) {
+    throw new Error("The Agent run is not bound to this App Builder project.");
+  }
+  return run;
+}
+
 function publicSession<T extends { tenantId: string; ownerActorId: string; sandboxName: string }>(session: T) {
   const { tenantId: _tenantId, ownerActorId: _ownerActorId, sandboxName: _sandboxName, ...safe } = session;
+  return safe;
+}
+
+function publicCheckpoint<T extends { tenantId: string; ownerActorId: string; providerSnapshotId: string }>(checkpoint: T) {
+  const { tenantId: _tenantId, ownerActorId: _ownerActorId, providerSnapshotId: _providerSnapshotId, ...safe } = checkpoint;
   return safe;
 }

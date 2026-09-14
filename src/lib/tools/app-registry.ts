@@ -377,6 +377,12 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.projects.builder.command.run", "Run app check", "Run one fixed package-script check or restart the private preview; arbitrary shell commands are not accepted.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, command: { type: "string", enum: ["lint", "typecheck", "test", "build", "start_preview"] },
   }, ["projectId", "sessionId", "command"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
+  mutationTool("app.projects.builder.checkpoint.create", "Seal app checkpoint", "Seal an immutable provider snapshot and workspace digest for the exact session revision. Provider identifiers remain server-only.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, expectedSessionRevision: integer(1, Number.MAX_SAFE_INTEGER), reason: { type: "string", enum: ["manual", "before_forge", "after_forge", "before_sentinel"] }, label: text(1, 120), sourceRunId: opaqueId("Optional exact project-bound Agent run ID."),
+  }, ["projectId", "sessionId", "expectedSessionRevision", "reason", "label"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
+  mutationTool("app.projects.builder.checkpoint.restore", "Restore app checkpoint", "Restore one exact sealed workspace revision after automatically preserving the current workspace as a recovery checkpoint.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, checkpointId: { type: "string", pattern: "^app_build_checkpoint_[a-f0-9]{48}$" }, expectedSessionRevision: integer(1, Number.MAX_SAFE_INTEGER),
+  }, ["projectId", "sessionId", "checkpointId", "expectedSessionRevision"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   mutationTool("app.projects.builder.stop", "Stop app workspace", "Stop the exact project's build sandbox while retaining its immutable activity receipts.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
   }, ["projectId", "sessionId"]), { riskLevel: 2, approvalRequired: true, reversible: false }),

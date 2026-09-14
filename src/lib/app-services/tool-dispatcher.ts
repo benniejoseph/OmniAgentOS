@@ -11,8 +11,10 @@ import {
 } from "@/lib/app-services/projects";
 import {
   createProjectBuilderService,
+  createProjectBuilderCheckpointService,
   listProjectBuilderTreeService,
   readProjectBuilderFileService,
+  restoreProjectBuilderCheckpointService,
   runProjectBuilderCommandService,
   showProjectBuilderService,
   stopProjectBuilderService,
@@ -304,6 +306,8 @@ export async function executeFirstPartyAppTool(input: {
     "app.projects.builder.file.read": () => readProjectBuilderFileService(caller, input.toolInput as never),
     "app.projects.builder.file.update": () => updateProjectBuilderFileService(caller, input.toolInput as never),
     "app.projects.builder.command.run": () => runProjectBuilderCommandService(caller, input.toolInput as never),
+    "app.projects.builder.checkpoint.create": () => createProjectBuilderCheckpointService(caller, input.toolInput as never),
+    "app.projects.builder.checkpoint.restore": () => restoreProjectBuilderCheckpointService(caller, input.toolInput as never),
     "app.projects.builder.stop": () => stopProjectBuilderService(caller, input.toolInput as never),
     "app.work_items.create": () => createWorkItemService(caller, input.toolInput as never),
     "app.work_items.update": () => updateWorkItemService(caller, input.toolInput as never),
