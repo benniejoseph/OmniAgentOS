@@ -586,13 +586,13 @@
 
 .projects :global(.projects-view-tabs strong) {
   color: inherit;
-  font-size: 0.68rem;
+  font-size: 0.78rem;
 }
 
 .projects :global(.projects-view-tabs small) {
   margin-top: 0.14rem;
   color: var(--muted);
-  font-size: 0.53rem;
+  font-size: 0.65rem;
 }
 
 .projects :global(.projects-view-tabs a) {

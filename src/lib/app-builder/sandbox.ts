@@ -105,7 +105,7 @@ export async function getBuilderPreviewUrl(input: {
   projectId: string;
   sessionId: string;
 }) {
-  const sandbox = await Sandbox.get({ name: input.sandboxName, resume: true });
+  const sandbox = await Sandbox.get({ name: input.sandboxName });
   return previewUrl(sandbox, previewToken(input));
 }
 

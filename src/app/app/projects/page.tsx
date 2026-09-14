@@ -8,5 +8,6 @@ export default async function ProjectsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const query = await searchParams;
-  return <ProjectsWorkspace initialView={query.view === "execution" ? "execution" : "overview"} />;
+  const initialView = query.view === "execution" ? "execution" : query.view === "build" ? "build" : "overview";
+  return <ProjectsWorkspace initialView={initialView} />;
 }

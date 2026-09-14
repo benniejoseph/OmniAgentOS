@@ -45,8 +45,8 @@ describe("project App Builder boundary", () => {
       "app.projects.builder.command.run",
       "app.projects.builder.stop",
     ]);
-    const operations = new Set(APP_SERVICE_OPERATION_CONTRACTS.map((contract) => contract.operation));
-    const bindings = new Set(MAIN_AGENT_APP_SERVICE_BINDINGS.map((binding) => binding.toolId));
+    const operations = new Set<string>(APP_SERVICE_OPERATION_CONTRACTS.map((contract) => contract.operation));
+    const bindings = new Set<string>(MAIN_AGENT_APP_SERVICE_BINDINGS.map((binding) => binding.toolId));
     for (const id of ids) {
       expect(operations.has(id), id).toBe(true);
       expect(bindings.has(id), id).toBe(true);
