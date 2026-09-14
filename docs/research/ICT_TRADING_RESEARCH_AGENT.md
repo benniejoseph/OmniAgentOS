@@ -336,6 +336,19 @@ If paper or live execution is considered later, it must be a separate authorizat
 
 Live execution is outside this research plan and requires a separate decision, threat model, operational readiness review and authorization.
 
+## Deferred trading checkpoint — 2026-09-14
+
+The chart-analysis foundation is deployed. The following work is deliberately retained for a later trading phase and must not be described as complete or production-validated:
+
+- Promote advanced ICT candidates only after transcript-backed definition review with source timecodes.
+- Add a false-positive review workflow for order blocks, Turtle Soup, Unicorn and Judas Swing candidates.
+- Build deterministic historical backtesting with leakage controls, locked manifests and reproducible results.
+- Calibrate scenario probabilities against sufficient comparable-event and forward-shadow outcomes.
+- Complete historical macro replay coverage without exceeding provider credits.
+- Resolve the Twelve Data entitlement for the canonical `NDX` time series; never substitute a different instrument.
+- Add broker-quality streaming OHLC only behind a separately reviewed market-data adapter.
+- Keep paper or live execution outside the research boundary until separately authorized with its own risk controls.
+
 ## 9. Decisions required before implementation
 
 1. Is the target Nasdaq product `NDX`, `NQ`/`MNQ`, `QQQ`, or a named broker's NAS100/US100 CFD?
