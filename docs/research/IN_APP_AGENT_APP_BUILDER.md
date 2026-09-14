@@ -1,10 +1,10 @@
 # In-app agent app builder — feasibility and recommended architecture
 
-Status: research only. No repository, sandbox, GitHub or deployment authority is added by this document.
+Status: Phase A implemented on 2026-09-14. GitHub delivery and app deployment authority remain intentionally unavailable.
 
 ## Decision
 
-Asael can become an effective private app-building environment, but the current product is not yet an end-to-end coding runtime. The recommended first scope is to create and iteratively edit new web applications from reviewed templates in an isolated Vercel Sandbox, with GitHub App-backed branches and pull requests and Vercel preview deployments. Production deployment remains an explicit reviewed action.
+Asael now has the safe first slice of a private app-building environment: a Build mode inside Projects can create one reviewed TypeScript web-app template in an actor- and project-bound Vercel Sandbox, inspect and digest-fence files, run a fixed check family, and serve an authenticated live preview. Forge can use the same governed operations with its independently configured `code_builder` model assignment. Iterative snapshot recovery, independent Sentinel verification, GitHub branches and pull requests, and app deployment remain later phases. Production deployment remains an explicit reviewed action.
 
 Do not make browser or computer use the primary coding interface. Code should be read, patched, tested and versioned through typed repository and sandbox tools. Computer use is useful later for visual QA of the running preview.
 
@@ -16,14 +16,14 @@ Do not make browser or computer use the primary coding interface. Code should be
 | Specialist delegation | Atlas can assign Scout, Forge, Sentinel and Mnemosyne | Reuse |
 | Durable execution | Project work items dispatch into resumable workflows | Reuse |
 | Governance | Tool policy, approvals, idempotency, execution scope and receipts exist | Reuse |
-| Model routing | Models and providers resolve from actor Settings assignments | Reuse; add a `code_builder` scope |
+| Model routing | Models and providers resolve from actor Settings assignments, including `code_builder` | Reused and extended |
 | Artifacts | Project results and evidence can be retained and reviewed | Extend for file manifests, diffs, builds and previews |
-| Repository mutation | No agent-visible checkout, file-read, patch, Git or pull-request tools | Build |
-| Isolated execution | No project-owned code sandbox or command runtime | Build |
-| Build verification | No typed command, test, build or preview receipt | Build |
-| Deployment | No governed app-builder preview or production deployment path | Build |
+| Workspace mutation | Governed tree/read and exact-SHA file update operations exist for the isolated template workspace; Git is unavailable | Phase A delivered; Git pending |
+| Isolated execution | Actor/project/session-scoped Vercel Sandbox with bounded resources and registry-only install access | Phase A delivered |
+| Build verification | Fixed lint, type-check, test, build and live-preview commands with bounded output and typed activity | Phase A delivered |
+| Deployment | Authenticated sandbox preview exists; GitHub, Vercel app preview deployment and production release are unavailable | Phases C/D pending |
 
-The current Forge persona declares a code-workspace capability, but its built-in Skill exposes only knowledge search and approved public HTTP requests. Project artifacts are text records. Therefore a current Project may plan an app and produce implementation-ready content, but cannot truthfully claim that it edited, built, tested or deployed an application.
+Forge now receives the governed Phase A builder tool family and resolves its model through the actor's `code_builder` Settings assignment. It may truthfully report only file and command effects represented by builder receipts. It cannot claim Git, pull-request or application-deployment effects because those tools do not exist yet.
 
 ## Recommended runtime
 
@@ -104,14 +104,16 @@ Patch application is preferable to unrestricted file writes because it creates a
 
 ### Phase A — safe prototype
 
-- Add Build Project contracts and a `code_builder` Settings assignment.
-- Start one Vercel Sandbox from a pinned web-app image.
-- Create an app only from a reviewed local template.
-- Add tree/read/patch and a narrow `npm install`, lint, type-check, test and build command family.
-- Stream bounded activity and serve one authenticated live preview.
-- No GitHub push and no deployment.
+- [x] Add Build Project contracts and a `code_builder` Settings assignment.
+- [x] Start one Vercel Sandbox from a pinned Node 24 runtime.
+- [x] Create an app only from a reviewed, dependency-pinned local template.
+- [x] Add tree/read/exact-SHA update and a narrow install, lint, type-check, test, build and preview command family.
+- [x] Stream bounded activity and serve one HMAC-authenticated live preview.
+- [x] Keep GitHub push and app deployment unavailable.
 
 Exit gate: the same brief produces an inspectable diff, focused checks and a working preview without accessing any production secret.
+
+Implementation evidence: the workspace receives no production environment variables, package installation is restricted to the npm registry and ignores lifecycle scripts, preview access is bound to actor/project/session, every service access revalidates Project ownership, and builder session/activity records are protected by exact-actor forced RLS. Focused contract, registry, model-assignment and database checks pass with affected lint and TypeScript. Wide-monitor and phone browser checks show the Build surface and preview without document-level horizontal overflow. The production canary is the final release gate.
 
 ### Phase B — iterative builder
 
