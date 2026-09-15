@@ -820,11 +820,13 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 through P9.11 and P9.14 through P9.18 are complete; P9.12 and P9.13 are
-intentionally deferred. P9.19 remains held behind live proof of the human-present
-payment flow. Phase 12 is implemented and server-deployed but remains open for
-provider credentials, signed distribution, and real-device proof. Phase 13 is
-deferred.
+P9.1 through P9.12 and P9.14 through P9.18 are complete. P9.13 is partially
+implemented for durable in-app reminders and causal mobile push, but web push,
+email delivery, and the full per-source/channel preference model remain pending.
+P9.19 remains held behind live proof of the human-present payment flow. Phase 12
+is implemented and server-deployed but remains operationally open for one observed
+Android notification delivery/deep-link/acknowledgement receipt. Phase 13 is
+intentionally deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
 
@@ -3201,8 +3203,8 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
 - [x] **Phase 7 — agent identity and lifecycle:** P7.1–P7.6 complete.
 - [x] **Phase 8 — delegation and A2A:** P8.1–P8.7 complete.
-- [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.19 complete.
+- [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.12 and P9.14–P9.18 complete; P9.13 is partial and P9.19 remains held behind reviewed live adapters and human-present proof.
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [ ] **Phase 12 — mobile application:** P12.1–P12.6 complete; one real notification delivery/deep-link/ack receipt remains the operational gate.
-- [ ] **Phase 13 — macOS application:** P13.1–P13.4 complete.
+- [ ] **Phase 13 — macOS application:** intentionally deferred; P13.1–P13.4 are not started.
