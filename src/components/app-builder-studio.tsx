@@ -23,6 +23,7 @@ import {
   SquareTerminal,
   WandSparkles,
 } from "lucide-react";
+import { buildAppBuilderAgentRequest } from "@/lib/app-builder/agent-request";
 import styles from "./app-builder-studio.module.css";
 
 type BuildProject = Readonly<{ id: string; title: string; objective: string; status: string }>;
@@ -289,16 +290,12 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          mode: "execute",
+        body: JSON.stringify(buildAppBuilderAgentRequest({
           projectId: project.id,
           message: `Work only in App Builder session ${session.id} for project ${project.id}. Inspect files before editing and preserve SHA-256 fences. User request: ${request}. Run focused checks and restart the preview when complete.`,
           requestId: crypto.randomUUID(),
-          strategy: "direct",
           agentId: "forge",
-          contextScope: "project",
-          contextSelection: { evidenceIds: [] },
-        }),
+        })),
       });
       if (!response.ok || !response.body) {
         const body = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -353,16 +350,12 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          mode: "execute",
+        body: JSON.stringify(buildAppBuilderAgentRequest({
           projectId: project.id,
           message: `Independently review App Builder verification ${verification.id} at checkpoint ${verification.checkpointId} in session ${sealed.session.id}. Use the governed verification receipt and inspect the project files. Project objective: ${project.objective}. Deterministic evidence: ${JSON.stringify(verification)}. Return a concise PASS or BLOCK verdict, specific evidence, and the smallest corrective actions. Never claim to have seen screenshot pixels; only digest metadata is available.`,
           requestId: crypto.randomUUID(),
-          strategy: "direct",
           agentId: "sentinel",
-          contextScope: "project",
-          contextSelection: { evidenceIds: [] },
-        }),
+        })),
       });
       if (!response.ok || !response.body) {
         const body = await response.json().catch(() => ({})) as Record<string, unknown>;
