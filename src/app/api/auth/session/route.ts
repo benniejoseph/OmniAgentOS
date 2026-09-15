@@ -9,5 +9,7 @@ async function GETHandler(request: Request) {
   const session = await measureRequestStage("auth", () =>
     resolveWorkspaceSession(request)
   );
-  return Response.json(session);
+  return Response.json(session, {
+    headers: { "cache-control": "private, no-store" },
+  });
 }
