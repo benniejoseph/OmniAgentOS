@@ -4,7 +4,7 @@ Date: 2026-09-15
 
 Reviewed baseline: `00c601c7e0416464ec621863b64e771e038fb975`
 
-Latest review remediation: `1608c2e650aeb1dc69b1129789fdb6a8c78cf41e`
+Latest review remediation: `ec6f605abe89ed7eb65b6c9e4a2e3b9bafba3dbe`
 Branch: `performance-remediation`
 
 This is the current review artifact. `docs/AUDIT_REPORT.md` and
@@ -107,20 +107,23 @@ suppressions exist, primarily exhaustive-dependency and manual-memoization
 exceptions. These should be reviewed while extracting modules, not removed
 mechanically.
 
-### 4. App Builder embedded preview — P2 functional defect
+### 4. App Builder embedded preview — repaired; authenticated visual proof pending
 
 The project workspace can produce and open an authenticated sandbox preview, but
-the embedded iframe is currently rejected by the browser. The UI therefore shows
-a blocked-content panel even though the preview itself is available. The current
-preview proxy forwards upstream response headers unchanged, while Build Studio
-embeds the provider domain cross-origin.
+the embedded iframe was rejected before the sandbox request. The root cause was
+Asael's own top-level CSP: `frame-src` allowed only `'self'` and `blob:` while
+Build Studio embeds an HMAC-authenticated `sb-*.vercel.run` preview.
 
-Recommended change: capture the exact live `frame-ancestors`/`X-Frame-Options`
-response first. If the provider edge forbids embedding, serve the preview through
-a narrowly authenticated same-origin streaming bridge that strips only the
-conflicting frame headers, applies Asael's own exact frame policy, bounds content
-and redirects, and never exposes the preview token to the model or logs. Keep
-Open preview as a fallback.
+The production CSP now admits only the reviewed Vercel Sandbox host family. The
+sandbox proxy validates and binds the exact Asael parent origin, removes a
+conflicting upstream `X-Frame-Options`, preserves other upstream CSP directives
+while replacing only `frame-ancestors`, applies `no-referrer` and `nosniff`, and
+is rewritten on every preview restart so existing sandboxes receive the fix. Five
+focused CSP/proxy checks and the production build pass. Canonical headers expose
+the exact sandbox frame source at revision
+`ec6f605abe89ed7eb65b6c9e4a2e3b9bafba3dbe`. The workstation locked before the
+authenticated visual restart, so the browser click-through remains an explicit
+proof item rather than a claimed canary.
 
 ### 5. Plan and delivery log drift — corrected in the master checklist
 
@@ -172,8 +175,9 @@ Computer Use gateway remain healthy and required no rebuild.
    review, asynchronous deterministic backtesting, consensus/surprise and regime
    conditioning, statistically defensible calibration, deeper XAU/USD history,
    and NDX time-series entitlement.
-3. App Builder: repair the embedded preview and complete a full Asael-repository
-   change through verification, GitHub delivery, preview, and governed release.
+3. App Builder: complete the authenticated embedded-preview click-through, then
+   prove a full Asael-repository change through verification, GitHub delivery,
+   preview, and governed release.
 4. Notifications/mobile: complete the real Android push/deep-link/ack receipt;
    decide whether the broader P9.13 web/email channels are still valuable for this
    private app before implementing them.
@@ -188,6 +192,8 @@ Computer Use gateway remain healthy and required no rebuild.
 - Retention repair: 40 focused tests passed before deployment.
 - Private API cache boundary: 34 focused wrapper and route checks passed before
   deployment.
+- Embedded preview CSP/proxy: 5 focused checks passed before deployment; the
+  authenticated visual restart remains pending because the workstation locked.
 - Changed-file lint, TypeScript, and diff validation passed for the deployed
   retention, App Builder, and session-cache changes; no full suite or broad audit
   was run.
