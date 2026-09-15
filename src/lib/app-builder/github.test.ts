@@ -14,6 +14,7 @@ const original = {
   appId: process.env.OMNIAGENT_GITHUB_APP_ID,
   privateKey: process.env.OMNIAGENT_GITHUB_APP_PRIVATE_KEY,
   installationId: process.env.OMNIAGENT_GITHUB_APP_INSTALLATION_ID,
+  repositoryIds: process.env.OMNIAGENT_GITHUB_APP_REPOSITORY_IDS,
   appSlug: process.env.OMNIAGENT_GITHUB_APP_SLUG,
 };
 
@@ -22,6 +23,7 @@ describe("App Builder GitHub App broker", () => {
     const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
     process.env.OMNIAGENT_GITHUB_APP_ID = "12345";
     process.env.OMNIAGENT_GITHUB_APP_INSTALLATION_ID = "67890";
+    process.env.OMNIAGENT_GITHUB_APP_REPOSITORY_IDS = "42";
     process.env.OMNIAGENT_GITHUB_APP_PRIVATE_KEY = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     process.env.OMNIAGENT_GITHUB_APP_SLUG = "asael-private-builder";
   });
@@ -31,22 +33,34 @@ describe("App Builder GitHub App broker", () => {
     restore("OMNIAGENT_GITHUB_APP_ID", original.appId);
     restore("OMNIAGENT_GITHUB_APP_PRIVATE_KEY", original.privateKey);
     restore("OMNIAGENT_GITHUB_APP_INSTALLATION_ID", original.installationId);
+    restore("OMNIAGENT_GITHUB_APP_REPOSITORY_IDS", original.repositoryIds);
     restore("OMNIAGENT_GITHUB_APP_SLUG", original.appSlug);
   });
 
-  it("reports configuration without exposing credential material and lists only installation repositories", async () => {
+  it("reports configuration without exposing credentials and lists only broker-allowlisted repositories", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(installationResponse())
       .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
-      .mockResolvedValueOnce(jsonResponse({ repositories: [{
-        id: 42,
-        name: "research-app",
-        full_name: "benniejoseph/research-app",
-        private: true,
-        default_branch: "main",
-        html_url: "https://github.com/benniejoseph/research-app",
-        owner: { login: "benniejoseph" },
-      }] }));
+      .mockResolvedValueOnce(jsonResponse({ repositories: [
+        {
+          id: 41,
+          name: "public-read-only",
+          full_name: "benniejoseph/public-read-only",
+          private: false,
+          default_branch: "main",
+          html_url: "https://github.com/benniejoseph/public-read-only",
+          owner: { login: "benniejoseph" },
+        },
+        {
+          id: 42,
+          name: "research-app",
+          full_name: "benniejoseph/research-app",
+          private: true,
+          default_branch: "main",
+          html_url: "https://github.com/benniejoseph/research-app",
+          owner: { login: "benniejoseph" },
+        },
+      ] }));
     vi.stubGlobal("fetch", fetchMock);
 
     expect(getBuilderGithubStatus()).toEqual({
@@ -65,6 +79,23 @@ describe("App Builder GitHub App broker", () => {
     expect(String(tokenRequest[1].headers.authorization)).toMatch(/^Bearer [^.]+\.[^.]+\.[^.]+$/);
     expect(JSON.stringify(getBuilderGithubStatus())).not.toContain("PRIVATE KEY");
     expect(fetchMock.mock.calls[2][1].headers.authorization).toBe("Bearer installation-token");
+  });
+
+  it("rejects a delivery repository outside the broker allowlist before provider access", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(deliverBuilderFilesToGithub({
+      repository: { repositoryId: "41", owner: "benniejoseph", name: "public-read-only" },
+      expectedBaseSha: "a".repeat(40),
+      defaultBranch: "main",
+      branchName: "asael/public-read-only-12345678",
+      title: "Do not deliver",
+      body: "Outside the explicit broker allowlist.",
+      draft: true,
+      files: [{ path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "c".repeat(64), size: 46 }],
+    })).rejects.toThrow(/outside the configured GitHub App allowlist/i);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("fences the exact base revision before creating any remote branch", async () => {

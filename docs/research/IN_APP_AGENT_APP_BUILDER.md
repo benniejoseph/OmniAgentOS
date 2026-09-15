@@ -133,7 +133,7 @@ Implementation evidence: migrations 168 and 169 install exact-actor forced-RLS c
 - [x] Add exact-revision binding, branch, commit, push and pull-request tools.
 - [x] Secret-scan and require passing checks before proposing delivery.
 
-Operational gate: create/install the private GitHub App once and place its app ID, installation ID, private key, and optional slug in the server environment. Install it only on selected repositories with the minimum Contents, Pull Requests, and Checks permissions. No general GitHub account token is used.
+Operational gate: create/install the private GitHub App once and place its app ID, installation ID, private key, required numeric repository-ID allowlist, and optional slug in the server environment. Install it only on selected repositories with the minimum Contents, Pull Requests, and Checks permissions. The broker-side allowlist excludes unrelated public repositories that GitHub may still enumerate read-only. No general GitHub account token is used.
 
 Exit gate: Asael can create a reviewable PR without obtaining general account credentials or writing the default branch.
 
