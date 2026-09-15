@@ -133,7 +133,7 @@ Implementation evidence: migrations 168 and 169 install exact-actor forced-RLS c
 - [x] Add exact-revision binding, branch, commit, push and pull-request tools.
 - [x] Secret-scan and require passing checks before proposing delivery.
 
-Operational gate: create/install the private GitHub App once and place its app ID, installation ID, private key, and slug in the server environment. No general GitHub account token is used.
+Operational gate: create/install the private GitHub App once and place its app ID, installation ID, private key, and optional slug in the server environment. Install it only on selected repositories with the minimum Contents, Pull Requests, and Checks permissions. No general GitHub account token is used.
 
 Exit gate: Asael can create a reviewable PR without obtaining general account credentials or writing the default branch.
 
@@ -143,7 +143,7 @@ Exit gate: Asael can create a reviewable PR without obtaining general account cr
 - [x] Add visual and route smoke checks against the exact preview.
 - [x] Add an explicit production-release gate with health, migration and rollback evidence.
 
-Implementation evidence: migrations 171 and 172 install actor-private forced-RLS preview and production ledgers. Preview source is secret-scanned and bound to an exact passing checkpoint and verification receipt. `ready` requires captured build logs, passing route smokes, and desktop/mobile captures. Production clones the exact reviewed preview into a fresh production build only after an unexpired digest and literal `RELEASE`; ambiguous provider acknowledgements can be resumed with the same idempotency identity. Generated applications that declare database migrations remain blocked until a separately approved migration/rollback workflow exists. The production tool is risk level 3 and is not exposed to Forge.
+Implementation evidence: migrations 171 and 172 install actor-private forced-RLS preview and production ledgers; migration 173 repairs their Vercel-host constraint with a PostgreSQL-safe literal-dot expression. Preview source is secret-scanned and bound to an exact passing checkpoint and verification receipt. `ready` requires captured build logs, passing route smokes, and desktop/mobile captures. Production clones the exact reviewed preview into a fresh production build only after an unexpired digest and literal `RELEASE`; ambiguous provider acknowledgements can be resumed with the same idempotency identity. Generated applications that declare database migrations remain blocked until a separately approved migration/rollback workflow exists. The production tool is risk level 3 and is not exposed to Forge. Live deployment requires `OMNIAGENT_VERCEL_ACCESS_TOKEN` to be a durable account token scoped to the owning project/team; a short-lived Vercel CLI OAuth session token is not an operational credential.
 
 Exit gate: a human can inspect the app and its evidence before the separately governed production effect.
 
