@@ -33,16 +33,18 @@ type BuilderVerification = Readonly<{ id: string; sessionId: string; checkpointI
 type TreeEntry = Readonly<{ path: string; kind: "file" | "directory"; size?: number }>;
 type BuilderFile = Readonly<{ path: string; content: string; sha256: string; size: number }>;
 type GithubStatus = Readonly<{ configured: boolean; missing: string[]; appSlug?: string; installUrl?: string }>;
+type VercelStatus = Readonly<{ configured: boolean; missing: string[] }>;
 type BuilderRepository = Readonly<{ repositoryId: string; owner: string; name: string; fullName: string; private: boolean; defaultBranch: string; htmlUrl: string }>;
 type RepositoryBinding = Readonly<{ id: string; repositoryId: string; repositoryFullName: string; private: boolean; defaultBranch: string; baseSha: string; revision: number; updatedAt: string }>;
 type BuilderDelivery = Readonly<{ id: string; repositoryBindingId: string; checkpointId: string; verificationId: string; workspaceSha256: string; baseSha: string; branchName: string; commitSha?: string; pullRequestNumber?: number; pullRequestUrl?: string; secretScanSha256: string; secretFindingCount: number; status: "preparing" | "pull_request_open" | "failed"; failureCode?: string; createdAt: string; updatedAt: string }>;
-type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; repositoryBinding: RepositoryBinding | null; deliveries: BuilderDelivery[]; github: GithubStatus; previewUrl: string | null }>;
+type BuilderDeployment = Readonly<{ id: string; checkpointId: string; verificationId: string; repositoryDeliveryId?: string; commitSha?: string; workspaceSha256: string; fileManifestSha256: string; fileCount: number; byteCount: number; secretScanSha256: string; smokeRoutes: string[]; providerDeploymentId?: string; providerState?: string; deploymentUrl?: string; status: "preparing" | "queued" | "building" | "verifying" | "ready" | "incomplete" | "failed"; logs: { status: "pending" | "captured" | "unavailable"; sha256?: string; eventCount: number }; routeEvidence: { status: "pending" | "passed" | "failed"; routes: ReadonlyArray<{ path: string; status: "passed" | "failed"; statusCode?: number; durationMs: number; bodySha256?: string; errorCode?: string }> }; browserEvidence: { status: "pending" | "captured" | "unavailable" | "failed"; captures: ReadonlyArray<{ viewport: "desktop" | "mobile"; width: number; height: number; screenshotSha256: string; mimeType: string; byteLength: number }>; errorCode?: string }; failureCode?: string; createdAt: string; updatedAt: string }>;
+type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; repositoryBinding: RepositoryBinding | null; deliveries: BuilderDelivery[]; deployments: BuilderDeployment[]; github: GithubStatus; vercel: VercelStatus; previewUrl: string | null }>;
 type AgentEvent = { type?: string; runId?: string; text?: string; response?: string; message?: string; label?: string; detail?: string; toolName?: string; status?: string };
 
 const commands = ["lint", "typecheck", "test", "build"] as const;
 
 export function AppBuilderStudio({ project }: { project: BuildProject }) {
-  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], github: { configured: false, missing: [] }, previewUrl: null });
+  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], deployments: [], github: { configured: false, missing: [] }, vercel: { configured: false, missing: [] }, previewUrl: null });
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [file, setFile] = useState<BuilderFile>();
   const [draft, setDraft] = useState("");
@@ -53,6 +55,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const [sentinelOutput, setSentinelOutput] = useState("");
   const [commandOutput, setCommandOutput] = useState("");
   const [githubOpen, setGithubOpen] = useState(false);
+  const [deployOpen, setDeployOpen] = useState(false);
   const [repositories, setRepositories] = useState<BuilderRepository[]>([]);
   const [selectedRepositoryId, setSelectedRepositoryId] = useState("");
   const [branchName, setBranchName] = useState("");
@@ -69,6 +72,12 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   );
   const currentCheckpoint = snapshot.checkpoints.find((checkpoint) => checkpoint.id === session?.currentCheckpointId);
   const latestDelivery = snapshot.deliveries[0];
+  const latestDeployment = snapshot.deployments[0];
+  const matchingDelivery = snapshot.deliveries.find((delivery) =>
+    delivery.status === "pull_request_open" &&
+    delivery.checkpointId === currentCheckpoint?.id &&
+    delivery.verificationId === deliveryVerification?.id,
+  );
 
   const loadSession = useCallback(async () => {
     const payload = await readJson<SessionPayload>(`/api/projects/${encodeURIComponent(project.id)}/builder`);
@@ -116,6 +125,31 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     void initialize();
     return () => { active = false; };
   }, [loadTree, project.id]);
+
+  useEffect(() => {
+    if (
+      !session || !latestDeployment ||
+      !new Set<BuilderDeployment["status"]>(["queued", "building", "verifying"]).has(latestDeployment.status)
+    ) return;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const payload = await mutate<{ deployment: BuilderDeployment }>(project.id, {
+          action: "deployment.refresh",
+          sessionId: session.id,
+          deploymentId: latestDeployment.id,
+        });
+        if (!active) return;
+        setSnapshot((current) => ({
+          ...current,
+          deployments: [payload.deployment, ...current.deployments.filter((item) => item.id !== payload.deployment.id)],
+        }));
+      } catch (refreshError) {
+        if (active) setError(message(refreshError));
+      }
+    }, 4_500);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [latestDeployment, project.id, session]);
 
   async function createWorkspace() {
     setBusy("create");
@@ -417,6 +451,60 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     }
   }
 
+  function toggleDeploy() {
+    setDeployOpen((current) => !current);
+    setGithubOpen(false);
+    setError(undefined);
+  }
+
+  async function createPreviewDeployment() {
+    if (!session || !currentCheckpoint || !deliveryVerification) return;
+    setBusy("vercel.deploy");
+    setError(undefined);
+    setDeployOpen(true);
+    try {
+      const payload = await mutate<{ deployment: BuilderDeployment }>(project.id, {
+        action: "deployment.preview",
+        sessionId: session.id,
+        checkpointId: currentCheckpoint.id,
+        verificationId: deliveryVerification.id,
+        ...(matchingDelivery ? { repositoryDeliveryId: matchingDelivery.id } : {}),
+      });
+      setSnapshot((current) => ({
+        ...current,
+        deployments: [payload.deployment, ...current.deployments.filter((item) => item.id !== payload.deployment.id)],
+      }));
+      await loadSession();
+    } catch (deploymentError) {
+      setError(message(deploymentError));
+      await loadSession().catch(() => undefined);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function refreshPreviewDeployment(deployment: BuilderDeployment) {
+    if (!session) return;
+    setBusy(`vercel.refresh:${deployment.id}`);
+    setError(undefined);
+    try {
+      const payload = await mutate<{ deployment: BuilderDeployment }>(project.id, {
+        action: "deployment.refresh",
+        sessionId: session.id,
+        deploymentId: deployment.id,
+      });
+      setSnapshot((current) => ({
+        ...current,
+        deployments: [payload.deployment, ...current.deployments.filter((item) => item.id !== payload.deployment.id)],
+      }));
+      await loadSession();
+    } catch (refreshError) {
+      setError(message(refreshError));
+    } finally {
+      setBusy("");
+    }
+  }
+
   const files = useMemo(() => tree.filter((entry) => entry.kind === "file"), [tree]);
 
   if (busy === "loading") return <section className={styles.loading}><Loader2 className="animate-spin" size={20} /><span>Opening the build studio…</span></section>;
@@ -451,8 +539,8 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
           <button type="button" onClick={() => void saveCheckpoint()} disabled={Boolean(busy) || dirty} title={dirty ? "Save the open file before sealing a checkpoint" : "Save a recoverable checkpoint"}><Save size={14} /> Checkpoint</button>
           <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy)} title="Restart preview"><RefreshCw size={14} className={busy === "start_preview" ? "animate-spin" : undefined} /></button>
           {snapshot.previewUrl ? <a href={snapshot.previewUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open preview</a> : null}
-          <button type="button" onClick={() => void toggleGithub()} aria-expanded={githubOpen} disabled={Boolean(busy) && busy !== "github.repositories"} title="Review and deliver this build through the private GitHub App"><GitBranch size={14} /> GitHub</button>
-          <button type="button" disabled title="Deployment is intentionally held for the next release slice"><Rocket size={14} /> Deploy</button>
+          <button type="button" onClick={() => { setDeployOpen(false); void toggleGithub(); }} aria-expanded={githubOpen} disabled={Boolean(busy) && busy !== "github.repositories"} title="Review and deliver this build through the private GitHub App"><GitBranch size={14} /> GitHub</button>
+          <button type="button" onClick={toggleDeploy} aria-expanded={deployOpen} disabled={Boolean(busy)} title="Create and verify a revision-bound Vercel preview"><Rocket size={14} /> Deploy</button>
         </div>
       </header>
 
@@ -484,6 +572,42 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
             </section>
           </div>
           {snapshot.deliveries.length ? <div className={styles.deliveryLedger}>{snapshot.deliveries.slice(0, 4).map((delivery) => <article key={delivery.id} data-status={delivery.status}><i /><div><strong>{delivery.branchName}</strong><small>{delivery.status.replaceAll("_", " ")} · {new Date(delivery.updatedAt).toLocaleString()}</small></div><code>{delivery.commitSha?.slice(0, 10) || delivery.failureCode || "preparing"}</code>{delivery.pullRequestUrl ? <a href={delivery.pullRequestUrl} target="_blank" rel="noreferrer">Open PR #{delivery.pullRequestNumber} <ExternalLink size={12} /></a> : null}</article>)}</div> : null}
+        </>}
+      </section> : null}
+
+      {deployOpen ? <section className={styles.deployPanel} aria-label="Vercel preview deployment">
+        <header>
+          <div><span className={styles.deliveryKicker}>Preview release desk</span><h3>Ship evidence before production</h3><p>One exact passing checkpoint becomes an isolated Vercel preview. Build logs, static routes, and desktop/mobile captures must all resolve before Asael calls it ready.</p></div>
+          <div className={styles.deliveryState} data-ready={latestDeployment?.status === "ready" || undefined}><i />{latestDeployment ? deploymentStatusLabel(latestDeployment.status) : snapshot.vercel.configured ? "Ready to deploy" : "Setup required"}</div>
+        </header>
+        {!snapshot.vercel.configured ? <div className={styles.githubSetup}><AlertCircle size={18} /><div><strong>Complete the Vercel deployment connection</strong><p>Missing: {snapshot.vercel.missing.join(", ") || "deployment credentials"}. The access token stays in Asael&apos;s server environment and is never placed in the generated app, Agent context, build log, or memory.</p></div></div> : <>
+          <div className={styles.previewFlow}>
+            <article data-ready={Boolean(currentCheckpoint) || undefined}><span>01</span><div><strong>Sealed source</strong><small>{currentCheckpoint ? currentCheckpoint.workspaceSha256.slice(0, 10) : "Checkpoint required"}</small></div><CheckCircle2 size={16} /></article>
+            <article data-ready={Boolean(deliveryVerification) || undefined}><span>02</span><div><strong>Verified</strong><small>{deliveryVerification ? "Checks + private views passed" : "Passing evidence required"}</small></div><ShieldCheck size={16} /></article>
+            <article data-ready={Boolean(latestDeployment?.providerDeploymentId) || undefined}><span>03</span><div><strong>Vercel build</strong><small>{latestDeployment?.providerState || "Not queued"}</small></div><Rocket size={16} /></article>
+            <article data-ready={latestDeployment?.routeEvidence.status === "passed" || undefined}><span>04</span><div><strong>Routes</strong><small>{latestDeployment ? `${latestDeployment.routeEvidence.routes.filter((route) => route.status === "passed").length}/${latestDeployment.smokeRoutes.length} healthy` : "Static paths discovered"}</small></div><MonitorPlay size={16} /></article>
+            <article data-ready={latestDeployment?.browserEvidence.status === "captured" || undefined}><span>05</span><div><strong>Visual proof</strong><small>{latestDeployment ? `${latestDeployment.browserEvidence.captures.length}/2 views` : "Desktop + mobile"}</small></div><CheckCircle2 size={16} /></article>
+          </div>
+          <div className={styles.deployGrid}>
+            <section className={styles.previewLaunchCard}>
+              <div><strong>Exact candidate</strong><small>{matchingDelivery ? `Draft PR #${matchingDelivery.pullRequestNumber} · commit ${matchingDelivery.commitSha?.slice(0, 10)}` : "Current verified workspace · GitHub handoff can be attached later"}</small></div>
+              <div className={styles.releaseCoordinates}><span>Checkpoint</span><code>{currentCheckpoint?.workspaceSha256.slice(0, 16) || "not sealed"}</code><span>Verification</span><code>{deliveryVerification?.id.slice(-12) || "not passed"}</code></div>
+              <button type="button" className={styles.primaryAction} onClick={() => void createPreviewDeployment()} disabled={Boolean(busy) || !currentCheckpoint || !deliveryVerification || latestDeployment?.status === "preparing" || latestDeployment?.status === "queued" || latestDeployment?.status === "building" || latestDeployment?.status === "verifying"}>{busy === "vercel.deploy" ? <Loader2 className="animate-spin" size={14} /> : <Rocket size={14} />} {busy === "vercel.deploy" ? "Uploading exact source…" : "Create Vercel preview"}</button>
+              <small className={styles.productionHold}><ShieldCheck size={13} /> Production remains a separate explicit approval.</small>
+            </section>
+            <section className={styles.previewEvidenceCard}>
+              <div><strong>Deployment evidence</strong><small>{latestDeployment ? new Date(latestDeployment.updatedAt).toLocaleString() : "No preview has been created yet."}</small></div>
+              {latestDeployment ? <>
+                <div className={styles.evidenceMatrix}>
+                  <span data-status={latestDeployment.logs.status}><b>Build log</b><small>{latestDeployment.logs.status === "captured" ? `${latestDeployment.logs.eventCount} events · ${latestDeployment.logs.sha256?.slice(0, 10)}` : latestDeployment.logs.status}</small></span>
+                  <span data-status={latestDeployment.routeEvidence.status}><b>Route smoke</b><small>{latestDeployment.routeEvidence.status} · {latestDeployment.routeEvidence.routes.length || latestDeployment.smokeRoutes.length} paths</small></span>
+                  <span data-status={latestDeployment.browserEvidence.status}><b>Visual smoke</b><small>{latestDeployment.browserEvidence.status} · {latestDeployment.browserEvidence.captures.length} captures</small></span>
+                </div>
+                <div className={styles.previewActions}>{latestDeployment.deploymentUrl ? <a href={latestDeployment.deploymentUrl} target="_blank" rel="noreferrer">Open exact preview <ExternalLink size={13} /></a> : null}{latestDeployment.status === "incomplete" ? <button type="button" onClick={() => void refreshPreviewDeployment(latestDeployment)} disabled={Boolean(busy)}>{busy === `vercel.refresh:${latestDeployment.id}` ? <Loader2 className="animate-spin" size={13} /> : <RefreshCw size={13} />} Retry evidence</button> : null}</div>
+              </> : <p>Deploy a passing checkpoint to begin the asynchronous evidence trail.</p>}
+            </section>
+          </div>
+          {snapshot.deployments.length ? <div className={styles.deploymentLedger}>{snapshot.deployments.slice(0, 5).map((deployment) => <article key={deployment.id} data-status={deployment.status}><i /><div><strong>{deploymentStatusLabel(deployment.status)}</strong><small>{deployment.commitSha ? `commit ${deployment.commitSha.slice(0, 10)}` : `workspace ${deployment.workspaceSha256.slice(0, 10)}`} · {new Date(deployment.updatedAt).toLocaleString()}</small></div><code>{deployment.providerDeploymentId?.slice(0, 14) || deployment.failureCode || "preparing"}</code>{deployment.deploymentUrl ? <a href={deployment.deploymentUrl} target="_blank" rel="noreferrer">Preview <ExternalLink size={12} /></a> : null}</article>)}</div> : null}
         </>}
       </section> : null}
 
@@ -563,4 +687,7 @@ function activityDetail(item: BuilderActivity) {
 function suggestBranch(title: string, workspaceSha256?: string) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "app";
   return `asael/${slug}-${(workspaceSha256 || "revision").slice(0, 8)}`;
+}
+function deploymentStatusLabel(value: BuilderDeployment["status"]) {
+  return value === "ready" ? "Evidence ready" : value === "incomplete" ? "Evidence incomplete" : value.replaceAll("_", " ");
 }

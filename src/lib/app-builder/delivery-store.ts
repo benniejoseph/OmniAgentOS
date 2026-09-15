@@ -95,6 +95,24 @@ export async function listBuilderDeliveries(sessionId: string, owner: BuilderOwn
   return rows.map(deliveryFromRow);
 }
 
+export async function getBuilderDelivery(
+  deliveryId: string,
+  sessionId: string,
+  owner: BuilderOwner,
+) {
+  requireDatabase();
+  await ensureDatabaseSchema();
+  const rows = await getSql()`
+    SELECT * FROM omni_app_builder_deliveries
+    WHERE tenant_id = ${owner.tenantId}
+      AND owner_actor_id = ${owner.actorId}
+      AND session_id = ${sessionId}
+      AND id = ${deliveryId}
+    LIMIT 1
+  `;
+  return rows[0] ? deliveryFromRow(rows[0]) : undefined;
+}
+
 export async function getBuilderDeliveryForIdempotency(input: BuilderOwner & {
   sessionId: string;
   idempotencyKey: string;

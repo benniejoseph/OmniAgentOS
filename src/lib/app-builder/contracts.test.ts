@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileUpdateInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
+import { assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
 import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 import { APP_SERVICE_OPERATION_CONTRACTS, MAIN_AGENT_APP_SERVICE_BINDINGS } from "@/lib/app-services/registry";
@@ -44,6 +44,18 @@ describe("project App Builder boundary", () => {
       body: "Review the responsive workspace.",
       draft: true,
     }).success).toBe(true);
+    expect(builderPreviewDeploymentInputSchema.safeParse({
+      projectId: "project-1",
+      sessionId: `app_build_${"a".repeat(48)}`,
+      checkpointId: `app_build_checkpoint_${"c".repeat(48)}`,
+      verificationId: `app_build_verification_${"d".repeat(48)}`,
+      repositoryDeliveryId: `app_build_delivery_${"e".repeat(48)}`,
+    }).success).toBe(true);
+    expect(builderPreviewDeploymentRefreshInputSchema.safeParse({
+      projectId: "project-1",
+      sessionId: `app_build_${"a".repeat(48)}`,
+      deploymentId: `app_build_deployment_${"f".repeat(48)}`,
+    }).success).toBe(true);
   });
 
   it("blocks credential-shaped source without retaining the secret in the receipt", () => {
@@ -82,6 +94,8 @@ describe("project App Builder boundary", () => {
       "app.projects.builder.repositories.list",
       "app.projects.builder.repository.bind",
       "app.projects.builder.delivery.create",
+      "app.projects.builder.deployment.preview",
+      "app.projects.builder.deployment.refresh",
       "app.projects.builder.stop",
     ]);
     const operations = new Set<string>(APP_SERVICE_OPERATION_CONTRACTS.map((contract) => contract.operation));
@@ -92,6 +106,7 @@ describe("project App Builder boundary", () => {
     }
     expect(FIRST_PARTY_APP_TOOLS.find((tool) => tool.id === "app.projects.builder.file.update")).toMatchObject({ operationClass: "mutation", riskLevel: 1, reversible: true });
     expect(FIRST_PARTY_APP_TOOLS.find((tool) => tool.id === "app.projects.builder.create")).toMatchObject({ approvalRequired: true, riskLevel: 2 });
+    expect(FIRST_PARTY_APP_TOOLS.find((tool) => tool.id === "app.projects.builder.deployment.preview")).toMatchObject({ approvalRequired: true, riskLevel: 2 });
   });
 
   it("adds the configurable builder model and actor-private persistent schema", async () => {
@@ -124,7 +139,7 @@ describe("project App Builder boundary", () => {
     expect(verification).toContain("omni_app_builder_verifications");
     expect(verification).toContain("app_builder.sentinel.reviewed");
     expect(verification).toContain("FORCE ROW LEVEL SECURITY");
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 170)).toEqual({
       version: 170,
       name: "app_builder_github_delivery_v1",
       checksum: "7d1f8e773faa0de1e8a5ac7a58ffb79a236a79504932fc757ee4cfbfbf796e7f",
@@ -134,6 +149,15 @@ describe("project App Builder boundary", () => {
     expect(delivery).toContain("omni_app_builder_deliveries");
     expect(delivery).toContain("app_builder.delivery.pull_request_open");
     expect(delivery).toContain("FORCE ROW LEVEL SECURITY");
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 171,
+      name: "app_builder_preview_deployments_v1",
+      checksum: "22a1cc4db58ef6e999d0276af281a12d4876dc46964009ebd124d645327294ad",
+    });
+    const previewDeployment = await readFile(new URL("../../../supabase/migrations/20260915140000_app_builder_preview_deployments.sql", import.meta.url), "utf8");
+    expect(previewDeployment).toContain("omni_app_builder_deployments");
+    expect(previewDeployment).toContain("app_builder.deployment.preview_ready");
+    expect(previewDeployment).toContain("FORCE ROW LEVEL SECURITY");
     const runner = await readFile(new URL("../orchestration/agent-runner.ts", import.meta.url), "utf8");
     expect(runner).toContain('agentId === "sentinel"');
     expect(runner).toContain('? "verifier" as const');

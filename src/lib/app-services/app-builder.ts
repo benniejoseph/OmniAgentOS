@@ -16,6 +16,8 @@ import {
   builderRepositoryBindInputSchema,
   builderRepositoryListInputSchema,
   builderDeliveryInputSchema,
+  builderPreviewDeploymentInputSchema,
+  builderPreviewDeploymentRefreshInputSchema,
   builderSentinelReviewInputSchema,
   builderSessionCreateInputSchema,
   builderSessionStopInputSchema,
@@ -59,6 +61,7 @@ import {
   bindBuilderRepository,
   completeBuilderDelivery,
   failBuilderDelivery,
+  getBuilderDelivery,
   getBuilderRepositoryBinding,
   getBuilderRepositoryBindingById,
   listBuilderDeliveries,
@@ -70,6 +73,23 @@ import {
   listBuilderGithubRepositories,
   resolveBuilderGithubRepository,
 } from "@/lib/app-builder/github";
+import {
+  beginBuilderDeployment,
+  failBuilderDeployment as failBuilderPreviewDeployment,
+  getBuilderDeployment,
+  listBuilderDeployments,
+  queueBuilderDeployment,
+  updateBuilderDeploymentEvidence,
+} from "@/lib/app-builder/deployment-store";
+import {
+  builderVercelProjectName,
+  createBuilderVercelPreview,
+  discoverBuilderSmokeRoutes,
+  getBuilderVercelDeployment,
+  getBuilderVercelLogEvidence,
+  getBuilderVercelStatus,
+  runBuilderVercelRouteSmokes,
+} from "@/lib/app-builder/vercel";
 import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { captureBuilderBrowserEvidence } from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
@@ -85,13 +105,15 @@ export async function showProjectBuilderService(
   await requireProject(caller, value.projectId);
   const session = await getProjectBuilderSession(value.projectId, owner(caller));
   const github = getBuilderGithubStatus();
-  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], github, previewUrl: null }, { resourceCount: 0 });
-  const [activity, checkpoints, verifications, repositoryBinding, deliveries, previewUrl] = await Promise.all([
+  const vercel = getBuilderVercelStatus();
+  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], deployments: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
+  const [activity, checkpoints, verifications, repositoryBinding, deliveries, deployments, previewUrl] = await Promise.all([
     listBuilderActivity(session.id, owner(caller)),
     listBuilderCheckpoints(session.id, owner(caller)),
     listBuilderVerifications(session.id, owner(caller)),
     getBuilderRepositoryBinding(session.id, owner(caller)),
     listBuilderDeliveries(session.id, owner(caller)),
+    listBuilderDeployments(session.id, owner(caller)),
     session.status === "ready" || session.status === "running"
       ? getBuilderPreviewUrl({
           sandboxName: session.sandboxName,
@@ -109,7 +131,9 @@ export async function showProjectBuilderService(
     verifications: verifications.map(publicVerification),
     repositoryBinding: repositoryBinding ? publicRepositoryBinding(repositoryBinding) : null,
     deliveries: deliveries.map(publicDelivery),
+    deployments: deployments.map(publicDeployment),
     github,
+    vercel,
     previewUrl,
   });
 }
@@ -696,6 +720,240 @@ export async function deliverProjectBuilderPullRequestService(
   }
 }
 
+export async function createProjectBuilderPreviewDeploymentService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderPreviewDeploymentInputSchema>,
+) {
+  const value = builderPreviewDeploymentInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.deployment.preview"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const checkpoint = await getBuilderCheckpoint(value.checkpointId, session.id, owner(caller));
+  if (!checkpoint || session.currentCheckpointId !== checkpoint.id) {
+    throw new Error("Preview deployment requires the exact current App Builder checkpoint.");
+  }
+  const verification = await getBuilderVerification(value.verificationId, session.id, owner(caller));
+  if (
+    !verification || verification.status !== "passed" ||
+    verification.checkpointId !== checkpoint.id ||
+    verification.workspaceSha256 !== checkpoint.workspaceSha256
+  ) {
+    throw new Error("Preview deployment requires a passing verification for the exact current checkpoint.");
+  }
+  const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
+  if (workspace.sha256 !== checkpoint.workspaceSha256) {
+    throw new Error("The workspace changed after verification. Seal and verify the current revision again.");
+  }
+  let repositoryDelivery;
+  if (value.repositoryDeliveryId) {
+    repositoryDelivery = await getBuilderDelivery(value.repositoryDeliveryId, session.id, owner(caller));
+    if (
+      !repositoryDelivery || repositoryDelivery.status !== "pull_request_open" ||
+      repositoryDelivery.checkpointId !== checkpoint.id ||
+      repositoryDelivery.verificationId !== verification.id ||
+      repositoryDelivery.workspaceSha256 !== checkpoint.workspaceSha256 ||
+      !repositoryDelivery.commitSha
+    ) {
+      throw new Error("The selected pull request is not bound to this exact passing checkpoint.");
+    }
+  }
+  const files = await readBuilderWorkspaceFiles(session.sandboxName);
+  const scan = scanBuilderFilesForSecrets(files);
+  const idempotencyKey = requireIdempotency(caller);
+  await recordBuilderActivity({
+    ...owner(caller), session,
+    eventType: "app_builder.secret_scan.completed",
+    eventKey: `${idempotencyKey}:preview_secret_scan`,
+    detail: {
+      contractVersion: scan.contractVersion,
+      checkpointId: checkpoint.id,
+      workspaceSha256: checkpoint.workspaceSha256,
+      status: scan.status,
+      fileCount: scan.fileCount,
+      byteCount: scan.byteCount,
+      findingCount: scan.findingCount,
+      scanSha256: scan.scanSha256,
+      findings: scan.findings,
+      purpose: "vercel_preview",
+    },
+  });
+  if (scan.status !== "passed") {
+    throw new Error(`Preview deployment is blocked by ${scan.findingCount} possible credential finding${scan.findingCount === 1 ? "" : "s"}. Review the reported file and line locations.`);
+  }
+  const fileManifestSha256 = createHash("sha256")
+    .update(files.map((file) => `${file.path}\0${file.sha256}\0${file.size}`).join("\n"))
+    .digest("hex");
+  const smokeRoutes = discoverBuilderSmokeRoutes(files);
+  const claim = await beginBuilderDeployment({
+    ...owner(caller),
+    projectId: session.projectId,
+    sessionId: session.id,
+    checkpointId: checkpoint.id,
+    verificationId: verification.id,
+    repositoryDeliveryId: repositoryDelivery?.id,
+    commitSha: repositoryDelivery?.commitSha,
+    workspaceSha256: checkpoint.workspaceSha256,
+    fileManifestSha256,
+    fileCount: files.length,
+    byteCount: files.reduce((total, file) => total + file.size, 0),
+    secretScanSha256: scan.scanSha256,
+    smokeRoutes,
+    idempotencyKey,
+  });
+  if (!claim.created) {
+    if (claim.deployment.status !== "preparing") {
+      return completeAppServiceCall(authorized, { deployment: publicDeployment(claim.deployment), created: false });
+    }
+    throw new Error("This preview deployment is already being prepared. Refresh its recorded state before retrying.");
+  }
+  try {
+    const deployed = await createBuilderVercelPreview({
+      deploymentReceiptId: claim.deployment.id,
+      projectName: builderVercelProjectName(session.tenantId, session.ownerActorId, session.projectId),
+      checkpointId: checkpoint.id,
+      workspaceSha256: checkpoint.workspaceSha256,
+      commitSha: repositoryDelivery?.commitSha,
+      files,
+    });
+    const deployment = await queueBuilderDeployment({
+      ...owner(caller),
+      deployment: claim.deployment,
+      providerProjectId: deployed.projectId,
+      providerDeploymentId: deployed.deploymentId,
+      providerState: deployed.state,
+      deploymentUrl: deployed.url,
+    });
+    await recordBuilderActivity({
+      ...owner(caller), session,
+      eventType: "app_builder.deployment.preview_queued",
+      eventKey: idempotencyKey,
+      detail: {
+        deploymentId: deployment.id,
+        providerDeploymentId: deployment.providerDeploymentId,
+        checkpointId: checkpoint.id,
+        verificationId: verification.id,
+        repositoryDeliveryId: repositoryDelivery?.id,
+        commitSha: repositoryDelivery?.commitSha,
+        workspaceSha256: checkpoint.workspaceSha256,
+        fileManifestSha256,
+        secretScanSha256: scan.scanSha256,
+        smokeRouteCount: smokeRoutes.length,
+      },
+    });
+    return completeAppServiceCall(authorized, { deployment: publicDeployment(deployment), created: true });
+  } catch (error) {
+    const failed = await failBuilderPreviewDeployment({ ...owner(caller), deployment: claim.deployment, error });
+    await recordBuilderActivity({
+      ...owner(caller), session,
+      eventType: "app_builder.deployment.preview_failed",
+      eventKey: idempotencyKey,
+      detail: {
+        deploymentId: failed.id,
+        checkpointId: checkpoint.id,
+        verificationId: verification.id,
+        workspaceSha256: checkpoint.workspaceSha256,
+        failureCode: failed.failureCode,
+      },
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function refreshProjectBuilderPreviewDeploymentService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderPreviewDeploymentRefreshInputSchema>,
+) {
+  const value = builderPreviewDeploymentRefreshInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.deployment.refresh"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const deployment = await getBuilderDeployment(value.deploymentId, session.id, owner(caller));
+  if (!deployment) throw new Error("The selected preview deployment was not found.");
+  if (deployment.status === "ready" || deployment.status === "failed") {
+    return completeAppServiceCall(authorized, { deployment: publicDeployment(deployment), changed: false });
+  }
+  if (!deployment.providerDeploymentId || !deployment.deploymentUrl) {
+    throw new Error("The preview deployment has no confirmed Vercel identity yet.");
+  }
+  const provider = await getBuilderVercelDeployment(deployment.providerDeploymentId);
+  if (provider.deploymentId !== deployment.providerDeploymentId || provider.projectId !== deployment.providerProjectId) {
+    throw new Error("Vercel returned a deployment outside the recorded preview identity.");
+  }
+  const state = provider.state.toUpperCase();
+  if (state === "ERROR" || state === "CANCELED" || state.endsWith("_ERROR")) {
+    const failed = await failBuilderPreviewDeployment({
+      ...owner(caller), deployment,
+      providerState: state,
+      error: new Error(`Vercel preview entered terminal state ${state}.`),
+    });
+    await recordBuilderActivity({
+      ...owner(caller), session,
+      eventType: "app_builder.deployment.preview_failed",
+      eventKey: requireIdempotency(caller),
+      detail: {
+        deploymentId: failed.id,
+        providerDeploymentId: failed.providerDeploymentId,
+        providerState: state,
+        workspaceSha256: failed.workspaceSha256,
+        failureCode: failed.failureCode,
+      },
+    });
+    return completeAppServiceCall(authorized, { deployment: publicDeployment(failed), changed: true });
+  }
+  if (state !== "READY") {
+    const status = state === "BUILDING" || state === "INITIALIZING" ? "building" as const : "queued" as const;
+    const logs = state === "BUILDING"
+      ? await getBuilderVercelLogEvidence(deployment.providerDeploymentId)
+      : deployment.logs;
+    const current = await updateBuilderDeploymentEvidence({
+      ...owner(caller), deployment, status, providerState: state, logs,
+    });
+    return completeAppServiceCall(authorized, { deployment: publicDeployment(current), changed: current.updatedAt !== deployment.updatedAt });
+  }
+  const verifying = await updateBuilderDeploymentEvidence({
+    ...owner(caller), deployment, status: "verifying", providerState: state,
+  });
+  const [logs, routeEvidence, browserEvidence] = await Promise.all([
+    getBuilderVercelLogEvidence(deployment.providerDeploymentId),
+    runBuilderVercelRouteSmokes(deployment.deploymentUrl, deployment.smokeRoutes),
+    captureBuilderBrowserEvidence({
+      tenantId: session.tenantId,
+      actorId: session.ownerActorId,
+      executionId: `app-builder-deployment:${deployment.id}`,
+      previewUrl: deployment.deploymentUrl,
+    }),
+  ]);
+  const status = logs.status === "captured" && routeEvidence.status === "passed" && browserEvidence.status === "captured"
+    ? "ready" as const
+    : "incomplete" as const;
+  const current = await updateBuilderDeploymentEvidence({
+    ...owner(caller), deployment: verifying, status, providerState: state,
+    logs, routeEvidence, browserEvidence,
+  });
+  await recordBuilderActivity({
+    ...owner(caller), session,
+    eventType: status === "ready"
+      ? "app_builder.deployment.preview_ready"
+      : "app_builder.deployment.preview_incomplete",
+    eventKey: requireIdempotency(caller),
+    detail: {
+      deploymentId: current.id,
+      providerDeploymentId: current.providerDeploymentId,
+      checkpointId: current.checkpointId,
+      verificationId: current.verificationId,
+      commitSha: current.commitSha,
+      workspaceSha256: current.workspaceSha256,
+      deploymentUrl: current.deploymentUrl,
+      logsStatus: logs.status,
+      logsSha256: logs.sha256,
+      logEventCount: logs.eventCount,
+      routeStatus: routeEvidence.status,
+      routeCount: routeEvidence.routes.length,
+      browserStatus: browserEvidence.status,
+      captureCount: browserEvidence.captures.length,
+    },
+  });
+  return completeAppServiceCall(authorized, { deployment: publicDeployment(current), changed: true });
+}
+
 async function requireSession(caller: AppServiceCaller, projectId: string, sessionId: string) {
   await requireProject(caller, projectId);
   const session = await getBuilderSession(sessionId, projectId, owner(caller));
@@ -775,6 +1033,11 @@ function publicRepositoryBinding<T extends { tenantId: string; ownerActorId: str
 
 function publicDelivery<T extends { tenantId: string; ownerActorId: string }>(delivery: T) {
   const { tenantId: _tenantId, ownerActorId: _ownerActorId, ...safe } = delivery;
+  return safe;
+}
+
+function publicDeployment<T extends { tenantId: string; ownerActorId: string }>(deployment: T) {
+  const { tenantId: _tenantId, ownerActorId: _ownerActorId, ...safe } = deployment;
   return safe;
 }
 
