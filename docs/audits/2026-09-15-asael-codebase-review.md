@@ -1,7 +1,10 @@
 # Asael codebase review — current evidence
 
-Date: 2026-09-15  
-Reviewed revision: `00c601c7e0416464ec621863b64e771e038fb975`  
+Date: 2026-09-15
+
+Reviewed baseline: `00c601c7e0416464ec621863b64e771e038fb975`
+
+Latest review remediation: `c152e89a25a3f1d21e3b512d02ad7699cdfd9234`
 Branch: `performance-remediation`
 
 This is the current review artifact. `docs/AUDIT_REPORT.md` and
@@ -141,6 +144,17 @@ Indexed search sizes are preserved, excluded files cannot leak into search,
 ranged reads are capped at 24,000 characters with truncation provenance, missing
 sizes are not represented as zero, and model output-budget errors are actionable.
 
+### 8. Session projection cache privacy — resolved and deployed
+
+The review found that `/api/auth/session` returned the authenticated actor/session
+projection under Vercel's default `Cache-Control: public, max-age=0,
+must-revalidate` response. The route now explicitly returns `private, no-store`
+for every session state. Its focused route regression, changed-file lint,
+TypeScript, and the Vercel production build pass. Canonical production returns the
+private header at exact web revision
+`c152e89a25a3f1d21e3b512d02ad7699cdfd9234`; the compatible protocol-1 worker and
+Computer Use gateway remain healthy and required no rebuild.
+
 ## Pending product work already recorded by the implementation plan
 
 1. Memory: representative offline evaluation before semantic prompt serving;
@@ -164,8 +178,10 @@ sizes are not represented as zero, and model output-budget errors are actionable
   store: 19/19 focused tests passed.
 - App Builder source-feedback slice: 14 focused tests passed before deployment.
 - Retention repair: 40 focused tests passed before deployment.
+- Session cache privacy: 1 focused route regression passed before deployment.
 - Changed-file lint, TypeScript, and diff validation passed for the deployed
-  retention/App Builder changes; no full suite or broad audit was run.
+  retention, App Builder, and session-cache changes; no full suite or broad audit
+  was run.
 
 ## Recommended implementation order
 
