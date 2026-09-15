@@ -1546,6 +1546,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[173],
       up: ensureAppBuilderRepositoryWorkspacesV1,
     },
+    {
+      ...databaseSchemaMigrations[174],
+      up: ensureToolExecutionRetentionRedactionV2,
+    },
   ];
 }
 
@@ -5502,7 +5506,7 @@ async function ensureToolExecutionRetentionRedactionV1(sql: SqlClient) {
     DECLARE
       is_expired_approval_redaction BOOLEAN;
     BEGIN
-      is_expired_approval_redaction :=
+      is_expired_approval_redaction := COALESCE((
         OLD.input IS DISTINCT FROM NEW.input
         AND OLD.status = 'approval_required'
         AND OLD.output IS NULL
@@ -5517,6 +5521,75 @@ async function ensureToolExecutionRetentionRedactionV1(sql: SqlClient) {
         AND NEW.approval_reason = 'Expired by retention policy.'
         AND NEW.effect_receipt IS NULL
         AND NEW.completed_at IS NOT NULL;
+
+      IF ROW(
+        OLD.id,
+        OLD.tenant_id,
+        OLD.actor_id,
+        OLD.tool_id,
+        OLD.tool_name,
+        OLD.risk_level,
+        OLD.dry_run,
+        OLD.approval_required,
+        OLD.created_at
+      ) IS DISTINCT FROM ROW(
+        NEW.id,
+        NEW.tenant_id,
+        NEW.actor_id,
+        NEW.tool_id,
+        NEW.tool_name,
+        NEW.risk_level,
+        NEW.dry_run,
+        NEW.approval_required,
+        NEW.created_at
+      ) OR (
+        OLD.input IS DISTINCT FROM NEW.input
+        AND NOT is_expired_approval_redaction
+      ) THEN
+        RAISE EXCEPTION 'Governed tool execution identity is immutable'
+          USING ERRCODE = '55000';
+      END IF;
+      RETURN NEW;
+    END
+    $function$
+  `;
+}
+
+async function ensureToolExecutionRetentionRedactionV2(sql: SqlClient) {
+  await sql`
+    CREATE OR REPLACE FUNCTION omni_reject_tool_execution_identity_change()
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SECURITY INVOKER
+    SET search_path = pg_catalog, public
+    AS $function$
+    DECLARE
+      is_expired_approval_redaction BOOLEAN;
+    BEGIN
+      is_expired_approval_redaction :=
+        OLD.input IS DISTINCT FROM NEW.input
+        AND OLD.status = 'approval_required'
+        AND OLD.approval_decision IS NULL
+        AND OLD.effect_receipt IS NULL
+        AND OLD.completed_at IS NULL
+        AND NEW.status = 'rejected'
+        AND NEW.input = '{"redacted":"expired approval"}'::JSONB
+        AND NEW.output IS NULL
+        AND NEW.reason = 'Approval expired before an operator decision.'
+        AND NEW.approval_decision = 'rejected'
+        AND NEW.approval_reason = 'Expired by retention policy.'
+        AND NEW.effect_receipt IS NULL
+        AND NEW.completed_at IS NOT NULL
+        AND ROW(
+          OLD.approvals,
+          OLD.approved_by,
+          OLD.approved_at
+        ) IS NOT DISTINCT FROM ROW(
+          NEW.approvals,
+          NEW.approved_by,
+          NEW.approved_at
+        )
+      ), FALSE);
 
       IF ROW(
         OLD.id,

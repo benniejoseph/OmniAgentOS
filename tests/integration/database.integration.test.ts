@@ -1099,6 +1099,12 @@ databaseDescribe("Postgres schema integration", () => {
         )
     `;
     await admin`
+      UPDATE omni_tool_executions
+      SET output = '{"preview":"sensitive pre-approval output"}'::jsonb,
+          reason = 'Waiting for operator approval.'
+      WHERE id = 'expired-approval'
+    `;
+    await admin`
       INSERT INTO omni_access_requests (
         id, tenant_id, name, email, company, role, use_case, timeline,
         status, created_at, updated_at
@@ -1282,7 +1288,7 @@ databaseDescribe("Postgres schema integration", () => {
       ORDER BY id
     `;
     const [expiredApproval] = await admin`
-      SELECT status, input, approval_reason
+      SELECT status, input, output, reason, approval_reason
       FROM omni_tool_executions
       WHERE id = 'expired-approval'
     `;
@@ -1379,6 +1385,8 @@ databaseDescribe("Postgres schema integration", () => {
     expect(expiredApproval).toMatchObject({
       status: "rejected",
       input: { redacted: "expired approval" },
+      output: null,
+      reason: "Approval expired before an operator decision.",
       approval_reason: "Expired by retention policy.",
     });
     expect(remainingAccessRequests).toEqual([
