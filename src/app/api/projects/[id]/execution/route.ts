@@ -3,6 +3,7 @@ import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contra
 import { controlProjectExecutionService } from "@/lib/app-services/projects";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
+import { projectTaskIdSchema } from "@/lib/projects/events";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -24,7 +25,7 @@ const schema = z.discriminatedUnion("action", [
     requireApproval: z.boolean(),
   }).strict(),
   z.object({ action: z.enum(["pause", "resume", "sync"]) }).strict(),
-  z.object({ action: z.enum(["approve", "retry"]), taskId: z.string().uuid() }).strict(),
+  z.object({ action: z.enum(["approve", "retry"]), taskId: projectTaskIdSchema }).strict(),
 ]);
 
 async function POSTHandler(request: Request, route: { params: Promise<{ id: string }> }) {
@@ -38,9 +39,16 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     context = await authorizeRequest({ request, action: "manage.workflow", resourceType: "project_execution", resourceId: id, nativeMutationCapability: "workspaces.update", metadata: { action: parsed.data.action } });
   } catch (error) { return forbiddenResponse(error); }
   try {
+    const command = "taskId" in parsed.data
+      ? {
+          projectId: id,
+          action: parsed.data.action,
+          workItemId: parsed.data.taskId,
+        }
+      : { projectId: id, ...parsed.data };
     const result = await controlProjectExecutionService(
       createRequestMutationAppServiceCaller(request, context, { projectId: id, purpose: `project.execution.${parsed.data.action}` }),
-      { projectId: id, ...parsed.data, ...("taskId" in parsed.data ? { workItemId: parsed.data.taskId } : {}) } as never,
+      command,
     );
     if (!result.data.snapshot) {
       return Response.json(

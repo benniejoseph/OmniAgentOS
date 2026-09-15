@@ -6,6 +6,11 @@ export const PROJECT_EVENT_SCHEMA_VERSION = 1 as const;
 const projectEventIdSchema = z.string().trim().min(1).max(240);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
+export const projectTaskIdSchema = z.union([
+  z.string().trim().uuid(),
+  z.string().trim().regex(/^project_task_[a-f0-9]{40}$/),
+]);
+
 export const projectMutationEventPayloadSchema = z.object({
   schemaVersion: z.literal(PROJECT_EVENT_SCHEMA_VERSION),
   projectId: projectEventIdSchema,

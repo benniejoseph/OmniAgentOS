@@ -1126,13 +1126,6 @@ async function POSTHandler(request: Request) {
               detail.run.id,
               missionOwner,
             );
-            await attachMissionExecutor({
-              taskId: missionTask.id,
-              executorType: "workflow_run",
-              executorId: detail.run.id,
-              status: "queued",
-              payload: { route: decision.route, threadId: thread.id },
-            }, missionOwner);
             if (mission.status === "draft") {
               mission = await transitionMission(mission.id, "queued", missionOwner);
             }
