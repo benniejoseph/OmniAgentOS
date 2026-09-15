@@ -394,6 +394,7 @@ export function safeBuilderRelativePath(input: string) {
   ) {
     throw new Error("Builder file path is outside the editable application boundary.");
   }
+  if (normalized === ".gitignore") return normalized;
   if (!/^[A-Za-z0-9][A-Za-z0-9._/@+ -]*(?:\/[A-Za-z0-9][A-Za-z0-9._/@+ -]*)*$/.test(normalized)) {
     throw new Error("Builder file path contains unsupported characters.");
   }
