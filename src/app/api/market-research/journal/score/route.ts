@@ -31,6 +31,7 @@ async function POSTHandler(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "market_forecast_outcome",
+      nativeMutationCapability: "markets.update",
       metadata: {
         operation: "score_due",
         instrumentId: parsed.data.instrumentId,

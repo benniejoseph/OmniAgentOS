@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/network/api_client.dart';
+import 'app_builder_view.dart';
 import 'projects.dart';
 
 class ProjectsView extends StatelessWidget {
@@ -191,10 +193,12 @@ class ProjectDetailView extends StatefulWidget {
     super.key,
     required this.id,
     required this.repository,
+    required this.api,
     this.focusWorkItemId,
   });
   final String id;
   final ProjectsRepository repository;
+  final ApiClient api;
   final String? focusWorkItemId;
   @override
   State<ProjectDetailView> createState() => _ProjectDetailViewState();
@@ -282,6 +286,11 @@ class _ProjectDetailViewState extends State<ProjectDetailView> {
                         label: Text('Artifacts'),
                         icon: Icon(Icons.fact_check_outlined),
                       ),
+                      ButtonSegment(
+                        value: 3,
+                        label: Text('Build'),
+                        icon: Icon(Icons.code_rounded),
+                      ),
                     ],
                     selected: {tab},
                     onSelectionChanged: (v) => setState(() => tab = v.first),
@@ -298,10 +307,12 @@ class _ProjectDetailViewState extends State<ProjectDetailView> {
                     ),
                   ),
                 Expanded(
-                  child: IndexedStack(
-                    index: tab,
-                    children: [_tasks(p), _execution(p), _artifacts(p)],
-                  ),
+                  child: tab == 3
+                      ? AppBuilderView(project: p, api: widget.api)
+                      : IndexedStack(
+                          index: tab,
+                          children: [_tasks(p), _execution(p), _artifacts(p)],
+                        ),
                 ),
               ],
             ),

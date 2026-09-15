@@ -9,12 +9,12 @@ describe("native contract discovery route", () => {
     await expect(response.json()).resolves.toMatchObject({
       schemaVersion: 1,
       contractId: "asael.native-api",
-      currentVersion: 5,
-      previousVersion: 4,
-      supportedVersions: [5, 4],
+      currentVersion: 6,
+      previousVersion: 5,
+      supportedVersions: [6, 5],
       versions: [
-        { version: 5, state: "current", openapi: "/native-contracts/v5/openapi.json" },
-        { version: 4, state: "previous", openapi: "/native-contracts/v4/openapi.json" },
+        { version: 6, state: "current", openapi: "/native-contracts/v6/openapi.json" },
+        { version: 5, state: "previous", openapi: "/native-contracts/v5/openapi.json" },
       ],
     });
   });

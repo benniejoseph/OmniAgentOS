@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 5;
-  static const previousVersion = 4;
-  static const supportedVersions = <int>[5, 4];
+  static const currentVersion = 6;
+  static const previousVersion = 5;
+  static const supportedVersions = <int>[6, 5];
   static const discoveryPath = '/api/mobile/contracts';
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -120,6 +120,29 @@ abstract final class NativePaths {
   static String customersGet(String id) => '/api/customer-accounts/${Uri.encodeComponent(id)}';
   static const memoryIntelligenceGet = '/api/memory/intelligence';
   static String memoryGet(String id) => '/api/memory/${Uri.encodeComponent(id)}';
+  static const customersList = '/api/customer-accounts';
+  static const customersPortfolio = '/api/customer-accounts/portfolio';
+  static const marketOverview = '/api/market-research';
+  static const marketBars = '/api/market-research/bars';
+  static const marketEvents = '/api/market-research/events';
+  static const marketEventsBackfill = '/api/market-research/events';
+  static const marketReplays = '/api/market-research/replays';
+  static const marketReplaysBackfill = '/api/market-research/replays';
+  static const marketBaselines = '/api/market-research/baselines';
+  static const marketFeatures = '/api/market-research/features';
+  static const marketAnalysis = '/api/market-research/analysis';
+  static const marketJournal = '/api/market-research/journal';
+  static const marketJournalGenerate = '/api/market-research/journal/generate';
+  static const marketJournalScore = '/api/market-research/journal/score';
+  static String operationsJob(String id) => '/api/operations/jobs/${Uri.encodeComponent(id)}';
+  static const paymentsReadiness = '/api/payments/ap2/readiness';
+  static const paymentsReviews = '/api/payments/ap2/reviews';
+  static const paymentsAuthenticators = '/api/payments/ap2/authenticators';
+  static const paymentsTransactions = '/api/payments/ap2/transactions';
+  static const settingsGet = '/api/settings';
+  static const settingsAssignmentsUpdate = '/api/settings/assignments';
+  static String workspacesBuilderGet(String id) => '/api/projects/${Uri.encodeComponent(id)}/builder';
+  static String workspacesBuilderUpdate(String id) => '/api/projects/${Uri.encodeComponent(id)}/builder';
 }
 
 abstract final class NativeConversationEvents {

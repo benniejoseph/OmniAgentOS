@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 5 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 4 as const;
+export const NATIVE_API_CURRENT_VERSION = 6 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 5 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -311,7 +311,7 @@ export const nativeConversationEventSchema = z.discriminatedUnion(
 
 export type NativeOperation = Readonly<{
   id: string;
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   summary: string;
   auth: "public" | "bearer";
@@ -431,6 +431,33 @@ const v5Operations = [
   operation("memory.get", "GET", "/api/memory/{id}", "Inspect one explicitly selected actor-scoped memory or its deletion preview.", "bearer", undefined, "JsonObject"),
 ] as const satisfies readonly NativeOperation[];
 
+const v6Operations = [
+  ...v5Operations,
+  operation("customers.list", "GET", "/api/customer-accounts", "Read the actor-visible Customer 360 portfolio.", "bearer", undefined, "JsonObject"),
+  operation("customers.portfolio", "GET", "/api/customer-accounts/portfolio", "Read actor-visible customer health and risk intelligence.", "bearer", undefined, "JsonObject"),
+  operation("market.overview", "GET", "/api/market-research", "Read the market-research instrument and provider projection.", "bearer", undefined, "JsonObject"),
+  operation("market.bars", "GET", "/api/market-research/bars", "Read one immutable actor-owned market snapshot.", "bearer", undefined, "JsonObject"),
+  operation("market.events", "GET", "/api/market-research/events", "Read official macro event history.", "bearer", undefined, "JsonObject"),
+  operation("market.events.backfill", "POST", "/api/market-research/events", "Queue governed official-event backfill.", "bearer", "JsonObject", "JsonObject"),
+  operation("market.replays", "GET", "/api/market-research/replays", "Read exact event-window replays.", "bearer", undefined, "JsonObject"),
+  operation("market.replays.backfill", "POST", "/api/market-research/replays", "Queue governed market replay backfill.", "bearer", "JsonObject", "JsonObject"),
+  operation("market.baselines", "GET", "/api/market-research/baselines", "Read comparable-event descriptive baselines.", "bearer", undefined, "JsonObject"),
+  operation("market.features", "GET", "/api/market-research/features", "Read deterministic ICT and Quarterly technical candidates.", "bearer", undefined, "JsonObject"),
+  operation("market.analysis", "GET", "/api/market-research/analysis", "Read private immutable chart-analysis versions.", "bearer", undefined, "JsonObject"),
+  operation("market.journal", "GET", "/api/market-research/journal", "Read the actor-private forward-shadow journal.", "bearer", undefined, "JsonObject"),
+  operation("market.journal.generate", "POST", "/api/market-research/journal/generate", "Generate one governed uncalibrated market scenario.", "bearer", "JsonObject", "JsonObject"),
+  operation("market.journal.score", "POST", "/api/market-research/journal/score", "Score due market scenarios against immutable outcomes.", "bearer", "JsonObject", "JsonObject"),
+  operation("operations.job", "GET", "/api/operations/jobs/{id}", "Read one actor-visible background operation.", "bearer", undefined, "JsonObject"),
+  operation("payments.readiness", "GET", "/api/payments/ap2/readiness", "Read the exact AP2 readiness boundary.", "bearer", undefined, "JsonObject"),
+  operation("payments.reviews", "GET", "/api/payments/ap2/reviews", "Read exact actor-private mandate reviews.", "bearer", undefined, "JsonObject"),
+  operation("payments.authenticators", "GET", "/api/payments/ap2/authenticators", "Read registered hardware-backed payment signers.", "bearer", undefined, "JsonObject"),
+  operation("payments.transactions", "GET", "/api/payments/ap2/transactions", "Read evidence-derived payment lifecycle projections.", "bearer", undefined, "JsonObject"),
+  operation("settings.get", "GET", "/api/settings", "Read the actor-authorized provider and model-routing control plane.", "bearer", undefined, "JsonObject"),
+  operation("settings.assignments.update", "PUT", "/api/settings/assignments", "Update one actor-owned model assignment.", "bearer", "JsonObject", "JsonObject"),
+  operation("workspaces.builder.get", "GET", "/api/projects/{id}/builder", "Read the project-scoped App Builder session.", "bearer", undefined, "JsonObject"),
+  operation("workspaces.builder.update", "POST", "/api/projects/{id}/builder", "Run a governed App Builder operation.", "bearer", "JsonObject", "JsonObject"),
+] as const satisfies readonly NativeOperation[];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -482,6 +509,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 3) return v3Operations;
   if (version === 4) return v4Operations;
   if (version === 5) return v5Operations;
+  if (version === 6) return v6Operations;
   return undefined;
 }
 
@@ -491,7 +519,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [5, 4],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [6, 5],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

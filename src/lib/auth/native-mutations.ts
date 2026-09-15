@@ -13,6 +13,8 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "approvals.decide",
   "today.update",
   "workspaces.update",
+  "markets.update",
+  "settings.update",
   "evidence.cancel",
   "push.registration.update",
   "push.delivery.acknowledge",
@@ -70,7 +72,9 @@ export function nativeMutationCapabilityPolicy(
 
 function minimumVersion(capability: NativeMutationCapability) {
   return capability === "push.registration.update" ||
-      capability === "push.delivery.acknowledge"
+      capability === "push.delivery.acknowledge" ||
+      capability === "markets.update" ||
+      capability === "settings.update"
     ? NATIVE_API_CURRENT_VERSION
     : 3;
 }

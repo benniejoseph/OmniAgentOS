@@ -80,6 +80,7 @@ async function POSTHandler(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "market_event_replay",
+      nativeMutationCapability: "markets.update",
       metadata: {
         operation: "backfill",
         instrumentId: parsed.data.instrumentId,

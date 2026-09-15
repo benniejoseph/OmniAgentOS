@@ -49,4 +49,18 @@ void main() {
     );
     expect(find.byType(Card), findsOneWidget);
   });
+
+  test('workspace navigation derives primary and grouped destinations', () {
+    expect(
+      destinationIndices(primary: true)
+          .map((index) => appDestinations[index].path),
+      ['/today', '/talk', '/capture', '/projects', '/knowledge'],
+    );
+    expect(
+      destinationIndices(group: AppDestinationGroup.system)
+          .map((index) => appDestinations[index].path),
+      ['/monitoring', '/security', '/settings'],
+    );
+    expect(destinationIndex('/inbox'), isNonNegative);
+  });
 }

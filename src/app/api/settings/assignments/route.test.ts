@@ -157,6 +157,7 @@ describe("model assignment route ownership", () => {
       action: "manage.connector",
       resourceType: "model_assignment",
       resourceId: "main_agent",
+      nativeMutationCapability: "settings.update",
       metadata: {
         scope: "main_agent",
         provider: "openai",
