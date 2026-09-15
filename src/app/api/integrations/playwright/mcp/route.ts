@@ -1,4 +1,5 @@
 import { LEGACY_PLAYWRIGHT_MCP_ENDPOINT } from "@/lib/connectors/mcp-trust";
+import { enforcePrivateNoStore } from "@/lib/http/response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,22 +28,24 @@ const responseHeaderAllowlist = [
 ] as const;
 
 export async function GET(request: Request) {
-  return proxyPlaywrightMcp(request);
+  return enforcePrivateNoStore(await proxyPlaywrightMcp(request));
 }
 
 export async function POST(request: Request) {
-  return proxyPlaywrightMcp(request);
+  return enforcePrivateNoStore(await proxyPlaywrightMcp(request));
 }
 
 export async function DELETE(request: Request) {
-  return proxyPlaywrightMcp(request);
+  return enforcePrivateNoStore(await proxyPlaywrightMcp(request));
 }
 
 export async function OPTIONS() {
-  return new Response(null, {
-    status: 204,
-    headers: { Allow: "GET, POST, DELETE, OPTIONS" },
-  });
+  return enforcePrivateNoStore(
+    new Response(null, {
+      status: 204,
+      headers: { Allow: "GET, POST, DELETE, OPTIONS" },
+    }),
+  );
 }
 
 async function proxyPlaywrightMcp(request: Request) {

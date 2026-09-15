@@ -1056,6 +1056,27 @@ describe("ordered database schema versions", () => {
     expect(getDatabaseTenantContext()).toBeUndefined();
   });
 
+  it("keeps every database-scoped API response out of browser and shared caches", async () => {
+    const handle = withDatabaseRequestScope(async (request: Request) => {
+      expect(request.url).toBe("https://asael.example/api/private");
+      return Response.json(
+        { tenantId: "tenant-a", actorId: "actor-a" },
+        { headers: { "cache-control": "public, s-maxage=300" } },
+      );
+    });
+
+    const response = await handle(
+      new Request("https://asael.example/api/private"),
+    );
+
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("server-timing")).toContain("total;dur=");
+    await expect(response.json()).resolves.toEqual({
+      tenantId: "tenant-a",
+      actorId: "actor-a",
+    });
+  });
+
   it("propagates actor aliases only inside the resolved request scope", async () => {
     const resolveActor = withDatabaseRequestScope(async () => {
       enterDatabaseActorContext("tenant-a", ["actor:canonical", "legacy@example.test"]);

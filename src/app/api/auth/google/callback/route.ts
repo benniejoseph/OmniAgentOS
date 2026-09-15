@@ -2,6 +2,7 @@ import { exchangeGoogleOwnerCode } from "@/lib/auth/google";
 import { sessionCookie } from "@/lib/auth/session";
 import { authenticateFederatedIdentity } from "@/lib/auth/store";
 import { getAppBaseUrl } from "@/lib/config";
+import { enforcePrivateNoStore } from "@/lib/http/response";
 
 export const runtime = "nodejs";
 
@@ -10,21 +11,26 @@ export async function GET(request: Request) {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   if (!code || !state) {
-    return Response.redirect(`${getAppBaseUrl()}/login?google=denied`, 302);
+    return enforcePrivateNoStore(
+      Response.redirect(`${getAppBaseUrl()}/login?google=denied`, 302),
+    );
   }
   try {
     const profile = await exchangeGoogleOwnerCode(code, state);
     const result = await authenticateFederatedIdentity({ email: profile.email });
     if (!result) throw new Error("The verified Google identity is not an active Asael owner.");
-    return new Response(null, {
-      status: 302,
-      headers: {
-        location: `${getAppBaseUrl()}/app`,
-        "set-cookie": sessionCookie(result.token, result.identity.session.expiresAt),
-        "cache-control": "private, no-store",
-      },
-    });
+    return enforcePrivateNoStore(
+      new Response(null, {
+        status: 302,
+        headers: {
+          location: `${getAppBaseUrl()}/app`,
+          "set-cookie": sessionCookie(result.token, result.identity.session.expiresAt),
+        },
+      }),
+    );
   } catch {
-    return Response.redirect(`${getAppBaseUrl()}/login?google=failed`, 302);
+    return enforcePrivateNoStore(
+      Response.redirect(`${getAppBaseUrl()}/login?google=failed`, 302),
+    );
   }
 }

@@ -6,6 +6,7 @@ import {
   recordDatabaseTiming,
   runWithRequestTiming,
 } from "@/lib/observability/request-timing";
+import { enforcePrivateNoStore } from "@/lib/http/response";
 import { CUSTOMER_HEALTH_SCORING_SCHEMA_SQL } from "@/lib/db/customer-health-schema";
 import { CUSTOMER_SUCCESS_WORKFLOW_SCHEMA_SQL } from "@/lib/db/customer-success-workflow-schema";
 import { COHESIVE_TODAY_PREFERENCES_SCHEMA_SQL } from "@/lib/db/cohesive-today-schema";
@@ -580,7 +581,7 @@ export function withDatabaseRequestScope<
       );
       return (
         result instanceof Response
-          ? appendServerTiming(result, request)
+          ? enforcePrivateNoStore(appendServerTiming(result, request))
           : result
       ) as TResult;
     }, request);
