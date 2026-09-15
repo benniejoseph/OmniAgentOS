@@ -135,6 +135,10 @@ describe("memory intelligence projection", () => {
       pendingReviews: 1,
       resolvedReviews: 2,
       deletionBarriers: 1,
+      semanticShadowStats: {
+        currentEnrichmentCount: 12,
+        distinctThreadCount: 4,
+      },
       generatedAt: now,
     });
 
@@ -148,6 +152,17 @@ describe("memory intelligence projection", () => {
       automaticTruthMutation: false,
     });
     expect(overview.summary.graphStatus).toBe("current");
+    expect(overview.semanticShadow).toEqual({
+      currentEpisodeCount: 12,
+      distinctThreadCount: 4,
+      minimumEpisodeTarget: 24,
+      minimumThreadTarget: 6,
+      sampleReadyForHumanReview: false,
+      activationReady: false,
+      deterministicSummariesActive: true,
+      shadowOnly: true,
+      rankingEffect: "none",
+    });
     expect(overview.steward.recommendations.map((item) => item.id))
       .toEqual(expect.arrayContaining(["review", "embedding", "scope"]));
     expect(overview.steward.recommendations.every((item) =>

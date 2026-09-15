@@ -31,6 +31,7 @@ import { readJsonFile, writeJsonFile } from "@/lib/storage/json";
 import { getDataPath } from "@/lib/storage/paths";
 import {
   getCurrentSemanticEnrichment,
+  getSemanticSummaryShadowStats,
   listCurrentSemanticEnrichments,
   readOwnedSemanticEpisodeSource,
   saveSemanticEnrichmentFromWorker,
@@ -77,6 +78,55 @@ afterEach(async () => {
 });
 
 describe("semantic conversation summary store", () => {
+  it("reports only current content-free shadow progress in the requested actor scope", async () => {
+    const fixture = await seedThreadLedger();
+    const contract = enrichmentContract(fixture.episode, fixture.turns);
+    await saveSemanticEnrichmentFromWorker(contract, {
+      executionScope: workerScope(),
+    });
+
+    await expect(getSemanticSummaryShadowStats({
+      tenantId,
+      actorIds: [actorId],
+    })).resolves.toEqual({
+      currentEnrichmentCount: 1,
+      distinctThreadCount: 1,
+    });
+    await expect(getSemanticSummaryShadowStats({
+      tenantId,
+      actorIds: ["actor:sibling"],
+    })).resolves.toEqual({
+      currentEnrichmentCount: 0,
+      distinctThreadCount: 0,
+    });
+    await expect(getSemanticSummaryShadowStats({
+      tenantId,
+      actorIds: [],
+    })).rejects.toThrow("bounded actor scope");
+  });
+
+  it("reads bounded PostgreSQL shadow counts without opening enrichment content", async () => {
+    const calls: Array<{ text: string; values: readonly unknown[] }> = [];
+    const sql = fakeSql((text, values) => {
+      calls.push({ text, values });
+      return [{
+        current_enrichment_count: "24",
+        distinct_thread_count: "6",
+      }];
+    });
+
+    await expect(getSemanticSummaryShadowStats({
+      tenantId,
+      actorIds: [actorId, "actor:legacy"],
+    }, { sql: sql as never })).resolves.toEqual({
+      currentEnrichmentCount: 24,
+      distinctThreadCount: 6,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].text).toContain("COUNT(DISTINCT enrichment.thread_id)");
+    expect(calls[0].text).not.toContain("enrichment.contract");
+  });
+
   it("reads, saves, and lists an exact owner enrichment idempotently", async () => {
     const fixture = await seedThreadLedger();
     const contract = enrichmentContract(fixture.episode, fixture.turns);

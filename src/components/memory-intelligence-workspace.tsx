@@ -953,6 +953,7 @@ export function MemoryIntelligenceWorkspace() {
                 cognitionReviews={cognitionReviews}
                 cognitionReviewGroups={cognitionReviewGroups}
                 quality={overview?.quality}
+                semanticShadow={overview?.semanticShadow}
                 loaded={reviewsLoaded}
                 cognitionLoaded={cognitionReviewsLoaded}
                 loading={reviewsLoading}
@@ -1112,6 +1113,7 @@ function ReviewIndex(props: {
   cognitionReviews: CognificationReview[];
   cognitionReviewGroups: CognificationReviewGroup[];
   quality?: MemoryIntelligenceOverview["quality"];
+  semanticShadow?: MemoryIntelligenceOverview["semanticShadow"];
   loaded: boolean;
   cognitionLoaded: boolean;
   loading: boolean;
@@ -1137,7 +1139,10 @@ function ReviewIndex(props: {
   );
   return <>
     <IndexHeading eyebrow="Truth review" title="Keep memory accurate and inspectable" detail="Candidates never enter active recall until you make a governed decision." />
-    <MemoryQualityMetrics quality={props.quality} />
+    <MemoryQualityMetrics
+      quality={props.quality}
+      semanticShadow={props.semanticShadow}
+    />
     <section className={styles.cognitionSection} aria-labelledby="source-map-review-title">
       <header className={styles.reviewSectionHeading}>
         <div className={styles.reviewSectionIcon}><GitBranch size={18} /></div>
@@ -1299,6 +1304,7 @@ function CognitionReviewGroups(props: {
 
 function MemoryQualityMetrics(props: {
   quality?: MemoryIntelligenceOverview["quality"];
+  semanticShadow?: MemoryIntelligenceOverview["semanticShadow"];
 }) {
   const quality = props.quality;
   const extraction = quality?.evidenceSupportedExtraction;
@@ -1306,6 +1312,7 @@ function MemoryQualityMetrics(props: {
   const retrieval = quality?.retrievalUsefulness;
   const outcomes = quality?.retrievalOutcomeUtility;
   const graph = quality?.graphLag;
+  const semanticShadow = props.semanticShadow;
   return (
     <section className={styles.qualityMetrics} aria-label="Memory quality signals">
       <article>
@@ -1332,6 +1339,11 @@ function MemoryQualityMetrics(props: {
         <span>Graph freshness</span>
         <strong>{graph ? startCase(graph.status) : "—"}</strong>
         <small>{graphLagLabel(graph?.lagMs)}</small>
+      </article>
+      <article>
+        <span>Semantic shadow</span>
+        <strong>{semanticShadow ? `${semanticShadow.currentEpisodeCount} / ${semanticShadow.minimumEpisodeTarget}` : "—"}</strong>
+        <small>{semanticShadow ? `${semanticShadow.distinctThreadCount} of ${semanticShadow.minimumThreadTarget} threads · evaluation only, does not affect answers` : "Loading shadow sample"}</small>
       </article>
     </section>
   );

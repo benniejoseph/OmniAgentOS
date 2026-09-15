@@ -53,6 +53,11 @@ export type SemanticSummaryEnrichmentRecord = Readonly<{
   createdAt: string;
 }>;
 
+export type SemanticSummaryShadowStats = Readonly<{
+  currentEnrichmentCount: number;
+  distinctThreadCount: number;
+}>;
+
 type SemanticSummaryEnrichmentLedger = Readonly<{
   schemaVersion: 1;
   records: readonly SemanticSummaryEnrichmentRecord[];
@@ -438,6 +443,77 @@ export async function listCurrentSemanticEnrichments(
       },
     );
     return current;
+  });
+}
+
+/** Returns content-free progress for the human-reviewed shadow sample. */
+export async function getSemanticSummaryShadowStats(
+  input: {
+    tenantId: string;
+    actorIds: readonly string[];
+  },
+  options: SqlOptions = {},
+): Promise<SemanticSummaryShadowStats> {
+  const tenantId = requiredId(input.tenantId, "tenant id");
+  const actorIds = [...new Set(input.actorIds.map((actorId) =>
+    requiredId(actorId, "actor id")
+  ))].sort();
+  if (!actorIds.length || actorIds.length > 32) {
+    throw new Error("Semantic summary shadow stats require a bounded actor scope.");
+  }
+
+  if (options.sql || hasDatabaseUrl()) {
+    if (!options.sql) await ensureDatabaseSchema();
+    const operation = async (sql: SemanticSummarySql) => {
+      const rows = await sql`
+        SELECT
+          COUNT(*)::INTEGER AS current_enrichment_count,
+          COUNT(DISTINCT enrichment.thread_id)::INTEGER AS distinct_thread_count
+        FROM omni_conversation_summary_enrichments enrichment
+        JOIN omni_conversation_summaries summary
+          ON summary.id = enrichment.episode_summary_id
+         AND summary.tenant_id = enrichment.tenant_id
+         AND summary.owner_actor_id = enrichment.owner_actor_id
+         AND summary.thread_id = enrichment.thread_id
+         AND summary.level = 'episode'
+         AND summary.source_sha256 = enrichment.episode_source_sha256
+         AND summary.summary_sha256 = enrichment.episode_summary_sha256
+         AND summary.source_turn_ids = enrichment.source_turn_ids
+        WHERE enrichment.tenant_id = ${tenantId}
+          AND enrichment.owner_actor_id = ANY(${actorIds})
+      `;
+      return freezeShadowStats(rows[0]);
+    };
+    if (options.sql) return operation(options.sql);
+    return runWithDatabaseActorScope(
+      tenantId,
+      actorIds,
+      () => operation(getSql()),
+    );
+  }
+
+  return withJsonFileLock(threadLedgerFile(), async () => {
+    const [threadLedger, enrichmentLedger] = await Promise.all([
+      readJsonFile<ThreadLedger>(threadLedgerFile(), emptyThreadLedger),
+      readJsonFile<SemanticSummaryEnrichmentLedger>(
+        enrichmentLedgerFile(),
+        emptyEnrichmentLedger,
+      ),
+    ]);
+    const actorScope = new Set(actorIds);
+    const records = enrichmentLedger.records
+      .map(parseFileRecord)
+      .filter((record) =>
+        record.contract.tenantId === tenantId &&
+        actorScope.has(record.contract.ownerActorId) &&
+        fileRecordIsCurrent(record, threadLedger)
+      );
+    return Object.freeze({
+      currentEnrichmentCount: records.length,
+      distinctThreadCount: new Set(
+        records.map((record) => record.contract.threadId),
+      ).size,
+    });
   });
 }
 
@@ -1068,6 +1144,23 @@ function nullablePositiveInteger(value: unknown): number | null {
     );
   }
   return parsed;
+}
+
+function freezeShadowStats(row: SqlRow | undefined): SemanticSummaryShadowStats {
+  const currentEnrichmentCount = Number(row?.current_enrichment_count || 0);
+  const distinctThreadCount = Number(row?.distinct_thread_count || 0);
+  if (
+    !Number.isSafeInteger(currentEnrichmentCount) ||
+    currentEnrichmentCount < 0 ||
+    !Number.isSafeInteger(distinctThreadCount) ||
+    distinctThreadCount < 0 ||
+    distinctThreadCount > currentEnrichmentCount
+  ) {
+    throw new SemanticSummaryEnrichmentConflictError(
+      "Stored semantic summary shadow statistics are invalid.",
+    );
+  }
+  return Object.freeze({ currentEnrichmentCount, distinctThreadCount });
 }
 
 function stringArray(value: unknown): string[] {

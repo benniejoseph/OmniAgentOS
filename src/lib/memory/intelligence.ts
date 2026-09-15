@@ -119,6 +119,17 @@ export type MemoryIntelligenceOverview = Readonly<{
     count: number;
   }>[];
   quality?: PublicMemoryCognitionQualityMetrics;
+  semanticShadow?: Readonly<{
+    currentEpisodeCount: number;
+    distinctThreadCount: number;
+    minimumEpisodeTarget: 24;
+    minimumThreadTarget: 6;
+    sampleReadyForHumanReview: boolean;
+    activationReady: false;
+    deterministicSummariesActive: true;
+    shadowOnly: true;
+    rankingEffect: "none";
+  }>;
   steward: Readonly<{
     agentId: "mnemosyne";
     name: "Mnemosyne";
@@ -243,6 +254,10 @@ export function buildMemoryIntelligenceOverview(input: {
   deletionBarriers: number;
   lastMaintenanceAt?: string | null;
   qualityMetrics?: PublicMemoryCognitionQualityMetrics;
+  semanticShadowStats?: Readonly<{
+    currentEnrichmentCount: number;
+    distinctThreadCount: number;
+  }>;
   generatedAt?: string;
 }): MemoryIntelligenceOverview {
   const durable = input.memories.filter((memory) =>
@@ -334,6 +349,21 @@ export function buildMemoryIntelligenceOverview(input: {
       knowledgeCategoryLabel,
     )),
     ...(input.qualityMetrics ? { quality: input.qualityMetrics } : {}),
+    ...(input.semanticShadowStats ? {
+      semanticShadow: Object.freeze({
+        currentEpisodeCount: input.semanticShadowStats.currentEnrichmentCount,
+        distinctThreadCount: input.semanticShadowStats.distinctThreadCount,
+        minimumEpisodeTarget: 24 as const,
+        minimumThreadTarget: 6 as const,
+        sampleReadyForHumanReview:
+          input.semanticShadowStats.currentEnrichmentCount >= 24 &&
+          input.semanticShadowStats.distinctThreadCount >= 6,
+        activationReady: false as const,
+        deterministicSummariesActive: true as const,
+        shadowOnly: true as const,
+        rankingEffect: "none" as const,
+      }),
+    } : {}),
     steward: Object.freeze({
       agentId: "mnemosyne",
       name: "Mnemosyne",
