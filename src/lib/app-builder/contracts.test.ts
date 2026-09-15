@@ -95,10 +95,16 @@ describe("project App Builder boundary", () => {
   it("ships a reviewed credential-free Next.js starter and creates its image-independent workspace root", async () => {
     const paths = appBuilderStarterTemplate.files.map((file) => file.path);
     expect(paths).toEqual(expect.arrayContaining(["package.json", "app/page.tsx", "app/globals.css", "tsconfig.json"]));
+    expect(paths).toContain(".gitignore");
+    expect(paths).not.toContain("next-env.d.ts");
+    expect(appBuilderStarterTemplate.files.find((file) => file.path === ".gitignore")?.content)
+      .toContain("next-env.d.ts");
     const combined = appBuilderStarterTemplate.files.map((file) => file.content).join("\n");
     expect(combined).not.toMatch(/API_KEY|SECRET|PASSWORD|\.env/);
     const sandboxSource = await readFile(new URL("./sandbox.ts", import.meta.url), "utf8");
     expect(sandboxSource).toContain("sandbox.fs.mkdir(APP_BUILDER_ROOT, { recursive: true })");
+    expect(sandboxSource).toContain('.filter((entry) => entry.path !== "next-env.d.ts")');
+    expect(sandboxSource).toContain('"-not", "-path", "./next-env.d.ts"');
   });
 
   it("registers every builder action through the governed app-service boundary", () => {
