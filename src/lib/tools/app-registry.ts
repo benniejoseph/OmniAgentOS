@@ -371,9 +371,10 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.projects.builder.search", "Search app source", "Search bounded editable source filenames and UTF-8 content inside the exact project build workspace.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, query: text(2, 120),
   }, ["projectId", "sessionId", "query"])),
-  readTool("app.projects.builder.file.read", "Read app file", "Read one bounded UTF-8 file and its exact SHA-256 from the project build workspace.", requiredObjectSchema({
+  readTool("app.projects.builder.file.read", "Read app file", "Read one 1-based, line-bounded UTF-8 slice and the full file's exact SHA-256 from the project build workspace. Continue with another range only when the relevant evidence is not in the returned slice.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240),
-  }, ["projectId", "sessionId", "path"])),
+    startLine: integer(1, 1_000_000), lineCount: integer(1, 400),
+  }, ["projectId", "sessionId", "path", "startLine", "lineCount"])),
   mutationTool("app.projects.builder.file.update", "Update app file", "Replace one inspected application file only when its current SHA-256 still matches; null is accepted only for a new file.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240), expectedSha256: { type: ["string", "null"], pattern: "^[a-f0-9]{64}$" }, content: text(0, 500_000),
   }, ["projectId", "sessionId", "path", "expectedSha256", "content"]), { riskLevel: 1, approvalRequired: false, reversible: true }),

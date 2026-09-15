@@ -231,7 +231,10 @@ export async function readProjectBuilderFileService(caller: AppServiceCaller, in
   const value = builderFileReadInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.file.read"));
   const session = await requireSession(caller, value.projectId, value.sessionId);
-  const file = await readBuilderFile(session.sandboxName, value.path);
+  const range = value.startLine !== undefined || value.lineCount !== undefined
+    ? { startLine: value.startLine ?? 1, lineCount: value.lineCount ?? 200 }
+    : undefined;
+  const file = await readBuilderFile(session.sandboxName, value.path, range);
   return completeAppServiceCall(authorized, { file });
 }
 
