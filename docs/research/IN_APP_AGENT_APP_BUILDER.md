@@ -1,10 +1,10 @@
 # In-app agent app builder — feasibility and recommended architecture
 
-Status: Phases A and B implemented on 2026-09-14. GitHub delivery and app deployment authority remain intentionally unavailable.
+Status: Phases A–D implemented through governed code and database schema on 2026-09-15. Live provider use still requires the server-side GitHub App and Vercel credentials described below.
 
 ## Decision
 
-Asael now has an iterative private app-building environment: Build mode inside Projects creates one reviewed TypeScript web-app template in an actor- and project-bound Vercel Sandbox, inspects and digest-fences files, runs a fixed check family, serves an authenticated live preview, and seals recoverable provider snapshots against exact workspace digests. Forge automatically protects the workspace before a run and seals a completed result against its exact project-bound run. Sentinel independently reads the sealed verification receipt and project files with the actor's configurable `verifier` model assignment. GitHub branches, pull requests, and app deployment remain later phases. Production deployment remains an explicit reviewed action.
+Asael now has an iterative private app-building environment: Build mode inside Projects creates one reviewed TypeScript web-app template in an actor- and project-bound Vercel Sandbox, inspects and digest-fences files, runs a fixed check family, serves an authenticated live preview, and seals recoverable provider snapshots against exact workspace digests. Forge automatically protects the workspace before a run and seals a completed result against its exact project-bound run. Sentinel independently reads the sealed verification receipt and project files with the actor's configurable `verifier` model assignment. A selected-repository GitHub App can deliver the exact passing revision to a new branch and draft pull request. Vercel preview deployment records build, route, and desktop/mobile evidence. Production requires a separate 15-minute digest-bound review, exact `RELEASE` confirmation, declared migration posture, and a recorded rollback target.
 
 Do not make browser or computer use the primary coding interface. Code should be read, patched, tested and versioned through typed repository and sandbox tools. Computer use is useful later for visual QA of the running preview.
 
@@ -22,9 +22,9 @@ Do not make browser or computer use the primary coding interface. Code should be
 | Isolated execution | Actor/project/session-scoped Vercel Sandbox with bounded resources and registry-only install access | Phase A delivered |
 | Build verification | Fixed lint, type-check, test, build and live-preview commands with bounded output and typed activity; sealed lint/type-check and private desktop/mobile capture receipts feed an independent Sentinel handoff | Phases A/B delivered |
 | Recovery | Immutable 30-day snapshots, exact workspace manifests, optimistic session revisions, automatic pre-restore safety checkpoints and digest-verified restore | Phase B delivered |
-| Deployment | Authenticated sandbox preview exists; GitHub, Vercel app preview deployment and production release are unavailable | Phases C/D pending |
+| Deployment | Authenticated sandbox preview, selected-repository GitHub delivery, verified Vercel previews, and explicitly reviewed production releases are implemented | Phases C/D delivered; provider credentials/canary still operational gates |
 
-Forge now receives the governed Phase A builder tool family and resolves its model through the actor's `code_builder` Settings assignment. It may truthfully report only file and command effects represented by builder receipts. It cannot claim Git, pull-request or application-deployment effects because those tools do not exist yet.
+Forge receives the governed builder tool family and resolves its model through the actor's `code_builder` Settings assignment. It may truthfully report only file, command, repository, and deployment effects represented by durable builder receipts. Risk-level-three production release is intentionally withheld from Forge and remains a direct human action.
 
 ## Recommended runtime
 
@@ -129,17 +129,21 @@ Implementation evidence: migrations 168 and 169 install exact-actor forced-RLS c
 
 ### Phase C — GitHub delivery
 
-- Register a private GitHub App with selected-repository access and minimum Contents/Pull Requests/Checks permissions.
-- Add exact-revision checkout, branch, commit, push and pull-request tools.
-- Secret-scan and require passing checks before proposing delivery.
+- [x] Add a private GitHub App broker with selected-repository access and minimum Contents/Pull Requests/Checks permissions.
+- [x] Add exact-revision binding, branch, commit, push and pull-request tools.
+- [x] Secret-scan and require passing checks before proposing delivery.
+
+Operational gate: create/install the private GitHub App once and place its app ID, installation ID, private key, and slug in the server environment. No general GitHub account token is used.
 
 Exit gate: Asael can create a reviewable PR without obtaining general account credentials or writing the default branch.
 
 ### Phase D — preview and release
 
-- Create a Vercel preview deployment and bind its logs, URL and revision to the Build Project.
-- Add visual and route smoke checks against the exact preview.
-- Add an explicit production-release approval with health, migration and rollback evidence.
+- [x] Create a Vercel preview deployment and bind its logs, URL and revision to the Build Project.
+- [x] Add visual and route smoke checks against the exact preview.
+- [x] Add an explicit production-release gate with health, migration and rollback evidence.
+
+Implementation evidence: migrations 171 and 172 install actor-private forced-RLS preview and production ledgers. Preview source is secret-scanned and bound to an exact passing checkpoint and verification receipt. `ready` requires captured build logs, passing route smokes, and desktop/mobile captures. Production clones the exact reviewed preview into a fresh production build only after an unexpired digest and literal `RELEASE`; ambiguous provider acknowledgements can be resumed with the same idempotency identity. Generated applications that declare database migrations remain blocked until a separately approved migration/rollback workflow exists. The production tool is risk level 3 and is not exposed to Forge.
 
 Exit gate: a human can inspect the app and its evidence before the separately governed production effect.
 

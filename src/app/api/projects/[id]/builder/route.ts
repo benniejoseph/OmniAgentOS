@@ -9,6 +9,9 @@ import {
   createProjectBuilderCheckpointService,
   deliverProjectBuilderPullRequestService,
   createProjectBuilderPreviewDeploymentService,
+  previewProjectBuilderProductionReleaseService,
+  releaseProjectBuilderProductionService,
+  refreshProjectBuilderProductionReleaseService,
   refreshProjectBuilderPreviewDeploymentService,
   listProjectBuilderRepositoriesService,
   listProjectBuilderTreeService,
@@ -45,6 +48,9 @@ const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("delivery.create"), sessionId: sessionIdSchema, repositoryBindingId: z.string().regex(/^app_build_repository_[a-f0-9]{48}$/), expectedBindingRevision: z.number().int().positive(), checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), branchName: z.string().trim().min(1).max(120), title: z.string().trim().min(3).max(180), body: z.string().trim().max(8_000).default(""), draft: z.boolean().default(true) }).strict(),
   z.object({ action: z.literal("deployment.preview"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), repositoryDeliveryId: z.string().regex(/^app_build_delivery_[a-f0-9]{48}$/).optional() }).strict(),
   z.object({ action: z.literal("deployment.refresh"), sessionId: sessionIdSchema, deploymentId: z.string().regex(/^app_build_deployment_[a-f0-9]{48}$/) }).strict(),
+  z.object({ action: z.literal("release.preview"), sessionId: sessionIdSchema, deploymentId: z.string().regex(/^app_build_deployment_[a-f0-9]{48}$/) }).strict(),
+  z.object({ action: z.literal("release.production"), sessionId: sessionIdSchema, releaseId: z.string().regex(/^app_build_release_[a-f0-9]{48}$/), releaseDigest: z.string().regex(/^[a-f0-9]{64}$/), confirmation: z.literal("RELEASE") }).strict(),
+  z.object({ action: z.literal("release.refresh"), sessionId: sessionIdSchema, releaseId: z.string().regex(/^app_build_release_[a-f0-9]{48}$/) }).strict(),
   z.object({ action: z.literal("stop"), sessionId: sessionIdSchema }).strict(),
 ]);
 
@@ -88,9 +94,9 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     context = await authorizeRequest({
       request,
       action: "run.agent",
-      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : action === "repository.bind" ? "app_builder_repository" : action === "delivery.create" ? "app_builder_delivery" : action.startsWith("deployment.") ? "app_builder_deployment" : "app_builder_session",
+      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : action === "repository.bind" ? "app_builder_repository" : action === "delivery.create" ? "app_builder_delivery" : action.startsWith("deployment.") ? "app_builder_deployment" : action.startsWith("release.") ? "app_builder_release" : "app_builder_session",
       resourceId: id,
-      riskLevel: action === "create" || action === "stop" || action === "checkpoint.restore" || action === "delivery.create" || action === "deployment.preview" ? 2 : 1,
+      riskLevel: action === "release.production" ? 3 : action === "create" || action === "stop" || action === "checkpoint.restore" || action === "delivery.create" || action === "deployment.preview" ? 2 : 1,
       nativeMutationCapability: "workspaces.update",
       metadata: { action },
     });
@@ -121,6 +127,12 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
                     ? await createProjectBuilderPreviewDeploymentService(caller, { projectId: id, sessionId: parsed.data.sessionId, checkpointId: parsed.data.checkpointId, verificationId: parsed.data.verificationId, repositoryDeliveryId: parsed.data.repositoryDeliveryId })
                   : action === "deployment.refresh"
                     ? await refreshProjectBuilderPreviewDeploymentService(caller, { projectId: id, sessionId: parsed.data.sessionId, deploymentId: parsed.data.deploymentId })
+                  : action === "release.preview"
+                    ? await previewProjectBuilderProductionReleaseService(caller, { projectId: id, sessionId: parsed.data.sessionId, deploymentId: parsed.data.deploymentId })
+                  : action === "release.production"
+                    ? await releaseProjectBuilderProductionService(caller, { projectId: id, sessionId: parsed.data.sessionId, releaseId: parsed.data.releaseId, releaseDigest: parsed.data.releaseDigest, confirmation: parsed.data.confirmation })
+                  : action === "release.refresh"
+                    ? await refreshProjectBuilderProductionReleaseService(caller, { projectId: id, sessionId: parsed.data.sessionId, releaseId: parsed.data.releaseId })
                   : await stopProjectBuilderService(caller, { projectId: id, sessionId: parsed.data.sessionId });
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {

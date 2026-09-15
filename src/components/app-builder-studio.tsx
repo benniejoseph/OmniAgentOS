@@ -38,13 +38,14 @@ type BuilderRepository = Readonly<{ repositoryId: string; owner: string; name: s
 type RepositoryBinding = Readonly<{ id: string; repositoryId: string; repositoryFullName: string; private: boolean; defaultBranch: string; baseSha: string; revision: number; updatedAt: string }>;
 type BuilderDelivery = Readonly<{ id: string; repositoryBindingId: string; checkpointId: string; verificationId: string; workspaceSha256: string; baseSha: string; branchName: string; commitSha?: string; pullRequestNumber?: number; pullRequestUrl?: string; secretScanSha256: string; secretFindingCount: number; status: "preparing" | "pull_request_open" | "failed"; failureCode?: string; createdAt: string; updatedAt: string }>;
 type BuilderDeployment = Readonly<{ id: string; checkpointId: string; verificationId: string; repositoryDeliveryId?: string; commitSha?: string; workspaceSha256: string; fileManifestSha256: string; fileCount: number; byteCount: number; secretScanSha256: string; smokeRoutes: string[]; providerDeploymentId?: string; providerState?: string; deploymentUrl?: string; status: "preparing" | "queued" | "building" | "verifying" | "ready" | "incomplete" | "failed"; logs: { status: "pending" | "captured" | "unavailable"; sha256?: string; eventCount: number }; routeEvidence: { status: "pending" | "passed" | "failed"; routes: ReadonlyArray<{ path: string; status: "passed" | "failed"; statusCode?: number; durationMs: number; bodySha256?: string; errorCode?: string }> }; browserEvidence: { status: "pending" | "captured" | "unavailable" | "failed"; captures: ReadonlyArray<{ viewport: "desktop" | "mobile"; width: number; height: number; screenshotSha256: string; mimeType: string; byteLength: number }>; errorCode?: string }; failureCode?: string; createdAt: string; updatedAt: string }>;
-type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; repositoryBinding: RepositoryBinding | null; deliveries: BuilderDelivery[]; deployments: BuilderDeployment[]; github: GithubStatus; vercel: VercelStatus; previewUrl: string | null }>;
+type BuilderRelease = Readonly<{ id: string; deploymentId: string; previewProviderDeploymentId: string; workspaceSha256: string; previewEvidenceSha256: string; releaseDigest: string; migrationEvidence: { status: "not_declared" | "declared"; fileCount: number; manifestSha256: string }; rollbackEvidence: { status: "available" | "first_release"; providerDeploymentId?: string; deploymentUrl?: string }; status: "review_pending" | "releasing" | "building" | "healthy" | "incomplete" | "failed" | "expired"; providerDeploymentId?: string; providerState?: string; deploymentUrl?: string; logs: BuilderDeployment["logs"]; routeEvidence: BuilderDeployment["routeEvidence"]; browserEvidence: BuilderDeployment["browserEvidence"]; failureCode?: string; createdAt: string; updatedAt: string; expiresAt: string; releasedAt?: string }>;
+type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; repositoryBinding: RepositoryBinding | null; deliveries: BuilderDelivery[]; deployments: BuilderDeployment[]; releases: BuilderRelease[]; github: GithubStatus; vercel: VercelStatus; previewUrl: string | null }>;
 type AgentEvent = { type?: string; runId?: string; text?: string; response?: string; message?: string; label?: string; detail?: string; toolName?: string; status?: string };
 
 const commands = ["lint", "typecheck", "test", "build"] as const;
 
 export function AppBuilderStudio({ project }: { project: BuildProject }) {
-  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], deployments: [], github: { configured: false, missing: [] }, vercel: { configured: false, missing: [] }, previewUrl: null });
+  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], deployments: [], releases: [], github: { configured: false, missing: [] }, vercel: { configured: false, missing: [] }, previewUrl: null });
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [file, setFile] = useState<BuilderFile>();
   const [draft, setDraft] = useState("");
@@ -61,6 +62,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const [branchName, setBranchName] = useState("");
   const [deliveryTitle, setDeliveryTitle] = useState(`Build: ${project.title}`.slice(0, 180));
   const [deliveryBody, setDeliveryBody] = useState("");
+  const [productionConfirmation, setProductionConfirmation] = useState("");
   const [busy, setBusy] = useState("loading");
   const [error, setError] = useState<string>();
   const session = snapshot.session;
@@ -73,6 +75,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const currentCheckpoint = snapshot.checkpoints.find((checkpoint) => checkpoint.id === session?.currentCheckpointId);
   const latestDelivery = snapshot.deliveries[0];
   const latestDeployment = snapshot.deployments[0];
+  const currentRelease = snapshot.releases.find((release) => release.deploymentId === latestDeployment?.id);
   const matchingDelivery = snapshot.deliveries.find((delivery) =>
     delivery.status === "pull_request_open" &&
     delivery.checkpointId === currentCheckpoint?.id &&
@@ -150,6 +153,28 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     }, 4_500);
     return () => { active = false; window.clearTimeout(timer); };
   }, [latestDeployment, project.id, session]);
+
+  useEffect(() => {
+    if (!session || !currentRelease?.providerDeploymentId || !new Set<BuilderRelease["status"]>(["releasing", "building"]).has(currentRelease.status)) return;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const payload = await mutate<{ release: BuilderRelease }>(project.id, {
+          action: "release.refresh",
+          sessionId: session.id,
+          releaseId: currentRelease.id,
+        });
+        if (!active) return;
+        setSnapshot((current) => ({
+          ...current,
+          releases: [payload.release, ...current.releases.filter((item) => item.id !== payload.release.id)],
+        }));
+      } catch (refreshError) {
+        if (active) setError(message(refreshError));
+      }
+    }, 4_500);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [currentRelease, project.id, session]);
 
   async function createWorkspace() {
     setBusy("create");
@@ -505,6 +530,78 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     }
   }
 
+  async function prepareProductionReview() {
+    if (!session || !latestDeployment || latestDeployment.status !== "ready") return;
+    setBusy("release.review");
+    setError(undefined);
+    setProductionConfirmation("");
+    try {
+      const payload = await mutate<{ release: BuilderRelease }>(project.id, {
+        action: "release.preview",
+        sessionId: session.id,
+        deploymentId: latestDeployment.id,
+      });
+      setSnapshot((current) => ({
+        ...current,
+        releases: [payload.release, ...current.releases.filter((item) => item.id !== payload.release.id)],
+      }));
+      await loadSession();
+    } catch (reviewError) {
+      setError(message(reviewError));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function releaseProduction(release: BuilderRelease) {
+    if (!session || productionConfirmation !== "RELEASE") return;
+    if (!window.confirm("Release this exact reviewed preview to the production URL?")) return;
+    setBusy("release.production");
+    setError(undefined);
+    try {
+      const payload = await mutate<{ release: BuilderRelease }>(project.id, {
+        action: "release.production",
+        sessionId: session.id,
+        releaseId: release.id,
+        releaseDigest: release.releaseDigest,
+        confirmation: "RELEASE",
+      });
+      setSnapshot((current) => ({
+        ...current,
+        releases: [payload.release, ...current.releases.filter((item) => item.id !== payload.release.id)],
+      }));
+      setProductionConfirmation("");
+      await loadSession();
+    } catch (releaseError) {
+      setError(message(releaseError));
+      await loadSession().catch(() => undefined);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function refreshProductionRelease(release: BuilderRelease) {
+    if (!session) return;
+    setBusy(`release.refresh:${release.id}`);
+    setError(undefined);
+    try {
+      const payload = await mutate<{ release: BuilderRelease }>(project.id, {
+        action: "release.refresh",
+        sessionId: session.id,
+        releaseId: release.id,
+      });
+      setSnapshot((current) => ({
+        ...current,
+        releases: [payload.release, ...current.releases.filter((item) => item.id !== payload.release.id)],
+      }));
+      await loadSession();
+    } catch (refreshError) {
+      setError(message(refreshError));
+    } finally {
+      setBusy("");
+    }
+  }
+
   const files = useMemo(() => tree.filter((entry) => entry.kind === "file"), [tree]);
 
   if (busy === "loading") return <section className={styles.loading}><Loader2 className="animate-spin" size={20} /><span>Opening the build studio…</span></section>;
@@ -607,6 +704,28 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
               </> : <p>Deploy a passing checkpoint to begin the asynchronous evidence trail.</p>}
             </section>
           </div>
+          <section className={styles.productionReleaseCard}>
+            <header>
+              <div><span className={styles.deliveryKicker}>Production gate</span><strong>Release only the reviewed preview</strong><small>A 15-minute receipt binds preview health, source digest, migration posture, and the exact rollback target.</small></div>
+              <div className={styles.deliveryState} data-ready={currentRelease?.status === "healthy" || undefined}><i />{currentRelease ? releaseStatusLabel(currentRelease.status) : "Review required"}</div>
+            </header>
+            {latestDeployment?.status !== "ready" ? <p>Complete preview evidence before preparing a production review.</p> : !currentRelease || currentRelease.status === "expired" || currentRelease.status === "failed" ? <div className={styles.productionEmpty}>
+              <div><ShieldCheck size={18} /><span><strong>{currentRelease?.status === "failed" ? "The last release failed safely" : currentRelease?.status === "expired" ? "The review window expired" : "Production has not been reviewed"}</strong><small>Prepare a fresh receipt from workspace {latestDeployment.workspaceSha256.slice(0, 12)}.</small></span></div>
+              <button type="button" className={styles.secondaryAction} onClick={() => void prepareProductionReview()} disabled={Boolean(busy)}>{busy === "release.review" ? <Loader2 className="animate-spin" size={14} /> : <ShieldCheck size={14} />} Prepare production review</button>
+            </div> : <>
+              <div className={styles.productionEvidence}>
+                <span data-ready><b>Preview proof</b><small>{currentRelease.previewEvidenceSha256.slice(0, 12)}</small></span>
+                <span data-ready={currentRelease.migrationEvidence.status === "not_declared" || undefined}><b>Database changes</b><small>{currentRelease.migrationEvidence.status === "not_declared" ? "None declared" : `${currentRelease.migrationEvidence.fileCount} migration files · blocked`}</small></span>
+                <span data-ready><b>Rollback</b><small>{currentRelease.rollbackEvidence.status === "available" ? currentRelease.rollbackEvidence.providerDeploymentId?.slice(0, 15) : "First production release"}</small></span>
+                <span data-ready={currentRelease.status === "healthy" || undefined}><b>Production health</b><small>{currentRelease.status === "healthy" ? `${currentRelease.routeEvidence.routes.length} routes · ${currentRelease.browserEvidence.captures.length} views` : releaseStatusLabel(currentRelease.status)}</small></span>
+              </div>
+              <div className={styles.releaseDigest}><span>Release receipt</span><code>{currentRelease.releaseDigest.slice(0, 24)}</code><small>{currentRelease.status === "review_pending" ? `Expires ${new Date(currentRelease.expiresAt).toLocaleTimeString()}` : currentRelease.providerState || "Receipt sealed"}</small></div>
+              {currentRelease.status === "review_pending" || currentRelease.status === "releasing" && !currentRelease.providerDeploymentId ? <div className={styles.releaseConfirmation}>
+                <label htmlFor={`builder-production-confirmation-${project.id}`}>{currentRelease.status === "releasing" ? "Provider acknowledgement was interrupted. Resume the same idempotent receipt with " : "Type "}<code>RELEASE</code>{currentRelease.status === "review_pending" ? " to confirm this exact receipt" : null}</label>
+                <div><input id={`builder-production-confirmation-${project.id}`} value={productionConfirmation} onChange={(event) => setProductionConfirmation(event.currentTarget.value)} autoComplete="off" spellCheck={false} placeholder="RELEASE" /><button type="button" onClick={() => void releaseProduction(currentRelease)} disabled={Boolean(busy) || productionConfirmation !== "RELEASE" || currentRelease.migrationEvidence.status !== "not_declared"}>{busy === "release.production" ? <Loader2 className="animate-spin" size={14} /> : <Rocket size={14} />} Release to production</button></div>
+              </div> : currentRelease.status === "releasing" || currentRelease.status === "building" ? <div className={styles.productionProgress}><Loader2 className="animate-spin" size={16} /><span>Vercel is building the production deployment. Asael will verify it automatically.</span></div> : <div className={styles.previewActions}>{currentRelease.deploymentUrl ? <a href={currentRelease.deploymentUrl} target="_blank" rel="noreferrer">Open production <ExternalLink size={13} /></a> : null}{currentRelease.status === "incomplete" ? <button type="button" onClick={() => void refreshProductionRelease(currentRelease)} disabled={Boolean(busy)}>{busy === `release.refresh:${currentRelease.id}` ? <Loader2 className="animate-spin" size={13} /> : <RefreshCw size={13} />} Retry production evidence</button> : null}</div>}
+            </>}
+          </section>
           {snapshot.deployments.length ? <div className={styles.deploymentLedger}>{snapshot.deployments.slice(0, 5).map((deployment) => <article key={deployment.id} data-status={deployment.status}><i /><div><strong>{deploymentStatusLabel(deployment.status)}</strong><small>{deployment.commitSha ? `commit ${deployment.commitSha.slice(0, 10)}` : `workspace ${deployment.workspaceSha256.slice(0, 10)}`} · {new Date(deployment.updatedAt).toLocaleString()}</small></div><code>{deployment.providerDeploymentId?.slice(0, 14) || deployment.failureCode || "preparing"}</code>{deployment.deploymentUrl ? <a href={deployment.deploymentUrl} target="_blank" rel="noreferrer">Preview <ExternalLink size={12} /></a> : null}</article>)}</div> : null}
         </>}
       </section> : null}
@@ -690,4 +809,7 @@ function suggestBranch(title: string, workspaceSha256?: string) {
 }
 function deploymentStatusLabel(value: BuilderDeployment["status"]) {
   return value === "ready" ? "Evidence ready" : value === "incomplete" ? "Evidence incomplete" : value.replaceAll("_", " ");
+}
+function releaseStatusLabel(value: BuilderRelease["status"]) {
+  return value === "review_pending" ? "Awaiting confirmation" : value === "healthy" ? "Production healthy" : value === "incomplete" ? "Health evidence incomplete" : value.replaceAll("_", " ");
 }

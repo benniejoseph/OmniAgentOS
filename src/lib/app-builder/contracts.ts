@@ -9,6 +9,7 @@ export const APP_BUILDER_REPOSITORY_CONTRACT_VERSION = "app-builder-repository:1
 export const APP_BUILDER_DELIVERY_CONTRACT_VERSION = "app-builder-delivery:1" as const;
 export const APP_BUILDER_SECRET_SCAN_CONTRACT_VERSION = "app-builder-secret-scan:1" as const;
 export const APP_BUILDER_DEPLOYMENT_CONTRACT_VERSION = "app-builder-deployment:1" as const;
+export const APP_BUILDER_RELEASE_CONTRACT_VERSION = "app-builder-release:1" as const;
 export const APP_BUILDER_TEMPLATE_ID = "nextjs-starter-v1" as const;
 export const APP_BUILDER_ROOT = "/vercel/sandbox/app" as const;
 export const APP_BUILDER_PREVIEW_PORT = 3000 as const;
@@ -234,6 +235,43 @@ export type AppBuilderDeployment = Readonly<{
   updatedAt: string;
 }>;
 
+export type AppBuilderRelease = Readonly<{
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  projectId: string;
+  sessionId: string;
+  deploymentId: string;
+  contractVersion: typeof APP_BUILDER_RELEASE_CONTRACT_VERSION;
+  previewProviderDeploymentId: string;
+  workspaceSha256: string;
+  previewEvidenceSha256: string;
+  releaseDigest: string;
+  migrationEvidence: Readonly<{
+    status: "not_declared" | "declared";
+    fileCount: number;
+    manifestSha256: string;
+  }>;
+  rollbackEvidence: Readonly<{
+    status: "available" | "first_release";
+    providerDeploymentId?: string;
+    deploymentUrl?: string;
+  }>;
+  status: "review_pending" | "releasing" | "building" | "healthy" | "incomplete" | "failed" | "expired";
+  providerProjectId?: string;
+  providerDeploymentId?: string;
+  providerState?: string;
+  deploymentUrl?: string;
+  logs: AppBuilderDeployment["logs"];
+  routeEvidence: AppBuilderDeployment["routeEvidence"];
+  browserEvidence: AppBuilderDeployment["browserEvidence"];
+  failureCode?: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  releasedAt?: string;
+}>;
+
 export const builderProjectInputSchema = z.object({
   projectId: z.string().trim().min(1).max(200),
 }).strict();
@@ -317,6 +355,20 @@ export const builderPreviewDeploymentInputSchema = builderTreeInputSchema.extend
 
 export const builderPreviewDeploymentRefreshInputSchema = builderTreeInputSchema.extend({
   deploymentId: z.string().regex(/^app_build_deployment_[a-f0-9]{48}$/),
+}).strict();
+
+export const builderProductionReleasePreviewInputSchema = builderTreeInputSchema.extend({
+  deploymentId: z.string().regex(/^app_build_deployment_[a-f0-9]{48}$/),
+}).strict();
+
+export const builderProductionReleaseInputSchema = builderTreeInputSchema.extend({
+  releaseId: z.string().regex(/^app_build_release_[a-f0-9]{48}$/),
+  releaseDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  confirmation: z.literal("RELEASE"),
+}).strict();
+
+export const builderProductionReleaseRefreshInputSchema = builderTreeInputSchema.extend({
+  releaseId: z.string().regex(/^app_build_release_[a-f0-9]{48}$/),
 }).strict();
 
 const deniedSegments = new Set([

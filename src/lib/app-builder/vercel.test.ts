@@ -5,10 +5,12 @@ vi.mock("server-only", () => ({}));
 
 import {
   builderVercelProjectName,
+  createBuilderVercelProduction,
   createBuilderVercelPreview,
   discoverBuilderSmokeRoutes,
   getBuilderVercelDeployment,
   getBuilderVercelLogEvidence,
+  getBuilderVercelProductionDeployment,
   getBuilderVercelStatus,
   runBuilderVercelRouteSmokes,
 } from "@/lib/app-builder/vercel";
@@ -97,6 +99,46 @@ describe("App Builder Vercel preview broker", () => {
       eventCount: 2,
     });
     expect(String(fetchMock.mock.calls[1][0])).toContain("/events?");
+  });
+
+  it("records an exact rollback candidate and promotes only the reviewed preview to production", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ deployments: [{ uid: "dpl_Previous123", url: "asael-app-old.vercel.app" }] }))
+      .mockResolvedValueOnce(jsonResponse({
+        id: "dpl_Production456",
+        projectId: "prj_Def456",
+        readyState: "QUEUED",
+        url: "asael-app-live.vercel.app",
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getBuilderVercelProductionDeployment("prj_Def456")).resolves.toEqual({
+      deploymentId: "dpl_Previous123",
+      url: "https://asael-app-old.vercel.app/",
+    });
+    await expect(createBuilderVercelProduction({
+      releaseReceiptId: `app_build_release_${"a".repeat(48)}`,
+      projectName: "asael-app-1234567890abcdef",
+      previewDeploymentId: "dpl_Abc123",
+      workspaceSha256: "c".repeat(64),
+    })).resolves.toMatchObject({
+      projectId: "prj_Def456",
+      deploymentId: "dpl_Production456",
+      state: "QUEUED",
+      url: "https://asael-app-live.vercel.app/",
+    });
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/v7/deployments?projectId=prj_Def456&target=production&state=READY&limit=1");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({
+      deploymentId: "dpl_Abc123",
+      name: "asael-app-1234567890abcdef",
+      target: "production",
+      meta: {
+        action: "promote",
+        asaelReleaseId: `app_build_release_${"a".repeat(48)}`,
+        asaelWorkspaceSha256: "c".repeat(64),
+      },
+    });
   });
 
   it("discovers static App Router pages and smokes only exact Vercel preview hosts", async () => {
