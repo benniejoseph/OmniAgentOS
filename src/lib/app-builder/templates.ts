@@ -58,7 +58,7 @@ export const appBuilderStarterTemplate = Object.freeze({
         exclude: ["node_modules"],
       }, null, 2)}\n`,
     },
-    { path: "next-env.d.ts", content: `/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n` },
+    { path: ".gitignore", content: `.next/\nnode_modules/\nnext-env.d.ts\n` },
     { path: "next.config.ts", content: `import type { NextConfig } from "next";\nconst nextConfig: NextConfig = { reactStrictMode: true };\nexport default nextConfig;\n` },
     { path: "eslint.config.mjs", content: `import { defineConfig, globalIgnores } from "eslint/config";\nimport nextVitals from "eslint-config-next/core-web-vitals";\nimport nextTs from "eslint-config-next/typescript";\nexport default defineConfig([...nextVitals, ...nextTs, globalIgnores([".next/**","out/**","build/**","next-env.d.ts"])]);\n` },
   ]),
