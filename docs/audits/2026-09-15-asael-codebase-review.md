@@ -4,7 +4,7 @@ Date: 2026-09-15
 
 Reviewed baseline: `00c601c7e0416464ec621863b64e771e038fb975`
 
-Latest review remediation: `c152e89a25a3f1d21e3b512d02ad7699cdfd9234`
+Latest review remediation: `1608c2e650aeb1dc69b1129789fdb6a8c78cf41e`
 Branch: `performance-remediation`
 
 This is the current review artifact. `docs/AUDIT_REPORT.md` and
@@ -144,15 +144,23 @@ Indexed search sizes are preserved, excluded files cannot leak into search,
 ranged reads are capped at 24,000 characters with truncation provenance, missing
 sizes are not represented as zero, and model output-budget errors are actionable.
 
-### 8. Session projection cache privacy — resolved and deployed
+### 8. Private API cache boundary — resolved and deployed
 
 The review found that `/api/auth/session` returned the authenticated actor/session
 projection under Vercel's default `Cache-Control: public, max-age=0,
 must-revalidate` response. The route now explicitly returns `private, no-store`
-for every session state. Its focused route regression, changed-file lint,
-TypeScript, and the Vercel production build pass. Canonical production returns the
-private header at exact web revision
-`c152e89a25a3f1d21e3b512d02ad7699cdfd9234`; the compatible protocol-1 worker and
+for every session state. The follow-up scan found that the common database request
+wrapper also preserved any route's default or accidental public policy. The
+wrapper now enforces the same private boundary for all 229 database-scoped API
+route files, including errors and streams. The unwrapped Google login/callback and
+managed browser transport receive the same protection; the intentionally public
+versioned mobile-contract route remains cacheable.
+
+Thirty-four focused database-wrapper, session, and unwrapped-route checks pass
+with changed-file lint, TypeScript, diff validation, and the Vercel production
+build. Canonical production returns the private policy for both session and
+approval responses at exact web revision
+`1608c2e650aeb1dc69b1129789fdb6a8c78cf41e`; the compatible protocol-1 worker and
 Computer Use gateway remain healthy and required no rebuild.
 
 ## Pending product work already recorded by the implementation plan
@@ -178,7 +186,8 @@ Computer Use gateway remain healthy and required no rebuild.
   store: 19/19 focused tests passed.
 - App Builder source-feedback slice: 14 focused tests passed before deployment.
 - Retention repair: 40 focused tests passed before deployment.
-- Session cache privacy: 1 focused route regression passed before deployment.
+- Private API cache boundary: 34 focused wrapper and route checks passed before
+  deployment.
 - Changed-file lint, TypeScript, and diff validation passed for the deployed
   retention, App Builder, and session-cache changes; no full suite or broad audit
   was run.
