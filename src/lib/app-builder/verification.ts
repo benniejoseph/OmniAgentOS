@@ -17,6 +17,7 @@ export async function captureBuilderBrowserEvidence(input: {
   actorId: string;
   executionId: string;
   previewUrl: string;
+  protectionBypassSecret?: string;
 }): Promise<AppBuilderVerification["browserEvidence"]> {
   const connectors = await listMcpConnectors(50, { tenantId: input.tenantId });
   const connector = connectors.find((candidate) =>
@@ -47,7 +48,7 @@ export async function captureBuilderBrowserEvidence(input: {
         await callMcpTool({
           connector,
           toolName: "browser_navigate",
-          args: { url: input.previewUrl },
+          args: { url: browserNavigationUrl(input.previewUrl, input.protectionBypassSecret) },
           idempotencyKey: `${input.executionId}:navigate`,
           sessionScope,
         });
@@ -79,6 +80,20 @@ export async function captureBuilderBrowserEvidence(input: {
       errorCode: `browser_${createHash("sha256").update(error instanceof Error ? error.message : "unknown").digest("hex").slice(0, 12)}`,
     };
   }
+}
+
+function browserNavigationUrl(previewUrl: string, protectionBypassSecret?: string) {
+  if (!protectionBypassSecret) return previewUrl;
+  if (!/^[A-Za-z0-9]{32}$/.test(protectionBypassSecret)) {
+    throw new Error("The Vercel protection bypass token is invalid.");
+  }
+  const url = new URL(previewUrl);
+  if (url.protocol !== "https:" || !url.hostname.endsWith(".vercel.app")) {
+    throw new Error("Protected browser evidence requires an exact Vercel preview URL.");
+  }
+  url.searchParams.set("x-vercel-protection-bypass", protectionBypassSecret);
+  url.searchParams.set("x-vercel-set-bypass-cookie", "true");
+  return url.toString();
 }
 
 function firstImageBlock(value: unknown): { data: string; mimeType: string } | undefined {

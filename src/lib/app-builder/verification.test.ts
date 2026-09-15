@@ -23,12 +23,17 @@ describe("App Builder private visual evidence", () => {
       ? { content: [{ type: "image", data: Buffer.from("private-pixels").toString("base64"), mimeType: "image/png" }] }
       : { content: [{ type: "text", text: "ok" }] });
     const { captureBuilderBrowserEvidence } = await import("@/lib/app-builder/verification");
-    const previewUrl = "https://preview.example.test/?asael_preview=do-not-return";
-    const result = await captureBuilderBrowserEvidence({ tenantId: "tenant-a", actorId: "actor-a", executionId: "verify-a", previewUrl });
+    const previewUrl = "https://preview-example.vercel.app/?asael_preview=do-not-return";
+    const protectionBypassSecret = "b".repeat(32);
+    const result = await captureBuilderBrowserEvidence({ tenantId: "tenant-a", actorId: "actor-a", executionId: "verify-a", previewUrl, protectionBypassSecret });
     expect(result).toMatchObject({ status: "captured", captures: [{ viewport: "desktop", width: 1440 }, { viewport: "mobile", width: 390 }] });
     expect(JSON.stringify(result)).not.toContain(previewUrl);
     expect(result.captures.every((capture) => /^[a-f0-9]{64}$/.test(capture.screenshotSha256))).toBe(true);
     expect(callMcpTool).toHaveBeenCalledTimes(5);
+    const navigation = callMcpTool.mock.calls.find(([input]) => input.toolName === "browser_navigate")?.[0];
+    expect(navigation.args.url).toContain(`x-vercel-protection-bypass=${protectionBypassSecret}`);
+    expect(navigation.args.url).toContain("x-vercel-set-bypass-cookie=true");
+    expect(JSON.stringify(result)).not.toContain(protectionBypassSecret);
   });
 
   it("reports incomplete evidence when the trusted connector is absent", async () => {

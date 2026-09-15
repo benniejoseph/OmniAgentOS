@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type {
   AppBuilderDeployment,
   AppBuilderFile,
@@ -120,6 +120,29 @@ export async function getBuilderVercelDeployment(deploymentId: string) {
   return deploymentFromProvider(response.body);
 }
 
+export async function ensureBuilderVercelProtectionBypass(projectId: string) {
+  if (!/^prj_[A-Za-z0-9]+$/.test(projectId)) throw new Error("The Vercel project ID is invalid.");
+  const config = vercelConfig();
+  const secret = builderVercelProtectionBypassSecret(projectId);
+  const path = `/v1/projects/${encodeURIComponent(projectId)}/protection-bypass`;
+  let response = await vercelJsonRequest(path, {
+    config,
+    method: "PATCH",
+    body: { generate: { secret, note: "Asael App Builder verification" } },
+  });
+  if (!response.ok && response.status === 409) {
+    response = await vercelJsonRequest(path, {
+      config,
+      method: "PATCH",
+      body: { update: { secret, note: "Asael App Builder verification" } },
+    });
+  }
+  if (!response.ok) {
+    throw vercelRejected(response.status, "preview verification access could not be configured");
+  }
+  return secret;
+}
+
 export async function getBuilderVercelProductionDeployment(projectId: string) {
   if (!/^prj_[A-Za-z0-9]+$/.test(projectId)) throw new Error("The Vercel project ID is invalid.");
   const query = new URLSearchParams({ projectId, target: "production", state: "READY", limit: "1" });
@@ -215,6 +238,7 @@ export function discoverBuilderSmokeRoutes(files: readonly Pick<AppBuilderFile, 
 export async function runBuilderVercelRouteSmokes(
   deploymentUrl: string,
   routes: readonly string[],
+  options: { protectionBypassSecret?: string } = {},
 ): Promise<AppBuilderDeployment["routeEvidence"]> {
   const base = assertVercelPreviewUrl(deploymentUrl);
   const evidence: AppBuilderDeployment["routeEvidence"]["routes"][number][] = [];
@@ -228,7 +252,7 @@ export async function runBuilderVercelRouteSmokes(
         method: "GET",
         redirect: "error",
         signal: controller.signal,
-        headers: previewBypassHeaders(),
+        headers: previewBypassHeaders(options.protectionBypassSecret),
       });
       const bytes = await readBoundedBody(response, 1_000_000);
       evidence.push({
@@ -302,7 +326,7 @@ async function uploadVercelFile(config: VercelConfig, sha: string, bytes: Buffer
 
 async function vercelJsonRequest(
   path: string,
-  options: { config: VercelConfig; method: "GET" | "POST"; body?: unknown; idempotencyKey?: string },
+  options: { config: VercelConfig; method: "GET" | "POST" | "PATCH"; body?: unknown; idempotencyKey?: string },
 ) {
   const separator = path.includes("?") ? "&" : "?";
   const response = await vercelRawRequest(`${path}${separator}teamId=${encodeURIComponent(options.config.teamId)}`, {
@@ -323,7 +347,7 @@ async function vercelJsonRequest(
 
 async function vercelRawRequest(
   path: string,
-  options: { config: VercelConfig; method: "GET" | "POST"; body?: string; idempotencyKey?: string; limit: number },
+  options: { config: VercelConfig; method: "GET" | "POST" | "PATCH"; body?: string; idempotencyKey?: string; limit: number },
 ) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_DEADLINE_MS);
@@ -411,8 +435,27 @@ function vercelRejected(status: number, message: string) {
   return new Error(`Vercel rejected the deployment operation (${status}: ${message}).`);
 }
 
-function previewBypassHeaders() {
-  const token = process.env.OMNIAGENT_VERCEL_PROTECTION_BYPASS_TOKEN?.trim();
+function builderVercelProtectionBypassSecret(projectId: string) {
+  const configured = process.env.OMNIAGENT_VERCEL_PROTECTION_BYPASS_TOKEN?.trim();
+  if (configured) {
+    if (!/^[A-Za-z0-9]{32}$/.test(configured)) {
+      throw new Error("The configured Vercel protection bypass token is invalid.");
+    }
+    return configured;
+  }
+  const signingSecret = process.env.OMNIAGENT_APP_BUILDER_PREVIEW_SECRET?.trim()
+    || process.env.OMNIAGENT_CREDENTIAL_KEYRING?.trim();
+  if (!signingSecret) {
+    throw new Error("Vercel preview verification requires the App Builder preview secret or credential keyring.");
+  }
+  return createHmac("sha256", signingSecret)
+    .update(`asael-app-builder-vercel-bypass:1:${projectId}`)
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function previewBypassHeaders(explicitToken?: string) {
+  const token = explicitToken?.trim() || process.env.OMNIAGENT_VERCEL_PROTECTION_BYPASS_TOKEN?.trim();
   return token ? { "x-vercel-protection-bypass": token } : undefined;
 }
 
