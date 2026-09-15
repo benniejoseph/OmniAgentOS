@@ -45,6 +45,9 @@ describe("App Builder sandbox source search", () => {
     expect(source).toContain('startsWith("frame-ancestors ")');
     expect(source).toContain('responseHeaders["referrer-policy"] = "no-referrer"');
     expect(source).toContain("builderPreviewParentOrigin()");
+    const previewStart = source.slice(source.indexOf("async function startBuilderPreview"));
+    expect(previewStart).toContain("await sandbox.writeFiles([");
+    expect(previewStart).toContain("/vercel/sandbox/asael-preview-proxy.mjs");
   });
 });
 

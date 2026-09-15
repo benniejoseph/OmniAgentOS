@@ -457,6 +457,13 @@ export async function restoreBuilderSandboxCheckpoint(input: {
 }
 
 async function startBuilderPreview(sandbox: Sandbox, token: string) {
+  await sandbox.writeFiles([
+    {
+      path: "/vercel/sandbox/asael-preview-proxy.mjs",
+      content: previewProxySource,
+      mode: 0o500,
+    },
+  ]);
   await stopBuilderPreviewProcesses(sandbox);
   await sandbox.runCommand({
     cmd: "npm",
