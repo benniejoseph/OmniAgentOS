@@ -18,6 +18,7 @@ type GitHubAppConfig = Readonly<{
   appId: string;
   privateKey: string;
   installationId: string;
+  repositoryIds: ReadonlySet<string>;
   appSlug?: string;
 }>;
 
@@ -47,6 +48,7 @@ export function getBuilderGithubStatus(): AppBuilderGithubStatus {
   if (!process.env.OMNIAGENT_GITHUB_APP_ID?.trim()) missing.push("GitHub App ID");
   if (!process.env.OMNIAGENT_GITHUB_APP_PRIVATE_KEY?.trim()) missing.push("GitHub App private key");
   if (!process.env.OMNIAGENT_GITHUB_APP_INSTALLATION_ID?.trim()) missing.push("GitHub App installation ID");
+  if (!process.env.OMNIAGENT_GITHUB_APP_REPOSITORY_IDS?.trim()) missing.push("GitHub repository allowlist");
   const appSlug = process.env.OMNIAGENT_GITHUB_APP_SLUG?.trim() || undefined;
   return {
     configured: missing.length === 0,
@@ -57,6 +59,7 @@ export function getBuilderGithubStatus(): AppBuilderGithubStatus {
 }
 
 export async function listBuilderGithubRepositories(): Promise<AppBuilderRepository[]> {
+  const config = githubAppConfig();
   const token = await createInstallationToken();
   const repositories: AppBuilderRepository[] = [];
   for (let page = 1; page <= 3; page += 1) {
@@ -75,6 +78,7 @@ export async function listBuilderGithubRepositories(): Promise<AppBuilderReposit
     for (const item of items) {
       if (
         !Number.isSafeInteger(item.id) ||
+        !config.repositoryIds.has(String(item.id)) ||
         !item.name?.trim() ||
         !item.full_name?.trim() ||
         !item.owner?.login?.trim() ||
@@ -246,6 +250,9 @@ export async function deliverBuilderFilesToGithub(input: {
 
 async function createInstallationToken(repositoryId?: string): Promise<InstallationToken> {
   const config = githubAppConfig();
+  if (repositoryId && !config.repositoryIds.has(repositoryId)) {
+    throw new Error("The selected repository is outside the configured GitHub App allowlist.");
+  }
   const jwt = createAppJwt(config);
   await verifyGithubInstallation(config, jwt);
   const payload = repositoryId
@@ -293,12 +300,24 @@ function githubAppConfig(): GitHubAppConfig {
   }
   const appId = process.env.OMNIAGENT_GITHUB_APP_ID!.trim();
   const installationId = process.env.OMNIAGENT_GITHUB_APP_INSTALLATION_ID!.trim();
+  const repositoryIds = process.env.OMNIAGENT_GITHUB_APP_REPOSITORY_IDS!
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
   if (!/^\d+$/.test(appId) || !/^\d+$/.test(installationId)) {
     throw new Error("GitHub App and installation IDs must be numeric.");
+  }
+  if (
+    repositoryIds.length < 1 ||
+    repositoryIds.length > 100 ||
+    repositoryIds.some((repositoryId) => !/^\d+$/.test(repositoryId))
+  ) {
+    throw new Error("GitHub repository allowlist must contain 1-100 comma-separated numeric repository IDs.");
   }
   return {
     appId,
     installationId,
+    repositoryIds: new Set(repositoryIds),
     privateKey: process.env.OMNIAGENT_GITHUB_APP_PRIVATE_KEY!.replaceAll("\\n", "\n").trim(),
     appSlug: status.appSlug,
   };
