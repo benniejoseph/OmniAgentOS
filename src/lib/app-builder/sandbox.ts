@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHmac } from "node:crypto";
 import { Sandbox } from "@vercel/sandbox";
+import { getAppBaseUrl } from "@/lib/config";
 import {
   APP_BUILDER_APP_PORT,
   APP_BUILDER_PREVIEW_PORT,
@@ -40,6 +41,12 @@ const commandTable: Record<Exclude<AppBuilderCommandKind, "start_preview">, read
 const previewProxySource = `import http from "node:http";
 const token = process.env.ASAEL_PREVIEW_TOKEN;
 if (!token) throw new Error("Preview token is required");
+const parentOrigin = process.env.ASAEL_PREVIEW_PARENT_ORIGIN;
+if (!parentOrigin) throw new Error("Preview parent origin is required");
+const parsedParentOrigin = new URL(parentOrigin);
+if (parsedParentOrigin.origin !== parentOrigin || (parsedParentOrigin.protocol !== "https:" && !["127.0.0.1", "localhost"].includes(parsedParentOrigin.hostname))) {
+  throw new Error("Preview parent origin is invalid");
+}
 const cookieName = "asael_preview";
 function authorized(reqUrl, cookie) {
   const url = new URL(reqUrl || "/", "http://preview.local");
@@ -57,7 +64,17 @@ const server = http.createServer((request, response) => {
     response.setHeader("set-cookie", cookieName + "=" + token + "; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=1800");
   }
   const upstream = http.request({ hostname: "127.0.0.1", port: ${APP_BUILDER_APP_PORT}, path: incoming.pathname + incoming.search, method: request.method, headers: { ...request.headers, host: "127.0.0.1:${APP_BUILDER_APP_PORT}" } }, (upstreamResponse) => {
-    response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+    const responseHeaders = { ...upstreamResponse.headers };
+    delete responseHeaders["x-frame-options"];
+    const upstreamCsp = Array.isArray(responseHeaders["content-security-policy"])
+      ? responseHeaders["content-security-policy"].join("; ")
+      : String(responseHeaders["content-security-policy"] || "");
+    const cspDirectives = upstreamCsp.split(";").map((part) => part.trim()).filter((part) => part && !part.toLowerCase().startsWith("frame-ancestors "));
+    cspDirectives.push("frame-ancestors " + parentOrigin);
+    responseHeaders["content-security-policy"] = cspDirectives.join("; ");
+    responseHeaders["referrer-policy"] = "no-referrer";
+    responseHeaders["x-content-type-options"] = "nosniff";
+    response.writeHead(upstreamResponse.statusCode || 502, responseHeaders);
     upstreamResponse.pipe(response);
   });
   upstream.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end("Preview is starting. Try refresh in a moment."); });
@@ -452,10 +469,22 @@ async function startBuilderPreview(sandbox: Sandbox, token: string) {
   await sandbox.runCommand({
     cmd: "node",
     args: ["/vercel/sandbox/asael-preview-proxy.mjs"],
-    env: { ASAEL_PREVIEW_TOKEN: token },
+    env: {
+      ASAEL_PREVIEW_TOKEN: token,
+      ASAEL_PREVIEW_PARENT_ORIGIN: builderPreviewParentOrigin(),
+    },
     detached: true,
     timeoutMs: SANDBOX_TIMEOUT_MS,
   });
+}
+
+function builderPreviewParentOrigin() {
+  const url = new URL(getAppBaseUrl());
+  const loopback = ["127.0.0.1", "localhost"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new Error("App Builder preview parent origin must be HTTPS or loopback HTTP.");
+  }
+  return url.origin;
 }
 
 async function stopBuilderPreviewProcesses(sandbox: Sandbox) {
