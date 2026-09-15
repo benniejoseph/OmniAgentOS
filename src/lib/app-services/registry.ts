@@ -2,7 +2,7 @@ import type { AppServiceOperationContract } from "@/lib/app-services/contracts";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export const APP_SERVICE_REGISTRY_VERSION =
-  "p9.1-app-service-registry:1" as const;
+  "p9.2-app-service-registry:1" as const;
 
 const readOnlyEventContract = "read_only:no_domain_mutation";
 
@@ -72,8 +72,10 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   read("app.projects.builder.show", "read", "app_builder_session"),
   mutation("app.projects.builder.create", "run.agent", "app_builder_session", "app-builder-events.v1"),
   read("app.projects.builder.tree", "read", "app_builder_file_tree"),
+  read("app.projects.builder.search", "read", "app_builder_file_tree"),
   read("app.projects.builder.file.read", "read", "app_builder_file"),
   mutation("app.projects.builder.file.update", "run.agent", "app_builder_file", "app-builder-events.v1"),
+  mutation("app.projects.builder.file.delete", "run.agent", "app_builder_file", "app-builder-events.v1"),
   mutation("app.projects.builder.command.run", "run.agent", "app_builder_command", "app-builder-events.v1"),
   mutation("app.projects.builder.checkpoint.create", "run.agent", "app_builder_checkpoint", "app-builder-events.v1"),
   mutation("app.projects.builder.checkpoint.restore", "run.agent", "app_builder_checkpoint", "app-builder-events.v1"),
@@ -82,6 +84,7 @@ export const APP_SERVICE_OPERATION_CONTRACTS = Object.freeze([
   mutation("app.projects.builder.sentinel.record", "run.agent", "app_builder_verification", "app-builder-events.v1"),
   read("app.projects.builder.repositories.list", "read", "app_builder_repository"),
   mutation("app.projects.builder.repository.bind", "run.agent", "app_builder_repository", "app-builder-events.v1"),
+  mutation("app.projects.builder.repository.checkout", "run.agent", "app_builder_repository", "app-builder-events.v1"),
   mutation("app.projects.builder.delivery.create", "run.agent", "app_builder_delivery", "app-builder-events.v1"),
   mutation("app.projects.builder.deployment.preview", "run.agent", "app_builder_deployment", "app-builder-events.v1"),
   mutation("app.projects.builder.deployment.refresh", "run.agent", "app_builder_deployment", "app-builder-events.v1"),
@@ -274,8 +277,10 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   { toolId: "app.projects.builder.show", operation: "app.projects.builder.show" },
   { toolId: "app.projects.builder.create", operation: "app.projects.builder.create" },
   { toolId: "app.projects.builder.tree", operation: "app.projects.builder.tree" },
+  { toolId: "app.projects.builder.search", operation: "app.projects.builder.search" },
   { toolId: "app.projects.builder.file.read", operation: "app.projects.builder.file.read" },
   { toolId: "app.projects.builder.file.update", operation: "app.projects.builder.file.update" },
+  { toolId: "app.projects.builder.file.delete", operation: "app.projects.builder.file.delete" },
   { toolId: "app.projects.builder.command.run", operation: "app.projects.builder.command.run" },
   { toolId: "app.projects.builder.checkpoint.create", operation: "app.projects.builder.checkpoint.create" },
   { toolId: "app.projects.builder.checkpoint.restore", operation: "app.projects.builder.checkpoint.restore" },
@@ -284,6 +289,7 @@ export const MAIN_AGENT_APP_SERVICE_BINDINGS = Object.freeze([
   { toolId: "app.projects.builder.sentinel.record", operation: "app.projects.builder.sentinel.record" },
   { toolId: "app.projects.builder.repositories.list", operation: "app.projects.builder.repositories.list" },
   { toolId: "app.projects.builder.repository.bind", operation: "app.projects.builder.repository.bind" },
+  { toolId: "app.projects.builder.repository.checkout", operation: "app.projects.builder.repository.checkout" },
   { toolId: "app.projects.builder.delivery.create", operation: "app.projects.builder.delivery.create" },
   { toolId: "app.projects.builder.deployment.preview", operation: "app.projects.builder.deployment.preview" },
   { toolId: "app.projects.builder.deployment.refresh", operation: "app.projects.builder.deployment.refresh" },

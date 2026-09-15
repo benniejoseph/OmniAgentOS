@@ -1,8 +1,8 @@
 import "server-only";
 
-import { createSign } from "node:crypto";
+import { createHash, createSign } from "node:crypto";
 import type {
-  AppBuilderFile,
+  AppBuilderDeliveryChange,
   AppBuilderGithubStatus,
   AppBuilderRepository,
 } from "@/lib/app-builder/contracts";
@@ -13,6 +13,8 @@ const MAX_GITHUB_RESPONSE_BYTES = 2_000_000;
 const GITHUB_DEADLINE_MS = 30_000;
 const MAX_DELIVERY_FILES = 500;
 const MAX_DELIVERY_BYTES = 8_000_000;
+const MAX_REPOSITORY_ARCHIVE_BYTES = 25_000_000;
+const GITHUB_ARCHIVE_DEADLINE_MS = 90_000;
 
 type GitHubAppConfig = Readonly<{
   appId: string;
@@ -120,6 +122,67 @@ export async function getBuilderGithubRepositoryHead(input: {
   return getGithubBranchHead(input.repository, input.branch, token.token);
 }
 
+export async function downloadBuilderGithubRepositoryArchive(input: {
+  repository: Pick<AppBuilderRepository, "repositoryId" | "owner" | "name">;
+  baseSha: string;
+}) {
+  if (!/^[a-f0-9]{40,64}$/.test(input.baseSha)) {
+    throw new Error("Repository checkout requires an exact GitHub commit revision.");
+  }
+  const token = await createInstallationToken(input.repository.repositoryId);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GITHUB_ARCHIVE_DEADLINE_MS);
+  try {
+    const initial = await fetch(
+      `${GITHUB_API}${repositoryPath(input.repository, `/tarball/${encodeURIComponent(input.baseSha)}`)}`,
+      {
+        redirect: "manual",
+        signal: controller.signal,
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token.token}`,
+          "user-agent": "asael-app-builder",
+          "x-github-api-version": GITHUB_API_VERSION,
+        },
+      },
+    );
+    let response = initial;
+    if (new Set([301, 302, 303, 307, 308]).has(initial.status)) {
+      const location = initial.headers.get("location");
+      if (!location) throw new Error("GitHub did not provide its repository archive location.");
+      const redirect = new URL(location, GITHUB_API);
+      if (redirect.protocol !== "https:" || redirect.hostname !== "codeload.github.com") {
+        throw new Error("GitHub returned an untrusted repository archive location.");
+      }
+      response = await fetch(redirect, {
+        redirect: "error",
+        signal: controller.signal,
+        headers: { "user-agent": "asael-app-builder" },
+      });
+    }
+    if (!response.ok) {
+      throw new Error(`GitHub could not prepare the exact repository archive (${response.status}).`);
+    }
+    const archive = await readBoundedBytes(response, MAX_REPOSITORY_ARCHIVE_BYTES);
+    if (archive.byteLength < 2 || archive[0] !== 0x1f || archive[1] !== 0x8b) {
+      throw new Error("GitHub returned an invalid repository archive.");
+    }
+    return {
+      archive,
+      archiveSha256: createHash("sha256").update(archive).digest("hex"),
+      byteCount: archive.byteLength,
+    };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("GitHub did not prepare the repository archive before the checkout deadline.");
+    }
+    if (error instanceof Error && error.message.startsWith("GitHub ")) throw error;
+    throw new Error("GitHub could not be reached for this governed repository checkout.");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function deliverBuilderFilesToGithub(input: {
   repository: Pick<AppBuilderRepository, "repositoryId" | "owner" | "name">;
   expectedBaseSha: string;
@@ -128,12 +191,15 @@ export async function deliverBuilderFilesToGithub(input: {
   title: string;
   body: string;
   draft: boolean;
-  files: readonly AppBuilderFile[];
+  changes: readonly AppBuilderDeliveryChange[];
 }): Promise<GitHubDeliveryResult> {
-  if (input.files.length < 1 || input.files.length > MAX_DELIVERY_FILES) {
-    throw new Error(`GitHub delivery requires 1-${MAX_DELIVERY_FILES} bounded application files.`);
+  if (input.changes.length < 1 || input.changes.length > MAX_DELIVERY_FILES) {
+    throw new Error(`GitHub delivery requires 1-${MAX_DELIVERY_FILES} bounded application changes.`);
   }
-  const byteCount = input.files.reduce((total, file) => total + file.size, 0);
+  const byteCount = input.changes.reduce(
+    (total, change) => total + (change.kind === "upsert" ? change.file.size : 0),
+    0,
+  );
   if (byteCount > MAX_DELIVERY_BYTES) {
     throw new Error("The application workspace exceeds the 8 MB reviewed GitHub delivery limit.");
   }
@@ -165,7 +231,11 @@ export async function deliverBuilderFilesToGithub(input: {
     throw new Error("GitHub did not return the exact base tree for this repository revision.");
   }
 
-  const blobs = await mapWithConcurrency(input.files, 6, async (file) => {
+  const blobs = await mapWithConcurrency(input.changes, 6, async (change) => {
+    if (change.kind === "delete") {
+      return { path: change.path, mode: "100644", type: "blob", sha: null };
+    }
+    const file = change.file;
     const blob = await githubRequest<{ sha?: string }>(
       repositoryPath(input.repository, "/git/blobs"),
       {
@@ -246,6 +316,26 @@ export async function deliverBuilderFilesToGithub(input: {
     pullRequestNumber: pull.number as number,
     pullRequestUrl: pull.html_url,
   };
+}
+
+async function readBoundedBytes(response: Response, limit: number) {
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > limit) throw new Error("GitHub repository archive exceeds the 25 MB checkout boundary.");
+  if (!response.body) throw new Error("GitHub repository archive response was empty.");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("GitHub repository archive exceeds the 25 MB checkout boundary.");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
 }
 
 async function createInstallationToken(repositoryId?: string): Promise<InstallationToken> {

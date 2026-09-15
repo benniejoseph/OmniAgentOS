@@ -11,6 +11,7 @@ import {
   FileCode2,
   Files,
   GitBranch,
+  FolderGit2,
   Loader2,
   MonitorPlay,
   RotateCcw,
@@ -18,9 +19,11 @@ import {
   RefreshCw,
   Rocket,
   Save,
+  Search,
   Send,
   ShieldCheck,
   SquareTerminal,
+  Trash2,
   WandSparkles,
 } from "lucide-react";
 import { buildAppBuilderAgentRequest } from "@/lib/app-builder/agent-request";
@@ -41,16 +44,17 @@ type GithubStatus = Readonly<{ configured: boolean; missing: string[]; appSlug?:
 type VercelStatus = Readonly<{ configured: boolean; missing: string[] }>;
 type BuilderRepository = Readonly<{ repositoryId: string; owner: string; name: string; fullName: string; private: boolean; defaultBranch: string; htmlUrl: string }>;
 type RepositoryBinding = Readonly<{ id: string; repositoryId: string; repositoryFullName: string; private: boolean; defaultBranch: string; baseSha: string; revision: number; updatedAt: string }>;
+type RepositoryWorkspace = Readonly<{ contractVersion: string; repositoryId: string; repositoryFullName: string; baseSha: string; archiveSha256: string; workspaceSha256: string; fileCount: number; importedAt: string }>;
 type BuilderDelivery = Readonly<{ id: string; repositoryBindingId: string; checkpointId: string; verificationId: string; workspaceSha256: string; baseSha: string; branchName: string; commitSha?: string; pullRequestNumber?: number; pullRequestUrl?: string; secretScanSha256: string; secretFindingCount: number; status: "preparing" | "pull_request_open" | "failed"; failureCode?: string; createdAt: string; updatedAt: string }>;
 type BuilderDeployment = Readonly<{ id: string; checkpointId: string; verificationId: string; repositoryDeliveryId?: string; commitSha?: string; workspaceSha256: string; fileManifestSha256: string; fileCount: number; byteCount: number; secretScanSha256: string; smokeRoutes: string[]; providerDeploymentId?: string; providerState?: string; deploymentUrl?: string; status: "preparing" | "queued" | "building" | "verifying" | "ready" | "incomplete" | "failed"; logs: { status: "pending" | "captured" | "unavailable"; sha256?: string; eventCount: number }; routeEvidence: { status: "pending" | "passed" | "failed"; routes: ReadonlyArray<{ path: string; status: "passed" | "failed"; statusCode?: number; durationMs: number; bodySha256?: string; errorCode?: string }> }; browserEvidence: { status: "pending" | "captured" | "unavailable" | "failed"; captures: ReadonlyArray<{ viewport: "desktop" | "mobile"; width: number; height: number; screenshotSha256: string; mimeType: string; byteLength: number }>; errorCode?: string }; failureCode?: string; createdAt: string; updatedAt: string }>;
 type BuilderRelease = Readonly<{ id: string; deploymentId: string; previewProviderDeploymentId: string; workspaceSha256: string; previewEvidenceSha256: string; releaseDigest: string; migrationEvidence: { status: "not_declared" | "declared"; fileCount: number; manifestSha256: string }; rollbackEvidence: { status: "available" | "first_release"; providerDeploymentId?: string; deploymentUrl?: string }; status: "review_pending" | "releasing" | "building" | "healthy" | "incomplete" | "failed" | "expired"; providerDeploymentId?: string; providerState?: string; deploymentUrl?: string; logs: BuilderDeployment["logs"]; routeEvidence: BuilderDeployment["routeEvidence"]; browserEvidence: BuilderDeployment["browserEvidence"]; failureCode?: string; createdAt: string; updatedAt: string; expiresAt: string; releasedAt?: string }>;
-type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; repositoryBinding: RepositoryBinding | null; deliveries: BuilderDelivery[]; deployments: BuilderDeployment[]; releases: BuilderRelease[]; github: GithubStatus; vercel: VercelStatus; previewUrl: string | null }>;
+type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; repositoryBinding: RepositoryBinding | null; repositoryWorkspace: RepositoryWorkspace | null; deliveries: BuilderDelivery[]; deployments: BuilderDeployment[]; releases: BuilderRelease[]; github: GithubStatus; vercel: VercelStatus; previewUrl: string | null }>;
 type AgentEvent = { type?: string; runId?: string; text?: string; response?: string; message?: string; label?: string; detail?: string; toolName?: string; status?: string };
 
 const commands = ["lint", "typecheck", "test", "build"] as const;
 
 export function AppBuilderStudio({ project }: { project: BuildProject }) {
-  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], deployments: [], releases: [], github: { configured: false, missing: [] }, vercel: { configured: false, missing: [] }, previewUrl: null });
+  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, repositoryWorkspace: null, deliveries: [], deployments: [], releases: [], github: { configured: false, missing: [] }, vercel: { configured: false, missing: [] }, previewUrl: null });
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [file, setFile] = useState<BuilderFile>();
   const [draft, setDraft] = useState("");
@@ -60,6 +64,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const [agentOutput, setAgentOutput] = useState("");
   const [sentinelOutput, setSentinelOutput] = useState("");
   const [commandOutput, setCommandOutput] = useState("");
+  const [fileSearch, setFileSearch] = useState("");
   const [githubOpen, setGithubOpen] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
   const [repositories, setRepositories] = useState<BuilderRepository[]>([]);
@@ -89,6 +94,11 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     delivery.checkpointId === currentCheckpoint?.id &&
     delivery.verificationId === deliveryVerification?.id,
   );
+  const repositoryWorkspaceCurrent = Boolean(
+    snapshot.repositoryBinding && snapshot.repositoryWorkspace &&
+    snapshot.repositoryBinding.repositoryId === snapshot.repositoryWorkspace.repositoryId &&
+    snapshot.repositoryBinding.baseSha === snapshot.repositoryWorkspace.baseSha
+  );
 
   const loadSession = useCallback(async () => {
     const payload = await readJson<SessionPayload>(`/api/projects/${encodeURIComponent(project.id)}/builder`);
@@ -109,6 +119,13 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     const nextPath = preferredPath && paths.includes(preferredPath) ? preferredPath : paths.includes("app/page.tsx") ? "app/page.tsx" : paths[0];
     if (nextPath) await loadFile(target, nextPath);
   }, [loadFile, project.id]);
+
+  const searchTree = useCallback(async (target: BuilderSession, query: string) => {
+    const normalized = query.trim();
+    if (!normalized) return loadTree(target, file?.path);
+    const payload = await readJson<{ entries: TreeEntry[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=search&sessionId=${encodeURIComponent(target.id)}&query=${encodeURIComponent(normalized)}`);
+    setTree(payload.entries);
+  }, [file?.path, loadTree, project.id]);
 
   const loadRepositories = useCallback(async () => {
     const payload = await readJson<{ repositories: BuilderRepository[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=github.repositories`);
@@ -208,6 +225,24 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
       await loadSession();
     } catch (saveError) {
       setError(message(saveError));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function deleteFile() {
+    if (!session || !file || dirty) return;
+    if (!window.confirm(`Delete ${file.path} from this workspace? The deletion stays reviewable before GitHub delivery.`)) return;
+    setBusy("delete");
+    setError(undefined);
+    try {
+      await mutate(project.id, { action: "file.delete", sessionId: session.id, path: file.path, expectedSha256: file.sha256 });
+      setFile(undefined);
+      setDraft("");
+      await loadTree(session);
+      await loadSession();
+    } catch (deleteError) {
+      setError(message(deleteError));
     } finally {
       setBusy("");
     }
@@ -436,6 +471,39 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     }
   }
 
+  async function checkoutRepository() {
+    const binding = snapshot.repositoryBinding;
+    if (!session || !binding) return;
+    const action = snapshot.repositoryWorkspace ? "replace the current repository workspace" : "replace the starter workspace";
+    if (!window.confirm(`Open ${binding.repositoryFullName} at ${binding.baseSha.slice(0, 12)}? This will ${action}; Asael seals a recovery checkpoint first.`)) return;
+    setBusy("github.checkout");
+    setError(undefined);
+    try {
+      const payload = await mutate<{
+        session: BuilderSession;
+        repositoryWorkspace: RepositoryWorkspace;
+        previewUrl: string;
+      }>(project.id, {
+        action: "repository.checkout",
+        sessionId: session.id,
+        repositoryBindingId: binding.id,
+        expectedBindingRevision: binding.revision,
+        expectedSessionRevision: session.revision,
+      });
+      setSnapshot((current) => ({ ...current, session: payload.session, repositoryWorkspace: payload.repositoryWorkspace, previewUrl: payload.previewUrl }));
+      setFileSearch("");
+      setFile(undefined);
+      setDraft("");
+      const refreshed = await loadSession();
+      if (refreshed.session) await loadTree(refreshed.session);
+    } catch (checkoutError) {
+      setError(message(checkoutError));
+      await loadSession().catch(() => undefined);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function refreshRepositories() {
     setBusy("github.repositories");
     setError(undefined);
@@ -634,7 +702,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   return (
     <section className={styles.studio} aria-busy={Boolean(busy)}>
       <header className={styles.studioHeader}>
-        <div><span className={styles.liveDot} /><div><strong>Build studio</strong><small>{session.templateId} · revision {session.revision}</small></div></div>
+        <div><span className={styles.liveDot} /><div><strong>Build studio</strong><small>{repositoryWorkspaceCurrent && snapshot.repositoryWorkspace ? `${snapshot.repositoryWorkspace.repositoryFullName} · ${snapshot.repositoryWorkspace.baseSha.slice(0, 10)}` : session.templateId} · revision {session.revision}</small></div></div>
         <div className={styles.headerActions}>
           <button type="button" onClick={() => void saveCheckpoint()} disabled={Boolean(busy) || dirty} title={dirty ? "Save the open file before sealing a checkpoint" : "Save a recoverable checkpoint"}><Save size={14} /> Checkpoint</button>
           <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy)} title="Restart preview"><RefreshCw size={14} className={busy === "start_preview" ? "animate-spin" : undefined} /></button>
@@ -650,7 +718,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
         <header><div><span className={styles.deliveryKicker}>Source handoff</span><h3>Open a reviewable pull request</h3><p>Asael writes only to a new branch in one repository selected for the private GitHub App.</p></div><div className={styles.deliveryState} data-ready={snapshot.github.configured || undefined}><i />{snapshot.github.configured ? "GitHub App ready" : "Setup required"}</div></header>
         {!snapshot.github.configured ? <div className={styles.githubSetup}><AlertCircle size={18} /><div><strong>Complete the private GitHub App connection</strong><p>Missing: {snapshot.github.missing.join(", ") || "application credentials"}. Grant selected-repository access with Contents and Pull requests write plus Checks read. Asael mints a short-lived token for the selected repository only.</p>{snapshot.github.installUrl ? <a href={snapshot.github.installUrl} target="_blank" rel="noreferrer">Install the GitHub App <ExternalLink size={13} /></a> : null}</div></div> : <>
           <div className={styles.deliveryFlow}>
-            <article data-ready={Boolean(snapshot.repositoryBinding) || undefined}><span>01</span><div><strong>Repository</strong><small>{snapshot.repositoryBinding ? snapshot.repositoryBinding.repositoryFullName : "Choose selected access"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
+            <article data-ready={repositoryWorkspaceCurrent || undefined}><span>01</span><div><strong>Repository workspace</strong><small>{repositoryWorkspaceCurrent && snapshot.repositoryWorkspace ? `${snapshot.repositoryWorkspace.repositoryFullName} · ${snapshot.repositoryWorkspace.fileCount} files` : snapshot.repositoryBinding ? "Bound · open exact revision" : "Choose selected access"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
             <article data-ready={Boolean(currentCheckpoint) || undefined}><span>02</span><div><strong>Sealed revision</strong><small>{currentCheckpoint ? currentCheckpoint.workspaceSha256.slice(0, 10) : "Checkpoint required"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
             <article data-ready={Boolean(deliveryVerification) || undefined}><span>03</span><div><strong>Verification</strong><small>{deliveryVerification ? "Checks + visual evidence passed" : "Passing Sentinel receipt required"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
             <article data-ready={latestDelivery?.status === "pull_request_open" || undefined}><span>04</span><div><strong>Draft PR</strong><small>{latestDelivery?.status === "pull_request_open" ? `#${latestDelivery.pullRequestNumber}` : "Secret scan runs first"}</small></div><GitBranch size={16} /></article>
@@ -662,6 +730,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
               <div className={styles.repositorySelect}><select id={`builder-repository-${project.id}`} value={selectedRepositoryId || snapshot.repositoryBinding?.repositoryId || ""} onChange={(event) => setSelectedRepositoryId(event.currentTarget.value)} disabled={busy === "github.repositories"}>{repositories.map((repository) => <option value={repository.repositoryId} key={repository.repositoryId}>{repository.fullName} · {repository.private ? "private" : "public"}</option>)}</select><button type="button" onClick={() => void refreshRepositories()} disabled={Boolean(busy)} aria-label="Refresh repositories">{busy === "github.repositories" ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}</button></div>
               {snapshot.repositoryBinding ? <div className={styles.revisionReceipt}><span>Bound to <b>{snapshot.repositoryBinding.defaultBranch}</b></span><code>{snapshot.repositoryBinding.baseSha.slice(0, 12)}</code></div> : null}
               <button type="button" className={styles.secondaryAction} onClick={() => void bindRepository()} disabled={!selectedRepositoryId || Boolean(busy)}>{busy === "github.bind" ? <Loader2 className="animate-spin" size={14} /> : <GitBranch size={14} />} {snapshot.repositoryBinding?.repositoryId === selectedRepositoryId ? "Refresh exact revision" : "Bind repository"}</button>
+              {snapshot.repositoryBinding ? <button type="button" className={styles.primaryAction} onClick={() => void checkoutRepository()} disabled={Boolean(busy) || repositoryWorkspaceCurrent}>{busy === "github.checkout" ? <Loader2 className="animate-spin" size={14} /> : <FolderGit2 size={14} />} {busy === "github.checkout" ? "Importing exact revision…" : repositoryWorkspaceCurrent ? "Repository open in workspace" : snapshot.repositoryWorkspace ? "Update workspace to bound revision" : "Open repository in workspace"}</button> : null}
             </section>
             <section className={styles.pullRequestCard}>
               <div><strong>Pull request</strong><small>A new branch is required; the default branch is never written directly.</small></div>
@@ -736,12 +805,12 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
       <div className={styles.workspace}>
         <aside className={styles.fileRail}>
           <div className={styles.railTabs} role="tablist"><button type="button" className={rail === "files" ? styles.selected : undefined} onClick={() => setRail("files")}><Files size={14} /> Files</button><button type="button" className={rail === "checkpoints" ? styles.selected : undefined} onClick={() => setRail("checkpoints")}><RotateCcw size={14} /> Restore</button><button type="button" className={rail === "activity" ? styles.selected : undefined} onClick={() => setRail("activity")}><Activity size={14} /> Activity</button></div>
-          {rail === "files" ? <div className={styles.fileList}>{files.map((entry) => <button type="button" key={entry.path} className={file?.path === entry.path ? styles.selectedFile : undefined} onClick={() => { if (dirty && !window.confirm("Discard the unsaved file change?")) return; void loadFile(session, entry.path); setView("code"); }}><FileCode2 size={13} /><span>{entry.path}</span><small>{formatBytes(entry.size || 0)}</small></button>)}</div> : rail === "checkpoints" ? <div className={styles.checkpointList}>{snapshot.checkpoints.length ? snapshot.checkpoints.map((checkpoint) => { const current = session.currentCheckpointId === checkpoint.id; return <article key={checkpoint.id} data-current={current || undefined}><div><i /><span>{current ? "Current seal" : checkpointReason(checkpoint.reason)}</span></div><strong>{checkpoint.label}</strong><small>{new Date(checkpoint.createdAt).toLocaleString()} · {checkpoint.fileCount} files</small><code>{checkpoint.workspaceSha256.slice(0, 12)}</code><button type="button" onClick={() => void restoreCheckpoint(checkpoint)} disabled={Boolean(busy) || dirty || current}>{busy === `restore:${checkpoint.id}` ? <Loader2 className="animate-spin" size={12} /> : <RotateCcw size={12} />} {current ? "Current" : "Restore"}</button></article>; }) : <p>No checkpoints yet. Save one before a risky change.</p>}</div> : <div className={styles.activityList}>{snapshot.activity.length ? snapshot.activity.map((item) => <article key={item.id}><i /><div><strong>{eventLabel(item.eventType)}</strong><small>{new Date(item.occurredAt).toLocaleString()}</small>{activityDetail(item)}</div></article>) : <p>No build activity yet.</p>}</div>}
+          {rail === "files" ? <><form className={styles.fileSearch} onSubmit={(event) => { event.preventDefault(); void searchTree(session, fileSearch); }}><Search size={13} /><input value={fileSearch} onChange={(event) => setFileSearch(event.currentTarget.value)} placeholder="Search source" aria-label="Search source files" /><button type="submit" disabled={fileSearch.trim().length === 1 || Boolean(busy)}>Find</button>{fileSearch ? <button type="button" onClick={() => { setFileSearch(""); void loadTree(session, file?.path); }}>Clear</button> : null}</form><div className={styles.fileList}>{files.length ? files.map((entry) => <button type="button" key={entry.path} className={file?.path === entry.path ? styles.selectedFile : undefined} onClick={() => { if (dirty && !window.confirm("Discard the unsaved file change?")) return; void loadFile(session, entry.path); setView("code"); }}><FileCode2 size={13} /><span>{entry.path}</span><small>{formatBytes(entry.size || 0)}</small></button>) : <p>No editable source matched.</p>}</div></> : rail === "checkpoints" ? <div className={styles.checkpointList}>{snapshot.checkpoints.length ? snapshot.checkpoints.map((checkpoint) => { const current = session.currentCheckpointId === checkpoint.id; return <article key={checkpoint.id} data-current={current || undefined}><div><i /><span>{current ? "Current seal" : checkpointReason(checkpoint.reason)}</span></div><strong>{checkpoint.label}</strong><small>{new Date(checkpoint.createdAt).toLocaleString()} · {checkpoint.fileCount} files</small><code>{checkpoint.workspaceSha256.slice(0, 12)}</code><button type="button" onClick={() => void restoreCheckpoint(checkpoint)} disabled={Boolean(busy) || dirty || current}>{busy === `restore:${checkpoint.id}` ? <Loader2 className="animate-spin" size={12} /> : <RotateCcw size={12} />} {current ? "Current" : "Restore"}</button></article>; }) : <p>No checkpoints yet. Save one before a risky change.</p>}</div> : <div className={styles.activityList}>{snapshot.activity.length ? snapshot.activity.map((item) => <article key={item.id}><i /><div><strong>{eventLabel(item.eventType)}</strong><small>{new Date(item.occurredAt).toLocaleString()}</small>{activityDetail(item)}</div></article>) : <p>No build activity yet.</p>}</div>}
         </aside>
 
         <div className={styles.canvas}>
           <div className={styles.canvasTabs} role="tablist"><button type="button" className={view === "preview" ? styles.selected : undefined} onClick={() => setView("preview")}><MonitorPlay size={14} /> Preview</button><button type="button" className={view === "code" ? styles.selected : undefined} onClick={() => setView("code")}><Code2 size={14} /> Code{dirty ? <i /> : null}</button><span>{file?.path || "No file selected"}</span></div>
-          {view === "preview" ? <div className={styles.previewFrame}>{snapshot.previewUrl ? <iframe key={snapshot.previewUrl} src={snapshot.previewUrl} title={`${project.title} live preview`} sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts" /> : <div><Loader2 className="animate-spin" /><span>Preview is waking up…</span></div>}</div> : <div className={styles.editor}><div><span>{file?.path}</span><small>{file ? `${formatBytes(file.size)} · ${file.sha256.slice(0, 10)}…` : ""}</small></div><textarea aria-label={`Edit ${file?.path || "file"}`} spellCheck={false} value={draft} onChange={(event) => setDraft(event.currentTarget.value)} disabled={!file} /><footer><span>{dirty ? "Unsaved change" : "Saved at exact revision"}</span><button type="button" onClick={() => void saveFile()} disabled={!dirty || busy === "save"}>{busy === "save" ? <Loader2 className="animate-spin" size={13} /> : <Save size={13} />} Save file</button></footer></div>}
+          {view === "preview" ? <div className={styles.previewFrame}>{snapshot.previewUrl ? <iframe key={snapshot.previewUrl} src={snapshot.previewUrl} title={`${project.title} live preview`} sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts" /> : <div><Loader2 className="animate-spin" /><span>Preview is waking up…</span></div>}</div> : <div className={styles.editor}><div><span>{file?.path}</span><small>{file ? `${formatBytes(file.size)} · ${file.sha256.slice(0, 10)}…` : ""}</small></div><textarea aria-label={`Edit ${file?.path || "file"}`} spellCheck={false} value={draft} onChange={(event) => setDraft(event.currentTarget.value)} disabled={!file} /><footer><span>{dirty ? "Unsaved change" : "Saved at exact revision"}</span><div className={styles.editorActions}><button type="button" className={styles.deleteAction} onClick={() => void deleteFile()} disabled={!file || dirty || Boolean(busy)}>{busy === "delete" ? <Loader2 className="animate-spin" size={13} /> : <Trash2 size={13} />} Delete</button><button type="button" onClick={() => void saveFile()} disabled={!dirty || busy === "save"}>{busy === "save" ? <Loader2 className="animate-spin" size={13} /> : <Save size={13} />} Save file</button></div></footer></div>}
           <div className={styles.checks}><div><SquareTerminal size={14} /><span>Focused checks</span></div>{commands.map((command) => <button type="button" key={command} onClick={() => void runCommand(command)} disabled={Boolean(busy) || dirty}>{busy === command ? <Loader2 className="animate-spin" size={12} /> : <CheckCircle2 size={12} />} {command}</button>)}</div>
           {commandOutput ? <pre className={styles.output}>{commandOutput}</pre> : null}
         </div>

@@ -10,6 +10,7 @@ export const APP_BUILDER_DELIVERY_CONTRACT_VERSION = "app-builder-delivery:1" as
 export const APP_BUILDER_SECRET_SCAN_CONTRACT_VERSION = "app-builder-secret-scan:1" as const;
 export const APP_BUILDER_DEPLOYMENT_CONTRACT_VERSION = "app-builder-deployment:1" as const;
 export const APP_BUILDER_RELEASE_CONTRACT_VERSION = "app-builder-release:1" as const;
+export const APP_BUILDER_REPOSITORY_WORKSPACE_CONTRACT_VERSION = "app-builder-repository-workspace:1" as const;
 export const APP_BUILDER_TEMPLATE_ID = "nextjs-starter-v1" as const;
 export const APP_BUILDER_ROOT = "/vercel/sandbox/app" as const;
 export const APP_BUILDER_PREVIEW_PORT = 3000 as const;
@@ -116,6 +117,22 @@ export type AppBuilderFile = Readonly<{
   sha256: string;
   size: number;
 }>;
+
+export type AppBuilderRepositoryWorkspace = Readonly<{
+  contractVersion: typeof APP_BUILDER_REPOSITORY_WORKSPACE_CONTRACT_VERSION;
+  repositoryId: string;
+  repositoryFullName: string;
+  baseSha: string;
+  archiveSha256: string;
+  workspaceSha256: string;
+  fileCount: number;
+  importedAt: string;
+}>;
+
+export type AppBuilderDeliveryChange = Readonly<
+  | { kind: "upsert"; file: AppBuilderFile }
+  | { kind: "delete"; path: string; previousSha256: string }
+>;
 
 export type AppBuilderTreeEntry = Readonly<{
   path: string;
@@ -291,6 +308,14 @@ export const builderFileUpdateInputSchema = builderFileReadInputSchema.extend({
   content: z.string().max(500_000),
 }).strict();
 
+export const builderFileDeleteInputSchema = builderFileReadInputSchema.extend({
+  expectedSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+export const builderSearchInputSchema = builderTreeInputSchema.extend({
+  query: z.string().trim().min(2).max(120),
+}).strict();
+
 export const builderCommandInputSchema = builderTreeInputSchema.extend({
   command: appBuilderCommandKindSchema,
 }).strict();
@@ -334,6 +359,12 @@ export const builderRepositoryListInputSchema = builderProjectInputSchema;
 
 export const builderRepositoryBindInputSchema = builderTreeInputSchema.extend({
   repositoryId: z.string().regex(/^\d{1,24}$/),
+}).strict();
+
+export const builderRepositoryCheckoutInputSchema = builderTreeInputSchema.extend({
+  repositoryBindingId: z.string().regex(/^app_build_repository_[a-f0-9]{48}$/),
+  expectedBindingRevision: z.number().int().positive(),
+  expectedSessionRevision: z.number().int().positive(),
 }).strict();
 
 export const builderDeliveryInputSchema = builderTreeInputSchema.extend({

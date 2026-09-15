@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 
 import {
   deliverBuilderFilesToGithub,
+  downloadBuilderGithubRepositoryArchive,
   getBuilderGithubStatus,
   GitHubDeliveryPartialError,
   listBuilderGithubRepositories,
@@ -93,9 +94,29 @@ describe("App Builder GitHub App broker", () => {
       title: "Do not deliver",
       body: "Outside the explicit broker allowlist.",
       draft: true,
-      files: [{ path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "c".repeat(64), size: 46 }],
+      changes: [{ kind: "upsert", file: { path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "c".repeat(64), size: 46 } }],
     })).rejects.toThrow(/outside the configured GitHub App allowlist/i);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("downloads an exact bounded archive without forwarding the installation token to codeload", async () => {
+    const archive = new Uint8Array([0x1f, 0x8b, 0x08, 0x00]);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(installationResponse())
+      .mockResolvedValueOnce(jsonResponse({ token: "installation-token", expires_at: "2026-09-15T05:00:00Z" }))
+      .mockResolvedValueOnce(new Response(null, {
+        status: 302,
+        headers: { location: "https://codeload.github.com/benniejoseph/research-app/legacy.tar.gz/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+      }))
+      .mockResolvedValueOnce(new Response(archive, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(downloadBuilderGithubRepositoryArchive({
+      repository: { repositoryId: "42", owner: "benniejoseph", name: "research-app" },
+      baseSha: "a".repeat(40),
+    })).resolves.toMatchObject({ byteCount: archive.byteLength });
+    expect(fetchMock.mock.calls[2][1].headers.authorization).toBe("Bearer installation-token");
+    expect(fetchMock.mock.calls[3][1].headers.authorization).toBeUndefined();
   });
 
   it("fences the exact base revision before creating any remote branch", async () => {
@@ -113,7 +134,7 @@ describe("App Builder GitHub App broker", () => {
       title: "Build research app",
       body: "Review evidence.",
       draft: true,
-      files: [{ path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "c".repeat(64), size: 46 }],
+      changes: [{ kind: "upsert", file: { path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "c".repeat(64), size: 46 } }],
     })).rejects.toThrow(/default branch changed/i);
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
@@ -141,7 +162,7 @@ describe("App Builder GitHub App broker", () => {
       title: "Build research app",
       body: "Review evidence.",
       draft: true,
-      files: [{ path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "f".repeat(64), size: 46 }],
+      changes: [{ kind: "upsert", file: { path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "f".repeat(64), size: 46 } }],
     });
 
     expect(result).toEqual(expect.objectContaining({
@@ -182,7 +203,7 @@ describe("App Builder GitHub App broker", () => {
       title: "Build research app",
       body: "Review evidence.",
       draft: true,
-      files: [{ path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "f".repeat(64), size: 46 }],
+      changes: [{ kind: "upsert", file: { path: "app/page.tsx", content: "export default function Page() { return null }", sha256: "f".repeat(64), size: 46 } }],
     }).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(GitHubDeliveryPartialError);

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, builderProductionReleaseInputSchema, builderProductionReleasePreviewInputSchema, builderProductionReleaseRefreshInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
+import { assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileDeleteInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, builderProductionReleaseInputSchema, builderProductionReleasePreviewInputSchema, builderProductionReleaseRefreshInputSchema, builderRepositoryCheckoutInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
 import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 import { APP_SERVICE_OPERATION_CONTRACTS, MAIN_AGENT_APP_SERVICE_BINDINGS } from "@/lib/app-services/registry";
@@ -27,6 +27,8 @@ describe("project App Builder boundary", () => {
       content: "export default function Page() { return null }",
     }).success).toBe(true);
     expect(builderCommandInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, command: "rm -rf" }).success).toBe(false);
+    expect(builderFileDeleteInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, path: "app/old.ts", expectedSha256: "b".repeat(64) }).success).toBe(true);
+    expect(builderRepositoryCheckoutInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, repositoryBindingId: `app_build_repository_${"b".repeat(48)}`, expectedBindingRevision: 2, expectedSessionRevision: 4 }).success).toBe(true);
     expect(builderCheckpointCreateInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, expectedSessionRevision: 4, reason: "before_forge", label: "Before Forge" }).success).toBe(true);
     expect(builderCheckpointRestoreInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, checkpointId: `app_build_checkpoint_${"b".repeat(48)}`, expectedSessionRevision: 5 }).success).toBe(true);
     expect(assertBuilderBranchName("asael/research-dashboard-a1b2c3d4")).toBe("asael/research-dashboard-a1b2c3d4");
@@ -106,7 +108,7 @@ describe("project App Builder boundary", () => {
     expect(combined).not.toMatch(/API_KEY|SECRET|PASSWORD|\.env/);
     const sandboxSource = await readFile(new URL("./sandbox.ts", import.meta.url), "utf8");
     expect(sandboxSource).toContain("sandbox.fs.mkdir(APP_BUILDER_ROOT, { recursive: true })");
-    expect(sandboxSource).toContain('entry.path !== "next-env.d.ts" && !entry.path.endsWith(".tsbuildinfo")');
+    expect(sandboxSource).toContain("safeWorkspacePath(relativePath");
     expect(sandboxSource).toContain('"-not", "-path", "./next-env.d.ts"');
     expect(sandboxSource).toContain('"-not", "-name", "*.tsbuildinfo"');
   });
@@ -117,8 +119,10 @@ describe("project App Builder boundary", () => {
       "app.projects.builder.show",
       "app.projects.builder.create",
       "app.projects.builder.tree",
+      "app.projects.builder.search",
       "app.projects.builder.file.read",
       "app.projects.builder.file.update",
+      "app.projects.builder.file.delete",
       "app.projects.builder.command.run",
       "app.projects.builder.checkpoint.create",
       "app.projects.builder.checkpoint.restore",
@@ -127,6 +131,7 @@ describe("project App Builder boundary", () => {
       "app.projects.builder.sentinel.record",
       "app.projects.builder.repositories.list",
       "app.projects.builder.repository.bind",
+      "app.projects.builder.repository.checkout",
       "app.projects.builder.delivery.create",
       "app.projects.builder.deployment.preview",
       "app.projects.builder.deployment.refresh",
@@ -205,7 +210,7 @@ describe("project App Builder boundary", () => {
     expect(productionRelease).toContain("omni_app_builder_releases");
     expect(productionRelease).toContain("app_builder.release.production_healthy");
     expect(productionRelease).toContain("FORCE ROW LEVEL SECURITY");
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 173)).toEqual({
       version: 173,
       name: "app_builder_deployment_url_constraint_repair_v1",
       checksum: "a41d2d82ad95d8402b182f8136f9bee67133d2380f246605c803915838c7da8e",
@@ -214,6 +219,14 @@ describe("project App Builder boundary", () => {
     expect(deploymentUrlRepair).toContain("[.]vercel[.]app");
     expect(deploymentUrlRepair).toContain("omni_app_builder_deployments_row_check");
     expect(deploymentUrlRepair).toContain("omni_app_builder_releases_row_check");
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 174,
+      name: "app_builder_repository_workspaces_v1",
+      checksum: "30f4769a6fcccd41aa457882b6be2752583d7d5920be75597e3b2121e91604d0",
+    });
+    const repositoryWorkspace = await readFile(new URL("../../../supabase/migrations/20260915190000_app_builder_repository_workspaces.sql", import.meta.url), "utf8");
+    expect(repositoryWorkspace).toContain("file_count BETWEEN 1 AND 10000");
+    expect(repositoryWorkspace).toContain("app_builder.repository.checked_out");
     const runner = await readFile(new URL("../orchestration/agent-runner.ts", import.meta.url), "utf8");
     expect(runner).toContain('agentId === "sentinel"');
     expect(runner).toContain('? "verifier" as const');

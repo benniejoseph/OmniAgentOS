@@ -5,6 +5,7 @@ import {
 } from "@/lib/app-services/contracts";
 import {
   bindProjectBuilderRepositoryService,
+  checkoutProjectBuilderRepositoryService,
   createProjectBuilderService,
   createProjectBuilderCheckpointService,
   deliverProjectBuilderPullRequestService,
@@ -15,6 +16,7 @@ import {
   refreshProjectBuilderPreviewDeploymentService,
   listProjectBuilderRepositoriesService,
   listProjectBuilderTreeService,
+  searchProjectBuilderFilesService,
   readProjectBuilderFileService,
   recordProjectBuilderSentinelReviewService,
   runProjectBuilderCommandService,
@@ -23,6 +25,7 @@ import {
   showProjectBuilderService,
   showProjectBuilderVerificationService,
   stopProjectBuilderService,
+  deleteProjectBuilderFileService,
   updateProjectBuilderFileService,
 } from "@/lib/app-services/app-builder";
 import { withDatabaseRequestScope } from "@/lib/db/client";
@@ -39,12 +42,14 @@ const sessionIdSchema = z.string().regex(/^app_build_[a-f0-9]{48}$/);
 const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("create") }).strict(),
   z.object({ action: z.literal("file.update"), sessionId: sessionIdSchema, path: z.string().trim().min(1).max(240), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(), content: z.string().max(500_000) }).strict(),
+  z.object({ action: z.literal("file.delete"), sessionId: sessionIdSchema, path: z.string().trim().min(1).max(240), expectedSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ action: z.literal("command.run"), sessionId: sessionIdSchema, command: z.enum(["lint", "typecheck", "test", "build", "start_preview"]) }).strict(),
   z.object({ action: z.literal("checkpoint.create"), sessionId: sessionIdSchema, expectedSessionRevision: z.number().int().positive(), reason: z.enum(["manual", "before_forge", "after_forge", "before_sentinel"]), label: z.string().trim().min(1).max(120), sourceRunId: z.string().uuid().optional() }).strict(),
   z.object({ action: z.literal("checkpoint.restore"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), expectedSessionRevision: z.number().int().positive() }).strict(),
   z.object({ action: z.literal("verification.run"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), expectedSessionRevision: z.number().int().positive() }).strict(),
   z.object({ action: z.literal("sentinel.record"), sessionId: sessionIdSchema, verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), sourceRunId: z.string().uuid() }).strict(),
   z.object({ action: z.literal("repository.bind"), sessionId: sessionIdSchema, repositoryId: z.string().regex(/^\d{1,24}$/) }).strict(),
+  z.object({ action: z.literal("repository.checkout"), sessionId: sessionIdSchema, repositoryBindingId: z.string().regex(/^app_build_repository_[a-f0-9]{48}$/), expectedBindingRevision: z.number().int().positive(), expectedSessionRevision: z.number().int().positive() }).strict(),
   z.object({ action: z.literal("delivery.create"), sessionId: sessionIdSchema, repositoryBindingId: z.string().regex(/^app_build_repository_[a-f0-9]{48}$/), expectedBindingRevision: z.number().int().positive(), checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), branchName: z.string().trim().min(1).max(120), title: z.string().trim().min(3).max(180), body: z.string().trim().max(8_000).default(""), draft: z.boolean().default(true) }).strict(),
   z.object({ action: z.literal("deployment.preview"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), repositoryDeliveryId: z.string().regex(/^app_build_delivery_[a-f0-9]{48}$/).optional() }).strict(),
   z.object({ action: z.literal("deployment.refresh"), sessionId: sessionIdSchema, deploymentId: z.string().regex(/^app_build_deployment_[a-f0-9]{48}$/) }).strict(),
@@ -69,6 +74,8 @@ async function GETHandler(request: Request, route: { params: Promise<{ id: strin
     const caller = createAppServiceCaller({ context });
     const result = view === "tree"
       ? await listProjectBuilderTreeService(caller, { projectId: id, sessionId })
+      : view === "search"
+        ? await searchProjectBuilderFilesService(caller, { projectId: id, sessionId, query: url.searchParams.get("query") || "" })
       : view === "file"
         ? await readProjectBuilderFileService(caller, { projectId: id, sessionId, path: url.searchParams.get("path") || "" })
         : view === "verification"
@@ -94,9 +101,9 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     context = await authorizeRequest({
       request,
       action: "run.agent",
-      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : action === "repository.bind" ? "app_builder_repository" : action === "delivery.create" ? "app_builder_delivery" : action.startsWith("deployment.") ? "app_builder_deployment" : action.startsWith("release.") ? "app_builder_release" : "app_builder_session",
+      resourceType: action === "file.update" || action === "file.delete" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : action.startsWith("repository.") ? "app_builder_repository" : action === "delivery.create" ? "app_builder_delivery" : action.startsWith("deployment.") ? "app_builder_deployment" : action.startsWith("release.") ? "app_builder_release" : "app_builder_session",
       resourceId: id,
-      riskLevel: action === "release.production" ? 3 : action === "create" || action === "stop" || action === "checkpoint.restore" || action === "delivery.create" || action === "deployment.preview" ? 2 : 1,
+      riskLevel: action === "release.production" ? 3 : action === "create" || action === "stop" || action === "checkpoint.restore" || action === "repository.checkout" || action === "delivery.create" || action === "deployment.preview" ? 2 : 1,
       nativeMutationCapability: "workspaces.update",
       metadata: { action },
     });
@@ -109,6 +116,8 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
       ? await createProjectBuilderService(caller, { projectId: id })
       : action === "file.update"
         ? await updateProjectBuilderFileService(caller, { projectId: id, sessionId: parsed.data.sessionId, path: parsed.data.path, expectedSha256: parsed.data.expectedSha256, content: parsed.data.content })
+        : action === "file.delete"
+          ? await deleteProjectBuilderFileService(caller, { projectId: id, sessionId: parsed.data.sessionId, path: parsed.data.path, expectedSha256: parsed.data.expectedSha256 })
         : action === "command.run"
           ? await runProjectBuilderCommandService(caller, { projectId: id, sessionId: parsed.data.sessionId, command: parsed.data.command })
           : action === "checkpoint.create"
@@ -121,6 +130,8 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
                 ? await recordProjectBuilderSentinelReviewService(caller, { projectId: id, sessionId: parsed.data.sessionId, verificationId: parsed.data.verificationId, sourceRunId: parsed.data.sourceRunId })
                 : action === "repository.bind"
                   ? await bindProjectBuilderRepositoryService(caller, { projectId: id, sessionId: parsed.data.sessionId, repositoryId: parsed.data.repositoryId })
+                  : action === "repository.checkout"
+                    ? await checkoutProjectBuilderRepositoryService(caller, { projectId: id, sessionId: parsed.data.sessionId, repositoryBindingId: parsed.data.repositoryBindingId, expectedBindingRevision: parsed.data.expectedBindingRevision, expectedSessionRevision: parsed.data.expectedSessionRevision })
                   : action === "delivery.create"
                     ? await deliverProjectBuilderPullRequestService(caller, { projectId: id, sessionId: parsed.data.sessionId, repositoryBindingId: parsed.data.repositoryBindingId, expectedBindingRevision: parsed.data.expectedBindingRevision, checkpointId: parsed.data.checkpointId, verificationId: parsed.data.verificationId, branchName: parsed.data.branchName, title: parsed.data.title, body: parsed.data.body, draft: parsed.data.draft })
                   : action === "deployment.preview"
