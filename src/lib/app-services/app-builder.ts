@@ -106,6 +106,10 @@ import {
   updateBuilderReleaseEvidence,
 } from "@/lib/app-builder/release-store";
 import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
+import {
+  hasPassingAppBuilderSentinelReview,
+  parseAppBuilderSentinelVerdict,
+} from "@/lib/app-builder/sentinel-review";
 import { captureBuilderBrowserEvidence } from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
@@ -534,6 +538,7 @@ export async function recordProjectBuilderSentinelReviewService(
   if (!run.prompt.includes(verification.id) || !run.prompt.includes(verification.checkpointId)) {
     throw new Error("The Sentinel run is not bound to this verification checkpoint.");
   }
+  const verdict = parseAppBuilderSentinelVerdict(run.response || "");
   await recordBuilderActivity({
     ...owner(caller), session,
     eventType: "app_builder.sentinel.reviewed",
@@ -541,13 +546,15 @@ export async function recordProjectBuilderSentinelReviewService(
     detail: {
       verificationId: verification.id,
       checkpointId: verification.checkpointId,
+      workspaceSha256: verification.workspaceSha256,
       sourceRunId: run.id,
+      verdict,
       responseSha256: createHash("sha256").update(run.response || "").digest("hex"),
     },
   });
   return completeAppServiceCall(authorized, {
     verification: publicVerification(verification),
-    sentinel: { runId: run.id, status: run.status },
+    sentinel: { runId: run.id, status: run.status, verdict },
   });
 }
 
@@ -627,6 +634,7 @@ export async function deliverProjectBuilderPullRequestService(
   ) {
     throw new Error("GitHub delivery requires a passing verification for the exact current checkpoint.");
   }
+  await requirePassingSentinelReview(session.id, verification, caller);
   const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
   if (workspace.sha256 !== checkpoint.workspaceSha256) {
     throw new Error("The workspace changed after verification. Seal and verify the current revision again.");
@@ -757,6 +765,7 @@ export async function createProjectBuilderPreviewDeploymentService(
   ) {
     throw new Error("Preview deployment requires a passing verification for the exact current checkpoint.");
   }
+  await requirePassingSentinelReview(session.id, verification, caller);
   const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
   if (workspace.sha256 !== checkpoint.workspaceSha256) {
     throw new Error("The workspace changed after verification. Seal and verify the current revision again.");
@@ -1243,6 +1252,17 @@ async function requireProject(caller: AppServiceCaller, projectId: string) {
   });
   if (!project) throw new Error("Project was not found.");
   return project;
+}
+
+async function requirePassingSentinelReview(
+  sessionId: string,
+  verification: { id: string; checkpointId: string; workspaceSha256: string },
+  caller: AppServiceCaller,
+) {
+  const activity = await listBuilderActivity(sessionId, owner(caller), 100);
+  if (!hasPassingAppBuilderSentinelReview(activity, verification)) {
+    throw new Error("Delivery requires an explicit passing Sentinel verdict bound to this exact checkpoint.");
+  }
 }
 
 function owner(caller: AppServiceCaller) {

@@ -24,6 +24,10 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { buildAppBuilderAgentRequest } from "@/lib/app-builder/agent-request";
+import {
+  findAppBuilderSentinelReview,
+  hasPassingAppBuilderSentinelReview,
+} from "@/lib/app-builder/sentinel-review";
 import styles from "./app-builder-studio.module.css";
 
 type BuildProject = Readonly<{ id: string; title: string; objective: string; status: string }>;
@@ -71,8 +75,11 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const dirty = Boolean(file && draft !== file.content);
   const latestVerification = snapshot.verifications[0];
   const deliveryVerification = snapshot.verifications.find((verification) =>
-    verification.status === "passed" && verification.checkpointId === session?.currentCheckpointId,
+    verification.status === "passed" &&
+    verification.checkpointId === session?.currentCheckpointId &&
+    hasPassingAppBuilderSentinelReview(snapshot.activity, verification),
   );
+  const latestSentinelReview = findAppBuilderSentinelReview(snapshot.activity, latestVerification);
   const currentCheckpoint = snapshot.checkpoints.find((checkpoint) => checkpoint.id === session?.currentCheckpointId);
   const latestDelivery = snapshot.deliveries[0];
   const latestDeployment = snapshot.deployments[0];
@@ -377,13 +384,16 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
         setSentinelOutput(accumulated.trim());
       });
       if (!completed || !runId) throw new Error("Sentinel did not produce a completed review receipt.");
-      await mutate(project.id, {
+      const review = await mutate<{ sentinel: { runId: string; status: string; verdict: "passed" | "blocked" } }>(project.id, {
         action: "sentinel.record",
         sessionId: sealed.session.id,
         verificationId: verification.id,
         sourceRunId: runId,
       });
       await loadSession();
+      if (review.sentinel.verdict !== "passed") {
+        throw new Error("Sentinel blocked this revision. Resolve the verdict before GitHub or Vercel delivery.");
+      }
     } catch (verificationError) {
       setError(message(verificationError));
     } finally {
@@ -742,7 +752,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
           {agentOutput ? <div className={styles.agentOutput}>{agentOutput}</div> : <div className={styles.suggestion}><WandSparkles size={15} /><span>Try “Turn this starter into a personal research dashboard with a responsive mobile view.”</span></div>}
           <form onSubmit={askForge}><label htmlFor={`forge-prompt-${project.id}`}>What should Forge build?</label><textarea id={`forge-prompt-${project.id}`} value={prompt} onChange={(event) => setPrompt(event.currentTarget.value)} rows={5} maxLength={4_000} placeholder="Describe the outcome, audience, and must-have behavior…" /><button type="submit" disabled={!prompt.trim() || Boolean(busy) || dirty}>{busy === "forge" ? <Loader2 className="animate-spin" size={14} /> : <Send size={14} />} {busy === "forge" ? "Forge is working" : dirty ? "Save file before Forge" : "Build with Forge"}</button></form>
           <section className={styles.sentinelCard}>
-            <div><span>S</span><div><strong>Sentinel</strong><small>Independent verifier · Settings model</small></div>{latestVerification ? <i data-status={latestVerification.status}>{latestVerification.status}</i> : null}</div>
+            <div><span>S</span><div><strong>Sentinel</strong><small>Independent verifier · Settings model</small></div>{latestVerification ? <i data-status={latestSentinelReview?.detail.verdict === "blocked" ? "failed" : latestVerification.status}>{latestSentinelReview?.detail.verdict === "passed" ? "passed" : latestSentinelReview?.detail.verdict === "blocked" ? "blocked" : latestVerification.status === "passed" ? "checks passed" : latestVerification.status}</i> : null}</div>
             <p>Seal this revision, run focused checks, capture private desktop and mobile evidence, then ask Sentinel for a separate verdict.</p>
             {latestVerification ? <div className={styles.evidenceStrip}><span>{latestVerification.checks.filter((check) => check.status === "passed").length}/2 checks</span><span>{latestVerification.browserEvidence.captures.length}/2 views</span><code>{latestVerification.workspaceSha256.slice(0, 9)}</code></div> : null}
             {sentinelOutput ? <div className={styles.sentinelOutput}>{sentinelOutput}</div> : null}
@@ -793,7 +803,7 @@ function checkpointReason(value: BuilderCheckpoint["reason"]) { return value.rep
 function eventLabel(value: string) { return value.replace("app_builder.", "").replaceAll("_", " ").replaceAll(".", " · "); }
 function activityDetail(item: BuilderActivity) {
   const detail = item.detail;
-  const text = typeof detail.path === "string" ? detail.path : typeof detail.command === "string" ? `${detail.command} · exit ${String(detail.exitCode ?? "—")}` : typeof detail.repositoryFullName === "string" ? detail.repositoryFullName : typeof detail.branchName === "string" ? detail.branchName : "";
+  const text = typeof detail.path === "string" ? detail.path : typeof detail.command === "string" ? `${detail.command} · exit ${String(detail.exitCode ?? "—")}` : typeof detail.verdict === "string" ? `Verdict · ${detail.verdict}` : typeof detail.repositoryFullName === "string" ? detail.repositoryFullName : typeof detail.branchName === "string" ? detail.branchName : "";
   return text ? <span>{text}</span> : null;
 }
 function suggestBranch(title: string, workspaceSha256?: string) {
