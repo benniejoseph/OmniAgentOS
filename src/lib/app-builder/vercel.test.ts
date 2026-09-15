@@ -8,6 +8,7 @@ import {
   createBuilderVercelProduction,
   createBuilderVercelPreview,
   discoverBuilderSmokeRoutes,
+  ensureBuilderVercelProtectionBypass,
   getBuilderVercelDeployment,
   getBuilderVercelLogEvidence,
   getBuilderVercelProductionDeployment,
@@ -19,6 +20,7 @@ const original = {
   token: process.env.OMNIAGENT_VERCEL_ACCESS_TOKEN,
   teamId: process.env.OMNIAGENT_VERCEL_TEAM_ID,
   bypass: process.env.OMNIAGENT_VERCEL_PROTECTION_BYPASS_TOKEN,
+  previewSecret: process.env.OMNIAGENT_APP_BUILDER_PREVIEW_SECRET,
 };
 
 describe("App Builder Vercel preview broker", () => {
@@ -26,6 +28,7 @@ describe("App Builder Vercel preview broker", () => {
     process.env.OMNIAGENT_VERCEL_ACCESS_TOKEN = "vercel_test_token_abcdefghijklmnopqrstuvwxyz";
     process.env.OMNIAGENT_VERCEL_TEAM_ID = "team_asaelprivate";
     delete process.env.OMNIAGENT_VERCEL_PROTECTION_BYPASS_TOKEN;
+    process.env.OMNIAGENT_APP_BUILDER_PREVIEW_SECRET = "app-builder-preview-test-secret";
   });
 
   afterEach(() => {
@@ -33,6 +36,7 @@ describe("App Builder Vercel preview broker", () => {
     restore("OMNIAGENT_VERCEL_ACCESS_TOKEN", original.token);
     restore("OMNIAGENT_VERCEL_TEAM_ID", original.teamId);
     restore("OMNIAGENT_VERCEL_PROTECTION_BYPASS_TOKEN", original.bypass);
+    restore("OMNIAGENT_APP_BUILDER_PREVIEW_SECRET", original.previewSecret);
   });
 
   it("reports readiness without exposing credentials and derives one opaque project name", () => {
@@ -101,6 +105,33 @@ describe("App Builder Vercel preview broker", () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain("/events?");
   });
 
+  it("configures one deterministic project-scoped verification bypass without persisting it", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ protectionBypass: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const secret = await ensureBuilderVercelProtectionBypass("prj_Def456");
+
+    expect(secret).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/v1/projects/prj_Def456/protection-bypass?teamId=team_asaelprivate");
+    expect(fetchMock.mock.calls[0][1].method).toBe("PATCH");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      generate: { secret, note: "Asael App Builder verification" },
+    });
+  });
+
+  it("reuses an existing deterministic verification bypass after a provider conflict", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { message: "already exists" } }, 409))
+      .mockResolvedValueOnce(jsonResponse({ protectionBypass: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const secret = await ensureBuilderVercelProtectionBypass("prj_Def456");
+
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({
+      update: { secret, note: "Asael App Builder verification" },
+    });
+  });
+
   it("records an exact rollback candidate and promotes only the reviewed preview to production", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ deployments: [{ uid: "dpl_Previous123", url: "asael-app-old.vercel.app" }] }))
@@ -149,8 +180,12 @@ describe("App Builder Vercel preview broker", () => {
       { path: "src/app/about/page.jsx" },
     ])).toEqual(["/", "/about", "/research"]);
     vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(new Response("ready", { status: 200 }))));
-    await expect(runBuilderVercelRouteSmokes("https://research-abc.vercel.app/", ["/", "/about"]))
+    const protectionBypassSecret = "a".repeat(32);
+    await expect(runBuilderVercelRouteSmokes("https://research-abc.vercel.app/", ["/", "/about"], { protectionBypassSecret }))
       .resolves.toMatchObject({ status: "passed", routes: [{ path: "/", status: "passed", statusCode: 200 }, { path: "/about", status: "passed", statusCode: 200 }] });
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].headers).toEqual({
+      "x-vercel-protection-bypass": protectionBypassSecret,
+    });
     await expect(runBuilderVercelRouteSmokes("https://127.0.0.1/", ["/"])).rejects.toThrow(/invalid preview URL/i);
   });
 });

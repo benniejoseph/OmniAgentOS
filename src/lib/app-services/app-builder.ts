@@ -88,6 +88,7 @@ import {
   builderVercelProjectName,
   createBuilderVercelPreview,
   discoverBuilderSmokeRoutes,
+  ensureBuilderVercelProtectionBypass,
   getBuilderVercelDeployment,
   getBuilderVercelLogEvidence,
   getBuilderVercelStatus,
@@ -891,13 +892,14 @@ export async function refreshProjectBuilderPreviewDeploymentService(
 ) {
   const value = builderPreviewDeploymentRefreshInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.deployment.refresh"));
+  const refreshIdempotencyKey = requireIdempotency(caller);
   const session = await requireSession(caller, value.projectId, value.sessionId);
   const deployment = await getBuilderDeployment(value.deploymentId, session.id, owner(caller));
   if (!deployment) throw new Error("The selected preview deployment was not found.");
   if (deployment.status === "ready" || deployment.status === "failed") {
     return completeAppServiceCall(authorized, { deployment: publicDeployment(deployment), changed: false });
   }
-  if (!deployment.providerDeploymentId || !deployment.deploymentUrl) {
+  if (!deployment.providerProjectId || !deployment.providerDeploymentId || !deployment.deploymentUrl) {
     throw new Error("The preview deployment has no confirmed Vercel identity yet.");
   }
   const provider = await getBuilderVercelDeployment(deployment.providerDeploymentId);
@@ -914,7 +916,7 @@ export async function refreshProjectBuilderPreviewDeploymentService(
     await recordBuilderActivity({
       ...owner(caller), session,
       eventType: "app_builder.deployment.preview_failed",
-      eventKey: requireIdempotency(caller),
+      eventKey: refreshIdempotencyKey,
       detail: {
         deploymentId: failed.id,
         providerDeploymentId: failed.providerDeploymentId,
@@ -938,14 +940,16 @@ export async function refreshProjectBuilderPreviewDeploymentService(
   const verifying = await updateBuilderDeploymentEvidence({
     ...owner(caller), deployment, status: "verifying", providerState: state,
   });
+  const protectionBypassSecret = await ensureBuilderVercelProtectionBypass(deployment.providerProjectId);
   const [logs, routeEvidence, browserEvidence] = await Promise.all([
     getBuilderVercelLogEvidence(deployment.providerDeploymentId),
-    runBuilderVercelRouteSmokes(deployment.deploymentUrl, deployment.smokeRoutes),
+    runBuilderVercelRouteSmokes(deployment.deploymentUrl, deployment.smokeRoutes, { protectionBypassSecret }),
     captureBuilderBrowserEvidence({
       tenantId: session.tenantId,
       actorId: session.ownerActorId,
-      executionId: `app-builder-deployment:${deployment.id}`,
+      executionId: `app-builder-deployment:${deployment.id}:${refreshIdempotencyKey}`,
       previewUrl: deployment.deploymentUrl,
+      protectionBypassSecret,
     }),
   ]);
   const status = logs.status === "captured" && routeEvidence.status === "passed" && browserEvidence.status === "captured"
@@ -960,7 +964,7 @@ export async function refreshProjectBuilderPreviewDeploymentService(
     eventType: status === "ready"
       ? "app_builder.deployment.preview_ready"
       : "app_builder.deployment.preview_incomplete",
-    eventKey: requireIdempotency(caller),
+    eventKey: refreshIdempotencyKey,
     detail: {
       deploymentId: current.id,
       providerDeploymentId: current.providerDeploymentId,
@@ -1146,6 +1150,7 @@ export async function refreshProjectBuilderProductionReleaseService(
 ) {
   const value = builderProductionReleaseRefreshInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.release.refresh"));
+  const refreshIdempotencyKey = requireIdempotency(caller);
   const session = await requireSession(caller, value.projectId, value.sessionId);
   let release = await getBuilderRelease(value.releaseId, session.id, owner(caller));
   if (!release) throw new Error("The selected production release was not found.");
@@ -1193,14 +1198,17 @@ export async function refreshProjectBuilderProductionReleaseService(
   }
   const sourceDeployment = await getBuilderDeployment(release.deploymentId, session.id, owner(caller));
   if (!sourceDeployment) throw new Error("The reviewed preview receipt is missing from this release.");
+  if (!release.providerProjectId) throw new Error("The production release has no confirmed Vercel project identity.");
+  const protectionBypassSecret = await ensureBuilderVercelProtectionBypass(release.providerProjectId);
   const [logs, routeEvidence, browserEvidence] = await Promise.all([
     getBuilderVercelLogEvidence(release.providerDeploymentId),
-    runBuilderVercelRouteSmokes(release.deploymentUrl, sourceDeployment.smokeRoutes),
+    runBuilderVercelRouteSmokes(release.deploymentUrl, sourceDeployment.smokeRoutes, { protectionBypassSecret }),
     captureBuilderBrowserEvidence({
       tenantId: session.tenantId,
       actorId: session.ownerActorId,
-      executionId: `app-builder-release:${release.id}`,
+      executionId: `app-builder-release:${release.id}:${refreshIdempotencyKey}`,
       previewUrl: release.deploymentUrl,
+      protectionBypassSecret,
     }),
   ]);
   const status = logs.status === "captured" && routeEvidence.status === "passed" && browserEvidence.status === "captured"
@@ -1215,7 +1223,7 @@ export async function refreshProjectBuilderProductionReleaseService(
     eventType: status === "healthy"
       ? "app_builder.release.production_healthy"
       : "app_builder.release.production_incomplete",
-    eventKey: requireIdempotency(caller),
+    eventKey: refreshIdempotencyKey,
     detail: {
       releaseId: current.id,
       productionProviderDeploymentId: current.providerDeploymentId,
