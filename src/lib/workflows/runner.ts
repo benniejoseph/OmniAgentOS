@@ -7,6 +7,14 @@ import { RunBudgetExceededError } from "@/lib/runs/budgets";
 import { runWithDatabaseActorScope } from "@/lib/db/client";
 import { formVerifiedEffectMemories } from "@/lib/memory/consolidator";
 import { saveMemory } from "@/lib/memory/store";
+import {
+  attachMissionExecutor,
+  reconcileMissionState,
+} from "@/lib/missions/runtime";
+import {
+  getMissionTask,
+  transitionMissionTask,
+} from "@/lib/missions/store";
 import { generateModelStructured } from "@/lib/models/gateway";
 import { buildAgentInstructions } from "@/lib/orchestration/prompts";
 import type { AgentRunRequest } from "@/lib/orchestration/types";
@@ -143,6 +151,10 @@ export async function tickWorkflowRun(
       return detail;
     }
     if (specialistGate.state === "failed") {
+      await failSpecialistParentMissionTask(
+        detail,
+        executionAuthority?.executionScope,
+      );
       await transitionWorkflowRunWithEvents(detail.run.id, ["queued"], {
         status: "failed",
         error: specialistGate.reason,
@@ -161,6 +173,10 @@ export async function tickWorkflowRun(
         tenantId: options.tenantId,
       }) as Promise<WorkflowRunDetail>;
     }
+    await attachSpecialistParentMissionExecutor(
+      detail,
+      executionAuthority?.executionScope,
+    );
   }
 
   if (
@@ -772,6 +788,63 @@ export async function tickWorkflowRun(
   }
 
   return getWorkflowRunDetail(runId, { tenantId: options.tenantId }) as Promise<WorkflowRunDetail>;
+}
+
+async function attachSpecialistParentMissionExecutor(
+  detail: WorkflowRunDetail,
+  executionScope?: ExecutionScope,
+) {
+  const binding = specialistParentMissionBinding(detail);
+  if (!binding) return;
+  await attachMissionExecutor({
+    taskId: binding.taskId,
+    executorType: "workflow_run",
+    executorId: detail.run.id,
+    status: "queued",
+    payload: { route: "durable_workflow" },
+  }, {
+    tenantId: detail.run.tenantId,
+    actorId: binding.actorId,
+    executionScope,
+    idempotencyKey: `workflow:${detail.run.id}:mission:attach`,
+  });
+}
+
+async function failSpecialistParentMissionTask(
+  detail: WorkflowRunDetail,
+  executionScope?: ExecutionScope,
+) {
+  const binding = specialistParentMissionBinding(detail);
+  if (!binding) return;
+  const owner = {
+    tenantId: detail.run.tenantId,
+    actorId: binding.actorId,
+    executionScope,
+    idempotencyKey: `workflow:${detail.run.id}:mission:dependency-failed`,
+  };
+  const task = await getMissionTask(binding.taskId, owner);
+  if (task && !["succeeded", "failed", "canceled"].includes(task.status)) {
+    await transitionMissionTask(task.id, "failed", owner);
+    await reconcileMissionState(task.missionId, owner);
+  }
+}
+
+function specialistParentMissionBinding(detail: WorkflowRunDetail) {
+  const metadata = detail.run.input.metadata;
+  const specialistTaskIds = metadata?.specialistTaskIds;
+  if (!Array.isArray(specialistTaskIds) || specialistTaskIds.length === 0) {
+    return undefined;
+  }
+  const actorId = typeof metadata?.actorId === "string" ? metadata.actorId : "";
+  const taskId = typeof metadata?.missionTaskId === "string"
+    ? metadata.missionTaskId
+    : "";
+  if (!actorId || !taskId) {
+    throw new Error(
+      "Durable specialist workflow is missing its parent mission binding.",
+    );
+  }
+  return { actorId, taskId };
 }
 
 export async function tickQueuedWorkflows(limit = 5) {

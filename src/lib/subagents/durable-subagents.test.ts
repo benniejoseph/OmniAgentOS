@@ -224,6 +224,7 @@ describe("durable specialist delegation", () => {
   });
 
   it("joins a read-only specialist exactly once before the parent workflow starts", async () => {
+    vi.resetModules();
     vi.doMock("@/lib/orchestration/agent-runner", () => ({
       runAgent: async function* (request: { preclaimedRunId?: string }) {
         const runId = request.preclaimedRunId;
@@ -289,12 +290,12 @@ describe("durable specialist delegation", () => {
       },
       idempotencyKey: "durable-specialist-workflow",
     });
-    await missionRuntime.attachMissionExecutor({
+    await expect(missionRuntime.attachMissionExecutor({
       taskId: mainTask.id,
       executorType: "workflow_run",
       executorId: workflow.run.id,
       status: "queued",
-    }, owner);
+    }, owner)).rejects.toThrow(/dependencies must succeed/i);
     await scheduler.bindDurableSpecialistsToWorkflow(
       specialists,
       workflow.run.id,
@@ -312,10 +313,16 @@ describe("durable specialist delegation", () => {
       missions.transitionMissionTask(mainTask.id, "running", owner),
     ).rejects.toThrow(/dependencies must succeed/i);
 
-    await expect(worker.processDurableSpecialistQueue({
+    const specialistResult = await worker.processDurableSpecialistQueue({
       tenantId: owner.tenantId,
       limit: 2,
-    })).resolves.toMatchObject({ leased: 1, completed: 1, failed: 0 });
+    });
+    expect(specialistResult).toMatchObject({
+      leased: 1,
+      completed: 1,
+      failed: 0,
+      jobs: [expect.objectContaining({ message: undefined })],
+    });
 
     const specialistRun = await runs.getAgentRun(specialists[0].runId, {
       tenantId: owner.tenantId,
@@ -330,6 +337,11 @@ describe("durable specialist delegation", () => {
         kind: "specialist_result",
       }),
     ]));
+    await expect(missions.findMissionAttemptByExecutor(
+      "workflow_run",
+      workflow.run.id,
+      owner,
+    )).resolves.toBeUndefined();
 
     const readyWorkflow = await workflows.getWorkflowRunDetail(workflow.run.id, {
       tenantId: owner.tenantId,
@@ -345,6 +357,11 @@ describe("durable specialist delegation", () => {
     expect(preflight.run.status).toBe("queued");
     expect(preflight.steps.find((step) => step.stepKey === "preflight"))
       .toMatchObject({ status: "completed", attempt: 1 });
+    await expect(missions.findMissionAttemptByExecutor(
+      "workflow_run",
+      workflow.run.id,
+      owner,
+    )).resolves.toMatchObject({ taskId: mainTask.id, status: "running" });
     const retrieved = await workflowRunner.tickWorkflowRun(workflow.run.id, {
       tenantId: owner.tenantId,
     });
@@ -378,7 +395,6 @@ describe("durable specialist delegation", () => {
 
   it("fails the parent workflow without claiming a step when a dependency fails", async () => {
     const missions = await import("@/lib/missions/store");
-    const missionRuntime = await import("@/lib/missions/runtime");
     const workflows = await import("@/lib/workflows/store");
     const workflowRunner = await import("@/lib/workflows/runner");
     const owner = { tenantId: "personal-failed-gate", actorId: "bennie" };
@@ -410,13 +426,6 @@ describe("durable specialist delegation", () => {
       },
       idempotencyKey: "failed-specialist-workflow",
     });
-    await missionRuntime.attachMissionExecutor({
-      taskId: mainTask.id,
-      executorType: "workflow_run",
-      executorId: workflow.run.id,
-      status: "queued",
-    }, owner);
-
     const failed = await workflowRunner.tickWorkflowRun(workflow.run.id, {
       tenantId: owner.tenantId,
     });
