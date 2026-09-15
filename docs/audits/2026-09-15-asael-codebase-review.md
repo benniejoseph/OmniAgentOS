@@ -125,6 +125,22 @@ the exact sandbox frame source at revision
 authenticated visual restart, so the browser click-through remains an explicit
 proof item rather than a claimed canary.
 
+### 9. Client live-refresh pressure — first repair deployed
+
+The Command progress and trace projections used fixed `setInterval` refreshes.
+Those intervals continued firing while the tab was hidden and could start a new
+request before a slow trajectory read finished. A shared visibility-aware
+scheduler now serializes refreshes, schedules the next request only after the
+previous one settles, stops timers while hidden, wakes immediately on focus or
+visibility restoration, and does not reschedule after cleanup. The same contract
+now governs Today, Dashboard, Approvals, and Results refreshes.
+
+Five focused scheduler and conversation-progress checks pass with changed-file
+lint, TypeScript, diff validation, and the production build. Canonical production
+is healthy at exact web revision
+`bae9643f971af48e5589376e212c9cbfc4c65a48` under deployment
+`dpl_BukULfvcBktDbuHa9VJV4wGSVNCQ`.
+
 ### 5. Plan and delivery log drift — corrected in the master checklist
 
 The checklist previously left Phase 9 unchecked while saying P9.1–P9.19 were all
@@ -194,16 +210,18 @@ Computer Use gateway remain healthy and required no rebuild.
   deployment.
 - Embedded preview CSP/proxy: 5 focused checks passed before deployment; the
   authenticated visual restart remains pending because the workstation locked.
+- Visibility-aware refresh: 5 focused scheduler and conversation-progress checks
+  passed before deployment.
 - Changed-file lint, TypeScript, and diff validation passed for the deployed
   retention, App Builder, and session-cache changes; no full suite or broad audit
   was run.
 
 ## Recommended implementation order
 
-1. Repair the embedded App Builder preview and prove one end-to-end Asael repo
-   iteration in Build Studio.
-2. Profile and split Command's client boundary around its hottest interaction,
-   consolidating live polling/subscription behavior.
+1. Complete the authenticated App Builder preview click-through and prove one
+   end-to-end Asael repo iteration in Build Studio.
+2. Profile the next Command interaction after the deployed live-refresh repair,
+   then extract only the measured hot boundary.
 3. Close the Android notification receipt while a device is connected.
 4. Decide P9.13 scope for a private app; implement only the selected web/email
    channels and preferences.
