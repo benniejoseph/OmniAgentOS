@@ -12,7 +12,8 @@ describe("project App Builder boundary", () => {
   it("accepts application files and rejects dependency, credential, generated, and traversal paths", () => {
     expect(safeBuilderRelativePath("app/page.tsx")).toBe("app/page.tsx");
     expect(safeBuilderRelativePath("components/Product card.tsx")).toBe("components/Product card.tsx");
-    for (const value of ["../secret", "/etc/passwd", ".env", "node_modules/pkg/index.js", ".next/server/app.js", ".git/config", "app/../../secret"]) {
+    expect(safeBuilderRelativePath(".gitignore")).toBe(".gitignore");
+    for (const value of ["../secret", "/etc/passwd", ".env", ".npmrc", ".github/workflows/release.yml", "node_modules/pkg/index.js", ".next/server/app.js", ".git/config", "app/../../secret"]) {
       expect(() => safeBuilderRelativePath(value), value).toThrow();
     }
   });
