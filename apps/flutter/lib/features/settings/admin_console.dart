@@ -95,7 +95,7 @@ class _AdminConsoleState extends ConsumerState<AdminConsole> {
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 180),
                     switchInCurve: Curves.easeOutCubic,
-                    child: _ModuleView(
+                    child: AdminModuleView(
                       key: ValueKey(module.id),
                       module: module,
                       controller: controller,
@@ -140,8 +140,8 @@ class _CompactNavigation extends StatelessWidget {
   );
 }
 
-class _ModuleView extends StatelessWidget {
-  const _ModuleView({
+class AdminModuleView extends StatelessWidget {
+  const AdminModuleView({
     super.key,
     required this.module,
     required this.controller,
@@ -241,6 +241,21 @@ class _ModuleView extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class AdminWorkspaceView extends ConsumerWidget {
+  const AdminWorkspaceView({super.key, required this.moduleId});
+
+  final String moduleId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final session = ref.watch(sessionControllerProvider).value;
+    if (session == null || !session.canManage) return const _AccessDenied();
+    final module = adminModules.firstWhere((item) => item.id == moduleId);
+    final controller = ref.watch(adminControllerProvider(module.id));
+    return AdminModuleView(module: module, controller: controller);
   }
 }
 

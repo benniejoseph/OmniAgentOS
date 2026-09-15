@@ -28,6 +28,7 @@ import '../../features/today/today.dart';
 import '../../features/today/today_providers.dart';
 import '../navigation/adaptive_shell.dart';
 import '../navigation/app_destination.dart';
+import '../navigation/destination_placeholder.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
@@ -107,9 +108,24 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                     '/knowledge' => KnowledgeView(
                       controller: ref.watch(knowledgeControllerProvider),
                     ),
-                    _ => throw StateError(
-                      'Unknown destination ${destination.path}',
+                    '/workflows' => const AdminWorkspaceView(
+                      moduleId: 'automation',
                     ),
+                    '/integrations' => const AdminWorkspaceView(
+                      moduleId: 'integrations',
+                    ),
+                    '/tools' => const AdminWorkspaceView(moduleId: 'tools'),
+                    '/quality' => const AdminWorkspaceView(moduleId: 'quality'),
+                    '/monitoring' => const AdminWorkspaceView(
+                      moduleId: 'monitoring',
+                    ),
+                    '/security' => const AdminWorkspaceView(
+                      moduleId: 'security',
+                    ),
+                    '/settings' => const AdminWorkspaceView(
+                      moduleId: 'settings',
+                    ),
+                    _ => DestinationPlaceholder(destination: destination),
                   },
                   routes: destination.path == '/projects'
                       ? [
