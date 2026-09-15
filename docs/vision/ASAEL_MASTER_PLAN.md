@@ -1169,8 +1169,10 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 | P12.3 | Ship Today, Conversation/voice, approvals, Workspaces, Capture, meetings, notifications, and evidence as vertical slices. | Reuse existing Flutter brief/tokens; modify unfinished client; create feature modules. | Each slice is feature-gated and contract-tested against the server version. | Core journeys work on phone/tablet with full loading, stale, offline, partial, approval, retry, and error states. |
 | P12.4 | Add offline encrypted capture and resumable media outbox. | Reuse object/asset plane; create device outbox. | No consequential agent action is queued offline without fresh authorization on reconnect. | Text, scan, image, file, and meeting media survive disconnect and sync idempotently. |
 | P12.5 | Add APNs/FCM delivery with causal deep links and notification actions. | Reuse delivery outbox; create device registrations. | Sensitive content previews follow device/user policy. | Notification opens the exact approval, work item, meeting, customer, or run and acknowledges once. |
+| P12.6 | Keep Android synchronized with post-P12 web workspaces. | Reuse authoritative server services and generated contracts; modify Flutter navigation and feature modules. | New mobile mutations remain exact-capability enrolled; trusted payment signing stays on an attested human-present surface. | Android exposes the same current destination map and native task flows for Accounts, Markets, Payments evidence, model Settings, administrative workspaces, and Project Build Studio, including exact GitHub repository checkout. |
 
-**Current status:** P12.1 through P12.5 are implemented and server-deployed.
+**Current status:** P12.1 through P12.6 are implemented. P12.6 is pending its
+single coordinated v6 server promotion and private Android binary installation.
 The existing Asael API remains the only application backend; Firebase is a
 transport-only attachment to the existing production cloud project. Matching
 Android and iOS Firebase applications are registered for the compatibility
@@ -1184,7 +1186,9 @@ information architecture as the web workspace. P12 completion hardening
 cancels an interrupted voice draft, binds a push acknowledgement to the
 delivery registration's exact current device and mobile session, and safely
 reconstructs every discriminated causal target. Schema v146 and native
-contract v4 are live. Android remains operationally open only for one observed
+contract v4 are live. The v6 Android client preserves those foundations while
+adding the post-P12 web navigation and task workspaces through the same API.
+Android remains operationally open only for one observed
 notification delivery/deep-link/acknowledgement receipt. The owner has
 explicitly deferred iOS implementation and all app-store publication; neither
 is a completion blocker for this private Android build. P9.12/P9.13 and Phase
@@ -3199,5 +3203,5 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.19 complete.
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
-- [ ] **Phase 12 — mobile application:** P12.1–P12.5 complete.
+- [ ] **Phase 12 — mobile application:** P12.1–P12.6 complete; one real notification delivery/deep-link/ack receipt remains the operational gate.
 - [ ] **Phase 13 — macOS application:** P13.1–P13.4 complete.
