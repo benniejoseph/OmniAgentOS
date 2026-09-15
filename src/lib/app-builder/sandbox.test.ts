@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sandboxMocks = vi.hoisted(() => ({
@@ -31,6 +32,19 @@ describe("App Builder sandbox source search", () => {
       cmd: "find",
       args: expect.arrayContaining(["-printf", "%P\\t%s\\n"]),
     }));
+  });
+
+  it("binds embedded previews to the validated Asael parent origin", async () => {
+    const source = await readFile(
+      new URL("./sandbox.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("ASAEL_PREVIEW_PARENT_ORIGIN");
+    expect(source).toContain('delete responseHeaders["x-frame-options"]');
+    expect(source).toContain('startsWith("frame-ancestors ")');
+    expect(source).toContain('responseHeaders["referrer-policy"] = "no-referrer"');
+    expect(source).toContain("builderPreviewParentOrigin()");
   });
 });
 

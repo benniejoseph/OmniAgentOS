@@ -114,7 +114,7 @@ function buildContentSecurityPolicy(nonce: string) {
     "font-src 'self' data:",
     `connect-src 'self'${production ? "" : " http: https: ws: wss:"}`,
     "worker-src 'self' blob:",
-    "frame-src 'self' blob:",
+    "frame-src 'self' blob: https://*.vercel.run",
     "manifest-src 'self'",
     "media-src 'self' blob:",
     "object-src 'none'",

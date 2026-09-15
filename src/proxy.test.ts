@@ -25,4 +25,21 @@ describe("canonical Asael origin", () => {
 
     expect(response.headers.get("location")).toBeNull();
   });
+
+  it("allows only the reviewed Vercel Sandbox frame family", () => {
+    const response = proxy(
+      new NextRequest("https://asael.bennierichard.com/app/projects"),
+    );
+    const policy = response.headers.get("content-security-policy") || "";
+    const frameSource = policy
+      .split(";")
+      .map((directive) => directive.trim())
+      .find((directive) => directive.startsWith("frame-src "));
+
+    expect(frameSource).toBe(
+      "frame-src 'self' blob: https://*.vercel.run",
+    );
+    expect(policy).toContain("frame-ancestors 'none'");
+    expect(policy).not.toContain("frame-src *");
+  });
 });
