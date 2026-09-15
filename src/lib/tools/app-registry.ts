@@ -392,6 +392,15 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.projects.builder.sentinel.record", "Record Sentinel review", "Bind one completed project-scoped Sentinel run to the exact verification and checkpoint it independently reviewed.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, verificationId: { type: "string", pattern: "^app_build_verification_[a-f0-9]{48}$" }, sourceRunId: opaqueId("Exact completed Sentinel Agent run ID."),
   }, ["projectId", "sessionId", "verificationId", "sourceRunId"]), { riskLevel: 1, approvalRequired: false, reversible: false }),
+  readTool("app.projects.builder.repositories.list", "List build repositories", "List only the repositories selected for the private GitHub App installation. Installation tokens remain server-only and short-lived.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."),
+  }, ["projectId"])),
+  mutationTool("app.projects.builder.repository.bind", "Bind build repository", "Bind one GitHub-App-selected repository and its exact default-branch revision to the project build session.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, repositoryId: { type: "string", pattern: "^[0-9]{1,24}$" },
+  }, ["projectId", "sessionId", "repositoryId"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
+  mutationTool("app.projects.builder.delivery.create", "Create build pull request", "Secret-scan and deliver one passing checkpoint to a new non-default GitHub branch, then open a draft pull request against the exact bound base revision.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, repositoryBindingId: { type: "string", pattern: "^app_build_repository_[a-f0-9]{48}$" }, expectedBindingRevision: integer(1, Number.MAX_SAFE_INTEGER), checkpointId: { type: "string", pattern: "^app_build_checkpoint_[a-f0-9]{48}$" }, verificationId: { type: "string", pattern: "^app_build_verification_[a-f0-9]{48}$" }, branchName: text(1, 120), title: text(3, 180), body: text(0, 8_000), draft: { type: "boolean", default: true },
+  }, ["projectId", "sessionId", "repositoryBindingId", "expectedBindingRevision", "checkpointId", "verificationId", "branchName", "title"]), { riskLevel: 2, approvalRequired: true, reversible: false }),
   mutationTool("app.projects.builder.stop", "Stop app workspace", "Stop the exact project's build sandbox while retaining its immutable activity receipts.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
   }, ["projectId", "sessionId"]), { riskLevel: 2, approvalRequired: true, reversible: false }),

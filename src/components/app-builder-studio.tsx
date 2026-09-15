@@ -5,6 +5,7 @@ import {
   Activity,
   AlertCircle,
   CheckCircle2,
+  ChevronRight,
   Code2,
   ExternalLink,
   FileCode2,
@@ -31,13 +32,17 @@ type BuilderCheckpoint = Readonly<{ id: string; sessionId: string; workspaceSha2
 type BuilderVerification = Readonly<{ id: string; sessionId: string; checkpointId: string; workspaceSha256: string; status: "passed" | "failed" | "incomplete"; checks: ReadonlyArray<{ command: "lint" | "typecheck"; status: "passed" | "failed"; exitCode: number; durationMs: number; outputSha256: string }>; browserEvidence: { status: "captured" | "unavailable" | "failed"; captures: ReadonlyArray<{ viewport: "desktop" | "mobile"; width: number; height: number; screenshotSha256: string; mimeType: string; byteLength: number }>; errorCode?: string }; createdAt: string }>;
 type TreeEntry = Readonly<{ path: string; kind: "file" | "directory"; size?: number }>;
 type BuilderFile = Readonly<{ path: string; content: string; sha256: string; size: number }>;
-type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; previewUrl: string | null }>;
+type GithubStatus = Readonly<{ configured: boolean; missing: string[]; appSlug?: string; installUrl?: string }>;
+type BuilderRepository = Readonly<{ repositoryId: string; owner: string; name: string; fullName: string; private: boolean; defaultBranch: string; htmlUrl: string }>;
+type RepositoryBinding = Readonly<{ id: string; repositoryId: string; repositoryFullName: string; private: boolean; defaultBranch: string; baseSha: string; revision: number; updatedAt: string }>;
+type BuilderDelivery = Readonly<{ id: string; repositoryBindingId: string; checkpointId: string; verificationId: string; workspaceSha256: string; baseSha: string; branchName: string; commitSha?: string; pullRequestNumber?: number; pullRequestUrl?: string; secretScanSha256: string; secretFindingCount: number; status: "preparing" | "pull_request_open" | "failed"; failureCode?: string; createdAt: string; updatedAt: string }>;
+type SessionPayload = Readonly<{ session: BuilderSession | null; activity: BuilderActivity[]; checkpoints: BuilderCheckpoint[]; verifications: BuilderVerification[]; repositoryBinding: RepositoryBinding | null; deliveries: BuilderDelivery[]; github: GithubStatus; previewUrl: string | null }>;
 type AgentEvent = { type?: string; runId?: string; text?: string; response?: string; message?: string; label?: string; detail?: string; toolName?: string; status?: string };
 
 const commands = ["lint", "typecheck", "test", "build"] as const;
 
 export function AppBuilderStudio({ project }: { project: BuildProject }) {
-  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], previewUrl: null });
+  const [snapshot, setSnapshot] = useState<SessionPayload>({ session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], github: { configured: false, missing: [] }, previewUrl: null });
   const [tree, setTree] = useState<TreeEntry[]>([]);
   const [file, setFile] = useState<BuilderFile>();
   const [draft, setDraft] = useState("");
@@ -47,12 +52,23 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const [agentOutput, setAgentOutput] = useState("");
   const [sentinelOutput, setSentinelOutput] = useState("");
   const [commandOutput, setCommandOutput] = useState("");
+  const [githubOpen, setGithubOpen] = useState(false);
+  const [repositories, setRepositories] = useState<BuilderRepository[]>([]);
+  const [selectedRepositoryId, setSelectedRepositoryId] = useState("");
+  const [branchName, setBranchName] = useState("");
+  const [deliveryTitle, setDeliveryTitle] = useState(`Build: ${project.title}`.slice(0, 180));
+  const [deliveryBody, setDeliveryBody] = useState("");
   const [busy, setBusy] = useState("loading");
   const [error, setError] = useState<string>();
   const session = snapshot.session;
   const ready = session?.status === "ready" || session?.status === "running";
   const dirty = Boolean(file && draft !== file.content);
   const latestVerification = snapshot.verifications[0];
+  const deliveryVerification = snapshot.verifications.find((verification) =>
+    verification.status === "passed" && verification.checkpointId === session?.currentCheckpointId,
+  );
+  const currentCheckpoint = snapshot.checkpoints.find((checkpoint) => checkpoint.id === session?.currentCheckpointId);
+  const latestDelivery = snapshot.deliveries[0];
 
   const loadSession = useCallback(async () => {
     const payload = await readJson<SessionPayload>(`/api/projects/${encodeURIComponent(project.id)}/builder`);
@@ -73,6 +89,13 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     const nextPath = preferredPath && paths.includes(preferredPath) ? preferredPath : paths.includes("app/page.tsx") ? "app/page.tsx" : paths[0];
     if (nextPath) await loadFile(target, nextPath);
   }, [loadFile, project.id]);
+
+  const loadRepositories = useCallback(async () => {
+    const payload = await readJson<{ repositories: BuilderRepository[] }>(`/api/projects/${encodeURIComponent(project.id)}/builder?view=github.repositories`);
+    setRepositories(payload.repositories);
+    setSelectedRepositoryId((current) => current || snapshot.repositoryBinding?.repositoryId || payload.repositories[0]?.repositoryId || "");
+    return payload.repositories;
+  }, [project.id, snapshot.repositoryBinding?.repositoryId]);
 
   useEffect(() => {
     let active = true;
@@ -99,7 +122,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     setError(undefined);
     try {
       const payload = await mutate<SessionPayload & { created: boolean }>(project.id, { action: "create" }, `builder-create:${project.id}`);
-      setSnapshot(payload);
+      setSnapshot((current) => ({ ...current, ...payload }));
       if (payload.session) await loadTree(payload.session);
     } catch (createError) {
       setError(message(createError));
@@ -137,7 +160,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
       label,
       ...(sourceRunId ? { sourceRunId } : {}),
     });
-    setSnapshot(payload);
+    setSnapshot((current) => ({ ...current, ...payload }));
     return payload;
   }
 
@@ -167,7 +190,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
         checkpointId: checkpoint.id,
         expectedSessionRevision: session.revision,
       });
-      setSnapshot(payload);
+      setSnapshot((current) => ({ ...current, ...payload }));
       if (payload.session) await loadTree(payload.session, file?.path);
       setView("preview");
     } catch (restoreError) {
@@ -316,6 +339,84 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     }
   }
 
+  async function toggleGithub() {
+    const next = !githubOpen;
+    setGithubOpen(next);
+    setError(undefined);
+    if (!next || !snapshot.github.configured || repositories.length) return;
+    setBusy("github.repositories");
+    try {
+      await loadRepositories();
+    } catch (repositoryError) {
+      setError(message(repositoryError));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function bindRepository() {
+    if (!session || !selectedRepositoryId) return;
+    setBusy("github.bind");
+    setError(undefined);
+    try {
+      const payload = await mutate<{ repositoryBinding: RepositoryBinding }>(project.id, {
+        action: "repository.bind",
+        sessionId: session.id,
+        repositoryId: selectedRepositoryId,
+      });
+      setSnapshot((current) => ({ ...current, repositoryBinding: payload.repositoryBinding }));
+      setBranchName(suggestBranch(project.title, currentCheckpoint?.workspaceSha256));
+      await loadSession();
+    } catch (bindingError) {
+      setError(message(bindingError));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function refreshRepositories() {
+    setBusy("github.repositories");
+    setError(undefined);
+    try {
+      await loadRepositories();
+    } catch (repositoryError) {
+      setError(message(repositoryError));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function createPullRequest() {
+    const binding = snapshot.repositoryBinding;
+    if (!session || !binding || !currentCheckpoint || !deliveryVerification) return;
+    setBusy("github.deliver");
+    setError(undefined);
+    try {
+      const payload = await mutate<{ delivery: BuilderDelivery }>(project.id, {
+        action: "delivery.create",
+        sessionId: session.id,
+        repositoryBindingId: binding.id,
+        expectedBindingRevision: binding.revision,
+        checkpointId: currentCheckpoint.id,
+        verificationId: deliveryVerification.id,
+        branchName: branchName || suggestBranch(project.title, currentCheckpoint.workspaceSha256),
+        title: deliveryTitle.trim(),
+        body: deliveryBody.trim(),
+        draft: true,
+      });
+      setSnapshot((current) => ({
+        ...current,
+        deliveries: [payload.delivery, ...current.deliveries.filter((item) => item.id !== payload.delivery.id)],
+      }));
+      await loadSession();
+    } catch (deliveryError) {
+      setError(message(deliveryError));
+      await loadSession().catch(() => undefined);
+    } finally {
+      setBusy("");
+    }
+  }
+
   const files = useMemo(() => tree.filter((entry) => entry.kind === "file"), [tree]);
 
   if (busy === "loading") return <section className={styles.loading}><Loader2 className="animate-spin" size={20} /><span>Opening the build studio…</span></section>;
@@ -350,12 +451,41 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
           <button type="button" onClick={() => void saveCheckpoint()} disabled={Boolean(busy) || dirty} title={dirty ? "Save the open file before sealing a checkpoint" : "Save a recoverable checkpoint"}><Save size={14} /> Checkpoint</button>
           <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy)} title="Restart preview"><RefreshCw size={14} className={busy === "start_preview" ? "animate-spin" : undefined} /></button>
           {snapshot.previewUrl ? <a href={snapshot.previewUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open preview</a> : null}
-          <button type="button" disabled title="GitHub publishing arrives after the build loop is verified"><GitBranch size={14} /> GitHub</button>
+          <button type="button" onClick={() => void toggleGithub()} aria-expanded={githubOpen} disabled={Boolean(busy) && busy !== "github.repositories"} title="Review and deliver this build through the private GitHub App"><GitBranch size={14} /> GitHub</button>
           <button type="button" disabled title="Deployment is intentionally held for the next release slice"><Rocket size={14} /> Deploy</button>
         </div>
       </header>
 
       {error ? <div className={styles.errorBanner} role="alert"><AlertCircle size={15} /><span>{error}</span><button type="button" onClick={() => setError(undefined)}>Dismiss</button></div> : null}
+
+      {githubOpen ? <section className={styles.deliveryPanel} aria-label="GitHub delivery">
+        <header><div><span className={styles.deliveryKicker}>Source handoff</span><h3>Open a reviewable pull request</h3><p>Asael writes only to a new branch in one repository selected for the private GitHub App.</p></div><div className={styles.deliveryState} data-ready={snapshot.github.configured || undefined}><i />{snapshot.github.configured ? "GitHub App ready" : "Setup required"}</div></header>
+        {!snapshot.github.configured ? <div className={styles.githubSetup}><AlertCircle size={18} /><div><strong>Complete the private GitHub App connection</strong><p>Missing: {snapshot.github.missing.join(", ") || "application credentials"}. Grant selected-repository access with Contents and Pull requests write plus Checks read. Asael mints a short-lived token for the selected repository only.</p>{snapshot.github.installUrl ? <a href={snapshot.github.installUrl} target="_blank" rel="noreferrer">Install the GitHub App <ExternalLink size={13} /></a> : null}</div></div> : <>
+          <div className={styles.deliveryFlow}>
+            <article data-ready={Boolean(snapshot.repositoryBinding) || undefined}><span>01</span><div><strong>Repository</strong><small>{snapshot.repositoryBinding ? snapshot.repositoryBinding.repositoryFullName : "Choose selected access"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
+            <article data-ready={Boolean(currentCheckpoint) || undefined}><span>02</span><div><strong>Sealed revision</strong><small>{currentCheckpoint ? currentCheckpoint.workspaceSha256.slice(0, 10) : "Checkpoint required"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
+            <article data-ready={Boolean(deliveryVerification) || undefined}><span>03</span><div><strong>Verification</strong><small>{deliveryVerification ? "Checks + visual evidence passed" : "Passing Sentinel receipt required"}</small></div><CheckCircle2 size={16} /></article><ChevronRight size={15} />
+            <article data-ready={latestDelivery?.status === "pull_request_open" || undefined}><span>04</span><div><strong>Draft PR</strong><small>{latestDelivery?.status === "pull_request_open" ? `#${latestDelivery.pullRequestNumber}` : "Secret scan runs first"}</small></div><GitBranch size={16} /></article>
+          </div>
+          <div className={styles.deliveryGrid}>
+            <section className={styles.repositoryCard}>
+              <div><strong>Destination repository</strong><small>Only GitHub App-selected repositories are visible.</small></div>
+              <label htmlFor={`builder-repository-${project.id}`}>Repository</label>
+              <div className={styles.repositorySelect}><select id={`builder-repository-${project.id}`} value={selectedRepositoryId || snapshot.repositoryBinding?.repositoryId || ""} onChange={(event) => setSelectedRepositoryId(event.currentTarget.value)} disabled={busy === "github.repositories"}>{repositories.map((repository) => <option value={repository.repositoryId} key={repository.repositoryId}>{repository.fullName} · {repository.private ? "private" : "public"}</option>)}</select><button type="button" onClick={() => void refreshRepositories()} disabled={Boolean(busy)} aria-label="Refresh repositories">{busy === "github.repositories" ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}</button></div>
+              {snapshot.repositoryBinding ? <div className={styles.revisionReceipt}><span>Bound to <b>{snapshot.repositoryBinding.defaultBranch}</b></span><code>{snapshot.repositoryBinding.baseSha.slice(0, 12)}</code></div> : null}
+              <button type="button" className={styles.secondaryAction} onClick={() => void bindRepository()} disabled={!selectedRepositoryId || Boolean(busy)}>{busy === "github.bind" ? <Loader2 className="animate-spin" size={14} /> : <GitBranch size={14} />} {snapshot.repositoryBinding?.repositoryId === selectedRepositoryId ? "Refresh exact revision" : "Bind repository"}</button>
+            </section>
+            <section className={styles.pullRequestCard}>
+              <div><strong>Pull request</strong><small>A new branch is required; the default branch is never written directly.</small></div>
+              <label htmlFor={`builder-branch-${project.id}`}>New branch</label><input id={`builder-branch-${project.id}`} value={branchName || suggestBranch(project.title, currentCheckpoint?.workspaceSha256)} onChange={(event) => setBranchName(event.currentTarget.value)} maxLength={120} placeholder="asael/my-app-a1b2c3d4" />
+              <label htmlFor={`builder-pr-title-${project.id}`}>Title</label><input id={`builder-pr-title-${project.id}`} value={deliveryTitle} onChange={(event) => setDeliveryTitle(event.currentTarget.value)} maxLength={180} />
+              <label htmlFor={`builder-pr-body-${project.id}`}>Review note <span>optional</span></label><textarea id={`builder-pr-body-${project.id}`} value={deliveryBody} onChange={(event) => setDeliveryBody(event.currentTarget.value)} maxLength={8_000} rows={3} placeholder="What changed and what should the reviewer inspect?" />
+              <button type="button" className={styles.primaryAction} onClick={() => void createPullRequest()} disabled={Boolean(busy) || !snapshot.repositoryBinding || !currentCheckpoint || !deliveryVerification || !deliveryTitle.trim()}>{busy === "github.deliver" ? <Loader2 className="animate-spin" size={14} /> : <GitBranch size={14} />} {busy === "github.deliver" ? "Scanning and delivering…" : "Secret-scan & open draft PR"}</button>
+            </section>
+          </div>
+          {snapshot.deliveries.length ? <div className={styles.deliveryLedger}>{snapshot.deliveries.slice(0, 4).map((delivery) => <article key={delivery.id} data-status={delivery.status}><i /><div><strong>{delivery.branchName}</strong><small>{delivery.status.replaceAll("_", " ")} · {new Date(delivery.updatedAt).toLocaleString()}</small></div><code>{delivery.commitSha?.slice(0, 10) || delivery.failureCode || "preparing"}</code>{delivery.pullRequestUrl ? <a href={delivery.pullRequestUrl} target="_blank" rel="noreferrer">Open PR #{delivery.pullRequestNumber} <ExternalLink size={12} /></a> : null}</article>)}</div> : null}
+        </>}
+      </section> : null}
 
       <div className={styles.workspace}>
         <aside className={styles.fileRail}>
@@ -427,6 +557,10 @@ function checkpointReason(value: BuilderCheckpoint["reason"]) { return value.rep
 function eventLabel(value: string) { return value.replace("app_builder.", "").replaceAll("_", " ").replaceAll(".", " · "); }
 function activityDetail(item: BuilderActivity) {
   const detail = item.detail;
-  const text = typeof detail.path === "string" ? detail.path : typeof detail.command === "string" ? `${detail.command} · exit ${String(detail.exitCode ?? "—")}` : "";
+  const text = typeof detail.path === "string" ? detail.path : typeof detail.command === "string" ? `${detail.command} · exit ${String(detail.exitCode ?? "—")}` : typeof detail.repositoryFullName === "string" ? detail.repositoryFullName : typeof detail.branchName === "string" ? detail.branchName : "";
   return text ? <span>{text}</span> : null;
+}
+function suggestBranch(title: string, workspaceSha256?: string) {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "app";
+  return `asael/${slug}-${(workspaceSha256 || "revision").slice(0, 8)}`;
 }

@@ -150,6 +150,20 @@ export async function readBuilderFile(sandboxName: string, requestedPath: string
   return { path: relativePath, content, sha256: builderFileSha256(buffer), size: buffer.byteLength };
 }
 
+export async function readBuilderWorkspaceFiles(sandboxName: string): Promise<AppBuilderFile[]> {
+  const entries = (await listBuilderFiles(sandboxName)).filter(
+    (entry): entry is AppBuilderTreeEntry & { kind: "file" } => entry.kind === "file",
+  );
+  const files = await mapWithConcurrency(entries, 8, (entry) =>
+    readBuilderFile(sandboxName, entry.path),
+  );
+  const byteCount = files.reduce((total, file) => total + file.size, 0);
+  if (byteCount > 8_000_000) {
+    throw new Error("The builder workspace exceeds the reviewed 8 MB delivery boundary.");
+  }
+  return files.sort((left, right) => left.path.localeCompare(right.path));
+}
+
 export async function updateBuilderFile(input: {
   sandboxName: string;
   path: string;
@@ -298,4 +312,22 @@ export async function getBuilderWorkspaceManifest(sandboxName: string) {
 
 function commandResult(exitCode: number, stdout: string, stderr: string, durationMs?: number) {
   return { exitCode, stdout: boundedBuilderOutput(stdout), stderr: boundedBuilderOutput(stderr), durationMs: durationMs || 0 };
+}
+
+async function mapWithConcurrency<TInput, TOutput>(
+  values: readonly TInput[],
+  concurrency: number,
+  mapper: (value: TInput) => Promise<TOutput>,
+) {
+  const output = new Array<TOutput>(values.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      output[index] = await mapper(values[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
+  return output;
 }

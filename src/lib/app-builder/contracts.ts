@@ -5,6 +5,9 @@ import { z } from "zod";
 export const APP_BUILDER_CONTRACT_VERSION = "app-builder-session:1" as const;
 export const APP_BUILDER_CHECKPOINT_CONTRACT_VERSION = "app-builder-checkpoint:1" as const;
 export const APP_BUILDER_VERIFICATION_CONTRACT_VERSION = "app-builder-verification:1" as const;
+export const APP_BUILDER_REPOSITORY_CONTRACT_VERSION = "app-builder-repository:1" as const;
+export const APP_BUILDER_DELIVERY_CONTRACT_VERSION = "app-builder-delivery:1" as const;
+export const APP_BUILDER_SECRET_SCAN_CONTRACT_VERSION = "app-builder-secret-scan:1" as const;
 export const APP_BUILDER_TEMPLATE_ID = "nextjs-starter-v1" as const;
 export const APP_BUILDER_ROOT = "/vercel/sandbox/app" as const;
 export const APP_BUILDER_PREVIEW_PORT = 3000 as const;
@@ -118,6 +121,66 @@ export type AppBuilderTreeEntry = Readonly<{
   size?: number;
 }>;
 
+export type AppBuilderRepository = Readonly<{
+  repositoryId: string;
+  owner: string;
+  name: string;
+  fullName: string;
+  private: boolean;
+  defaultBranch: string;
+  htmlUrl: string;
+}>;
+
+export type AppBuilderRepositoryBinding = Readonly<{
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  projectId: string;
+  sessionId: string;
+  contractVersion: typeof APP_BUILDER_REPOSITORY_CONTRACT_VERSION;
+  repositoryId: string;
+  repositoryOwner: string;
+  repositoryName: string;
+  repositoryFullName: string;
+  private: boolean;
+  defaultBranch: string;
+  baseSha: string;
+  revision: number;
+  boundAt: string;
+  updatedAt: string;
+}>;
+
+export type AppBuilderDelivery = Readonly<{
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  projectId: string;
+  sessionId: string;
+  repositoryBindingId: string;
+  contractVersion: typeof APP_BUILDER_DELIVERY_CONTRACT_VERSION;
+  checkpointId: string;
+  verificationId: string;
+  workspaceSha256: string;
+  baseSha: string;
+  branchName: string;
+  commitSha?: string;
+  pullRequestNumber?: number;
+  pullRequestUrl?: string;
+  secretScanSha256: string;
+  secretFindingCount: number;
+  status: "preparing" | "pull_request_open" | "failed";
+  failureCode?: string;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
+export type AppBuilderGithubStatus = Readonly<{
+  configured: boolean;
+  missing: readonly string[];
+  appSlug?: string;
+  installUrl?: string;
+}>;
+
 export const builderProjectInputSchema = z.object({
   projectId: z.string().trim().min(1).max(200),
 }).strict();
@@ -176,6 +239,23 @@ export const builderSentinelReviewInputSchema = builderVerificationShowInputSche
   sourceRunId: z.string().uuid(),
 }).strict();
 
+export const builderRepositoryListInputSchema = builderProjectInputSchema;
+
+export const builderRepositoryBindInputSchema = builderTreeInputSchema.extend({
+  repositoryId: z.string().regex(/^\d{1,24}$/),
+}).strict();
+
+export const builderDeliveryInputSchema = builderTreeInputSchema.extend({
+  repositoryBindingId: z.string().regex(/^app_build_repository_[a-f0-9]{48}$/),
+  expectedBindingRevision: z.number().int().positive(),
+  checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/),
+  verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/),
+  branchName: z.string().trim().min(1).max(120).transform(assertBuilderBranchName),
+  title: z.string().trim().min(3).max(180),
+  body: z.string().trim().max(8_000).default(""),
+  draft: z.boolean().default(true),
+}).strict();
+
 const deniedSegments = new Set([
   ".git",
   ".next",
@@ -212,4 +292,20 @@ export function builderFileSha256(content: string | Uint8Array) {
 export function boundedBuilderOutput(value: string, limit = 32_000) {
   const clean = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
   return clean.length <= limit ? clean : `${clean.slice(0, limit)}\n… output truncated by Asael`;
+}
+
+export function assertBuilderBranchName(value: string) {
+  const branch = value.trim();
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/.test(branch) ||
+    branch.includes("..") ||
+    branch.includes("//") ||
+    branch.endsWith("/") ||
+    branch.endsWith(".") ||
+    branch.startsWith("refs/") ||
+    branch === "HEAD"
+  ) {
+    throw new Error("Use a normal Git branch name without refs/, traversal, repeated slashes, or a trailing slash or dot.");
+  }
+  return branch;
 }

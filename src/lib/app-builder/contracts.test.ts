@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderFileUpdateInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
+import { assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileUpdateInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
+import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 import { APP_SERVICE_OPERATION_CONTRACTS, MAIN_AGENT_APP_SERVICE_BINDINGS } from "@/lib/app-services/registry";
 import { databaseSchemaMigrations } from "@/lib/db/client";
@@ -27,6 +28,32 @@ describe("project App Builder boundary", () => {
     expect(builderCommandInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, command: "rm -rf" }).success).toBe(false);
     expect(builderCheckpointCreateInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, expectedSessionRevision: 4, reason: "before_forge", label: "Before Forge" }).success).toBe(true);
     expect(builderCheckpointRestoreInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, checkpointId: `app_build_checkpoint_${"b".repeat(48)}`, expectedSessionRevision: 5 }).success).toBe(true);
+    expect(assertBuilderBranchName("asael/research-dashboard-a1b2c3d4")).toBe("asael/research-dashboard-a1b2c3d4");
+    for (const branch of ["refs/heads/main", "../main", "feature//unsafe", "feature/"]) {
+      expect(() => assertBuilderBranchName(branch), branch).toThrow();
+    }
+    expect(builderDeliveryInputSchema.safeParse({
+      projectId: "project-1",
+      sessionId: `app_build_${"a".repeat(48)}`,
+      repositoryBindingId: `app_build_repository_${"b".repeat(48)}`,
+      expectedBindingRevision: 1,
+      checkpointId: `app_build_checkpoint_${"c".repeat(48)}`,
+      verificationId: `app_build_verification_${"d".repeat(48)}`,
+      branchName: "asael/research-dashboard-a1b2c3d4",
+      title: "Build research dashboard",
+      body: "Review the responsive workspace.",
+      draft: true,
+    }).success).toBe(true);
+  });
+
+  it("blocks credential-shaped source without retaining the secret in the receipt", () => {
+    const content = "const token = \"github_pat_abcdefghijklmnopqrstuvwxyz1234567890\";";
+    const scan = scanBuilderFilesForSecrets([{ path: "app/unsafe.ts", content, sha256: "a".repeat(64), size: content.length }]);
+    expect(scan).toMatchObject({ status: "blocked", findingCount: 1 });
+    expect(scan.findings).toEqual([{ path: "app/unsafe.ts", line: 1, rule: "github_token" }]);
+    expect(JSON.stringify(scan)).not.toContain("github_pat_");
+    const safe = scanBuilderFilesForSecrets([{ path: "app/safe.ts", content: "const key = process.env.API_KEY;", sha256: "b".repeat(64), size: 32 }]);
+    expect(safe).toMatchObject({ status: "passed", findingCount: 0 });
   });
 
   it("ships a reviewed credential-free Next.js starter and creates its image-independent workspace root", async () => {
@@ -52,6 +79,9 @@ describe("project App Builder boundary", () => {
       "app.projects.builder.verification.show",
       "app.projects.builder.verification.run",
       "app.projects.builder.sentinel.record",
+      "app.projects.builder.repositories.list",
+      "app.projects.builder.repository.bind",
+      "app.projects.builder.delivery.create",
       "app.projects.builder.stop",
     ]);
     const operations = new Set<string>(APP_SERVICE_OPERATION_CONTRACTS.map((contract) => contract.operation));
@@ -85,7 +115,7 @@ describe("project App Builder boundary", () => {
     expect(recovery).toContain("omni_app_builder_checkpoints");
     expect(recovery).toContain("app_builder.checkpoint.restored");
     expect(recovery).toContain("FORCE ROW LEVEL SECURITY");
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 169)).toEqual({
       version: 169,
       name: "app_builder_verification_v1",
       checksum: "42d9291da42daf9b4513f4fe9f3221bae4336d2d20074773a96db70135d9d176",
@@ -94,6 +124,16 @@ describe("project App Builder boundary", () => {
     expect(verification).toContain("omni_app_builder_verifications");
     expect(verification).toContain("app_builder.sentinel.reviewed");
     expect(verification).toContain("FORCE ROW LEVEL SECURITY");
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 170,
+      name: "app_builder_github_delivery_v1",
+      checksum: "7d1f8e773faa0de1e8a5ac7a58ffb79a236a79504932fc757ee4cfbfbf796e7f",
+    });
+    const delivery = await readFile(new URL("../../../supabase/migrations/20260915103000_app_builder_github_delivery.sql", import.meta.url), "utf8");
+    expect(delivery).toContain("omni_app_builder_repository_bindings");
+    expect(delivery).toContain("omni_app_builder_deliveries");
+    expect(delivery).toContain("app_builder.delivery.pull_request_open");
+    expect(delivery).toContain("FORCE ROW LEVEL SECURITY");
     const runner = await readFile(new URL("../orchestration/agent-runner.ts", import.meta.url), "utf8");
     expect(runner).toContain('agentId === "sentinel"');
     expect(runner).toContain('? "verifier" as const');
