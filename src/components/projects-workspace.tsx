@@ -383,7 +383,7 @@ export function ProjectsWorkspace({ initialView = "overview" }: { initialView?: 
 
   async function moveTask(task: ProjectTask) {
     if (!selected) return;
-    const status = task.status === "open" ? "doing" : task.status === "doing" ? "done" : "open";
+    const status = nextProjectTaskStatus(task);
     setActingId(task.id);
     try {
       const payload = await readJson(`/api/projects/${encodeURIComponent(selected.id)}/tasks/${encodeURIComponent(task.id)}`, {
@@ -784,6 +784,11 @@ function executionDescription(status: Project["executionStatus"], mode: Project[
 function workflowLabel(status: NonNullable<ProjectTask["workflowStatus"]>) { return status.replace("_", " "); }
 function taskIsClosed(task: ProjectTask) {
   return ["unverified", "failed", "canceled", "succeeded"].includes(task.workItem.status.status);
+}
+export function nextProjectTaskStatus(task: Pick<ProjectTask, "status" | "workItem">): ProjectTask["status"] {
+  if (["unverified", "failed", "canceled", "succeeded"].includes(task.workItem.status.status)) return "open";
+  if (["running", "partial"].includes(task.workItem.status.status) || task.status === "doing") return "done";
+  return "doing";
 }
 function workItemStatusLabel(task: ProjectTask, dependencyNames: (string | undefined)[]) {
   const status = task.workItem.status.status;

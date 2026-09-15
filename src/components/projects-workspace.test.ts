@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeProjects } from "@/components/projects-workspace";
+import { nextProjectTaskStatus, normalizeProjects } from "@/components/projects-workspace";
 
 const status = {
   schemaVersion: 1,
@@ -60,6 +60,7 @@ const project = {
   tasks: [{ id: "task-a", workItemStatus: status, workItem }],
   artifacts: [{ id: "artifact-a" }],
 };
+const canonicalWorkItem = normalizeProjects([project])![0]!.tasks[0]!.workItem;
 
 describe("Projects canonical WorkItem boundary", () => {
   it("accepts the pinned canonical truth shared with Missions", () => {
@@ -85,5 +86,26 @@ describe("Projects canonical WorkItem boundary", () => {
       ...project.tasks[0],
       workItem: { ...workItem, cost: undefined },
     }] }])).toBeUndefined();
+  });
+});
+
+describe("Projects task transitions", () => {
+  it("reopens terminal canonical work instead of advancing a stale legacy status", () => {
+    expect(nextProjectTaskStatus({
+      status: "open",
+      workItem: { ...canonicalWorkItem, status: { ...canonicalWorkItem.status, status: "failed", sourceStatus: "doing:failed" } },
+    })).toBe("open");
+  });
+
+  it("advances active canonical work through doing and done", () => {
+    expect(nextProjectTaskStatus({ status: "open", workItem: canonicalWorkItem })).toBe("done");
+    expect(nextProjectTaskStatus({
+      status: "open",
+      workItem: {
+        ...canonicalWorkItem,
+        status: { ...canonicalWorkItem.status, status: "waiting", sourceStatus: "open:queued" },
+        execution: { ...canonicalWorkItem.execution, availability: "unavailable" },
+      },
+    })).toBe("doing");
   });
 });
