@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/security/network", () => ({
+  fetchPublicHttpUrl: vi.fn((input: string | URL | Request, init?: RequestInit) => fetch(input, init)),
+}));
 
 import {
   builderVercelProjectName,
@@ -187,6 +190,29 @@ describe("App Builder Vercel preview broker", () => {
       "x-vercel-protection-bypass": protectionBypassSecret,
     });
     await expect(runBuilderVercelRouteSmokes("https://127.0.0.1/", ["/"])).rejects.toThrow(/invalid preview URL/i);
+  });
+
+  it("follows only bounded same-origin application redirects", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 307, headers: { location: "/welcome" } }))
+      .mockResolvedValueOnce(new Response("ready", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(runBuilderVercelRouteSmokes("https://research-abc.vercel.app/", ["/"]))
+      .resolves.toMatchObject({ status: "passed", routes: [{ path: "/", status: "passed", statusCode: 200 }] });
+    expect(String(fetchMock.mock.calls[1][0])).toBe("https://research-abc.vercel.app/welcome");
+  });
+
+  it("fails closed on a Vercel authentication redirect", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, {
+      status: 302,
+      headers: { location: "https://vercel.com/sso-api?redacted=1" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(runBuilderVercelRouteSmokes("https://research-abc.vercel.app/", ["/"]))
+      .resolves.toMatchObject({ status: "failed", routes: [{ path: "/", status: "failed", statusCode: 302 }] });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 

@@ -6,10 +6,12 @@ import type {
   AppBuilderFile,
   AppBuilderVercelStatus,
 } from "@/lib/app-builder/contracts";
+import { fetchPublicHttpUrl } from "@/lib/security/network";
 
 const VERCEL_API = "https://api.vercel.com";
 const REQUEST_DEADLINE_MS = 30_000;
 const ROUTE_DEADLINE_MS = 15_000;
+const MAX_ROUTE_REDIRECTS = 3;
 const MAX_RESPONSE_BYTES = 2_000_000;
 const MAX_LOG_BYTES = 1_000_000;
 const MAX_DEPLOYMENT_FILES = 500;
@@ -248,12 +250,12 @@ export async function runBuilderVercelRouteSmokes(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), ROUTE_DEADLINE_MS);
     try {
-      const response = await fetch(new URL(safeRoute, base), {
-        method: "GET",
-        redirect: "error",
-        signal: controller.signal,
-        headers: previewBypassHeaders(options.protectionBypassSecret),
-      });
+      const response = await fetchBuilderRoute(
+        new URL(safeRoute, base),
+        base,
+        previewBypassHeaders(options.protectionBypassSecret),
+        controller.signal,
+      );
       const bytes = await readBoundedBody(response, 1_000_000);
       evidence.push({
         path: safeRoute,
@@ -277,6 +279,32 @@ export async function runBuilderVercelRouteSmokes(
     status: evidence.length > 0 && evidence.every((route) => route.status === "passed") ? "passed" : "failed",
     routes: evidence,
   };
+}
+
+async function fetchBuilderRoute(
+  initialUrl: URL,
+  deploymentBase: URL,
+  headers: Record<string, string> | undefined,
+  signal: AbortSignal,
+) {
+  let current = initialUrl;
+  for (let redirectCount = 0; redirectCount <= MAX_ROUTE_REDIRECTS; redirectCount += 1) {
+    const response = await fetchPublicHttpUrl(current, {
+      method: "GET",
+      redirect: "manual",
+      cache: "no-store",
+      signal,
+      headers,
+    }, "Vercel preview route");
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get("location");
+    if (!location || redirectCount === MAX_ROUTE_REDIRECTS) return response;
+    const next = new URL(location, current);
+    if (next.origin !== deploymentBase.origin || next.username || next.password || next.hash) return response;
+    await response.body?.cancel();
+    current = next;
+  }
+  throw new Error("Vercel preview route exceeded its redirect limit.");
 }
 
 function assertDeploymentFiles(files: readonly AppBuilderFile[]) {
