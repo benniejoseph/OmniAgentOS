@@ -18,9 +18,12 @@ class AppBuilderView extends StatefulWidget {
 class _AppBuilderViewState extends State<AppBuilderView> {
   Json? snapshot, file;
   List<Json> tree = const [];
+  List<Json> repositories = const [];
   final editor = TextEditingController();
   Object? error;
   bool loading = true;
+  bool repositoriesLoaded = false;
+  String? selectedRepositoryId;
   String? action, commandOutput;
 
   Json? get session => snapshot?['session'] is Map
@@ -28,6 +31,18 @@ class _AppBuilderViewState extends State<AppBuilderView> {
       : null;
   bool get ready => const {'ready', 'running'}.contains(session?['status']);
   bool get dirty => file != null && editor.text != file?['content']?.toString();
+  Json? get repositoryBinding => snapshot?['repositoryBinding'] is Map
+      ? Json.from(snapshot!['repositoryBinding'] as Map)
+      : null;
+  Json? get repositoryWorkspace => snapshot?['repositoryWorkspace'] is Map
+      ? Json.from(snapshot!['repositoryWorkspace'] as Map)
+      : null;
+  bool get repositoryWorkspaceCurrent =>
+      repositoryBinding != null &&
+      repositoryWorkspace != null &&
+      repositoryBinding!['repositoryId'] ==
+          repositoryWorkspace!['repositoryId'] &&
+      repositoryBinding!['baseSha'] == repositoryWorkspace!['baseSha'];
 
   @override
   void initState() {
@@ -94,6 +109,85 @@ class _AppBuilderViewState extends State<AppBuilderView> {
     file = response['file'] is Map ? Json.from(response['file'] as Map) : null;
     editor.text = file?['content']?.toString() ?? '';
     if (mounted) setState(() {});
+  }
+
+  Future<void> _loadRepositories() async {
+    await _act('github.repositories', () async {
+      final response = await widget.api.getJson(
+        NativePaths.workspacesBuilderGet(widget.project.id),
+        query: const {'view': 'github.repositories'},
+      );
+      repositories = (response['repositories'] as List? ?? const [])
+          .whereType<Map>()
+          .map(Json.from)
+          .toList(growable: false);
+      repositoriesLoaded = true;
+      final current =
+          selectedRepositoryId ??
+          repositoryBinding?['repositoryId']?.toString();
+      selectedRepositoryId =
+          repositories.any(
+            (item) => item['repositoryId']?.toString() == current,
+          )
+          ? current
+          : repositories.firstOrNull?['repositoryId']?.toString();
+    });
+  }
+
+  Future<void> _bindRepository() async {
+    final active = session;
+    final repositoryId = selectedRepositoryId;
+    if (active == null || repositoryId == null) return;
+    await _act('github.bind', () async {
+      await _mutate({
+        'action': 'repository.bind',
+        'sessionId': active['id'],
+        'repositoryId': repositoryId,
+      }, 'repository-bind');
+      await _load(preferredPath: file?['path']?.toString());
+    });
+  }
+
+  Future<void> _checkoutRepository() async {
+    final active = session;
+    final binding = repositoryBinding;
+    if (active == null || binding == null || dirty) return;
+    final replacing = repositoryWorkspace == null
+        ? 'the starter workspace'
+        : 'the current repository workspace';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Open ${binding['repositoryFullName']}?'),
+        content: Text(
+          'This replaces $replacing with ${binding['defaultBranch']} at ${_shortSha(binding['baseSha'])}. Asael seals a recovery checkpoint first.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.folder_open_rounded),
+            label: const Text('Open repository'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _act('github.checkout', () async {
+      await _mutate({
+        'action': 'repository.checkout',
+        'sessionId': active['id'],
+        'repositoryBindingId': binding['id'],
+        'expectedBindingRevision': binding['revision'],
+        'expectedSessionRevision': active['revision'],
+      }, 'repository-checkout');
+      file = null;
+      editor.clear();
+      await _load();
+    });
   }
 
   Future<Json> _mutate(Json data, String purpose) => widget.api.postJson(
@@ -300,12 +394,24 @@ class _AppBuilderViewState extends State<AppBuilderView> {
                     ),
                     const VerticalDivider(width: 1),
                     SizedBox(
-                      width: 280,
-                      child: _RecoveryRail(
+                      width: 300,
+                      child: _BuilderSideRail(
+                        snapshot: snapshot!,
+                        repositories: repositories,
+                        repositoriesLoaded: repositoriesLoaded,
+                        selectedRepositoryId: selectedRepositoryId,
+                        repositoryWorkspaceCurrent: repositoryWorkspaceCurrent,
+                        dirty: dirty,
+                        busy: action,
                         checkpoints: checkpoints,
                         activity: activity,
                         currentCheckpointId: session?['currentCheckpointId']
                             ?.toString(),
+                        onRepositoryChanged: (value) =>
+                            setState(() => selectedRepositoryId = value),
+                        onLoadRepositories: _loadRepositories,
+                        onBindRepository: _bindRepository,
+                        onCheckoutRepository: _checkoutRepository,
                         onRestore: _restore,
                       ),
                     ),
@@ -322,10 +428,20 @@ class _AppBuilderViewState extends State<AppBuilderView> {
                   activity: activity,
                   currentCheckpointId: session?['currentCheckpointId']
                       ?.toString(),
+                  snapshot: snapshot!,
+                  repositories: repositories,
+                  repositoriesLoaded: repositoriesLoaded,
+                  selectedRepositoryId: selectedRepositoryId,
+                  repositoryWorkspaceCurrent: repositoryWorkspaceCurrent,
                   onOpen: dirty ? null : _loadFile,
                   onChanged: () => setState(() {}),
                   onSave: _save,
                   onCommand: _runCommand,
+                  onRepositoryChanged: (value) =>
+                      setState(() => selectedRepositoryId = value),
+                  onLoadRepositories: _loadRepositories,
+                  onBindRepository: _bindRepository,
+                  onCheckoutRepository: _checkoutRepository,
                   onRestore: _restore,
                 ),
         ),
@@ -655,6 +771,299 @@ class _RecoveryRail extends StatelessWidget {
   );
 }
 
+class _BuilderSideRail extends StatefulWidget {
+  const _BuilderSideRail({
+    required this.snapshot,
+    required this.repositories,
+    required this.repositoriesLoaded,
+    required this.selectedRepositoryId,
+    required this.repositoryWorkspaceCurrent,
+    required this.dirty,
+    required this.busy,
+    required this.checkpoints,
+    required this.activity,
+    required this.currentCheckpointId,
+    required this.onRepositoryChanged,
+    required this.onLoadRepositories,
+    required this.onBindRepository,
+    required this.onCheckoutRepository,
+    required this.onRestore,
+  });
+  final Json snapshot;
+  final List<Json> repositories, checkpoints, activity;
+  final bool repositoriesLoaded, repositoryWorkspaceCurrent, dirty;
+  final String? selectedRepositoryId, busy, currentCheckpointId;
+  final ValueChanged<String?> onRepositoryChanged;
+  final VoidCallback onLoadRepositories, onBindRepository;
+  final VoidCallback onCheckoutRepository;
+  final ValueChanged<Json> onRestore;
+
+  @override
+  State<_BuilderSideRail> createState() => _BuilderSideRailState();
+}
+
+class _BuilderSideRailState extends State<_BuilderSideRail> {
+  int tab = 0;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+        child: SegmentedButton<int>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(value: 0, label: Text('Source')),
+            ButtonSegment(value: 1, label: Text('History')),
+          ],
+          selected: {tab},
+          onSelectionChanged: (value) => setState(() => tab = value.first),
+        ),
+      ),
+      Expanded(
+        child: tab == 0
+            ? _RepositoryPanel(
+                snapshot: widget.snapshot,
+                repositories: widget.repositories,
+                repositoriesLoaded: widget.repositoriesLoaded,
+                selectedRepositoryId: widget.selectedRepositoryId,
+                repositoryWorkspaceCurrent: widget.repositoryWorkspaceCurrent,
+                dirty: widget.dirty,
+                busy: widget.busy,
+                onRepositoryChanged: widget.onRepositoryChanged,
+                onLoadRepositories: widget.onLoadRepositories,
+                onBindRepository: widget.onBindRepository,
+                onCheckoutRepository: widget.onCheckoutRepository,
+              )
+            : _RecoveryRail(
+                checkpoints: widget.checkpoints,
+                activity: widget.activity,
+                currentCheckpointId: widget.currentCheckpointId,
+                onRestore: widget.onRestore,
+              ),
+      ),
+    ],
+  );
+}
+
+class _RepositoryPanel extends StatelessWidget {
+  const _RepositoryPanel({
+    required this.snapshot,
+    required this.repositories,
+    required this.repositoriesLoaded,
+    required this.selectedRepositoryId,
+    required this.repositoryWorkspaceCurrent,
+    required this.dirty,
+    required this.busy,
+    required this.onRepositoryChanged,
+    required this.onLoadRepositories,
+    required this.onBindRepository,
+    required this.onCheckoutRepository,
+  });
+  final Json snapshot;
+  final List<Json> repositories;
+  final bool repositoriesLoaded, repositoryWorkspaceCurrent, dirty;
+  final String? selectedRepositoryId, busy;
+  final ValueChanged<String?> onRepositoryChanged;
+  final VoidCallback onLoadRepositories, onBindRepository;
+  final VoidCallback onCheckoutRepository;
+
+  @override
+  Widget build(BuildContext context) {
+    final github = _map(snapshot['github']);
+    final binding = _map(snapshot['repositoryBinding']);
+    final workspace = _map(snapshot['repositoryWorkspace']);
+    final configured = github['configured'] == true;
+    final selection =
+        repositories.any(
+          (item) => item['repositoryId']?.toString() == selectedRepositoryId,
+        )
+        ? selectedRepositoryId
+        : null;
+    return ListView(
+      padding: const EdgeInsets.all(14),
+      children: [
+        Row(
+          children: [
+            Icon(
+              Icons.hub_outlined,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 9),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Repository source',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  Text(
+                    configured ? 'Private GitHub App' : 'Setup required',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              configured
+                  ? Icons.check_circle_rounded
+                  : Icons.warning_amber_rounded,
+              size: 19,
+              color: configured
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.error,
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        if (!configured) ...[
+          Text(
+            'The server is missing ${_stringList(github['missing']).join(', ').isEmpty ? 'GitHub App credentials' : _stringList(github['missing']).join(', ')}.',
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Configure it on web first. The mobile app never receives installation tokens.',
+          ),
+        ] else if (!repositoriesLoaded) ...[
+          const Text(
+            'Load the repositories explicitly selected for Asael. Unrelated repositories remain hidden.',
+          ),
+          const SizedBox(height: 12),
+          FilledButton.tonalIcon(
+            onPressed: busy == null ? onLoadRepositories : null,
+            icon: busy == 'github.repositories'
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.sync_rounded),
+            label: const Text('Load repositories'),
+          ),
+        ] else if (repositories.isEmpty) ...[
+          const Text(
+            'No selected repositories are available to this GitHub App installation.',
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: busy == null ? onLoadRepositories : null,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Refresh'),
+          ),
+        ] else ...[
+          DropdownButtonFormField<String>(
+            initialValue: selection,
+            isExpanded: true,
+            decoration: const InputDecoration(
+              labelText: 'Selected repository',
+              border: OutlineInputBorder(),
+            ),
+            items: [
+              for (final repository in repositories)
+                DropdownMenuItem(
+                  value: repository['repositoryId']?.toString(),
+                  child: Text(
+                    repository['fullName']?.toString() ?? 'Repository',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+            onChanged: busy == null ? onRepositoryChanged : null,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: busy == null && selectedRepositoryId != null
+                      ? onBindRepository
+                      : null,
+                  icon: busy == 'github.bind'
+                      ? const SizedBox.square(
+                          dimension: 15,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.link_rounded, size: 18),
+                  label: Text(
+                    binding['repositoryId'] == selectedRepositoryId
+                        ? 'Refresh revision'
+                        : 'Bind repository',
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Refresh selected repositories',
+                onPressed: busy == null ? onLoadRepositories : null,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
+            ],
+          ),
+          if (binding.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    binding['repositoryFullName']?.toString() ?? 'Repository',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    '${binding['defaultBranch'] ?? 'default'} · ${_shortSha(binding['baseSha'])}',
+                    style: const TextStyle(fontFamily: 'monospace'),
+                  ),
+                  if (workspace.isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    Text(
+                      repositoryWorkspaceCurrent
+                          ? '${workspace['fileCount'] ?? 0} files open at this exact revision'
+                          : 'Workspace differs from the bound revision',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: busy == null && !dirty && !repositoryWorkspaceCurrent
+                  ? onCheckoutRepository
+                  : null,
+              icon: busy == 'github.checkout'
+                  ? const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      repositoryWorkspaceCurrent
+                          ? Icons.check_rounded
+                          : Icons.folder_open_rounded,
+                    ),
+              label: Text(
+                repositoryWorkspaceCurrent
+                    ? 'Repository is open'
+                    : dirty
+                    ? 'Save the open file first'
+                    : 'Open exact revision',
+              ),
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
 class _MobileBuilderBody extends StatefulWidget {
   const _MobileBuilderBody({
     required this.tree,
@@ -666,20 +1075,34 @@ class _MobileBuilderBody extends StatefulWidget {
     required this.checkpoints,
     required this.activity,
     required this.currentCheckpointId,
+    required this.snapshot,
+    required this.repositories,
+    required this.repositoriesLoaded,
+    required this.selectedRepositoryId,
+    required this.repositoryWorkspaceCurrent,
     required this.onOpen,
     required this.onChanged,
     required this.onSave,
     required this.onCommand,
+    required this.onRepositoryChanged,
+    required this.onLoadRepositories,
+    required this.onBindRepository,
+    required this.onCheckoutRepository,
     required this.onRestore,
   });
-  final List<Json> tree, checkpoints, activity;
+  final List<Json> tree, checkpoints, activity, repositories;
+  final Json snapshot;
   final Json? file;
   final TextEditingController controller;
-  final bool dirty;
+  final bool dirty, repositoriesLoaded, repositoryWorkspaceCurrent;
   final String? busy, output, currentCheckpointId;
+  final String? selectedRepositoryId;
   final ValueChanged<String>? onOpen;
   final VoidCallback onChanged, onSave;
   final ValueChanged<String> onCommand;
+  final ValueChanged<String?> onRepositoryChanged;
+  final VoidCallback onLoadRepositories, onBindRepository;
+  final VoidCallback onCheckoutRepository;
   final ValueChanged<Json> onRestore;
   @override
   State<_MobileBuilderBody> createState() => _MobileBuilderBodyState();
@@ -706,6 +1129,11 @@ class _MobileBuilderBodyState extends State<_MobileBuilderBody> {
             ),
             ButtonSegment(
               value: 2,
+              label: Text('Source'),
+              icon: Icon(Icons.hub_outlined),
+            ),
+            ButtonSegment(
+              value: 3,
               label: Text('Recovery'),
               icon: Icon(Icons.history_rounded),
             ),
@@ -730,6 +1158,19 @@ class _MobileBuilderBodyState extends State<_MobileBuilderBody> {
             tree: widget.tree,
             selectedPath: widget.file?['path']?.toString(),
             onOpen: widget.onOpen,
+          ),
+          2 => _RepositoryPanel(
+            snapshot: widget.snapshot,
+            repositories: widget.repositories,
+            repositoriesLoaded: widget.repositoriesLoaded,
+            selectedRepositoryId: widget.selectedRepositoryId,
+            repositoryWorkspaceCurrent: widget.repositoryWorkspaceCurrent,
+            dirty: widget.dirty,
+            busy: widget.busy,
+            onRepositoryChanged: widget.onRepositoryChanged,
+            onLoadRepositories: widget.onLoadRepositories,
+            onBindRepository: widget.onBindRepository,
+            onCheckoutRepository: widget.onCheckoutRepository,
           ),
           _ => _RecoveryRail(
             checkpoints: widget.checkpoints,
@@ -830,6 +1271,13 @@ class _BuilderError extends StatelessWidget {
 
 Json _map(Object? value) =>
     value is Map ? Json.from(value) : <String, dynamic>{};
+List<String> _stringList(Object? value) =>
+    (value as List? ?? const []).map((item) => item.toString()).toList();
+String _shortSha(Object? value) {
+  final text = value?.toString() ?? '';
+  return text.length <= 12 ? text : text.substring(0, 12);
+}
+
 String _humanize(String value) => value
     .split(RegExp(r'[._:-]'))
     .where((part) => part.isNotEmpty)
