@@ -181,6 +181,18 @@ class ApiClient {
     ),
   );
 
+  Future<Map<String, dynamic>> putJson(
+    String path, {
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+  }) => _json(
+    () => _dio.put<Object?>(
+      path,
+      data: data,
+      options: Options(headers: headers),
+    ),
+  );
+
   Future<Map<String, dynamic>> deleteJson(
     String path, {
     Map<String, dynamic>? query,

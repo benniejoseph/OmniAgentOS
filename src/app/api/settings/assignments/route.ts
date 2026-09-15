@@ -59,7 +59,7 @@ async function PUTHandler(request: Request) {
   if (!parsed.success) return Response.json({ error: "Invalid model assignment", details: parsed.error.flatten() }, { status: 400 });
   let context;
   try {
-    context = await authorizeRequest({ request, action: "manage.connector", resourceType: "model_assignment", resourceId: parsed.data.scope, metadata: { scope: parsed.data.scope, provider: parsed.data.provider, fallbackProvider: parsed.data.fallbackProvider, crossProviderFallbackConsent: parsed.data.crossProviderFallbackConsent === true } });
+    context = await authorizeRequest({ request, action: "manage.connector", resourceType: "model_assignment", resourceId: parsed.data.scope, nativeMutationCapability: "settings.update", metadata: { scope: parsed.data.scope, provider: parsed.data.provider, fallbackProvider: parsed.data.fallbackProvider, crossProviderFallbackConsent: parsed.data.crossProviderFallbackConsent === true } });
   } catch (error) { return forbiddenResponse(error); }
   try { return Response.json({ assignment: await saveModelAssignment({ ...context, ...parsed.data }) }); }
   catch (error) { return settingsErrorResponse(error); }

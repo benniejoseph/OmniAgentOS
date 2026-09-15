@@ -10,10 +10,13 @@ import '../../features/agents/agents_providers.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
 import '../../features/customers/customer_detail.dart';
+import '../../features/customers/accounts_view.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
 import '../../features/knowledge/knowledge.dart';
 import '../../features/knowledge/knowledge_providers.dart';
+import '../../features/markets/markets_view.dart';
+import '../../features/payments/payments_view.dart';
 import '../../features/meetings/meetings_providers.dart';
 import '../../features/meetings/meetings_view.dart';
 import '../../features/projects/projects_providers.dart';
@@ -21,6 +24,7 @@ import '../../features/projects/projects_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/results_view.dart';
 import '../../features/settings/admin_console.dart';
+import '../../features/settings/model_settings_view.dart';
 import '../../features/security/device_security_screen.dart';
 import '../../features/talk/talk.dart';
 import '../../features/talk/talk_providers.dart';
@@ -108,6 +112,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                     '/knowledge' => KnowledgeView(
                       controller: ref.watch(knowledgeControllerProvider),
                     ),
+                    '/accounts' => AccountsView(
+                      api: ref.watch(apiClientProvider),
+                      onOpen: (account) =>
+                          context.push('/accounts/${account.id}'),
+                    ),
+                    '/markets' => MarketsView(
+                      api: ref.watch(apiClientProvider),
+                    ),
+                    '/payments' => PaymentsView(
+                      api: ref.watch(apiClientProvider),
+                    ),
                     '/workflows' => const AdminWorkspaceView(
                       moduleId: 'automation',
                     ),
@@ -122,18 +137,29 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                     '/security' => const AdminWorkspaceView(
                       moduleId: 'security',
                     ),
-                    '/settings' => const AdminWorkspaceView(
-                      moduleId: 'settings',
+                    '/settings' => ModelSettingsView(
+                      api: ref.watch(apiClientProvider),
                     ),
                     _ => DestinationPlaceholder(destination: destination),
                   },
-                  routes: destination.path == '/projects'
+                  routes: destination.path == '/accounts'
+                      ? [
+                          GoRoute(
+                            path: ':id',
+                            builder: (_, state) => CustomerDetailView(
+                              id: state.pathParameters['id']!,
+                              api: ref.watch(apiClientProvider),
+                            ),
+                          ),
+                        ]
+                      : destination.path == '/projects'
                       ? [
                           GoRoute(
                             path: ':id',
                             builder: (_, state) => ProjectDetailView(
                               id: state.pathParameters['id']!,
                               repository: ref.watch(projectsRepositoryProvider),
+                              api: ref.watch(apiClientProvider),
                               focusWorkItemId:
                                   state.uri.queryParameters['workItemId'],
                             ),

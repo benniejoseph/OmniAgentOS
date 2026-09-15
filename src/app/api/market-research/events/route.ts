@@ -86,6 +86,7 @@ async function POSTHandler(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "market_event_history",
+      nativeMutationCapability: "markets.update",
       metadata: {
         operation: "backfill",
         startDate: parsed.data.startDate,

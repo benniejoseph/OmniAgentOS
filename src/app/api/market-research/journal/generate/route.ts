@@ -31,6 +31,7 @@ async function POSTHandler(request: Request) {
       request,
       action: "run.agent",
       resourceType: "market_forward_forecast",
+      nativeMutationCapability: "markets.update",
       metadata: {
         operation: "generate",
         instrumentId: parsed.data.instrumentId,
