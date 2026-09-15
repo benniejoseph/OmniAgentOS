@@ -13,6 +13,9 @@ import {
   builderFileReadInputSchema,
   builderFileUpdateInputSchema,
   builderProjectInputSchema,
+  builderRepositoryBindInputSchema,
+  builderRepositoryListInputSchema,
+  builderDeliveryInputSchema,
   builderSentinelReviewInputSchema,
   builderSessionCreateInputSchema,
   builderSessionStopInputSchema,
@@ -27,6 +30,7 @@ import {
   getBuilderWorkspaceManifest,
   listBuilderFiles,
   readBuilderFile,
+  readBuilderWorkspaceFiles,
   runBuilderCommand,
   restoreBuilderSandboxCheckpoint,
   stopBuilderSandbox,
@@ -50,6 +54,23 @@ import {
   setBuilderCurrentCheckpoint,
   transitionBuilderSession,
 } from "@/lib/app-builder/store";
+import {
+  beginBuilderDelivery,
+  bindBuilderRepository,
+  completeBuilderDelivery,
+  failBuilderDelivery,
+  getBuilderRepositoryBinding,
+  getBuilderRepositoryBindingById,
+  listBuilderDeliveries,
+} from "@/lib/app-builder/delivery-store";
+import {
+  deliverBuilderFilesToGithub,
+  getBuilderGithubStatus,
+  GitHubDeliveryPartialError,
+  listBuilderGithubRepositories,
+  resolveBuilderGithubRepository,
+} from "@/lib/app-builder/github";
+import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { captureBuilderBrowserEvidence } from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
@@ -63,11 +84,14 @@ export async function showProjectBuilderService(
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.show"));
   await requireProject(caller, value.projectId);
   const session = await getProjectBuilderSession(value.projectId, owner(caller));
-  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], previewUrl: null }, { resourceCount: 0 });
-  const [activity, checkpoints, verifications, previewUrl] = await Promise.all([
+  const github = getBuilderGithubStatus();
+  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], github, previewUrl: null }, { resourceCount: 0 });
+  const [activity, checkpoints, verifications, repositoryBinding, deliveries, previewUrl] = await Promise.all([
     listBuilderActivity(session.id, owner(caller)),
     listBuilderCheckpoints(session.id, owner(caller)),
     listBuilderVerifications(session.id, owner(caller)),
+    getBuilderRepositoryBinding(session.id, owner(caller)),
+    listBuilderDeliveries(session.id, owner(caller)),
     session.status === "ready" || session.status === "running"
       ? getBuilderPreviewUrl({
           sandboxName: session.sandboxName,
@@ -83,6 +107,9 @@ export async function showProjectBuilderService(
     activity,
     checkpoints: checkpoints.map(publicCheckpoint),
     verifications: verifications.map(publicVerification),
+    repositoryBinding: repositoryBinding ? publicRepositoryBinding(repositoryBinding) : null,
+    deliveries: deliveries.map(publicDelivery),
+    github,
     previewUrl,
   });
 }
@@ -482,6 +509,193 @@ export async function recordProjectBuilderSentinelReviewService(
   });
 }
 
+export async function listProjectBuilderRepositoriesService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderRepositoryListInputSchema>,
+) {
+  const value = builderRepositoryListInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.repositories.list"));
+  await requireProject(caller, value.projectId);
+  const repositories = await listBuilderGithubRepositories();
+  return completeAppServiceCall(authorized, {
+    github: getBuilderGithubStatus(),
+    repositories,
+  }, { resourceCount: repositories.length });
+}
+
+export async function bindProjectBuilderRepositoryService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderRepositoryBindInputSchema>,
+) {
+  const value = builderRepositoryBindInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.repository.bind"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const resolved = await resolveBuilderGithubRepository(value.repositoryId);
+  if (!resolved.baseSha) throw new Error("GitHub did not return the repository default-branch revision.");
+  const binding = await bindBuilderRepository({
+    ...owner(caller),
+    projectId: value.projectId,
+    sessionId: session.id,
+    repository: resolved.repository,
+    baseSha: resolved.baseSha,
+  });
+  await recordBuilderActivity({
+    ...owner(caller), session,
+    eventType: "app_builder.repository.bound",
+    eventKey: requireIdempotency(caller),
+    detail: {
+      repositoryBindingId: binding.id,
+      repositoryId: binding.repositoryId,
+      repositoryFullName: binding.repositoryFullName,
+      defaultBranch: binding.defaultBranch,
+      baseSha: binding.baseSha,
+      revision: binding.revision,
+    },
+  });
+  return completeAppServiceCall(authorized, {
+    repositoryBinding: publicRepositoryBinding(binding),
+  });
+}
+
+export async function deliverProjectBuilderPullRequestService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderDeliveryInputSchema>,
+) {
+  const value = builderDeliveryInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.delivery.create"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const binding = await getBuilderRepositoryBindingById(
+    value.repositoryBindingId,
+    session.id,
+    owner(caller),
+  );
+  if (!binding || binding.revision !== value.expectedBindingRevision) {
+    throw new Error("The GitHub repository binding changed. Refresh it before delivery.");
+  }
+  const checkpoint = await getBuilderCheckpoint(value.checkpointId, session.id, owner(caller));
+  if (!checkpoint || session.currentCheckpointId !== checkpoint.id) {
+    throw new Error("GitHub delivery requires the exact current App Builder checkpoint.");
+  }
+  const verification = await getBuilderVerification(value.verificationId, session.id, owner(caller));
+  if (
+    !verification ||
+    verification.status !== "passed" ||
+    verification.checkpointId !== checkpoint.id ||
+    verification.workspaceSha256 !== checkpoint.workspaceSha256
+  ) {
+    throw new Error("GitHub delivery requires a passing verification for the exact current checkpoint.");
+  }
+  const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
+  if (workspace.sha256 !== checkpoint.workspaceSha256) {
+    throw new Error("The workspace changed after verification. Seal and verify the current revision again.");
+  }
+  const files = await readBuilderWorkspaceFiles(session.sandboxName);
+  const scan = scanBuilderFilesForSecrets(files);
+  await recordBuilderActivity({
+    ...owner(caller), session,
+    eventType: "app_builder.secret_scan.completed",
+    eventKey: `${requireIdempotency(caller)}:secret_scan`,
+    detail: {
+      contractVersion: scan.contractVersion,
+      checkpointId: checkpoint.id,
+      workspaceSha256: checkpoint.workspaceSha256,
+      status: scan.status,
+      fileCount: scan.fileCount,
+      byteCount: scan.byteCount,
+      findingCount: scan.findingCount,
+      scanSha256: scan.scanSha256,
+      findings: scan.findings,
+    },
+  });
+  if (scan.status !== "passed") {
+    throw new Error(`GitHub delivery is blocked by ${scan.findingCount} possible credential finding${scan.findingCount === 1 ? "" : "s"}. Review the reported file and line locations.`);
+  }
+  const idempotencyKey = requireIdempotency(caller);
+  const claim = await beginBuilderDelivery({
+    ...owner(caller), projectId: session.projectId, sessionId: session.id,
+    repositoryBindingId: binding.id, checkpointId: checkpoint.id,
+    verificationId: verification.id, workspaceSha256: checkpoint.workspaceSha256,
+    baseSha: binding.baseSha, branchName: value.branchName,
+    secretScanSha256: scan.scanSha256, secretFindingCount: scan.findingCount,
+    idempotencyKey,
+  });
+  if (!claim.created) {
+    if (claim.delivery.status === "pull_request_open") {
+      return completeAppServiceCall(authorized, { delivery: publicDelivery(claim.delivery), created: false });
+    }
+    throw new Error(`This GitHub delivery attempt is already ${claim.delivery.status}. Use a fresh branch for a new reviewed attempt.`);
+  }
+  try {
+    const delivered = await deliverBuilderFilesToGithub({
+      repository: {
+        repositoryId: binding.repositoryId,
+        owner: binding.repositoryOwner,
+        name: binding.repositoryName,
+      },
+      expectedBaseSha: binding.baseSha,
+      defaultBranch: binding.defaultBranch,
+      branchName: value.branchName,
+      title: value.title,
+      body: deliveryBody(value.body, {
+        workspaceSha256: checkpoint.workspaceSha256,
+        checkpointId: checkpoint.id,
+        verificationId: verification.id,
+        secretScanSha256: scan.scanSha256,
+      }),
+      draft: value.draft,
+      files,
+    });
+    const delivery = await completeBuilderDelivery({
+      ...owner(caller), delivery: claim.delivery,
+      commitSha: delivered.commitSha,
+      pullRequestNumber: delivered.pullRequestNumber,
+      pullRequestUrl: delivered.pullRequestUrl,
+    });
+    await recordBuilderActivity({
+      ...owner(caller), session,
+      eventType: "app_builder.delivery.pull_request_open",
+      eventKey: idempotencyKey,
+      detail: {
+        deliveryId: delivery.id,
+        repositoryBindingId: binding.id,
+        checkpointId: checkpoint.id,
+        verificationId: verification.id,
+        workspaceSha256: checkpoint.workspaceSha256,
+        baseSha: binding.baseSha,
+        branchName: delivery.branchName,
+        commitSha: delivery.commitSha,
+        pullRequestNumber: delivery.pullRequestNumber,
+        pullRequestUrl: delivery.pullRequestUrl,
+        secretScanSha256: scan.scanSha256,
+      },
+    });
+    return completeAppServiceCall(authorized, { delivery: publicDelivery(delivery), created: true });
+  } catch (error) {
+    const failed = await failBuilderDelivery({
+      ...owner(caller),
+      delivery: claim.delivery,
+      error,
+      commitSha: error instanceof GitHubDeliveryPartialError ? error.partial.commitSha : undefined,
+    });
+    await recordBuilderActivity({
+      ...owner(caller), session,
+      eventType: "app_builder.delivery.failed",
+      eventKey: idempotencyKey,
+      detail: {
+        deliveryId: failed.id,
+        repositoryBindingId: binding.id,
+        checkpointId: checkpoint.id,
+        verificationId: verification.id,
+        workspaceSha256: checkpoint.workspaceSha256,
+        branchName: value.branchName,
+        commitSha: failed.commitSha,
+        failureCode: failed.failureCode,
+      },
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
 async function requireSession(caller: AppServiceCaller, projectId: string, sessionId: string) {
   await requireProject(caller, projectId);
   const session = await getBuilderSession(sessionId, projectId, owner(caller));
@@ -552,4 +766,35 @@ function publicCheckpoint<T extends { tenantId: string; ownerActorId: string; pr
 function publicVerification<T extends { tenantId: string; ownerActorId: string }>(verification: T) {
   const { tenantId: _tenantId, ownerActorId: _ownerActorId, ...safe } = verification;
   return safe;
+}
+
+function publicRepositoryBinding<T extends { tenantId: string; ownerActorId: string }>(binding: T) {
+  const { tenantId: _tenantId, ownerActorId: _ownerActorId, ...safe } = binding;
+  return safe;
+}
+
+function publicDelivery<T extends { tenantId: string; ownerActorId: string }>(delivery: T) {
+  const { tenantId: _tenantId, ownerActorId: _ownerActorId, ...safe } = delivery;
+  return safe;
+}
+
+function deliveryBody(
+  requested: string,
+  evidence: {
+    workspaceSha256: string;
+    checkpointId: string;
+    verificationId: string;
+    secretScanSha256: string;
+  },
+) {
+  return [
+    requested.trim(),
+    "",
+    "---",
+    "Asael Build Studio evidence",
+    `- Workspace: ${evidence.workspaceSha256}`,
+    `- Checkpoint: ${evidence.checkpointId}`,
+    `- Verification: ${evidence.verificationId}`,
+    `- Secret scan: ${evidence.secretScanSha256}`,
+  ].filter((line, index) => index > 0 || Boolean(line)).join("\n").slice(0, 8_000);
 }

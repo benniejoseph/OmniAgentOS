@@ -735,10 +735,15 @@ describe("ordered database schema versions", () => {
       name: "maintenance_system_scope_v1",
       checksum: "6eeab2482987d833ab99862640348951d6d798d732cb91df91791ac29b098679",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 169)).toEqual({
       version: 169,
       name: "app_builder_verification_v1",
       checksum: "42d9291da42daf9b4513f4fe9f3221bae4336d2d20074773a96db70135d9d176",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 170,
+      name: "app_builder_github_delivery_v1",
+      checksum: "7d1f8e773faa0de1e8a5ac7a58ffb79a236a79504932fc757ee4cfbfbf796e7f",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

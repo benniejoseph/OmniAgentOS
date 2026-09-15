@@ -10,8 +10,11 @@ import {
   updateWorkItemService,
 } from "@/lib/app-services/projects";
 import {
+  bindProjectBuilderRepositoryService,
   createProjectBuilderService,
   createProjectBuilderCheckpointService,
+  deliverProjectBuilderPullRequestService,
+  listProjectBuilderRepositoriesService,
   listProjectBuilderTreeService,
   readProjectBuilderFileService,
   recordProjectBuilderSentinelReviewService,
@@ -314,6 +317,9 @@ export async function executeFirstPartyAppTool(input: {
     "app.projects.builder.verification.show": () => showProjectBuilderVerificationService(caller, input.toolInput as never),
     "app.projects.builder.verification.run": () => runProjectBuilderVerificationService(caller, input.toolInput as never),
     "app.projects.builder.sentinel.record": () => recordProjectBuilderSentinelReviewService(caller, input.toolInput as never),
+    "app.projects.builder.repositories.list": () => listProjectBuilderRepositoriesService(caller, input.toolInput as never),
+    "app.projects.builder.repository.bind": () => bindProjectBuilderRepositoryService(caller, input.toolInput as never),
+    "app.projects.builder.delivery.create": () => deliverProjectBuilderPullRequestService(caller, input.toolInput as never),
     "app.projects.builder.stop": () => stopProjectBuilderService(caller, input.toolInput as never),
     "app.work_items.create": () => createWorkItemService(caller, input.toolInput as never),
     "app.work_items.update": () => updateWorkItemService(caller, input.toolInput as never),
