@@ -8,6 +8,8 @@ import {
   createProjectBuilderService,
   createProjectBuilderCheckpointService,
   deliverProjectBuilderPullRequestService,
+  createProjectBuilderPreviewDeploymentService,
+  refreshProjectBuilderPreviewDeploymentService,
   listProjectBuilderRepositoriesService,
   listProjectBuilderTreeService,
   readProjectBuilderFileService,
@@ -41,6 +43,8 @@ const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("sentinel.record"), sessionId: sessionIdSchema, verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), sourceRunId: z.string().uuid() }).strict(),
   z.object({ action: z.literal("repository.bind"), sessionId: sessionIdSchema, repositoryId: z.string().regex(/^\d{1,24}$/) }).strict(),
   z.object({ action: z.literal("delivery.create"), sessionId: sessionIdSchema, repositoryBindingId: z.string().regex(/^app_build_repository_[a-f0-9]{48}$/), expectedBindingRevision: z.number().int().positive(), checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), branchName: z.string().trim().min(1).max(120), title: z.string().trim().min(3).max(180), body: z.string().trim().max(8_000).default(""), draft: z.boolean().default(true) }).strict(),
+  z.object({ action: z.literal("deployment.preview"), sessionId: sessionIdSchema, checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/), verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/), repositoryDeliveryId: z.string().regex(/^app_build_delivery_[a-f0-9]{48}$/).optional() }).strict(),
+  z.object({ action: z.literal("deployment.refresh"), sessionId: sessionIdSchema, deploymentId: z.string().regex(/^app_build_deployment_[a-f0-9]{48}$/) }).strict(),
   z.object({ action: z.literal("stop"), sessionId: sessionIdSchema }).strict(),
 ]);
 
@@ -84,9 +88,9 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
     context = await authorizeRequest({
       request,
       action: "run.agent",
-      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : action === "repository.bind" ? "app_builder_repository" : action === "delivery.create" ? "app_builder_delivery" : "app_builder_session",
+      resourceType: action === "file.update" ? "app_builder_file" : action === "command.run" ? "app_builder_command" : action.startsWith("checkpoint.") ? "app_builder_checkpoint" : action === "verification.run" || action === "sentinel.record" ? "app_builder_verification" : action === "repository.bind" ? "app_builder_repository" : action === "delivery.create" ? "app_builder_delivery" : action.startsWith("deployment.") ? "app_builder_deployment" : "app_builder_session",
       resourceId: id,
-      riskLevel: action === "create" || action === "stop" || action === "checkpoint.restore" || action === "delivery.create" ? 2 : 1,
+      riskLevel: action === "create" || action === "stop" || action === "checkpoint.restore" || action === "delivery.create" || action === "deployment.preview" ? 2 : 1,
       nativeMutationCapability: "workspaces.update",
       metadata: { action },
     });
@@ -113,6 +117,10 @@ async function POSTHandler(request: Request, route: { params: Promise<{ id: stri
                   ? await bindProjectBuilderRepositoryService(caller, { projectId: id, sessionId: parsed.data.sessionId, repositoryId: parsed.data.repositoryId })
                   : action === "delivery.create"
                     ? await deliverProjectBuilderPullRequestService(caller, { projectId: id, sessionId: parsed.data.sessionId, repositoryBindingId: parsed.data.repositoryBindingId, expectedBindingRevision: parsed.data.expectedBindingRevision, checkpointId: parsed.data.checkpointId, verificationId: parsed.data.verificationId, branchName: parsed.data.branchName, title: parsed.data.title, body: parsed.data.body, draft: parsed.data.draft })
+                  : action === "deployment.preview"
+                    ? await createProjectBuilderPreviewDeploymentService(caller, { projectId: id, sessionId: parsed.data.sessionId, checkpointId: parsed.data.checkpointId, verificationId: parsed.data.verificationId, repositoryDeliveryId: parsed.data.repositoryDeliveryId })
+                  : action === "deployment.refresh"
+                    ? await refreshProjectBuilderPreviewDeploymentService(caller, { projectId: id, sessionId: parsed.data.sessionId, deploymentId: parsed.data.deploymentId })
                   : await stopProjectBuilderService(caller, { projectId: id, sessionId: parsed.data.sessionId });
     return Response.json({ ...result.data, serviceReceipt: result.receipt }, { headers: privateNoStoreHeaders });
   } catch (error) {

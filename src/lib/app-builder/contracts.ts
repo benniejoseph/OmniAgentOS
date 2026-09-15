@@ -8,6 +8,7 @@ export const APP_BUILDER_VERIFICATION_CONTRACT_VERSION = "app-builder-verificati
 export const APP_BUILDER_REPOSITORY_CONTRACT_VERSION = "app-builder-repository:1" as const;
 export const APP_BUILDER_DELIVERY_CONTRACT_VERSION = "app-builder-delivery:1" as const;
 export const APP_BUILDER_SECRET_SCAN_CONTRACT_VERSION = "app-builder-secret-scan:1" as const;
+export const APP_BUILDER_DEPLOYMENT_CONTRACT_VERSION = "app-builder-deployment:1" as const;
 export const APP_BUILDER_TEMPLATE_ID = "nextjs-starter-v1" as const;
 export const APP_BUILDER_ROOT = "/vercel/sandbox/app" as const;
 export const APP_BUILDER_PREVIEW_PORT = 3000 as const;
@@ -181,6 +182,58 @@ export type AppBuilderGithubStatus = Readonly<{
   installUrl?: string;
 }>;
 
+export type AppBuilderVercelStatus = Readonly<{
+  configured: boolean;
+  missing: readonly string[];
+}>;
+
+export type AppBuilderDeployment = Readonly<{
+  id: string;
+  tenantId: string;
+  ownerActorId: string;
+  projectId: string;
+  sessionId: string;
+  contractVersion: typeof APP_BUILDER_DEPLOYMENT_CONTRACT_VERSION;
+  checkpointId: string;
+  verificationId: string;
+  repositoryDeliveryId?: string;
+  commitSha?: string;
+  workspaceSha256: string;
+  fileManifestSha256: string;
+  fileCount: number;
+  byteCount: number;
+  secretScanSha256: string;
+  smokeRoutes: readonly string[];
+  providerProjectId?: string;
+  providerDeploymentId?: string;
+  providerState?: string;
+  deploymentUrl?: string;
+  status: "preparing" | "queued" | "building" | "verifying" | "ready" | "incomplete" | "failed";
+  logs: Readonly<{
+    status: "pending" | "captured" | "unavailable";
+    sha256?: string;
+    eventCount: number;
+  }>;
+  routeEvidence: Readonly<{
+    status: "pending" | "passed" | "failed";
+    routes: ReadonlyArray<Readonly<{
+      path: string;
+      status: "passed" | "failed";
+      statusCode?: number;
+      durationMs: number;
+      bodySha256?: string;
+      errorCode?: string;
+    }>>;
+  }>;
+  browserEvidence: AppBuilderVerification["browserEvidence"] | Readonly<{
+    status: "pending";
+    captures: readonly [];
+  }>;
+  failureCode?: string;
+  createdAt: string;
+  updatedAt: string;
+}>;
+
 export const builderProjectInputSchema = z.object({
   projectId: z.string().trim().min(1).max(200),
 }).strict();
@@ -254,6 +307,16 @@ export const builderDeliveryInputSchema = builderTreeInputSchema.extend({
   title: z.string().trim().min(3).max(180),
   body: z.string().trim().max(8_000).default(""),
   draft: z.boolean().default(true),
+}).strict();
+
+export const builderPreviewDeploymentInputSchema = builderTreeInputSchema.extend({
+  checkpointId: z.string().regex(/^app_build_checkpoint_[a-f0-9]{48}$/),
+  verificationId: z.string().regex(/^app_build_verification_[a-f0-9]{48}$/),
+  repositoryDeliveryId: z.string().regex(/^app_build_delivery_[a-f0-9]{48}$/).optional(),
+}).strict();
+
+export const builderPreviewDeploymentRefreshInputSchema = builderTreeInputSchema.extend({
+  deploymentId: z.string().regex(/^app_build_deployment_[a-f0-9]{48}$/),
 }).strict();
 
 const deniedSegments = new Set([
