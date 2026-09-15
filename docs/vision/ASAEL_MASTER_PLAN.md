@@ -1171,8 +1171,9 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 | P12.5 | Add APNs/FCM delivery with causal deep links and notification actions. | Reuse delivery outbox; create device registrations. | Sensitive content previews follow device/user policy. | Notification opens the exact approval, work item, meeting, customer, or run and acknowledges once. |
 | P12.6 | Keep Android synchronized with post-P12 web workspaces. | Reuse authoritative server services and generated contracts; modify Flutter navigation and feature modules. | New mobile mutations remain exact-capability enrolled; trusted payment signing stays on an attested human-present surface. | Android exposes the same current destination map and native task flows for Accounts, Markets, Payments evidence, model Settings, administrative workspaces, and Project Build Studio, including exact GitHub repository checkout. |
 
-**Current status:** P12.1 through P12.6 are implemented. P12.6 is pending its
-single coordinated v6 server promotion and private Android binary installation.
+**Current status:** P12.1 through P12.6 are implemented and server-deployed.
+The signed private Android v6 binary is built and awaits a connected device for
+installation.
 The existing Asael API remains the only application backend; Firebase is a
 transport-only attachment to the existing production cloud project. Matching
 Android and iOS Firebase applications are registered for the compatibility
