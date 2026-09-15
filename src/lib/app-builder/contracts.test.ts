@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileDeleteInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, builderProductionReleaseInputSchema, builderProductionReleasePreviewInputSchema, builderProductionReleaseRefreshInputSchema, builderRepositoryCheckoutInputSchema, safeBuilderRelativePath } from "@/lib/app-builder/contracts";
+import { assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileDeleteInputSchema, builderFileReadInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, builderProductionReleaseInputSchema, builderProductionReleasePreviewInputSchema, builderProductionReleaseRefreshInputSchema, builderRepositoryCheckoutInputSchema, safeBuilderRelativePath, sliceAppBuilderFileContent } from "@/lib/app-builder/contracts";
 import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 import { APP_SERVICE_OPERATION_CONTRACTS, MAIN_AGENT_APP_SERVICE_BINDINGS } from "@/lib/app-services/registry";
@@ -28,6 +28,8 @@ describe("project App Builder boundary", () => {
     }).success).toBe(true);
     expect(builderCommandInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, command: "rm -rf" }).success).toBe(false);
     expect(builderFileDeleteInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, path: "app/old.ts", expectedSha256: "b".repeat(64) }).success).toBe(true);
+    expect(builderFileReadInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, path: "docs/plan.md", startLine: 401, lineCount: 200 }).success).toBe(true);
+    expect(builderFileReadInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, path: "docs/plan.md", startLine: 1, lineCount: 401 }).success).toBe(false);
     expect(builderRepositoryCheckoutInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, repositoryBindingId: `app_build_repository_${"b".repeat(48)}`, expectedBindingRevision: 2, expectedSessionRevision: 4 }).success).toBe(true);
     expect(builderCheckpointCreateInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, expectedSessionRevision: 4, reason: "before_forge", label: "Before Forge" }).success).toBe(true);
     expect(builderCheckpointRestoreInputSchema.safeParse({ projectId: "project-1", sessionId: `app_build_${"a".repeat(48)}`, checkpointId: `app_build_checkpoint_${"b".repeat(48)}`, expectedSessionRevision: 5 }).success).toBe(true);
@@ -83,6 +85,18 @@ describe("project App Builder boundary", () => {
       sessionId: `app_build_${"a".repeat(48)}`,
       releaseId: `app_build_release_${"b".repeat(48)}`,
     }).success).toBe(true);
+  });
+
+  it("returns deterministic bounded file slices with line provenance", () => {
+    expect(sliceAppBuilderFileContent("one\ntwo\nthree\nfour", { startLine: 2, lineCount: 2 })).toEqual({
+      content: "two\nthree",
+      lineRange: { startLine: 2, endLine: 3, totalLines: 4, truncated: true },
+    });
+    expect(sliceAppBuilderFileContent("one\ntwo", { startLine: 1, lineCount: 400 })).toEqual({
+      content: "one\ntwo",
+      lineRange: { startLine: 1, endLine: 2, totalLines: 2, truncated: false },
+    });
+    expect(() => sliceAppBuilderFileContent("one\ntwo", { startLine: 3, lineCount: 1 })).toThrow(/out of bounds/);
   });
 
   it("blocks credential-shaped source without retaining the secret in the receipt", () => {

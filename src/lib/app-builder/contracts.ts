@@ -116,7 +116,34 @@ export type AppBuilderFile = Readonly<{
   content: string;
   sha256: string;
   size: number;
+  lineRange?: Readonly<{
+    startLine: number;
+    endLine: number;
+    totalLines: number;
+    truncated: boolean;
+  }>;
 }>;
+
+export function sliceAppBuilderFileContent(
+  content: string,
+  range?: Readonly<{ startLine: number; lineCount: number }>,
+): Pick<AppBuilderFile, "content" | "lineRange"> {
+  if (!range) return { content };
+  const lines = content.split(/\r?\n/);
+  if (range.startLine > lines.length) {
+    throw new Error(`Builder file has ${lines.length} lines; startLine ${range.startLine} is out of bounds.`);
+  }
+  const endLine = Math.min(lines.length, range.startLine + range.lineCount - 1);
+  return {
+    content: lines.slice(range.startLine - 1, endLine).join("\n"),
+    lineRange: {
+      startLine: range.startLine,
+      endLine,
+      totalLines: lines.length,
+      truncated: range.startLine > 1 || endLine < lines.length,
+    },
+  };
+}
 
 export type AppBuilderRepositoryWorkspace = Readonly<{
   contractVersion: typeof APP_BUILDER_REPOSITORY_WORKSPACE_CONTRACT_VERSION;
@@ -301,14 +328,18 @@ export const builderTreeInputSchema = builderProjectInputSchema.extend({
 
 export const builderFileReadInputSchema = builderTreeInputSchema.extend({
   path: z.string().trim().min(1).max(240),
+  startLine: z.number().int().positive().optional(),
+  lineCount: z.number().int().min(1).max(400).optional(),
 }).strict();
 
-export const builderFileUpdateInputSchema = builderFileReadInputSchema.extend({
+export const builderFileUpdateInputSchema = builderTreeInputSchema.extend({
+  path: z.string().trim().min(1).max(240),
   expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   content: z.string().max(500_000),
 }).strict();
 
-export const builderFileDeleteInputSchema = builderFileReadInputSchema.extend({
+export const builderFileDeleteInputSchema = builderTreeInputSchema.extend({
+  path: z.string().trim().min(1).max(240),
   expectedSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 

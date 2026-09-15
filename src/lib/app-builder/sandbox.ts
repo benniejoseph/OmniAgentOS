@@ -10,6 +10,7 @@ import {
   boundedBuilderOutput,
   builderFileSha256,
   safeBuilderRelativePath,
+  sliceAppBuilderFileContent,
   type AppBuilderCommandKind,
   type AppBuilderDeliveryChange,
   type AppBuilderFile,
@@ -186,14 +187,23 @@ export async function searchBuilderFiles(input: { sandboxName: string; query: st
   return paths.map((path) => ({ path, kind: "file" as const }));
 }
 
-export async function readBuilderFile(sandboxName: string, requestedPath: string): Promise<AppBuilderFile> {
+export async function readBuilderFile(
+  sandboxName: string,
+  requestedPath: string,
+  range?: Readonly<{ startLine: number; lineCount: number }>,
+): Promise<AppBuilderFile> {
   const relativePath = safeBuilderRelativePath(requestedPath);
   const sandbox = await Sandbox.get({ name: sandboxName, resume: true });
   const buffer = await sandbox.readFileToBuffer({ path: `${APP_BUILDER_ROOT}/${relativePath}` });
   if (!buffer) throw new Error("Builder file was not found.");
   if (buffer.byteLength > 500_000) throw new Error("Builder file is too large to inspect in this workspace.");
   const content = buffer.toString("utf8");
-  return { path: relativePath, content, sha256: builderFileSha256(buffer), size: buffer.byteLength };
+  return {
+    path: relativePath,
+    ...sliceAppBuilderFileContent(content, range),
+    sha256: builderFileSha256(buffer),
+    size: buffer.byteLength,
+  };
 }
 
 export async function readBuilderWorkspaceFiles(sandboxName: string): Promise<AppBuilderFile[]> {

@@ -334,7 +334,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(buildAppBuilderAgentRequest({
           projectId: project.id,
-          message: `Work only in App Builder session ${session.id} for project ${project.id}. Inspect files before editing and preserve SHA-256 fences. User request: ${request}. Run focused checks and restart the preview when complete.`,
+          message: `Work only in App Builder session ${session.id} for project ${project.id}. Inspect files before editing and preserve SHA-256 fences. Use bounded file-read ranges, starting with the smallest relevant section, and continue only when needed. User request: ${request}. Run focused checks and restart the preview when complete.`,
           requestId: crypto.randomUUID(),
           agentId: "forge",
         })),
