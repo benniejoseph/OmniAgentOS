@@ -15,6 +15,7 @@ import {
   Square,
 } from "lucide-react";
 import { clsx } from "clsx";
+import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -127,7 +128,7 @@ export function ConversationProgressPanel({
 
   useEffect(() => {
     const controller = new AbortController();
-    let timer: ReturnType<typeof setInterval> | undefined;
+    let firstLoad = true;
     const load = async (showLoading: boolean) => {
       if (showLoading) setState("loading");
       try {
@@ -151,11 +152,21 @@ export function ConversationProgressPanel({
         setState("error");
       }
     };
-    void load(true);
-    if (live) timer = setInterval(() => void load(false), 4_000);
+    const stopRefresh = live
+      ? startVisibleRefresh({
+          onRefresh: () => {
+            const showLoading = firstLoad;
+            firstLoad = false;
+            return load(showLoading);
+          },
+          pollIntervalMs: 4_000,
+          refreshOnStart: true,
+        })
+      : undefined;
+    if (!live) void load(true);
     return () => {
+      stopRefresh?.();
       controller.abort();
-      if (timer) clearInterval(timer);
     };
   }, [live, refreshVersion, runId]);
 

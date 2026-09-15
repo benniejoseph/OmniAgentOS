@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 
 export function useLiveRefresh({
   enabled,
@@ -22,42 +23,9 @@ export function useLiveRefresh({
       return;
     }
 
-    let disposed = false;
-    let refreshing = false;
-    const refresh = async () => {
-      if (
-        disposed ||
-        refreshing ||
-        document.visibilityState !== "visible"
-      ) {
-        return;
-      }
-      refreshing = true;
-      try {
-        await refreshRef.current();
-      } finally {
-        refreshing = false;
-      }
-    };
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        void refresh();
-      }
-    };
-
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", handleVisibility);
-    const interval = pollIntervalMs
-      ? window.setInterval(() => void refresh(), pollIntervalMs)
-      : undefined;
-
-    return () => {
-      disposed = true;
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", handleVisibility);
-      if (interval !== undefined) {
-        window.clearInterval(interval);
-      }
-    };
+    return startVisibleRefresh({
+      onRefresh: () => refreshRef.current(),
+      pollIntervalMs,
+    });
   }, [enabled, pollIntervalMs]);
 }

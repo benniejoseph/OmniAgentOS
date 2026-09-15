@@ -48,6 +48,7 @@ import {
 } from "@/components/app-shell/session-context";
 import { ConversationCanvas } from "@/components/conversation-canvas";
 import { ConversationProgressPanel } from "@/components/conversation-progress-panel";
+import { startVisibleRefresh } from "@/lib/client/visible-refresh";
 import {
   PrivateMediaPreview,
   type PrivateMediaReadiness,
@@ -4400,7 +4401,7 @@ function RunTraceJourney({
 
   useEffect(() => {
     const controller = new AbortController();
-    let timer: ReturnType<typeof setInterval> | undefined;
+    let firstLoad = true;
     const loadTrace = async (showLoading: boolean) => {
       if (showLoading) setState("loading");
       try {
@@ -4426,11 +4427,21 @@ function RunTraceJourney({
         setState("error");
       }
     };
-    void loadTrace(true);
-    if (live) timer = setInterval(() => void loadTrace(false), 4_000);
+    const stopRefresh = live
+      ? startVisibleRefresh({
+          onRefresh: () => {
+            const showLoading = firstLoad;
+            firstLoad = false;
+            return loadTrace(showLoading);
+          },
+          pollIntervalMs: 4_000,
+          refreshOnStart: true,
+        })
+      : undefined;
+    if (!live) void loadTrace(true);
     return () => {
+      stopRefresh?.();
       controller.abort();
-      if (timer) clearInterval(timer);
     };
   }, [kind, live, refreshVersion, runId]);
 
