@@ -157,7 +157,7 @@ export async function searchBuilderFiles(input: { sandboxName: string; query: st
   const sandbox = await Sandbox.get({ name: input.sandboxName, resume: true });
   const names = await sandbox.runCommand({
     cmd: "find",
-    args: [".", "-maxdepth", "12", "-type", "f", ...workspaceFindExclusions(), "-printf", "%P\\n"],
+    args: [".", "-maxdepth", "12", "-type", "f", ...workspaceFindExclusions(), "-printf", "%P\\t%s\\n"],
     cwd: APP_BUILDER_ROOT,
     timeoutMs: 20_000,
   });
@@ -175,16 +175,24 @@ export async function searchBuilderFiles(input: { sandboxName: string; query: st
     throw new Error("The builder source index could not be searched.");
   }
   const lowered = query.toLocaleLowerCase();
-  const matchedNames = (await names.stdout()).split("\n")
-    .filter((candidate) => candidate.toLocaleLowerCase().includes(lowered));
+  const indexedFiles = (await names.stdout()).split("\n").flatMap((line) => {
+    const [candidate, rawSize] = line.split("\t");
+    const path = safeWorkspacePath(candidate || "");
+    return path ? [{ path, size: Number(rawSize) || 0 }] : [];
+  });
+  const sizeByPath = new Map(indexedFiles.map((entry) => [entry.path, entry.size]));
+  const matchedNames = indexedFiles
+    .filter((entry) => entry.path.toLocaleLowerCase().includes(lowered))
+    .map((entry) => entry.path);
   const matchedContent = (await content.stdout()).split("\n")
     .map((candidate) => candidate.startsWith("./") ? candidate.slice(2) : candidate);
   const paths = [...new Set([...matchedNames, ...matchedContent])]
     .map(safeWorkspacePath)
     .filter((candidate): candidate is string => Boolean(candidate))
+    .filter((candidate) => sizeByPath.has(candidate))
     .sort((left, right) => left.localeCompare(right))
     .slice(0, 100);
-  return paths.map((path) => ({ path, kind: "file" as const }));
+  return paths.map((path) => ({ path, kind: "file" as const, size: sizeByPath.get(path)! }));
 }
 
 export async function readBuilderFile(
