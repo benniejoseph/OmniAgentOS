@@ -5,12 +5,15 @@ import { Sandbox } from "@vercel/sandbox";
 import {
   APP_BUILDER_APP_PORT,
   APP_BUILDER_PREVIEW_PORT,
+  APP_BUILDER_REPOSITORY_WORKSPACE_CONTRACT_VERSION,
   APP_BUILDER_ROOT,
   boundedBuilderOutput,
   builderFileSha256,
   safeBuilderRelativePath,
   type AppBuilderCommandKind,
+  type AppBuilderDeliveryChange,
   type AppBuilderFile,
+  type AppBuilderRepositoryWorkspace,
   type AppBuilderTreeEntry,
 } from "@/lib/app-builder/contracts";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
@@ -18,6 +21,13 @@ import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 const SANDBOX_TIMEOUT_MS = 30 * 60 * 1_000;
 const COMMAND_TIMEOUT_MS = 8 * 60 * 1_000;
 const CHECKPOINT_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1_000;
+const MAX_WORKSPACE_FILES = 10_000;
+const REPOSITORY_ARCHIVE_PATH = "/vercel/sandbox/asael-repository-source.tar.gz";
+const REPOSITORY_BASELINE_PATH = "/vercel/sandbox/asael-repository-baseline.json";
+
+type RepositoryBaseline = AppBuilderRepositoryWorkspace & Readonly<{
+  entries: ReadonlyArray<Readonly<{ path: string; sha256: string }>>;
+}>;
 
 const commandTable: Record<Exclude<AppBuilderCommandKind, "start_preview">, readonly [string, readonly string[]]> = {
   lint: ["npm", ["run", "lint"]],
@@ -120,17 +130,16 @@ export async function listBuilderFiles(sandboxName: string): Promise<AppBuilderT
   const sandbox = await Sandbox.get({ name: sandboxName, resume: true });
   const result = await sandbox.runCommand({
     cmd: "find",
-    args: [".", "-maxdepth", "8", "-type", "f", "-not", "-path", "./node_modules/*", "-not", "-path", "./.next/*", "-printf", "%P\\t%s\\n"],
+    args: [".", "-maxdepth", "12", "-type", "f", ...workspaceFindExclusions(), "-printf", "%P\\t%s\\n"],
     cwd: APP_BUILDER_ROOT,
     timeoutMs: 20_000,
   });
   if (result.exitCode !== 0) throw new Error("The builder file index could not be read.");
-  const rows = (await result.stdout()).split("\n").filter(Boolean).slice(0, 500).map((line) => {
+  const rows = (await result.stdout()).split("\n").filter(Boolean).flatMap((line): AppBuilderTreeEntry[] => {
     const [relativePath, rawSize] = line.split("\t");
-    return { path: safeBuilderRelativePath(relativePath || ""), kind: "file" as const, size: Number(rawSize) || 0 };
-  }).filter((entry) =>
-    entry.path !== "next-env.d.ts" && !entry.path.endsWith(".tsbuildinfo")
-  );
+    const safePath = safeWorkspacePath(relativePath || "");
+    return safePath ? [{ path: safePath, kind: "file", size: Number(rawSize) || 0 }] : [];
+  }).slice(0, 500);
   const directories = new Set<string>();
   for (const row of rows) {
     const pieces = row.path.split("/");
@@ -140,6 +149,41 @@ export async function listBuilderFiles(sandboxName: string): Promise<AppBuilderT
     ...[...directories].map((relativePath) => ({ path: relativePath, kind: "directory" as const })),
     ...rows,
   ].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export async function searchBuilderFiles(input: { sandboxName: string; query: string }) {
+  const query = input.query.trim();
+  const sandbox = await Sandbox.get({ name: input.sandboxName, resume: true });
+  const names = await sandbox.runCommand({
+    cmd: "find",
+    args: [".", "-maxdepth", "12", "-type", "f", ...workspaceFindExclusions(), "-printf", "%P\\n"],
+    cwd: APP_BUILDER_ROOT,
+    timeoutMs: 20_000,
+  });
+  if (names.exitCode !== 0) throw new Error("The builder filename index could not be searched.");
+  const content = await sandbox.runCommand({
+    cmd: "grep",
+    args: [
+      "-RIlF", "--max-count=1", "--exclude-dir=node_modules", "--exclude-dir=.next",
+      "--exclude=*.tsbuildinfo", "--", query, ".",
+    ],
+    cwd: APP_BUILDER_ROOT,
+    timeoutMs: 30_000,
+  });
+  if (content.exitCode !== 0 && content.exitCode !== 1) {
+    throw new Error("The builder source index could not be searched.");
+  }
+  const lowered = query.toLocaleLowerCase();
+  const matchedNames = (await names.stdout()).split("\n")
+    .filter((candidate) => candidate.toLocaleLowerCase().includes(lowered));
+  const matchedContent = (await content.stdout()).split("\n")
+    .map((candidate) => candidate.startsWith("./") ? candidate.slice(2) : candidate);
+  const paths = [...new Set([...matchedNames, ...matchedContent])]
+    .map(safeWorkspacePath)
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, 100);
+  return paths.map((path) => ({ path, kind: "file" as const }));
 }
 
 export async function readBuilderFile(sandboxName: string, requestedPath: string): Promise<AppBuilderFile> {
@@ -183,6 +227,133 @@ export async function updateBuilderFile(input: {
   if (parent) await sandbox.runCommand({ cmd: "mkdir", args: ["-p", `${APP_BUILDER_ROOT}/${parent}`], timeoutMs: 10_000 });
   await sandbox.writeFiles([{ path: `${APP_BUILDER_ROOT}/${relativePath}`, content: input.content }]);
   return { path: relativePath, previousSha256: currentSha256, sha256: builderFileSha256(input.content), size: Buffer.byteLength(input.content) };
+}
+
+export async function deleteBuilderFile(input: {
+  sandboxName: string;
+  path: string;
+  expectedSha256: string;
+}) {
+  const relativePath = safeBuilderRelativePath(input.path);
+  const sandbox = await Sandbox.get({ name: input.sandboxName, resume: true });
+  const current = await sandbox.readFileToBuffer({ path: `${APP_BUILDER_ROOT}/${relativePath}` });
+  if (!current) throw new Error("Builder file was not found.");
+  const currentSha256 = builderFileSha256(current);
+  if (currentSha256 !== input.expectedSha256) {
+    throw new Error("Builder file changed after it was inspected. Read it again before deleting it.");
+  }
+  const removed = await sandbox.runCommand({
+    cmd: "rm",
+    args: ["--", `${APP_BUILDER_ROOT}/${relativePath}`],
+    timeoutMs: 10_000,
+  });
+  if (removed.exitCode !== 0) throw new Error("Builder file could not be deleted.");
+  return { path: relativePath, previousSha256: currentSha256 };
+}
+
+export async function checkoutBuilderRepositoryArchive(input: {
+  sandboxName: string;
+  repositoryId: string;
+  repositoryFullName: string;
+  baseSha: string;
+  archiveSha256: string;
+  archive: Uint8Array;
+  previewIdentity: { tenantId: string; ownerActorId: string; projectId: string; sessionId: string };
+}) {
+  const sandbox = await Sandbox.get({ name: input.sandboxName, resume: true });
+  await stopBuilderPreviewProcesses(sandbox);
+  await sandbox.writeFiles([{ path: REPOSITORY_ARCHIVE_PATH, content: input.archive, mode: 0o400 }]);
+  try {
+    await validateRepositoryArchive(sandbox);
+    const removed = await sandbox.runCommand({
+      cmd: "rm",
+      args: ["-rf", "--", APP_BUILDER_ROOT],
+      timeoutMs: 30_000,
+    });
+    if (removed.exitCode !== 0) throw new Error("The previous builder workspace could not be replaced safely.");
+    await sandbox.fs.mkdir(APP_BUILDER_ROOT, { recursive: true });
+    const extracted = await sandbox.runCommand({
+      cmd: "tar",
+      args: [
+        "-xzf", REPOSITORY_ARCHIVE_PATH, "--strip-components=1", "--no-same-owner",
+        "--no-same-permissions", "--directory", APP_BUILDER_ROOT,
+      ],
+      timeoutMs: 60_000,
+    });
+    if (extracted.exitCode !== 0) throw new Error("The reviewed GitHub archive could not be extracted.");
+    const packageJson = await sandbox.readFileToBuffer({ path: `${APP_BUILDER_ROOT}/package.json` });
+    if (!packageJson) throw new Error("Repository checkout currently requires a Node application with package.json at its root.");
+    const baselineRows = await builderWorkspaceRows(sandbox);
+    const workspaceSha256 = workspaceRowsSha256(baselineRows);
+    const importedAt = new Date().toISOString();
+    const baseline: RepositoryBaseline = {
+      contractVersion: APP_BUILDER_REPOSITORY_WORKSPACE_CONTRACT_VERSION,
+      repositoryId: input.repositoryId,
+      repositoryFullName: input.repositoryFullName,
+      baseSha: input.baseSha,
+      archiveSha256: input.archiveSha256,
+      workspaceSha256,
+      fileCount: baselineRows.length,
+      importedAt,
+      entries: baselineRows,
+    };
+    await sandbox.writeFiles([{
+      path: REPOSITORY_BASELINE_PATH,
+      content: JSON.stringify(baseline),
+      mode: 0o400,
+    }]);
+    const lockfile = await sandbox.readFileToBuffer({ path: `${APP_BUILDER_ROOT}/package-lock.json` });
+    const install = await sandbox.runCommand({
+      cmd: "npm",
+      args: [lockfile ? "ci" : "install", "--ignore-scripts", "--no-audit", "--no-fund"],
+      cwd: APP_BUILDER_ROOT,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+    });
+    const [stdout, stderr] = await Promise.all([install.stdout(), install.stderr()]);
+    if (install.exitCode !== 0) {
+      throw new Error(`Repository dependencies could not be installed. ${boundedBuilderOutput(stderr || stdout, 2_000)}`);
+    }
+    await startBuilderPreview(sandbox, previewToken(input.previewIdentity));
+    return {
+      workspace: publicRepositoryWorkspace(baseline),
+      install: commandResult(install.exitCode, stdout, stderr, install.durationMs),
+      previewUrl: previewUrl(sandbox, previewToken(input.previewIdentity)),
+    };
+  } finally {
+    await sandbox.runCommand({ cmd: "rm", args: ["-f", "--", REPOSITORY_ARCHIVE_PATH], timeoutMs: 10_000 }).catch(() => undefined);
+  }
+}
+
+export async function getBuilderRepositoryWorkspace(sandboxName: string) {
+  const sandbox = await Sandbox.get({ name: sandboxName, resume: true });
+  const baseline = await readRepositoryBaseline(sandbox);
+  return baseline ? publicRepositoryWorkspace(baseline) : null;
+}
+
+export async function readBuilderRepositoryChanges(input: {
+  sandboxName: string;
+  repositoryId: string;
+  baseSha: string;
+}): Promise<AppBuilderDeliveryChange[]> {
+  const sandbox = await Sandbox.get({ name: input.sandboxName, resume: true });
+  const baseline = await readRepositoryBaseline(sandbox);
+  if (!baseline || baseline.repositoryId !== input.repositoryId || baseline.baseSha !== input.baseSha) {
+    throw new Error("The builder workspace is not checked out from this exact repository revision.");
+  }
+  const currentRows = await builderWorkspaceRows(sandbox);
+  const current = new Map(currentRows.map((row) => [row.path, row.sha256]));
+  const previous = new Map(baseline.entries.map((row) => [row.path, row.sha256]));
+  const changes: AppBuilderDeliveryChange[] = [];
+  for (const row of currentRows) {
+    if (previous.get(row.path) !== row.sha256) {
+      changes.push({ kind: "upsert", file: await readBuilderFile(input.sandboxName, row.path) });
+    }
+  }
+  for (const row of baseline.entries) {
+    if (!current.has(row.path)) changes.push({ kind: "delete", path: row.path, previousSha256: row.sha256 });
+  }
+  if (changes.length > 500) throw new Error("Repository delivery exceeds the 500-change review boundary.");
+  return changes.sort((left, right) => changePath(left).localeCompare(changePath(right)));
 }
 
 export async function runBuilderCommand(input: {
@@ -251,8 +422,7 @@ export async function restoreBuilderSandboxCheckpoint(input: {
 }
 
 async function startBuilderPreview(sandbox: Sandbox, token: string) {
-  await sandbox.runCommand({ cmd: "pkill", args: ["-f", `next dev.*${APP_BUILDER_APP_PORT}`], timeoutMs: 10_000 }).catch(() => undefined);
-  await sandbox.runCommand({ cmd: "pkill", args: ["-f", "asael-preview-proxy.mjs"], timeoutMs: 10_000 }).catch(() => undefined);
+  await stopBuilderPreviewProcesses(sandbox);
   await sandbox.runCommand({
     cmd: "npm",
     args: ["run", "dev", "--", "--hostname", "127.0.0.1", "--port", String(APP_BUILDER_APP_PORT)],
@@ -270,6 +440,11 @@ async function startBuilderPreview(sandbox: Sandbox, token: string) {
   });
 }
 
+async function stopBuilderPreviewProcesses(sandbox: Sandbox) {
+  await sandbox.runCommand({ cmd: "pkill", args: ["-f", `next dev.*${APP_BUILDER_APP_PORT}`], timeoutMs: 10_000 }).catch(() => undefined);
+  await sandbox.runCommand({ cmd: "pkill", args: ["-f", "asael-preview-proxy.mjs"], timeoutMs: 10_000 }).catch(() => undefined);
+}
+
 function previewToken(input: { tenantId: string; ownerActorId: string; projectId: string; sessionId: string }) {
   const secret = process.env.OMNIAGENT_APP_BUILDER_PREVIEW_SECRET || process.env.OMNIAGENT_CREDENTIAL_KEYRING;
   if (!secret || secret.length < 32) throw new Error("App Builder preview signing is not configured.");
@@ -283,14 +458,16 @@ function previewUrl(sandbox: Sandbox, token: string) {
 }
 
 async function builderWorkspaceManifest(sandbox: Sandbox) {
+  const rows = await builderWorkspaceRows(sandbox);
+  return { fileCount: rows.length, sha256: workspaceRowsSha256(rows) };
+}
+
+async function builderWorkspaceRows(sandbox: Sandbox) {
   const result = await sandbox.runCommand({
     cmd: "find",
     args: [
-      ".", "-maxdepth", "8", "-type", "f",
-      "-not", "-path", "./node_modules/*",
-      "-not", "-path", "./.next/*",
-      "-not", "-path", "./next-env.d.ts",
-      "-not", "-name", "*.tsbuildinfo",
+      ".", "-maxdepth", "12", "-type", "f",
+      ...workspaceFindExclusions(),
       "-exec", "sha256sum", "{}", "+",
     ],
     cwd: APP_BUILDER_ROOT,
@@ -300,13 +477,14 @@ async function builderWorkspaceManifest(sandbox: Sandbox) {
   const rows = (await result.stdout()).split("\n").filter(Boolean).map((line) => {
     const match = line.match(/^([a-f0-9]{64})\s+\.\/(.+)$/);
     if (!match) throw new Error("The builder workspace manifest was malformed.");
-    return { sha256: match[1], path: safeBuilderRelativePath(match[2]) };
-  }).sort((left, right) => left.path.localeCompare(right.path));
-  if (!rows.length || rows.length > 500) throw new Error("The builder workspace manifest is outside its file budget.");
-  return {
-    fileCount: rows.length,
-    sha256: builderFileSha256(rows.map((row) => `${row.path}\u0000${row.sha256}`).join("\n")),
-  };
+    const safePath = safeWorkspacePath(match[2]);
+    return safePath ? { sha256: match[1], path: safePath } : undefined;
+  }).filter((row): row is { sha256: string; path: string } => Boolean(row))
+    .sort((left, right) => left.path.localeCompare(right.path));
+  if (!rows.length || rows.length > MAX_WORKSPACE_FILES) {
+    throw new Error(`The builder workspace must contain 1-${MAX_WORKSPACE_FILES} editable source files.`);
+  }
+  return rows;
 }
 
 export async function getBuilderWorkspaceManifest(sandboxName: string) {
@@ -334,4 +512,88 @@ async function mapWithConcurrency<TInput, TOutput>(
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
   return output;
+}
+
+function workspaceRowsSha256(rows: ReadonlyArray<{ path: string; sha256: string }>) {
+  return builderFileSha256(rows.map((row) => `${row.path}\u0000${row.sha256}`).join("\n"));
+}
+
+function workspaceFindExclusions() {
+  return [
+    "-not", "-path", "./node_modules/*",
+    "-not", "-path", "./.next/*",
+    "-not", "-path", "./next-env.d.ts",
+    "-not", "-name", "*.tsbuildinfo",
+  ];
+}
+
+function safeWorkspacePath(value: string) {
+  try {
+    const normalized = value.trim().replaceAll("\\", "/");
+    if (normalized.length > 240) return undefined;
+    return safeBuilderRelativePath(normalized);
+  } catch {
+    return undefined;
+  }
+}
+
+async function validateRepositoryArchive(sandbox: Sandbox) {
+  const listed = await sandbox.runCommand({
+    cmd: "tar",
+    args: ["-tzf", REPOSITORY_ARCHIVE_PATH],
+    timeoutMs: 30_000,
+  });
+  if (listed.exitCode !== 0) throw new Error("GitHub repository archive could not be inspected.");
+  const members = (await listed.stdout()).split("\n").filter(Boolean);
+  if (!members.length || members.length > MAX_WORKSPACE_FILES + 2_000) {
+    throw new Error("GitHub repository archive is outside the 12,000-entry checkout boundary.");
+  }
+  const root = members[0].split("/")[0];
+  if (!root || members.some((member) => !safeArchiveMember(member, root))) {
+    throw new Error("GitHub repository archive contains an unsafe path.");
+  }
+  const verbose = await sandbox.runCommand({
+    cmd: "tar",
+    args: ["-tvzf", REPOSITORY_ARCHIVE_PATH],
+    timeoutMs: 30_000,
+  });
+  if (verbose.exitCode !== 0 || (await verbose.stdout()).split("\n").some((line) => line.startsWith("l") || line.startsWith("h"))) {
+    throw new Error("GitHub repository archive contains unsupported linked entries.");
+  }
+}
+
+function safeArchiveMember(member: string, root: string) {
+  if (!member || member.includes("\0") || member.includes("\\") || member.startsWith("/")) return false;
+  const segments = member.split("/").filter(Boolean);
+  return segments[0] === root && segments.every((segment) => segment !== "." && segment !== "..");
+}
+
+async function readRepositoryBaseline(sandbox: Sandbox): Promise<RepositoryBaseline | null> {
+  const buffer = await sandbox.readFileToBuffer({ path: REPOSITORY_BASELINE_PATH });
+  if (!buffer) return null;
+  if (buffer.byteLength > 2_000_000) throw new Error("Repository workspace baseline is oversized.");
+  let value: unknown;
+  try { value = JSON.parse(buffer.toString("utf8")); } catch { throw new Error("Repository workspace baseline is malformed."); }
+  const candidate = value as Partial<RepositoryBaseline>;
+  if (
+    candidate.contractVersion !== APP_BUILDER_REPOSITORY_WORKSPACE_CONTRACT_VERSION ||
+    !/^\d{1,24}$/.test(candidate.repositoryId || "") ||
+    !/^[a-f0-9]{40,64}$/.test(candidate.baseSha || "") ||
+    !/^[a-f0-9]{64}$/.test(candidate.archiveSha256 || "") ||
+    !/^[a-f0-9]{64}$/.test(candidate.workspaceSha256 || "") ||
+    !candidate.repositoryFullName || !candidate.importedAt ||
+    !Array.isArray(candidate.entries) || candidate.entries.length !== candidate.fileCount ||
+    candidate.entries.length < 1 || candidate.entries.length > MAX_WORKSPACE_FILES ||
+    candidate.entries.some((entry) => !safeWorkspacePath(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256))
+  ) throw new Error("Repository workspace baseline failed integrity validation.");
+  return candidate as RepositoryBaseline;
+}
+
+function publicRepositoryWorkspace(baseline: RepositoryBaseline): AppBuilderRepositoryWorkspace {
+  const { entries: _entries, ...workspace } = baseline;
+  return workspace;
+}
+
+function changePath(change: AppBuilderDeliveryChange) {
+  return change.kind === "upsert" ? change.file.path : change.path;
 }

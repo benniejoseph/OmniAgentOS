@@ -368,12 +368,18 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.projects.builder.tree", "List app files", "List bounded editable files in the exact project build workspace; dependencies, generated output, credentials, and VCS metadata stay excluded.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
   }, ["projectId", "sessionId"])),
+  readTool("app.projects.builder.search", "Search app source", "Search bounded editable source filenames and UTF-8 content inside the exact project build workspace.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, query: text(2, 120),
+  }, ["projectId", "sessionId", "query"])),
   readTool("app.projects.builder.file.read", "Read app file", "Read one bounded UTF-8 file and its exact SHA-256 from the project build workspace.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240),
   }, ["projectId", "sessionId", "path"])),
   mutationTool("app.projects.builder.file.update", "Update app file", "Replace one inspected application file only when its current SHA-256 still matches; null is accepted only for a new file.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240), expectedSha256: { type: ["string", "null"], pattern: "^[a-f0-9]{64}$" }, content: text(0, 500_000),
   }, ["projectId", "sessionId", "path", "expectedSha256", "content"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
+  mutationTool("app.projects.builder.file.delete", "Delete app file", "Delete one inspected application file only when its current SHA-256 still matches; the repository diff retains the deletion for reviewed delivery.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240), expectedSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  }, ["projectId", "sessionId", "path", "expectedSha256"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
   mutationTool("app.projects.builder.command.run", "Run app check", "Run one fixed package-script check or restart the private preview; arbitrary shell commands are not accepted.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, command: { type: "string", enum: ["lint", "typecheck", "test", "build", "start_preview"] },
   }, ["projectId", "sessionId", "command"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
@@ -398,6 +404,9 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.projects.builder.repository.bind", "Bind build repository", "Bind one GitHub-App-selected repository and its exact default-branch revision to the project build session.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, repositoryId: { type: "string", pattern: "^[0-9]{1,24}$" },
   }, ["projectId", "sessionId", "repositoryId"]), { riskLevel: 1, approvalRequired: false, reversible: true }),
+  mutationTool("app.projects.builder.repository.checkout", "Open repository workspace", "Replace the starter with an exact GitHub revision after sealing a recovery checkpoint. The installation token never enters the sandbox, model context, files, or logs.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, repositoryBindingId: { type: "string", pattern: "^app_build_repository_[a-f0-9]{48}$" }, expectedBindingRevision: integer(1, Number.MAX_SAFE_INTEGER), expectedSessionRevision: integer(1, Number.MAX_SAFE_INTEGER),
+  }, ["projectId", "sessionId", "repositoryBindingId", "expectedBindingRevision", "expectedSessionRevision"]), { riskLevel: 2, approvalRequired: true, reversible: true }),
   mutationTool("app.projects.builder.delivery.create", "Create build pull request", "Secret-scan and deliver one passing checkpoint to a new non-default GitHub branch, then open a draft pull request against the exact bound base revision.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, repositoryBindingId: { type: "string", pattern: "^app_build_repository_[a-f0-9]{48}$" }, expectedBindingRevision: integer(1, Number.MAX_SAFE_INTEGER), checkpointId: { type: "string", pattern: "^app_build_checkpoint_[a-f0-9]{48}$" }, verificationId: { type: "string", pattern: "^app_build_verification_[a-f0-9]{48}$" }, branchName: text(1, 120), title: text(3, 180), body: text(0, 8_000), draft: { type: "boolean", default: true },
   }, ["projectId", "sessionId", "repositoryBindingId", "expectedBindingRevision", "checkpointId", "verificationId", "branchName", "title"]), { riskLevel: 2, approvalRequired: true, reversible: false }),

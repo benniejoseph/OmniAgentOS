@@ -863,5 +863,10 @@
     "version": 173,
     "name": "app_builder_deployment_url_constraint_repair_v1",
     "checksum": "a41d2d82ad95d8402b182f8136f9bee67133d2380f246605c803915838c7da8e"
+  },
+  {
+    "version": 174,
+    "name": "app_builder_repository_workspaces_v1",
+    "checksum": "30f4769a6fcccd41aa457882b6be2752583d7d5920be75597e3b2121e91604d0"
   }
 ]

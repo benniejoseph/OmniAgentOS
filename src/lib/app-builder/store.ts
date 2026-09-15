@@ -171,6 +171,37 @@ export async function recordBuilderWorkspaceChange(input: BuilderOwner & {
   return session;
 }
 
+export async function recordBuilderWorkspaceReplacement(input: BuilderOwner & {
+  session: AppBuilderSession;
+  eventKey: string;
+  detail: Record<string, unknown>;
+}) {
+  const rows = await getSql()`
+    UPDATE omni_app_builder_sessions
+    SET current_checkpoint_id = NULL,
+        revision = revision + 1,
+        updated_at = NOW()
+    WHERE tenant_id = ${input.tenantId}
+      AND owner_actor_id = ${input.actorId}
+      AND project_id = ${input.session.projectId}
+      AND id = ${input.session.id}
+      AND revision = ${input.session.revision}
+    RETURNING *
+  `;
+  if (!rows[0]) {
+    throw new Error("Builder session changed while the repository checkout was running. Refresh before retrying.");
+  }
+  const session = sessionFromRow(rows[0]);
+  await appendBuilderActivity({
+    owner: input,
+    session,
+    eventType: "app_builder.repository.checked_out",
+    eventKey: input.eventKey,
+    detail: input.detail,
+  });
+  return session;
+}
+
 export async function listBuilderActivity(sessionId: string, owner: BuilderOwner, limit = 40) {
   requireBuilderDatabase();
   await ensureDatabaseSchema();

@@ -1,10 +1,10 @@
 # In-app agent app builder — feasibility and recommended architecture
 
-Status: Phases A–D implemented through governed code and database schema on 2026-09-15. Live provider use still requires the server-side GitHub App and Vercel credentials described below.
+Status: Phases A–E implemented through governed code and database schema on 2026-09-15. Live provider use still requires the server-side GitHub App and Vercel credentials described below.
 
 ## Decision
 
-Asael now has an iterative private app-building environment: Build mode inside Projects creates one reviewed TypeScript web-app template in an actor- and project-bound Vercel Sandbox, inspects and digest-fences files, runs a fixed check family, serves an authenticated live preview, and seals recoverable provider snapshots against exact workspace digests. Forge automatically protects the workspace before a run and seals a completed result against its exact project-bound run. Sentinel independently reads the sealed verification receipt and project files with the actor's configurable `verifier` model assignment. A selected-repository GitHub App can deliver the exact passing revision to a new branch and draft pull request. Vercel preview deployment records build, route, and desktop/mobile evidence. Production requires a separate 15-minute digest-bound review, exact `RELEASE` confirmation, declared migration posture, and a recorded rollback target.
+Asael now has an iterative private app-building environment: Build mode inside Projects creates one reviewed TypeScript web-app template or replaces it with an exact selected-repository revision in an actor- and project-bound Vercel Sandbox, inspects and digest-fences files, searches bounded source, runs a fixed check family, serves an authenticated live preview, and seals recoverable provider snapshots against exact workspace digests. Forge automatically protects the workspace before a run and seals a completed result against its exact project-bound run. Sentinel independently reads the sealed verification receipt and project files with the actor's configurable `verifier` model assignment. A selected-repository GitHub App can deliver only the repository diff to a new branch and draft pull request. Vercel preview deployment records build, route, and desktop/mobile evidence for starter workspaces. Production requires a separate 15-minute digest-bound review, exact `RELEASE` confirmation, declared migration posture, and a recorded rollback target.
 
 Do not make browser or computer use the primary coding interface. Code should be read, patched, tested and versioned through typed repository and sandbox tools. Computer use is useful later for visual QA of the running preview.
 
@@ -18,7 +18,7 @@ Do not make browser or computer use the primary coding interface. Code should be
 | Governance | Tool policy, approvals, idempotency, execution scope and receipts exist | Reuse |
 | Model routing | Models and providers resolve from actor Settings assignments, including `code_builder` | Reused and extended |
 | Artifacts | Project results and evidence can be retained and reviewed | Extend for file manifests, diffs, builds and previews |
-| Workspace mutation | Governed tree/read and exact-SHA file update operations exist for the isolated template workspace; Git is unavailable | Phase A delivered; Git pending |
+| Workspace mutation | Governed tree/search/read/exact-SHA update/delete operations exist for isolated starter and exact-revision repository workspaces; Git credentials remain broker-only | Phases A/E delivered |
 | Isolated execution | Actor/project/session-scoped Vercel Sandbox with bounded resources and registry-only install access | Phase A delivered |
 | Build verification | Fixed lint, type-check, test, build and live-preview commands with bounded output and typed activity; sealed lint/type-check and private desktop/mobile capture receipts feed an independent Sentinel handoff | Phases A/B delivered |
 | Recovery | Immutable 30-day snapshots, exact workspace manifests, optimistic session revisions, automatic pre-restore safety checkpoints and digest-verified restore | Phase B delivered |
@@ -55,7 +55,7 @@ Make this a focused **Build** mode inside Projects instead of adding another unr
 
 The normal flow is:
 
-`brief -> reviewed template -> sandbox -> plan -> patch -> focused checks -> live preview -> visual QA -> diff review -> branch/PR -> preview deployment -> explicit production approval`
+`brief -> reviewed template or exact repository revision -> sandbox -> plan -> search/read/patch -> focused checks -> live preview -> visual QA -> diff review -> branch/PR -> preview deployment -> explicit production approval`
 
 Follow-up prompts continue the same build session where safe. A session may be stopped and resumed from a trusted snapshot, while Git remains the durable source of truth.
 
@@ -147,6 +147,18 @@ Implementation evidence: migrations 171 and 172 install actor-private forced-RLS
 
 Exit gate: a human can inspect the app and its evidence before the separately governed production effect.
 
+### Phase E — repository workspaces
+
+- [x] Import one exact GitHub commit through the server-side App broker without placing its token in the sandbox, model context, files or logs.
+- [x] Seal a recovery checkpoint before replacing the current workspace and record the checkout as a typed actor-private event.
+- [x] Raise checkpoint manifests to 10,000 editable source files while retaining the 500-file/8 MB reviewed change-delivery boundary.
+- [x] Add bounded source search plus exact-SHA update and deletion operations for Forge.
+- [x] Compare the current workspace against the imported baseline and deliver only added, modified or deleted files.
+
+Implementation evidence: migration 174 expands only the checkpoint source-file budget and adds `app_builder.repository.checked_out` to the typed event contract. GitHub archives are commit-fenced, size-bounded, path-inspected, link-rejected and extracted without owner or permission inheritance. Repository lifecycle scripts remain disabled during dependency installation, outbound sandbox access remains npm-registry-only, and source delivery continues to require checkpoint, verification, Sentinel and secret-scan receipts. Direct Vercel source upload remains intentionally limited to starter workspaces until repository commit deployment receives a separate provider contract.
+
+Exit gate: Forge can open OmniAgent's selected GitHub revision, find and change existing source, and propose a minimal reviewable pull request without general GitHub credentials.
+
 ## Scope recommendation
 
-Begin with new TypeScript web applications using one curated Next.js template and no arbitrary infrastructure creation. Do not start by allowing the in-app agent to modify Asael itself, create mobile binaries, provision databases, rotate secrets or deploy to production. Once the isolated new-app workflow has reliable build and verification receipts, repository import and broader stacks can be added deliberately.
+Continue with TypeScript/Node repositories that have a root `package.json`; retain the curated Next.js starter for new apps. Broader stacks, repository-commit preview deployment, scoped affected-file test commands and patch-first review can be added deliberately without widening credential or infrastructure authority.

@@ -11,12 +11,14 @@ import {
 } from "@/lib/app-services/projects";
 import {
   bindProjectBuilderRepositoryService,
+  checkoutProjectBuilderRepositoryService,
   createProjectBuilderService,
   createProjectBuilderCheckpointService,
   createProjectBuilderPreviewDeploymentService,
   deliverProjectBuilderPullRequestService,
   listProjectBuilderRepositoriesService,
   listProjectBuilderTreeService,
+  searchProjectBuilderFilesService,
   previewProjectBuilderProductionReleaseService,
   readProjectBuilderFileService,
   recordProjectBuilderSentinelReviewService,
@@ -29,6 +31,7 @@ import {
   showProjectBuilderVerificationService,
   showProjectBuilderService,
   stopProjectBuilderService,
+  deleteProjectBuilderFileService,
   updateProjectBuilderFileService,
 } from "@/lib/app-services/app-builder";
 import {
@@ -314,8 +317,10 @@ export async function executeFirstPartyAppTool(input: {
     "app.projects.builder.show": () => showProjectBuilderService(caller, input.toolInput as never),
     "app.projects.builder.create": () => createProjectBuilderService(caller, input.toolInput as never),
     "app.projects.builder.tree": () => listProjectBuilderTreeService(caller, input.toolInput as never),
+    "app.projects.builder.search": () => searchProjectBuilderFilesService(caller, input.toolInput as never),
     "app.projects.builder.file.read": () => readProjectBuilderFileService(caller, input.toolInput as never),
     "app.projects.builder.file.update": () => updateProjectBuilderFileService(caller, input.toolInput as never),
+    "app.projects.builder.file.delete": () => deleteProjectBuilderFileService(caller, input.toolInput as never),
     "app.projects.builder.command.run": () => runProjectBuilderCommandService(caller, input.toolInput as never),
     "app.projects.builder.checkpoint.create": () => createProjectBuilderCheckpointService(caller, input.toolInput as never),
     "app.projects.builder.checkpoint.restore": () => restoreProjectBuilderCheckpointService(caller, input.toolInput as never),
@@ -324,6 +329,7 @@ export async function executeFirstPartyAppTool(input: {
     "app.projects.builder.sentinel.record": () => recordProjectBuilderSentinelReviewService(caller, input.toolInput as never),
     "app.projects.builder.repositories.list": () => listProjectBuilderRepositoriesService(caller, input.toolInput as never),
     "app.projects.builder.repository.bind": () => bindProjectBuilderRepositoryService(caller, input.toolInput as never),
+    "app.projects.builder.repository.checkout": () => checkoutProjectBuilderRepositoryService(caller, input.toolInput as never),
     "app.projects.builder.delivery.create": () => deliverProjectBuilderPullRequestService(caller, input.toolInput as never),
     "app.projects.builder.deployment.preview": () => createProjectBuilderPreviewDeploymentService(caller, input.toolInput as never),
     "app.projects.builder.deployment.refresh": () => refreshProjectBuilderPreviewDeploymentService(caller, input.toolInput as never),

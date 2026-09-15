@@ -11,10 +11,13 @@ import {
   builderCheckpointCreateInputSchema,
   builderCheckpointRestoreInputSchema,
   builderFileReadInputSchema,
+  builderFileDeleteInputSchema,
   builderFileUpdateInputSchema,
   builderProjectInputSchema,
   builderRepositoryBindInputSchema,
+  builderRepositoryCheckoutInputSchema,
   builderRepositoryListInputSchema,
+  builderSearchInputSchema,
   builderDeliveryInputSchema,
   builderPreviewDeploymentInputSchema,
   builderPreviewDeploymentRefreshInputSchema,
@@ -31,13 +34,18 @@ import {
 import {
   createBuilderSandbox,
   createBuilderSandboxCheckpoint,
+  checkoutBuilderRepositoryArchive,
+  deleteBuilderFile,
   getBuilderPreviewUrl,
+  getBuilderRepositoryWorkspace,
   getBuilderWorkspaceManifest,
   listBuilderFiles,
   readBuilderFile,
+  readBuilderRepositoryChanges,
   readBuilderWorkspaceFiles,
   runBuilderCommand,
   restoreBuilderSandboxCheckpoint,
+  searchBuilderFiles,
   stopBuilderSandbox,
   updateBuilderFile,
 } from "@/lib/app-builder/sandbox";
@@ -55,6 +63,7 @@ import {
   recordBuilderCheckpoint,
   recordBuilderActivity,
   recordBuilderWorkspaceChange,
+  recordBuilderWorkspaceReplacement,
   recordBuilderVerification,
   setBuilderCurrentCheckpoint,
   transitionBuilderSession,
@@ -71,6 +80,7 @@ import {
 } from "@/lib/app-builder/delivery-store";
 import {
   deliverBuilderFilesToGithub,
+  downloadBuilderGithubRepositoryArchive,
   getBuilderGithubStatus,
   GitHubDeliveryPartialError,
   listBuilderGithubRepositories,
@@ -127,12 +137,15 @@ export async function showProjectBuilderService(
   const session = await getProjectBuilderSession(value.projectId, owner(caller));
   const github = getBuilderGithubStatus();
   const vercel = getBuilderVercelStatus();
-  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], deployments: [], releases: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
-  const [activity, checkpoints, verifications, repositoryBinding, deliveries, deployments, releases, previewUrl] = await Promise.all([
+  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, repositoryWorkspace: null, deliveries: [], deployments: [], releases: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
+  const [activity, checkpoints, verifications, repositoryBinding, repositoryWorkspace, deliveries, deployments, releases, previewUrl] = await Promise.all([
     listBuilderActivity(session.id, owner(caller)),
     listBuilderCheckpoints(session.id, owner(caller)),
     listBuilderVerifications(session.id, owner(caller)),
     getBuilderRepositoryBinding(session.id, owner(caller)),
+    session.status === "ready" || session.status === "running"
+      ? getBuilderRepositoryWorkspace(session.sandboxName).catch(() => null)
+      : Promise.resolve(null),
     listBuilderDeliveries(session.id, owner(caller)),
     listBuilderDeployments(session.id, owner(caller)),
     listBuilderReleases(session.id, owner(caller)),
@@ -152,6 +165,7 @@ export async function showProjectBuilderService(
     checkpoints: checkpoints.map(publicCheckpoint),
     verifications: verifications.map(publicVerification),
     repositoryBinding: repositoryBinding ? publicRepositoryBinding(repositoryBinding) : null,
+    repositoryWorkspace,
     deliveries: deliveries.map(publicDelivery),
     deployments: deployments.map(publicDeployment),
     releases: releases.map(publicRelease),
@@ -221,6 +235,14 @@ export async function readProjectBuilderFileService(caller: AppServiceCaller, in
   return completeAppServiceCall(authorized, { file });
 }
 
+export async function searchProjectBuilderFilesService(caller: AppServiceCaller, input: z.input<typeof builderSearchInputSchema>) {
+  const value = builderSearchInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.search"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const entries = await searchBuilderFiles({ sandboxName: session.sandboxName, query: value.query });
+  return completeAppServiceCall(authorized, { entries, query: value.query }, { resourceCount: entries.length });
+}
+
 export async function updateProjectBuilderFileService(caller: AppServiceCaller, input: z.input<typeof builderFileUpdateInputSchema>) {
   const value = builderFileUpdateInputSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.file.update"));
@@ -232,6 +254,19 @@ export async function updateProjectBuilderFileService(caller: AppServiceCaller, 
     detail: { path: result.path, previousSha256: result.previousSha256, sha256: result.sha256, size: result.size },
   });
   return completeAppServiceCall(authorized, { session: publicSession(current), update: result });
+}
+
+export async function deleteProjectBuilderFileService(caller: AppServiceCaller, input: z.input<typeof builderFileDeleteInputSchema>) {
+  const value = builderFileDeleteInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.file.delete"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const result = await deleteBuilderFile({ sandboxName: session.sandboxName, path: value.path, expectedSha256: value.expectedSha256 });
+  const current = await recordBuilderWorkspaceChange({
+    ...owner(caller), session,
+    eventKey: requireIdempotency(caller),
+    detail: { action: "delete", path: result.path, previousSha256: result.previousSha256 },
+  });
+  return completeAppServiceCall(authorized, { session: publicSession(current), deletion: result });
 }
 
 export async function runProjectBuilderCommandService(caller: AppServiceCaller, input: z.input<typeof builderCommandInputSchema>) {
@@ -607,6 +642,100 @@ export async function bindProjectBuilderRepositoryService(
   });
 }
 
+export async function checkoutProjectBuilderRepositoryService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderRepositoryCheckoutInputSchema>,
+) {
+  const value = builderRepositoryCheckoutInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.repository.checkout"));
+  let session = await requireSession(caller, value.projectId, value.sessionId);
+  assertExpectedSessionRevision(session, value.expectedSessionRevision);
+  const binding = await getBuilderRepositoryBindingById(
+    value.repositoryBindingId,
+    session.id,
+    owner(caller),
+  );
+  if (!binding || binding.revision !== value.expectedBindingRevision) {
+    throw new Error("The GitHub repository binding changed. Refresh it before checkout.");
+  }
+  const idempotencyKey = requireIdempotency(caller);
+  const recoveryKey = `${idempotencyKey}:before_repository_checkout`;
+  let recovery = await getBuilderCheckpointForIdempotency({
+    ...owner(caller), sessionId: session.id, idempotencyKey: recoveryKey,
+  });
+  if (!recovery) {
+    const captured = await createBuilderSandboxCheckpoint({
+      sandboxName: session.sandboxName,
+      tenantId: session.tenantId,
+      ownerActorId: session.ownerActorId,
+      projectId: session.projectId,
+      sessionId: session.id,
+    });
+    recovery = await recordBuilderCheckpoint({
+      ...owner(caller), session, idempotencyKey: recoveryKey,
+      providerSnapshotId: captured.providerSnapshotId,
+      workspaceSha256: captured.workspaceSha256,
+      fileCount: captured.fileCount,
+      snapshotBytes: captured.snapshotBytes,
+      reason: "before_restore",
+      label: `Before importing ${binding.repositoryFullName}`.slice(0, 120),
+      expiresAt: captured.expiresAt,
+    });
+  }
+  if (session.currentCheckpointId !== recovery.id) {
+    session = await setBuilderCurrentCheckpoint({
+      ...owner(caller), session, checkpoint: recovery,
+      eventType: "app_builder.checkpoint.created", eventKey: recoveryKey,
+    });
+  }
+  const source = await downloadBuilderGithubRepositoryArchive({
+    repository: {
+      repositoryId: binding.repositoryId,
+      owner: binding.repositoryOwner,
+      name: binding.repositoryName,
+    },
+    baseSha: binding.baseSha,
+  });
+  const checkedOut = await checkoutBuilderRepositoryArchive({
+    sandboxName: session.sandboxName,
+    repositoryId: binding.repositoryId,
+    repositoryFullName: binding.repositoryFullName,
+    baseSha: binding.baseSha,
+    archiveSha256: source.archiveSha256,
+    archive: source.archive,
+    previewIdentity: {
+      tenantId: session.tenantId,
+      ownerActorId: session.ownerActorId,
+      projectId: session.projectId,
+      sessionId: session.id,
+    },
+  });
+  const current = await recordBuilderWorkspaceReplacement({
+    ...owner(caller), session, eventKey: idempotencyKey,
+    detail: {
+      repositoryBindingId: binding.id,
+      repositoryId: binding.repositoryId,
+      repositoryFullName: binding.repositoryFullName,
+      defaultBranch: binding.defaultBranch,
+      baseSha: binding.baseSha,
+      archiveSha256: source.archiveSha256,
+      archiveByteCount: source.byteCount,
+      workspaceSha256: checkedOut.workspace.workspaceSha256,
+      fileCount: checkedOut.workspace.fileCount,
+      recoveryCheckpointId: recovery.id,
+      installExitCode: checkedOut.install.exitCode,
+      installDurationMs: checkedOut.install.durationMs,
+    },
+  });
+  return completeAppServiceCall(authorized, {
+    session: publicSession(current),
+    repositoryBinding: publicRepositoryBinding(binding),
+    repositoryWorkspace: checkedOut.workspace,
+    recoveryCheckpoint: publicCheckpoint(recovery),
+    previewUrl: checkedOut.previewUrl,
+  });
+}
+
 export async function deliverProjectBuilderPullRequestService(
   caller: AppServiceCaller,
   input: z.input<typeof builderDeliveryInputSchema>,
@@ -640,7 +769,16 @@ export async function deliverProjectBuilderPullRequestService(
   if (workspace.sha256 !== checkpoint.workspaceSha256) {
     throw new Error("The workspace changed after verification. Seal and verify the current revision again.");
   }
-  const files = await readBuilderWorkspaceFiles(session.sandboxName);
+  const repositoryWorkspace = await getBuilderRepositoryWorkspace(session.sandboxName);
+  const changes = repositoryWorkspace
+    ? await readBuilderRepositoryChanges({
+        sandboxName: session.sandboxName,
+        repositoryId: binding.repositoryId,
+        baseSha: binding.baseSha,
+      })
+    : (await readBuilderWorkspaceFiles(session.sandboxName)).map((file) => ({ kind: "upsert" as const, file }));
+  if (!changes.length) throw new Error("The checked-out repository has no changes to deliver.");
+  const files = changes.flatMap((change) => change.kind === "upsert" ? [change.file] : []);
   const scan = scanBuilderFilesForSecrets(files);
   await recordBuilderActivity({
     ...owner(caller), session,
@@ -694,7 +832,7 @@ export async function deliverProjectBuilderPullRequestService(
         secretScanSha256: scan.scanSha256,
       }),
       draft: value.draft,
-      files,
+      changes,
     });
     const delivery = await completeBuilderDelivery({
       ...owner(caller), delivery: claim.delivery,
@@ -770,6 +908,9 @@ export async function createProjectBuilderPreviewDeploymentService(
   const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
   if (workspace.sha256 !== checkpoint.workspaceSha256) {
     throw new Error("The workspace changed after verification. Seal and verify the current revision again.");
+  }
+  if (await getBuilderRepositoryWorkspace(session.sandboxName)) {
+    throw new Error("Repository-backed preview deployment must use its reviewed GitHub commit. Direct source upload remains limited to starter workspaces.");
   }
   let repositoryDelivery;
   if (value.repositoryDeliveryId) {
