@@ -40,6 +40,7 @@ import { listActorRetrievalOutcomeObservations } from "@/lib/runs/retrieval-outc
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { memoryTierSchema } from "@/lib/memory/tier-policy";
 import { getLatestScopedStreamEventAt } from "@/lib/events/store";
+import { getSemanticSummaryShadowStats } from "@/lib/threads/semantic-summary-store";
 
 const indexStateSchema = z.enum([
   "active",
@@ -142,6 +143,7 @@ export async function showMemoryIntelligenceService(
     lastMaintenanceAt,
     cognitionRecords,
     retrievalOutcomeSamples,
+    semanticShadowStats,
   ] = await Promise.all([
     readMemoryCatalog(caller, requestAccess, "durable"),
     listKnowledgeDocuments(5_000, {
@@ -187,6 +189,17 @@ export async function showMemoryIntelligenceService(
           eligibleRatedRunCount: 0,
           observations: [],
           invalidOrExcludedCount: 0,
+        }),
+    actorBinding
+      ? getSemanticSummaryShadowStats({
+          tenantId: caller.context.tenantId,
+          actorIds: actorBinding.readableOwnerActorIds.length
+            ? actorBinding.readableOwnerActorIds
+            : [caller.context.actorId],
+        })
+      : Promise.resolve({
+          currentEnrichmentCount: 0,
+          distinctThreadCount: 0,
         }),
   ]);
   const generatedAt = new Date().toISOString();
@@ -240,6 +253,7 @@ export async function showMemoryIntelligenceService(
     deletionBarriers,
     lastMaintenanceAt,
     qualityMetrics,
+    semanticShadowStats,
     generatedAt,
   });
   return completeAppServiceCall(authorized, { overview }, {
