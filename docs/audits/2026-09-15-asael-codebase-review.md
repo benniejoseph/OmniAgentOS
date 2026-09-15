@@ -187,7 +187,9 @@ Computer Use gateway remain healthy and required no rebuild.
 1. Memory: the fail-closed offline activation scorer now exists, but a qualifying
    human-reviewed production-shadow sample must still pass before semantic prompt
    serving; outcome-weighted ranking, paraphrase/conflict classification, and
-   automatic Mnemosyne execution remain separately gated.
+   automatic Mnemosyne execution remain separately gated. The Memory UI now shows
+   episode/thread progress; Supabase table statistics currently estimate zero
+   stored semantic episode enrichments.
 2. Trading: transcript-authoritative ICT ontology and promotions, false-positive
    review, asynchronous deterministic backtesting, consensus/surprise and regime
    conditioning, statistically defensible calibration, deeper XAU/USD history,
@@ -216,6 +218,9 @@ Computer Use gateway remain healthy and required no rebuild.
 - Semantic memory activation gate: 4 focused scoring, undersampling, quality,
   leakage, latency, replay, and tamper checks passed; this operator-only harness
   does not change production runtime policy and was not deployed separately.
+- Semantic shadow observability: 20 focused store, overview, and activation-gate
+  checks passed before deployment; anonymous production access remains 401 with
+  private/no-store caching.
 - Changed-file lint, TypeScript, and diff validation passed for the deployed
   retention, App Builder, and session-cache changes; no full suite or broad audit
   was run.
