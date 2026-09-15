@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   RunBudgetExceededError,
+  budgetPerRemainingModelTurn,
   createRunBudgetState,
   isBrowserActionTool,
   narrowRunBudgetLimits,
@@ -72,5 +73,27 @@ describe("complete run budgets", () => {
     expect(isBrowserActionTool({ id: "browser.click" })).toBe(true);
     expect(isBrowserActionTool({ id: "mcp:playwright:browser_fill_form" })).toBe(true);
     expect(isBrowserActionTool({ id: "web.search", category: "web" })).toBe(false);
+  });
+
+  it("keeps every model turn inside the run budget after fixed context costs", () => {
+    let state = createRunBudgetState({
+      ...limits,
+      modelTurns: 7,
+      tokens: 64_000,
+      costMicrousd: 2_500_000,
+    });
+    state = reserveRunBudget(state, { tokens: 4_096, costMicrousd: 1_000 });
+
+    for (let turn = 0; turn < 7; turn += 1) {
+      state = reserveRunBudget(state, {
+        modelTurns: 1,
+        tokens: budgetPerRemainingModelTurn(state, "tokens"),
+        costMicrousd: budgetPerRemainingModelTurn(state, "costMicrousd"),
+      });
+    }
+
+    expect(state.used.modelTurns).toBe(7);
+    expect(state.used.tokens).toBe(64_000);
+    expect(state.used.costMicrousd).toBe(2_500_000);
   });
 });
