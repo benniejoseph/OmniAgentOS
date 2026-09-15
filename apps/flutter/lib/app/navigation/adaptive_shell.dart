@@ -10,9 +10,21 @@ class AdaptiveShell extends StatelessWidget {
 
   final StatefulNavigationShell navigationShell;
 
-  // Mirrors the web app's five-item everyday loop.
-  static const _everydayBranches = [0, 1, 2, 3, 9];
-  static const _reviewBranches = [4, 5, 6, 7, 8];
+  // Derive branch positions from destination metadata so adding a workspace
+  // cannot silently break the phone dock or attention shortcut.
+  static final _everydayBranches = destinationIndices(primary: true);
+  static final _workspaceBranches = destinationIndices(
+    group: AppDestinationGroup.workspace,
+  );
+  static final _automationBranches = destinationIndices(
+    group: AppDestinationGroup.automation,
+  );
+  static final _reviewBranches = destinationIndices(
+    group: AppDestinationGroup.review,
+  );
+  static final _systemBranches = destinationIndices(
+    group: AppDestinationGroup.system,
+  );
 
   void _select(int index) => navigationShell.goBranch(
     index,
@@ -82,7 +94,7 @@ class AdaptiveShell extends StatelessWidget {
         actions: [
           IconButton(
             tooltip: 'Attention inbox',
-            onPressed: () => _select(7),
+            onPressed: () => _select(destinationIndex('/inbox')),
             icon: const Icon(Icons.notifications_none_rounded, size: 21),
           ),
           const SizedBox(width: 4),
@@ -102,85 +114,129 @@ class AdaptiveShell extends StatelessWidget {
   }
 
   Widget _wide(BuildContext context, double width) {
-    final extended = width >= 1180;
+    final extended = width >= 1120;
     return Scaffold(
       body: Row(
         children: [
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surface
-                  .withValues(alpha: .95),
-              border: Border(
-                right: BorderSide(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-              ),
-            ),
-            child: SafeArea(
-              child: NavigationRail(
-                selectedIndex: navigationShell.currentIndex,
-                onDestinationSelected: _select,
-                extended: extended,
-                leading: Padding(
-                  padding: const EdgeInsets.only(top: 14, bottom: 22),
-                  child: _BrandMark(extended: extended),
-                ),
-                trailing: Expanded(
-                  child: Align(
-                    alignment: Alignment.bottomCenter,
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 16),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (extended)
-                            FilledButton.tonalIcon(
-                              onPressed: () => context.push('/devices'),
-                              icon: const Icon(Icons.devices_rounded),
-                              label: const Text('Devices & security'),
-                            )
-                          else
-                            IconButton.filledTonal(
-                              tooltip: 'Devices & security',
-                              onPressed: () => context.push('/devices'),
-                              icon: const Icon(Icons.devices_rounded),
-                            ),
-                          const SizedBox(height: 8),
-                          if (extended)
-                            FilledButton.tonalIcon(
-                              onPressed: () => context.push('/administration'),
-                              icon: const Icon(
-                                Icons.admin_panel_settings_outlined,
-                              ),
-                              label: const Text('Control plane'),
-                            )
-                          else
-                            IconButton.filledTonal(
-                              tooltip: 'Control plane',
-                              onPressed: () => context.push('/administration'),
-                              icon: const Icon(
-                                Icons.admin_panel_settings_outlined,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                destinations: appDestinations
-                    .map(
-                      (item) => NavigationRailDestination(
-                        icon: Icon(item.icon),
-                        selectedIcon: Icon(item.selectedIcon),
-                        label: Text(item.label),
-                      ),
-                    )
-                    .toList(),
-              ),
-            ),
+          _DesktopSidebar(
+            extended: extended,
+            currentIndex: navigationShell.currentIndex,
+            onSelect: _select,
           ),
           Expanded(child: DaybookBackdrop(child: navigationShell)),
         ],
+      ),
+    );
+  }
+}
+
+class _DesktopSidebar extends StatelessWidget {
+  const _DesktopSidebar({
+    required this.extended,
+    required this.currentIndex,
+    required this.onSelect,
+  });
+
+  final bool extended;
+  final int currentIndex;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+      width: extended ? 244 : 76,
+      decoration: BoxDecoration(
+        color: scheme.surface.withValues(alpha: .95),
+        border: Border(right: BorderSide(color: scheme.outlineVariant)),
+      ),
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: EdgeInsets.fromLTRB(extended ? 18 : 12, 14, 12, 16),
+              child: _BrandMark(extended: extended),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: extended
+                  ? ListView(
+                      padding: const EdgeInsets.fromLTRB(10, 14, 10, 20),
+                      children: [
+                        _DrawerGroup(
+                          label: 'Workspace',
+                          indices: AdaptiveShell._workspaceBranches,
+                          currentIndex: currentIndex,
+                          onSelect: onSelect,
+                        ),
+                        const SizedBox(height: 16),
+                        _DrawerGroup(
+                          label: 'Automation',
+                          indices: AdaptiveShell._automationBranches,
+                          currentIndex: currentIndex,
+                          onSelect: onSelect,
+                        ),
+                        const SizedBox(height: 16),
+                        _DrawerGroup(
+                          label: 'Review',
+                          indices: AdaptiveShell._reviewBranches,
+                          currentIndex: currentIndex,
+                          onSelect: onSelect,
+                        ),
+                        const SizedBox(height: 16),
+                        _DrawerGroup(
+                          label: 'System',
+                          indices: AdaptiveShell._systemBranches,
+                          currentIndex: currentIndex,
+                          onSelect: onSelect,
+                        ),
+                      ],
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      itemCount: appDestinations.length,
+                      itemBuilder: (context, index) {
+                        final destination = appDestinations[index];
+                        final selected = currentIndex == index;
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 2,
+                          ),
+                          child: Tooltip(
+                            message: destination.label,
+                            child: IconButton(
+                              isSelected: selected,
+                              style: IconButton.styleFrom(
+                                foregroundColor: selected
+                                    ? scheme.primary
+                                    : scheme.onSurfaceVariant,
+                                backgroundColor: selected
+                                    ? scheme.primary.withValues(alpha: .12)
+                                    : Colors.transparent,
+                              ),
+                              onPressed: () => onSelect(index),
+                              icon: Icon(destination.icon),
+                              selectedIcon: Icon(destination.selectedIcon),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: IconButton(
+                tooltip: 'Devices & security',
+                onPressed: () => context.push('/devices'),
+                icon: const Icon(Icons.devices_rounded),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -339,21 +395,35 @@ class _WorkspaceDrawer extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(10, 12, 10, 20),
                 children: [
                   _DrawerGroup(
-                    label: 'Everyday',
-                    indices: AdaptiveShell._everydayBranches,
+                    label: 'Workspace',
+                    indices: AdaptiveShell._workspaceBranches,
                     currentIndex: currentIndex,
                     onSelect: (index) => _select(context, index),
                   ),
                   const SizedBox(height: 16),
                   _DrawerGroup(
-                    label: 'Plan and review',
+                    label: 'Automation',
+                    indices: AdaptiveShell._automationBranches,
+                    currentIndex: currentIndex,
+                    onSelect: (index) => _select(context, index),
+                  ),
+                  const SizedBox(height: 16),
+                  _DrawerGroup(
+                    label: 'Review',
                     indices: AdaptiveShell._reviewBranches,
                     currentIndex: currentIndex,
                     onSelect: (index) => _select(context, index),
                   ),
-                  const SizedBox(height: 18),
-                  const Divider(),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 16),
+                  _DrawerGroup(
+                    label: 'System',
+                    indices: AdaptiveShell._systemBranches,
+                    currentIndex: currentIndex,
+                    onSelect: (index) => _select(context, index),
+                  ),
+                  const SizedBox(height: 14),
+                  const Divider(height: 1),
+                  const SizedBox(height: 8),
                   _UtilityTile(
                     icon: Icons.devices_rounded,
                     label: 'Devices & security',
@@ -361,15 +431,6 @@ class _WorkspaceDrawer extends StatelessWidget {
                     onTap: () {
                       Navigator.pop(context);
                       context.push('/devices');
-                    },
-                  ),
-                  _UtilityTile(
-                    icon: Icons.admin_panel_settings_outlined,
-                    label: 'Control plane',
-                    description: 'Automation, tools, quality, and settings',
-                    onTap: () {
-                      Navigator.pop(context);
-                      context.push('/administration');
                     },
                   ),
                 ],

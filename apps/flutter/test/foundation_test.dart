@@ -44,7 +44,7 @@ void main() {
 
     expect(find.text('Today'), findsOneWidget);
     expect(
-      find.text('Live priorities, briefings, and system pulse.'),
+      find.text('Your work, decisions, and recent results.'),
       findsOneWidget,
     );
     expect(find.byType(Card), findsOneWidget);
