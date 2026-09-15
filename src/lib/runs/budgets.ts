@@ -175,6 +175,25 @@ export function remainingRunBudget(
   ) as RunBudgetCountersV1;
 }
 
+/**
+ * Allocate one model turn from the budget that remains after fixed run costs
+ * such as context compilation. Recomputing the share for every turn prevents
+ * those fixed costs from making the final otherwise-authorized turn exceed the
+ * run-wide token or cost limit.
+ */
+export function budgetPerRemainingModelTurn(
+  state: RunBudgetStateV1,
+  dimension: "tokens" | "costMicrousd",
+  now = Date.now(),
+) {
+  const remaining = remainingRunBudget(state, now);
+  if (remaining.modelTurns <= 0 || remaining[dimension] <= 0) return 1;
+  return Math.max(
+    1,
+    Math.floor(remaining[dimension] / remaining.modelTurns),
+  );
+}
+
 export function isBrowserActionTool(input: {
   id?: string;
   name?: string;

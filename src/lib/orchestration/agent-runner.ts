@@ -133,6 +133,7 @@ import {
 import {
   DEFAULT_AGENT_RUN_BUDGET_LIMITS,
   RunBudgetExceededError,
+  budgetPerRemainingModelTurn,
   createRunBudgetState,
   isBrowserActionTool,
   remainingRunBudget,
@@ -2821,12 +2822,8 @@ function reserveAgentModelTurn(
   return {
     state: reserveRunBudget(state, {
       modelTurns: 1,
-      tokens: Math.max(1, Math.floor(
-        state.limits.tokens / Math.max(1, state.limits.modelTurns),
-      )),
-      costMicrousd: Math.max(1, Math.floor(
-        state.limits.costMicrousd / Math.max(1, state.limits.modelTurns),
-      )),
+      tokens: budgetPerRemainingModelTurn(state, "tokens"),
+      costMicrousd: budgetPerRemainingModelTurn(state, "costMicrousd"),
       retries: retrySlots,
     }),
     maxAttempts: 1 + retrySlots,
