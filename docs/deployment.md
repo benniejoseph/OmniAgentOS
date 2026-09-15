@@ -39,7 +39,7 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION` and `OMNIAGENT_NATIVE_MIN_IOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed release inputs under `public/native-contracts/v3` and `public/native-contracts/v4`; v1-v2 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v3 document hashes drift. Keep v4 current and v3 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
+Native contract artifacts are committed release inputs under `public/native-contracts/v5` and `public/native-contracts/v6`; v1-v4 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v5 document hashes drift. Keep v6 current and v5 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
 
 ### Licensed TradingView chart assets
 
