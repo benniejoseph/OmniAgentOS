@@ -128,7 +128,9 @@ export async function listBuilderFiles(sandboxName: string): Promise<AppBuilderT
   const rows = (await result.stdout()).split("\n").filter(Boolean).slice(0, 500).map((line) => {
     const [relativePath, rawSize] = line.split("\t");
     return { path: safeBuilderRelativePath(relativePath || ""), kind: "file" as const, size: Number(rawSize) || 0 };
-  }).filter((entry) => entry.path !== "next-env.d.ts");
+  }).filter((entry) =>
+    entry.path !== "next-env.d.ts" && !entry.path.endsWith(".tsbuildinfo")
+  );
   const directories = new Set<string>();
   for (const row of rows) {
     const pieces = row.path.split("/");
@@ -288,6 +290,7 @@ async function builderWorkspaceManifest(sandbox: Sandbox) {
       "-not", "-path", "./node_modules/*",
       "-not", "-path", "./.next/*",
       "-not", "-path", "./next-env.d.ts",
+      "-not", "-name", "*.tsbuildinfo",
       "-exec", "sha256sum", "{}", "+",
     ],
     cwd: APP_BUILDER_ROOT,
