@@ -245,7 +245,7 @@ describe("project App Builder boundary", () => {
     expect(deploymentUrlRepair).toContain("[.]vercel[.]app");
     expect(deploymentUrlRepair).toContain("omni_app_builder_deployments_row_check");
     expect(deploymentUrlRepair).toContain("omni_app_builder_releases_row_check");
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 174)).toEqual({
       version: 174,
       name: "app_builder_repository_workspaces_v1",
       checksum: "30f4769a6fcccd41aa457882b6be2752583d7d5920be75597e3b2121e91604d0",
