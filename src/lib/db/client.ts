@@ -10,6 +10,7 @@ import { CUSTOMER_HEALTH_SCORING_SCHEMA_SQL } from "@/lib/db/customer-health-sch
 import { CUSTOMER_SUCCESS_WORKFLOW_SCHEMA_SQL } from "@/lib/db/customer-success-workflow-schema";
 import { COHESIVE_TODAY_PREFERENCES_SCHEMA_SQL } from "@/lib/db/cohesive-today-schema";
 import { PERSONAL_CONTEXT_CONSENT_SCHEMA_SQL } from "@/lib/db/personal-context-consent-schema";
+import { APP_BUILDER_PRODUCTION_RELEASE_SCHEMA_SQL } from "@/lib/db/app-builder-production-release-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -194,6 +195,7 @@ export const tenantRootPolicyTables = [
   "omni_app_builder_repository_bindings",
   "omni_app_builder_deliveries",
   "omni_app_builder_deployments",
+  "omni_app_builder_releases",
   "omni_app_builder_events",
   "omni_work_projects",
   "omni_work_project_memberships",
@@ -1531,6 +1533,14 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[170],
       up: ensureAppBuilderPreviewDeploymentsV1,
+    },
+    {
+      ...databaseSchemaMigrations[171],
+      up: ensureAppBuilderProductionReleasesV1,
+    },
+    {
+      ...databaseSchemaMigrations[172],
+      up: ensureAppBuilderDeploymentUrlConstraintRepairV1,
     },
   ];
 }
@@ -19918,6 +19928,23 @@ async function ensureAppBuilderPreviewDeploymentsV1(sql: SqlClient) {
     END
     $verify$
   `;
+}
+
+async function ensureAppBuilderProductionReleasesV1(sql: SqlClient) {
+  await sql.query(APP_BUILDER_PRODUCTION_RELEASE_SCHEMA_SQL);
+}
+
+async function ensureAppBuilderDeploymentUrlConstraintRepairV1(sql: SqlClient) {
+  await sql.query(`
+    DO $verify$
+    BEGIN
+      IF NOT ('https://asael-app-1234567890abcdef.vercel.app/' ~ '^https://[a-z0-9][a-z0-9-]*[a-z0-9][.]vercel[.]app/$')
+        OR 'https://asael-app-1234567890abcdefXvercelYapp/' ~ '^https://[a-z0-9][a-z0-9-]*[a-z0-9][.]vercel[.]app/$' THEN
+        RAISE EXCEPTION 'App Builder deployment URL constraint repair is invalid' USING ERRCODE = '55000';
+      END IF;
+    END
+    $verify$
+  `);
 }
 
 async function ensureKnowledgeCognificationCandidatesV1(sql: SqlClient) {

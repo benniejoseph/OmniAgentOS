@@ -18,6 +18,9 @@ import {
   builderDeliveryInputSchema,
   builderPreviewDeploymentInputSchema,
   builderPreviewDeploymentRefreshInputSchema,
+  builderProductionReleaseInputSchema,
+  builderProductionReleasePreviewInputSchema,
+  builderProductionReleaseRefreshInputSchema,
   builderSentinelReviewInputSchema,
   builderSessionCreateInputSchema,
   builderSessionStopInputSchema,
@@ -89,12 +92,25 @@ import {
   getBuilderVercelLogEvidence,
   getBuilderVercelStatus,
   runBuilderVercelRouteSmokes,
+  createBuilderVercelProduction,
+  getBuilderVercelProductionDeployment,
 } from "@/lib/app-builder/vercel";
+import {
+  beginBuilderReleaseReview,
+  claimBuilderProductionRelease,
+  expireBuilderRelease,
+  failBuilderRelease,
+  getBuilderRelease,
+  listBuilderReleases,
+  queueBuilderProductionRelease,
+  updateBuilderReleaseEvidence,
+} from "@/lib/app-builder/release-store";
 import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { captureBuilderBrowserEvidence } from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
+import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
 export async function showProjectBuilderService(
   caller: AppServiceCaller,
@@ -106,14 +122,15 @@ export async function showProjectBuilderService(
   const session = await getProjectBuilderSession(value.projectId, owner(caller));
   const github = getBuilderGithubStatus();
   const vercel = getBuilderVercelStatus();
-  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], deployments: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
-  const [activity, checkpoints, verifications, repositoryBinding, deliveries, deployments, previewUrl] = await Promise.all([
+  if (!session) return completeAppServiceCall(authorized, { session: null, activity: [], checkpoints: [], verifications: [], repositoryBinding: null, deliveries: [], deployments: [], releases: [], github, vercel, previewUrl: null }, { resourceCount: 0 });
+  const [activity, checkpoints, verifications, repositoryBinding, deliveries, deployments, releases, previewUrl] = await Promise.all([
     listBuilderActivity(session.id, owner(caller)),
     listBuilderCheckpoints(session.id, owner(caller)),
     listBuilderVerifications(session.id, owner(caller)),
     getBuilderRepositoryBinding(session.id, owner(caller)),
     listBuilderDeliveries(session.id, owner(caller)),
     listBuilderDeployments(session.id, owner(caller)),
+    listBuilderReleases(session.id, owner(caller)),
     session.status === "ready" || session.status === "running"
       ? getBuilderPreviewUrl({
           sandboxName: session.sandboxName,
@@ -132,6 +149,7 @@ export async function showProjectBuilderService(
     repositoryBinding: repositoryBinding ? publicRepositoryBinding(repositoryBinding) : null,
     deliveries: deliveries.map(publicDelivery),
     deployments: deployments.map(publicDeployment),
+    releases: releases.map(publicRelease),
     github,
     vercel,
     previewUrl,
@@ -954,6 +972,262 @@ export async function refreshProjectBuilderPreviewDeploymentService(
   return completeAppServiceCall(authorized, { deployment: publicDeployment(current), changed: true });
 }
 
+export async function previewProjectBuilderProductionReleaseService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderProductionReleasePreviewInputSchema>,
+) {
+  const value = builderProductionReleasePreviewInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.release.preview"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  const deployment = await getBuilderDeployment(value.deploymentId, session.id, owner(caller));
+  if (
+    !deployment || deployment.status !== "ready" ||
+    !deployment.providerDeploymentId || !deployment.providerProjectId
+  ) {
+    throw new Error("Production review requires an exact preview with complete build, route, and visual evidence.");
+  }
+  const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
+  if (workspace.sha256 !== deployment.workspaceSha256) {
+    throw new Error("The build workspace changed after this preview. Restore its checkpoint before preparing production review.");
+  }
+  const files = await readBuilderWorkspaceFiles(session.sandboxName);
+  const migrationFiles = files.filter((file) => /(^|\/)(?:supabase\/migrations|prisma\/migrations|drizzle|migrations)(?:\/|$)/i.test(file.path));
+  const migrationEvidence = {
+    status: migrationFiles.length ? "declared" as const : "not_declared" as const,
+    fileCount: migrationFiles.length,
+    manifestSha256: createHash("sha256")
+      .update(migrationFiles.map((file) => `${file.path}\0${file.sha256}`).join("\n"))
+      .digest("hex"),
+  };
+  const currentProduction = await getBuilderVercelProductionDeployment(deployment.providerProjectId);
+  const rollbackEvidence = currentProduction
+    ? { status: "available" as const, providerDeploymentId: currentProduction.deploymentId, deploymentUrl: currentProduction.url }
+    : { status: "first_release" as const };
+  const previewEvidenceSha256 = canonicalJsonSha256({
+    deploymentId: deployment.id,
+    providerDeploymentId: deployment.providerDeploymentId,
+    workspaceSha256: deployment.workspaceSha256,
+    fileManifestSha256: deployment.fileManifestSha256,
+    secretScanSha256: deployment.secretScanSha256,
+    logs: deployment.logs,
+    routeEvidence: deployment.routeEvidence,
+    browserEvidence: deployment.browserEvidence,
+  });
+  const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+  const review = await beginBuilderReleaseReview({
+    ...owner(caller),
+    projectId: session.projectId,
+    sessionId: session.id,
+    deploymentId: deployment.id,
+    previewProviderDeploymentId: deployment.providerDeploymentId,
+    workspaceSha256: deployment.workspaceSha256,
+    previewEvidenceSha256,
+    migrationEvidence,
+    rollbackEvidence,
+    expiresAt,
+    idempotencyKey: requireIdempotency(caller),
+  });
+  if (review.created) {
+    await recordBuilderActivity({
+      ...owner(caller), session,
+      eventType: "app_builder.release.review_prepared",
+      eventKey: requireIdempotency(caller),
+      detail: {
+        releaseId: review.release.id,
+        deploymentId: deployment.id,
+        previewProviderDeploymentId: deployment.providerDeploymentId,
+        workspaceSha256: deployment.workspaceSha256,
+        previewEvidenceSha256,
+        releaseDigest: review.release.releaseDigest,
+        migrationStatus: migrationEvidence.status,
+        migrationFileCount: migrationEvidence.fileCount,
+        migrationManifestSha256: migrationEvidence.manifestSha256,
+        rollbackStatus: rollbackEvidence.status,
+        rollbackProviderDeploymentId: rollbackEvidence.status === "available" ? rollbackEvidence.providerDeploymentId : undefined,
+        expiresAt,
+      },
+    });
+  }
+  return completeAppServiceCall(authorized, { release: publicRelease(review.release), created: review.created });
+}
+
+export async function releaseProjectBuilderProductionService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderProductionReleaseInputSchema>,
+) {
+  const value = builderProductionReleaseInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.release.production"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  let release = await getBuilderRelease(value.releaseId, session.id, owner(caller));
+  if (!release) throw new Error("The production release review was not found.");
+  if (Date.parse(release.expiresAt) <= Date.now() && release.status === "review_pending") {
+    release = await expireBuilderRelease({ ...owner(caller), release });
+  }
+  const resumableClaim = release.status === "releasing" && !release.providerDeploymentId;
+  if ((!resumableClaim && release.status !== "review_pending") || release.releaseDigest !== value.releaseDigest) {
+    throw new Error("The production release review changed or expired. Prepare a fresh review before releasing.");
+  }
+  if (release.migrationEvidence.status !== "not_declared") {
+    throw new Error("Production release is blocked because this starter declares database migrations without an approved migration and rollback workflow.");
+  }
+  const deployment = await getBuilderDeployment(release.deploymentId, session.id, owner(caller));
+  if (
+    !deployment || deployment.status !== "ready" ||
+    deployment.providerDeploymentId !== release.previewProviderDeploymentId ||
+    deployment.workspaceSha256 !== release.workspaceSha256
+  ) {
+    throw new Error("The reviewed preview evidence no longer matches the production release candidate.");
+  }
+  const claimed = await claimBuilderProductionRelease({
+    ...owner(caller), release, releaseDigest: value.releaseDigest,
+  });
+  try {
+    const production = await createBuilderVercelProduction({
+      releaseReceiptId: claimed.id,
+      projectName: builderVercelProjectName(session.tenantId, session.ownerActorId, session.projectId),
+      previewDeploymentId: claimed.previewProviderDeploymentId,
+      workspaceSha256: claimed.workspaceSha256,
+    });
+    const queued = await queueBuilderProductionRelease({
+      ...owner(caller), release: claimed,
+      providerProjectId: production.projectId,
+      providerDeploymentId: production.deploymentId,
+      providerState: production.state,
+      deploymentUrl: production.url,
+    });
+    await recordBuilderActivity({
+      ...owner(caller), session,
+      eventType: "app_builder.release.production_queued",
+      eventKey: requireIdempotency(caller),
+      detail: {
+        releaseId: queued.id,
+        deploymentId: queued.deploymentId,
+        previewProviderDeploymentId: queued.previewProviderDeploymentId,
+        productionProviderDeploymentId: queued.providerDeploymentId,
+        workspaceSha256: queued.workspaceSha256,
+        previewEvidenceSha256: queued.previewEvidenceSha256,
+        releaseDigest: queued.releaseDigest,
+        rollbackStatus: queued.rollbackEvidence.status,
+        rollbackProviderDeploymentId: queued.rollbackEvidence.providerDeploymentId,
+      },
+    });
+    return completeAppServiceCall(authorized, { release: publicRelease(queued), created: true });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Vercel rejected the deployment operation")) {
+      const failed = await failBuilderRelease({ ...owner(caller), release: claimed, error });
+      await recordBuilderActivity({
+        ...owner(caller), session,
+        eventType: "app_builder.release.production_failed",
+        eventKey: requireIdempotency(caller),
+        detail: {
+          releaseId: failed.id,
+          deploymentId: failed.deploymentId,
+          workspaceSha256: failed.workspaceSha256,
+          failureCode: failed.failureCode,
+        },
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+export async function refreshProjectBuilderProductionReleaseService(
+  caller: AppServiceCaller,
+  input: z.input<typeof builderProductionReleaseRefreshInputSchema>,
+) {
+  const value = builderProductionReleaseRefreshInputSchema.parse(input);
+  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.projects.builder.release.refresh"));
+  const session = await requireSession(caller, value.projectId, value.sessionId);
+  let release = await getBuilderRelease(value.releaseId, session.id, owner(caller));
+  if (!release) throw new Error("The selected production release was not found.");
+  if (release.status === "review_pending" && Date.parse(release.expiresAt) <= Date.now()) {
+    release = await expireBuilderRelease({ ...owner(caller), release });
+  }
+  if (new Set(["review_pending", "healthy", "failed", "expired"]).has(release.status)) {
+    return completeAppServiceCall(authorized, { release: publicRelease(release), changed: false });
+  }
+  if (!release.providerDeploymentId || !release.deploymentUrl) {
+    return completeAppServiceCall(authorized, { release: publicRelease(release), changed: false });
+  }
+  const provider = await getBuilderVercelDeployment(release.providerDeploymentId);
+  if (provider.deploymentId !== release.providerDeploymentId || provider.projectId !== release.providerProjectId) {
+    throw new Error("Vercel returned a deployment outside the recorded production identity.");
+  }
+  const state = provider.state.toUpperCase();
+  if (state === "ERROR" || state === "CANCELED" || state.endsWith("_ERROR")) {
+    const failed = await failBuilderRelease({
+      ...owner(caller), release, providerState: state,
+      error: new Error(`Vercel production deployment entered terminal state ${state}.`),
+    });
+    await recordBuilderActivity({
+      ...owner(caller), session,
+      eventType: "app_builder.release.production_failed",
+      eventKey: requireIdempotency(caller),
+      detail: {
+        releaseId: failed.id,
+        productionProviderDeploymentId: failed.providerDeploymentId,
+        providerState: state,
+        workspaceSha256: failed.workspaceSha256,
+        failureCode: failed.failureCode,
+      },
+    });
+    return completeAppServiceCall(authorized, { release: publicRelease(failed), changed: true });
+  }
+  if (state !== "READY") {
+    const logs = state === "BUILDING"
+      ? await getBuilderVercelLogEvidence(release.providerDeploymentId)
+      : release.logs;
+    const current = await updateBuilderReleaseEvidence({
+      ...owner(caller), release, status: "building", providerState: state, logs,
+    });
+    return completeAppServiceCall(authorized, { release: publicRelease(current), changed: true });
+  }
+  const sourceDeployment = await getBuilderDeployment(release.deploymentId, session.id, owner(caller));
+  if (!sourceDeployment) throw new Error("The reviewed preview receipt is missing from this release.");
+  const [logs, routeEvidence, browserEvidence] = await Promise.all([
+    getBuilderVercelLogEvidence(release.providerDeploymentId),
+    runBuilderVercelRouteSmokes(release.deploymentUrl, sourceDeployment.smokeRoutes),
+    captureBuilderBrowserEvidence({
+      tenantId: session.tenantId,
+      actorId: session.ownerActorId,
+      executionId: `app-builder-release:${release.id}`,
+      previewUrl: release.deploymentUrl,
+    }),
+  ]);
+  const status = logs.status === "captured" && routeEvidence.status === "passed" && browserEvidence.status === "captured"
+    ? "healthy" as const
+    : "incomplete" as const;
+  const current = await updateBuilderReleaseEvidence({
+    ...owner(caller), release, status, providerState: state,
+    logs, routeEvidence, browserEvidence,
+  });
+  await recordBuilderActivity({
+    ...owner(caller), session,
+    eventType: status === "healthy"
+      ? "app_builder.release.production_healthy"
+      : "app_builder.release.production_incomplete",
+    eventKey: requireIdempotency(caller),
+    detail: {
+      releaseId: current.id,
+      productionProviderDeploymentId: current.providerDeploymentId,
+      workspaceSha256: current.workspaceSha256,
+      previewEvidenceSha256: current.previewEvidenceSha256,
+      releaseDigest: current.releaseDigest,
+      deploymentUrl: current.deploymentUrl,
+      logsStatus: logs.status,
+      logsSha256: logs.sha256,
+      logEventCount: logs.eventCount,
+      routeStatus: routeEvidence.status,
+      routeCount: routeEvidence.routes.length,
+      browserStatus: browserEvidence.status,
+      captureCount: browserEvidence.captures.length,
+      rollbackStatus: current.rollbackEvidence.status,
+      rollbackProviderDeploymentId: current.rollbackEvidence.providerDeploymentId,
+    },
+  });
+  return completeAppServiceCall(authorized, { release: publicRelease(current), changed: true });
+}
+
 async function requireSession(caller: AppServiceCaller, projectId: string, sessionId: string) {
   await requireProject(caller, projectId);
   const session = await getBuilderSession(sessionId, projectId, owner(caller));
@@ -1038,6 +1312,11 @@ function publicDelivery<T extends { tenantId: string; ownerActorId: string }>(de
 
 function publicDeployment<T extends { tenantId: string; ownerActorId: string }>(deployment: T) {
   const { tenantId: _tenantId, ownerActorId: _ownerActorId, ...safe } = deployment;
+  return safe;
+}
+
+function publicRelease<T extends { tenantId: string; ownerActorId: string }>(release: T) {
+  const { tenantId: _tenantId, ownerActorId: _ownerActorId, ...safe } = release;
   return safe;
 }
 

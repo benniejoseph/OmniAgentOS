@@ -407,6 +407,15 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   mutationTool("app.projects.builder.deployment.refresh", "Verify app preview", "Refresh one exact Vercel preview and record bounded build-log, route-smoke, and desktop/mobile visual evidence without changing production.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, deploymentId: { type: "string", pattern: "^app_build_deployment_[a-f0-9]{48}$" },
   }, ["projectId", "sessionId", "deploymentId"]), { riskLevel: 1, approvalRequired: false, reversible: false }),
+  mutationTool("app.projects.builder.release.preview", "Prepare production review", "Create a short-lived digest-bound production review from one fully verified preview. The receipt declares migration posture and the exact rollback deployment without changing production.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, deploymentId: { type: "string", pattern: "^app_build_deployment_[a-f0-9]{48}$" },
+  }, ["projectId", "sessionId", "deploymentId"]), { riskLevel: 1, approvalRequired: false, reversible: false }),
+  mutationTool("app.projects.builder.release.production", "Release app to production", "Promote one exact reviewed preview to production. Requires an unexpired release digest, explicit RELEASE confirmation, and human approval; declared database migrations remain blocked.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, releaseId: { type: "string", pattern: "^app_build_release_[a-f0-9]{48}$" }, releaseDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, confirmation: { type: "string", enum: ["RELEASE"] },
+  }, ["projectId", "sessionId", "releaseId", "releaseDigest", "confirmation"]), { riskLevel: 3, approvalRequired: true, reversible: false }),
+  mutationTool("app.projects.builder.release.refresh", "Verify production release", "Refresh the exact production deployment and append bounded build-log, route-smoke, and desktop/mobile health evidence.", requiredObjectSchema({
+    projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, releaseId: { type: "string", pattern: "^app_build_release_[a-f0-9]{48}$" },
+  }, ["projectId", "sessionId", "releaseId"]), { riskLevel: 1, approvalRequired: false, reversible: false }),
   mutationTool("app.projects.builder.stop", "Stop app workspace", "Stop the exact project's build sandbox while retaining its immutable activity receipts.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" },
   }, ["projectId", "sessionId"]), { riskLevel: 2, approvalRequired: true, reversible: false }),

@@ -745,10 +745,20 @@ describe("ordered database schema versions", () => {
       name: "app_builder_github_delivery_v1",
       checksum: "7d1f8e773faa0de1e8a5ac7a58ffb79a236a79504932fc757ee4cfbfbf796e7f",
     });
-    expect(databaseSchemaMigrations.at(-1)).toEqual({
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 171)).toEqual({
       version: 171,
       name: "app_builder_preview_deployments_v1",
       checksum: "22a1cc4db58ef6e999d0276af281a12d4876dc46964009ebd124d645327294ad",
+    });
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 172)).toEqual({
+      version: 172,
+      name: "app_builder_production_releases_v1",
+      checksum: "7d4c51d2d01df3f14c2ccf263b8c2b029acaf1537db427d8b2353b4b3ea8fed0",
+    });
+    expect(databaseSchemaMigrations.at(-1)).toEqual({
+      version: 173,
+      name: "app_builder_deployment_url_constraint_repair_v1",
+      checksum: "a41d2d82ad95d8402b182f8136f9bee67133d2380f246605c803915838c7da8e",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

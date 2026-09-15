@@ -120,6 +120,55 @@ export async function getBuilderVercelDeployment(deploymentId: string) {
   return deploymentFromProvider(response.body);
 }
 
+export async function getBuilderVercelProductionDeployment(projectId: string) {
+  if (!/^prj_[A-Za-z0-9]+$/.test(projectId)) throw new Error("The Vercel project ID is invalid.");
+  const query = new URLSearchParams({ projectId, target: "production", state: "READY", limit: "1" });
+  const response = await vercelJsonRequest(`/v7/deployments?${query}`, {
+    config: vercelConfig(),
+    method: "GET",
+  });
+  if (!response.ok) throw vercelRejected(response.status, providerError(response.body).message);
+  const deployments = Array.isArray(response.body.deployments) ? response.body.deployments : [];
+  const item = deployments[0];
+  if (!item || typeof item !== "object") return undefined;
+  const record = item as Record<string, unknown>;
+  const deploymentId = typeof record.uid === "string" ? record.uid : typeof record.id === "string" ? record.id : "";
+  const rawUrl = typeof record.url === "string" ? record.url : "";
+  if (!/^dpl_[A-Za-z0-9]+$/.test(deploymentId) || !rawUrl) return undefined;
+  return {
+    deploymentId,
+    url: assertVercelPreviewUrl(rawUrl.startsWith("https://") ? rawUrl : `https://${rawUrl}`).toString(),
+  };
+}
+
+export async function createBuilderVercelProduction(input: {
+  releaseReceiptId: string;
+  projectName: string;
+  previewDeploymentId: string;
+  workspaceSha256: string;
+}) {
+  if (!/^app_build_release_[a-f0-9]{48}$/.test(input.releaseReceiptId)) throw new Error("The production release receipt is invalid.");
+  if (!/^asael-app-[a-f0-9]{16}$/.test(input.projectName)) throw new Error("The App Builder Vercel project name is invalid.");
+  if (!/^dpl_[A-Za-z0-9]+$/.test(input.previewDeploymentId)) throw new Error("The preview deployment ID is invalid.");
+  const response = await vercelJsonRequest("/v13/deployments", {
+    config: vercelConfig(),
+    method: "POST",
+    idempotencyKey: input.releaseReceiptId,
+    body: {
+      deploymentId: input.previewDeploymentId,
+      name: input.projectName,
+      target: "production",
+      meta: {
+        action: "promote",
+        asaelReleaseId: input.releaseReceiptId,
+        asaelWorkspaceSha256: input.workspaceSha256,
+      },
+    },
+  });
+  if (!response.ok) throw vercelRejected(response.status, providerError(response.body).message);
+  return deploymentFromProvider(response.body);
+}
+
 export async function getBuilderVercelLogEvidence(deploymentId: string): Promise<AppBuilderDeployment["logs"]> {
   if (!/^dpl_[A-Za-z0-9]+$/.test(deploymentId)) return { status: "unavailable", eventCount: 0 };
   try {
@@ -359,7 +408,7 @@ function providerError(body: Record<string, unknown>) {
 }
 
 function vercelRejected(status: number, message: string) {
-  return new Error(`Vercel rejected the preview operation (${status}: ${message}).`);
+  return new Error(`Vercel rejected the deployment operation (${status}: ${message}).`);
 }
 
 function previewBypassHeaders() {
