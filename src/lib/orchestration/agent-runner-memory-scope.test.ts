@@ -531,6 +531,8 @@ describe("agent memory scope", () => {
         persistTrace: false,
         contextCompilerV2Shadow: expect.objectContaining({
           runId: "run-memory-scope",
+          authorizedInitiatingActorIds:
+            scopedRequest.promptSharedMemoryAccess.actorBinding.readableOwnerActorIds,
         }),
       }),
     );

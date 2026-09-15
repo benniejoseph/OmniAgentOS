@@ -467,6 +467,13 @@ export async function* runAgent(
     sharedPromptMemoryAccessScope ||
     agentPrivateMemoryAccessScope ||
     personalPromptMemoryAccessScope;
+  const contextCompilerInitiatingActorIds = promptMemoryAccessScope
+    ? request.promptMemoryAccess?.actorBinding.readableOwnerActorIds
+    : sharedPromptMemoryAccessScope
+      ? request.promptSharedMemoryAccess?.actorBinding.readableOwnerActorIds
+      : personalPromptMemoryAccessScope
+        ? request.promptPersonalMemoryAccess?.actorBinding.readableOwnerActorIds
+        : undefined;
   const isolatedMemoryContext = Boolean(databaseMemoryAccessScope);
   let pendingDeltaText = "";
   let lastDeltaFlush = Date.now();
@@ -856,6 +863,7 @@ export async function* runAgent(
                 contextCompilerV2Automatic: {
                   runId,
                   executionScope,
+                  authorizedInitiatingActorIds: contextCompilerInitiatingActorIds,
                 },
               }
             : promptMemoryAccessScope && request.contextSelection?.evidenceIds.length
@@ -863,12 +871,14 @@ export async function* runAgent(
                 contextCompilerV2Canary: {
                   runId,
                   executionScope,
+                  authorizedInitiatingActorIds: contextCompilerInitiatingActorIds,
                 },
               }
             : {
                 contextCompilerV2Shadow: {
                   runId,
                   executionScope,
+                  authorizedInitiatingActorIds: contextCompilerInitiatingActorIds,
                 },
               }),
         })
