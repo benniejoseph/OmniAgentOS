@@ -99,12 +99,15 @@ describe("project App Builder boundary", () => {
     expect(paths).not.toContain("next-env.d.ts");
     expect(appBuilderStarterTemplate.files.find((file) => file.path === ".gitignore")?.content)
       .toContain("next-env.d.ts");
+    expect(appBuilderStarterTemplate.files.find((file) => file.path === ".gitignore")?.content)
+      .toContain("*.tsbuildinfo");
     const combined = appBuilderStarterTemplate.files.map((file) => file.content).join("\n");
     expect(combined).not.toMatch(/API_KEY|SECRET|PASSWORD|\.env/);
     const sandboxSource = await readFile(new URL("./sandbox.ts", import.meta.url), "utf8");
     expect(sandboxSource).toContain("sandbox.fs.mkdir(APP_BUILDER_ROOT, { recursive: true })");
-    expect(sandboxSource).toContain('.filter((entry) => entry.path !== "next-env.d.ts")');
+    expect(sandboxSource).toContain('entry.path !== "next-env.d.ts" && !entry.path.endsWith(".tsbuildinfo")');
     expect(sandboxSource).toContain('"-not", "-path", "./next-env.d.ts"');
+    expect(sandboxSource).toContain('"-not", "-name", "*.tsbuildinfo"');
   });
 
   it("registers every builder action through the governed app-service boundary", () => {
