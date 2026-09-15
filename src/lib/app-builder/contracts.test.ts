@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileDeleteInputSchema, builderFileReadInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, builderProductionReleaseInputSchema, builderProductionReleasePreviewInputSchema, builderProductionReleaseRefreshInputSchema, builderRepositoryCheckoutInputSchema, safeBuilderRelativePath, sliceAppBuilderFileContent } from "@/lib/app-builder/contracts";
+import { APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT, assertBuilderBranchName, builderCheckpointCreateInputSchema, builderCheckpointRestoreInputSchema, builderCommandInputSchema, builderDeliveryInputSchema, builderFileDeleteInputSchema, builderFileReadInputSchema, builderFileUpdateInputSchema, builderPreviewDeploymentInputSchema, builderPreviewDeploymentRefreshInputSchema, builderProductionReleaseInputSchema, builderProductionReleasePreviewInputSchema, builderProductionReleaseRefreshInputSchema, builderRepositoryCheckoutInputSchema, safeBuilderRelativePath, sliceAppBuilderFileContent } from "@/lib/app-builder/contracts";
 import { scanBuilderFilesForSecrets } from "@/lib/app-builder/secret-scan";
 import { appBuilderStarterTemplate } from "@/lib/app-builder/templates";
 import { APP_SERVICE_OPERATION_CONTRACTS, MAIN_AGENT_APP_SERVICE_BINDINGS } from "@/lib/app-services/registry";
@@ -95,6 +95,18 @@ describe("project App Builder boundary", () => {
     expect(sliceAppBuilderFileContent("one\ntwo", { startLine: 1, lineCount: 400 })).toEqual({
       content: "one\ntwo",
       lineRange: { startLine: 1, endLine: 2, totalLines: 2, truncated: false },
+    });
+    const oversizedLine = `${"x".repeat(APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT + 1)}\ntail`;
+    expect(sliceAppBuilderFileContent(oversizedLine, { startLine: 1, lineCount: 2 })).toEqual({
+      content: "x".repeat(APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT),
+      lineRange: {
+        startLine: 1,
+        endLine: 1,
+        totalLines: 2,
+        truncated: true,
+        characterLimitReached: true,
+        characterLimit: APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT,
+      },
     });
     expect(() => sliceAppBuilderFileContent("one\ntwo", { startLine: 3, lineCount: 1 })).toThrow(/out of bounds/);
   });

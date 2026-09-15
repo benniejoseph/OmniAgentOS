@@ -371,7 +371,7 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
   readTool("app.projects.builder.search", "Search app source", "Search bounded editable source filenames and UTF-8 content inside the exact project build workspace.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, query: text(2, 120),
   }, ["projectId", "sessionId", "query"])),
-  readTool("app.projects.builder.file.read", "Read app file", "Read one 1-based, line-bounded UTF-8 slice and the full file's exact SHA-256 from the project build workspace. Continue with another range only when the relevant evidence is not in the returned slice.", requiredObjectSchema({
+  readTool("app.projects.builder.file.read", "Read app file", "Read one 1-based, line- and character-bounded UTF-8 slice and the full file's exact SHA-256 from the project build workspace. Continue with another range only when the relevant evidence is not in the returned slice.", requiredObjectSchema({
     projectId: opaqueId("Exact owning project ID."), sessionId: { type: "string", pattern: "^app_build_[a-f0-9]{48}$" }, path: text(1, 240),
     startLine: integer(1, 1_000_000), lineCount: integer(1, 400),
   }, ["projectId", "sessionId", "path", "startLine", "lineCount"])),

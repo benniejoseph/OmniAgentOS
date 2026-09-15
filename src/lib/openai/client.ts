@@ -461,14 +461,7 @@ export async function streamResponseTurn({
     if (eventType === "response.incomplete") {
       terminalSeen = true;
       const reason = response?.incomplete_details?.reason || "";
-      terminalFailure = new ModelProviderError(
-        reason === "content_filter"
-          ? "OpenAI blocked the response for safety."
-          : "OpenAI returned an incomplete response.",
-        "openai",
-        reason === "content_filter" ? "safety" : "unknown",
-        false,
-      );
+      terminalFailure = openAIIncompleteResponseError(reason);
       if (reason === "content_filter") emittedOutput = true;
     }
     if (eventType.startsWith("response.refusal.")) {
@@ -1005,15 +998,7 @@ export function classifyOpenAITerminalResponse(response: unknown) {
     const details = value.incomplete_details && typeof value.incomplete_details === "object"
       ? value.incomplete_details as Record<string, unknown>
       : {};
-    const safety = details.reason === "content_filter";
-    return new ModelProviderError(
-      safety
-        ? "OpenAI blocked the response for safety."
-        : "OpenAI returned an incomplete response.",
-      "openai",
-      safety ? "safety" : "unknown",
-      false,
-    );
+    return openAIIncompleteResponseError(details.reason);
   }
   if (status && status !== "completed") {
     return new ModelProviderError(
@@ -1024,4 +1009,23 @@ export function classifyOpenAITerminalResponse(response: unknown) {
     );
   }
   return undefined;
+}
+
+function openAIIncompleteResponseError(reason: unknown) {
+  if (reason === "content_filter") {
+    return new ModelProviderError(
+      "OpenAI blocked the response for safety.",
+      "openai",
+      "safety",
+      false,
+    );
+  }
+  return new ModelProviderError(
+    reason === "max_output_tokens"
+      ? "OpenAI reached the response token limit. Narrow the request or split it into smaller steps."
+      : "OpenAI returned an incomplete response.",
+    "openai",
+    "unknown",
+    false,
+  );
 }

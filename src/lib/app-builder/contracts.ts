@@ -121,8 +121,12 @@ export type AppBuilderFile = Readonly<{
     endLine: number;
     totalLines: number;
     truncated: boolean;
+    characterLimitReached?: boolean;
+    characterLimit?: number;
   }>;
 }>;
+
+export const APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT = 24_000;
 
 export function sliceAppBuilderFileContent(
   content: string,
@@ -133,14 +137,28 @@ export function sliceAppBuilderFileContent(
   if (range.startLine > lines.length) {
     throw new Error(`Builder file has ${lines.length} lines; startLine ${range.startLine} is out of bounds.`);
   }
-  const endLine = Math.min(lines.length, range.startLine + range.lineCount - 1);
+  const requestedEndLine = Math.min(lines.length, range.startLine + range.lineCount - 1);
+  const requestedContent = lines.slice(range.startLine - 1, requestedEndLine).join("\n");
+  const characterLimitReached = requestedContent.length > APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT;
+  const slicedContent = characterLimitReached
+    ? requestedContent.slice(0, APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT)
+    : requestedContent;
+  const returnedEndLine = characterLimitReached
+    ? range.startLine + (slicedContent.match(/\n/g)?.length || 0)
+    : requestedEndLine;
   return {
-    content: lines.slice(range.startLine - 1, endLine).join("\n"),
+    content: slicedContent,
     lineRange: {
       startLine: range.startLine,
-      endLine,
+      endLine: returnedEndLine,
       totalLines: lines.length,
-      truncated: range.startLine > 1 || endLine < lines.length,
+      truncated: range.startLine > 1 || requestedEndLine < lines.length || characterLimitReached,
+      ...(characterLimitReached
+        ? {
+            characterLimitReached: true,
+            characterLimit: APP_BUILDER_FILE_SLICE_CHARACTER_LIMIT,
+          }
+        : {}),
     },
   };
 }

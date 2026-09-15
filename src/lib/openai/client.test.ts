@@ -122,6 +122,37 @@ describe("OpenAI response privacy", () => {
     );
   });
 
+  it("turns token-limited incomplete responses into actionable errors", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_URL;
+    delete process.env.OMNIAGENT_OPENAI_GATEWAY_TOKEN;
+    openAiMocks.createResponse.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "response.incomplete",
+          response: {
+            id: "response-limited",
+            incomplete_details: { reason: "max_output_tokens" },
+            usage: { input_tokens: 20, output_tokens: 100, total_tokens: 120 },
+          },
+        };
+      },
+    });
+    const { streamResponseTurn } = await import("@/lib/openai/client");
+
+    await expect(streamResponseTurn({
+      input: "bounded request",
+      onDelta: () => undefined,
+      model: "gpt-5",
+      maxOutputTokens: 100,
+    })).rejects.toMatchObject({
+      message: "OpenAI reached the response token limit. Narrow the request or split it into smaller steps.",
+      provider: "openai",
+      kind: "unknown",
+      retryable: false,
+    });
+  });
+
   it("does not expose raw credentials when production gateway configuration is invalid", async () => {
     process.env.OPENAI_API_KEY = "upstream-api-key";
     process.env.VERCEL_ENV = "production";
