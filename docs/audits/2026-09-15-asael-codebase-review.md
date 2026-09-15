@@ -184,9 +184,10 @@ Computer Use gateway remain healthy and required no rebuild.
 
 ## Pending product work already recorded by the implementation plan
 
-1. Memory: representative offline evaluation before semantic prompt serving;
-   outcome-weighted ranking; paraphrase/conflict classification; automatic
-   Mnemosyne execution remains gated.
+1. Memory: the fail-closed offline activation scorer now exists, but a qualifying
+   human-reviewed production-shadow sample must still pass before semantic prompt
+   serving; outcome-weighted ranking, paraphrase/conflict classification, and
+   automatic Mnemosyne execution remain separately gated.
 2. Trading: transcript-authoritative ICT ontology and promotions, false-positive
    review, asynchronous deterministic backtesting, consensus/surprise and regime
    conditioning, statistically defensible calibration, deeper XAU/USD history,
@@ -212,6 +213,9 @@ Computer Use gateway remain healthy and required no rebuild.
   authenticated visual restart remains pending because the workstation locked.
 - Visibility-aware refresh: 5 focused scheduler and conversation-progress checks
   passed before deployment.
+- Semantic memory activation gate: 4 focused scoring, undersampling, quality,
+  leakage, latency, replay, and tamper checks passed; this operator-only harness
+  does not change production runtime policy and was not deployed separately.
 - Changed-file lint, TypeScript, and diff validation passed for the deployed
   retention, App Builder, and session-cache changes; no full suite or broad audit
   was run.
