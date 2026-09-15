@@ -407,6 +407,30 @@ describe("actor-scoped context retrieval", () => {
     expect(mocks.searchKnowledge).not.toHaveBeenCalled();
   });
 
+  it("accepts a server-verified legacy request actor without widening the canonical memory boundary", async () => {
+    const pack = await buildContextPack("how should I deploy", {
+      tenantId: "tenant-a",
+      databaseMemoryAccessScope: accessScope(),
+      retrievalSources: AUTHORIZED_CONTEXT_RETRIEVAL_SOURCES,
+      persistTrace: false,
+      contextCompilerV2Shadow: {
+        runId: "run-legacy-request-actor",
+        executionScope: createExecutionScope({
+          tenantId: "tenant-a",
+          initiatingActorId: "owner@example.test",
+          executingPrincipalType: "agent",
+          executingPrincipalId: "agent:forge",
+          correlationId: "context-legacy-request-actor",
+          purpose: "agent.run",
+        }),
+        authorizedInitiatingActorIds: [actorId, "owner@example.test"],
+      },
+    });
+
+    expect(pack.compilerV2Shadow).toBeDefined();
+    expect(mocks.searchMemories).toHaveBeenCalled();
+  });
+
   it("compares the legacy pack with an independently authorized v2 selection", async () => {
     const executionScope = createExecutionScope({
       tenantId: "tenant-a",

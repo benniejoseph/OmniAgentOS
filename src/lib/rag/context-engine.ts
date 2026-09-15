@@ -67,6 +67,13 @@ import { redactSensitive } from "@/lib/security/context";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type { AiUsageScope } from "@/lib/usage/types";
 
+type ContextCompilerV2RuntimeScope = {
+  runId: string;
+  executionScope: ExecutionScope;
+  /** Server-verified canonical actor followed by its readable legacy aliases. */
+  authorizedInitiatingActorIds?: readonly string[];
+};
+
 export type BuildContextPackOptions = {
   tenantId?: string;
   /**
@@ -115,27 +122,18 @@ export type BuildContextPackOptions = {
    * Runs Context Compiler v2 as a metadata-only comparison. The legacy pack
    * remains authoritative until a later rollout promotes the compiler.
    */
-  contextCompilerV2Shadow?: {
-    runId: string;
-    executionScope: ExecutionScope;
-  };
+  contextCompilerV2Shadow?: ContextCompilerV2RuntimeScope;
   /**
    * Authoritative only for a direct, explicit actor-private selection. The
    * canary may remove rejected evidence but can never add an item that the
    * reviewed legacy selection did not contain.
    */
-  contextCompilerV2Canary?: {
-    runId: string;
-    executionScope: ExecutionScope;
-  };
+  contextCompilerV2Canary?: ContextCompilerV2RuntimeScope;
   /**
    * Strict authority filter for automatic personal retrieval. It may shrink
    * the already scope-authorized legacy ranking but cannot add candidates.
    */
-  contextCompilerV2Automatic?: {
-    runId: string;
-    executionScope: ExecutionScope;
-  };
+  contextCompilerV2Automatic?: ContextCompilerV2RuntimeScope;
   /** Exact user-principal authority for P5.5 actor-private relation traversal. */
   entityGraphAccess?: RequestEntityAccessV1;
 };
@@ -576,19 +574,26 @@ function assertContextCompilerV2Scope(
   if (!compiler.executionScope.initiatingActorId) {
     throw new Error("Context Compiler v2 requires an initiating actor.");
   }
-  if (
-    databaseMemoryAccessScope &&
-    (
-      compiler.executionScope.initiatingActorId !==
-        databaseMemoryAccessScope.initiatingActorId ||
+  if (databaseMemoryAccessScope) {
+    const actorIds = compiler.authorizedInitiatingActorIds;
+    const actorMatches = actorIds
+      ? actorIds.length > 0 &&
+        actorIds.length === new Set(actorIds).size &&
+        actorIds[0] === databaseMemoryAccessScope.initiatingActorId &&
+        Boolean(compiler.executionScope.initiatingActorId) &&
+        actorIds.includes(compiler.executionScope.initiatingActorId!)
+      : compiler.executionScope.initiatingActorId ===
+        databaseMemoryAccessScope.initiatingActorId;
+    if (
+      !actorMatches ||
       compiler.executionScope.workspaceId !== databaseMemoryAccessScope.workspaceId ||
       compiler.executionScope.projectId !== databaseMemoryAccessScope.projectId ||
       compiler.executionScope.missionId !== databaseMemoryAccessScope.missionId
-    )
-  ) {
-    throw new Error(
-      "Context Compiler v2 scope does not match the authorized memory boundary.",
-    );
+    ) {
+      throw new Error(
+        "Context Compiler v2 scope does not match the authorized memory boundary.",
+      );
+    }
   }
 }
 
