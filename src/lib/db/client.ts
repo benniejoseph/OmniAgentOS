@@ -581,11 +581,35 @@ export function withDatabaseRequestScope<
       );
       return (
         result instanceof Response
-          ? enforcePrivateNoStore(appendServerTiming(result, request))
+          ? finalizeDatabaseRequestResponse(result, request)
           : result
       ) as TResult;
     }, request);
   };
+}
+
+function finalizeDatabaseRequestResponse(
+  response: Response,
+  request?: Request,
+) {
+  const timedResponse = appendServerTiming(response, request);
+  if (isExplicitPublicHealthSummary(request, timedResponse)) {
+    return timedResponse;
+  }
+  return enforcePrivateNoStore(timedResponse);
+}
+
+function isExplicitPublicHealthSummary(
+  request: Request | undefined,
+  response: Response,
+) {
+  if (!request) return false;
+  const url = new URL(request.url);
+  return (
+    url.pathname === "/api/health" &&
+    url.searchParams.get("public") === "1" &&
+    response.headers.get("cache-control")?.startsWith("public,") === true
+  );
 }
 
 /**

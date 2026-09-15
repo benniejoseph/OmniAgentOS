@@ -1077,6 +1077,33 @@ describe("ordered database schema versions", () => {
     });
   });
 
+  it("preserves only the explicit public health-summary cache contract", async () => {
+    const handle = withDatabaseRequestScope(async (_request: Request) =>
+      Response.json(
+        { status: "healthy" },
+        {
+          headers: {
+            "cache-control": "public, s-maxage=30, stale-while-revalidate=300",
+          },
+        },
+      )
+    );
+
+    const publicSummary = await handle(
+      new Request("https://asael.example/api/health?public=1"),
+    );
+    expect(publicSummary.headers.get("cache-control")).toBe(
+      "public, s-maxage=30, stale-while-revalidate=300",
+    );
+
+    const privateHealth = await handle(
+      new Request("https://asael.example/api/health"),
+    );
+    expect(privateHealth.headers.get("cache-control")).toBe(
+      "private, no-store",
+    );
+  });
+
   it("propagates actor aliases only inside the resolved request scope", async () => {
     const resolveActor = withDatabaseRequestScope(async () => {
       enterDatabaseActorContext("tenant-a", ["actor:canonical", "legacy@example.test"]);
