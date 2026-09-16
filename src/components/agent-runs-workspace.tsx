@@ -72,6 +72,7 @@ import {
   projectClientThreadSummaries,
   projectClientThreadTurns,
 } from "@/lib/command/client-projection";
+import { startProgressiveThreadLoad } from "@/lib/command/progressive-thread-load";
 import {
   extractLegacyCommandMedia,
   mergeCommandMediaArtifacts,
@@ -525,6 +526,8 @@ export function AgentRunsWorkspace({
   const browserActivityVersionRef = useRef(0);
   const browserActivityStreamControllerRef = useRef<AbortController | null>(null);
   const conversationCanvasControllerRef = useRef<AbortController | null>(null);
+  const threadLoadControllerRef = useRef<AbortController | null>(null);
+  const threadLoadVersionRef = useRef(0);
   const browserActivityModeRef = useRef<BrowserActivityMode | undefined>(undefined);
   const browserActivityRunIdRef = useRef("");
   const pendingDeltasRef = useRef<string[]>([]);
@@ -841,6 +844,7 @@ export function AgentRunsWorkspace({
       browserActivityControllerRef.current?.abort();
       browserActivityStreamControllerRef.current?.abort();
       conversationCanvasControllerRef.current?.abort();
+      threadLoadControllerRef.current?.abort();
       if (deltaFlushTimerRef.current !== null) {
         window.clearTimeout(deltaFlushTimerRef.current);
       }
@@ -2417,86 +2421,100 @@ export function AgentRunsWorkspace({
     }
   }
 
-  async function loadThread(id: string) {
+  async function loadThread(
+    id: string,
+    options: { restoreLatestRun?: boolean } = {},
+  ) {
+    const version = ++threadLoadVersionRef.current;
+    threadLoadControllerRef.current?.abort();
+    const controller = new AbortController();
+    threadLoadControllerRef.current = controller;
     try {
-      const result = asRecord(await readJson(`/api/threads/${encodeURIComponent(id)}`));
-      const thread = asRecord(result.thread);
-      const loadedTurns = projectClientThreadTurns(readPath(result, "turns"));
-      const latestRunId = [...loadedTurns]
-        .reverse()
-        .find((turn) => Boolean(turn.runId))
-        ?.runId;
-      let waitingClarification: { runId: string; message: string } | undefined;
-      let loadedMediaArtifacts: CommandMediaArtifact[] = [];
-      if (latestRunId) {
-        try {
-          const runPayload = asRecord(await readJson(
-            `/api/runs/${encodeURIComponent(latestRunId)}`,
-          ));
-          loadedMediaArtifacts = projectCommandMediaArtifacts(runPayload);
+      await startProgressiveThreadLoad({
+        readThread: async (signal) => asRecord(await readJson(
+          `/api/threads/${encodeURIComponent(id)}`,
+          { signal },
+        )),
+        latestRunId: (result) => options.restoreLatestRun === false
+          ? undefined
+          : [...projectClientThreadTurns(readPath(result, "turns"))]
+              .reverse()
+              .find((turn) => Boolean(turn.runId))
+              ?.runId,
+        readRun: async (runId, signal) => asRecord(await readJson(
+          `/api/runs/${encodeURIComponent(runId)}`,
+          { signal },
+        )),
+        isCurrent: () => threadLoadVersionRef.current === version,
+        onThreadReady: (result, latestRunId) => {
+          const thread = asRecord(result.thread);
+          const loadedTurns = projectClientThreadTurns(readPath(result, "turns"));
+          setThreadId(stringValue(thread.id));
+          const loadedProjectId = stringValue(thread.projectId);
+          if (loadedProjectId) setSelectedProjectId(loadedProjectId);
+          setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
+          setTurns(loadedTurns);
+          setAgentResponse("");
+          setRunMediaProjection({ runId: latestRunId || "", artifacts: [] });
+          contextControllerRef.current?.abort();
+          contextVersionRef.current += 1;
+          setContextPack(undefined);
+          setContextQuery("");
+          setSelectedContextIds([]);
+          clearContextLockState();
+          contextSelectionReviewedRef.current = contextScope !== "explicit_selection";
+          setContextLoading(false);
+          setContextError(undefined);
+          setWorkflowPlan(undefined);
+          setWorkflowRun(undefined);
+          setWorkflowSyncError(undefined);
+          setActiveAgentRunId("");
+          setClarificationRunId("");
+          currentRunIdRef.current = "";
+          clearBrowserActivity();
+          directRunStatusRef.current = "";
+          setStreamEvents([]);
+          setWaitingApproval(undefined);
+          setGrounding(undefined);
+          setContextUseReceipt(undefined);
+          setActiveTab("execute");
+          setDetailsOpen(false);
+          setMobileConversationsOpen(false);
+          setConversationView("chat");
+          agentRequestIdRef.current = "";
+        },
+        onRunReady: (runPayload, latestRunId) => {
+          setRunMediaProjection({
+            runId: latestRunId,
+            artifacts: projectCommandMediaArtifacts(runPayload),
+          });
           setContextUseReceipt(contextUseReceiptFromPayload(runPayload));
           const run = asRecord(runPayload.run);
-          if (stringValue(run.status) === "waiting_clarification") {
-            waitingClarification = {
+          if (stringValue(run.status) !== "waiting_clarification") return;
+          const message = stringValue(
+            run.response,
+            "Reply to the clarification request to continue this run.",
+          );
+          setAgentResponse(message);
+          setActiveAgentRunId(latestRunId);
+          setClarificationRunId(latestRunId);
+          currentRunIdRef.current = latestRunId;
+          directRunStatusRef.current = "waiting_clarification";
+          setStreamEvents([
+            { type: "run", runId: latestRunId, threadId: id },
+            {
+              type: "clarification",
               runId: latestRunId,
-              message: stringValue(
-                run.response,
-                "Reply to the clarification request to continue this run.",
-              ),
-            };
-          }
-        } catch {
-          // The conversation remains usable even if its latest run cannot be restored.
-        }
-      }
-      setThreadId(stringValue(thread.id));
-      const loadedProjectId = stringValue(thread.projectId);
-      if (loadedProjectId) setSelectedProjectId(loadedProjectId);
-      setMode((stringValue(thread.mode, "orchestrate") as AgentMode));
-      setTurns(loadedTurns);
-      setAgentResponse(waitingClarification?.message || "");
-      setRunMediaProjection({
-        runId: latestRunId || "",
-        artifacts: loadedMediaArtifacts,
-      });
-      contextControllerRef.current?.abort();
-      contextVersionRef.current += 1;
-      setContextPack(undefined);
-      setContextQuery("");
-      setSelectedContextIds([]);
-      clearContextLockState();
-      contextSelectionReviewedRef.current = contextScope !== "explicit_selection";
-      setContextLoading(false);
-      setContextError(undefined);
-      setWorkflowPlan(undefined);
-      setWorkflowRun(undefined);
-      setWorkflowSyncError(undefined);
-      setActiveAgentRunId(waitingClarification?.runId || "");
-      setClarificationRunId(waitingClarification?.runId || "");
-      currentRunIdRef.current = waitingClarification?.runId || "";
-      clearBrowserActivity();
-      directRunStatusRef.current = waitingClarification
-        ? "waiting_clarification"
-        : "";
-      setStreamEvents(waitingClarification ? [
-        { type: "run", runId: waitingClarification.runId, threadId: id },
-        {
-          type: "clarification",
-          runId: waitingClarification.runId,
-          threadId: id,
-          message: waitingClarification.message,
-          reasonCode: "ambiguous_read_target",
+              threadId: id,
+              message,
+              reasonCode: "ambiguous_read_target",
+            },
+          ]);
         },
-      ] : []);
-      setWaitingApproval(undefined);
-      setGrounding(undefined);
-      if (!latestRunId) setContextUseReceipt(undefined);
-      setActiveTab("execute");
-      setDetailsOpen(false);
-      setMobileConversationsOpen(false);
-      setConversationView("chat");
-      agentRequestIdRef.current = "";
+        signal: controller.signal,
+      });
     } catch (threadError) {
+      if (controller.signal.aborted || threadLoadVersionRef.current !== version) return;
       setError(threadError instanceof Error ? threadError.message : "Conversation could not be loaded.");
     }
   }
@@ -2508,7 +2526,7 @@ export function AgentRunsWorkspace({
       const run = asRecord(payload.run);
       if (stringValue(run.id) !== id) throw new Error("Run not found.");
       const ownedThreadId = stringValue(run.threadId);
-      if (ownedThreadId) await loadThread(ownedThreadId);
+      if (ownedThreadId) await loadThread(ownedThreadId, { restoreLatestRun: false });
       const status = stringValue(run.status);
       const response = stringValue(run.response);
       const nextGrounding = run.grounding
@@ -2563,6 +2581,8 @@ export function AgentRunsWorkspace({
   }
 
   function newThread() {
+    threadLoadVersionRef.current += 1;
+    threadLoadControllerRef.current?.abort();
     contextControllerRef.current?.abort();
     contextVersionRef.current += 1;
     setThreadId("");
