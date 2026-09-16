@@ -63,6 +63,7 @@ export async function listPendingMarketReplayEvents(input: {
       AND events.owner_actor_id = ${input.actorId}
       AND events.release_date BETWEEN ${input.startDate}::DATE AND ${input.endDate}::DATE
       AND COALESCE(schedule.occurred_at, events.occurred_at) IS NOT NULL
+      AND COALESCE(schedule.occurred_at, events.occurred_at) <= NOW() - INTERVAL '270 minutes'
       AND NOT EXISTS (
         SELECT 1
         FROM omni_market_event_replays replay
@@ -213,6 +214,7 @@ export async function listMarketEventReplays(input: {
     WHERE events.tenant_id = ${input.tenantId}
       AND events.owner_actor_id = ${input.actorId}
       AND COALESCE(schedule.occurred_at, events.occurred_at) IS NOT NULL
+      AND COALESCE(schedule.occurred_at, events.occurred_at) <= NOW() - INTERVAL '270 minutes'
   `;
   const eligibleEvents = Number(totals[0]?.eligible_events || 0);
   const replayedEvents = Number(totals[0]?.replayed_events || 0);
