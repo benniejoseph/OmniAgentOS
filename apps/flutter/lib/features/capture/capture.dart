@@ -8,6 +8,7 @@ import 'package:mime/mime.dart';
 
 import 'capture_batch_view.dart';
 import 'capture_controller.dart';
+import 'capture_drop_intake.dart';
 import 'capture_models.dart';
 import 'capture_outbox.dart';
 
@@ -28,16 +29,29 @@ class _CaptureViewState extends State<CaptureView> {
       note = TextEditingController(),
       tags = TextEditingController();
   final imagePicker = ImagePicker();
+  late CaptureDropIntake dropIntake;
   CaptureAttachment? attachment;
   final List<SelectedCaptureFile> batchFiles = [];
   CaptureKind attachmentKind = CaptureKind.text;
   String? attachmentError;
+  CaptureDropSummary? dropSummary;
+  bool dropping = false;
   bool picking = false;
 
   @override
   void initState() {
     super.initState();
+    dropIntake = CaptureDropIntake(widget.controller);
     unawaited(recoverInterruptedImagePick());
+  }
+
+  @override
+  void didUpdateWidget(covariant CaptureView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(oldWidget.controller, widget.controller)) return;
+    dropIntake = CaptureDropIntake(widget.controller);
+    dropping = false;
+    dropSummary = null;
   }
 
   @override
@@ -219,6 +233,57 @@ class _CaptureViewState extends State<CaptureView> {
     }
   }
 
+  Future<void> submitDroppedFiles(List<CaptureDropSource> sources) async {
+    if (dropping || _dropDisabled) return;
+    setState(() {
+      dropping = true;
+      dropSummary = null;
+      attachmentError = null;
+    });
+    try {
+      final result = await dropIntake.submit(
+        sources,
+        context: CaptureDropContext(
+          title: title.text,
+          note: note.text,
+          tags: tags.text
+              .split(',')
+              .map((tag) => tag.trim())
+              .where((tag) => tag.isNotEmpty)
+              .toList(),
+        ),
+      );
+      if (!mounted) return;
+      setState(() => dropSummary = result);
+      if (result.queued > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${result.queued} ${result.queued == 1 ? 'file is' : 'files are'} encrypted and queued. Indexing continues in the background.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => dropping = false);
+    }
+  }
+
+  bool get _dropDisabled {
+    final activeTransfer = widget.controller.batchItems.any(
+      (item) =>
+          item.state == CaptureBatchState.queued ||
+          item.state == CaptureBatchState.uploading,
+    );
+    return dropping ||
+        dropIntake.busy ||
+        widget.controller.pending.length >= captureBatchMaxFiles ||
+        widget.controller.batchQueueing ||
+        widget.controller.submitting ||
+        widget.controller.syncing ||
+        activeTransfer;
+  }
+
   Future<void> pickAttachment() async {
     if (picking) return;
     setState(() {
@@ -380,6 +445,29 @@ class _CaptureViewState extends State<CaptureView> {
                   : 'Notes are queued, indexed, and kept searchable with their source.',
               style: Theme.of(context).textTheme.bodyLarge,
             ),
+            if (_isMacOS) ...[
+              const SizedBox(height: 18),
+              CaptureDropSurface(
+                enabled: !_dropDisabled,
+                busy: dropping || dropIntake.busy,
+                remainingCapacity:
+                    (captureBatchMaxFiles - widget.controller.pending.length)
+                        .clamp(0, captureBatchMaxFiles),
+                onDrop: submitDroppedFiles,
+              ),
+              if (dropSummary != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8, left: 4),
+                  child: Text(
+                    dropSummary!.message,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: dropSummary!.hasProblems
+                          ? Theme.of(context).colorScheme.error
+                          : Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                ),
+            ],
             const SizedBox(height: 24),
             TextField(
               controller: title,
