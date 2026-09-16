@@ -11,6 +11,9 @@ typedef DesktopNotificationActionHandler = Future<void> Function(
 typedef DesktopApnsRegistrationHandler = Future<void> Function(
   DesktopApnsRegistration registration,
 );
+typedef DesktopSharedCaptureHandler = Future<void> Function(
+  DesktopSharedCapture capture,
+);
 
 enum DesktopNotificationCommand { open, complete, snooze15, dismiss }
 
@@ -60,6 +63,45 @@ class DesktopApnsRegistration {
   bool get succeeded => token != null;
 }
 
+class DesktopSharedCapture {
+  const DesktopSharedCapture({required this.requestId, required this.paths});
+
+  factory DesktopSharedCapture.fromArguments(Object? arguments) {
+    if (arguments is! Map || arguments.length != 2) {
+      throw const FormatException('The shared capture request is invalid.');
+    }
+    final requestId = arguments['requestId'];
+    final files = arguments['files'];
+    if (requestId is! String ||
+        !RegExp(
+          r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+        ).hasMatch(requestId) ||
+        files is! List ||
+        files.isEmpty ||
+        files.length > 25 ||
+        files.any(
+          (value) =>
+              value is! String ||
+              value.isEmpty ||
+              value.length > 8192 ||
+              value.contains(RegExp(r'[\x00-\x1f\x7f]')),
+        )) {
+      throw const FormatException('The shared capture payload is invalid.');
+    }
+    final paths = files.cast<String>();
+    if (paths.toSet().length != paths.length) {
+      throw const FormatException('The shared capture contains duplicates.');
+    }
+    return DesktopSharedCapture(
+      requestId: requestId,
+      paths: List<String>.unmodifiable(paths),
+    );
+  }
+
+  final String requestId;
+  final List<String> paths;
+}
+
 /// The deliberately small boundary between AppKit lifecycle affordances and
 /// Asael's shared Flutter application.
 ///
@@ -91,6 +133,8 @@ class DesktopHostBridge {
   final List<DesktopNotificationAction> _pendingNotificationActions = [];
   DesktopApnsRegistrationHandler? _apnsHandler;
   DesktopApnsRegistration? _pendingApnsRegistration;
+  DesktopSharedCaptureHandler? _sharedCaptureHandler;
+  final List<DesktopSharedCapture> _pendingSharedCaptures = [];
   bool _initialized = false;
 
   Future<void> initialize() async {
@@ -196,6 +240,31 @@ class DesktopHostBridge {
           await handler(registration);
         }
         return null;
+      case 'sharedCapture':
+        try {
+          final capture = DesktopSharedCapture.fromArguments(call.arguments);
+          final handler = _sharedCaptureHandler;
+          if (handler == null) {
+            if (_pendingSharedCaptures.length >= 16) {
+              throw const FormatException(
+                'The shared capture request queue is full.',
+              );
+            }
+            if (_pendingSharedCaptures.every(
+              (pending) => pending.requestId != capture.requestId,
+            )) {
+              _pendingSharedCaptures.add(capture);
+            }
+          } else {
+            await handler(capture);
+          }
+          return null;
+        } on FormatException catch (error) {
+          throw PlatformException(
+            code: 'invalid_shared_capture',
+            message: error.message,
+          );
+        }
       default:
         throw PlatformException(
           code: 'unsupported_desktop_intent',
@@ -225,6 +294,39 @@ class DesktopHostBridge {
     if (handler != null && pending != null) {
       _pendingApnsRegistration = null;
       unawaited(handler(pending));
+    }
+  }
+
+  void attachSharedCaptureHandler(DesktopSharedCaptureHandler? handler) {
+    _sharedCaptureHandler = handler;
+    if (handler != null && _pendingSharedCaptures.isNotEmpty) {
+      final pending = List<DesktopSharedCapture>.of(_pendingSharedCaptures);
+      _pendingSharedCaptures.clear();
+      unawaited(() async {
+        for (final capture in pending) {
+          await handler(capture);
+        }
+      }());
+    }
+  }
+
+  Future<void> completeSharedCapture(String requestId) async {
+    await _invokeSharedCaptureMethod('completeSharedCapture', requestId);
+  }
+
+  Future<void> retrySharedCapture(String requestId) async {
+    await _invokeSharedCaptureMethod('retrySharedCapture', requestId);
+  }
+
+  Future<void> _invokeSharedCaptureMethod(
+    String method,
+    String requestId,
+  ) async {
+    if (!_enabled) return;
+    try {
+      await _channel.invokeMethod<void>(method, {'requestId': requestId});
+    } on MissingPluginException {
+      // Widget tests and development runners may not have an AppKit host.
     }
   }
 
@@ -277,6 +379,8 @@ class DesktopHostBridge {
     _pendingNotificationActions.clear();
     _apnsHandler = null;
     _pendingApnsRegistration = null;
+    _sharedCaptureHandler = null;
+    _pendingSharedCaptures.clear();
     _initialized = false;
   }
 }

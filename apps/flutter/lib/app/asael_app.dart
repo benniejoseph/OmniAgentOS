@@ -8,6 +8,7 @@ import 'theme/app_theme.dart';
 import '../core/platform/desktop_host_bridge.dart';
 import '../features/auth/application/session_controller.dart';
 import '../features/capture/capture_providers.dart';
+import '../features/capture/capture_drop_intake.dart';
 import '../features/push/mobile_push.dart';
 
 class AsaelApp extends ConsumerStatefulWidget {
@@ -20,6 +21,28 @@ class AsaelApp extends ConsumerStatefulWidget {
 class _AsaelAppState extends ConsumerState<AsaelApp>
     with WidgetsBindingObserver {
   final _desktopHostBridge = appDesktopHostBridge;
+
+  Future<void> _handleSharedCapture(DesktopSharedCapture capture) async {
+    final router = ref.read(appRouterProvider);
+    final controller = ref.read(captureControllerProvider);
+    router.go('/capture');
+    final summary = await CaptureDropIntake(controller).submit(
+      capture.paths.map(AppGroupCaptureDropSource.new).toList(growable: false),
+    );
+    final retryable =
+        summary.busy ||
+        summary.changed > 0 ||
+        summary.unreadable > 0 ||
+        summary.cleanupFailed > 0;
+    if (retryable) {
+      await _desktopHostBridge.retrySharedCapture(capture.requestId);
+    } else {
+      // Accepted files are encrypted in the actor-scoped outbox before the
+      // App Group staging copy is removed. Terminal invalid files are also
+      // cleared so an unsafe share cannot create an infinite retry loop.
+      await _desktopHostBridge.completeSharedCapture(capture.requestId);
+    }
+  }
 
   @override
   void initState() {
@@ -62,6 +85,10 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     );
     _desktopHostBridge.attachApnsRegistrationHandler(
       push?.handleDesktopApnsRegistration,
+    );
+    final captureController = ref.watch(captureControllerProvider);
+    _desktopHostBridge.attachSharedCaptureHandler(
+      captureController.owner == null ? null : _handleSharedCapture,
     );
     return MaterialApp.router(
       title: 'Asael',

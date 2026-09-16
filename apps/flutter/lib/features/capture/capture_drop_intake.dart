@@ -153,6 +153,53 @@ class DesktopCaptureDropSource implements CaptureDropSource {
   Stream<Uint8List> openRead(int start, int end) => item.openRead(start, end);
 }
 
+/// A file already copied into Asael's private App Group intake directory.
+///
+/// It has no security-scoped bookmark because the native host and Share
+/// Extension share the same explicitly entitled container. The native host
+/// validates containment before exposing a path; this source still rejects
+/// links and re-checks stable metadata before encryption.
+class AppGroupCaptureDropSource implements CaptureDropSource {
+  AppGroupCaptureDropSource(String sourcePath)
+    : _file = File(sourcePath),
+      _name = path.basename(sourcePath);
+
+  final File _file;
+  final String _name;
+
+  @override
+  String get name => _name;
+
+  @override
+  String get sourcePath => _file.path;
+
+  @override
+  bool get fromPromise => false;
+
+  @override
+  Uint8List? get securityBookmark => null;
+
+  @override
+  Future<CaptureDropEntityType> entityType() async {
+    final type = await FileSystemEntity.type(_file.path, followLinks: false);
+    return switch (type) {
+      FileSystemEntityType.file => CaptureDropEntityType.file,
+      FileSystemEntityType.directory => CaptureDropEntityType.directory,
+      _ => CaptureDropEntityType.other,
+    };
+  }
+
+  @override
+  Future<int> length() => _file.length();
+
+  @override
+  Future<DateTime> lastModified() => _file.lastModified();
+
+  @override
+  Stream<Uint8List> openRead(int start, int end) =>
+      _file.openRead(start, end).map(Uint8List.fromList);
+}
+
 abstract interface class CaptureDropSecurityAccess {
   Future<bool> start(Uint8List bookmark);
   Future<bool> stop(Uint8List bookmark);

@@ -74,10 +74,18 @@ if [[ -n "$task_signing_identity" ]]; then
   fi
 
   while IFS= read -r -d '' task_nested_code; do
-    codesign \
-      "${task_codesign_keychain_args[@]}" \
-      "${task_codesign_args[@]}" \
-      "$task_nested_code"
+    if [[ "$task_nested_code" == *.appex ]]; then
+      codesign \
+        "${task_codesign_keychain_args[@]}" \
+        "${task_codesign_args[@]}" \
+        --entitlements "$task_flutter_dir/macos/ShareExtension/ShareExtension.entitlements" \
+        "$task_nested_code"
+    else
+      codesign \
+        "${task_codesign_keychain_args[@]}" \
+        "${task_codesign_args[@]}" \
+        "$task_nested_code"
+    fi
   done < <(
     find "$task_staged_app/Contents" -depth \
       \( \

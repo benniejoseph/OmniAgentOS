@@ -38,6 +38,10 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
     true
   }
 
+  override func application(_ application: NSApplication, open urls: [URL]) {
+    desktopHostController.handleOpenURLs(urls)
+  }
+
   func attachDesktopBridge(channel: FlutterMethodChannel, window: NSWindow) {
     desktopHostController.attach(channel: channel, window: window)
   }
@@ -79,6 +83,23 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 /// Owns Asael's small native desktop surface. Product behavior remains in Flutter;
 /// this controller only keeps the app available and forwards explicit navigation.
 private final class DesktopHostController: NSObject {
+  private struct SharedCaptureManifest: Decodable {
+    struct FileEntry: Decodable {
+      let name: String
+      let size: Int
+    }
+
+    let schemaVersion: Int
+    let requestId: String
+    let files: [FileEntry]
+  }
+
+  private struct ValidatedSharedCapture {
+    let requestId: String
+    let directory: URL
+    let files: [URL]
+  }
+
   private enum NotificationAction: String {
     case open
     case complete
@@ -103,6 +124,14 @@ private final class DesktopHostController: NSObject {
   private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
   private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
   private static let quickEntryWindowSize = NSSize(width: 760, height: 400)
+  private static let appGroupIdentifier = "group.app.omniagent.omniagent"
+  private static let sharedCaptureInbox = "ShareInbox"
+  private static let sharedCaptureManifest = "manifest.json"
+  private static let sharedCaptureMaxFiles = 25
+  private static let sharedCaptureMaxFileBytes = 5 * 1_024 * 1_024
+  private static let sharedCaptureRequestPattern = try! NSRegularExpression(
+    pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+  )
 
   private weak var window: NSWindow?
   private var channel: FlutterMethodChannel?
@@ -116,6 +145,8 @@ private final class DesktopHostController: NSObject {
   private var hasStarted = false
   private var isQuickEntryPresented = false
   private var regularWindowFrame: NSRect?
+  private var deliveredSharedCaptureIds = Set<String>()
+  private var sharedCaptureDeliveryInFlight = false
 
   func start() {
     guard !hasStarted else { return }
@@ -134,6 +165,8 @@ private final class DesktopHostController: NSObject {
     channel?.setMethodCallHandler(nil)
     channel = nil
     isDartReady = false
+    deliveredSharedCaptureIds.removeAll()
+    sharedCaptureDeliveryInFlight = false
 
     if let hotKey {
       UnregisterEventHotKey(hotKey)
@@ -172,6 +205,7 @@ private final class DesktopHostController: NSObject {
         DispatchQueue.main.async {
           self.isDartReady = true
           self.flushPendingRoute()
+          self.deliverNextSharedCapture()
         }
         result(nil)
       case "showMainPresentation":
@@ -189,9 +223,196 @@ private final class DesktopHostController: NSObject {
           self.requestRemoteNotifications()
         }
         result(nil)
+      case "completeSharedCapture":
+        guard let requestId = self.sharedCaptureRequestId(call.arguments),
+              self.deliveredSharedCaptureIds.contains(requestId)
+        else {
+          result(FlutterError(code: "invalid_shared_capture", message: "The shared capture receipt is invalid.", details: nil))
+          return
+        }
+        self.completeSharedCapture(requestId)
+        result(nil)
+      case "retrySharedCapture":
+        guard let requestId = self.sharedCaptureRequestId(call.arguments),
+              self.deliveredSharedCaptureIds.contains(requestId)
+        else {
+          result(FlutterError(code: "invalid_shared_capture", message: "The shared capture retry is invalid.", details: nil))
+          return
+        }
+        self.deliveredSharedCaptureIds.remove(requestId)
+        self.scheduleSharedCaptureRetry()
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
+    }
+  }
+
+  func handleOpenURLs(_ urls: [URL]) {
+    guard urls.contains(where: { url in
+      url.scheme?.lowercased() == "asael" && url.host?.lowercased() == "capture-shared"
+    }) else { return }
+    DispatchQueue.main.async { [weak self] in
+      self?.showMainWindow()
+      self?.deliverNextSharedCapture()
+    }
+  }
+
+  private func sharedCaptureRequestId(_ arguments: Any?) -> String? {
+    guard let values = arguments as? [String: Any],
+          values.count == 1,
+          let requestId = values["requestId"] as? String,
+          Self.isSharedCaptureRequestId(requestId)
+    else { return nil }
+    return requestId
+  }
+
+  private static func isSharedCaptureRequestId(_ value: String) -> Bool {
+    let range = NSRange(value.startIndex..<value.endIndex, in: value)
+    return sharedCaptureRequestPattern.firstMatch(in: value, range: range) != nil
+  }
+
+  private func sharedCaptureInboxURL(create: Bool = false) -> URL? {
+    guard let container = FileManager.default.containerURL(
+      forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
+    ) else { return nil }
+    let inbox = container.appendingPathComponent(Self.sharedCaptureInbox, isDirectory: true)
+    if create {
+      try? FileManager.default.createDirectory(
+        at: inbox,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+      )
+    }
+    return inbox
+  }
+
+  private func deliverNextSharedCapture() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard isDartReady,
+          !sharedCaptureDeliveryInFlight,
+          let channel,
+          let inbox = sharedCaptureInboxURL(create: true),
+          let candidates = try? FileManager.default.contentsOfDirectory(
+            at: inbox,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+          )
+    else { return }
+
+    let capture = candidates
+      .sorted { $0.lastPathComponent < $1.lastPathComponent }
+      .compactMap(validatedSharedCapture)
+      .first { !deliveredSharedCaptureIds.contains($0.requestId) }
+    guard let capture else { return }
+
+    deliveredSharedCaptureIds.insert(capture.requestId)
+    sharedCaptureDeliveryInFlight = true
+    request(.capture)
+    channel.invokeMethod(
+      "sharedCapture",
+      arguments: [
+        "requestId": capture.requestId,
+        "files": capture.files.map(\.path),
+      ]
+    ) { [weak self] response in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.sharedCaptureDeliveryInFlight = false
+        if response is FlutterError {
+          self.deliveredSharedCaptureIds.remove(capture.requestId)
+          self.scheduleSharedCaptureRetry()
+        } else {
+          self.deliverNextSharedCapture()
+        }
+      }
+    }
+  }
+
+  private func validatedSharedCapture(_ candidate: URL) -> ValidatedSharedCapture? {
+    let requestId = candidate.lastPathComponent.lowercased()
+    guard Self.isSharedCaptureRequestId(requestId),
+          candidate.lastPathComponent == requestId,
+          let inbox = sharedCaptureInboxURL(),
+          Self.isDirectChild(candidate, of: inbox),
+          let attributes = try? FileManager.default.attributesOfItem(atPath: candidate.path),
+          attributes[.type] as? FileAttributeType == .typeDirectory,
+          let manifestData = try? Data(
+            contentsOf: candidate.appendingPathComponent(Self.sharedCaptureManifest),
+            options: [.mappedIfSafe]
+          ),
+          manifestData.count <= 32 * 1_024,
+          let manifest = try? JSONDecoder().decode(SharedCaptureManifest.self, from: manifestData),
+          manifest.schemaVersion == 1,
+          manifest.requestId == requestId,
+          !manifest.files.isEmpty,
+          manifest.files.count <= Self.sharedCaptureMaxFiles
+    else { return nil }
+
+    var names = Set<String>()
+    var files: [URL] = []
+    for entry in manifest.files {
+      guard Self.isSafeSharedCaptureFilename(entry.name),
+            names.insert(entry.name).inserted,
+            entry.size > 0,
+            entry.size <= Self.sharedCaptureMaxFileBytes
+      else { return nil }
+      let file = candidate.appendingPathComponent(entry.name, isDirectory: false)
+      guard Self.isDirectChild(file, of: candidate),
+            let fileAttributes = try? FileManager.default.attributesOfItem(atPath: file.path),
+            fileAttributes[.type] as? FileAttributeType == .typeRegular,
+            (fileAttributes[.size] as? NSNumber)?.intValue == entry.size
+      else { return nil }
+      files.append(file)
+    }
+    return ValidatedSharedCapture(
+      requestId: requestId,
+      directory: candidate,
+      files: files
+    )
+  }
+
+  private static func isDirectChild(_ candidate: URL, of parent: URL) -> Bool {
+    let resolvedParent = parent.standardizedFileURL.resolvingSymlinksInPath()
+    let resolvedCandidate = candidate.standardizedFileURL.resolvingSymlinksInPath()
+    return resolvedCandidate.deletingLastPathComponent() == resolvedParent
+  }
+
+  private static func isSafeSharedCaptureFilename(_ name: String) -> Bool {
+    guard !name.isEmpty,
+          name != ".",
+          name != "..",
+          name.count <= 180,
+          name.lengthOfBytes(using: .utf8) <= 240,
+          (name as NSString).lastPathComponent == name,
+          !name.unicodeScalars.contains(where: { scalar in
+            scalar.value < 0x20 ||
+              (scalar.value >= 0x7f && scalar.value <= 0x9f) ||
+              (scalar.value >= 0x202a && scalar.value <= 0x202e) ||
+              (scalar.value >= 0x2066 && scalar.value <= 0x2069)
+          })
+    else { return false }
+    return true
+  }
+
+  private func completeSharedCapture(_ requestId: String) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    defer {
+      deliveredSharedCaptureIds.remove(requestId)
+      deliverNextSharedCapture()
+    }
+    guard let inbox = sharedCaptureInboxURL(),
+          let capture = validatedSharedCapture(
+            inbox.appendingPathComponent(requestId, isDirectory: true)
+          ),
+          capture.requestId == requestId
+    else { return }
+    try? FileManager.default.removeItem(at: capture.directory)
+  }
+
+  private func scheduleSharedCaptureRetry() {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+      self?.deliverNextSharedCapture()
     }
   }
 

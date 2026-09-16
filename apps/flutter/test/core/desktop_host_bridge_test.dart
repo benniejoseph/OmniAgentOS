@@ -107,6 +107,64 @@ void main() {
     expect(received.last.errorCode, 'missing_entitlement');
   });
 
+  test('queues and validates App Group capture requests', () async {
+    final received = <DesktopSharedCapture>[];
+    final bridge = DesktopHostBridge(enabled: false);
+    const requestId = 'b14b1388-38aa-4dd7-bf14-f511b47e52e2';
+
+    await bridge.handleNativeCall(
+      const MethodCall('sharedCapture', {
+        'requestId': requestId,
+        'files': ['/private/group/Inbox/request/course-01.vtt'],
+      }),
+    );
+    bridge.attachSharedCaptureHandler((capture) async {
+      received.add(capture);
+    });
+    await Future<void>.delayed(Duration.zero);
+
+    expect(received, hasLength(1));
+    expect(received.single.requestId, requestId);
+    expect(received.single.paths.single, endsWith('course-01.vtt'));
+
+    await expectLater(
+      bridge.handleNativeCall(
+        const MethodCall('sharedCapture', {
+          'requestId': requestId,
+          'files': ['/private/a.vtt', '/private/a.vtt'],
+        }),
+      ),
+      throwsA(
+        isA<PlatformException>().having(
+          (error) => error.code,
+          'code',
+          'invalid_shared_capture',
+        ),
+      ),
+    );
+  });
+
+  test('returns App Group capture disposition to AppKit', () async {
+    const channel = MethodChannel('test.asael.desktop.share');
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return null;
+        });
+    final bridge = DesktopHostBridge(channel: channel, enabled: true);
+
+    await bridge.completeSharedCapture('b14b1388-38aa-4dd7-bf14-f511b47e52e2');
+    await bridge.retrySharedCapture('b14b1388-38aa-4dd7-bf14-f511b47e52e2');
+
+    expect(calls.map((call) => call.method), [
+      'completeSharedCapture',
+      'retrySharedCapture',
+    ]);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
+  });
+
   test('rejects unknown native intents', () async {
     final bridge = DesktopHostBridge(enabled: false);
 
