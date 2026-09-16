@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -46,6 +47,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
   final homePath = appHomePath();
   return GoRouter(
+    debugLogDiagnostics: kDebugMode,
     initialLocation: homePath,
     redirect: (context, state) {
       final atLogin = state.matchedLocation == '/login';
@@ -71,11 +73,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/quick-entry',
         builder: (context, _) => TalkView(
-          controller: ref.watch(talkControllerProvider),
+          controller: ref.read(talkControllerProvider),
           quickEntry: true,
+          onQuickEntryReady: () {
+            unawaited(appDesktopHostBridge.showQuickEntryPresentation());
+          },
           onExitQuickEntry: () {
-            unawaited(appDesktopHostBridge.showMainPresentation());
             context.go('/talk');
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              unawaited(appDesktopHostBridge.showMainPresentation());
+            });
           },
         ),
       ),
@@ -85,7 +92,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/customers/:id',
         builder: (_, state) => CustomerDetailView(
           id: state.pathParameters['id']!,
-          api: ref.watch(apiClientProvider),
+          api: ref.read(apiClientProvider),
         ),
       ),
       StatefulShellRoute.indexedStack(
@@ -98,50 +105,50 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                   path: destination.path,
                   builder: (context, state) => switch (destination.path) {
                     '/today' => TodayView(
-                      controller: ref.watch(todayControllerProvider),
+                      controller: ref.read(todayControllerProvider),
                       focusItemId: state.uri.queryParameters['workItemId'],
                     ),
                     '/talk' => TalkView(
-                      controller: ref.watch(talkControllerProvider),
+                      controller: ref.read(talkControllerProvider),
                     ),
                     '/capture' => CaptureView(
-                      controller: ref.watch(captureControllerProvider),
+                      controller: ref.read(captureControllerProvider),
                     ),
                     '/projects' => ProjectsView(
-                      controller: ref.watch(projectsControllerProvider),
+                      controller: ref.read(projectsControllerProvider),
                       onOpen: (project) =>
                           context.push('/projects/${project.id}'),
                     ),
                     '/meetings' => MeetingsView(
-                      controller: ref.watch(meetingsControllerProvider),
+                      controller: ref.read(meetingsControllerProvider),
                       onOpen: (meeting) =>
                           context.push('/meetings/${meeting.id}'),
                     ),
                     '/results' => ResultsView(
-                      controller: ref.watch(resultsControllerProvider),
+                      controller: ref.read(resultsControllerProvider),
                       onOpen: (result) => context.push(
                         '/results/${Uri.encodeComponent(result.key)}',
                       ),
                     ),
                     '/inbox' => InboxView(
-                      controller: ref.watch(inboxControllerProvider),
+                      controller: ref.read(inboxControllerProvider),
                     ),
                     '/agents' => AgentsView(
-                      controller: ref.watch(agentsControllerProvider),
+                      controller: ref.read(agentsControllerProvider),
                     ),
                     '/knowledge' => KnowledgeView(
-                      controller: ref.watch(knowledgeControllerProvider),
+                      controller: ref.read(knowledgeControllerProvider),
                     ),
                     '/accounts' => AccountsView(
-                      api: ref.watch(apiClientProvider),
+                      api: ref.read(apiClientProvider),
                       onOpen: (account) =>
                           context.push('/accounts/${account.id}'),
                     ),
                     '/markets' => MarketsView(
-                      api: ref.watch(apiClientProvider),
+                      api: ref.read(apiClientProvider),
                     ),
                     '/payments' => PaymentsView(
-                      api: ref.watch(apiClientProvider),
+                      api: ref.read(apiClientProvider),
                     ),
                     '/workflows' => const AdminWorkspaceView(
                       moduleId: 'automation',
@@ -158,7 +165,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       moduleId: 'security',
                     ),
                     '/settings' => ModelSettingsView(
-                      api: ref.watch(apiClientProvider),
+                      api: ref.read(apiClientProvider),
                     ),
                     _ => DestinationPlaceholder(destination: destination),
                   },
@@ -168,7 +175,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             path: ':id',
                             builder: (_, state) => CustomerDetailView(
                               id: state.pathParameters['id']!,
-                              api: ref.watch(apiClientProvider),
+                              api: ref.read(apiClientProvider),
                             ),
                           ),
                         ]
@@ -178,8 +185,8 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             path: ':id',
                             builder: (_, state) => ProjectDetailView(
                               id: state.pathParameters['id']!,
-                              repository: ref.watch(projectsRepositoryProvider),
-                              api: ref.watch(apiClientProvider),
+                              repository: ref.read(projectsRepositoryProvider),
+                              api: ref.read(apiClientProvider),
                               focusWorkItemId:
                                   state.uri.queryParameters['workItemId'],
                             ),
@@ -193,7 +200,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                               keyValue: Uri.decodeComponent(
                                 state.pathParameters['key']!,
                               ),
-                              repository: ref.watch(resultsRepositoryProvider),
+                              repository: ref.read(resultsRepositoryProvider),
                             ),
                           ),
                         ]
@@ -203,7 +210,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                             path: ':id',
                             builder: (_, state) => MeetingDetailView(
                               id: state.pathParameters['id']!,
-                              repository: ref.watch(meetingsRepositoryProvider),
+                              repository: ref.read(meetingsRepositoryProvider),
                             ),
                           ),
                         ]
@@ -212,7 +219,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                           GoRoute(
                             path: 'approvals/:id',
                             builder: (_, state) => InboxView(
-                              controller: ref.watch(inboxControllerProvider),
+                              controller: ref.read(inboxControllerProvider),
                               focusApprovalId: state.pathParameters['id'],
                             ),
                           ),

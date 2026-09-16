@@ -101,4 +101,23 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
   });
+
+  test('asks AppKit to compact only Quick Entry presentation', () async {
+    const channel = MethodChannel('test.asael.desktop.quick-entry');
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return null;
+        });
+    final bridge = DesktopHostBridge(channel: channel, enabled: true);
+
+    await bridge.showQuickEntryPresentation();
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'showQuickEntryPresentation');
+    expect(calls.single.arguments, isNull);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
+  });
 }

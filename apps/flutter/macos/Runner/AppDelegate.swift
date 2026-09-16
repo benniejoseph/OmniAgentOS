@@ -131,6 +131,11 @@ private final class DesktopHostController: NSObject {
           self.showMainWindow()
         }
         result(nil)
+      case "showQuickEntryPresentation":
+        DispatchQueue.main.async {
+          self.showQuickEntryWindow()
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -205,10 +210,11 @@ private final class DesktopHostController: NSObject {
 
   private func request(_ route: Route) {
     dispatchPrecondition(condition: .onQueue(.main))
-    if route == .quickEntry {
-      showQuickEntryWindow()
-    } else {
+    if route != .quickEntry {
       showMainWindow()
+    } else if let window = window ?? NSApp.windows.first(where: { $0 is MainFlutterWindow }) {
+      self.window = window
+      focus(window)
     }
 
     guard isDartReady, let channel else {
@@ -225,9 +231,7 @@ private final class DesktopHostController: NSObject {
     dispatchPrecondition(condition: .onQueue(.main))
     guard isDartReady, let route = pendingRoute, let channel else { return }
     pendingRoute = nil
-    if route == .quickEntry {
-      showQuickEntryWindow()
-    } else {
+    if route != .quickEntry {
       showMainWindow()
     }
     channel.invokeMethod("openRoute", arguments: ["route": route.rawValue])

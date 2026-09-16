@@ -55,12 +55,21 @@ fi
 
 codesign --verify --deep --strict --verbose=2 "$task_staged_app"
 
-hdiutil create \
-  -volname "Asael" \
-  -srcfolder "$task_stage_dir" \
-  -format UDZO \
-  -ov \
-  "$task_dmg"
+rm -f "$task_dmg"
+if command -v diskutil >/dev/null 2>&1 && diskutil help image create from >/dev/null 2>&1; then
+  diskutil image create from \
+    --volumeName "Asael" \
+    --format UDZO \
+    "$task_stage_dir" \
+    "$task_dmg"
+else
+  hdiutil create \
+    -volname "Asael" \
+    -srcfolder "$task_stage_dir" \
+    -format UDZO \
+    -ov \
+    "$task_dmg"
+fi
 
 if [[ -n "$task_signing_identity" ]]; then
   codesign --force --timestamp --sign "$task_signing_identity" "$task_dmg"

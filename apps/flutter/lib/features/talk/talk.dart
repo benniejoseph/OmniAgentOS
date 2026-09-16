@@ -1175,12 +1175,14 @@ class TalkView extends StatefulWidget {
     required this.controller,
     this.voiceRecorder,
     this.quickEntry = false,
+    this.onQuickEntryReady,
     this.onExitQuickEntry,
   });
 
   final TalkController controller;
   final VoiceDraftRecorder? voiceRecorder;
   final bool quickEntry;
+  final VoidCallback? onQuickEntryReady;
   final VoidCallback? onExitQuickEntry;
   @override
   State<TalkView> createState() => _TalkViewState();
@@ -1201,7 +1203,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     super.initState();
     recorder = widget.voiceRecorder ?? RecordVoiceDraftRecorder();
     WidgetsBinding.instance.addObserver(this);
-    if (!widget.quickEntry && widget.controller.conversationHistorySupported) {
+    if (widget.quickEntry) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onQuickEntryReady?.call();
+      });
+    } else if (widget.controller.conversationHistorySupported) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(widget.controller.loadRecentThreads());
       });
@@ -1211,7 +1217,11 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(covariant TalkView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!widget.quickEntry &&
+    if (widget.quickEntry && !oldWidget.quickEntry) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onQuickEntryReady?.call();
+      });
+    } else if (!widget.quickEntry &&
         oldWidget.controller != widget.controller &&
         widget.controller.conversationHistorySupported) {
       WidgetsBinding.instance.addPostFrameCallback((_) {

@@ -107,6 +107,20 @@ class DesktopHostBridge {
     }
   }
 
+  /// Compacts the native window only after Flutter has rendered Quick Entry.
+  /// Sequencing route replacement before resize avoids overlapping responsive
+  /// and accessibility-tree transitions on macOS 27.
+  Future<void> showQuickEntryPresentation() async {
+    if (!_enabled) return;
+    try {
+      await _channel.invokeMethod<void>('showQuickEntryPresentation');
+    } on MissingPluginException {
+      // Tests and development runners may not have the AppKit host attached.
+    } on PlatformException {
+      // The route remains usable at the ordinary window size.
+    }
+  }
+
   Future<void> dispose() async {
     if (!_enabled || !_initialized) return;
     _channel.setMethodCallHandler(null);

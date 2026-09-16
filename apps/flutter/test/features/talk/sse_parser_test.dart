@@ -456,18 +456,21 @@ void main() {
       final repository = _TalkRepository();
       final controller = TalkController(repository);
       var exits = 0;
+      var presentationReady = 0;
       await tester.pumpWidget(
         MaterialApp(
           home: TalkView(
             controller: controller,
             voiceRecorder: _VoiceDraftRecorder(),
             quickEntry: true,
+            onQuickEntryReady: () => presentationReady += 1,
             onExitQuickEntry: () => exits += 1,
           ),
         ),
       );
       await tester.pump();
 
+      expect(presentationReady, 1);
       expect(find.text('Quick Entry'), findsOneWidget);
       expect(find.text('Conversation'), findsNothing);
       await tester.enterText(
