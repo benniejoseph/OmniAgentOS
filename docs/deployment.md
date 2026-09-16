@@ -102,11 +102,12 @@ before a contract-v8 macOS client signs in. It widens only attested native
 session and push-registration platform checks to include `macos`; direct APNs
 registrations may originate from iOS or macOS. Contract v8 removes unenrolled
 legacy mutation declarations from its generated surface and does not activate
-new route capabilities. Contract v9 is current and retains frozen v8 as the
-supported previous version while adding only actor-scoped thread, thread-memory,
-and integrity-verified Capture asset reads. Publish the schema migration and
-server contract before distributing the macOS binary; Vercel does not distribute
-or sign that binary.
+new route capabilities. Contract v10 is current and retains frozen v9 as the
+supported previous version. It adds only the actor-scoped, exact-run Computer
+Use frame read used by the native artifact rail; v9 continues to provide
+actor-scoped thread, thread-memory, and integrity-verified Capture asset reads.
+Publish the schema migration and server contract before distributing the macOS
+binary; Vercel does not distribute or sign that binary.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
