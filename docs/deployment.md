@@ -39,7 +39,7 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION` and `OMNIAGENT_NATIVE_MIN_IOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed release inputs under `public/native-contracts/v5` and `public/native-contracts/v6`; v1-v4 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v5 document hashes drift. Keep v6 current and v5 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
+Native contract artifacts are committed release inputs under `public/native-contracts/v6` and `public/native-contracts/v7`; v1-v5 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v6 document hashes drift. Keep v7 current and v6 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
 
 ### Licensed TradingView chart assets
 
@@ -85,6 +85,16 @@ project, and both native apps retain the compatibility package/bundle identity
 Vercel production variable above and must never be copied into the repository
 or native application. iOS delivery additionally requires an Apple APNs token
 key to be configured in Firebase before a device receipt can pass.
+
+The deterministic market-backtest foundation requires migration
+`20260916120000_market_deterministic_backtests.sql` (internal schema version
+177) before publishing `/api/market-research/backtests`. It installs
+actor-private forced-RLS append-only result and event ledgers. The web route
+only enqueues work; the Fly worker executes `market.backtest.run`, so web and
+worker must be released as one compatible feature revision. Native contract v7
+adds the Android read/run operations while retaining frozen v6 compatibility.
+No market credential, raw provider payload, or trade-execution authority is
+introduced by this migration.
 
 Android release builds fail closed when a production signing identity is not
 available. On the release Mac, `apps/flutter/tool/build_android_release.sh`
