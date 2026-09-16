@@ -41,7 +41,24 @@ if ! command -v flutter >/dev/null 2>&1; then
 fi
 
 cd "$task_flutter_dir"
-flutter build macos --release "$@"
+if [[ "$task_signing_mode" == "developer" ]]; then
+  flutter build macos --release "$@"
+else
+  # Xcode 27 refuses its automatic signing phase when App Group entitlements
+  # are present but the owner-only identity has no Apple TeamIdentifier. Build
+  # the exact Flutter Release product unsigned, then sign the extension and app
+  # explicitly below with the private identity and retained entitlements.
+  flutter build macos --release --config-only "$@"
+  xcodebuild \
+    -quiet \
+    -workspace macos/Runner.xcworkspace \
+    -scheme Runner \
+    -configuration Release \
+    SYMROOT="$task_flutter_dir/build/macos/Build/Products" \
+    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGNING_REQUIRED=NO \
+    build
+fi
 
 task_source_app="$task_flutter_dir/build/macos/Build/Products/Release/omniagent.app"
 if [[ ! -d "$task_source_app" ]]; then
