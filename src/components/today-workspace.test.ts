@@ -26,6 +26,19 @@ describe("cohesive Today workspace", () => {
     expect(source).toContain("cosmicBackdrop");
     expect(source).toContain("Active agents");
     expect(source).toContain("visibleSections");
+    expect(source).toContain("today-overview-dial");
+    expect(source).toContain("today-overview-summary");
+
+    const consumptionIndex = source.indexOf("<UsageCockpit");
+    const dataConfidenceIndex = source.indexOf(
+      '<section className={styles.projectionStatus}',
+    );
+    const knowledgeConfidenceIndex = source.indexOf(
+      '<SourceCoveragePanel surface="today" />',
+    );
+    expect(consumptionIndex).toBeGreaterThan(-1);
+    expect(dataConfidenceIndex).toBeGreaterThan(consumptionIndex);
+    expect(knowledgeConfidenceIndex).toBeGreaterThan(dataConfidenceIndex);
   });
 
   it("keeps the authenticated actor scope inside the cohesive service boundary", async () => {

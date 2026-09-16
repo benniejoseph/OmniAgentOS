@@ -430,25 +430,27 @@ export function TodayWorkspace({
       ) : null}
 
       <section className="today-overview" aria-labelledby="today-overview-title">
-        <div className={styles.dayArc} aria-hidden="true">
-          <svg viewBox="0 0 1200 210" preserveAspectRatio="none">
-            <path d="M18 176C250 48 398 27 601 28c202 1 364 28 581 148" />
-          </svg>
-          <span />
-        </div>
         <div className="today-overview-heading">
           <div>
             <h2 id="today-overview-title">At a glance</h2>
-            <p>Open any area to continue where you left off.</p>
+            <p>Your focus, schedule, active work, and recent context in one view.</p>
           </div>
+          <span className="today-overview-summary">
+            <strong>{completed}</strong> completed
+            <i aria-hidden="true" />
+            <strong>{open.length}</strong> open
+          </span>
         </div>
-        <div className="today-overview-list">
+        <div className="today-overview-list" aria-label="Today overview">
           {visibleSections.has("focus") ? <TodayOverviewLink
             icon={Circle}
             label="Open today"
             value={open.length}
             detail={`${completed} completed`}
             href="#today-focus"
+            tone="focus"
+            featured
+            progress={{ completed, total: visibleItems.length }}
           /> : null}
           {visibleSections.has("agenda") ? <TodayOverviewLink
             icon={CalendarDays}
@@ -456,6 +458,7 @@ export function TodayWorkspace({
             value={agenda.filter((item) => item.kind === "meeting" || item.kind === "commitment").length}
             detail={`${agenda.filter((item) => item.kind === "meeting").length} meetings`}
             href="#today-agenda"
+            tone="agenda"
           /> : null}
           {visibleSections.has("active_agents") || visibleSections.has("work") ? <TodayOverviewLink
             icon={Workflow}
@@ -463,6 +466,7 @@ export function TodayWorkspace({
             value={activeWork.length}
             detail="Agents and workflows"
             href="/app/workflows"
+            tone="work"
           /> : null}
           {visibleSections.has("approvals") ? <TodayOverviewLink
             icon={Bell}
@@ -471,6 +475,8 @@ export function TodayWorkspace({
             detail="Waiting for review"
             href="/app/approvals"
             attention={approvals.length > 0}
+            tone="approvals"
+            wide
           /> : null}
           {visibleSections.has("work") ? <TodayOverviewLink
             icon={FolderKanban}
@@ -478,6 +484,7 @@ export function TodayWorkspace({
             value={today.projects?.length || 0}
             detail="Active projects in view"
             href="/app/projects"
+            tone="projects"
           /> : null}
           {visibleSections.has("customers") ? <TodayOverviewLink
             icon={Building2}
@@ -486,6 +493,7 @@ export function TodayWorkspace({
             detail={`${customerPortfolio?.counts.pendingApprovals || 0} approvals · ${customerPortfolio?.counts.overdueCommitments || 0} overdue`}
             href="/app/accounts"
             attention={Boolean(customerPortfolio?.counts.urgent || customerPortfolio?.counts.attention)}
+            tone="customers"
           /> : null}
           {visibleSections.has("memory") ? <TodayOverviewLink
             icon={BrainCircuit}
@@ -493,6 +501,7 @@ export function TodayWorkspace({
             value={today.memories.length}
             detail="Recent memories in view"
             href="/app/memory"
+            tone="memory"
           /> : null}
           {visibleSections.has("conversations") ? <TodayOverviewLink
             icon={MessageSquareText}
@@ -500,28 +509,10 @@ export function TodayWorkspace({
             value={today.threads.length}
             detail="Recent threads"
             href="/app/command"
+            tone="conversations"
           /> : null}
         </div>
       </section>
-
-      <section className={styles.projectionStatus} aria-labelledby="today-projection-status-title">
-        <div>
-          <p className={styles.projectionKicker}>Data confidence</p>
-          <h2 id="today-projection-status-title">Trusted status</h2>
-          <p>See which parts of Asael are current enough to rely on. If a source cannot be checked, Asael says so instead of pretending it is empty.</p>
-        </div>
-        <div className={styles.sourceStateGrid}>
-          {sourceStates.map((source) => (
-            <div key={source.source} className={styles.sourceState} data-status={source.status}>
-              <span>{sourceLabel(source.source)}</span>
-              <strong>{sourceStatusLabel(source.status)}</strong>
-              <small>{source.lastChangedAt ? `Last change ${formatTodayRelative(source.lastChangedAt, relativeAsOf)}` : source.detail}</small>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <SourceCoveragePanel surface="today" />
 
       <section className="today-generated-brief" aria-labelledby="daily-brief-title">
         <div className="today-brief-lead">
@@ -739,6 +730,25 @@ export function TodayWorkspace({
         onPeriodChange={setUsagePeriod}
         onRetry={() => void load({ force: true, showLoading: true })}
       /> : null}
+
+      <section className={styles.projectionStatus} aria-labelledby="today-projection-status-title">
+        <div>
+          <p className={styles.projectionKicker}>Data confidence</p>
+          <h2 id="today-projection-status-title">Trusted status</h2>
+          <p>See which parts of Asael are current enough to rely on. If a source cannot be checked, Asael says so instead of pretending it is empty.</p>
+        </div>
+        <div className={styles.sourceStateGrid}>
+          {sourceStates.map((source) => (
+            <div key={source.source} className={styles.sourceState} data-status={source.status}>
+              <span>{sourceLabel(source.source)}</span>
+              <strong>{sourceStatusLabel(source.status)}</strong>
+              <small>{source.lastChangedAt ? `Last change ${formatTodayRelative(source.lastChangedAt, relativeAsOf)}` : source.detail}</small>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <SourceCoveragePanel surface="today" />
     </main>
   );
 }
@@ -1086,6 +1096,10 @@ function TodayOverviewLink({
   detail,
   href,
   attention = false,
+  featured = false,
+  wide = false,
+  progress,
+  tone,
 }: {
   icon: typeof Workflow;
   label: string;
@@ -1093,9 +1107,64 @@ function TodayOverviewLink({
   detail: string;
   href: string;
   attention?: boolean;
+  featured?: boolean;
+  wide?: boolean;
+  progress?: { completed: number; total: number };
+  tone: "focus" | "agenda" | "work" | "approvals" | "projects" | "customers" | "memory" | "conversations";
 }) {
+  const completion = progress?.total
+    ? Math.round(progress.completed / progress.total * 100)
+    : 0;
+  const circumference = 2 * Math.PI * 27;
+
+  if (featured) {
+    return (
+      <Link
+        href={href}
+        className={clsx("today-overview-item", "is-featured", attention && "needs-attention")}
+        data-tone={tone}
+      >
+        <span className="today-overview-featured-head">
+          <span className="today-overview-icon"><Icon size={18} aria-hidden="true" /></span>
+          <strong>{label}</strong>
+          <ArrowRight size={16} aria-hidden="true" />
+        </span>
+        <span className="today-overview-featured-body">
+          <span
+            className="today-overview-dial"
+            aria-label={`${progress?.completed || 0} of ${progress?.total || 0} focus items completed`}
+          >
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <circle cx="32" cy="32" r="27" />
+              <circle
+                className="today-overview-dial-value"
+                cx="32"
+                cy="32"
+                r="27"
+                style={{
+                  strokeDasharray: circumference,
+                  strokeDashoffset: circumference * (1 - completion / 100),
+                }}
+              />
+            </svg>
+            <span><strong>{value}</strong><small>open</small></span>
+          </span>
+          <span className="today-overview-featured-copy">
+            <strong>{detail}</strong>
+            <small>{progress?.total ? `${completion}% of today’s list complete` : "Your focus list is clear"}</small>
+            <span aria-hidden="true"><i style={{ width: `${completion}%` }} /></span>
+          </span>
+        </span>
+      </Link>
+    );
+  }
+
   return (
-    <Link href={href} className={clsx("today-overview-item", attention && "needs-attention")}>
+    <Link
+      href={href}
+      className={clsx("today-overview-item", wide && "is-wide", attention && "needs-attention")}
+      data-tone={tone}
+    >
       <span className="today-overview-icon"><Icon size={17} aria-hidden="true" /></span>
       <span className="today-overview-copy"><strong>{label}</strong><small>{detail}</small></span>
       <span className="today-overview-value">{value}</span>

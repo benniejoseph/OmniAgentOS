@@ -477,22 +477,39 @@ test("Today explains trusted data and keeps the agenda aligned", async ({ page }
   await signIn(page);
   await expect(page.getByRole("heading", { name: "Trusted status" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "What Asael can reliably use" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "At a glance" })).toBeVisible();
   await expect(page.getByText("Setup and readiness", { exact: true })).toHaveCount(0);
   expect(readinessRequests).toEqual([]);
 
   expect(await page.evaluate(() => {
     const trusted = document.querySelector("#today-projection-status-title")?.closest("section");
     const usage = document.querySelector("#usage-cockpit-title")?.closest("section");
-    return Boolean(trusted && usage && (trusted.compareDocumentPosition(usage) & Node.DOCUMENT_POSITION_FOLLOWING));
+    const knowledge = document.querySelector("#source-coverage-title-today")?.closest("section");
+    return Boolean(
+      trusted &&
+      usage &&
+      knowledge &&
+      (usage.compareDocumentPosition(trusted) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+      (trusted.compareDocumentPosition(knowledge) & Node.DOCUMENT_POSITION_FOLLOWING),
+    );
   })).toBe(true);
+
+  const overview = page.locator(".today-overview-list");
+  const featuredOverview = overview.locator(".today-overview-item.is-featured");
+  const regularOverview = overview.locator(".today-overview-item:not(.is-featured)").first();
+  const featuredBox = await featuredOverview.boundingBox();
+  const regularBox = await regularOverview.boundingBox();
+  expect(featuredBox).not.toBeNull();
+  expect(regularBox).not.toBeNull();
+  expect(featuredBox!.height).toBeGreaterThan(regularBox!.height);
 
   const coverageIsFullWidth = await page.getByRole("heading", {
     name: "What Asael can reliably use",
   }).evaluate((heading) => {
     const panel = heading.closest("section");
-    const parent = panel?.parentElement;
-    if (!panel || !parent) return false;
-    return Math.abs(panel.getBoundingClientRect().width - parent.getBoundingClientRect().width) < 2;
+    const overview = document.querySelector(".today-overview");
+    if (!panel || !overview) return false;
+    return Math.abs(panel.getBoundingClientRect().width - overview.getBoundingClientRect().width) < 2;
   });
   expect(coverageIsFullWidth).toBe(true);
 
@@ -506,6 +523,11 @@ test("Today explains trusted data and keeps the agenda aligned", async ({ page }
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: "Agenda" })).toBeVisible();
+  const mobileOverviewBox = await overview.boundingBox();
+  const mobileFeaturedBox = await featuredOverview.boundingBox();
+  expect(mobileOverviewBox).not.toBeNull();
+  expect(mobileFeaturedBox).not.toBeNull();
+  expect(Math.abs(mobileOverviewBox!.width - mobileFeaturedBox!.width)).toBeLessThanOrEqual(2);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
