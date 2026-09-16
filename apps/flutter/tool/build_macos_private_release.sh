@@ -14,6 +14,17 @@ task_local_signing_identity="${ASAEL_MACOS_LOCAL_SIGNING_IDENTITY:-Asael Private
 task_signing_identity="$task_developer_signing_identity"
 task_signing_mode="developer"
 task_codesign_keychain_args=()
+task_version_line="$(awk '/^version:/ { print $2; exit }' "$task_flutter_dir/pubspec.yaml")"
+task_version="${task_version_line%%+*}"
+task_build="${task_version_line#*+}"
+if [[ "$task_build" == "$task_version_line" ]]; then
+  task_build="0"
+fi
+task_flutter_build_args=(
+  "$@"
+  "--dart-define=APP_VERSION=$task_version"
+  "--dart-define=APP_BUILD_NUMBER=$task_build"
+)
 
 if [[ -z "$task_developer_signing_identity" ]]; then
   if [[ -f "$task_local_signing_keychain" && -f "$task_local_signing_password_file" ]]; then
@@ -42,13 +53,13 @@ fi
 
 cd "$task_flutter_dir"
 if [[ "$task_signing_mode" == "developer" ]]; then
-  flutter build macos --release "$@"
+  flutter build macos --release "${task_flutter_build_args[@]}"
 else
   # Xcode 27 refuses its automatic signing phase when App Group entitlements
   # are present but the owner-only identity has no Apple TeamIdentifier. Build
   # the exact Flutter Release product unsigned, then sign the extension and app
   # explicitly below with the private identity and retained entitlements.
-  flutter build macos --release --config-only "$@"
+  flutter build macos --release --config-only "${task_flutter_build_args[@]}"
   xcodebuild \
     -quiet \
     -workspace macos/Runner.xcworkspace \
@@ -64,13 +75,6 @@ task_source_app="$task_flutter_dir/build/macos/Build/Products/Release/omniagent.
 if [[ ! -d "$task_source_app" ]]; then
   echo "Expected macOS application was not produced: $task_source_app" >&2
   exit 1
-fi
-
-task_version_line="$(awk '/^version:/ { print $2; exit }' pubspec.yaml)"
-task_version="${task_version_line%%+*}"
-task_build="${task_version_line#*+}"
-if [[ "$task_build" == "$task_version_line" ]]; then
-  task_build="0"
 fi
 
 mkdir -p "$task_dist_dir"
