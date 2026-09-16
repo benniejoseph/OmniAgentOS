@@ -17,7 +17,7 @@ void main() {
     expect(options.usesDataProtectionKeychain, isFalse);
     expect(options.groupId, isNull);
     expect(options.synchronizable, isFalse);
-    expect(options.accessibility, KeychainAccessibility.unlocked_this_device);
+    expect(options.accessibility, isNull);
   });
 
   test('other native platforms retain their default secure-storage policy', () {

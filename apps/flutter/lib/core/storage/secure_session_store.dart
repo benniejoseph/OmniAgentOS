@@ -254,7 +254,9 @@ FlutterSecureStorage createAsaelSecureStorage({
   // silently widening this credential boundary.
   return const FlutterSecureStorage(
     mOptions: MacOsOptions(
-      accessibility: KeychainAccessibility.unlocked_this_device,
+      // kSecAttrAccessible selects the data-protection Keychain on macOS.
+      // Leave it unset when using the ordinary login Keychain.
+      accessibility: null,
       synchronizable: false,
       usesDataProtectionKeychain: false,
     ),
