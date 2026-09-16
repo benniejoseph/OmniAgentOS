@@ -188,9 +188,10 @@ Computer Use gateway remain healthy and required no rebuild.
    human-reviewed production-shadow sample must still pass before semantic prompt
    serving; outcome-weighted ranking, paraphrase/conflict classification, and
    automatic Mnemosyne execution remain separately gated. Memory Reviews now has
-   a bounded actor-scoped collector for sealed episode enrichments and tracks its
-   background jobs without affecting answers. Human adjudication across the ten
-   required dimensions and a qualifying gate result are still pending.
+   a bounded actor-scoped collector plus a content-safe human review bench for
+   sealed episode enrichments. The remaining operation is to collect and review
+   24 cases across six conversations and all ten dimensions, add the separate
+   retrieval-rank probe, and produce a qualifying gate result.
 2. Trading: transcript-authoritative ICT ontology and promotions, false-positive
    review, asynchronous deterministic backtesting, consensus/surprise and regime
    conditioning, statistically defensible calibration, deeper XAU/USD history,
@@ -226,6 +227,11 @@ Computer Use gateway remain healthy and required no rebuild.
   job-projection checks passed with affected lint, TypeScript, diff validation,
   and the Vercel production build; canonical production serves exact revision
   `b73591b574060dec8a4fcd8801f38bc3d9a44667`.
+- Semantic shadow adjudication: 39 focused gate, review, route, form, store, and
+  job-projection checks passed with affected lint, TypeScript, diff validation,
+  and the Vercel production build. Canonical web and the release-active Fly
+  worker serve exact revision `74e4c05b875737a9050bd32c78c0adbad5019736`;
+  anonymous review access is 401 with private/no-store caching.
 - Changed-file lint, TypeScript, and diff validation passed for the deployed
   retention, App Builder, and session-cache changes; no full suite or broad audit
   was run.
@@ -234,8 +240,8 @@ Computer Use gateway remain healthy and required no rebuild.
 
 1. Complete the authenticated App Builder preview click-through and prove one
    end-to-end Asael repo iteration in Build Studio.
-2. Collect the bounded semantic episode sample from Memory Reviews, then build
-   the content-safe human adjudication workflow required by the activation gate.
+2. Collect and adjudicate the bounded semantic episode sample in Memory Reviews,
+   then run the separate retrieval-rank probe required by the activation gate.
 3. Profile the next Command interaction after the deployed live-refresh repair,
    then extract only the measured hot boundary.
 4. Close the Android notification receipt while a device is connected.
