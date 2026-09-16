@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 8;
-  static const previousVersion = 7;
-  static const supportedVersions = <int>[8, 7];
+  static const currentVersion = 9;
+  static const previousVersion = 8;
+  static const supportedVersions = <int>[9, 8];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -111,6 +111,9 @@ abstract final class NativeContract {
     'workspaces.builder.update',
     'market.backtests',
     'market.backtests.run',
+    'threads.list',
+    'threads.get',
+    'capture.asset.get',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -168,7 +171,18 @@ abstract final class NativePaths {
   static const agentsList = '/api/agents';
   static const agentsPerformance = '/api/agents/performance';
   static const skillsList = '/api/skills';
-  static const memoryList = '/api/memory';
+  static String memoryList({String? threadId, int? limit}) {
+    final path = '/api/memory';
+    final query = <String, String>{
+      'threadId': ?threadId,
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
   static const memoryGraphGet = '/api/memory/graph';
   static const knowledgeList = '/api/knowledge';
   static const missionsList = '/api/missions';
@@ -237,6 +251,29 @@ abstract final class NativePaths {
   static String workspacesBuilderUpdate(String id) => '/api/projects/${Uri.encodeComponent(id)}/builder';
   static const marketBacktests = '/api/market-research/backtests';
   static const marketBacktestsRun = '/api/market-research/backtests';
+  static String threadsList({int? limit}) {
+    final path = '/api/threads';
+    final query = <String, String>{
+      if (limit != null) 'limit': limit.toString(),
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
+  static String threadsGet(String id) => '/api/threads/${Uri.encodeComponent(id)}';
+  static String captureAssetGet(String id, {bool content = false}) {
+    final path = '/api/capture/assets/${Uri.encodeComponent(id)}';
+    final query = <String, String>{
+      if (content) 'content': '1',
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '$path?$encoded';
+  }
 }
 
 abstract final class NativeConversationEvents {

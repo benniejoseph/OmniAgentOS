@@ -3,12 +3,20 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 7);
-    expect(NativeContract.previousVersion, 6);
-    expect(NativeContract.supportedVersions, [7, 6]);
+    expect(NativeContract.currentVersion, 9);
+    expect(NativeContract.previousVersion, 8);
+    expect(NativeContract.supportedVersions, [9, 8]);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
+    );
+    expect(
+      NativePaths.memoryList(threadId: 'thread/one', limit: 40),
+      '/api/memory?threadId=thread%2Fone&limit=40',
+    );
+    expect(
+      NativePaths.captureAssetGet('asset one', content: true),
+      '/api/capture/assets/asset%20one?content=1',
     );
   });
 
@@ -22,7 +30,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [7, 6],
+            'supportedVersions': [9, 8],
           },
         },
       }),
@@ -33,7 +41,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [8, 9],
+            'supportedVersions': [10, 11],
           },
         },
       }),

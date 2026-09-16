@@ -4,6 +4,7 @@ const routeMocks = vi.hoisted(() => ({
   authorizeRequest: vi.fn(),
   indexMemoryGraphRecords: vi.fn(),
   indexUserPrivateMemoryGraphRecords: vi.fn(),
+  getOwnedThread: vi.fn(),
   listMemories: vi.fn(),
   listThreadMemories: vi.fn(),
   projectExplicitMemoryEntities: vi.fn(),
@@ -44,7 +45,9 @@ vi.mock("@/lib/openai/client", () => ({
   embedTexts: routeMocks.embedTexts,
 }));
 
-vi.mock("@/lib/threads/store", () => ({ getOwnedThread: vi.fn() }));
+vi.mock("@/lib/threads/store", () => ({
+  getOwnedThread: routeMocks.getOwnedThread,
+}));
 
 import { GET, POST } from "@/app/api/memory/route";
 import { MEMORY_PURPOSE_IDS } from "@/lib/memory/access-binding";
@@ -76,6 +79,7 @@ describe("memory API private canary", () => {
     routeMocks.authorizeRequest.mockReset().mockResolvedValue(context);
     routeMocks.indexMemoryGraphRecords.mockReset();
     routeMocks.indexUserPrivateMemoryGraphRecords.mockReset();
+    routeMocks.getOwnedThread.mockReset().mockResolvedValue(null);
     routeMocks.listMemories.mockReset()
       .mockResolvedValueOnce([legacyMemory])
       .mockResolvedValueOnce([]);
@@ -117,6 +121,50 @@ describe("memory API private canary", () => {
         },
       }],
     });
+  });
+
+  it("resolves an owned thread before listing its scoped memory", async () => {
+    routeMocks.getOwnedThread.mockResolvedValue({
+      id: "thread-a",
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+    });
+
+    const response = await GET(new Request(
+      "http://localhost/api/memory?threadId=thread-a&limit=9",
+    ));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(routeMocks.getOwnedThread).toHaveBeenCalledWith(
+      "thread-a",
+      expect.objectContaining({
+        tenantId: context.tenantId,
+        actorId: context.actorId,
+        requestActorBinding: expect.objectContaining({
+          canonicalActorId:
+            "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        }),
+      }),
+    );
+    expect(routeMocks.listThreadMemories).toHaveBeenCalledTimes(2);
+    expect(routeMocks.listThreadMemories).toHaveBeenNthCalledWith(
+      1,
+      "thread-a",
+      { tenantId: context.tenantId, limit: 9 },
+    );
+    expect(routeMocks.listThreadMemories).toHaveBeenNthCalledWith(
+      2,
+      "thread-a",
+      expect.objectContaining({
+        tenantId: context.tenantId,
+        limit: 9,
+        accessScope: expect.objectContaining({
+          initiatingActorId:
+            "actor:a30f9e6c-51f4-4c3c-a0c0-7c62242f1db6",
+        }),
+      }),
+    );
   });
 
   it("creates canonical user-private memory with actor-scoped graph indexing", async () => {

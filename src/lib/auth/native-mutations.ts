@@ -72,9 +72,9 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
-  // Backtests were enrolled in v7. Keep that rollout floor stable when the
-  // current document advances so a supported v7 client does not lose an
-  // already granted capability.
+  // Backtests were enrolled in v7. Keep that capability floor stable when the
+  // current document advances; compatibility still independently limits calls
+  // to the current and immediately previous native contracts.
   if (capability === "markets.backtest.run") return 7;
   if (
     capability === "push.registration.update" ||

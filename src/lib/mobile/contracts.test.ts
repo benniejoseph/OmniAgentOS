@@ -14,15 +14,18 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(8);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(7);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(9);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(8);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
-    expect(nativeOperationsForVersion(9)).toBeUndefined();
+    expect(nativeOperationsForVersion(9)?.length).toBe(
+      (nativeOperationsForVersion(8)?.length || 0) + 3,
+    );
+    expect(nativeOperationsForVersion(10)).toBeUndefined();
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([8, 7]);
+    ).supportedVersions).toEqual([9, 8]);
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {
@@ -43,7 +46,35 @@ describe("native API contracts", () => {
     expect(unenrolledMutationIds.every((id) => !v8OperationIds.has(id))).toBe(true);
   });
 
-  it("generates a Dart capability set from current v8 operations", async () => {
+  it("adds only scoped reads for durable conversations in v9", () => {
+    const v8OperationIds = new Set(
+      nativeOperationsForVersion(8)?.map((operation) => operation.id),
+    );
+    const v9Operations = nativeOperationsForVersion(9) || [];
+    const v9OperationIds = new Set(v9Operations.map((operation) => operation.id));
+    expect([...v9OperationIds].filter((id) => !v8OperationIds.has(id))).toEqual([
+      "threads.list",
+      "threads.get",
+      "capture.asset.get",
+    ]);
+    expect(
+      v9Operations
+        .filter((operation) => !v8OperationIds.has(operation.id))
+        .every((operation) => operation.method === "GET" && operation.auth === "bearer"),
+    ).toBe(true);
+    expect(
+      v9Operations.find((operation) => operation.id === "memory.list"),
+    ).toMatchObject({
+      method: "GET",
+      path: "/api/memory",
+      queryParameters: [
+        { name: "threadId", type: "string", maxLength: 200 },
+        { name: "limit", type: "integer", maximum: 100 },
+      ],
+    });
+  });
+
+  it("generates a Dart capability set from current v9 operations", async () => {
     const dart = await readFile(
       new URL(
         "../../../apps/flutter/lib/generated/native_contract.g.dart",
@@ -54,6 +85,10 @@ describe("native API contracts", () => {
 
     expect(dart).toContain("static const operationIds = <String>{");
     expect(dart).toContain("'market.backtests.run',");
+    expect(dart).toContain("'threads.list',");
+    expect(dart).toContain("'threads.get',");
+    expect(dart).toContain("'capture.asset.get',");
+    expect(dart).toContain("static String memoryList({String? threadId, int? limit})");
     expect(dart).not.toContain("'agents.create',");
     expect(dart).not.toContain("'admin.workflows.tick',");
   });
@@ -68,13 +103,13 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 8,
+        clientContractVersion: 9,
       },
     };
     expect(nativeLoginRequestSchema.safeParse(request).success).toBe(true);
     expect(nativeLoginRequestSchema.safeParse({
       ...request,
-      device: { ...request.device, clientContractVersion: 7 },
+      device: { ...request.device, clientContractVersion: 8 },
     }).success).toBe(true);
     expect(nativeLoginRequestSchema.safeParse({
       ...request,
@@ -113,7 +148,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 8 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 9 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -125,9 +160,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 8,
-          previousVersion: 7,
-          supportedVersions: [8, 7],
+          currentVersion: 9,
+          previousVersion: 8,
+          supportedVersions: [9, 8],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -136,14 +171,14 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 8,
+        clientContractVersion: 9,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 8,
-        supportedContractVersions: [8, 7],
+        requiredContractVersion: 9,
+        supportedContractVersions: [9, 8],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(8);
+    }).api.nativeContract.currentVersion).toBe(9);
   });
 });

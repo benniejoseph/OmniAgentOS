@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 8 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 7 as const;
+export const NATIVE_API_CURRENT_VERSION = 9 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 8 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -318,6 +318,18 @@ export type NativeOperation = Readonly<{
   requestSchema?: string;
   responseSchema: string;
   mediaType?: "application/json" | "text/event-stream" | "multipart/form-data";
+  queryParameters?: readonly NativeQueryParameter[];
+  binaryResponse?: boolean;
+}>;
+
+export type NativeQueryParameter = Readonly<{
+  name: string;
+  type: "string" | "integer" | "flag";
+  required?: boolean;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
 }>;
 
 const v1Operations = [
@@ -489,6 +501,58 @@ const v8Operations: readonly NativeOperation[] = v7Operations.filter(
   (operation) => !v8UnenrolledMutationOperationIds.has(operation.id),
 );
 
+// Contract v9 adds only authenticated reads needed for durable desktop
+// conversations. The existing Memory collection read gains an explicit
+// thread filter; no new write or authority path is introduced.
+const v9Operations: readonly NativeOperation[] = [
+  ...v8Operations.map((candidate) => candidate.id === "memory.list"
+    ? {
+        ...candidate,
+        summary: "Read actor-scoped memory, optionally limited to one exact owned thread.",
+        queryParameters: [
+          queryParameter("threadId", "string", { minLength: 1, maxLength: 200 }),
+          queryParameter("limit", "integer", { minimum: 1, maximum: 100 }),
+        ],
+      }
+    : candidate),
+  operation(
+    "threads.list",
+    "GET",
+    "/api/threads",
+    "Read the authenticated actor's durable conversation threads.",
+    "bearer",
+    undefined,
+    "JsonObject",
+    {
+      queryParameters: [
+        queryParameter("limit", "integer", { minimum: 1, maximum: 100 }),
+      ],
+    },
+  ),
+  operation(
+    "threads.get",
+    "GET",
+    "/api/threads/{id}",
+    "Read one exact owned thread with bounded turns and public summaries.",
+    "bearer",
+    undefined,
+    "JsonObject",
+  ),
+  operation(
+    "capture.asset.get",
+    "GET",
+    "/api/capture/assets/{id}",
+    "Read scoped asset metadata or integrity-verified content with content=1.",
+    "bearer",
+    undefined,
+    "JsonObject",
+    {
+      queryParameters: [queryParameter("content", "flag")],
+      binaryResponse: true,
+    },
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -543,6 +607,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 6) return v6Operations;
   if (version === 7) return v7Operations;
   if (version === 8) return v8Operations;
+  if (version === 9) return v9Operations;
   return undefined;
 }
 
@@ -552,7 +617,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [8, 7],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [9, 8],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
@@ -572,6 +637,24 @@ function operation(
   auth: NativeOperation["auth"],
   requestSchema: string | undefined,
   responseSchema: string,
+  options: Pick<NativeOperation, "queryParameters" | "binaryResponse"> = {},
 ): NativeOperation {
-  return { id, method, path, summary, auth, requestSchema, responseSchema };
+  return {
+    id,
+    method,
+    path,
+    summary,
+    auth,
+    requestSchema,
+    responseSchema,
+    ...options,
+  };
+}
+
+function queryParameter(
+  name: string,
+  type: NativeQueryParameter["type"],
+  constraints: Omit<NativeQueryParameter, "name" | "type"> = {},
+): NativeQueryParameter {
+  return { name, type, ...constraints };
 }

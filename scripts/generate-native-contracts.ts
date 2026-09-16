@@ -11,15 +11,24 @@ import {
   nativeContractSchemas,
   nativeOperationsForVersion,
   type NativeOperation,
+  type NativeQueryParameter,
 } from "../src/lib/mobile/contracts";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.includes("--check");
-const frozenPreviousDocumentSha256 = Object.freeze({
-  "openapi.json": "5bd9b2d62d94caedee930a9b032ab55154a5ae3cddfa9f5295685cbd3fe5fee8",
-  "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
-  "fixtures.json": "f69fc5b08b1006e4943c4e5a38df63e91ac5ef3b4f7c325e873f98d64746edb0",
-  "manifest.json": "ba176b99472920cd9a4ca0ca34770e43812cc1653d5d99ce3e94c3e26e416f41",
+const frozenDocumentSha256ByVersion = Object.freeze({
+  7: Object.freeze({
+    "openapi.json": "5bd9b2d62d94caedee930a9b032ab55154a5ae3cddfa9f5295685cbd3fe5fee8",
+    "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
+    "fixtures.json": "f69fc5b08b1006e4943c4e5a38df63e91ac5ef3b4f7c325e873f98d64746edb0",
+    "manifest.json": "ba176b99472920cd9a4ca0ca34770e43812cc1653d5d99ce3e94c3e26e416f41",
+  }),
+  8: Object.freeze({
+    "openapi.json": "64ee18c3a5cf79fb7cd145897ccabaf45e9a7b23aca6510fb77cbab13923d7f7",
+    "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
+    "fixtures.json": "8c677a783d4004b3d947d9a6abfbbae3012a83a7efa034ba76d73047ad64d395",
+    "manifest.json": "d5c41419fbd4ff6885519a349117e3d529fcb28207966bf0d9577bacdc4a3745",
+  }),
 });
 
 const fixtures = Object.freeze({
@@ -67,10 +76,18 @@ void generate().catch((error: unknown) => {
 
 async function generate() {
   const expected = new Map<string, string>();
+  for (const [version, documents] of Object.entries(
+    frozenDocumentSha256ByVersion,
+  )) {
+    await retainFrozenContract(
+      expected,
+      path.join(repositoryRoot, "public", "native-contracts", `v${version}`),
+      documents,
+    );
+  }
   for (const version of NATIVE_API_SUPPORTED_VERSIONS) {
     const directory = path.join(repositoryRoot, "public", "native-contracts", `v${version}`);
     if (version === NATIVE_API_PREVIOUS_VERSION) {
-      await retainFrozenPreviousContract(expected, directory);
       continue;
     }
     const operations = nativeOperationsForVersion(version);
@@ -127,20 +144,21 @@ async function generate() {
   process.stdout.write(`Generated native contracts v${NATIVE_API_CURRENT_VERSION} and v${NATIVE_API_PREVIOUS_VERSION}.\n`);
 }
 
-async function retainFrozenPreviousContract(
+async function retainFrozenContract(
   expected: Map<string, string>,
   directory: string,
+  documents: Readonly<Record<string, string>>,
 ) {
   for (const [basename, expectedSha256] of Object.entries(
-    frozenPreviousDocumentSha256,
+    documents,
   )) {
     const filename = path.join(directory, basename);
     const content = await readFile(filename, "utf8").catch(() => undefined);
     if (content === undefined) {
-      throw new Error(`Missing frozen previous native contract: ${path.relative(repositoryRoot, filename)}`);
+      throw new Error(`Missing frozen native contract: ${path.relative(repositoryRoot, filename)}`);
     }
     if (sha256(content) !== expectedSha256) {
-      throw new Error(`Frozen previous native contract changed: ${path.relative(repositoryRoot, filename)}`);
+      throw new Error(`Frozen native contract changed: ${path.relative(repositoryRoot, filename)}`);
     }
     expected.set(filename, content);
   }
@@ -149,12 +167,19 @@ async function retainFrozenPreviousContract(
 function openApiDocument(version: number, operations: readonly NativeOperation[]) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const operation of operations) {
-    const parameters = [...operation.path.matchAll(/\{([^}]+)\}/g)].map((match) => ({
+    const pathParameters = [...operation.path.matchAll(/\{([^}]+)\}/g)].map((match) => ({
       name: match[1],
       in: "path",
       required: true,
       schema: { type: "string", minLength: 1, maxLength: 200 },
     }));
+    const queryParameters = (operation.queryParameters || []).map((parameter) => ({
+      name: parameter.name,
+      in: "query",
+      required: parameter.required || false,
+      schema: openApiQueryParameterSchema(parameter),
+    }));
+    const parameters = [...pathParameters, ...queryParameters];
     const mediaType = operation.mediaType || "application/json";
     const requestBody = operation.requestSchema && operation.method !== "GET"
       ? {
@@ -177,7 +202,16 @@ function openApiDocument(version: number, operations: readonly NativeOperation[]
       responses: {
         "200": {
           description: "Successful response.",
-          content: { [mediaType]: { schema: ref(operation.responseSchema) } },
+          content: {
+            [mediaType]: { schema: ref(operation.responseSchema) },
+            ...(operation.binaryResponse
+              ? {
+                  "application/octet-stream": {
+                    schema: { type: "string", format: "binary" },
+                  },
+                }
+              : {}),
+          },
         },
         "400": errorResponse(),
         "401": errorResponse(),
@@ -240,13 +274,37 @@ function renderDartContract(operations: readonly NativeOperation[]) {
   const paths = operations.map((operation) => {
     const name = dartName(operation.id);
     const parameters = [...operation.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
-    if (!parameters.length) return `  static const ${name} = '${operation.path}';`;
-    const args = parameters.map((parameter) => `String ${parameter}`).join(", ");
+    const queryParameters = operation.queryParameters || [];
+    if (!parameters.length && !queryParameters.length) {
+      return `  static const ${name} = '${operation.path}';`;
+    }
+    const positionalArgs = parameters.map((parameter) => `String ${parameter}`);
+    const namedArgs = queryParameters.map(dartQueryParameterDeclaration);
+    const args = [
+      ...positionalArgs,
+      ...(namedArgs.length ? [`{${namedArgs.join(", ")}}`] : []),
+    ].join(", ");
     let rendered = operation.path;
     for (const parameter of parameters) {
       rendered = rendered.replace(`{${parameter}}`, `\${Uri.encodeComponent(${parameter})}`);
     }
-    return `  static String ${name}(${args}) => '${rendered}';`;
+    if (!queryParameters.length) {
+      return `  static String ${name}(${args}) => '${rendered}';`;
+    }
+    const queryEntries = queryParameters
+      .map(dartQueryParameterEntry)
+      .join("\n");
+    return `  static String ${name}(${args}) {
+    final path = '${rendered}';
+    final query = <String, String>{
+${queryEntries}
+    };
+    if (query.isEmpty) return path;
+    final encoded = query.entries
+        .map((entry) => '\${Uri.encodeQueryComponent(entry.key)}=\${Uri.encodeQueryComponent(entry.value)}')
+        .join('&');
+    return '\$path?\$encoded';
+  }`;
   }).join("\n");
   const eventTypes = agentEventSchemasForDart().map((value) => `    '${value}',`).join("\n");
   return `// GENERATED FILE. DO NOT EDIT.\n// Run npm run generate:native-contracts from the repository root.\n\nabstract final class NativeContract {\n  static const id = '${NATIVE_API_CONTRACT_ID}';\n  static const currentVersion = ${NATIVE_API_CURRENT_VERSION};\n  static const previousVersion = ${NATIVE_API_PREVIOUS_VERSION};\n  static const supportedVersions = <int>[${NATIVE_API_SUPPORTED_VERSIONS.join(", ")}];\n  static const discoveryPath = '/api/mobile/contracts';\n  static const operationIds = <String>{\n${operationIds}\n  };\n\n  static bool supports(int version) => supportedVersions.contains(version);\n  static bool supportsOperation(String operationId) => operationIds.contains(operationId);\n\n  static void verifyBootstrap(Map<String, dynamic> response) {\n    final api = response['api'];\n    if (api is! Map || api['nativeContract'] == null) {\n      // The immediately previous server did not advertise discovery metadata.\n      return;\n    }\n    final contract = api['nativeContract'];\n    if (contract is! Map || contract['id'] != id) {\n      throw const FormatException('The service returned a different native contract.');\n    }\n    final versions = contract['supportedVersions'];\n    if (versions is! List || !versions.contains(currentVersion)) {\n      throw const FormatException('This native client contract is not supported by the service.');\n    }\n  }\n}\n\nabstract final class NativePaths {\n${paths}\n}\n\nabstract final class NativeConversationEvents {\n  static const supportedTypes = <String>{\n${eventTypes}\n  };\n\n  static Map<String, dynamic> parse(String eventName, Object? value) {\n    if (value is! Map) {\n      throw const FormatException('Native event payload must be an object.');\n    }\n    final event = Map<String, dynamic>.from(value);\n    final type = event['type'];\n    if (type is! String || type != eventName || !supportedTypes.contains(type)) {\n      throw const FormatException('Native event discriminant is invalid.');\n    }\n    return event;\n  }\n}\n`;
@@ -258,6 +316,55 @@ function agentEventSchemasForDart() {
     "memory", "model", "council_member", "council_verdict", "tool",
     "waiting_approval", "budget_exhausted", "done", "canceled", "error",
   ];
+}
+
+function openApiQueryParameterSchema(parameter: NativeQueryParameter) {
+  if (parameter.type === "flag") {
+    return { type: "string", enum: ["1"] };
+  }
+  if (parameter.type === "integer") {
+    return {
+      type: "integer",
+      ...(parameter.minimum !== undefined ? { minimum: parameter.minimum } : {}),
+      ...(parameter.maximum !== undefined ? { maximum: parameter.maximum } : {}),
+    };
+  }
+  return {
+    type: "string",
+    ...(parameter.minLength !== undefined ? { minLength: parameter.minLength } : {}),
+    ...(parameter.maxLength !== undefined ? { maxLength: parameter.maxLength } : {}),
+  };
+}
+
+function dartQueryParameterDeclaration(parameter: NativeQueryParameter) {
+  if (parameter.type === "flag") {
+    return parameter.required
+      ? `required bool ${parameter.name}`
+      : `bool ${parameter.name} = false`;
+  }
+  const type = parameter.type === "integer" ? "int" : "String";
+  return parameter.required
+    ? `required ${type} ${parameter.name}`
+    : `${type}? ${parameter.name}`;
+}
+
+function dartQueryParameterEntry(parameter: NativeQueryParameter) {
+  if (parameter.type === "string" && !parameter.required) {
+    return `      '${parameter.name}': ?${parameter.name},`;
+  }
+  const condition = parameter.type === "flag"
+    ? parameter.name
+    : parameter.required
+      ? "true"
+      : `${parameter.name} != null`;
+  const value = parameter.type === "flag"
+    ? "'1'"
+    : parameter.type === "integer"
+      ? `${parameter.name}.toString()`
+      : parameter.name;
+  return condition === "true"
+    ? `      '${parameter.name}': ${value},`
+    : `      if (${condition}) '${parameter.name}': ${value},`;
 }
 
 function dartName(id: string) {

@@ -39,8 +39,8 @@ opening Today, Command, Capture, or Inbox. It carries no bearer credentials, dom
 objects, connector content, tool requests, or authority. Native intents invoke the
 same Flutter routes and server services as every other client surface.
 
-The macOS client uses native contract v8 while the server retains frozen v7 as the
-immediately previous compatibility version. The platform identifier is `macos`.
+The macOS client first enrolled on native contract v8 and advances through ADR 011's
+current/previous discovery window. The platform identifier is `macos`.
 Keychain protects native session credentials. Server membership, device/session
 state, exact native mutation capabilities, approvals, idempotency, and governed tool
 execution remain authoritative on every request.
@@ -115,9 +115,9 @@ its generated native contracts are already the supported shared-client foundatio
 
 ## Rollback
 
-The server may hold macOS contract v8 or raise the macOS minimum version without
-weakening authorization. A client rollback uses still-supported v7 behavior only where
-that frozen contract permits it; `macos` sessions themselves require v8 and therefore
+The server may hold a current macOS contract or raise the macOS minimum version without
+weakening authorization. A client rollback uses the still-supported previous contract
+only where that frozen contract permits it; `macos` sessions themselves require v8 or later and therefore
 fail explicitly rather than impersonating iOS or Android. Revocation, wipe, queued
 intent quarantine, audit history, and server canonical state survive a client rollback.
 
