@@ -87,6 +87,30 @@ describe("capability-aware autonomy", () => {
     expect(intent.excludedOperationNames).toContain("browser_press_key");
   });
 
+  it("routes an explicit Computer Use request into the isolated browser contract", () => {
+    const intent = analyzeBrowserCapabilityIntent(
+      "Use the computer to review my authenticated portal without submitting anything.",
+    );
+
+    expect(intent.requiredOperationNames).toEqual([
+      "browser_navigate",
+      "browser_snapshot",
+      "browser_find",
+    ]);
+    expect(intent.excludeWebSearch).toBe(true);
+    expect(intent.excludedOperationNames).toContain("browser_fill_form");
+  });
+
+  it("keeps a direct interaction follow-up on the Computer Use route", () => {
+    const intent = analyzeBrowserCapabilityIntent(
+      "Click Continue, then take a screenshot. Do not type or submit anything.",
+    );
+
+    expect(intent.requiredOperationNames).toContain("browser_click");
+    expect(intent.excludedOperationNames).toContain("browser_type");
+    expect(intent.excludedOperationNames).toContain("browser_fill_form");
+  });
+
   it("keeps the newest useful history when discovery reaches its query limit", () => {
     const query = buildCapabilitySearchQuery({
       request: "Do it again",

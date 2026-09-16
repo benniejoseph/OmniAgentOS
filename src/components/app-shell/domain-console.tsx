@@ -2434,7 +2434,9 @@ export function catalogConnectorInstalled(
       .join(" ");
     if (catalogId === "github") return identity.includes("github");
     if (catalogId === "browser-automation") {
-      return identity.includes("playwright") || identity.includes("browser automation");
+      return identity.includes("computer use") ||
+        identity.includes("playwright") ||
+        identity.includes("browser automation");
     }
     const normalizedCatalogId = catalogId.replace(/[^a-z0-9]+/g, "");
     return Boolean(normalizedCatalogId) &&

@@ -47,13 +47,23 @@ class ApiTalkRepository
   }
 
   @override
-  Future<TalkArtifactContent> loadArtifact(String assetId) async {
+  Future<TalkArtifactContent> loadArtifact(
+    TalkMediaArtifactSummary artifact,
+  ) async {
+    final assetId = artifact.assetId;
     if (!RegExp(r'^[a-zA-Z0-9_-]{1,200}$').hasMatch(assetId)) {
       throw ArgumentError.value(assetId, 'assetId');
     }
-    final bytes = await api.getBytes(
-      NativePaths.captureAssetGet(assetId, content: true),
-    );
+    final path = switch (artifact.kind) {
+      'computer'
+          when artifact.sourceRunId != null &&
+              RegExp(r'^[a-zA-Z0-9_-]{1,200}$')
+                  .hasMatch(artifact.sourceRunId!) =>
+        NativePaths.evidenceRunComputerFrame(artifact.sourceRunId!, assetId),
+      'image' || 'video' => NativePaths.captureAssetGet(assetId, content: true),
+      _ => throw StateError('This artifact source is not supported.'),
+    };
+    final bytes = await api.getBytes(path);
     return TalkArtifactContent(assetId: assetId, bytes: bytes);
   }
 

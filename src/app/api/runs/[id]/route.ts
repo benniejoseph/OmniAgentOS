@@ -7,6 +7,8 @@ import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { foldRunProjection } from "@/lib/events/projections";
 import { listStreamEvents } from "@/lib/events/store";
 import { listRunMediaArtifacts } from "@/lib/runs/media-artifacts";
+import { listRunBrowserActivity } from "@/lib/runs/activity";
+import { projectComputerUseEvidence } from "@/lib/runs/computer-use-evidence";
 import { publicAgentRun } from "@/lib/runs/public";
 import { getAgentRun } from "@/lib/runs/store";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -53,18 +55,25 @@ async function GETHandler(
   if (!run) return Response.json({ error: "Run not found." }, { status: 404 });
   // Media is consumed with the terminal result. Avoid rebuilding a potentially
   // long event projection during the three-second active-run polling loop.
-  const mediaArtifacts = ["completed", "failed", "canceled"].includes(run.status)
-    ? await listRunMediaArtifacts(run.id, {
-        tenantId: auth.tenantId,
-        actorId: run.ownerActorId,
-      }).catch(() => [])
-    : [];
+  const terminal = ["completed", "failed", "canceled"].includes(run.status);
+  const owner = { tenantId: auth.tenantId, actorId: run.ownerActorId };
+  const [mediaArtifacts, computerUseActivity] = terminal
+    ? await Promise.all([
+        listRunMediaArtifacts(run.id, owner).catch(() => []),
+        listRunBrowserActivity(run.id, owner).catch(() => []),
+      ])
+    : [[], []];
+  const computerUseEvidence = projectComputerUseEvidence(
+    run.id,
+    computerUseActivity,
+  );
 
   const url = new URL(request.url);
   if (url.searchParams.get("replay") !== "true") {
     return Response.json({
       ...result.data,
       mediaArtifacts,
+      computerUseEvidence,
       serviceReceipt: result.receipt,
     });
   }
@@ -93,6 +102,7 @@ async function GETHandler(
   return Response.json({
     run: publicAgentRun(run),
     mediaArtifacts,
+    computerUseEvidence,
     eventCount: events.length,
     replayed,
     consistent,

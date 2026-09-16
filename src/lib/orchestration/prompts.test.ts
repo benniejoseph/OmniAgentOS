@@ -178,4 +178,16 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("Asia/Kolkata");
     expect(instructions).toContain("use live web evidence");
   });
+
+  it("keeps Computer Use inside the governed isolated workspace", () => {
+    const instructions = buildAgentInstructions({
+      mode: "execute",
+      computerUse: true,
+    });
+
+    expect(instructions).toContain("Computer Use workspace:");
+    expect(instructions).toContain("isolated actor- and run-scoped session");
+    expect(instructions).toContain("do not control the owner's wider macOS desktop");
+    expect(instructions).toContain("captured evidence establish it");
+  });
 });

@@ -9,6 +9,7 @@ import {
   AGENT_MAX_OUTPUT_TOKENS,
   AGENT_MAX_TOOL_STEPS,
   AGENT_REASONING_EFFORT,
+  COMPUTER_USE_MODEL,
   hasAnthropicKey,
   hasGeminiKey,
   hasOpenAIKey,
@@ -70,6 +71,7 @@ import { selectAgentModel } from "@/lib/openai/model-router";
 import { recordRuntimeEventSafely } from "@/lib/observability/store";
 import { enqueueMemoryConsolidationJob } from "@/lib/operations/background-jobs";
 import { buildAgentInput, buildAgentInstructions } from "@/lib/orchestration/prompts";
+import { modelAssignmentScopeForAgent } from "@/lib/orchestration/computer-use-routing";
 import {
   formatCouncilContributions,
   reviewCouncilResponse,
@@ -232,17 +234,29 @@ export async function* runAgent(
   );
   const browserCapabilityIntent = analyzeBrowserCapabilityIntent(query);
   const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
-  const deploymentModelRoute = selectAgentModel({
-    message: query,
-    mode,
-    specialistCount: request.specialistIds?.length,
-    modelPolicy: request.agentProfile?.modelPolicy,
-  });
-  const deploymentProviderConfigured = hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
+  const computerUseRequested =
+    browserCapabilityIntent.requiredOperationNames.length > 0;
+  const deploymentModelRoute = computerUseRequested
+    ? {
+        provider: "openai" as const,
+        model: COMPUTER_USE_MODEL,
+        tier: "reasoning" as const,
+        reason:
+          "Computer Use selected the deployment fallback configured by OPENAI_COMPUTER_USE_MODEL.",
+      }
+    : selectAgentModel({
+        message: query,
+        mode,
+        specialistCount: request.specialistIds?.length,
+        modelPolicy: request.agentProfile?.modelPolicy,
+      });
+  const deploymentProviderConfigured = computerUseRequested
+    ? hasOpenAIKey()
+    : hasOpenAIKey() || hasGeminiKey() || hasAnthropicKey();
   const runtimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(request.tenantId),
     actorId: request.actorId || "",
-    scope: modelAssignmentScopeForAgent(request.agentId),
+    scope: modelAssignmentScopeForAgent(request.agentId, computerUseRequested),
     tier: deploymentModelRoute.tier,
     requiredFeature: "tools",
     deploymentFallback: {
@@ -774,6 +788,14 @@ export async function* runAgent(
         ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
         : "Primary specialist selected by Atlas.",
     });
+    if (computerUseRequested) {
+      yield await emit({
+        type: "status",
+        label: "Computer Use workspace ready",
+        detail:
+          "Using an isolated, actor-scoped browser session. Consequential actions still pause for approval.",
+      });
+    }
     if (sharedPromptMemoryAccessScope) {
       yield await emit({
         type: "status",
@@ -1117,6 +1139,7 @@ export async function* runAgent(
       specialistIds: request.specialistIds,
       adaptationGuidance,
       profile: request.agentProfile,
+      computerUse: computerUseRequested,
     });
     const toolIds = toolbox.tools
       .map((entry) => entry.definition.id)
@@ -3230,7 +3253,10 @@ async function resumeAgentRunAfterToolApprovalInScope({
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
-    scope: modelAssignmentScopeForAgent(run.agentId),
+    scope: modelAssignmentScopeForAgent(
+      run.agentId,
+      analyzeBrowserCapabilityIntent(run.prompt).requiredOperationNames.length > 0,
+    ),
     tier: resumeTier,
     requiredFeature: "tools",
     deploymentFallback: {
@@ -4091,7 +4117,10 @@ async function resumeProviderBoundAgentRunAfterApproval({
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
-    scope: modelAssignmentScopeForAgent(run.agentId),
+    scope: modelAssignmentScopeForAgent(
+      run.agentId,
+      analyzeBrowserCapabilityIntent(run.prompt).requiredOperationNames.length > 0,
+    ),
     tier: providerState.tier,
     requiredFeature: "tools",
     deploymentFallback: {
@@ -5400,14 +5429,6 @@ function toolExecutionStatus(status: ToolExecutionRecord["status"]): "executed" 
 
 function normalizeTenantId(value?: string) {
   return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default").trim() || "default";
-}
-
-function modelAssignmentScopeForAgent(agentId?: string) {
-  return agentId === "forge"
-    ? "code_builder" as const
-    : agentId === "sentinel"
-      ? "verifier" as const
-      : "main_agent" as const;
 }
 
 function agentMcpSessionScope(

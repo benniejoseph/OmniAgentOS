@@ -217,11 +217,31 @@ class _TerminalTalkRepository
           'rawOutput': 'private tool payload',
         },
       ],
+      'computerUseEvidence': [
+        {
+          'executionId': 'execution-browser-1',
+          'sequence': 7,
+          'action': 'Open website',
+          'operation': 'browser_navigate',
+          'status': 'executed',
+          'targetOrigin': 'https://example.com',
+          'frame': {
+            'id': 'computer_frame_1',
+            'mediaType': 'image/png',
+            'byteCount': 4096,
+            'filename': 'computer-use-0007.png',
+            'contentUrl': 'https://untrusted.example/computer.png',
+          },
+        },
+      ],
     });
   }
 
   @override
-  Future<TalkArtifactContent> loadArtifact(String assetId) async {
+  Future<TalkArtifactContent> loadArtifact(
+    TalkMediaArtifactSummary artifact,
+  ) async {
+    final assetId = artifact.assetId;
     loadedAssetIds.add(assetId);
     return TalkArtifactContent(
       assetId: assetId,
@@ -496,7 +516,12 @@ void main() {
     expect(repository.inspectedRunIds, ['run-terminal-123456']);
     expect(
       controller.activities.map((activity) => activity.title),
-      containsAll(['Atlas', 'Evidence verified', 'Image Generate']),
+      containsAll([
+        'Atlas',
+        'Evidence verified',
+        'Image Generate',
+        'Computer Use evidence captured',
+      ]),
     );
     final projection = controller.activities
         .map((activity) => '${activity.title} ${activity.detail}')
@@ -509,7 +534,10 @@ void main() {
     expect(projection, isNot(contains('untrusted.example')));
     expect(projection, isNot(contains('private tool payload')));
     await _settleAsync();
-    expect(controller.artifacts.single.filename, 'portrait.png');
+    expect(controller.artifacts.map((item) => item.filename), [
+      'portrait.png',
+      'computer-use-0007.png',
+    ]);
     expect(repository.loadedAssetIds, ['capture_asset_portrait']);
     expect(controller.selectedArtifactContent?.bytes, [1, 2, 3]);
   });

@@ -257,15 +257,31 @@ function isDirectBrowserNavigation(request: string) {
   if (!request) return false;
   if (/\bhttps?:\/\/[^\s]+/i.test(request)) return true;
 
+  const affirmative = withoutNegativeClauses(request);
+  const explicitComputerUse =
+    /\b(?:computer\s+use|use\s+(?:the\s+)?computer|control\s+(?:the\s+)?browser|work\s+in\s+(?:the\s+)?browser)\b/i;
+  if (explicitComputerUse.test(affirmative)) return true;
+  if (/\b(?:click|hover|take\s+(?:a\s+)?screenshot|go\s+back|switch\s+tabs?|close\s+tabs?)\b/i.test(affirmative)) {
+    return true;
+  }
+  if (
+    /\b(?:type|fill|submit|press|select|drag|upload|sign\s*in|log\s*in)\b/i.test(
+      affirmative,
+    ) &&
+    /\b(?:browser|website|web\s?page|site|portal|url|link|tab|button|field|form|dialog|page)\b/i.test(
+      affirmative,
+    )
+  ) return true;
+
   const navigationVerb = /\b(?:open|visit|navigate|go\s+to|load)\b/i;
   const browserTarget =
     /\b(?:browser|playwright|website|web\s?page|site|portal|url|link|tab)\b/i;
   const namedWebsite =
     /\b(?:youtube|linkedin|github|google|gmail|facebook|instagram|x\.com|twitter)\b/i;
   return (
-    (navigationVerb.test(request) && browserTarget.test(request)) ||
-    /\b(?:visit|navigate\s+to|go\s+to)\b/i.test(request) ||
-    (/\bopen\b/i.test(request) && namedWebsite.test(request))
+    (navigationVerb.test(affirmative) && browserTarget.test(affirmative)) ||
+    /\b(?:visit|navigate\s+to|go\s+to)\b/i.test(affirmative) ||
+    (/\bopen\b/i.test(affirmative) && namedWebsite.test(affirmative))
   );
 }
 

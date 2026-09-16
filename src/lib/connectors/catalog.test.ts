@@ -26,7 +26,7 @@ describe("connection catalog", () => {
     );
 
     expect(playwright).toMatchObject({
-      name: "Playwright Browser",
+      name: "Computer Use Runtime",
       adapter: "mcp",
       endpoint: ASAEL_PLAYWRIGHT_MCP_ENDPOINT,
       credentialMode: "app_vault",

@@ -38,6 +38,19 @@ int _boundedCount(
   return count >= 0 && count <= maximum ? count : fallback;
 }
 
+String? _validatedWebOrigin(String value) {
+  if (value.isEmpty) return null;
+  final uri = Uri.tryParse(value);
+  if (uri == null ||
+      !const {'http', 'https'}.contains(uri.scheme) ||
+      uri.host.isEmpty ||
+      uri.userInfo.isNotEmpty ||
+      uri.origin != value) {
+    return null;
+  }
+  return uri.origin;
+}
+
 class SseEvent {
   const SseEvent({required this.event, required this.data});
   final String event;
@@ -197,6 +210,8 @@ class TalkMediaArtifactSummary {
     required this.mediaType,
     required this.byteCount,
     required this.status,
+    this.sourceRunId,
+    this.contextLabel,
   });
 
   final String assetId;
@@ -206,6 +221,8 @@ class TalkMediaArtifactSummary {
   final String mediaType;
   final int byteCount;
   final String status;
+  final String? sourceRunId;
+  final String? contextLabel;
 }
 
 class TalkArtifactContent {
@@ -243,6 +260,7 @@ class TalkRunInspection {
     required this.grounding,
     required this.agentIdentity,
     required this.mediaArtifacts,
+    required this.computerUseArtifacts,
   });
 
   final String runId;
@@ -250,6 +268,7 @@ class TalkRunInspection {
   final TalkGroundingSummary grounding;
   final TalkAgentIdentitySummary agentIdentity;
   final List<TalkMediaArtifactSummary> mediaArtifacts;
+  final List<TalkMediaArtifactSummary> computerUseArtifacts;
 
   factory TalkRunInspection.fromJson(Json payload) {
     final run = _jsonRecord(payload['run']);
@@ -356,6 +375,74 @@ class TalkRunInspection {
       }
     }
 
+    final computerUseArtifacts = <TalkMediaArtifactSummary>[];
+    final rawComputerUseEvidence = payload['computerUseEvidence'];
+    if (rawComputerUseEvidence is List) {
+      for (final candidate in rawComputerUseEvidence.take(24)) {
+        final evidence = _jsonRecord(candidate);
+        final frame = _jsonRecord(evidence['frame']);
+        final frameId = _boundedDisplayText(frame['id'], 200);
+        final operation = _boundedDisplayText(
+          evidence['operation'],
+          80,
+        ).toLowerCase();
+        final action = _boundedDisplayText(evidence['action'], 120);
+        final evidenceStatus = _boundedDisplayText(
+          evidence['status'],
+          30,
+        ).toLowerCase();
+        final filename = _boundedDisplayText(frame['filename'], 240);
+        final mediaType = _boundedDisplayText(
+          frame['mediaType'],
+          160,
+        ).toLowerCase();
+        final byteCount = _boundedCount(
+          frame['byteCount'],
+          fallback: -1,
+          maximum: 1500000,
+        );
+        final targetOrigin = _validatedWebOrigin(
+          _boundedDisplayText(evidence['targetOrigin'], 500),
+        );
+        if (frameId.isEmpty ||
+            !RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(frameId) ||
+            !seenAssetIds.add(frameId) ||
+            !RegExp(r'^browser_[a-z_]{1,80}$').hasMatch(operation) ||
+            action.isEmpty ||
+            !const {
+              'executed',
+              'dry_run',
+              'failed',
+              'blocked',
+            }.contains(evidenceStatus) ||
+            !RegExp(r'^computer-use-[0-9]{4}\.(png|jpg|webp)$')
+                .hasMatch(filename) ||
+            !const {
+              'image/png',
+              'image/jpeg',
+              'image/webp',
+            }.contains(mediaType) ||
+            byteCount <= 0) {
+          continue;
+        }
+        computerUseArtifacts.add(
+          TalkMediaArtifactSummary(
+            assetId: frameId,
+            kind: 'computer',
+            operation: operation,
+            filename: filename,
+            mediaType: mediaType,
+            byteCount: byteCount,
+            status: evidenceStatus == 'executed' ? 'stored' : evidenceStatus,
+            sourceRunId: runId,
+            contextLabel: targetOrigin == null
+                ? action
+                : '$action · $targetOrigin',
+          ),
+        );
+      }
+    }
+
     return TalkRunInspection(
       runId: runId,
       status: status,
@@ -388,6 +475,7 @@ class TalkRunInspection {
         definitionVersion: definitionVersion > 0 ? definitionVersion : null,
       ),
       mediaArtifacts: List.unmodifiable(mediaArtifacts),
+      computerUseArtifacts: List.unmodifiable(computerUseArtifacts),
     );
   }
 }
@@ -425,7 +513,7 @@ abstract interface class TalkRepository {
 }
 
 abstract interface class TalkArtifactRepository {
-  Future<TalkArtifactContent> loadArtifact(String assetId);
+  Future<TalkArtifactContent> loadArtifact(TalkMediaArtifactSummary artifact);
 }
 
 class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
@@ -624,7 +712,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     artifactLoading = true;
     notifyListeners();
     try {
-      final content = await source.loadArtifact(artifact.assetId);
+      final content = await source.loadArtifact(artifact);
       if (_disposed || selectedArtifact?.assetId != artifact.assetId) return;
       if (content.assetId != artifact.assetId || content.bytes.isEmpty) {
         throw const FormatException('The artifact preview did not match.');
@@ -1150,9 +1238,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       _projectAgentIdentity(inspection, route);
       _projectGrounding(inspection, route);
       _projectMediaArtifacts(inspection, route);
+      _projectComputerUseArtifacts(inspection, route);
       artifacts
         ..clear()
-        ..addAll(inspection.mediaArtifacts);
+        ..addAll(inspection.mediaArtifacts)
+        ..addAll(inspection.computerUseArtifacts);
       if (artifacts.isEmpty) {
         selectedArtifact = null;
         selectedArtifactContent = null;
@@ -1261,6 +1351,22 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         actionRoute: route,
       );
     }
+  }
+
+  void _projectComputerUseArtifacts(
+    TalkRunInspection inspection,
+    String route,
+  ) {
+    if (inspection.computerUseArtifacts.isEmpty) return;
+    _recordActivity(
+      key: 'computer-evidence:${inspection.runId}',
+      title: 'Computer Use evidence captured',
+      detail:
+          '${inspection.computerUseArtifacts.length} private visual checkpoint${inspection.computerUseArtifacts.length == 1 ? '' : 's'} available in Artifacts.',
+      state: TalkActivityState.succeeded,
+      actionLabel: 'Open result',
+      actionRoute: route,
+    );
   }
 
   static String _resultRoute(String kind, String id) =>
@@ -2326,7 +2432,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                     color: scheme.surfaceContainerHighest,
                     child: controller.artifactLoading
                         ? const Center(child: CircularProgressIndicator())
-                        : content != null && selected.kind == 'image'
+                        : content != null &&
+                              (selected.kind == 'image' ||
+                                  selected.kind == 'computer')
                         ? Image.memory(
                             content.bytes,
                             fit: BoxFit.contain,
@@ -2406,7 +2514,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                     borderRadius: BorderRadius.circular(12),
                   ),
                   leading: Icon(
-                    artifact.kind == 'image'
+                    artifact.kind == 'computer'
+                        ? Icons.screenshot_monitor_outlined
+                        : artifact.kind == 'image'
                         ? Icons.image_outlined
                         : Icons.movie_outlined,
                     color: isSelected ? scheme.primary : null,
@@ -2417,7 +2527,7 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${TalkController._sentenceCase(artifact.operation)} · ${artifact.status}',
+                    '${artifact.contextLabel ?? TalkController._sentenceCase(artifact.operation)} · ${artifact.status}',
                     maxLines: 1,
                   ),
                   onTap: () => controller.selectArtifact(artifact),
@@ -2441,7 +2551,9 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            artifact.kind == 'video'
+            artifact.kind == 'computer'
+                ? Icons.screenshot_monitor_outlined
+                : artifact.kind == 'video'
                 ? Icons.play_circle_outline_rounded
                 : Icons.broken_image_outlined,
             size: 38,

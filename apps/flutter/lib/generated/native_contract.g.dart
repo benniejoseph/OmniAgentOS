@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 9;
-  static const previousVersion = 8;
-  static const supportedVersions = <int>[9, 8];
+  static const currentVersion = 10;
+  static const previousVersion = 9;
+  static const supportedVersions = <int>[10, 9];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -114,6 +114,7 @@ abstract final class NativeContract {
     'threads.list',
     'threads.get',
     'capture.asset.get',
+    'evidence.run.computerFrame',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -274,6 +275,7 @@ abstract final class NativePaths {
         .join('&');
     return '$path?$encoded';
   }
+  static String evidenceRunComputerFrame(String id, String frameId) => '/api/runs/${Uri.encodeComponent(id)}/activity/frames/${Uri.encodeComponent(frameId)}';
 }
 
 abstract final class NativeConversationEvents {

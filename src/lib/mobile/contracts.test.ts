@@ -14,18 +14,20 @@ import {
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(9);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(8);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(10);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(9);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
     expect(nativeOperationsForVersion(9)?.length).toBe(
       (nativeOperationsForVersion(8)?.length || 0) + 3,
     );
-    expect(nativeOperationsForVersion(10)).toBeUndefined();
+    expect(nativeOperationsForVersion(10)?.length).toBe(
+      (nativeOperationsForVersion(9)?.length || 0) + 1,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([9, 8]);
+    ).supportedVersions).toEqual([10, 9]);
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {
@@ -74,7 +76,7 @@ describe("native API contracts", () => {
     });
   });
 
-  it("generates a Dart capability set from current v9 operations", async () => {
+  it("generates a Dart capability set from current v10 operations", async () => {
     const dart = await readFile(
       new URL(
         "../../../apps/flutter/lib/generated/native_contract.g.dart",
@@ -88,6 +90,8 @@ describe("native API contracts", () => {
     expect(dart).toContain("'threads.list',");
     expect(dart).toContain("'threads.get',");
     expect(dart).toContain("'capture.asset.get',");
+    expect(dart).toContain("'evidence.run.computerFrame',");
+    expect(dart).toContain("static String evidenceRunComputerFrame(String id, String frameId)");
     expect(dart).toContain("static String memoryList({String? threadId, int? limit})");
     expect(dart).not.toContain("'agents.create',");
     expect(dart).not.toContain("'admin.workflows.tick',");
@@ -103,13 +107,13 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 9,
+        clientContractVersion: 10,
       },
     };
     expect(nativeLoginRequestSchema.safeParse(request).success).toBe(true);
     expect(nativeLoginRequestSchema.safeParse({
       ...request,
-      device: { ...request.device, clientContractVersion: 8 },
+      device: { ...request.device, clientContractVersion: 9 },
     }).success).toBe(true);
     expect(nativeLoginRequestSchema.safeParse({
       ...request,
@@ -160,9 +164,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 9,
-          previousVersion: 8,
-          supportedVersions: [9, 8],
+          currentVersion: 10,
+          previousVersion: 9,
+          supportedVersions: [10, 9],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -174,11 +178,11 @@ describe("native API contracts", () => {
         clientContractVersion: 9,
         minimumVersion: "1.0.0",
         requiredContractVersion: 9,
-        supportedContractVersions: [9, 8],
+        supportedContractVersions: [10, 9],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(9);
+    }).api.nativeContract.currentVersion).toBe(10);
   });
 });
