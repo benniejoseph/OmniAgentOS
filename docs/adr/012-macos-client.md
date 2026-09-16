@@ -27,7 +27,7 @@ integration:
 
 - application and window lifecycle;
 - the menu-bar surface and system commands;
-- a registered global Quick Capture shortcut;
+- a registered global Quick Entry shortcut plus explicit menu-bar Capture;
 - notification actions and deep-link delivery;
 - Share Extension and App Group transfer when that slice is introduced;
 - scoped file and microphone permission integration;
@@ -53,7 +53,7 @@ only at the point of use, explained in product language, and remains visible and
 revocable in macOS System Settings. The app receives no broad filesystem, screen
 recording, automation, or Accessibility permission for ordinary product operation.
 
-Quick Capture uses a registered system hot key that does not require Accessibility
+Quick Entry uses a registered system hot key that does not require Accessibility
 permission. File intake begins with user selection, drag-and-drop, or a Share
 Extension. A future Computer Use helper must be separately signed and isolated, show
 an active-use indicator, enforce domain/action allowlists and a kill switch, and send
@@ -75,8 +75,9 @@ Asael is a private application and does not require Mac App Store publication.
 Development builds run from Flutter/Xcode. Private releases use the existing bundle
 identity, Hardened Runtime, an Apple Development or Developer ID signature as
 appropriate, notarization for distribution to additional Macs, and a signed update
-feed with an explicit rollback path. Push remains configuration-required until Apple
-Developer/APNs credentials and the matching Firebase Apple configuration are proven.
+feed with an explicit rollback path. The matching Firebase Apple application
+configuration is bundled; push remains configuration-required until Apple
+Developer signing and APNs credentials are proven.
 
 The first release does not claim native payment signing, unrestricted local computer
 control, or background data access that has not been separately reviewed and proven.
@@ -106,8 +107,9 @@ its generated native contracts are already the supported shared-client foundatio
    push registration boundary, and focused compatibility fixtures while preserving v7.
 2. Prove sandboxed network access, login, token rotation, Keychain restoration,
    biometric lock, remote wipe, and desktop window lifecycle.
-3. Deliver menu-bar Today, global Quick Capture, drag/drop, microphone/file intake,
-   and notification actions through allowlisted native intents.
+3. Deliver menu-bar Today, global Quick Entry, bulk file/microphone Capture,
+   drag/drop, Share Extension intake, and notification actions through allowlisted
+   native intents.
 4. Complete the high-use Today, Command, Inbox, Capture, Projects, and Memory desktop
    journeys before widening administrative parity.
 5. Add an encrypted projection cache and explicit reconnect/conflict presentation.

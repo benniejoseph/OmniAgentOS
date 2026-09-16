@@ -39,7 +39,7 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed release inputs under `public/native-contracts/v7` and `public/native-contracts/v8`; v1-v6 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v7 document hashes drift. Keep v8 current and v7 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
+Native contract artifacts are committed release inputs under `public/native-contracts/v8` and `public/native-contracts/v9`; v1-v7 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v7/v8 document hashes drift. Keep v9 current and v8 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
 
 ### Licensed TradingView chart assets
 
@@ -69,8 +69,8 @@ actor/device registrations with encrypted token bundles and a leased,
 deduplicating delivery outbox under forced RLS. FCM delivery requires
 `OMNIAGENT_FCM_SERVICE_ACCOUNT_JSON`; direct APNs requires the complete APNs
 group above. The Flutter build separately requires its real Firebase
-`google-services.json` and `GoogleService-Info.plist`, Firebase-console APNs
-configuration, and normal Android/iOS signing. Those native application files
+`google-services.json` and per-target `GoogleService-Info.plist`, Firebase-console
+APNs configuration, and normal Android/Apple signing. Those native application files
 are not Vercel secrets; commit only the real registered-app configuration and
 never a Firebase service-account key. Provider configuration is reported
 truthfully to the registered device without exposing credentials. The existing
@@ -79,7 +79,7 @@ image release.
 
 Production uses Firebase only as notification transport for the existing Asael
 backend. Firebase is enabled on the existing `asael-private-ai` Google Cloud
-project, and both native apps retain the compatibility package/bundle identity
+project, and the Android and Apple apps retain the compatibility package/bundle identity
 `app.omniagent.omniagent`. The FCM sender service account has only
 `roles/firebasecloudmessaging.admin`; its JSON key is stored as the sensitive
 Vercel production variable above and must never be copied into the repository
@@ -102,8 +102,22 @@ before a contract-v8 macOS client signs in. It widens only attested native
 session and push-registration platform checks to include `macos`; direct APNs
 registrations may originate from iOS or macOS. Contract v8 removes unenrolled
 legacy mutation declarations from its generated surface and does not activate
-new route capabilities. Publish the schema migration and server contract before
-distributing the macOS binary; Vercel does not distribute or sign that binary.
+new route capabilities. Contract v9 is current and retains frozen v8 as the
+supported previous version while adding only actor-scoped thread, thread-memory,
+and integrity-verified Capture asset reads. Publish the schema migration and
+server contract before distributing the macOS binary; Vercel does not distribute
+or sign that binary.
+
+macOS development and private packaging require the full Xcode application, not
+only Command Line Tools. Run `flutter run -d macos` for the signed development
+build. `apps/flutter/tool/build_macos_private_release.sh` creates the private DMG
+and prints its SHA-256. A local Xcode signature is sufficient for the owner's Mac;
+distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
+`ASAEL_MACOS_NOTARY_PROFILE`, which makes signing, notarization, stapling, and
+verification mandatory. The Firebase Apple configuration is bundled and matches
+the registered compatibility bundle ID. APNs still requires an Apple signing
+identity, Push Notifications capability, and the corresponding provider key;
+configuration alone is not treated as a delivery receipt.
 
 Android release builds fail closed when a production signing identity is not
 available. On the release Mac, `apps/flutter/tool/build_android_release.sh`

@@ -1206,7 +1206,7 @@ real FCM delivery opened its exact causal target and persisted the
 acknowledgement against the current device registration, closing the former
 operational gate. The owner has explicitly deferred iOS implementation and all
 app-store publication; neither is a completion blocker for this private Android
-build. Phase 13 remains out of the current sequence.
+build. Phase 13 is now active as the private macOS client sequence.
 
 **Phase gate:** revoked-device, reconnect, token rotation, offline capture, push, voice interruption, and cross-tenant isolation scenarios pass before public release.
 
@@ -1220,6 +1220,38 @@ build. Phase 13 remains out of the current sequence.
 | P13.2 | Add menu-bar Today, global capture, share extension, drag/drop, microphone, file intake, and notification actions. | Reuse Workspace/Capture/voice/outbox; create macOS surfaces. | Every local permission is opt-in, scoped, visible, and revocable. | User can capture and supervise work without giving unrestricted filesystem or microphone access. |
 | P13.3 | Add consented local browser handoff/computer bridge if still necessary. | Reuse browser grants/takeover; create signed local bridge. | Domain/action allowlist, user-visible indicator, kill switch, and session isolation are mandatory. | Asael can operate approved local surfaces without exporting browser credentials or bypassing governed execution. |
 | P13.4 | Add offline cache and state reconciliation. | Reuse native contract/events. | Server remains authoritative; conflicts are visible and recoverable. | macOS, mobile, and web converge on identical work, memory, approval, and run state after reconnect. |
+
+**Current status:** P13.1 is implemented in code. ADR 012 selects the shared
+Flutter client with a deliberately thin AppKit host, migration 178 enrolls
+`macos` without adding a second backend, and native contract v9 publishes the
+actor-scoped conversation and verified-asset reads needed by the desktop
+experience while retaining frozen v8 compatibility. The sandboxed host provides
+persistent window and menu-bar lifecycle, Today, Command, Quick Entry, Capture,
+and Inbox commands, a global Control-Option-Space Quick Entry shortcut, scoped
+Keychain/file/microphone entitlements, the Asael icon, and a private DMG build,
+signing, and notarization path.
+
+P13.2 is partially implemented. Command now behaves as an observable desktop
+cockpit with persistent conversation history, compact Quick Entry, streamed
+tool/specialist/approval state, governed run cancellation, durable-workflow
+monitoring, and bounded terminal evidence/media metadata. Capture accepts up to
+25 transcript, document, image, or supported-media files, encrypts the local
+queue, uploads three concurrently with bounded transient retries, and retains
+each item until the actor-scoped server job confirms indexing. The existing
+voice draft, offline outbox, Firebase Apple application configuration, and
+responsive Daybook UI are shared with Android. External file drag/drop, the
+Share Extension, native notification actions, and a signed APNs device receipt
+remain pending.
+
+P13.3 has not started and remains optional: ordinary Asael operation receives no
+Accessibility, screen-recording, Apple Events, or broad filesystem authority.
+If local Computer Use is still needed, it must be a separately signed, visible,
+revocable helper routed through the governed executor. P13.4 is complete only
+for the encrypted Capture outbox; general offline projections, freshness/conflict
+presentation, and full reconnect reconciliation remain pending. A real macOS
+build, login, and local private-install proof is also open until Xcode 27 is
+installed. APNs delivery and a notarized release for another Mac additionally
+require an Apple signing identity and provider credentials.
 
 **Phase gate:** native clients are alternate interaction surfaces for one core—not independent products with divergent truth or policy.
 
@@ -3218,4 +3250,4 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** intentionally deferred; P13.1–P13.4 are not started.
+- [ ] **Phase 13 — macOS application:** P13.1 is implemented in code; P13.2 is partial; P13.3 is intentionally held and P13.4 remains open beyond Capture. Native build/sign/install proof is pending.
