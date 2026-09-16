@@ -24,6 +24,7 @@ describe("operation job queue (file mode)", () => {
           outcome: "enriched",
           statementCount: 7,
           sourceTurnCount: 12,
+          generationLatencyMs: 4_321,
           privateProgress: "do-not-expose",
         },
         result: {
@@ -33,6 +34,7 @@ describe("operation job queue (file mode)", () => {
           reason: "private supersession reason",
           statementCount: 7,
           sourceTurnCount: 12,
+          generationLatencyMs: 4_321,
         },
       },
       priority: 0,
@@ -50,6 +52,7 @@ describe("operation job queue (file mode)", () => {
       outcome: "enriched",
       statementCount: 7,
       sourceTurnCount: 12,
+      generationLatencyMs: 4_321,
     });
     expect(projected.result).toEqual({
       shadowOnly: true,
@@ -57,6 +60,7 @@ describe("operation job queue (file mode)", () => {
       outcome: "enriched",
       statementCount: 7,
       sourceTurnCount: 12,
+      generationLatencyMs: 4_321,
     });
     expect(projected.lastError).toBe(
       "Semantic summary enrichment did not complete.",

@@ -41,7 +41,7 @@ const countSchema = z.number().int().nonnegative().max(1_000_000);
 const rankSchema = z.number().int().positive().max(100).nullable();
 const dimensionSchema = z.enum(SEMANTIC_MEMORY_SHADOW_DIMENSIONS);
 
-const observationCaseSchema = z.object({
+export const semanticMemoryShadowObservationCaseSchema = z.object({
   caseId: z.string().regex(/^shadow-case-[a-z0-9][a-z0-9._-]{0,119}$/),
   dimension: dimensionSchema,
   threadSha256: sha256Schema,
@@ -90,7 +90,7 @@ const observationSetSchema = z.object({
   sideEffectPolicy: z.literal("none"),
   shadowOnly: z.literal(true),
   rankingEffect: z.literal("none"),
-  cases: z.array(observationCaseSchema).min(1).max(256),
+  cases: z.array(semanticMemoryShadowObservationCaseSchema).min(1).max(256),
 }).strict().superRefine((value, context) => {
   const caseIds = new Set<string>();
   for (const [index, testCase] of value.cases.entries()) {

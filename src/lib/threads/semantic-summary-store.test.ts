@@ -33,6 +33,7 @@ import {
   getCurrentSemanticEnrichment,
   getSemanticSummaryShadowStats,
   listCurrentSemanticEnrichments,
+  listOwnedSemanticSummaryEnrichments,
   readOwnedSemanticEpisodeSource,
   saveSemanticEnrichmentFromWorker,
   SEMANTIC_SUMMARY_ENRICHED_EVENT_TYPE,
@@ -162,6 +163,14 @@ describe("semantic conversation summary store", () => {
       actorId,
       threadId: thread.id,
     })).toEqual([first]);
+    expect(await listOwnedSemanticSummaryEnrichments({
+      tenantId,
+      actorIds: [actorId],
+    })).toEqual([{ record: first, source }]);
+    expect(await listOwnedSemanticSummaryEnrichments({
+      tenantId,
+      actorIds: ["actor:someone-else"],
+    })).toEqual([]);
     expect(await readOwnedSemanticEpisodeSource({
       tenantId,
       actorId: "actor:someone-else",
