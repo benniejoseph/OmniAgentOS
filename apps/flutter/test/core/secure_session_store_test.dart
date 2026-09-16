@@ -12,13 +12,14 @@ void main() {
       platform: TargetPlatform.macOS,
       isWeb: false,
     );
-    final options = storage.mOptions as MacOsOptions;
+    expect(storage, isA<MacOsFileKeychainStore>());
+    final options = (storage as MacOsFileKeychainStore).channelOptions;
 
-    expect(options.usesDataProtectionKeychain, isFalse);
-    expect(options.groupId, isNull);
-    expect(options.accountName, 'app.omniagent.omniagent.secure-store.v1');
-    expect(options.synchronizable, isFalse);
-    expect(options.accessibility, isNull);
+    expect(options['usesDataProtectionKeychain'], 'false');
+    expect(options['accountName'], 'app.omniagent.omniagent.secure-store.v1');
+    expect(options, isNot(contains('groupId')));
+    expect(options, isNot(contains('synchronizable')));
+    expect(options, isNot(contains('accessibility')));
   });
 
   test('other native platforms retain their default secure-storage policy', () {
@@ -26,7 +27,9 @@ void main() {
       platform: TargetPlatform.android,
       isWeb: false,
     );
-    final options = storage.mOptions as MacOsOptions;
+    expect(storage, isA<FlutterSecureValueStore>());
+    final options =
+        (storage as FlutterSecureValueStore).storage.mOptions as MacOsOptions;
 
     expect(options.usesDataProtectionKeychain, isTrue);
   });

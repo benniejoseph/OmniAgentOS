@@ -4,11 +4,15 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter/services.dart';
 
 import '../auth/biometric_gate.dart';
 
 class SecureSessionStore {
-  SecureSessionStore(this._storage);
+  SecureSessionStore(FlutterSecureStorage storage)
+    : this.withStorage(FlutterSecureValueStore(storage));
+
+  SecureSessionStore.withStorage(this._storage);
   static const _operationTimeout = Duration(seconds: 20);
   static const _tokenKey = 'asael.session_token';
   static const _refreshTokenKey = 'asael.refresh_token';
@@ -24,7 +28,7 @@ class SecureSessionStore {
   static const _pendingPushAcknowledgementKey =
       'asael.pending_push_acknowledgement_v1';
   static const _legacyTokenKey = 'omniagent.session_token';
-  final FlutterSecureStorage _storage;
+  final AsaelSecureValueStore _storage;
   bool _biometricReleaseUnlocked = false;
 
   Future<T> _bounded<T>(Future<T> operation) => operation.timeout(
@@ -257,6 +261,72 @@ class SecureSessionStore {
   }
 }
 
+abstract interface class AsaelSecureValueStore {
+  Future<String?> read({required String key});
+
+  Future<void> write({required String key, required String value});
+
+  Future<void> delete({required String key});
+}
+
+class FlutterSecureValueStore implements AsaelSecureValueStore {
+  const FlutterSecureValueStore(this.storage);
+
+  final FlutterSecureStorage storage;
+
+  @override
+  Future<String?> read({required String key}) => storage.read(key: key);
+
+  @override
+  Future<void> write({required String key, required String value}) =>
+      storage.write(key: key, value: value);
+
+  @override
+  Future<void> delete({required String key}) => storage.delete(key: key);
+}
+
+/// Uses the ordinary file-based login Keychain on macOS.
+///
+/// `flutter_secure_storage` always serializes `synchronizable=false`. On
+/// macOS that attribute opts the query into the data-protection access-group
+/// path, which requires an Apple-authorized provisioning profile. Asael's
+/// owner-only self-signed build intentionally has no Team Identifier or shared
+/// Keychain group, so this adapter invokes the same native plugin while
+/// omitting the access-group and synchronizable attributes entirely.
+class MacOsFileKeychainStore implements AsaelSecureValueStore {
+  const MacOsFileKeychainStore({
+    this.channel = const MethodChannel(_channelName),
+  });
+
+  static const _channelName = 'plugins.it_nomads.com/flutter_secure_storage';
+  static const _serviceName = 'app.omniagent.omniagent.secure-store.v1';
+  final MethodChannel channel;
+
+  @visibleForTesting
+  Map<String, String> get channelOptions => const {
+    'accountName': _serviceName,
+    'usesDataProtectionKeychain': 'false',
+  };
+
+  Map<String, Object> _arguments(String key, [String? value]) => {
+    'key': key,
+    'value': ?value,
+    'options': channelOptions,
+  };
+
+  @override
+  Future<String?> read({required String key}) =>
+      channel.invokeMethod<String>('read', _arguments(key));
+
+  @override
+  Future<void> write({required String key, required String value}) =>
+      channel.invokeMethod<void>('write', _arguments(key, value));
+
+  @override
+  Future<void> delete({required String key}) =>
+      channel.invokeMethod<void>('delete', _arguments(key));
+}
+
 class DeviceSecretMaterial {
   const DeviceSecretMaterial({required this.id, required this.bytes});
 
@@ -302,32 +372,25 @@ List<int> _decodeBase64Url(String value) {
 }
 
 @visibleForTesting
-FlutterSecureStorage createAsaelSecureStorage({
+AsaelSecureValueStore createAsaelSecureStorage({
   TargetPlatform? platform,
   bool? isWeb,
 }) {
   final usesMacOSKeychain =
       !(isWeb ?? kIsWeb) &&
       (platform ?? defaultTargetPlatform) == TargetPlatform.macOS;
-  if (!usesMacOSKeychain) return const FlutterSecureStorage();
+  if (!usesMacOSKeychain) {
+    return const FlutterSecureValueStore(FlutterSecureStorage());
+  }
 
   // Asael does not share credentials with another application or extension.
   // The ordinary device-bound macOS Keychain keeps the same OS-backed secret
   // storage without requiring a provisioning-only Keychain Sharing group. A
   // future Share Extension must introduce its own reviewed handoff rather than
   // silently widening this credential boundary.
-  return const FlutterSecureStorage(
-    mOptions: MacOsOptions(
-      accountName: 'app.omniagent.omniagent.secure-store.v1',
-      // kSecAttrAccessible selects the data-protection Keychain on macOS.
-      // Leave it unset when using the ordinary login Keychain.
-      accessibility: null,
-      synchronizable: false,
-      usesDataProtectionKeychain: false,
-    ),
-  );
+  return const MacOsFileKeychainStore();
 }
 
 final secureSessionStoreProvider = Provider<SecureSessionStore>(
-  (_) => SecureSessionStore(createAsaelSecureStorage()),
+  (_) => SecureSessionStore.withStorage(createAsaelSecureStorage()),
 );
