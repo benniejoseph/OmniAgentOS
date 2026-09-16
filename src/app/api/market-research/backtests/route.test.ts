@@ -90,7 +90,7 @@ describe("market backtests route", () => {
     expect(mocks.authorizeRequest).toHaveBeenCalledWith(expect.objectContaining({
       action: "manage.workflow",
       resourceType: "market_backtest",
-      nativeMutationCapability: "markets.update",
+      nativeMutationCapability: "markets.backtest.run",
       metadata: {
         operation: "run",
         snapshotId,

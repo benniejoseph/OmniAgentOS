@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 6;
-  static const previousVersion = 5;
-  static const supportedVersions = <int>[6, 5];
+  static const currentVersion = 7;
+  static const previousVersion = 6;
+  static const supportedVersions = <int>[7, 6];
   static const discoveryPath = '/api/mobile/contracts';
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -143,6 +143,8 @@ abstract final class NativePaths {
   static const settingsAssignmentsUpdate = '/api/settings/assignments';
   static String workspacesBuilderGet(String id) => '/api/projects/${Uri.encodeComponent(id)}/builder';
   static String workspacesBuilderUpdate(String id) => '/api/projects/${Uri.encodeComponent(id)}/builder';
+  static const marketBacktests = '/api/market-research/backtests';
+  static const marketBacktestsRun = '/api/market-research/backtests';
 }
 
 abstract final class NativeConversationEvents {

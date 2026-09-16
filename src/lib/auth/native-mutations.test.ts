@@ -25,7 +25,7 @@ function context(
 }
 
 describe("native mutation capability enrollment", () => {
-  it("enrolls market and settings mutations only on contract v6", () => {
+  it("retains existing market/settings writes on v6 and gates backtests on v7", () => {
     expect(nativeMutationEnrollment(context(6), "markets.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 6,
@@ -38,10 +38,18 @@ describe("native mutation capability enrollment", () => {
       state: "held",
       minimumContractVersion: 6,
     });
+    expect(nativeMutationEnrollment(context(7), "markets.backtest.run", asOf)).toMatchObject({
+      state: "active",
+      minimumContractVersion: 7,
+    });
+    expect(nativeMutationEnrollment(context(6), "markets.backtest.run", asOf)).toMatchObject({
+      state: "held",
+      minimumContractVersion: 7,
+    });
   });
 
-  it("retains earlier workspace mutation compatibility", () => {
-    expect(nativeMutationEnrollment(context(5), "workspaces.update", asOf)).toMatchObject({
+  it("retains earlier workspace capability minimum on a supported client", () => {
+    expect(nativeMutationEnrollment(context(6), "workspaces.update", asOf)).toMatchObject({
       state: "active",
       minimumContractVersion: 3,
     });

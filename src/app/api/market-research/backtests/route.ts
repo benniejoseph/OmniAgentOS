@@ -80,7 +80,7 @@ async function POSTHandler(request: Request) {
       request,
       action: "manage.workflow",
       resourceType: "market_backtest",
-      nativeMutationCapability: "markets.update",
+      nativeMutationCapability: "markets.backtest.run",
       metadata: {
         operation: "run",
         snapshotId: parsed.data.snapshotId,

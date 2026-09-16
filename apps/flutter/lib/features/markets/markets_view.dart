@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -16,18 +17,26 @@ class MarketsView extends StatefulWidget {
 }
 
 class _MarketsViewState extends State<MarketsView> {
-  Json? overview, bars, events, features, journal;
+  Json? overview, bars, events, features, backtests, journal, backtestJob;
   Object? error;
   String instrumentId = 'xauusd.spot';
+  String? backtestJobInstrumentId;
   String interval = '15min';
   int tab = 0;
   bool loading = true;
   String? action;
+  Timer? _backtestPollTimer;
 
   @override
   void initState() {
     super.initState();
     _loadFoundation();
+  }
+
+  @override
+  void dispose() {
+    _backtestPollTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadFoundation() async {
@@ -90,6 +99,11 @@ class _MarketsViewState extends State<MarketsView> {
             query: {'snapshotId': snapshotId},
           );
         }
+      } else if (tab == 3) {
+        backtests = await widget.api.getJson(
+          NativePaths.marketBacktests,
+          query: {'instrumentId': instrumentId, 'limit': 20},
+        );
       } else {
         journal = await widget.api.getJson(
           NativePaths.marketJournal,
@@ -111,11 +125,12 @@ class _MarketsViewState extends State<MarketsView> {
       error = null;
       bars = null;
       features = null;
+      backtests = null;
       journal = null;
     });
     try {
       await _loadBars();
-      if (tab == 2 || tab == 3) await _refreshCurrent();
+      if (tab == 2 || tab == 3 || tab == 4) await _refreshCurrent();
     } catch (value) {
       error = value;
     } finally {
@@ -131,6 +146,7 @@ class _MarketsViewState extends State<MarketsView> {
       error = null;
       bars = null;
       features = null;
+      backtests = null;
     });
     try {
       await _loadBars();
@@ -146,8 +162,110 @@ class _MarketsViewState extends State<MarketsView> {
     setState(() => tab = value);
     if ((value == 1 && events == null) ||
         (value == 2 && features == null) ||
-        (value == 3 && journal == null)) {
+        (value == 3 && backtests == null) ||
+        (value == 4 && journal == null)) {
       await _refreshCurrent();
+    }
+  }
+
+  Future<void> _runBacktest(Json configuration) async {
+    final snapshotId = bars?['snapshotId']?.toString();
+    if (snapshotId == null ||
+        bars?['instrumentId']?.toString() != instrumentId) {
+      setState(
+        () => error = StateError('Load a verified price snapshot first.'),
+      );
+      return;
+    }
+    _backtestPollTimer?.cancel();
+    setState(() {
+      action = 'backtest';
+      error = null;
+      backtestJob = null;
+      backtestJobInstrumentId = instrumentId;
+    });
+    try {
+      final response = await widget.api.postJson(
+        NativePaths.marketBacktestsRun,
+        data: {
+          'snapshotId': snapshotId,
+          'strategy': {
+            'strategyId': 'foundation.liquidity_sweep_reversal.v1',
+            'direction': configuration['direction'],
+            'session': configuration['session'],
+            'rewardRiskRatio': configuration['rewardRiskRatio'],
+            'maxHoldingBars': configuration['maxHoldingBars'],
+            'stopBufferRangeMultiplier': 0.1,
+          },
+          'costs': {
+            'spreadBps': configuration['spreadBps'],
+            'slippageBps': configuration['slippageBps'],
+            'commissionBps': configuration['commissionBps'],
+          },
+          'initialEquity': 10000,
+          'riskPerTradeBps': configuration['riskPerTradeBps'],
+        },
+        headers: _idempotency('backtest-$snapshotId'),
+      );
+      final job = _map(response['job']);
+      if (job['id'] == null) {
+        throw StateError('The backtest queue did not return a job.');
+      }
+      if (!mounted) return;
+      setState(() => backtestJob = job);
+      _scheduleBacktestPoll();
+    } catch (value) {
+      if (!mounted) return;
+      setState(() {
+        error = value;
+        action = null;
+      });
+    }
+  }
+
+  void _scheduleBacktestPoll() {
+    _backtestPollTimer?.cancel();
+    _backtestPollTimer = Timer(const Duration(seconds: 2), _readBacktestJob);
+  }
+
+  Future<void> _readBacktestJob() async {
+    final jobId = backtestJob?['id']?.toString();
+    if (!mounted || jobId == null || action != 'backtest') return;
+    try {
+      final response = await widget.api.getJson(
+        NativePaths.operationsJob(jobId),
+      );
+      final job = _map(response['job']);
+      final status = job['status']?.toString();
+      if (!mounted) return;
+      setState(() => backtestJob = job);
+      if (status == 'completed') {
+        if (backtestJobInstrumentId == instrumentId) {
+          final result = await widget.api.getJson(
+            NativePaths.marketBacktests,
+            query: {'instrumentId': instrumentId, 'limit': 20},
+          );
+          if (mounted) setState(() => backtests = result);
+        }
+        if (mounted) setState(() => action = null);
+      } else if (status == 'failed' || status == 'canceled') {
+        if (mounted) {
+          setState(() {
+            error = StateError(
+              job['lastError']?.toString() ?? 'The backtest did not complete.',
+            );
+            action = null;
+          });
+        }
+      } else {
+        _scheduleBacktestPoll();
+      }
+    } catch (value) {
+      if (!mounted) return;
+      setState(() {
+        error = value;
+        action = null;
+      });
     }
   }
 
@@ -314,6 +432,11 @@ class _MarketsViewState extends State<MarketsView> {
                             ),
                             ButtonSegment(
                               value: 3,
+                              label: Text('Backtests'),
+                              icon: Icon(Icons.rocket_launch_outlined),
+                            ),
+                            ButtonSegment(
+                              value: 4,
                               label: Text('Forecast journal'),
                               icon: Icon(Icons.auto_awesome_outlined),
                             ),
@@ -363,6 +486,19 @@ class _MarketsViewState extends State<MarketsView> {
                           bars: bars,
                           features: features,
                           loading: loading,
+                        ),
+                        3 => _BacktestTab(
+                          key: const ValueKey('backtests'),
+                          bars: bars,
+                          backtests: backtests,
+                          job: backtestJobInstrumentId == instrumentId
+                              ? backtestJob
+                              : null,
+                          loading: loading,
+                          running:
+                              action == 'backtest' &&
+                              backtestJobInstrumentId == instrumentId,
+                          onRun: _runBacktest,
                         ),
                         _ => _JournalTab(
                           key: const ValueKey('journal'),
@@ -605,6 +741,409 @@ class _TechnicalTab extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+class _BacktestTab extends StatefulWidget {
+  const _BacktestTab({
+    super.key,
+    required this.bars,
+    required this.backtests,
+    required this.job,
+    required this.loading,
+    required this.running,
+    required this.onRun,
+  });
+  final Json? bars, backtests, job;
+  final bool loading, running;
+  final ValueChanged<Json> onRun;
+
+  @override
+  State<_BacktestTab> createState() => _BacktestTabState();
+}
+
+class _BacktestTabState extends State<_BacktestTab> {
+  String direction = 'both';
+  String session = 'all';
+  double rewardRiskRatio = 2;
+  int maxHoldingBars = 24;
+  double spreadBps = 2;
+  double slippageBps = 1;
+  double commissionBps = 0;
+  int riskPerTradeBps = 100;
+
+  Json get configuration => {
+    'direction': direction,
+    'session': session,
+    'rewardRiskRatio': rewardRiskRatio,
+    'maxHoldingBars': maxHoldingBars,
+    'spreadBps': spreadBps,
+    'slippageBps': slippageBps,
+    'commissionBps': commissionBps,
+    'riskPerTradeBps': riskPerTradeBps,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final results = (widget.backtests?['backtests'] as List? ?? const [])
+        .whereType<Map>()
+        .map(Json.from)
+        .toList();
+    final latest = results.isEmpty ? null : results.first;
+    final overall = _map(latest?['metrics'])['overall'];
+    final overallMetrics = _map(overall);
+    final testMetrics = _map(_map(latest?['metrics'])['test']);
+    final stage = _humanize(
+      _map(widget.job?['progress'])['stage']?.toString() ?? 'queued',
+    );
+    if (widget.loading && widget.backtests == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(48),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionTitle(
+          title: 'Backtest lab',
+          detail: 'Retrospective research · immutable snapshot · no execution',
+        ),
+        const SizedBox(height: 8),
+        _PlainSurface(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.rocket_launch_outlined, size: 24),
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Liquidity-sweep reversal · foundation v1',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'A bar trades beyond the exact prior 20-bar boundary and closes back inside. Entry is on the next bar; the last 20% remains held out.',
+                            style: TextStyle(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    _BacktestSelect<String>(
+                      label: 'Direction',
+                      value: direction,
+                      values: const {
+                        'both': 'Long + short',
+                        'long_only': 'Long only',
+                        'short_only': 'Short only',
+                      },
+                      onChanged: (value) => setState(() => direction = value),
+                    ),
+                    _BacktestSelect<String>(
+                      label: 'Session',
+                      value: session,
+                      values: const {
+                        'all': 'All sessions',
+                        'london': 'London',
+                        'new_york_am': 'New York AM',
+                      },
+                      onChanged: (value) => setState(() => session = value),
+                    ),
+                    _BacktestSelect<double>(
+                      label: 'Reward / risk',
+                      value: rewardRiskRatio,
+                      values: {1: '1R', 1.5: '1.5R', 2: '2R', 3: '3R'},
+                      onChanged: (value) =>
+                          setState(() => rewardRiskRatio = value),
+                    ),
+                    _BacktestSelect<int>(
+                      label: 'Max bars held',
+                      value: maxHoldingBars,
+                      values: const {12: '12', 24: '24', 48: '48', 96: '96'},
+                      onChanged: (value) =>
+                          setState(() => maxHoldingBars = value),
+                    ),
+                    _BacktestSelect<int>(
+                      label: 'Risk / trade',
+                      value: riskPerTradeBps,
+                      values: const {
+                        25: '0.25%',
+                        50: '0.50%',
+                        100: '1.00%',
+                        200: '2.00%',
+                      },
+                      onChanged: (value) =>
+                          setState(() => riskPerTradeBps = value),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Costs: ${spreadBps.toStringAsFixed(0)} bps spread · ${slippageBps.toStringAsFixed(0)} bps slippage each side · no commission',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: widget.bars == null || widget.running
+                      ? null
+                      : () => widget.onRun(configuration),
+                  icon: widget.running
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.play_arrow_rounded),
+                  label: Text(
+                    widget.running
+                        ? 'Running · $stage'
+                        : 'Run immutable backtest',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 7,
+          runSpacing: 7,
+          children: const [
+            _AssurancePill('60 / 20 / 20 chronological'),
+            _AssurancePill('Next-bar entry'),
+            _AssurancePill('Stop-first collision'),
+            _AssurancePill('Single position'),
+            _AssurancePill('No model call'),
+          ],
+        ),
+        const SizedBox(height: 18),
+        if (latest == null)
+          const _EmptyState(
+            icon: Icons.history_rounded,
+            message: 'No sealed backtests yet. Run the foundation strategy against the current immutable snapshot.',
+          )
+        else ...[
+          _SectionTitle(
+            title: 'Latest sealed result',
+            detail:
+                '${_shortDate(latest['createdAt']?.toString())} · ${latest['interval']} · ${overallMetrics['trades'] ?? 0} trades',
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _BacktestMetric(
+                label: 'Net result',
+                value: _signedR(overallMetrics['netR']),
+                detail: 'Overall',
+              ),
+              _BacktestMetric(
+                label: 'Win rate',
+                value: _percent(overallMetrics['winRate']),
+                detail:
+                    '${overallMetrics['wins'] ?? 0} win · ${overallMetrics['losses'] ?? 0} loss',
+              ),
+              _BacktestMetric(
+                label: 'Max drawdown',
+                value: _percentValue(overallMetrics['maxDrawdownPercent']),
+                detail: 'Fixed fractional risk',
+              ),
+              _BacktestMetric(
+                label: 'Held-out test',
+                value: _signedR(testMetrics['netR']),
+                detail:
+                    '${testMetrics['trades'] ?? 0} trades · ${_percent(testMetrics['winRate'])}',
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _BacktestTrades(trades: latest['trades']),
+          for (final warning in (latest['warnings'] as List? ?? const []).take(
+            4,
+          ))
+            Padding(
+              padding: const EdgeInsets.only(top: 7),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.warning_amber_rounded, size: 17),
+                  const SizedBox(width: 7),
+                  Expanded(child: Text(warning.toString())),
+                ],
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _BacktestSelect<T> extends StatelessWidget {
+  const _BacktestSelect({
+    required this.label,
+    required this.value,
+    required this.values,
+    required this.onChanged,
+  });
+  final String label;
+  final T value;
+  final Map<T, String> values;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 178,
+    child: DropdownButtonFormField<T>(
+      initialValue: value,
+      decoration: InputDecoration(labelText: label, isDense: true),
+      items: [
+        for (final entry in values.entries)
+          DropdownMenuItem(value: entry.key, child: Text(entry.value)),
+      ],
+      onChanged: (next) {
+        if (next != null) onChanged(next);
+      },
+    ),
+  );
+}
+
+class _AssurancePill extends StatelessWidget {
+  const _AssurancePill(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.primary.withValues(alpha: .07),
+      border: Border.all(
+        color: Theme.of(context).colorScheme.primary.withValues(alpha: .18),
+      ),
+      borderRadius: BorderRadius.circular(999),
+    ),
+    child: Text(label, style: const TextStyle(fontSize: 11)),
+  );
+}
+
+class _BacktestMetric extends StatelessWidget {
+  const _BacktestMetric({
+    required this.label,
+    required this.value,
+    required this.detail,
+  });
+  final String label, value, detail;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 190,
+    child: _PlainSurface(
+      child: Padding(
+        padding: const EdgeInsets.all(13),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 11,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(value, style: Theme.of(context).textTheme.titleLarge),
+            Text(detail, style: const TextStyle(fontSize: 11)),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _BacktestTrades extends StatelessWidget {
+  const _BacktestTrades({required this.trades});
+  final Object? trades;
+
+  @override
+  Widget build(BuildContext context) {
+    final items = (trades as List? ?? const [])
+        .whereType<Map>()
+        .map(Json.from)
+        .toList()
+        .reversed
+        .take(6)
+        .toList();
+    if (items.isEmpty) {
+      return const _EmptyState(
+        icon: Icons.query_stats_rounded,
+        message: 'No qualifying foundation signal occurred in this snapshot.',
+      );
+    }
+    return _PlainSurface(
+      child: Column(
+        children: [
+          for (var index = 0; index < items.length; index++) ...[
+            Padding(
+              padding: const EdgeInsets.all(13),
+              child: Row(
+                children: [
+                  Icon(
+                    items[index]['direction'] == 'long'
+                        ? Icons.trending_up_rounded
+                        : Icons.trending_down_rounded,
+                    size: 19,
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '${_humanize(items[index]['direction']?.toString() ?? '')} · ${_humanize(items[index]['exitReason']?.toString() ?? '')}',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        Text(
+                          '${_humanize(items[index]['split']?.toString() ?? '')} · ${_shortDate(items[index]['enteredAt']?.toString())}',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    _signedR(items[index]['netR']),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ],
+              ),
+            ),
+            if (index != items.length - 1) const Divider(height: 1),
+          ],
+        ],
+      ),
     );
   }
 }
@@ -1218,4 +1757,20 @@ String _shortDate(String? value) {
   final hour = date.hour.toString().padLeft(2, '0');
   final minute = date.minute.toString().padLeft(2, '0');
   return '${date.day}/${date.month} $hour:$minute';
+}
+
+String _signedR(Object? value) {
+  final amount = (value as num?)?.toDouble();
+  if (amount == null) return '—';
+  return '${amount >= 0 ? '+' : ''}${amount.toStringAsFixed(2)}R';
+}
+
+String _percent(Object? value) {
+  final ratio = (value as num?)?.toDouble();
+  return ratio == null ? '—' : '${(ratio * 100).toStringAsFixed(0)}%';
+}
+
+String _percentValue(Object? value) {
+  final amount = (value as num?)?.toDouble();
+  return amount == null ? '—' : '${amount.toStringAsFixed(1)}%';
 }

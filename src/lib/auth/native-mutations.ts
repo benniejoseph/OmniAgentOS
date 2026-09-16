@@ -14,6 +14,7 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "today.update",
   "workspaces.update",
   "markets.update",
+  "markets.backtest.run",
   "settings.update",
   "evidence.cancel",
   "push.registration.update",
@@ -71,12 +72,13 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
-  return capability === "push.registration.update" ||
-      capability === "push.delivery.acknowledge" ||
-      capability === "markets.update" ||
-      capability === "settings.update"
-    ? NATIVE_API_CURRENT_VERSION
-    : 3;
+  if (capability === "markets.backtest.run") return NATIVE_API_CURRENT_VERSION;
+  if (
+    capability === "push.registration.update" ||
+    capability === "push.delivery.acknowledge"
+  ) return 4;
+  if (capability === "markets.update" || capability === "settings.update") return 6;
+  return 3;
 }
 
 function held(

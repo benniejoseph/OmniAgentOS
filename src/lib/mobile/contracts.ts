@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 6 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 5 as const;
+export const NATIVE_API_CURRENT_VERSION = 7 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 6 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -458,6 +458,12 @@ const v6Operations = [
   operation("workspaces.builder.update", "POST", "/api/projects/{id}/builder", "Run a governed App Builder operation.", "bearer", "JsonObject", "JsonObject"),
 ] as const satisfies readonly NativeOperation[];
 
+const v7Operations = [
+  ...v6Operations,
+  operation("market.backtests", "GET", "/api/market-research/backtests", "Read actor-private immutable deterministic backtests.", "bearer", undefined, "JsonObject"),
+  operation("market.backtests.run", "POST", "/api/market-research/backtests", "Queue one governed leakage-safe deterministic backtest.", "bearer", "JsonObject", "JsonObject"),
+] as const satisfies readonly NativeOperation[];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -510,6 +516,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 4) return v4Operations;
   if (version === 5) return v5Operations;
   if (version === 6) return v6Operations;
+  if (version === 7) return v7Operations;
   return undefined;
 }
 
@@ -519,7 +526,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [6, 5],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [7, 6],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
