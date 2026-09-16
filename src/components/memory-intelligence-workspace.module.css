@@ -155,6 +155,39 @@
 .qualityMetrics span { color: var(--memory-primary); font-size: .74rem; font-weight: 760; letter-spacing: .06em; text-transform: uppercase; }
 .qualityMetrics strong { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.2rem, 1.7vw, 1.6rem); font-weight: 620; font-variant-numeric: tabular-nums; }
 .qualityMetrics small { color: var(--memory-muted); font-size: .76rem; line-height: 1.45; }
+.semanticLab { margin: 1rem; overflow: hidden; border: 1px solid color-mix(in oklab, var(--memory-primary) 34%, var(--memory-line)); border-radius: 1.3rem; background: linear-gradient(135deg, color-mix(in oklab, var(--memory-mint) 42%, var(--memory-paper-solid)), var(--memory-paper-solid)); }
+.semanticLabHeading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; border-bottom: 1px solid color-mix(in oklab, var(--memory-primary) 18%, var(--memory-line)); padding: 1rem; }
+.semanticLabIcon { display: grid; width: 2.7rem; height: 2.7rem; place-items: center; border: 1px solid color-mix(in oklab, var(--memory-primary) 24%, var(--memory-line)); border-radius: .9rem; color: var(--memory-primary); background: var(--memory-paper-solid); box-shadow: 0 .6rem 1.5rem color-mix(in oklab, var(--memory-primary) 10%, transparent); }
+.semanticLabHeading p { color: var(--memory-primary); font-size: .64rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.semanticLabHeading h3 { margin-top: .12rem; font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.22rem; font-weight: 610; letter-spacing: -.025em; }
+.semanticLabHeading > div:nth-child(2) > span { display: block; max-width: 46rem; margin-top: .16rem; color: var(--memory-muted); font-size: .72rem; line-height: 1.45; }
+.semanticLabState { display: inline-flex; min-height: 2.15rem; align-items: center; gap: .35rem; border: 1px solid var(--memory-line); border-radius: 999px; padding: 0 .65rem; color: var(--memory-muted); background: var(--memory-paper-solid); font-size: .64rem; font-weight: 720; white-space: nowrap; }
+.semanticLabState[data-active="true"] { border-color: color-mix(in oklab, var(--memory-primary) 45%, var(--memory-line)); color: var(--memory-primary); }
+.semanticLabBody { display: grid; gap: .8rem; padding: 1rem; }
+.semanticLabProgress { display: grid; gap: .55rem; }
+.semanticLabProgress > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
+.semanticLabProgress span { display: flex; align-items: baseline; gap: .25rem; border: 1px solid color-mix(in oklab, var(--memory-line) 76%, transparent); border-radius: .85rem; padding: .72rem .8rem; color: var(--memory-muted); font-size: .72rem; font-variant-numeric: tabular-nums; background: color-mix(in oklab, var(--memory-paper-solid) 86%, transparent); }
+.semanticLabProgress strong { color: var(--memory-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.3rem; font-weight: 650; }
+.semanticLabProgress small { margin-left: auto; color: var(--memory-muted); font-size: .66rem; }
+.semanticLabProgress progress { width: 100%; height: .38rem; overflow: hidden; appearance: none; border: 0; border-radius: 999px; background: var(--memory-line); }
+.semanticLabProgress progress::-webkit-progress-bar { border-radius: 999px; background: var(--memory-line); }
+.semanticLabProgress progress::-webkit-progress-value { border-radius: 999px; background: var(--memory-primary); }
+.semanticLabProgress progress::-moz-progress-bar { border-radius: 999px; background: var(--memory-primary); }
+.semanticLabAction { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border: 1px solid var(--memory-line); border-radius: 1rem; padding: .85rem; background: var(--memory-paper-solid); }
+.semanticLabAction > div { display: grid; gap: .2rem; }
+.semanticLabAction strong { font-size: .76rem; }
+.semanticLabAction span { max-width: 43rem; color: var(--memory-muted); font-size: .68rem; line-height: 1.5; }
+.semanticLabAction button { display: inline-flex; min-height: 2.5rem; flex: 0 0 auto; align-items: center; justify-content: center; gap: .38rem; border: 1px solid transparent; border-radius: 999px; padding: 0 .85rem; color: var(--primary-ink); background: var(--memory-primary); font-size: .69rem; font-weight: 760; }
+.semanticLabAction button:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 .55rem 1.4rem color-mix(in oklab, var(--memory-primary) 20%, transparent); }
+.semanticLabAction button:disabled { cursor: default; opacity: .7; }
+.semanticLabJobs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--memory-line); border-radius: .85rem; background: color-mix(in oklab, var(--memory-paper-solid) 88%, transparent); }
+.semanticLabJobs > div { display: grid; gap: .1rem; padding: .6rem .7rem; }
+.semanticLabJobs > div + div { border-left: 1px solid var(--memory-line); }
+.semanticLabJobs dt { color: var(--memory-muted); font-size: .58rem; font-weight: 680; text-transform: uppercase; }
+.semanticLabJobs dd { color: var(--memory-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.semanticLabJobs [data-attention="true"] dd { color: var(--warning); }
+.semanticLabBoundary { display: flex; align-items: flex-start; gap: .45rem; color: var(--memory-muted); font-size: .66rem; line-height: 1.5; }
+.semanticLabBoundary svg { flex: 0 0 auto; margin-top: .08rem; color: var(--memory-primary); }
 .reviewSectionHeading { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: 1rem; }
 .reviewSectionIcon { display: grid; width: 2.6rem; height: 2.6rem; place-items: center; border-radius: .85rem; color: var(--memory-primary); background: var(--memory-paper-solid); box-shadow: 0 .5rem 1.5rem color-mix(in oklab, var(--memory-primary) 10%, transparent); }
 .reviewSectionHeading > div:nth-child(2) p, .memoryReviewHeading p { color: var(--memory-primary); font-size: .64rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
@@ -324,6 +357,8 @@
   .qualityMetrics article + article { border-left: 0; }
   .qualityMetrics article:nth-child(even) { border-left: 1px solid var(--memory-line); }
   .qualityMetrics article:nth-child(n+3) { border-top: 1px solid var(--memory-line); }
+  .semanticLabAction { align-items: stretch; flex-direction: column; }
+  .semanticLabAction button { align-self: flex-start; }
   .cognitionEvidence { border-top: 1px solid var(--memory-line); border-left: 0; }
   .reviewClaims { grid-template-columns: 1fr; }
   .reviewClaims section + section { border-top: 1px solid var(--memory-line); border-left: 0; }
@@ -345,6 +380,11 @@
   .qualityMetrics { grid-template-columns: 1fr; }
   .qualityMetrics article:nth-child(even) { border-left: 0; }
   .qualityMetrics article + article { border-top: 1px solid var(--memory-line); }
+  .semanticLab { margin-inline: .75rem; }
+  .semanticLabHeading { grid-template-columns: auto minmax(0, 1fr); }
+  .semanticLabState { grid-column: 1 / -1; justify-self: start; }
+  .semanticLabProgress > div { grid-template-columns: 1fr; }
+  .semanticLabAction button { width: 100%; }
   .cognitionCounts div:nth-child(3) { border-top: 1px solid var(--memory-line); border-left: 0; }
   .cognitionCounts div:nth-child(4) { border-top: 1px solid var(--memory-line); }
   .cognitionList article > footer button { width: 100%; justify-content: center; }
