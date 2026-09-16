@@ -2,8 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/asael_app.dart';
+import 'app/router/app_router.dart';
 
-void main() {
+void main(List<String> arguments) {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const ProviderScope(child: AsaelApp()));
+  runApp(
+    ProviderScope(
+      overrides: [
+        appInitialLocationProvider.overrideWithValue(
+          initialAppLocation(arguments),
+        ),
+      ],
+      child: const AsaelApp(),
+    ),
+  );
 }

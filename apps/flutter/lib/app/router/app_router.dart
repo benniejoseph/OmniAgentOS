@@ -43,12 +43,26 @@ String appHomePath() => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
     ? '/talk'
     : '/today';
 
+String initialAppLocation(List<String> arguments) {
+  const prefix = '--asael-route=';
+  final route = arguments
+      .where((argument) => argument.startsWith(prefix))
+      .map((argument) => argument.substring(prefix.length))
+      .lastOrNull;
+  return route != null && DesktopHostBridge.isWorkspaceRoute(route)
+      ? route
+      : appHomePath();
+}
+
+final appInitialLocationProvider = Provider<String>((_) => appHomePath());
+
 final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
-  final homePath = appHomePath();
+  final initialLocation = ref.watch(appInitialLocationProvider);
+  final homePath = initialLocation;
   return GoRouter(
     debugLogDiagnostics: kDebugMode,
-    initialLocation: homePath,
+    initialLocation: initialLocation,
     redirect: (context, state) {
       final atLogin = state.matchedLocation == '/login';
       final atBootstrap = state.matchedLocation == '/bootstrap';
@@ -144,9 +158,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       onOpen: (account) =>
                           context.push('/accounts/${account.id}'),
                     ),
-                    '/markets' => MarketsView(
-                      api: ref.read(apiClientProvider),
-                    ),
+                    '/markets' => MarketsView(api: ref.read(apiClientProvider)),
                     '/payments' => PaymentsView(
                       api: ref.read(apiClientProvider),
                     ),

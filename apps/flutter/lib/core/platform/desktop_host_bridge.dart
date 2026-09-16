@@ -17,6 +17,49 @@ typedef DesktopSharedCaptureHandler = Future<void> Function(
 
 enum DesktopNotificationCommand { open, complete, snooze15, dismiss }
 
+enum DesktopQuickEntryShortcut {
+  commandShiftSpace('command_shift_space', 'Command + Shift + Space'),
+  optionSpace('option_space', 'Option + Space'),
+  controlSpace('control_space', 'Control + Space'),
+  disabled('disabled', 'Disabled');
+
+  const DesktopQuickEntryShortcut(this.id, this.label);
+  final String id;
+  final String label;
+
+  static DesktopQuickEntryShortcut fromId(String id) => values.firstWhere(
+    (value) => value.id == id,
+    orElse: () => throw const FormatException(
+      'The native shortcut selection is invalid.',
+    ),
+  );
+}
+
+class DesktopShortcutState {
+  const DesktopShortcutState({
+    required this.shortcut,
+    required this.registered,
+  });
+
+  factory DesktopShortcutState.fromArguments(Object? arguments) {
+    if (arguments is! Map ||
+        arguments.length != 2 ||
+        arguments['shortcut'] is! String ||
+        arguments['registered'] is! bool) {
+      throw const FormatException('The native shortcut state is invalid.');
+    }
+    return DesktopShortcutState(
+      shortcut: DesktopQuickEntryShortcut.fromId(
+        arguments['shortcut'] as String,
+      ),
+      registered: arguments['registered'] as bool,
+    );
+  }
+
+  final DesktopQuickEntryShortcut shortcut;
+  final bool registered;
+}
+
 class DesktopNotificationAction {
   const DesktopNotificationAction({required this.command, required this.data});
 
@@ -122,11 +165,19 @@ class DesktopHostBridge {
     '/inbox',
   };
 
+  static final _workspaceRoute = RegExp(
+    r'^/(talk|today|capture|inbox|knowledge|projects|meetings|results)(/[A-Za-z0-9._~%:-]{1,500})?$',
+  );
+
+  static bool isWorkspaceRoute(String route) =>
+      route.length <= 600 && _workspaceRoute.hasMatch(route);
+
   static bool get _isMacOS =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 
   final MethodChannel _channel;
   final bool _enabled;
+  bool get supported => _enabled;
   DesktopRouteOpener? _openRoute;
   String? _pendingRoute;
   DesktopNotificationActionHandler? _notificationHandler;
@@ -333,6 +384,40 @@ class DesktopHostBridge {
   Future<void> requestRemoteNotifications() async {
     if (!_enabled) return;
     await _invokePresentationMethod('requestRemoteNotifications');
+  }
+
+  Future<DesktopShortcutState> getQuickEntryShortcut() async {
+    if (!_enabled) {
+      return const DesktopShortcutState(
+        shortcut: DesktopQuickEntryShortcut.disabled,
+        registered: false,
+      );
+    }
+    final result = await _channel.invokeMethod<Object?>(
+      'getQuickEntryShortcut',
+    );
+    return DesktopShortcutState.fromArguments(result);
+  }
+
+  Future<DesktopShortcutState> setQuickEntryShortcut(
+    DesktopQuickEntryShortcut shortcut,
+  ) async {
+    if (!_enabled) {
+      return DesktopShortcutState(shortcut: shortcut, registered: false);
+    }
+    final result = await _channel.invokeMethod<Object?>(
+      'setQuickEntryShortcut',
+      {'shortcut': shortcut.id},
+    );
+    return DesktopShortcutState.fromArguments(result);
+  }
+
+  Future<void> openWorkspaceWindow(String route) async {
+    if (!_enabled) return;
+    if (!isWorkspaceRoute(route)) {
+      throw ArgumentError.value(route, 'route', 'Unsupported workspace route');
+    }
+    await _channel.invokeMethod<void>('openWorkspaceWindow', {'route': route});
   }
 
   void _dispatch(String route) {

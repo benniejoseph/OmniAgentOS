@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/platform/desktop_host_bridge.dart';
 import '../../generated/native_contract.g.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -60,11 +61,39 @@ class _ModelSettingsViewState extends State<ModelSettingsView> {
   Object? error;
   bool loading = true;
   String? saving;
+  DesktopShortcutState? desktopShortcut;
+  Object? desktopError;
+  bool desktopSaving = false;
 
   @override
   void initState() {
     super.initState();
     _load();
+    if (appDesktopHostBridge.supported) _loadDesktopPreferences();
+  }
+
+  Future<void> _loadDesktopPreferences() async {
+    try {
+      final state = await appDesktopHostBridge.getQuickEntryShortcut();
+      if (mounted) setState(() => desktopShortcut = state);
+    } catch (error) {
+      if (mounted) setState(() => desktopError = error);
+    }
+  }
+
+  Future<void> _setDesktopShortcut(DesktopQuickEntryShortcut shortcut) async {
+    setState(() {
+      desktopSaving = true;
+      desktopError = null;
+    });
+    try {
+      final state = await appDesktopHostBridge.setQuickEntryShortcut(shortcut);
+      if (mounted) setState(() => desktopShortcut = state);
+    } catch (error) {
+      if (mounted) setState(() => desktopError = error);
+    } finally {
+      if (mounted) setState(() => desktopSaving = false);
+    }
   }
 
   Future<void> _load() async {
@@ -264,6 +293,154 @@ class _ModelSettingsViewState extends State<ModelSettingsView> {
                             ],
                           ),
                         ),
+                        if (appDesktopHostBridge.supported) ...[
+                          const SizedBox(height: 24),
+                          Text(
+                            'Desktop workspace',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          _Surface(
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        Icons.keyboard_command_key_rounded,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .primary,
+                                      ),
+                                      const SizedBox(width: 12),
+                                      const Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Quick Entry shortcut',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                            Text(
+                                              'Choose one global shortcut or leave it available from the menu bar only.',
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      SizedBox(
+                                        width: 230,
+                                        child:
+                                            DropdownButtonFormField<
+                                              DesktopQuickEntryShortcut
+                                            >(
+                                              key: ValueKey(
+                                                desktopShortcut?.shortcut,
+                                              ),
+                                              initialValue:
+                                                  desktopShortcut?.shortcut,
+                                              items: DesktopQuickEntryShortcut
+                                                  .values
+                                                  .map(
+                                                    (shortcut) =>
+                                                        DropdownMenuItem(
+                                                          value: shortcut,
+                                                          child: Text(
+                                                            shortcut.label,
+                                                          ),
+                                                        ),
+                                                  )
+                                                  .toList(),
+                                              onChanged:
+                                                  desktopSaving ||
+                                                      desktopShortcut == null
+                                                  ? null
+                                                  : (value) {
+                                                      if (value != null) {
+                                                        _setDesktopShortcut(
+                                                          value,
+                                                        );
+                                                      }
+                                                    },
+                                            ),
+                                      ),
+                                    ],
+                                  ),
+                                  if (desktopShortcut case final shortcut?) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      shortcut.shortcut ==
+                                              DesktopQuickEntryShortcut.disabled
+                                          ? 'Global shortcut disabled. Quick Entry remains in the Asael menu.'
+                                          : shortcut.registered
+                                          ? 'Shortcut is active system-wide.'
+                                          : 'This shortcut is already owned by another application. Choose another preset.',
+                                      style: TextStyle(
+                                        color:
+                                            shortcut.shortcut !=
+                                                    DesktopQuickEntryShortcut
+                                                        .disabled &&
+                                                !shortcut.registered
+                                            ? Theme.of(context)
+                                                  .colorScheme
+                                                  .error
+                                            : Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ],
+                                  if (desktopError != null) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Desktop preferences could not be updated.',
+                                      style: TextStyle(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error,
+                                      ),
+                                    ),
+                                  ],
+                                  const Divider(height: 28),
+                                  Row(
+                                    children: [
+                                      const Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'Independent workspaces',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                            ),
+                                            Text(
+                                              'Open another signed Asael window with the same account and governed backend.',
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      FilledButton.tonalIcon(
+                                        onPressed: () => appDesktopHostBridge
+                                            .openWorkspaceWindow('/talk'),
+                                        icon: const Icon(
+                                          Icons.open_in_new_rounded,
+                                        ),
+                                        label: const Text('New conversation'),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 24),
                         Row(
                           children: [

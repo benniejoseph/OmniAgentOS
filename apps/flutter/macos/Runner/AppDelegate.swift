@@ -83,6 +83,40 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 /// Owns Asael's small native desktop surface. Product behavior remains in Flutter;
 /// this controller only keeps the app available and forwards explicit navigation.
 private final class DesktopHostController: NSObject {
+  private enum QuickEntryShortcut: String {
+    case commandShiftSpace = "command_shift_space"
+    case optionSpace = "option_space"
+    case controlSpace = "control_space"
+    case disabled
+
+    var carbonModifiers: UInt32 {
+      switch self {
+      case .commandShiftSpace: UInt32(cmdKey | shiftKey)
+      case .optionSpace: UInt32(optionKey)
+      case .controlSpace: UInt32(controlKey)
+      case .disabled: 0
+      }
+    }
+
+    var menuModifiers: NSEvent.ModifierFlags {
+      switch self {
+      case .commandShiftSpace: [.command, .shift]
+      case .optionSpace: [.option]
+      case .controlSpace: [.control]
+      case .disabled: []
+      }
+    }
+
+    var displayName: String {
+      switch self {
+      case .commandShiftSpace: "Command-Shift-Space"
+      case .optionSpace: "Option-Space"
+      case .controlSpace: "Control-Space"
+      case .disabled: "disabled"
+      }
+    }
+  }
+
   private struct SharedCaptureManifest: Decodable {
     struct FileEntry: Decodable {
       let name: String
@@ -121,6 +155,8 @@ private final class DesktopHostController: NSObject {
 
   private static let hotKeySignature: OSType = 0x41534145 // "ASAE"
   private static let quickEntryHotKeyID: UInt32 = 1
+  private static let quickEntryShortcutDefaultsKey = "AsaelQuickEntryShortcutV1"
+  private static let desktopChannelName = "app.omniagent.omniagent/desktop"
   private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
   private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
   private static let quickEntryWindowSize = NSSize(width: 760, height: 400)
@@ -132,6 +168,9 @@ private final class DesktopHostController: NSObject {
   private static let sharedCaptureRequestPattern = try! NSRegularExpression(
     pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
   )
+  private static let workspaceRoutePattern = try! NSRegularExpression(
+    pattern: "^/(talk|today|capture|inbox|knowledge|projects|meetings|results)(/[A-Za-z0-9._~%:-]{1,500})?$"
+  )
 
   private weak var window: NSWindow?
   private var channel: FlutterMethodChannel?
@@ -140,6 +179,8 @@ private final class DesktopHostController: NSObject {
   private weak var applicationQuickEntryMenuItem: NSMenuItem?
   private var hotKey: EventHotKeyRef?
   private var hotKeyEventHandler: EventHandlerRef?
+  private var quickEntryShortcut = QuickEntryShortcut.commandShiftSpace
+  private var shortcutRegistered = false
   private var pendingRoute: Route?
   private var isDartReady = false
   private var hasStarted = false
@@ -147,18 +188,16 @@ private final class DesktopHostController: NSObject {
   private var regularWindowFrame: NSRect?
   private var deliveredSharedCaptureIds = Set<String>()
   private var sharedCaptureDeliveryInFlight = false
+  private var workspaceWindows: [UUID: AsaelWorkspaceWindowController] = [:]
 
   func start() {
     guard !hasStarted else { return }
     hasStarted = true
+    quickEntryShortcut = savedQuickEntryShortcut()
     configureApplicationMenu()
     configureStatusItem()
-    if !registerQuickEntryHotKey() {
-      for item in [statusQuickEntryMenuItem, applicationQuickEntryMenuItem].compactMap({ $0 }) {
-        item.title = "Quick Entry — shortcut unavailable"
-        item.toolTip = "Another application owns Command-Shift-Space. Quick Entry remains available from this menu."
-      }
-    }
+    let registered = registerQuickEntryHotKey()
+    updateQuickEntryMenus(registrationSucceeded: registered)
   }
 
   func stop() {
@@ -186,6 +225,10 @@ private final class DesktopHostController: NSObject {
       menu.removeItem(applicationQuickEntryMenuItem)
     }
     applicationQuickEntryMenuItem = nil
+    for controller in Array(workspaceWindows.values) {
+      controller.close()
+    }
+    workspaceWindows.removeAll()
   }
 
   func attach(channel: FlutterMethodChannel, window: NSWindow) {
@@ -223,6 +266,26 @@ private final class DesktopHostController: NSObject {
           self.requestRemoteNotifications()
         }
         result(nil)
+      case "getQuickEntryShortcut":
+        result(self.quickEntryShortcutState())
+      case "setQuickEntryShortcut":
+        guard let shortcut = self.quickEntryShortcut(call.arguments) else {
+          result(FlutterError(code: "invalid_shortcut", message: "The Quick Entry shortcut is invalid.", details: nil))
+          return
+        }
+        DispatchQueue.main.async {
+          self.setQuickEntryShortcut(shortcut)
+          result(self.quickEntryShortcutState())
+        }
+      case "openWorkspaceWindow":
+        guard let route = self.workspaceRoute(call.arguments) else {
+          result(FlutterError(code: "invalid_workspace_route", message: "The workspace route is invalid.", details: nil))
+          return
+        }
+        DispatchQueue.main.async {
+          self.openWorkspaceWindow(route)
+          result(nil)
+        }
       case "completeSharedCapture":
         guard let requestId = self.sharedCaptureRequestId(call.arguments),
               self.deliveredSharedCaptureIds.contains(requestId)
@@ -245,6 +308,112 @@ private final class DesktopHostController: NSObject {
       default:
         result(FlutterMethodNotImplemented)
       }
+    }
+  }
+
+  func attachAuxiliary(channel: FlutterMethodChannel, window: NSWindow) {
+    channel.setMethodCallHandler { [weak self, weak window] call, result in
+      guard let self, let window else {
+        result(FlutterError(code: "window_unavailable", message: "The workspace window is unavailable.", details: nil))
+        return
+      }
+      switch call.method {
+      case "flutterReady":
+        result(nil)
+      case "showMainPresentation":
+        DispatchQueue.main.async {
+          self.focus(window)
+          result(nil)
+        }
+      case "getQuickEntryShortcut":
+        result(self.quickEntryShortcutState())
+      case "setQuickEntryShortcut":
+        guard let shortcut = self.quickEntryShortcut(call.arguments) else {
+          result(FlutterError(code: "invalid_shortcut", message: "The Quick Entry shortcut is invalid.", details: nil))
+          return
+        }
+        DispatchQueue.main.async {
+          self.setQuickEntryShortcut(shortcut)
+          result(self.quickEntryShortcutState())
+        }
+      case "openWorkspaceWindow":
+        guard let route = self.workspaceRoute(call.arguments) else {
+          result(FlutterError(code: "invalid_workspace_route", message: "The workspace route is invalid.", details: nil))
+          return
+        }
+        DispatchQueue.main.async {
+          self.openWorkspaceWindow(route)
+          result(nil)
+        }
+      case "requestRemoteNotifications":
+        DispatchQueue.main.async {
+          self.requestRemoteNotifications()
+          result(nil)
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private func quickEntryShortcut(_ arguments: Any?) -> QuickEntryShortcut? {
+    guard let values = arguments as? [String: Any],
+          values.count == 1,
+          let rawValue = values["shortcut"] as? String
+    else { return nil }
+    return QuickEntryShortcut(rawValue: rawValue)
+  }
+
+  private func workspaceRoute(_ arguments: Any?) -> String? {
+    guard let values = arguments as? [String: Any],
+          values.count == 1,
+          let route = values["route"] as? String,
+          route.utf8.count <= 600
+    else { return nil }
+    let range = NSRange(route.startIndex..<route.endIndex, in: route)
+    return Self.workspaceRoutePattern.firstMatch(in: route, range: range) == nil ? nil : route
+  }
+
+  private func savedQuickEntryShortcut() -> QuickEntryShortcut {
+    guard let rawValue = UserDefaults.standard.string(
+      forKey: Self.quickEntryShortcutDefaultsKey
+    ) else { return .commandShiftSpace }
+    return QuickEntryShortcut(rawValue: rawValue) ?? .commandShiftSpace
+  }
+
+  private func setQuickEntryShortcut(_ shortcut: QuickEntryShortcut) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    quickEntryShortcut = shortcut
+    UserDefaults.standard.set(shortcut.rawValue, forKey: Self.quickEntryShortcutDefaultsKey)
+    let registered = registerQuickEntryHotKey()
+    updateQuickEntryMenus(registrationSucceeded: registered)
+  }
+
+  private func quickEntryShortcutState() -> [String: Any] {
+    [
+      "shortcut": quickEntryShortcut.rawValue,
+      "registered": shortcutRegistered,
+    ]
+  }
+
+  private func openWorkspaceWindow(_ route: String) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard workspaceWindows.count < 8 else {
+      NSSound.beep()
+      return
+    }
+    let id = UUID()
+    let controller = AsaelWorkspaceWindowController(
+      id: id,
+      route: route,
+      desktopHost: self
+    ) { [weak self] closedId in
+      self?.workspaceWindows.removeValue(forKey: closedId)
+    }
+    workspaceWindows[id] = controller
+    controller.showWindow(nil)
+    if let window = controller.window {
+      focus(window)
     }
   }
 
@@ -647,12 +816,12 @@ private final class DesktopHostController: NSObject {
     menu.addItem(menuItem(title: "Command", key: "2", action: #selector(openCommand)))
 
     let quickEntry = menuItem(title: "Quick Entry", key: " ", action: #selector(openQuickEntry))
-    quickEntry.keyEquivalentModifierMask = [.command, .shift]
     menu.addItem(quickEntry)
     statusQuickEntryMenuItem = quickEntry
 
     menu.addItem(menuItem(title: "Quick Capture", key: "3", action: #selector(openQuickCapture)))
     menu.addItem(menuItem(title: "Inbox", key: "4", action: #selector(openInbox)))
+    menu.addItem(menuItem(title: "New Conversation Window", key: "n", action: #selector(openConversationWindow)))
     menu.addItem(.separator())
 
     let quit = NSMenuItem(title: "Quit Asael", action: #selector(quitApplication), keyEquivalent: "q")
@@ -669,9 +838,15 @@ private final class DesktopHostController: NSObject {
     guard let menu = NSApp.mainMenu?.items.first?.submenu else { return }
 
     let item = menuItem(title: "Quick Entry", key: " ", action: #selector(openQuickEntry))
-    item.keyEquivalentModifierMask = [.command, .shift]
     menu.insertItem(item, at: min(1, menu.items.count))
     applicationQuickEntryMenuItem = item
+
+    let newWindow = menuItem(
+      title: "New Conversation Window",
+      key: "n",
+      action: #selector(openConversationWindow)
+    )
+    menu.insertItem(newWindow, at: min(2, menu.items.count))
   }
 
   private func menuItem(title: String, key: String, action: Selector) -> NSMenuItem {
@@ -683,6 +858,12 @@ private final class DesktopHostController: NSObject {
 
   private func registerQuickEntryHotKey() -> Bool {
     dispatchPrecondition(condition: .onQueue(.main))
+
+    unregisterQuickEntryHotKey()
+    guard quickEntryShortcut != .disabled else {
+      shortcutRegistered = false
+      return true
+    }
 
     var eventType = EventTypeSpec(
       eventClass: OSType(kEventClassKeyboard),
@@ -732,10 +913,9 @@ private final class DesktopHostController: NSObject {
       signature: Self.hotKeySignature,
       id: Self.quickEntryHotKeyID
     )
-    let modifiers = UInt32(cmdKey | shiftKey)
     let registrationStatus = RegisterEventHotKey(
       UInt32(kVK_Space),
-      modifiers,
+      quickEntryShortcut.carbonModifiers,
       identifier,
       GetApplicationEventTarget(),
       0,
@@ -746,7 +926,37 @@ private final class DesktopHostController: NSObject {
       RemoveEventHandler(hotKeyEventHandler)
       self.hotKeyEventHandler = nil
     }
-    return registrationStatus == noErr
+    shortcutRegistered = registrationStatus == noErr
+    return shortcutRegistered
+  }
+
+  private func unregisterQuickEntryHotKey() {
+    if let hotKey {
+      UnregisterEventHotKey(hotKey)
+      self.hotKey = nil
+    }
+    if let hotKeyEventHandler {
+      RemoveEventHandler(hotKeyEventHandler)
+      self.hotKeyEventHandler = nil
+    }
+    shortcutRegistered = false
+  }
+
+  private func updateQuickEntryMenus(registrationSucceeded: Bool) {
+    for item in [statusQuickEntryMenuItem, applicationQuickEntryMenuItem].compactMap({ $0 }) {
+      item.keyEquivalent = quickEntryShortcut == .disabled ? "" : " "
+      item.keyEquivalentModifierMask = quickEntryShortcut.menuModifiers
+      if quickEntryShortcut == .disabled {
+        item.title = "Quick Entry"
+        item.toolTip = "The global shortcut is disabled. Quick Entry remains available here."
+      } else if registrationSucceeded {
+        item.title = "Quick Entry"
+        item.toolTip = "Open Quick Entry with \(quickEntryShortcut.displayName)."
+      } else {
+        item.title = "Quick Entry — shortcut unavailable"
+        item.toolTip = "Another application owns \(quickEntryShortcut.displayName). Quick Entry remains available here."
+      }
+    }
   }
 
   @objc private func openToday() {
@@ -769,7 +979,74 @@ private final class DesktopHostController: NSObject {
     request(.inbox)
   }
 
+  @objc private func openConversationWindow() {
+    openWorkspaceWindow(Route.command.rawValue)
+  }
+
   @objc private func quitApplication() {
     NSApp.terminate(nil)
+  }
+}
+
+private final class AsaelWorkspaceWindowController: NSWindowController, NSWindowDelegate {
+  private let id: UUID
+  private let flutterViewController: FlutterViewController
+  private let channel: FlutterMethodChannel
+  private let onClose: (UUID) -> Void
+  private var closed = false
+
+  init(
+    id: UUID,
+    route: String,
+    desktopHost: DesktopHostController,
+    onClose: @escaping (UUID) -> Void
+  ) {
+    self.id = id
+    self.onClose = onClose
+
+    let project = FlutterDartProject()
+    project.dartEntrypointArguments = [
+      "--asael-route=\(route)",
+      "--asael-window=\(id.uuidString.lowercased())",
+    ]
+    let flutterViewController = FlutterViewController(project: project)
+    self.flutterViewController = flutterViewController
+    RegisterGeneratedPlugins(registry: flutterViewController)
+
+    channel = FlutterMethodChannel(
+      name: "app.omniagent.omniagent/desktop",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1_240, height: 800),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+    window.title = "Asael Workspace"
+    window.minSize = NSSize(width: 860, height: 620)
+    window.contentViewController = flutterViewController
+    window.isReleasedWhenClosed = false
+    window.tabbingMode = .preferred
+    window.collectionBehavior.insert(.fullScreenPrimary)
+
+    super.init(window: window)
+    window.delegate = self
+    window.center()
+    desktopHost.attachAuxiliary(channel: channel, window: window)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  func windowWillClose(_ notification: Notification) {
+    guard !closed else { return }
+    closed = true
+    channel.setMethodCallHandler(nil)
+    flutterViewController.engine.shutDownEngine()
+    onClose(id)
   }
 }

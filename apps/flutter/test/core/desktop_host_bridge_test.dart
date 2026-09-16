@@ -1,9 +1,21 @@
 import 'package:asael/core/platform/desktop_host_bridge.dart';
+import 'package:asael/app/router/app_router.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('accepts only a validated native initial workspace route', () {
+    expect(
+      initialAppLocation(const ['--asael-route=/results/agent%3Arun-123']),
+      '/results/agent%3Arun-123',
+    );
+    expect(
+      initialAppLocation(const ['--asael-route=/settings?token=private']),
+      appHomePath(),
+    );
+  });
 
   test('accepts only allowlisted desktop routes', () async {
     final opened = <String>[];
@@ -234,6 +246,66 @@ void main() {
     expect(calls, hasLength(1));
     expect(calls.single.method, 'showQuickEntryPresentation');
     expect(calls.single.arguments, isNull);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
+  });
+
+  test(
+    'reads and updates only a bounded Quick Entry shortcut preset',
+    () async {
+      const channel = MethodChannel('test.asael.desktop.shortcuts');
+      final calls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            calls.add(call);
+            final requested = call.arguments is Map
+                ? (call.arguments as Map)['shortcut']
+                : null;
+            return {
+              'shortcut': requested ?? 'command_shift_space',
+              'registered': requested != 'disabled',
+            };
+          });
+      final bridge = DesktopHostBridge(channel: channel, enabled: true);
+
+      final initial = await bridge.getQuickEntryShortcut();
+      final changed = await bridge.setQuickEntryShortcut(
+        DesktopQuickEntryShortcut.optionSpace,
+      );
+
+      expect(initial.shortcut, DesktopQuickEntryShortcut.commandShiftSpace);
+      expect(initial.registered, isTrue);
+      expect(changed.shortcut, DesktopQuickEntryShortcut.optionSpace);
+      expect(calls.map((call) => call.method), [
+        'getQuickEntryShortcut',
+        'setQuickEntryShortcut',
+      ]);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    },
+  );
+
+  test('opens only an allowlisted independent workspace route', () async {
+    const channel = MethodChannel('test.asael.desktop.windows');
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return null;
+        });
+    final bridge = DesktopHostBridge(channel: channel, enabled: true);
+
+    await bridge.openWorkspaceWindow('/results/agent%3Arun-123');
+    expect(calls.single.method, 'openWorkspaceWindow');
+    expect(calls.single.arguments, {'route': '/results/agent%3Arun-123'});
+    await expectLater(
+      bridge.openWorkspaceWindow('/settings?token=private'),
+      throwsArgumentError,
+    );
+    expect(
+      DesktopHostBridge.isWorkspaceRoute('/capture/../../private'),
+      isFalse,
+    );
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
   });

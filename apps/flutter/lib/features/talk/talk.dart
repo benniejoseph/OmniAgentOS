@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
 
 import '../../app/brand/asael_mark.dart';
+import '../../core/platform/desktop_host_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import 'talk_history.dart';
 import 'talk_history_view.dart';
@@ -1720,6 +1721,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           ),
         ),
         actions: [
+          if (appDesktopHostBridge.supported)
+            IconButton(
+              tooltip: 'Open a new Conversation window',
+              onPressed: () =>
+                  appDesktopHostBridge.openWorkspaceWindow('/talk'),
+              icon: const Icon(Icons.open_in_new_rounded),
+            ),
           if (widget.controller.conversationHistorySupported)
             IconButton(
               tooltip: 'Conversation history',
@@ -2772,18 +2780,33 @@ class _TalkActivityCard extends StatelessWidget {
                 if (activity.actionLabel != null &&
                     activity.actionRoute != null) ...[
                   const SizedBox(height: 7),
-                  TextButton.icon(
-                    onPressed: () => context.go(activity.actionRoute!),
-                    icon: const Icon(Icons.arrow_forward_rounded, size: 15),
-                    label: Text(activity.actionLabel!),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 5,
+                  Row(
+                    children: [
+                      TextButton.icon(
+                        onPressed: () => context.go(activity.actionRoute!),
+                        icon: const Icon(Icons.arrow_forward_rounded, size: 15),
+                        label: Text(activity.actionLabel!),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 5,
+                          ),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
                       ),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
+                      if (appDesktopHostBridge.supported &&
+                          DesktopHostBridge.isWorkspaceRoute(
+                            activity.actionRoute!,
+                          ))
+                        IconButton(
+                          tooltip: 'Open in a new window',
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => appDesktopHostBridge
+                              .openWorkspaceWindow(activity.actionRoute!),
+                          icon: const Icon(Icons.open_in_new_rounded, size: 15),
+                        ),
+                    ],
                   ),
                 ],
               ],
