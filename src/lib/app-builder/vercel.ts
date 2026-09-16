@@ -78,6 +78,7 @@ export async function createBuilderVercelPreview(
     assertDeploymentFiles(input.source.files);
   } else {
     assertGithubDeploymentSource(input.source);
+    await ensureBuilderGithubPreviewProject(config, input.projectName);
   }
   const payload = {
     name: input.projectName,
@@ -134,6 +135,42 @@ export async function createBuilderVercelPreview(
     throw vercelRejected(response.status, providerError(response.body).message);
   }
   return deploymentFromProvider(response.body);
+}
+
+async function ensureBuilderGithubPreviewProject(config: VercelConfig, projectName: string) {
+  const projectPath = `/v9/projects/${encodeURIComponent(projectName)}`;
+  const existing = await vercelJsonRequest(projectPath, { config, method: "GET" });
+  if (!existing.ok && existing.status !== 404) {
+    throw vercelRejected(existing.status, "preview project readiness could not be checked");
+  }
+  if (!existing.ok) {
+    const created = await vercelJsonRequest("/v11/projects", {
+      config,
+      method: "POST",
+      body: { name: projectName, framework: "nextjs" },
+    });
+    if (!created.ok) {
+      throw vercelRejected(created.status, "preview project could not be created");
+    }
+  }
+
+  const environment = await vercelJsonRequest(
+    `/v10/projects/${encodeURIComponent(projectName)}/env?upsert=true`,
+    {
+      config,
+      method: "POST",
+      body: {
+        key: "OMNIAGENT_ALLOW_DEMO_STORAGE",
+        value: "true",
+        type: "plain",
+        target: ["preview"],
+        comment: "Disposable Asael App Builder preview storage mode",
+      },
+    },
+  );
+  if (!environment.ok) {
+    throw vercelRejected(environment.status, "preview project environment could not be configured");
+  }
 }
 
 function assertGithubDeploymentSource(

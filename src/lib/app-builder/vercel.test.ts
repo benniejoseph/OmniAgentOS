@@ -95,12 +95,15 @@ describe("App Builder Vercel preview broker", () => {
   });
 
   it("deploys a reviewed repository commit through Git without uploading workspace files", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
-      id: "dpl_Git123",
-      projectId: "prj_Git456",
-      readyState: "QUEUED",
-      url: "omniagent-review.vercel.app",
-    }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ id: "prj_Git456" }))
+      .mockResolvedValueOnce(jsonResponse({ created: { id: "env_preview" }, failed: [] }, 201))
+      .mockResolvedValueOnce(jsonResponse({
+        id: "dpl_Git123",
+        projectId: "prj_Git456",
+        readyState: "QUEUED",
+        url: "omniagent-review.vercel.app",
+      }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(createBuilderVercelPreview({
@@ -116,8 +119,17 @@ describe("App Builder Vercel preview broker", () => {
       },
     })).resolves.toMatchObject({ deploymentId: "dpl_Git123" });
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/v9/projects/asael-app-1234567890abcdef");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/env?upsert=true&teamId=team_asaelprivate");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({
+      key: "OMNIAGENT_ALLOW_DEMO_STORAGE",
+      value: "true",
+      type: "plain",
+      target: ["preview"],
+      comment: "Disposable Asael App Builder preview storage mode",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1].body))).toMatchObject({
       name: "asael-app-1234567890abcdef",
       gitSource: {
         type: "github",
@@ -126,6 +138,39 @@ describe("App Builder Vercel preview broker", () => {
         sha: "d".repeat(40),
       },
       meta: { asaelCommitSha: "d".repeat(40) },
+    });
+  });
+
+  it("creates a missing isolated project before configuring a Git preview", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { message: "not found" } }, 404))
+      .mockResolvedValueOnce(jsonResponse({ id: "prj_Git456" }))
+      .mockResolvedValueOnce(jsonResponse({ created: { id: "env_preview" }, failed: [] }, 201))
+      .mockResolvedValueOnce(jsonResponse({
+        id: "dpl_Git123",
+        projectId: "prj_Git456",
+        readyState: "QUEUED",
+        url: "omniagent-review.vercel.app",
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createBuilderVercelPreview({
+      deploymentReceiptId: `app_build_deployment_${"a".repeat(48)}`,
+      projectName: "asael-app-1234567890abcdef",
+      checkpointId: `app_build_checkpoint_${"b".repeat(48)}`,
+      workspaceSha256: "c".repeat(64),
+      source: {
+        kind: "github",
+        repositoryId: "1260961340",
+        ref: "asael/review",
+        commitSha: "d".repeat(40),
+      },
+    });
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/v11/projects?");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({
+      name: "asael-app-1234567890abcdef",
+      framework: "nextjs",
     });
   });
 
