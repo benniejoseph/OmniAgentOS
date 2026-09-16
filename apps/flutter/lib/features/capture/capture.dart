@@ -1,234 +1,20 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mime/mime.dart';
 
-import '../../core/network/api_exception.dart';
+import 'capture_batch_view.dart';
+import 'capture_controller.dart';
+import 'capture_models.dart';
 import 'capture_outbox.dart';
 
-class CaptureDraft {
-  const CaptureDraft({
-    required this.content,
-    this.title = '',
-    this.tags = const [],
-    this.file,
-    this.kind = CaptureKind.text,
-  });
-  final String content, title;
-  final List<String> tags;
-  final CaptureAttachment? file;
-  final CaptureKind kind;
-  bool get valid => validationError == null;
-  String? get validationError {
-    if (content.trim().isEmpty && file == null) {
-      return 'Add a note or attachment.';
-    }
-    if (content.length > 20000) {
-      return 'Notes must be 20,000 characters or shorter.';
-    }
-    if (title.length > 240) return 'Titles must be 240 characters or shorter.';
-    if (tags.length > 50 || tags.any((tag) => tag.trim().length > 80)) {
-      return 'Use at most 50 tags, each 80 characters or shorter.';
-    }
-    if (file != null &&
-        (file!.bytes.isEmpty || file!.bytes.length > 5 * 1024 * 1024)) {
-      return 'Choose a non-empty attachment up to 5 MB.';
-    }
-    return null;
-  }
-}
+export 'capture_controller.dart';
+export 'capture_models.dart';
 
-enum CaptureKind { text, scan, image, file, meetingMedia }
-
-class CaptureAttachment {
-  const CaptureAttachment({
-    required this.name,
-    required this.bytes,
-    required this.contentType,
-  });
-  final String name, contentType;
-  final Uint8List bytes;
-}
-
-class CaptureReceipt {
-  const CaptureReceipt({
-    required this.jobId,
-    required this.title,
-    required this.tags,
-  });
-  final String jobId, title;
-  final List<String> tags;
-}
-
-abstract interface class CaptureRepository {
-  Future<CaptureReceipt> submit(
-    CaptureDraft draft, {
-    required String idempotencyKey,
-    required CaptureOwnerBinding owner,
-  });
-}
-
-class CaptureController extends ChangeNotifier {
-  CaptureController(this.repository, this.outbox, this.owner);
-  final CaptureRepository repository;
-  final CaptureOutbox outbox;
-  final CaptureOwnerBinding? owner;
-  bool submitting = false, loadingOutbox = false, syncing = false;
-  bool lastSubmitQueued = false;
-  Object? error;
-  Object? syncError;
-  CaptureReceipt? receipt;
-  List<CaptureOutboxEntry> pending = const [];
-
-  Future<void> initialize() async {
-    if (owner == null || loadingOutbox || syncing) return;
-    final generation = _generation;
-    loadingOutbox = true;
-    _emit();
-    try {
-      final restored = await outbox.list(owner!);
-      if (generation != _generation) return;
-      pending = restored;
-      error = null;
-    } catch (e) {
-      if (generation == _generation) error = e;
-    } finally {
-      loadingOutbox = false;
-      _emit();
-    }
-    if (generation != _generation) return;
-    if (pending.isNotEmpty) await syncPending();
-  }
-
-  Future<bool> submit(CaptureDraft draft) async {
-    if (submitting || owner == null) return false;
-    if (!draft.valid) {
-      error = FormatException(draft.validationError!);
-      _emit();
-      return false;
-    }
-    submitting = true;
-    error = null;
-    syncError = null;
-    lastSubmitQueued = false;
-    receipt = null;
-    final generation = _generation;
-    _emit();
-    try {
-      final entry = await outbox.enqueue(owner!, draft);
-      if (generation != _generation) return true;
-      pending = await outbox.list(owner!);
-      if (generation != _generation) return true;
-      _emit();
-      try {
-        final synced = await repository.submit(
-          entry.draft,
-          idempotencyKey: entry.idempotencyKey,
-          owner: owner!,
-        );
-        if (generation != _generation) return true;
-        receipt = synced;
-        await outbox.remove(owner!, entry.id);
-        pending = await outbox.list(owner!);
-      } catch (e) {
-        if (generation == _generation) {
-          syncError = e;
-          lastSubmitQueued = true;
-        }
-      }
-      return true;
-    } catch (e) {
-      if (generation == _generation) error = e;
-      return false;
-    } finally {
-      submitting = false;
-      _emit();
-    }
-  }
-
-  Future<void> syncPending() async {
-    if (owner == null || syncing || submitting || loadingOutbox) return;
-    final generation = _generation;
-    syncing = true;
-    syncError = null;
-    _emit();
-    try {
-      final entries = await outbox.list(owner!);
-      if (generation != _generation) return;
-      for (final entry in entries) {
-        if (generation != _generation) break;
-        try {
-          final synced = await repository.submit(
-            entry.draft,
-            idempotencyKey: entry.idempotencyKey,
-            owner: owner!,
-          );
-          if (generation != _generation) break;
-          receipt = synced;
-          await outbox.remove(owner!, entry.id);
-        } catch (e) {
-          if (generation != _generation) break;
-          syncError = e;
-          if (_stopBatchAfter(e)) break;
-        }
-      }
-      final restored = await outbox.list(owner!);
-      if (generation == _generation) pending = restored;
-    } catch (e) {
-      if (generation == _generation) error = e;
-    } finally {
-      syncing = false;
-      _emit();
-    }
-  }
-
-  Future<void> discard(String entryId) async {
-    if (owner == null || syncing || submitting) return;
-    try {
-      await outbox.remove(owner!, entryId);
-      pending = await outbox.list(owner!);
-      syncError = null;
-    } catch (e) {
-      error = e;
-    }
-    _emit();
-  }
-
-  void lock() {
-    _generation += 1;
-    pending = const [];
-    receipt = null;
-    error = null;
-    syncError = null;
-    _emit();
-  }
-
-  int _generation = 0;
-  bool _disposed = false;
-
-  void _emit() {
-    if (!_disposed) notifyListeners();
-  }
-
-  @override
-  void dispose() {
-    _disposed = true;
-    _generation += 1;
-    super.dispose();
-  }
-}
-
-bool _stopBatchAfter(Object error) =>
-    error is! ApiException ||
-    error.statusCode == null ||
-    error.statusCode == 401 ||
-    error.statusCode == 403 ||
-    error.statusCode == 408 ||
-    error.statusCode == 429 ||
-    (error.statusCode ?? 0) >= 500;
+bool get _isMacOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 
 class CaptureView extends StatefulWidget {
   const CaptureView({super.key, required this.controller});
@@ -243,6 +29,7 @@ class _CaptureViewState extends State<CaptureView> {
       tags = TextEditingController();
   final imagePicker = ImagePicker();
   CaptureAttachment? attachment;
+  final List<SelectedCaptureFile> batchFiles = [];
   CaptureKind attachmentKind = CaptureKind.text;
   String? attachmentError;
   bool picking = false;
@@ -262,6 +49,10 @@ class _CaptureViewState extends State<CaptureView> {
   }
 
   Future<void> submit() async {
+    if (batchFiles.isNotEmpty) {
+      await submitBatch();
+      return;
+    }
     final ok = await widget.controller.submit(
       CaptureDraft(
         title: title.text,
@@ -296,6 +87,138 @@ class _CaptureViewState extends State<CaptureView> {
     }
   }
 
+  Future<void> submitBatch() async {
+    final selected = List<SelectedCaptureFile>.from(batchFiles);
+    final sharedTitle = title.text.trim();
+    final sharedNote = note.text;
+    final sharedTags = tags.text
+        .split(',')
+        .map((tag) => tag.trim())
+        .where((tag) => tag.isNotEmpty)
+        .toList();
+    final result = await widget.controller.submitBatch(
+      selected.map((item) => item.file.name).toList(),
+      (index) async {
+        final selectedFile = selected[index];
+        final currentLength = await selectedFile.file.length();
+        if (currentLength != selectedFile.length ||
+            currentLength < 1 ||
+            currentLength > captureAttachmentMaxBytes) {
+          throw const FormatException(
+            'The file changed after selection. Choose it again.',
+          );
+        }
+        final bytes = await selectedFile.file.readAsBytes();
+        if (bytes.length != currentLength) {
+          throw const FormatException(
+            'The complete file could not be read. Choose it again.',
+          );
+        }
+        final filenameTitle = captureBatchTitle(selectedFile.file.name);
+        final itemTitle = sharedTitle.isEmpty
+            ? filenameTitle
+            : '$sharedTitle · $filenameTitle';
+        return CaptureDraft(
+          title: itemTitle.length <= 240
+              ? itemTitle
+              : itemTitle.substring(0, 240),
+          content: sharedNote,
+          tags: sharedTags,
+          file: CaptureAttachment(
+            name: selectedFile.file.name,
+            bytes: bytes,
+            contentType:
+                lookupMimeType(selectedFile.file.name, headerBytes: bytes) ??
+                'application/octet-stream',
+          ),
+          kind: bulkCaptureKind(selectedFile.file.name),
+        );
+      },
+    );
+    if (!mounted || result.queued == 0) return;
+    title.clear();
+    note.clear();
+    tags.clear();
+    setState(() {
+      batchFiles.clear();
+      attachmentError = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.failed == 0
+              ? '${result.queued} ${result.queued == 1 ? 'document' : 'documents'} encrypted and queued. Processing continues in the background.'
+              : '${result.queued} queued; ${result.failed} could not be added. Review the batch below.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> pickBatchDocuments() async {
+    if (picking || !_isMacOS) return;
+    setState(() {
+      picking = true;
+      attachmentError = null;
+    });
+    try {
+      final files = await FilePicker.pickFiles(
+        dialogTitle: 'Choose documents or transcripts',
+        type: FileType.custom,
+        allowedExtensions: captureDocumentExtensions,
+      );
+      if (files.isEmpty) return;
+      final known = batchFiles.map((item) => item.key).toSet();
+      final available =
+          (captureBatchMaxFiles -
+                  widget.controller.pending.length -
+                  batchFiles.length)
+              .clamp(0, captureBatchMaxFiles);
+      var accepted = 0;
+      var duplicate = 0;
+      var empty = 0;
+      var tooLarge = 0;
+      var full = 0;
+      final additions = <SelectedCaptureFile>[];
+      for (final file in files) {
+        final length = await file.length();
+        final key = captureSelectionKey(file.name, length);
+        if (known.contains(key)) {
+          duplicate += 1;
+        } else if (length < 1) {
+          empty += 1;
+        } else if (length > captureAttachmentMaxBytes) {
+          tooLarge += 1;
+        } else if (accepted >= available) {
+          full += 1;
+        } else {
+          known.add(key);
+          additions.add(SelectedCaptureFile(file: file, length: length));
+          accepted += 1;
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        attachment = null;
+        attachmentKind = CaptureKind.text;
+        batchFiles.addAll(additions);
+        attachmentError = captureSelectionMessage(
+          duplicate: duplicate,
+          empty: empty,
+          tooLarge: tooLarge,
+          full: full,
+        );
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          attachmentError = 'These files could not be selected. Choose supported documents up to 5 MB each.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => picking = false);
+    }
+  }
+
   Future<void> pickAttachment() async {
     if (picking) return;
     setState(() {
@@ -306,57 +229,17 @@ class _CaptureViewState extends State<CaptureView> {
       final file = await FilePicker.pickFile(
         dialogTitle: 'Choose a capture file',
         type: FileType.custom,
-        allowedExtensions: const [
-          'txt',
-          'md',
-          'csv',
-          'json',
-          'html',
-          'xml',
-          'yaml',
-          'log',
-          'rtf',
-          'sql',
-          'js',
-          'ts',
-          'tsx',
-          'py',
-          'swift',
-          'kt',
-          'toml',
-          'ics',
-          'vcf',
-          'ipynb',
-          'png',
-          'jpg',
-          'jpeg',
-          'webp',
-          'mp3',
-          'm4a',
-          'wav',
-          'ogg',
-          'mp4',
-          'webm',
-          'xlsx',
-          'xlsm',
-          'pptx',
-          'ppsx',
-          'odt',
-          'ods',
-          'odp',
-          'epub',
-          'pdf',
-          'docx',
-        ],
+        allowedExtensions: captureDocumentExtensions,
       );
       if (file == null) return;
       final length = await file.length();
-      if (length == 0 || length > 5 * 1024 * 1024) {
+      if (length == 0 || length > captureAttachmentMaxBytes) {
         throw const FormatException('Choose a non-empty file up to 5 MB.');
       }
       final bytes = await file.readAsBytes();
       if (!mounted) return;
       setState(() {
+        batchFiles.clear();
         attachment = CaptureAttachment(
           name: file.name,
           bytes: bytes,
@@ -401,7 +284,7 @@ class _CaptureViewState extends State<CaptureView> {
       );
       if (file == null) return;
       final length = await file.length();
-      if (length == 0 || length > 5 * 1024 * 1024) {
+      if (length == 0 || length > captureAttachmentMaxBytes) {
         throw const FormatException('Choose a non-empty file up to 5 MB.');
       }
       final bytes = await file.readAsBytes();
@@ -428,7 +311,7 @@ class _CaptureViewState extends State<CaptureView> {
       );
       if (file == null) return;
       final length = await file.length();
-      if (length == 0 || length > 5 * 1024 * 1024) {
+      if (length == 0 || length > captureAttachmentMaxBytes) {
         throw const FormatException('Choose a non-empty image up to 5 MB.');
       }
       _setAttachment(file.name, await file.readAsBytes(), kind);
@@ -445,7 +328,7 @@ class _CaptureViewState extends State<CaptureView> {
       if (recovered.isEmpty || recovered.file == null) return;
       final file = recovered.file!;
       final length = await file.length();
-      if (length == 0 || length > 5 * 1024 * 1024) {
+      if (length == 0 || length > captureAttachmentMaxBytes) {
         throw const FormatException('Choose a non-empty image up to 5 MB.');
       }
       _setAttachment(file.name, await file.readAsBytes(), CaptureKind.image);
@@ -457,6 +340,7 @@ class _CaptureViewState extends State<CaptureView> {
   void _setAttachment(String name, Uint8List bytes, CaptureKind kind) {
     if (!mounted) return;
     setState(() {
+      batchFiles.clear();
       attachment = CaptureAttachment(
         name: name,
         bytes: bytes,
@@ -491,7 +375,9 @@ class _CaptureViewState extends State<CaptureView> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Notes are queued, indexed, and kept searchable with their source.',
+              _isMacOS
+                  ? 'Capture a thought or queue a transcript collection. Every document keeps its source and real processing status.'
+                  : 'Notes are queued, indexed, and kept searchable with their source.',
               style: Theme.of(context).textTheme.bodyLarge,
             ),
             const SizedBox(height: 24),
@@ -499,7 +385,8 @@ class _CaptureViewState extends State<CaptureView> {
               controller: title,
               decoration: const InputDecoration(
                 labelText: 'Title',
-                helperText: 'Optional, a title is generated when left empty',
+                helperText:
+                    'Optional; for a batch this becomes the collection label',
                 prefixIcon: Icon(Icons.title_rounded),
               ),
             ),
@@ -508,13 +395,25 @@ class _CaptureViewState extends State<CaptureView> {
               spacing: 8,
               runSpacing: 8,
               children: [
-                OutlinedButton.icon(
-                  onPressed: picking || widget.controller.submitting
-                      ? null
-                      : () => pickImage(ImageSource.camera, CaptureKind.scan),
-                  icon: const Icon(Icons.document_scanner_outlined),
-                  label: const Text('Scan page'),
-                ),
+                if (!_isMacOS)
+                  OutlinedButton.icon(
+                    onPressed: picking || widget.controller.submitting
+                        ? null
+                        : () => pickImage(ImageSource.camera, CaptureKind.scan),
+                    icon: const Icon(Icons.document_scanner_outlined),
+                    label: const Text('Scan page'),
+                  ),
+                if (_isMacOS)
+                  FilledButton.tonalIcon(
+                    onPressed:
+                        picking ||
+                            widget.controller.submitting ||
+                            widget.controller.batchQueueing
+                        ? null
+                        : pickBatchDocuments,
+                    icon: const Icon(Icons.library_add_outlined),
+                    label: const Text('Add documents in bulk'),
+                  ),
                 OutlinedButton.icon(
                   onPressed: picking || widget.controller.submitting
                       ? null
@@ -562,6 +461,14 @@ class _CaptureViewState extends State<CaptureView> {
                         }),
                 ),
               ),
+            if (batchFiles.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: CaptureSelectionPanel(
+                  files: batchFiles,
+                  onRemove: (item) => setState(() => batchFiles.remove(item)),
+                ),
+              ),
             if (attachmentError != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
@@ -601,7 +508,12 @@ class _CaptureViewState extends State<CaptureView> {
                 padding: EdgeInsets.only(top: 12),
                 child: LinearProgressIndicator(),
               ),
-            if (widget.controller.pending.isNotEmpty)
+            if (widget.controller.batchItems.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: CaptureBatchProgressPanel(controller: widget.controller),
+              ),
+            if (widget.controller.pendingWithoutBatch.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 16),
                 child: _CaptureOutboxPanel(controller: widget.controller),
@@ -627,16 +539,27 @@ class _CaptureViewState extends State<CaptureView> {
               ),
             const SizedBox(height: 20),
             FilledButton.icon(
-              onPressed: widget.controller.submitting ? null : submit,
-              icon: widget.controller.submitting
+              onPressed:
+                  widget.controller.submitting ||
+                      widget.controller.batchQueueing ||
+                      widget.controller.syncing
+                  ? null
+                  : submit,
+              icon:
+                  widget.controller.submitting ||
+                      widget.controller.batchQueueing
                   ? const SizedBox.square(
                       dimension: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.bolt_rounded),
               label: Text(
-                widget.controller.submitting
+                widget.controller.batchQueueing
+                    ? 'Encrypting batch…'
+                    : widget.controller.submitting
                     ? 'Saving capture…'
+                    : batchFiles.isNotEmpty
+                    ? 'Queue ${batchFiles.length} ${batchFiles.length == 1 ? 'document' : 'documents'}'
                     : 'Save capture',
               ),
             ),
@@ -655,7 +578,7 @@ class _CaptureViewState extends State<CaptureView> {
             padding: const EdgeInsets.all(20),
             child: Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 1080),
+                constraints: BoxConstraints(maxWidth: _isMacOS ? 1320 : 1080),
                 child: wide
                     ? Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -750,63 +673,66 @@ class _CaptureOutboxPanel extends StatelessWidget {
   final CaptureController controller;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.secondaryContainer,
-      borderRadius: BorderRadius.circular(16),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.lock_clock_outlined),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                '${controller.pending.length} encrypted ${controller.pending.length == 1 ? 'capture' : 'captures'} waiting',
-                style: Theme.of(context).textTheme.titleMedium,
+  Widget build(BuildContext context) {
+    final entries = controller.pendingWithoutBatch;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.lock_clock_outlined),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${entries.length} encrypted ${entries.length == 1 ? 'capture' : 'captures'} waiting',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              TextButton.icon(
+                onPressed: controller.syncing ? null : controller.syncPending,
+                icon: controller.syncing
+                    ? const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.sync_rounded),
+                label: const Text('Sync'),
+              ),
+            ],
+          ),
+          Text(
+            controller.syncError == null
+                ? 'These items sync only for this signed-in workspace.'
+                : 'Sync paused. The encrypted originals remain on this device.',
+          ),
+          const SizedBox(height: 8),
+          for (final entry in entries.take(4))
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(_captureKindIcon(entry.draft.kind)),
+              title: Text(_captureKindLabel(entry.draft.kind)),
+              subtitle: Text(_queuedTime(entry.createdAt)),
+              trailing: IconButton(
+                tooltip: 'Discard encrypted capture',
+                icon: const Icon(Icons.delete_outline_rounded),
+                onPressed: controller.syncing
+                    ? null
+                    : () => _confirmDiscard(context, entry),
               ),
             ),
-            TextButton.icon(
-              onPressed: controller.syncing ? null : controller.syncPending,
-              icon: controller.syncing
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.sync_rounded),
-              label: const Text('Sync'),
-            ),
-          ],
-        ),
-        Text(
-          controller.syncError == null
-              ? 'These items sync only for this signed-in workspace.'
-              : 'Sync paused. The encrypted originals remain on this device.',
-        ),
-        const SizedBox(height: 8),
-        for (final entry in controller.pending.take(4))
-          ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(_captureKindIcon(entry.draft.kind)),
-            title: Text(_captureKindLabel(entry.draft.kind)),
-            subtitle: Text(_queuedTime(entry.createdAt)),
-            trailing: IconButton(
-              tooltip: 'Discard encrypted capture',
-              icon: const Icon(Icons.delete_outline_rounded),
-              onPressed: controller.syncing
-                  ? null
-                  : () => _confirmDiscard(context, entry),
-            ),
-          ),
-        if (controller.pending.length > 4)
-          Text('+ ${controller.pending.length - 4} more encrypted captures'),
-      ],
-    ),
-  );
+          if (entries.length > 4)
+            Text('+ ${entries.length - 4} more encrypted captures'),
+        ],
+      ),
+    );
+  }
 
   Future<void> _confirmDiscard(
     BuildContext context,

@@ -8,13 +8,13 @@ import 'package:cryptography/cryptography.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/storage/secure_session_store.dart';
-import 'capture.dart';
+import 'capture_models.dart';
 
 const _outboxSchemaVersion = 1;
 const _outboxDirectory = 'asael-capture-outbox-v1';
-const _maxOutboxEntries = 25;
+const _maxOutboxEntries = captureBatchMaxFiles;
 const _maxOutboxBytes = 64 * 1024 * 1024;
-const _maxAttachmentBytes = 5 * 1024 * 1024;
+const _maxAttachmentBytes = captureAttachmentMaxBytes;
 
 class CaptureOwnerBinding {
   const CaptureOwnerBinding({required this.tenantId, required this.actorId});
@@ -60,6 +60,8 @@ abstract interface class CaptureOutbox {
   );
 
   Future<List<CaptureOutboxEntry>> list(CaptureOwnerBinding owner);
+
+  Future<CaptureOutboxEntry?> get(CaptureOwnerBinding owner, String entryId);
 
   Future<void> remove(CaptureOwnerBinding owner, String entryId);
 }
@@ -151,6 +153,25 @@ class EncryptedCaptureOutbox implements CaptureOutbox {
       return List.unmodifiable(entries);
     },
   );
+
+  @override
+  Future<CaptureOutboxEntry?> get(CaptureOwnerBinding owner, String entryId) =>
+      _serial(() async {
+        _validateOwner(owner);
+        if (!_validId(entryId)) {
+          throw const FormatException('The capture outbox id is invalid.');
+        }
+        final context = await _context();
+        final file = File('${context.directory.path}/$entryId.capture');
+        if (!await file.exists()) return null;
+        final entry = await _decrypt(file, context.secret);
+        if (!owner.owns(entry)) {
+          throw const CaptureOutboxIntegrityException(
+            'The capture outbox owner does not match the active session.',
+          );
+        }
+        return entry;
+      });
 
   @override
   Future<void> remove(CaptureOwnerBinding owner, String entryId) =>

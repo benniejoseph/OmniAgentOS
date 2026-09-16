@@ -85,6 +85,7 @@ void main() {
       final restored = await createOutbox().list(owner);
       expect(restored, hasLength(1));
       expect(restored.single.id, entry.id);
+      expect((await createOutbox().get(owner, entry.id))?.id, entry.id);
       expect(restored.single.idempotencyKey, entry.idempotencyKey);
       expect(restored.single.draft.kind, CaptureKind.meetingMedia);
       expect(restored.single.draft.file?.bytes, [1, 2, 3, 4]);

@@ -1,14 +1,15 @@
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../auth/application/session_controller.dart';
-import 'capture.dart';
 import 'capture_api_repository.dart';
+import 'capture_controller.dart';
 import 'capture_outbox.dart';
 
 final captureRepositoryProvider = Provider<CaptureRepository>(
@@ -33,6 +34,8 @@ final captureControllerProvider = ChangeNotifierProvider<CaptureController>((
     ref.watch(captureRepositoryProvider),
     ref.watch(captureOutboxProvider),
     owner,
+    resumeBatchProcessing:
+        !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS,
   );
   if (owner != null) unawaited(controller.initialize());
   final subscription = Connectivity().onConnectivityChanged.listen((states) {

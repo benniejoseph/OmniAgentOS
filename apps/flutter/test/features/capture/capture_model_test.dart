@@ -96,6 +96,12 @@ class _CaptureRepository implements CaptureRepository {
     if (fail) throw const ApiException('offline');
     return const CaptureReceipt(jobId: 'job-one', title: 'Note', tags: []);
   }
+
+  @override
+  Future<CaptureJobSnapshot> readJob(
+    String jobId, {
+    required CaptureOwnerBinding owner,
+  }) async => CaptureJobSnapshot(id: jobId, status: 'completed');
 }
 
 class _MemoryOutbox implements CaptureOutbox {
@@ -123,6 +129,14 @@ class _MemoryOutbox implements CaptureOutbox {
       entries.where(owner.owns).toList();
 
   @override
+  Future<CaptureOutboxEntry?> get(
+    CaptureOwnerBinding owner,
+    String entryId,
+  ) async => entries
+      .where((entry) => entry.id == entryId && owner.owns(entry))
+      .firstOrNull;
+
+  @override
   Future<void> remove(CaptureOwnerBinding owner, String entryId) async {
     entries.removeWhere((entry) => entry.id == entryId && owner.owns(entry));
   }
@@ -141,4 +155,10 @@ class _BlockingCaptureRepository implements CaptureRepository {
     called.complete();
     return result.future;
   }
+
+  @override
+  Future<CaptureJobSnapshot> readJob(
+    String jobId, {
+    required CaptureOwnerBinding owner,
+  }) async => CaptureJobSnapshot(id: jobId, status: 'completed');
 }
