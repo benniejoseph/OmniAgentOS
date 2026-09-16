@@ -43,12 +43,16 @@ private final class DesktopHostController: NSObject {
   private enum Route: String {
     case today = "/today"
     case command = "/talk"
+    case quickEntry = "/talk?entry=quick"
     case capture = "/capture"
     case inbox = "/inbox"
   }
 
   private static let hotKeySignature: OSType = 0x41534145 // "ASAE"
-  private static let quickCaptureHotKeyID: UInt32 = 1
+  private static let quickEntryHotKeyID: UInt32 = 1
+  private static let regularWindowMinimumSize = NSSize(width: 1_024, height: 700)
+  private static let quickEntryWindowMinimumSize = NSSize(width: 680, height: 320)
+  private static let quickEntryWindowSize = NSSize(width: 760, height: 400)
 
   private weak var window: NSWindow?
   private var channel: FlutterMethodChannel?
@@ -58,12 +62,14 @@ private final class DesktopHostController: NSObject {
   private var pendingRoute: Route?
   private var isDartReady = false
   private var hasStarted = false
+  private var isQuickEntryPresented = false
+  private var regularWindowFrame: NSRect?
 
   func start() {
     guard !hasStarted else { return }
     hasStarted = true
     configureStatusItem()
-    registerQuickCaptureHotKey()
+    registerQuickEntryHotKey()
   }
 
   func stop() {
@@ -104,6 +110,11 @@ private final class DesktopHostController: NSObject {
           self.flushPendingRoute()
         }
         result(nil)
+      case "showMainPresentation":
+        DispatchQueue.main.async {
+          self.showMainWindow()
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -119,6 +130,56 @@ private final class DesktopHostController: NSObject {
     }
 
     self.window = window
+    restoreMainWindowPresentation(window)
+    focus(window)
+  }
+
+  private func showQuickEntryWindow() {
+    dispatchPrecondition(condition: .onQueue(.main))
+
+    guard let window = window ?? NSApp.windows.first(where: { $0 is MainFlutterWindow }) else {
+      NSApp.activate(ignoringOtherApps: true)
+      return
+    }
+
+    self.window = window
+    if !isQuickEntryPresented {
+      regularWindowFrame = window.frame
+    }
+    isQuickEntryPresented = true
+    window.minSize = Self.quickEntryWindowMinimumSize
+    window.level = .floating
+    window.collectionBehavior.insert(.fullScreenAuxiliary)
+
+    let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+    if let visibleFrame {
+      let x = visibleFrame.midX - Self.quickEntryWindowSize.width / 2
+      let y = visibleFrame.maxY - Self.quickEntryWindowSize.height - 72
+      window.setFrame(
+        NSRect(origin: NSPoint(x: x, y: y), size: Self.quickEntryWindowSize),
+        display: true,
+        animate: window.isVisible
+      )
+    } else {
+      window.setContentSize(Self.quickEntryWindowSize)
+      window.center()
+    }
+    focus(window)
+  }
+
+  private func restoreMainWindowPresentation(_ window: NSWindow) {
+    guard isQuickEntryPresented else { return }
+    isQuickEntryPresented = false
+    window.level = .normal
+    window.collectionBehavior.remove(.fullScreenAuxiliary)
+    window.minSize = Self.regularWindowMinimumSize
+    if let regularWindowFrame {
+      window.setFrame(regularWindowFrame, display: true, animate: window.isVisible)
+      self.regularWindowFrame = nil
+    }
+  }
+
+  private func focus(_ window: NSWindow) {
     if window.isMiniaturized {
       window.deminiaturize(nil)
     }
@@ -128,7 +189,11 @@ private final class DesktopHostController: NSObject {
 
   private func request(_ route: Route) {
     dispatchPrecondition(condition: .onQueue(.main))
-    showMainWindow()
+    if route == .quickEntry {
+      showQuickEntryWindow()
+    } else {
+      showMainWindow()
+    }
 
     guard isDartReady, let channel else {
       // Last-write-wins: after startup only the user's newest destination should
@@ -144,6 +209,11 @@ private final class DesktopHostController: NSObject {
     dispatchPrecondition(condition: .onQueue(.main))
     guard isDartReady, let route = pendingRoute, let channel else { return }
     pendingRoute = nil
+    if route == .quickEntry {
+      showQuickEntryWindow()
+    } else {
+      showMainWindow()
+    }
     channel.invokeMethod("openRoute", arguments: ["route": route.rawValue])
   }
 
@@ -168,10 +238,11 @@ private final class DesktopHostController: NSObject {
     menu.addItem(menuItem(title: "Today", key: "1", action: #selector(openToday)))
     menu.addItem(menuItem(title: "Command", key: "2", action: #selector(openCommand)))
 
-    let capture = menuItem(title: "Quick Capture", key: " ", action: #selector(openQuickCapture))
-    capture.keyEquivalentModifierMask = [.control, .option]
-    menu.addItem(capture)
+    let quickEntry = menuItem(title: "Quick Entry", key: " ", action: #selector(openQuickEntry))
+    quickEntry.keyEquivalentModifierMask = [.control, .option]
+    menu.addItem(quickEntry)
 
+    menu.addItem(menuItem(title: "Quick Capture", key: "3", action: #selector(openQuickCapture)))
     menu.addItem(menuItem(title: "Inbox", key: "4", action: #selector(openInbox)))
     menu.addItem(.separator())
 
@@ -191,7 +262,7 @@ private final class DesktopHostController: NSObject {
     return item
   }
 
-  private func registerQuickCaptureHotKey() {
+  private func registerQuickEntryHotKey() {
     dispatchPrecondition(condition: .onQueue(.main))
 
     var eventType = EventTypeSpec(
@@ -217,7 +288,7 @@ private final class DesktopHostController: NSObject {
         )
         guard status == noErr,
               identifier.signature == DesktopHostController.hotKeySignature,
-              identifier.id == DesktopHostController.quickCaptureHotKeyID
+              identifier.id == DesktopHostController.quickEntryHotKeyID
         else {
           return OSStatus(eventNotHandledErr)
         }
@@ -226,7 +297,7 @@ private final class DesktopHostController: NSObject {
           .fromOpaque(userData)
           .takeUnretainedValue()
         DispatchQueue.main.async {
-          controller.request(.capture)
+          controller.request(.quickEntry)
         }
         return noErr
       },
@@ -240,7 +311,7 @@ private final class DesktopHostController: NSObject {
 
     let identifier = EventHotKeyID(
       signature: Self.hotKeySignature,
-      id: Self.quickCaptureHotKeyID
+      id: Self.quickEntryHotKeyID
     )
     let modifiers = UInt32(controlKey | optionKey)
     let registrationStatus = RegisterEventHotKey(
@@ -264,6 +335,10 @@ private final class DesktopHostController: NSObject {
 
   @objc private func openCommand() {
     request(.command)
+  }
+
+  @objc private func openQuickEntry() {
+    request(.quickEntry)
   }
 
   @objc private func openQuickCapture() {

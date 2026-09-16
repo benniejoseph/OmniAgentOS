@@ -11,8 +11,11 @@ void main() {
     await bridge.handleNativeCall(
       const MethodCall('openRoute', {'route': '/capture'}),
     );
+    await bridge.handleNativeCall(
+      const MethodCall('openRoute', {'route': '/talk?entry=quick'}),
+    );
 
-    expect(opened, ['/capture']);
+    expect(opened, ['/capture', '/talk?entry=quick']);
     await expectLater(
       bridge.handleNativeCall(
         const MethodCall('openRoute', {'route': '/settings'}),

@@ -21,6 +21,7 @@ class DesktopHostBridge {
   static const allowedRoutes = <String>{
     '/today',
     '/talk',
+    '/talk?entry=quick',
     '/capture',
     '/inbox',
   };
@@ -90,6 +91,20 @@ class DesktopHostBridge {
     opener(route);
   }
 
+  /// Restores the ordinary desktop window after Flutter leaves Quick Entry.
+  /// This changes presentation only; no command, credential, or tool argument
+  /// crosses the native bridge.
+  Future<void> showMainPresentation() async {
+    if (!_enabled) return;
+    try {
+      await _channel.invokeMethod<void>('showMainPresentation');
+    } on MissingPluginException {
+      // Tests and development runners may not have the AppKit host attached.
+    } on PlatformException {
+      // Flutter navigation remains usable if native presentation restoration fails.
+    }
+  }
+
   Future<void> dispose() async {
     if (!_enabled || !_initialized) return;
     _channel.setMethodCallHandler(null);
@@ -98,3 +113,8 @@ class DesktopHostBridge {
     _initialized = false;
   }
 }
+
+/// One process-wide bridge owns the native method handler and presentation
+/// requests. Keeping it here also lets routing and the app lifecycle share the
+/// same deliberately small boundary.
+final appDesktopHostBridge = DesktopHostBridge();

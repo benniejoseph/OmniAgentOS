@@ -19,7 +19,7 @@ class AsaelApp extends ConsumerStatefulWidget {
 
 class _AsaelAppState extends ConsumerState<AsaelApp>
     with WidgetsBindingObserver {
-  final _desktopHostBridge = DesktopHostBridge();
+  final _desktopHostBridge = appDesktopHostBridge;
 
   @override
   void initState() {
