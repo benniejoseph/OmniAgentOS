@@ -3,10 +3,12 @@ import 'dart:typed_data';
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'talk.dart';
+import 'talk_history_api_repository.dart';
 
-class ApiTalkRepository implements TalkRepository {
-  const ApiTalkRepository(this.api);
+class ApiTalkRepository implements TalkRepository, TalkHistoryRepository {
+  ApiTalkRepository(this.api) : _history = ApiTalkHistoryRepository(api);
   final ApiClient api;
+  final ApiTalkHistoryRepository _history;
 
   @override
   Future<void> cancelRun(String runId) async {
@@ -42,6 +44,20 @@ class ApiTalkRepository implements TalkRepository {
     }
     return inspection;
   }
+
+  @override
+  Future<List<TalkThreadSummary>> listThreads({int limit = 30}) =>
+      _history.listThreads(limit: limit);
+
+  @override
+  Future<TalkThreadDetail> getThread(String threadId) =>
+      _history.getThread(threadId);
+
+  @override
+  Future<List<TalkThreadMemorySummary>> listThreadMemories(
+    String threadId, {
+    int limit = 24,
+  }) => _history.listThreadMemories(threadId, limit: limit);
 
   @override
   Stream<SseEvent> send({

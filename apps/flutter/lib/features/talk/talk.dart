@@ -10,6 +10,10 @@ import 'package:record/record.dart';
 
 import '../../app/brand/asael_mark.dart';
 import '../../generated/native_contract.g.dart';
+import 'talk_history.dart';
+import 'talk_history_view.dart';
+
+export 'talk_history.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -390,7 +394,7 @@ abstract interface class TalkRepository {
   Future<TalkRunInspection> inspectRun(String runId);
 }
 
-class TalkController extends ChangeNotifier {
+class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkController(
     this.repository, {
     this.workflowPollInterval = const Duration(seconds: 3),
@@ -405,7 +409,6 @@ class TalkController extends ChangeNotifier {
   final _workflowIds = <String>[];
   final _workflowMonitorTokens = <String, Object>{};
   final _inspectedRunIds = <String>{};
-  String? threadId;
   String? runId;
   String? status;
   bool sending = false;
@@ -417,6 +420,53 @@ class TalkController extends ChangeNotifier {
   List<String> get workflowIds => List.unmodifiable(_workflowIds);
   Set<String> get monitoringWorkflowIds =>
       Set.unmodifiable(_workflowMonitorTokens.keys);
+
+  @override
+  TalkHistoryRepository? get talkHistoryRepository =>
+      repository is TalkHistoryRepository
+      ? repository as TalkHistoryRepository
+      : null;
+
+  @override
+  bool get historyInteractionBusy => sending;
+
+  @override
+  void applyHistoryThreadProjection(TalkThreadDetail detail) {
+    messages.clear();
+    messages.addAll(
+      detail.turns.map(
+        (turn) => TalkMessage(
+          role: turn.role == TalkThreadRole.user
+              ? TalkRole.user
+              : TalkRole.assistant,
+          text: turn.text,
+        ),
+      ),
+    );
+    activities.clear();
+    _workflowIds.clear();
+    _workflowMonitorTokens.clear();
+    _retryInput = null;
+    _retryMode = null;
+    _retryStrategy = null;
+    runId = null;
+    status = null;
+    canceling = false;
+  }
+
+  @override
+  void clearHistoryThreadProjection() {
+    messages.clear();
+    activities.clear();
+    _workflowIds.clear();
+    _workflowMonitorTokens.clear();
+    _retryInput = null;
+    _retryMode = null;
+    _retryStrategy = null;
+    runId = null;
+    status = null;
+  }
+
   Future<void> send(
     String input, {
     String mode = 'orchestrate',
@@ -527,9 +577,7 @@ class TalkController extends ChangeNotifier {
         mode: mode,
         strategy: strategy,
       )) {
-        if (event.data['threadId'] is String) {
-          threadId = event.data['threadId'] as String;
-        }
+        adoptConversationThreadId(event.data['threadId']);
         switch (event.event) {
           case 'run':
             runId = event.data['runId'] as String?;
@@ -774,6 +822,9 @@ class TalkController extends ChangeNotifier {
     }
     if (terminalInspectionRunId case final id?) {
       await _inspectTerminalRun(id);
+    }
+    if (conversationHistorySupported && !_disposed) {
+      unawaited(loadRecentThreads(force: true));
     }
   }
 
@@ -1075,6 +1126,7 @@ class TalkController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    disposeTalkHistory();
     _workflowMonitorTokens.clear();
     super.dispose();
   }
@@ -1149,6 +1201,23 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     super.initState();
     recorder = widget.voiceRecorder ?? RecordVoiceDraftRecorder();
     WidgetsBinding.instance.addObserver(this);
+    if (!widget.quickEntry && widget.controller.conversationHistorySupported) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(widget.controller.loadRecentThreads());
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant TalkView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.quickEntry &&
+        oldWidget.controller != widget.controller &&
+        widget.controller.conversationHistorySupported) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(widget.controller.loadRecentThreads());
+      });
+    }
   }
 
   @override
@@ -1268,6 +1337,33 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         });
       }
     }
+  }
+
+  Future<void> _openHistorySheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (sheetContext) => FractionallySizedBox(
+        heightFactor: .82,
+        child: ListenableBuilder(
+          listenable: widget.controller,
+          builder: (_, _) => TalkHistoryPane(
+            controller: widget.controller,
+            onNew: () {
+              Navigator.of(sheetContext).pop();
+              widget.controller.newConversation();
+              inputFocus.requestFocus();
+            },
+            onSelected: (id) {
+              Navigator.of(sheetContext).pop();
+              unawaited(widget.controller.openThread(id));
+            },
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildQuickEntry(BuildContext context) {
@@ -1398,10 +1494,25 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     if (widget.quickEntry) return _buildQuickEntry(context);
+    final useHistorySheet =
+        MediaQuery.sizeOf(context).width < talkHistoryDesktopBreakpoint;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Conversation'),
+        title: ListenableBuilder(
+          listenable: widget.controller,
+          builder: (_, _) => Text(
+            widget.controller.selectedThread?.title ?? 'Conversation',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
         actions: [
+          if (widget.controller.conversationHistorySupported && useHistorySheet)
+            IconButton(
+              tooltip: 'Conversation history',
+              onPressed: _openHistorySheet,
+              icon: const Icon(Icons.history_rounded),
+            ),
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: Center(
@@ -1464,9 +1575,15 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                         )
                       : const SizedBox.shrink(key: ValueKey('idle')),
                 ),
+                TalkThreadProjectionBanner(controller: widget.controller),
                 Expanded(
                   child: widget.controller.messages.isEmpty
-                      ? const _TalkEmpty()
+                      ? _TalkEmpty(
+                          selectedThread: widget.controller.hasSelectedThread,
+                          loading:
+                              widget.controller.threadState ==
+                              TalkThreadState.loading,
+                        )
                       : ListView.builder(
                           controller: scroll,
                           padding: const EdgeInsets.all(16),
@@ -1706,6 +1823,30 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 ),
               ],
             );
+            if (constraints.maxWidth >= talkHistoryDesktopBreakpoint &&
+                widget.controller.conversationHistorySupported) {
+              return Row(
+                children: [
+                  SizedBox(
+                    width: 272,
+                    child: TalkHistoryPane(
+                      controller: widget.controller,
+                      onNew: () {
+                        widget.controller.newConversation();
+                        inputFocus.requestFocus();
+                      },
+                      onSelected: (id) =>
+                          unawaited(widget.controller.openThread(id)),
+                    ),
+                  ),
+                  Expanded(child: conversation),
+                  SizedBox(
+                    width: 328,
+                    child: _TalkActivityPane(controller: widget.controller),
+                  ),
+                ],
+              );
+            }
             if (constraints.maxWidth < 1180) return conversation;
             return Row(
               children: [
@@ -1980,7 +2121,11 @@ class _TalkActivityCard extends StatelessWidget {
 }
 
 class _TalkEmpty extends StatelessWidget {
-  const _TalkEmpty();
+  const _TalkEmpty({required this.selectedThread, required this.loading});
+
+  final bool selectedThread;
+  final bool loading;
+
   @override
   Widget build(BuildContext context) => Center(
     child: Padding(
@@ -1988,15 +2133,29 @@ class _TalkEmpty extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const AsaelMark(size: 52),
+          if (loading)
+            const SizedBox.square(
+              dimension: 38,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            )
+          else
+            const AsaelMark(size: 52),
           const SizedBox(height: 20),
           Text(
-            'What needs to move?',
+            loading
+                ? 'Opening conversation'
+                : selectedThread
+                ? 'This conversation is empty'
+                : 'What needs to move?',
             style: Theme.of(context).textTheme.headlineSmall,
           ),
           const SizedBox(height: 8),
-          const Text(
-            'Ask a question or describe an outcome. Asael will keep plans, evidence, and approvals connected.',
+          Text(
+            loading
+                ? 'Reading the latest public message projection.'
+                : selectedThread
+                ? 'Send a message to continue this durable conversation.'
+                : 'Ask a question or describe an outcome. Asael will keep plans, evidence, and approvals connected.',
             textAlign: TextAlign.center,
           ),
         ],
