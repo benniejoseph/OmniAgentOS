@@ -16,6 +16,7 @@ import {
   History,
   Layers3,
   RefreshCw,
+  Rocket,
   ShieldCheck,
   Sparkles,
   Waypoints,
@@ -27,6 +28,7 @@ import { PriceChart } from "@/components/market-research/price-chart";
 import {
   MARKET_INTERVALS,
   type MarketBarsResult,
+  type MarketBacktestsResult,
   type MarketAnalysisVersionsResult,
   type MarketEventBaselinesResult,
   type MarketEventsResult,
@@ -42,7 +44,18 @@ import {
 } from "@/lib/market-research/contracts";
 import styles from "@/components/market-research/market-research-workspace.module.css";
 
-type WorkspaceTab = "overview" | "events" | "technicals" | "journal";
+type WorkspaceTab = "overview" | "events" | "technicals" | "backtests" | "journal";
+
+type BacktestConfiguration = {
+  direction: "both" | "long_only" | "short_only";
+  session: "all" | "london" | "new_york_am";
+  rewardRiskRatio: number;
+  maxHoldingBars: number;
+  spreadBps: number;
+  slippageBps: number;
+  commissionBps: number;
+  riskPerTradeBps: number;
+};
 
 type MarketBackfillJob = {
   id: string;
@@ -55,6 +68,7 @@ const tabs: Array<{ id: WorkspaceTab; label: string; description: string }> = [
   { id: "overview", label: "Research desk", description: "Live context and readiness" },
   { id: "events", label: "News impact lab", description: "High-impact release replay" },
   { id: "technicals", label: "ICT + Quarterly", description: "Deterministic structure" },
+  { id: "backtests", label: "Backtest lab", description: "Leakage-safe replay" },
   { id: "journal", label: "Forecast journal", description: "Frozen predictions and scoring" },
 ];
 
@@ -90,6 +104,11 @@ export function MarketResearchWorkspace() {
   const [journalLoading, setJournalLoading] = useState(false);
   const [journalError, setJournalError] = useState<string>();
   const [journalAction, setJournalAction] = useState<MarketForecastHorizon | "score">();
+  const [backtests, setBacktests] = useState<MarketBacktestsResult>();
+  const [backtestsLoading, setBacktestsLoading] = useState(false);
+  const [backtestsError, setBacktestsError] = useState<string>();
+  const [backtestJob, setBacktestJob] = useState<MarketBackfillJob>();
+  const [backtestJobInstrumentId, setBacktestJobInstrumentId] = useState<MarketInstrumentId>();
 
   const loadOverview = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -310,6 +329,30 @@ export function MarketResearchWorkspace() {
     }
   }, []);
 
+  const loadBacktests = useCallback(async (
+    instrumentId: MarketInstrumentId,
+    signal?: AbortSignal,
+  ) => {
+    setBacktestsLoading(true);
+    setBacktestsError(undefined);
+    try {
+      const query = new URLSearchParams({ instrumentId, limit: "20" });
+      const response = await fetch(`/api/market-research/backtests?${query}`, {
+        cache: "no-store",
+        signal,
+      });
+      const payload = await response.json() as MarketBacktestsResult & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Backtest history could not load.");
+      setBacktests(payload);
+    } catch (loadError) {
+      if (loadError instanceof DOMException && loadError.name === "AbortError") return;
+      setBacktests(undefined);
+      setBacktestsError(loadError instanceof Error ? loadError.message : "Backtest history could not load.");
+    } finally {
+      if (!signal?.aborted) setBacktestsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab !== "events" || events) return;
     const controller = new AbortController();
@@ -505,6 +548,94 @@ export function MarketResearchWorkspace() {
     };
   }, [activeTab, loadJournal, selectedId]);
 
+  useEffect(() => {
+    if (activeTab !== "backtests") return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => void loadBacktests(selectedId, controller.signal),
+      0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeTab, loadBacktests, selectedId]);
+
+  const runBacktest = useCallback(async (configuration: BacktestConfiguration) => {
+    if (!bars?.snapshotId || bars.instrumentId !== selectedId) {
+      setBacktestsError("Load a verified immutable price snapshot first.");
+      return;
+    }
+    setBacktestsError(undefined);
+    try {
+      const response = await fetch("/api/market-research/backtests", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `market-backtest-${bars.snapshotId}-${crypto.randomUUID()}`,
+        },
+        body: JSON.stringify({
+          snapshotId: bars.snapshotId,
+          strategy: {
+            strategyId: "foundation.liquidity_sweep_reversal.v1",
+            direction: configuration.direction,
+            session: configuration.session,
+            rewardRiskRatio: configuration.rewardRiskRatio,
+            maxHoldingBars: configuration.maxHoldingBars,
+            stopBufferRangeMultiplier: 0.1,
+          },
+          costs: {
+            spreadBps: configuration.spreadBps,
+            slippageBps: configuration.slippageBps,
+            commissionBps: configuration.commissionBps,
+          },
+          initialEquity: 10_000,
+          riskPerTradeBps: configuration.riskPerTradeBps,
+        }),
+      });
+      const payload = await response.json() as { job?: MarketBackfillJob; error?: string };
+      if (!response.ok || !payload.job) {
+        throw new Error(payload.error || "Backtest could not be queued.");
+      }
+      setBacktestJob(payload.job);
+      setBacktestJobInstrumentId(selectedId);
+    } catch (queueError) {
+      setBacktestsError(queueError instanceof Error ? queueError.message : "Backtest could not be queued.");
+    }
+  }, [bars, selectedId]);
+
+  useEffect(() => {
+    if (!backtestJob || !["queued", "running"].includes(backtestJob.status)) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/operations/jobs/${backtestJob.id}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const payload = await response.json() as { job?: MarketBackfillJob; error?: string };
+        if (!response.ok || !payload.job) {
+          throw new Error(payload.error || "Backtest progress is unavailable.");
+        }
+        setBacktestJob(payload.job);
+        if (payload.job.status === "completed") {
+          if (backtestJobInstrumentId === selectedId) {
+            await loadBacktests(selectedId, controller.signal);
+          }
+        } else if (payload.job.status === "failed") {
+          setBacktestsError(payload.job.lastError || "Backtest did not complete.");
+        }
+      } catch (pollError) {
+        if (pollError instanceof DOMException && pollError.name === "AbortError") return;
+        setBacktestsError(pollError instanceof Error ? pollError.message : "Backtest progress is unavailable.");
+      }
+    }, 2_000);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [backtestJob, backtestJobInstrumentId, loadBacktests, selectedId]);
+
   const generateForecast = useCallback(async (horizon: MarketForecastHorizon) => {
     setJournalAction(horizon);
     setJournalError(undefined);
@@ -669,6 +800,17 @@ export function MarketResearchWorkspace() {
               action={journalAction}
               onGenerate={generateForecast}
               onScore={scoreDueForecasts}
+            />
+          ) : null}
+          {activeTab === "backtests" ? (
+            <BacktestLab
+              instrument={selected}
+              bars={bars?.instrumentId === selectedId ? bars : undefined}
+              backtests={backtests?.instrumentId === selectedId ? backtests : undefined}
+              loading={backtestsLoading}
+              error={backtestsError || barsError}
+              job={backtestJobInstrumentId === selectedId ? backtestJob : undefined}
+              onRun={runBacktest}
             />
           ) : null}
         </>
@@ -1242,6 +1384,196 @@ function formatFeatureTime(value: string) {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function BacktestLab({
+  instrument,
+  bars,
+  backtests,
+  loading,
+  error,
+  job,
+  onRun,
+}: {
+  instrument: MarketInstrument;
+  bars?: MarketBarsResult;
+  backtests?: MarketBacktestsResult;
+  loading: boolean;
+  error?: string;
+  job?: MarketBackfillJob;
+  onRun: (configuration: BacktestConfiguration) => void;
+}) {
+  const [configuration, setConfiguration] = useState<BacktestConfiguration>({
+    direction: "both",
+    session: "all",
+    rewardRiskRatio: 2,
+    maxHoldingBars: 24,
+    spreadBps: 2,
+    slippageBps: 1,
+    commissionBps: 0,
+    riskPerTradeBps: 100,
+  });
+  const running = job && ["queued", "running"].includes(job.status);
+  const latest = backtests?.backtests[0];
+  const progressStage = typeof job?.progress?.stage === "string"
+    ? job.progress.stage.replaceAll("_", " ")
+    : "queued";
+  return (
+    <section className={styles.lab}>
+      <header className={styles.labHeader}>
+        <div>
+          <p className={styles.eyebrow}>Retrospective research · {instrument.shortLabel}</p>
+          <h2>Backtest lab</h2>
+          <p>Replay one frozen liquidity-sweep strategy against the exact chart snapshot. Entry happens on the next bar, costs are explicit, and the last 20% stays held out.</p>
+        </div>
+        <span className={styles.stateBadge} data-state="foundation">Foundation strategy · v1</span>
+      </header>
+
+      <div className={styles.backtestComposer}>
+        <div className={styles.backtestProtocol}>
+          <Rocket size={24} />
+          <strong>Liquidity-sweep reversal</strong>
+          <p>A bar must trade beyond the exact prior 20-bar boundary and close back inside. Advanced OB, Unicorn, Judas Swing, and transcript rules remain excluded until reviewed.</p>
+          <small>{bars ? `${bars.bars.length} ${bars.interval} bars · ${bars.snapshotSha256.slice(0, 12)}` : "Waiting for a verified snapshot"}</small>
+        </div>
+        <form
+          className={styles.backtestForm}
+          onSubmit={(event) => {
+            event.preventDefault();
+            onRun(configuration);
+          }}
+        >
+          <label>
+            <span>Direction</span>
+            <select
+              value={configuration.direction}
+              onChange={(event) => setConfiguration((current) => ({
+                ...current,
+                direction: event.target.value as BacktestConfiguration["direction"],
+              }))}
+            >
+              <option value="both">Long + short</option>
+              <option value="long_only">Long only</option>
+              <option value="short_only">Short only</option>
+            </select>
+          </label>
+          <label>
+            <span>Session</span>
+            <select
+              value={configuration.session}
+              onChange={(event) => setConfiguration((current) => ({
+                ...current,
+                session: event.target.value as BacktestConfiguration["session"],
+              }))}
+            >
+              <option value="all">All sessions</option>
+              <option value="london">London 02:00–05:00 ET</option>
+              <option value="new_york_am">New York 07:00–10:00 ET</option>
+            </select>
+          </label>
+          <NumberField label="Reward / risk" value={configuration.rewardRiskRatio} min={0.5} max={5} step={0.25} onChange={(value) => setConfiguration((current) => ({ ...current, rewardRiskRatio: value }))} />
+          <NumberField label="Max bars held" value={configuration.maxHoldingBars} min={1} max={96} step={1} onChange={(value) => setConfiguration((current) => ({ ...current, maxHoldingBars: value }))} />
+          <NumberField label="Spread · bps" value={configuration.spreadBps} min={0} max={100} step={0.1} onChange={(value) => setConfiguration((current) => ({ ...current, spreadBps: value }))} />
+          <NumberField label="Slippage · bps" value={configuration.slippageBps} min={0} max={100} step={0.1} onChange={(value) => setConfiguration((current) => ({ ...current, slippageBps: value }))} />
+          <NumberField label="Commission · bps" value={configuration.commissionBps} min={0} max={100} step={0.1} onChange={(value) => setConfiguration((current) => ({ ...current, commissionBps: value }))} />
+          <NumberField label="Risk / trade · bps" value={configuration.riskPerTradeBps} min={1} max={500} step={1} onChange={(value) => setConfiguration((current) => ({ ...current, riskPerTradeBps: value }))} />
+          <button type="submit" disabled={!bars || Boolean(running)}>
+            {running ? <RefreshCw className={styles.spin} size={15} /> : <Rocket size={15} />}
+            {running ? `Running · ${progressStage}` : "Run immutable backtest"}
+          </button>
+        </form>
+      </div>
+
+      {error ? <div className={styles.inlineError} role="alert"><AlertTriangle size={15} />{error}</div> : null}
+      <div className={styles.backtestAssurance}>
+        <span><ShieldCheck size={14} /> 60 / 20 / 20 chronological slices</span>
+        <span>Next-bar entry</span>
+        <span>Stop-first collision</span>
+        <span>Single position</span>
+        <span>No model call</span>
+      </div>
+
+      {latest ? (
+        <section className={styles.backtestLatest}>
+          <header>
+            <div><strong>Latest sealed result</strong><small>{formatFeatureTime(latest.createdAt)} · {latest.interval} · {latest.metrics.overall.trades} trades</small></div>
+            <code>{latest.resultSha256.slice(0, 12)}</code>
+          </header>
+          <div className={styles.backtestMetrics}>
+            <BacktestMetric label="Net result" value={`${signed(latest.metrics.overall.netR)}R`} detail={`Ending ${formatMoney(latest.metrics.overall.endingEquity)}`} />
+            <BacktestMetric label="Win rate" value={formatRatio(latest.metrics.overall.winRate)} detail={`${latest.metrics.overall.wins} win · ${latest.metrics.overall.losses} loss`} />
+            <BacktestMetric label="Expectancy" value={latest.metrics.overall.expectancyR === null ? "—" : `${signed(latest.metrics.overall.expectancyR)}R`} detail={`PF ${latest.metrics.overall.profitFactor?.toFixed(2) || "—"}`} />
+            <BacktestMetric label="Max drawdown" value={`${latest.metrics.overall.maxDrawdownPercent.toFixed(1)}%`} detail="Fixed fractional risk" />
+            <BacktestMetric label="Held-out test" value={`${signed(latest.metrics.test.netR)}R`} detail={`${latest.metrics.test.trades} trades · ${formatRatio(latest.metrics.test.winRate)}`} />
+          </div>
+          <div className={styles.backtestTradeList}>
+            <header><strong>Last trades</strong><small>Net of configured spread, slippage, and commission</small></header>
+            {latest.trades.slice(-6).reverse().map((trade) => (
+              <article key={trade.id} data-direction={trade.direction}>
+                <span><strong>{trade.direction}</strong><small>{trade.split} · {trade.exitReason}</small></span>
+                <time dateTime={trade.enteredAt}>{formatFeatureTime(trade.enteredAt)}</time>
+                <span><strong>{signed(trade.netR)}R</strong><small>{trade.holdingBars} bar{trade.holdingBars === 1 ? "" : "s"}</small></span>
+              </article>
+            ))}
+            {!latest.trades.length ? <p>No qualifying foundation signal occurred in this snapshot.</p> : null}
+          </div>
+          <div className={styles.backtestWarnings}>
+            {latest.warnings.map((warning) => <p key={warning}><AlertTriangle size={13} />{warning}</p>)}
+          </div>
+        </section>
+      ) : loading ? (
+        <div className={styles.journalEmpty}><RefreshCw className={styles.spin} size={24} /><strong>Reading backtest ledger</strong><p>Results load independently from the chart.</p></div>
+      ) : (
+        <div className={styles.journalEmpty}><History size={26} /><strong>No backtests yet</strong><p>Run the foundation strategy against the current immutable snapshot. Every result remains visible for comparison.</p></div>
+      )}
+    </section>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label>
+      <span>{label}</span>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
+  );
+}
+
+function BacktestMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <article><small>{label}</small><strong>{value}</strong><span>{detail}</span></article>;
+}
+
+function signed(value: number) {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
+function formatMoney(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(value);
 }
 
 function ForecastJournal({

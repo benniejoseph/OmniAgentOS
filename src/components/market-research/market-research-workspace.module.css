@@ -52,7 +52,7 @@
 .quickState span { display: inline-flex; align-items: center; gap: .35rem; }
 .quickState svg { color: var(--primary); }
 
-.tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+.tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
 .tab, .tabActive { position: relative; display: grid; min-height: 4.8rem; align-content: center; gap: .12rem; border-right: 1px solid var(--line); padding: .7rem clamp(.75rem, 1.4vw, 1.25rem); text-align: left; }
 .tab:last-child, .tabActive:last-child { border-right: 0; }
 .tab::after, .tabActive::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--primary); transform: scaleX(0); transition: transform 170ms ease; content: ""; }
@@ -381,6 +381,50 @@
 .guardrailList p:nth-last-child(-n+2) { border-bottom: 0; }
 .guardrailList svg { color: var(--success); }
 
+.backtestComposer { display: grid; grid-template-columns: minmax(17rem, .58fr) minmax(0, 1.42fr); gap: 1rem; margin-top: 1rem; }
+.backtestProtocol, .backtestForm, .backtestLatest { border: 1px solid var(--line); border-radius: 1.2rem; background: oklch(from var(--surface) l c h / .84); }
+.backtestProtocol { display: grid; min-height: 100%; align-content: center; justify-items: start; gap: .55rem; padding: 1.25rem; color: var(--primary); background: linear-gradient(145deg, oklch(from var(--primary) l c h / .1), transparent 66%), var(--surface); }
+.backtestProtocol strong { color: var(--foreground); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.2rem; }
+.backtestProtocol p { color: var(--muted); font-size: .7rem; line-height: 1.65; }
+.backtestProtocol small { border: 1px solid var(--line); border-radius: 999px; padding: .34rem .55rem; color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .56rem; }
+.backtestForm { display: grid; grid-template-columns: repeat(4, minmax(8rem, 1fr)); align-content: start; overflow: hidden; }
+.backtestForm label { display: grid; min-height: 5.6rem; align-content: center; gap: .35rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: .65rem .8rem; }
+.backtestForm label:nth-child(4n) { border-right: 0; }
+.backtestForm label span { color: var(--muted); font-size: .58rem; font-weight: 760; text-transform: uppercase; letter-spacing: .05em; }
+.backtestForm input, .backtestForm select { width: 100%; min-height: 2.35rem; border: 1px solid var(--line); border-radius: .65rem; padding: 0 .65rem; color: var(--foreground); background: var(--surface-raised); font-size: .68rem; outline: none; }
+.backtestForm input:focus, .backtestForm select:focus { border-color: var(--primary); box-shadow: 0 0 0 .18rem oklch(from var(--primary) l c h / .1); }
+.backtestForm > button { display: inline-flex; grid-column: 1 / -1; min-height: 3.3rem; align-items: center; justify-content: center; gap: .45rem; margin: .8rem; border-radius: 999px; color: var(--primary-foreground); background: var(--primary); font-size: .7rem; font-weight: 780; }
+.backtestForm > button:disabled { cursor: not-allowed; opacity: .5; }
+.backtestAssurance { display: flex; min-height: 3.4rem; align-items: center; flex-wrap: wrap; gap: .45rem 1rem; margin-top: 1rem; border-block: 1px solid var(--line); padding: .65rem .15rem; color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .58rem; }
+.backtestAssurance span { display: inline-flex; align-items: center; gap: .32rem; }
+.backtestAssurance span:first-child { color: var(--success); }
+.backtestLatest { margin-top: 1rem; overflow: hidden; }
+.backtestLatest > header { display: flex; min-height: 4.4rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: .8rem 1rem; background: linear-gradient(110deg, oklch(from var(--primary) l c h / .06), transparent 48%); }
+.backtestLatest > header div { display: grid; gap: .16rem; }
+.backtestLatest > header strong { font-size: .78rem; }
+.backtestLatest > header small, .backtestLatest > header code { color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .57rem; }
+.backtestMetrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+.backtestMetrics article { display: grid; min-height: 8rem; align-content: center; gap: .25rem; border-right: 1px solid var(--line); padding: .85rem 1rem; }
+.backtestMetrics article:last-child { border-right: 0; }
+.backtestMetrics small { color: var(--muted); font-size: .57rem; font-weight: 750; text-transform: uppercase; }
+.backtestMetrics strong { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: clamp(1.35rem, 2vw, 2rem); font-weight: 590; }
+.backtestMetrics span { color: var(--muted); font-size: .59rem; }
+.backtestTradeList > header { display: flex; min-height: 3.7rem; align-items: center; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--line); padding: .7rem 1rem; }
+.backtestTradeList > header strong { font-size: .7rem; }
+.backtestTradeList > header small { color: var(--muted); font-size: .58rem; }
+.backtestTradeList article { display: grid; min-height: 3.8rem; grid-template-columns: minmax(8rem, 1fr) minmax(9rem, 1fr) auto; align-items: center; gap: 1rem; border-bottom: 1px solid var(--line); padding: .55rem 1rem; }
+.backtestTradeList article > span:last-child { text-align: right; }
+.backtestTradeList strong, .backtestTradeList small { display: block; }
+.backtestTradeList strong { font-size: .67rem; text-transform: capitalize; }
+.backtestTradeList small, .backtestTradeList time { margin-top: .12rem; color: var(--muted); font-family: var(--font-geist-mono), monospace; font-size: .56rem; }
+.backtestTradeList article[data-direction="long"] > span:first-child strong { color: var(--success); }
+.backtestTradeList article[data-direction="short"] > span:first-child strong { color: var(--danger); }
+.backtestTradeList > p { padding: 1.2rem; color: var(--muted); font-size: .66rem; text-align: center; }
+.backtestWarnings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); background: var(--surface-raised); }
+.backtestWarnings p { display: flex; min-height: 3.6rem; align-items: center; gap: .45rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: .7rem 1rem; color: var(--muted); font-size: .59rem; line-height: 1.45; }
+.backtestWarnings p:nth-child(even) { border-right: 0; }
+.backtestWarnings svg { flex: 0 0 auto; color: var(--warning); }
+
 .instrumentSkeleton, .workspaceSkeleton > div { overflow: hidden; background: linear-gradient(90deg, var(--surface-raised), var(--surface), var(--surface-raised)); background-size: 220% 100%; animation: market-shimmer 1.3s linear infinite; }
 .instrumentSkeleton { display: grid; width: 12.5rem; align-content: center; gap: .4rem; border-right: 1px solid var(--line); padding: 1rem; }
 .instrumentSkeleton i { width: 4.5rem; height: .9rem; border-radius: 999px; background: var(--line); }
@@ -413,6 +457,10 @@
   .baselineGrid > article:nth-child(2n) { border-right: 0; }
   .journalActions { grid-template-columns: minmax(0, 1fr); }
   .journalActions > span { justify-content: flex-start; }
+  .backtestComposer { grid-template-columns: minmax(0, 1fr); }
+  .backtestMetrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .backtestMetrics article:nth-child(3) { border-right: 0; }
+  .backtestMetrics article:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
 }
 
 @media (max-width: 58rem) {
@@ -422,9 +470,8 @@
   .instruments { overflow-x: auto; }
   .instrument, .instrumentActive { flex: 0 0 11.5rem; }
   .quickState { justify-content: flex-start; }
-  .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .tab:nth-child(2), .tabActive:nth-child(2) { border-right: 0; }
-  .tab:nth-child(-n+2), .tabActive:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .tabs { display: flex; overflow-x: auto; }
+  .tab, .tabActive { flex: 0 0 13rem; border-bottom: 0; }
   .instrumentHeader { align-items: flex-start; flex-direction: column; }
   .priceReadout { justify-items: start; }
   .metricStrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -446,6 +493,14 @@
   .scenarioGrid { grid-template-columns: minmax(0, 1fr); }
   .scenarioGrid section { min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .scenarioGrid section:last-child { border-bottom: 0; }
+  .backtestForm { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .backtestForm label:nth-child(4n) { border-right: 1px solid var(--line); }
+  .backtestForm label:nth-child(2n) { border-right: 0; }
+  .backtestMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .backtestMetrics article, .backtestMetrics article:nth-child(3) { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .backtestMetrics article:nth-child(2n) { border-right: 0; }
+  .backtestWarnings { grid-template-columns: minmax(0, 1fr); }
+  .backtestWarnings p, .backtestWarnings p:nth-child(even) { border-right: 0; }
 }
 
 @media (max-width: 42rem) {
@@ -489,6 +544,15 @@
   .journalActions > span { display: grid; width: 100%; }
   .journalActions button { width: 100%; }
   .forecastCard > header { align-items: flex-start; flex-direction: column; }
+  .backtestForm { grid-template-columns: minmax(0, 1fr); }
+  .backtestForm label, .backtestForm label:nth-child(2n), .backtestForm label:nth-child(4n) { border-right: 0; }
+  .backtestMetrics { grid-template-columns: minmax(0, 1fr); }
+  .backtestMetrics article, .backtestMetrics article:nth-child(2n), .backtestMetrics article:nth-child(3) { min-height: 6rem; border-right: 0; border-bottom: 1px solid var(--line); }
+  .backtestMetrics article:last-child { border-bottom: 0; }
+  .backtestTradeList > header { align-items: flex-start; flex-direction: column; }
+  .backtestTradeList article { grid-template-columns: minmax(0, 1fr) auto; gap: .35rem .7rem; }
+  .backtestTradeList article time { grid-column: 1; }
+  .backtestTradeList article > span:last-child { grid-column: 2; grid-row: 1 / span 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {
