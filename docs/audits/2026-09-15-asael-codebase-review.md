@@ -6,7 +6,7 @@ Reconciled through: 2026-09-16
 
 Reviewed baseline: `00c601c7e0416464ec621863b64e771e038fb975`
 
-Latest reviewed feature revision: `e170412`
+Latest reviewed and deployed revision: `c52842aadb4ffa9596cc33f54678a7c052463e5c`
 
 Branch: `performance-remediation`
 
@@ -38,9 +38,9 @@ closed in code and, where applicable, on a physical device:
    plus causal Android push are required; redundant background web push and
    notification email are excluded unless the owner later opts in.
 
-The new trading backtest feature is implemented but remains research-only. The
-current release batch must still install migration 177 and promote the paired
-web/worker revision before it is production-complete.
+The new trading backtest feature is implemented and deployed but remains
+research-only. Migration 177, canonical web and the Fly worker now serve the
+same exact release revision.
 
 ## Inventory at the original review boundary
 
@@ -188,6 +188,14 @@ remain excluded until transcript-authoritative definitions pass review.
 - Android native v7 compatibility and mutation boundary: 10 focused web checks,
   native artifact drift check, Flutter analyzer and three generated-contract
   checks passed.
+- Production release: migration 177 installed; a 136.5 MB logical backup and
+  checksum manifest completed after the backup-role coverage repair; Vercel
+  deployment `dpl_BsKtCpjjAzog74q91UCyPX6ksBQF` and Fly machine
+  `895904f64791e8` are healthy at exact revision
+  `c52842aadb4ffa9596cc33f54678a7c052463e5c`. One governed XAU/USD backtest
+  completed over 480 bars with 28 trades and eight held-out-test trades. Wide
+  and mobile browser checks rendered the sealed result without overflow or
+  console/page errors.
 - Affected TypeScript and diff validation passed for each committed feature
   slice. No broad audit or full test suite was run.
 

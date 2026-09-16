@@ -1180,7 +1180,7 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 | P12.5 | Add APNs/FCM delivery with causal deep links and notification actions. | Reuse delivery outbox; create device registrations. | Sensitive content previews follow device/user policy. | Notification opens the exact approval, work item, meeting, customer, or run and acknowledges once. |
 | P12.6 | Keep Android synchronized with post-P12 web workspaces. | Reuse authoritative server services and generated contracts; modify Flutter navigation and feature modules. | New mobile mutations remain exact-capability enrolled; trusted payment signing stays on an attested human-present surface. | Android exposes the same current destination map and native task flows for Accounts, Markets, Payments evidence, model Settings, administrative workspaces, and Project Build Studio, including exact GitHub repository checkout. |
 
-**Current status:** P12.1 through P12.6 are implemented. The signed private
+**Current status:** P12.1 through P12.6 are implemented and server-deployed. The signed private
 Android client has been installed and proven on a physical Samsung Android 16
 device. Native contract v7 adds the governed deterministic market-backtest lab
 while retaining frozen v6 compatibility; its release binary can be installed
@@ -1198,7 +1198,7 @@ information architecture as the web workspace. P12 completion hardening
 cancels an interrupted voice draft, binds a push acknowledgement to the
 delivery registration's exact current device and mobile session, and safely
 reconstructs every discriminated causal target. Schema v146 and native
-contract v4 are live. The Android client preserves those foundations while
+contract v7 are live. The Android client preserves those foundations while
 adding the post-P12 web navigation and task workspaces through the same API. A
 real FCM delivery opened its exact causal target and persisted the
 acknowledgement against the current device registration, closing the former
