@@ -1248,9 +1248,10 @@ Accessibility, screen-recording, Apple Events, or broad filesystem authority.
 If local Computer Use is still needed, it must be a separately signed, visible,
 revocable helper routed through the governed executor. P13.4 is complete only
 for the encrypted Capture outbox; general offline projections, freshness/conflict
-presentation, and full reconnect reconciliation remain pending. A real macOS
-build, login, and local private-install proof is also open until Xcode 27 is
-installed. APNs delivery and a notarized release for another Mac additionally
+presentation, and full reconnect reconciliation remain pending. Xcode 27 is
+installed on macOS 27, but a real build, login, and local private-install proof
+remains open until the owner accepts Apple's license and completes Xcode's
+first-launch components. APNs delivery and a notarized release for another Mac additionally
 require an Apple signing identity and provider credentials.
 
 **Phase gate:** native clients are alternate interaction surfaces for one core—not independent products with divergent truth or policy.
