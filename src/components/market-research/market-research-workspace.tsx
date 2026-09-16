@@ -429,6 +429,10 @@ export function MarketResearchWorkspace() {
   const startEventBackfill = useCallback(async () => {
     setEventsError(undefined);
     try {
+      const importedEventKeys = new Set(events?.events.map(({ eventKey }) => eventKey));
+      const catalogExpansionRequired = liveCalendar?.catalog.families.some(
+        ({ eventKey }) => !importedEventKeys.has(eventKey),
+      ) === true;
       const response = await fetch("/api/market-research/events", {
         method: "POST",
         headers: {
@@ -436,7 +440,9 @@ export function MarketResearchWorkspace() {
           "idempotency-key": `market-events-${Date.now()}`,
         },
         body: JSON.stringify({
-          startDate: events?.total ? utcDateDaysAgo(120) : "2000-01-01",
+          startDate: events?.total && !catalogExpansionRequired
+            ? utcDateDaysAgo(120)
+            : "2000-01-01",
           endDate: new Date().toISOString().slice(0, 10),
         }),
       });
@@ -448,7 +454,7 @@ export function MarketResearchWorkspace() {
     } catch (queueError) {
       setEventsError(queueError instanceof Error ? queueError.message : "Market event history could not be queued.");
     }
-  }, [events]);
+  }, [events, liveCalendar]);
 
   const startReplayBackfill = useCallback(async () => {
     setReplayError(undefined);
@@ -1226,6 +1232,10 @@ function NewsImpactLab({
   const calendar = overview?.providers.find((provider) => provider.provider === "bls");
   const vintage = overview?.providers.find((provider) => provider.provider === "fred");
   const importing = backfillJob && ["queued", "running"].includes(backfillJob.status);
+  const importedEventKeys = new Set(events?.events.map(({ eventKey }) => eventKey));
+  const catalogExpansionRequired = liveCalendar?.catalog.families.some(
+    ({ eventKey }) => !importedEventKeys.has(eventKey),
+  ) === true;
   const completedSources = numberProgress(backfillJob?.progress?.completedSources);
   const totalSources = numberProgress(backfillJob?.progress?.totalSources);
   const activeReplayJobs = Object.values(replayJobs).filter((job) =>
@@ -1250,7 +1260,13 @@ function NewsImpactLab({
           <div className={styles.labButtons}>
             <button type="button" onClick={onBackfill} disabled={Boolean(importing) || vintage?.configured !== true}>
               <History size={15} />
-              {importing ? `Importing ${completedSources}/${totalSources || "…"}` : events?.total ? "Refresh history" : "Import history"}
+              {importing
+                ? `Importing ${completedSources}/${totalSources || "…"}`
+                : catalogExpansionRequired
+                  ? `Expand to ${liveCalendar?.catalog.reviewedFamilies || 17} families`
+                  : events?.total
+                    ? "Refresh history"
+                    : "Import history"}
             </button>
             <button type="button" onClick={onReplayBackfill} disabled={Boolean(replaying) || instrument.providerMapping.status !== "verified" || !events?.total}>
               <ChartCandlestick size={15} />
