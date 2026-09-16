@@ -139,12 +139,16 @@ function projectSemanticSummaryProgress(
   const sourceTurnCount = safeSemanticSummaryCount(
     progress?.sourceTurnCount ?? result?.sourceTurnCount,
   );
+  const generationLatencyMs = safeSemanticSummaryLatency(
+    progress?.generationLatencyMs ?? result?.generationLatencyMs,
+  );
   return {
     stage,
     shadowOnly: true,
     ...(outcome ? { outcome } : {}),
     ...(statementCount === undefined ? {} : { statementCount }),
     ...(sourceTurnCount === undefined ? {} : { sourceTurnCount }),
+    ...(generationLatencyMs === undefined ? {} : { generationLatencyMs }),
   };
 }
 
@@ -157,12 +161,16 @@ function projectSemanticSummaryResult(
     semanticSummaryOutcome(result?.status);
   const statementCount = safeSemanticSummaryCount(result?.statementCount);
   const sourceTurnCount = safeSemanticSummaryCount(result?.sourceTurnCount);
+  const generationLatencyMs = safeSemanticSummaryLatency(
+    result?.generationLatencyMs ?? progress?.generationLatencyMs,
+  );
   return {
     shadowOnly: true,
     rankingEffect: "none",
     ...(outcome ? { outcome } : {}),
     ...(statementCount === undefined ? {} : { statementCount }),
     ...(sourceTurnCount === undefined ? {} : { sourceTurnCount }),
+    ...(generationLatencyMs === undefined ? {} : { generationLatencyMs }),
   };
 }
 
@@ -179,6 +187,12 @@ function semanticSummaryOutcome(value: unknown) {
 function safeSemanticSummaryCount(value: unknown) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0
     ? Math.min(value, 10_000)
+    : undefined;
+}
+
+function safeSemanticSummaryLatency(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? Math.min(value, 120_000)
     : undefined;
 }
 

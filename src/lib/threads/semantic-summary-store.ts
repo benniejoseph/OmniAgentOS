@@ -47,6 +47,11 @@ export type OwnedSemanticEpisodeSource = Readonly<{
   turns: readonly ThreadTurnRecord[];
 }>;
 
+export type OwnedSemanticSummaryEnrichment = Readonly<{
+  record: SemanticSummaryEnrichmentRecord;
+  source: OwnedSemanticEpisodeSource;
+}>;
+
 export type SemanticSummaryEnrichmentRecord = Readonly<{
   contract: SemanticEpisodeEnrichmentV1;
   episodeSummarySha256: string;
@@ -443,6 +448,155 @@ export async function listCurrentSemanticEnrichments(
       },
     );
     return current;
+  });
+}
+
+/**
+ * Lists current enrichment/source pairs across an explicit bounded actor set.
+ * This is the private human-review read; callers must never project owner
+ * coordinates or use the returned content as agent instructions.
+ */
+export async function listOwnedSemanticSummaryEnrichments(
+  input: {
+    tenantId: string;
+    actorIds: readonly string[];
+    limit?: number;
+  },
+  options: SqlOptions = {},
+): Promise<OwnedSemanticSummaryEnrichment[]> {
+  const tenantId = requiredId(input.tenantId, "tenant id");
+  const actorIds = [...new Set(input.actorIds.map((actorId) =>
+    requiredId(actorId, "actor id")
+  ))].sort();
+  if (!actorIds.length || actorIds.length > 32) {
+    throw new Error(
+      "Semantic summary review requires a bounded actor scope.",
+    );
+  }
+  const limit = boundedLimit(input.limit);
+
+  if (options.sql || hasDatabaseUrl()) {
+    if (!options.sql) await ensureDatabaseSchema();
+    const operation = async (sql: SemanticSummarySql) => {
+      const rows = await sql`
+        SELECT enrichment.*
+        FROM omni_conversation_summary_enrichments enrichment
+        JOIN omni_conversation_summaries summary
+          ON summary.id = enrichment.episode_summary_id
+         AND summary.tenant_id = enrichment.tenant_id
+         AND summary.owner_actor_id = enrichment.owner_actor_id
+         AND summary.thread_id = enrichment.thread_id
+         AND summary.level = 'episode'
+         AND summary.source_sha256 = enrichment.episode_source_sha256
+         AND summary.summary_sha256 = enrichment.episode_summary_sha256
+         AND summary.source_turn_ids = enrichment.source_turn_ids
+        WHERE enrichment.tenant_id = ${tenantId}
+          AND enrichment.owner_actor_id = ANY(${actorIds}::text[])
+        ORDER BY enrichment.starts_at DESC, enrichment.id COLLATE "C"
+        LIMIT ${limit}
+      `;
+      if (!rows.length) return [];
+      const records = rows.map(recordFromRow);
+      const episodeIds = records.map(
+        (record) => record.contract.episodeSummaryId,
+      );
+      const summaryRows = await sql`
+        SELECT summary.*
+        FROM omni_conversation_summaries summary
+        JOIN omni_threads thread ON thread.id = summary.thread_id
+        WHERE summary.tenant_id = ${tenantId}
+          AND summary.owner_actor_id = ANY(${actorIds}::text[])
+          AND summary.id = ANY(${episodeIds})
+          AND summary.level = 'episode'
+          AND thread.tenant_id = summary.tenant_id
+          AND thread.actor_id = summary.owner_actor_id
+          AND thread.project_id IS NOT DISTINCT FROM summary.project_id
+      `;
+      const episodes = new Map(
+        summaryRows.map((row) => {
+          const episode = conversationSummaryFromRow(row);
+          return [episode.id, episode] as const;
+        }),
+      );
+      const sourceTurnIds = [...new Set(
+        records.flatMap((record) => record.contract.sourceTurnIds),
+      )];
+      const turnRows = await sql`
+        SELECT turn.*
+        FROM omni_thread_turns turn
+        JOIN omni_threads thread ON thread.id = turn.thread_id
+        WHERE turn.tenant_id = ${tenantId}
+          AND turn.id = ANY(${sourceTurnIds})
+          AND thread.tenant_id = turn.tenant_id
+          AND thread.actor_id = ANY(${actorIds}::text[])
+      `;
+      const turnsById = new Map(
+        turnRows.map((row) => {
+          const turn = turnFromRow(row);
+          return [turn.id, turn] as const;
+        }),
+      );
+      const candidates: OwnedSemanticSummaryEnrichment[] = [];
+      for (const record of records) {
+        const episode = episodes.get(record.contract.episodeSummaryId);
+        if (!episode) continue;
+        try {
+          const turns = orderedTurns(
+            episode,
+            record.contract.sourceTurnIds.flatMap((id) => {
+              const turn = turnsById.get(id);
+              return turn ? [turn] : [];
+            }),
+          );
+          const source = freezeSource({ episode, turns });
+          if (recordMatchesCurrentSource(record, source)) {
+            candidates.push(Object.freeze({ record, source }));
+          }
+        } catch (error) {
+          if (error instanceof SemanticSummaryStaleSourceError) continue;
+          throw error;
+        }
+      }
+      return candidates;
+    };
+    if (options.sql) return operation(options.sql);
+    return runWithDatabaseActorScope(
+      tenantId,
+      actorIds,
+      () => operation(getSql()),
+    );
+  }
+
+  return withJsonFileLock(threadLedgerFile(), async () => {
+    const [threadLedger, enrichmentLedger] = await Promise.all([
+      readJsonFile<ThreadLedger>(threadLedgerFile(), emptyThreadLedger),
+      readJsonFile<SemanticSummaryEnrichmentLedger>(
+        enrichmentLedgerFile(),
+        emptyEnrichmentLedger,
+      ),
+    ]);
+    const actorScope = new Set(actorIds);
+    return enrichmentLedger.records
+      .map(parseFileRecord)
+      .filter((record) =>
+        record.contract.tenantId === tenantId &&
+        actorScope.has(record.contract.ownerActorId)
+      )
+      .sort((left, right) =>
+        right.contract.startsAt.localeCompare(left.contract.startsAt) ||
+        left.contract.enrichmentId.localeCompare(right.contract.enrichmentId)
+      )
+      .flatMap((record) => {
+        const source = readOwnedEpisodeSourceFromLedger(threadLedger, {
+          tenantId,
+          actorId: record.contract.ownerActorId,
+          episodeSummaryId: record.contract.episodeSummaryId,
+        });
+        return source && recordMatchesCurrentSource(record, source)
+          ? [Object.freeze({ record, source })]
+          : [];
+      })
+      .slice(0, limit);
   });
 }
 

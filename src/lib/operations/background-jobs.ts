@@ -1521,6 +1521,7 @@ async function executeSemanticSummaryEnrichmentJob(
     stage: "generating_enrichment",
     shadowOnly: true,
   });
+  const generationStartedAt = Date.now();
   const enrichment = await enrichConversationEpisode({
     tenantId: job.tenantId,
     actorId,
@@ -1532,11 +1533,13 @@ async function executeSemanticSummaryEnrichmentJob(
     causationId: executionScope.causationId || undefined,
     abortSignal,
   });
+  const generationLatencyMs = Math.max(0, Date.now() - generationStartedAt);
   abortSignal.throwIfAborted();
 
   await updateBackgroundJobProgress(job, abortSignal, {
     stage: "saving_enrichment",
     shadowOnly: true,
+    generationLatencyMs,
   });
   const saved = await saveSemanticEnrichmentFromWorker(enrichment, {
     executionScope,
@@ -1550,6 +1553,7 @@ async function executeSemanticSummaryEnrichmentJob(
     sourceSha256: saved.contract.sourceSha256,
     enrichmentSha256: saved.contract.enrichmentSha256,
     statementCount: saved.contract.statements.length,
+    generationLatencyMs,
     status: "enriched",
     shadowOnly: true,
     rankingEffect: "none",

@@ -45,6 +45,7 @@ import type { MemoryReconciliationReview } from "@/lib/memory/reconciliation";
 import type { MemoryTier } from "@/lib/memory/tier-policy";
 import type { MemoryRecord, MemoryType } from "@/lib/memory/types";
 import { SemanticShadowCollector } from "@/components/semantic-shadow-collector";
+import { SemanticShadowReviewQueue } from "@/components/semantic-shadow-review-queue";
 import styles from "@/components/memory-intelligence-workspace.module.css";
 
 const MemoryUniverse = dynamic(
@@ -1148,6 +1149,9 @@ function ReviewIndex(props: {
     />
     <SemanticShadowCollector
       semanticShadow={props.semanticShadow}
+      onProgressChanged={props.onSemanticShadowProgress}
+    />
+    <SemanticShadowReviewQueue
       onProgressChanged={props.onSemanticShadowProgress}
     />
     <section className={styles.cognitionSection} aria-labelledby="source-map-review-title">
