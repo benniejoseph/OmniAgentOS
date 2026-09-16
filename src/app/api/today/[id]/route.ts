@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
-import { updateTodayItemService } from "@/lib/app-services/today";
+import { createAppServiceCaller, createRequestMutationAppServiceCaller } from "@/lib/app-services/contracts";
+import { showTodayService, updateTodayItemService } from "@/lib/app-services/today";
 import { withDatabaseRequestScope } from "@/lib/db/client";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
@@ -13,7 +13,8 @@ const updateSchema = z.object({
   status: z.enum(["open", "done"]).optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),
   dueAt: z.string().datetime().nullable().optional(),
-}).strict().refine((value) => Object.keys(value).length > 0, {
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+}).strict().refine(({ expectedUpdatedAt: _expectedUpdatedAt, ...value }) => Object.keys(value).length > 0, {
   message: "A change is required.",
 });
 
@@ -48,7 +49,21 @@ async function PATCHHandler(
     createRequestMutationAppServiceCaller(request, context, { purpose: "today.item.update", causationId: id }),
     { itemId: id, ...parsed.data },
   );
-  return result.data.item
-    ? Response.json({ ...result.data, serviceReceipt: result.receipt })
-    : Response.json({ error: "Focus item not found." }, { status: 404 });
+  if (result.data.item) {
+    return Response.json({ ...result.data, serviceReceipt: result.receipt });
+  }
+  if (parsed.data.expectedUpdatedAt) {
+    const current = await showTodayService(createAppServiceCaller({ context }), {});
+    const item = current.data.items.find((candidate) => candidate.id === id);
+    if (item) {
+      return Response.json({
+        error: {
+          code: "projection_conflict",
+          message: "This focus item changed on another device.",
+        },
+        current: item,
+      }, { status: 409 });
+    }
+  }
+  return Response.json({ error: "Focus item not found." }, { status: 404 });
 }

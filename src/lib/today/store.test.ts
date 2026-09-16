@@ -48,4 +48,24 @@ describe("personal today items", () => {
       listTodayItems(10, { tenantId: "personal", actorId: "someone-else" }),
     ).resolves.toEqual([]);
   });
+
+  it("rejects an update based on a stale projection timestamp", async () => {
+    const item = await createTodayItem({
+      tenantId: "personal",
+      actorId: "owner",
+      title: "Do not overwrite me",
+    });
+    await expect(
+      updateTodayItem(
+        item.id,
+        { status: "done", expectedUpdatedAt: "2026-01-01T00:00:00.000Z" },
+        { tenantId: "personal", actorId: "owner" },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      listTodayItems(10, { tenantId: "personal", actorId: "owner" }),
+    ).resolves.toEqual([
+      expect.objectContaining({ id: item.id, status: "open" }),
+    ]);
+  });
 });

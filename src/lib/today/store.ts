@@ -105,6 +105,7 @@ export async function updateTodayItem(
     status?: TodayItemStatus;
     priority?: TodayItemPriority;
     dueAt?: string | null;
+    expectedUpdatedAt?: string;
   },
   options: {
     tenantId?: string;
@@ -136,6 +137,8 @@ export async function updateTodayItem(
           updated_at = ${now}
       WHERE id = ${id} AND tenant_id = ${tenantId}
         AND (actor_id = ${canonicalActorId} OR actor_id = ${exactActorId})
+        AND (${input.expectedUpdatedAt || null}::timestamptz IS NULL
+          OR updated_at = ${input.expectedUpdatedAt || null}::timestamptz)
       RETURNING *
     `;
     return rows[0]
@@ -148,6 +151,9 @@ export async function updateTodayItem(
       candidate.id === id && candidate.tenantId === tenantId && candidate.actorId === actorId
     );
     if (!item) return ledger;
+    if (input.expectedUpdatedAt && item.updatedAt !== input.expectedUpdatedAt) {
+      return ledger;
+    }
     if (input.title) item.title = safeText(input.title, 280);
     if (input.status) {
       item.status = input.status;

@@ -33,7 +33,8 @@ export const todayItemUpdateServiceInputSchema = z.object({
   status: z.enum(["open", "done"]).optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),
   dueAt: z.string().datetime({ offset: true }).nullable().optional(),
-}).strict().refine(({ itemId: _itemId, ...change }) => Object.keys(change).length > 0, {
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
+}).strict().refine(({ itemId: _itemId, expectedUpdatedAt: _expectedUpdatedAt, ...change }) => Object.keys(change).length > 0, {
   message: "A Today-item change is required.",
 });
 
@@ -66,8 +67,8 @@ export async function createTodayItemService(caller: AppServiceCaller, input: z.
 export async function updateTodayItemService(caller: AppServiceCaller, input: z.input<typeof todayItemUpdateServiceInputSchema>) {
   const value = redactSensitive(todayItemUpdateServiceInputSchema.parse(input)) as z.output<typeof todayItemUpdateServiceInputSchema>;
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.today.item.update"));
-  const { itemId, ...change } = value;
-  const item = await updateTodayItem(itemId, change, readOwner(caller));
+  const { itemId, expectedUpdatedAt, ...change } = value;
+  const item = await updateTodayItem(itemId, { ...change, expectedUpdatedAt }, readOwner(caller));
   if (item) invalidateTodaySnapshot(caller.context);
   return completeAppServiceCall(authorized, { item: item || null }, { resourceCount: item ? 1 : 0 });
 }

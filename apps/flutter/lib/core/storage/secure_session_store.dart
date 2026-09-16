@@ -16,6 +16,9 @@ class SecureSessionStore {
   static const _deviceIdKey = 'asael.device_id';
   static const _biometricEnabledKey = 'asael.biometric_enabled';
   static const _captureOutboxSecretKey = 'asael.capture_outbox_secret_v1';
+  static const _offlineProjectionSecretKey =
+      'asael.offline_projection_secret_v1';
+  static const _offlineProjectionOwnerKey = 'asael.offline_projection_owner_v1';
   static const _pushRegistrationIdKey = 'asael.push_registration_id_v1';
   static const _pushPreviewPolicyKey = 'asael.push_preview_policy_v1';
   static const _pendingPushAcknowledgementKey =
@@ -138,9 +141,57 @@ class SecureSessionStore {
   Future<void> clearPendingPushAcknowledgement() =>
       _delete(_pendingPushAcknowledgementKey);
 
-  Future<DeviceSecretMaterial> readOrCreateCaptureOutboxSecret() async {
+  Future<DeviceSecretMaterial> readOrCreateCaptureOutboxSecret() =>
+      _readOrCreateDeviceSecret(_captureOutboxSecretKey);
+
+  Future<DeviceSecretMaterial> readOrCreateOfflineProjectionSecret() =>
+      _readOrCreateDeviceSecret(_offlineProjectionSecretKey);
+
+  Future<void> writeOfflineProjectionOwner({
+    required String tenantId,
+    required String actorId,
+  }) async {
+    if (tenantId.trim().isEmpty ||
+        tenantId.length > 200 ||
+        actorId.trim().isEmpty ||
+        actorId.length > 320) {
+      throw const FormatException('The offline projection owner is invalid.');
+    }
+    await _write(
+      _offlineProjectionOwnerKey,
+      jsonEncode({'version': 1, 'tenantId': tenantId, 'actorId': actorId}),
+    );
+  }
+
+  Future<({String tenantId, String actorId})?>
+  readOfflineProjectionOwner() async {
+    final encoded = await _read(_offlineProjectionOwnerKey);
+    if (encoded == null) return null;
+    try {
+      final value = jsonDecode(encoded);
+      if (value is! Map ||
+          value['version'] != 1 ||
+          value['tenantId'] is! String ||
+          value['actorId'] is! String) {
+        return null;
+      }
+      final tenantId = value['tenantId'] as String;
+      final actorId = value['actorId'] as String;
+      if (tenantId.trim().isEmpty ||
+          tenantId.length > 200 ||
+          actorId.trim().isEmpty ||
+          actorId.length > 320) {
+        return null;
+      }
+      return (tenantId: tenantId, actorId: actorId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<DeviceSecretMaterial> _readOrCreateDeviceSecret(String key) async {
     await _requireBiometricRelease();
-    final encoded = await _read(_captureOutboxSecretKey);
+    final encoded = await _read(key);
     if (encoded != null) return DeviceSecretMaterial.decode(encoded);
     final random = Random.secure();
     final idBytes = List<int>.generate(18, (_) => random.nextInt(256));
@@ -149,7 +200,7 @@ class SecureSessionStore {
       id: base64UrlEncode(idBytes).replaceAll('=', ''),
       bytes: Uint8List.fromList(keyBytes),
     );
-    await _write(_captureOutboxSecretKey, material.encode());
+    await _write(key, material.encode());
     return material;
   }
 
@@ -196,6 +247,8 @@ class SecureSessionStore {
       _delete(_deviceIdKey),
       _delete(_biometricEnabledKey),
       _delete(_captureOutboxSecretKey),
+      _delete(_offlineProjectionSecretKey),
+      _delete(_offlineProjectionOwnerKey),
       _delete(_pushRegistrationIdKey),
       _delete(_pushPreviewPolicyKey),
       _delete(_pendingPushAcknowledgementKey),

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'router/app_router.dart';
 import 'theme/app_theme.dart';
 import '../core/platform/desktop_host_bridge.dart';
+import '../core/sync/reconnect_coordinator.dart';
 import '../features/auth/application/session_controller.dart';
 import '../features/capture/capture_providers.dart';
 import '../features/capture/capture_drop_intake.dart';
@@ -68,7 +69,11 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
       );
       ref.read(captureControllerProvider).lock();
     } else if (state == AppLifecycleState.resumed) {
-      unawaited(ref.read(captureControllerProvider).syncPending());
+      unawaited(
+        ref
+            .read(reconnectCoordinatorProvider)
+            .reconcile(ReconnectReason.appResumed),
+      );
       unawaited(ref.read(mobilePushCoordinatorProvider)?.initialize());
     }
   }
@@ -76,7 +81,9 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
   @override
   Widget build(BuildContext context) {
     ref.watch(captureOutboxLifecycleProvider);
+    ref.watch(reconnectCoordinatorProvider);
     final router = ref.watch(appRouterProvider);
+    final reconnect = ref.watch(reconnectCoordinatorProvider);
     _desktopHostBridge.attachRouter(router);
     final push = ref.watch(mobilePushCoordinatorProvider);
     push?.attachRouter(router);
@@ -99,6 +106,117 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
       highContrastDarkTheme: AppTheme.dark(highContrast: true),
       themeMode: ThemeMode.system,
       routerConfig: router,
+      builder: (context, child) => _ReconnectStatusLayer(
+        coordinator: reconnect,
+        child: child ?? const SizedBox.shrink(),
+      ),
     );
   }
+}
+
+class _ReconnectStatusLayer extends StatelessWidget {
+  const _ReconnectStatusLayer({required this.coordinator, required this.child});
+
+  final ReconnectCoordinator coordinator;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: coordinator,
+    child: child,
+    builder: (context, child) {
+      final phase = coordinator.phase;
+      final visible = const {
+        ReconnectPhase.offline,
+        ReconnectPhase.reconciling,
+        ReconnectPhase.degraded,
+      }.contains(phase);
+      final scheme = Theme.of(context).colorScheme;
+      final (icon, message, color) = switch (phase) {
+        ReconnectPhase.offline => (
+          Icons.cloud_off_rounded,
+          'Offline · showing encrypted local projections',
+          scheme.tertiaryContainer,
+        ),
+        ReconnectPhase.reconciling => (
+          Icons.sync_rounded,
+          'Reconnected · reconciling local and server state',
+          scheme.primaryContainer,
+        ),
+        ReconnectPhase.degraded => (
+          Icons.sync_problem_rounded,
+          'Some views could not reconcile · retrying remains safe',
+          scheme.errorContainer,
+        ),
+        _ => (Icons.cloud_done_rounded, '', scheme.surface),
+      };
+      return Stack(
+        children: [
+          Positioned.fill(child: child!),
+          Positioned(
+            top: 10,
+            left: 0,
+            right: 0,
+            child: IgnorePointer(
+              ignoring: !visible,
+              child: AnimatedSlide(
+                offset: visible ? Offset.zero : const Offset(0, -1.4),
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                child: AnimatedOpacity(
+                  opacity: visible ? 1 : 0,
+                  duration: const Duration(milliseconds: 160),
+                  child: Center(
+                    child: Semantics(
+                      liveRegion: true,
+                      label: message,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: color,
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(color: scheme.outlineVariant),
+                          boxShadow: [
+                            BoxShadow(
+                              color: scheme.shadow.withValues(alpha: 0.12),
+                              blurRadius: 18,
+                              offset: const Offset(0, 6),
+                            ),
+                          ],
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (phase == ReconnectPhase.reconciling)
+                                const SizedBox.square(
+                                  dimension: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              else
+                                Icon(icon, size: 16),
+                              const SizedBox(width: 8),
+                              Text(
+                                message,
+                                style: Theme.of(context).textTheme.labelLarge,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    },
+  );
 }

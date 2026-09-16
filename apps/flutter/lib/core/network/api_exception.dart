@@ -14,10 +14,18 @@ class ApiException implements Exception {
         message = (data['message'] ?? nestedError)?.toString();
       }
     }
-    return ApiException(
-      message ?? 'The command service could not be reached.',
-      statusCode: error.response?.statusCode,
-    );
+    final resolvedMessage =
+        message ?? 'The command service could not be reached.';
+    final statusCode = error.response?.statusCode;
+    if (statusCode == 409) {
+      return ApiConflictException(
+        resolvedMessage,
+        serverState: data is Map && data['current'] is Map
+            ? Map<String, dynamic>.from(data['current'] as Map)
+            : null,
+      );
+    }
+    return ApiException(resolvedMessage, statusCode: statusCode);
   }
 
   final String message;
@@ -25,4 +33,11 @@ class ApiException implements Exception {
 
   @override
   String toString() => message;
+}
+
+class ApiConflictException extends ApiException {
+  const ApiConflictException(super.message, {this.serverState})
+    : super(statusCode: 409);
+
+  final Map<String, dynamic>? serverState;
 }

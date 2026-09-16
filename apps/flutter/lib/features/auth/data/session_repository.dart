@@ -23,8 +23,8 @@ class SessionRepository {
     if (accessToken == null && refreshToken == null) return null;
     if (accessToken != null) {
       try {
-        return AppSession.fromJson(
-          await _api.getJson(NativePaths.bootstrapGet),
+        return await _bindOfflineProjectionOwner(
+          AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet)),
         );
       } on ApiException catch (error) {
         if (error.statusCode != 401) rethrow;
@@ -42,7 +42,9 @@ class SessionRepository {
         deviceId: deviceId,
       );
       await _persistTokens(rotated);
-      return AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet));
+      return await _bindOfflineProjectionOwner(
+        AppSession.fromJson(await _api.getJson(NativePaths.bootstrapGet)),
+      );
     } on ApiException catch (error) {
       if (error.statusCode != 401) rethrow;
       await _store.clear();
@@ -61,7 +63,11 @@ class SessionRepository {
       deviceId: deviceId,
     );
     await _persistTokens(json);
-    return AppSession.fromJson(json);
+    final session = await _bindOfflineProjectionOwner(
+      AppSession.fromJson(json),
+    );
+    await _api.seedOfflineProjection(NativePaths.bootstrapGet, json);
+    return session;
   }
 
   Future<void> signOut() async {
@@ -111,6 +117,14 @@ class SessionRepository {
     if (!await _store.readBiometricEnabled()) return false;
     _store.lockBiometricRelease();
     return true;
+  }
+
+  Future<AppSession> _bindOfflineProjectionOwner(AppSession session) async {
+    await _store.writeOfflineProjectionOwner(
+      tenantId: session.tenantId,
+      actorId: session.actorId,
+    );
+    return session;
   }
 
   Future<void> _persistTokens(Map<String, dynamic> response) async {

@@ -1,14 +1,18 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:asael/core/network/api_exception.dart';
 import 'package:asael/features/today/today.dart';
 
 class _TodayRepository implements TodayRepository {
   var failUpdate = false;
-  final item = const TodayItem(
+  Object? updateError;
+  Json? lastChanges;
+  final item = TodayItem(
     id: 'item-1',
     title: 'Ship',
     kind: 'task',
     priority: TodayPriority.high,
     status: 'open',
+    updatedAt: DateTime.utc(2026, 9, 16, 8),
   );
 
   @override
@@ -28,6 +32,8 @@ class _TodayRepository implements TodayRepository {
 
   @override
   Future<TodayItem> update(String id, Json changes) async {
+    lastChanges = changes;
+    if (updateError case final error?) throw error;
     if (failUpdate) throw StateError('offline');
     return item;
   }
@@ -73,4 +79,26 @@ void main() {
     expect(controller.error, isA<StateError>());
     expect(controller.updating, isEmpty);
   });
+
+  test(
+    'sends an optimistic fence and restores server truth on conflict',
+    () async {
+      final repository = _TodayRepository();
+      final controller = TodayController(repository);
+      await controller.refresh();
+      repository.updateError = const ApiConflictException(
+        'Changed elsewhere',
+        serverState: {'id': 'item-1'},
+      );
+
+      await controller.toggle(repository.item);
+
+      expect(
+        repository.lastChanges?['expectedUpdatedAt'],
+        '2026-09-16T08:00:00.000Z',
+      );
+      expect(controller.error, isA<ApiConflictException>());
+      expect(controller.snapshot?.items.single.status, 'open');
+    },
+  );
 }

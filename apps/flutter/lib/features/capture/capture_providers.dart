@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_riverpod/legacy.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/storage/secure_session_store.dart';
+import '../../core/sync/reconnect_coordinator.dart';
 import '../auth/application/session_controller.dart';
 import 'capture_api_repository.dart';
 import 'capture_controller.dart';
@@ -38,13 +38,10 @@ final captureControllerProvider = ChangeNotifierProvider<CaptureController>((
         !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS,
   );
   if (owner != null) unawaited(controller.initialize());
-  final subscription = Connectivity().onConnectivityChanged.listen((states) {
-    if (owner != null &&
-        states.any((state) => state != ConnectivityResult.none)) {
-      unawaited(controller.syncPending());
-    }
-  });
-  ref.onDispose(subscription.cancel);
+  final unregister = ref
+      .read(reconnectCoordinatorProvider)
+      .register('capture-outbox', controller.syncPending, priority: 0);
+  ref.onDispose(unregister);
   return controller;
 });
 

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/network/api_exception.dart';
+
 typedef Json = Map<String, dynamic>;
 
 enum TodayPriority { low, medium, high }
@@ -12,11 +14,13 @@ class TodayItem {
     required this.priority,
     required this.status,
     this.dueAt,
+    this.updatedAt,
     this.reminderState = 'none',
   });
   final String id, title, kind, status, reminderState;
   final TodayPriority priority;
   final DateTime? dueAt;
+  final DateTime? updatedAt;
   bool get isDone => status == 'done';
   factory TodayItem.fromJson(Json json) => TodayItem(
     id: json['id'] as String,
@@ -29,6 +33,7 @@ class TodayItem {
     status: json['status'] as String? ?? 'open',
     reminderState: json['reminderState'] as String? ?? 'none',
     dueAt: DateTime.tryParse(json['dueAt'] as String? ?? ''),
+    updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? ''),
   );
 }
 
@@ -165,8 +170,13 @@ class TodayController extends ChangeNotifier {
     try {
       await repository.update(item.id, {
         'status': item.isDone ? 'open' : 'done',
+        if (item.updatedAt != null)
+          'expectedUpdatedAt': item.updatedAt!.toUtc().toIso8601String(),
       });
       await refresh();
+    } on ApiConflictException catch (value) {
+      await refresh();
+      error = value;
     } catch (value) {
       error = value;
     } finally {
@@ -248,9 +258,11 @@ class TodayView extends StatelessWidget {
                     children: [
                       const Icon(Icons.cloud_off_outlined),
                       const SizedBox(width: 10),
-                      const Expanded(
+                      Expanded(
                         child: Text(
-                          'Update failed · showing the last available Today view.',
+                          controller.error is ApiConflictException
+                              ? 'Changed elsewhere · the newer server version is shown.'
+                              : 'Update failed · showing the last available Today view.',
                         ),
                       ),
                       TextButton(

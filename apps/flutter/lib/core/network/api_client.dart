@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -5,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/native_client_info.dart';
 import '../config/app_config.dart';
+import '../storage/offline_projection_store.dart';
 import '../storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
 import 'api_exception.dart';
@@ -13,6 +15,9 @@ final apiClientProvider = Provider<ApiClient>((ref) {
   final store = ref.watch(secureSessionStoreProvider);
   final dio = Dio(_baseOptions());
   final refreshDio = Dio(_baseOptions());
+  final projectionStore = EncryptedOfflineProjectionStore(
+    store.readOrCreateOfflineProjectionSecret,
+  );
   Future<void>? refreshInFlight;
 
   Future<void> refreshSession() async {
@@ -102,7 +107,7 @@ final apiClientProvider = Provider<ApiClient>((ref) {
       },
     ),
   );
-  return ApiClient(dio, refreshDio, store);
+  return ApiClient(dio, refreshDio, store, projectionStore);
 });
 
 BaseOptions _baseOptions() => BaseOptions(
@@ -144,18 +149,78 @@ Future<void> _persistNativeTokens(
 }
 
 class ApiClient {
-  const ApiClient(this._dio, this._rawDio, this._store);
+  const ApiClient(
+    this._dio,
+    this._rawDio,
+    this._store, [
+    this._projectionStore,
+  ]);
   final Dio _dio;
   final Dio _rawDio;
   final SecureSessionStore _store;
+  final OfflineProjectionStore? _projectionStore;
 
   Future<bool> clearAndAcknowledgeRemoteWipe() =>
       _clearAndAcknowledgeRemoteWipe(_rawDio, _store);
 
+  Future<void> seedOfflineProjection(
+    String path,
+    Map<String, dynamic> payload, {
+    Map<String, dynamic>? query,
+  }) async {
+    final projectionStore = _projectionStore;
+    final ownerValue = await _store.readOfflineProjectionOwner();
+    if (projectionStore == null || ownerValue == null) return;
+    await projectionStore.write(
+      ProjectionOwnerBinding(
+        tenantId: ownerValue.tenantId,
+        actorId: ownerValue.actorId,
+      ),
+      offlineProjectionKey(path, query: query),
+      payload,
+    );
+  }
+
   Future<Map<String, dynamic>> getJson(
     String path, {
     Map<String, dynamic>? query,
-  }) => _json(() => _dio.get<Object?>(path, queryParameters: query));
+  }) async {
+    final ownerValue = await _store.readOfflineProjectionOwner();
+    final owner = ownerValue == null
+        ? null
+        : ProjectionOwnerBinding(
+            tenantId: ownerValue.tenantId,
+            actorId: ownerValue.actorId,
+          );
+    final key = offlineProjectionKey(path, query: query);
+    try {
+      final payload = await _json(
+        () => _dio.get<Object?>(path, queryParameters: query),
+      );
+      final projectionStore = _projectionStore;
+      if (projectionStore != null && owner != null) {
+        unawaited(
+          projectionStore.write(owner, key, payload).catchError((Object _) {}),
+        );
+      }
+      return payload;
+    } on ApiException catch (error) {
+      final projectionStore = _projectionStore;
+      if (!_canUseOfflineProjection(error) ||
+          projectionStore == null ||
+          owner == null) {
+        rethrow;
+      }
+      try {
+        final projection = await projectionStore.read(owner, key);
+        if (projection != null) return projection.payload;
+      } catch (_) {
+        // Corrupt, expired, or unavailable entries cannot mask the real
+        // transport failure or widen the active actor scope.
+      }
+      rethrow;
+    }
+  }
 
   Future<Map<String, dynamic>> postJson(
     String path, {
@@ -284,6 +349,10 @@ class ApiClient {
     }
   }
 }
+
+bool _canUseOfflineProjection(ApiException error) =>
+    error.statusCode == null ||
+    const {408, 429, 500, 502, 503, 504}.contains(error.statusCode);
 
 Future<bool> _clearAndAcknowledgeRemoteWipe(
   Dio dio,
