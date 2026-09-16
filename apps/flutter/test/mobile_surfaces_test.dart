@@ -31,6 +31,14 @@ class _TalkRepository implements TalkRepository {
   Future<void> cancelRun(String runId) async {}
 
   @override
+  Future<TalkRunInspection> inspectRun(String runId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
+
+  @override
   Stream<SseEvent> send({
     required String message,
     String? threadId,

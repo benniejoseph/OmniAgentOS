@@ -20,6 +20,30 @@ class ApiTalkRepository implements TalkRepository {
   }
 
   @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async {
+    final json = await api.getJson(
+      NativePaths.evidenceWorkflow(workflowId),
+      query: const {'view': 'status'},
+    );
+    final snapshot = TalkWorkflowSnapshot.fromJson(json);
+    if (snapshot.id != workflowId) {
+      throw StateError('The workflow projection did not match the request.');
+    }
+    return snapshot;
+  }
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async {
+    final inspection = TalkRunInspection.fromJson(
+      await api.getJson(NativePaths.evidenceRun(runId)),
+    );
+    if (inspection.runId != runId) {
+      throw StateError('The run projection did not match the request.');
+    }
+    return inspection;
+  }
+
+  @override
   Stream<SseEvent> send({
     required String message,
     String? threadId,

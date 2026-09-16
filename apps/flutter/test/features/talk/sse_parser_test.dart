@@ -1,8 +1,8 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:asael/features/talk/talk.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _TalkRepository implements TalkRepository {
@@ -12,6 +12,14 @@ class _TalkRepository implements TalkRepository {
 
   @override
   Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
 
   @override
   Future<String> transcribeVoice(Uint8List bytes) async {
@@ -43,6 +51,14 @@ class _ActivityTalkRepository implements TalkRepository {
 
   @override
   Future<void> cancelRun(String runId) async => canceledRunIds.add(runId);
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
 
   @override
   Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
@@ -99,6 +115,136 @@ class _ActivityTalkRepository implements TalkRepository {
         'message': 'Review the email before it is sent.',
       },
     );
+  }
+}
+
+class _DelegatedTalkRepository implements TalkRepository {
+  _DelegatedTalkRepository({this.alwaysRunning = false});
+
+  final bool alwaysRunning;
+  int workflowReads = 0;
+
+  @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async {
+    workflowReads += 1;
+    return TalkWorkflowSnapshot(
+      id: workflowId,
+      status: alwaysRunning || workflowReads == 1 ? 'running' : 'completed',
+      currentStep: 'execute',
+    );
+  }
+
+  @override
+  Stream<SseEvent> send({
+    required String message,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+  }) async* {
+    yield const SseEvent(
+      event: 'delegated',
+      data: {
+        'type': 'delegated',
+        'threadId': 'thread-durable',
+        'workflowId': 'workflow-durable-123456',
+        'acknowledgement': 'I moved this into durable background work.',
+        'reason': 'The request needs more time than an interactive run.',
+      },
+    );
+  }
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
+class _TerminalTalkRepository implements TalkRepository {
+  final inspectedRunIds = <String>[];
+
+  @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async {
+    inspectedRunIds.add(runId);
+    return TalkRunInspection.fromJson({
+      'run': {
+        'id': runId,
+        'status': 'completed',
+        'grounding': {
+          'status': 'verified',
+          'citedIds': ['knowledge:one'],
+          'invalidIds': <String>[],
+          'sources': [
+            {
+              'title': 'Untrusted source title',
+              'snippet': 'private source content must not enter activity',
+            },
+          ],
+        },
+      },
+      'contextReceipt': {
+        'actualCount': 1,
+        'actualEvidenceIds': ['knowledge:one'],
+      },
+      'agentIdentity': {
+        'state': 'ready',
+        'card': {
+          'name': 'Atlas',
+          'role': 'Orchestrator',
+          'definitionVersion': 4,
+        },
+      },
+      'mediaArtifacts': [
+        {
+          'assetId': 'capture_asset_portrait',
+          'kind': 'image',
+          'operation': 'generate',
+          'filename': 'portrait.png',
+          'mediaType': 'image/png',
+          'byteCount': 2048,
+          'status': 'stored',
+          'contentUrl': 'https://untrusted.example/private.png',
+          'rawOutput': 'private tool payload',
+        },
+      ],
+    });
+  }
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SseEvent> send({
+    required String message,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+  }) async* {
+    yield const SseEvent(
+      event: 'run',
+      data: {'type': 'run', 'runId': 'run-terminal-123456'},
+    );
+    yield const SseEvent(
+      event: 'done',
+      data: {'type': 'done', 'response': 'Finished with evidence.'},
+    );
+  }
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
+Future<void> _settleAsync([int turns = 12]) async {
+  for (var index = 0; index < turns; index += 1) {
+    await Future<void>.delayed(Duration.zero);
   }
 }
 
@@ -209,6 +355,77 @@ void main() {
     },
   );
 
+  test(
+    'retains delegated workflows and monitors them to a terminal state',
+    () async {
+      final repository = _DelegatedTalkRepository();
+      final controller = TalkController(
+        repository,
+        workflowPollInterval: Duration.zero,
+        workflowPollLimit: 4,
+      );
+
+      await controller.send('Continue this in the background');
+      await _settleAsync();
+
+      expect(controller.workflowIds, ['workflow-durable-123456']);
+      expect(repository.workflowReads, 2);
+      expect(controller.monitoringWorkflowIds, isEmpty);
+      final activity = controller.activities.singleWhere(
+        (item) => item.key == 'workflow:workflow-durable-123456',
+      );
+      expect(activity.title, 'Background work complete');
+      expect(activity.state, TalkActivityState.succeeded);
+      expect(
+        activity.actionRoute,
+        '/results/workflow%3Aworkflow-durable-123456',
+      );
+    },
+  );
+
+  test('stops live workflow checks at the configured bound', () async {
+    final repository = _DelegatedTalkRepository(alwaysRunning: true);
+    final controller = TalkController(
+      repository,
+      workflowPollInterval: Duration.zero,
+      workflowPollLimit: 2,
+    );
+
+    await controller.send('Keep working durably');
+    await _settleAsync();
+
+    expect(repository.workflowReads, 2);
+    expect(controller.monitoringWorkflowIds, isEmpty);
+    final activity = controller.activities.singleWhere(
+      (item) => item.key == 'workflow:workflow-durable-123456',
+    );
+    expect(activity.title, 'Background work still running');
+    expect(activity.state, TalkActivityState.waiting);
+  });
+
+  test('fetches terminal run evidence without projecting raw source or tool output', () async {
+    final repository = _TerminalTalkRepository();
+    final controller = TalkController(repository);
+
+    await controller.send('Create the evidence-backed media');
+
+    expect(repository.inspectedRunIds, ['run-terminal-123456']);
+    expect(
+      controller.activities.map((activity) => activity.title),
+      containsAll(['Atlas', 'Evidence verified', 'Image Generate']),
+    );
+    final projection = controller.activities
+        .map((activity) => '${activity.title} ${activity.detail}')
+        .join(' ');
+    expect(projection, contains('Orchestrator · definition v4'));
+    expect(projection, contains('1 source · 1 cited · 1 context items used'));
+    expect(projection, contains('portrait.png · image/png · 2.0 KB'));
+    expect(projection, isNot(contains('Untrusted source title')));
+    expect(projection, isNot(contains('private source content')));
+    expect(projection, isNot(contains('untrusted.example')));
+    expect(projection, isNot(contains('private tool payload')));
+  });
+
   testWidgets('shows the live activity rail at a desktop width', (
     tester,
   ) async {
@@ -232,6 +449,43 @@ void main() {
     expect(find.text('Review approval'), findsOneWidget);
     expect(find.textContaining('Governed run run-observab'), findsOneWidget);
   });
+
+  testWidgets(
+    'Quick Entry exits on submit and Escape while retaining its controller',
+    (tester) async {
+      final repository = _TalkRepository();
+      final controller = TalkController(repository);
+      var exits = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TalkView(
+            controller: controller,
+            voiceRecorder: _VoiceDraftRecorder(),
+            quickEntry: true,
+            onExitQuickEntry: () => exits += 1,
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Quick Entry'), findsOneWidget);
+      expect(find.text('Conversation'), findsNothing);
+      await tester.enterText(
+        find.byKey(const ValueKey('quick-entry-input')),
+        'Prepare my briefing',
+      );
+      await tester.tap(find.byTooltip('Send and open Conversation'));
+      await tester.pump();
+
+      expect(exits, 1);
+      expect(repository.calls.single.message, 'Prepare my briefing');
+      expect(controller.messages.first.text, 'Prepare my briefing');
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(exits, 2);
+    },
+  );
 
   testWidgets(
     'interrupts a backgrounded voice draft without transcription or send',

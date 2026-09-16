@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
 
@@ -11,6 +12,25 @@ import '../../app/brand/asael_mark.dart';
 import '../../generated/native_contract.g.dart';
 
 typedef Json = Map<String, dynamic>;
+
+Json _jsonRecord(Object? value) =>
+    value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
+
+String _boundedDisplayText(Object? value, int maximum) {
+  if (value is! String) return '';
+  final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  return normalized.length <= maximum ? normalized : '';
+}
+
+int _boundedCount(
+  Object? value, {
+  required int fallback,
+  required int maximum,
+}) {
+  if (value is! num) return fallback;
+  final count = value.toInt();
+  return count >= 0 && count <= maximum ? count : fallback;
+}
 
 class SseEvent {
   const SseEvent({required this.event, required this.data});
@@ -93,6 +113,251 @@ class TalkActivity {
   final String? actionRoute;
 }
 
+class TalkWorkflowSnapshot {
+  const TalkWorkflowSnapshot({
+    required this.id,
+    required this.status,
+    this.currentStep,
+  });
+
+  final String id;
+  final String status;
+  final String? currentStep;
+
+  bool get terminal =>
+      const {'completed', 'failed', 'canceled'}.contains(status);
+
+  factory TalkWorkflowSnapshot.fromJson(Json payload) {
+    final run = _jsonRecord(payload['run']);
+    final id = _boundedDisplayText(run['id'], 200);
+    final status = _boundedDisplayText(run['status'], 40).toLowerCase();
+    if (id.isEmpty ||
+        !const {
+          'queued',
+          'running',
+          'waiting_approval',
+          'paused',
+          'completed',
+          'failed',
+          'canceled',
+        }.contains(status)) {
+      throw const FormatException('Invalid workflow status projection.');
+    }
+    final currentStep = _boundedDisplayText(run['currentStep'], 80);
+    return TalkWorkflowSnapshot(
+      id: id,
+      status: status,
+      currentStep: currentStep.isEmpty ? null : currentStep,
+    );
+  }
+}
+
+class TalkAgentIdentitySummary {
+  const TalkAgentIdentitySummary({
+    required this.state,
+    this.name,
+    this.role,
+    this.definitionVersion,
+  });
+
+  final String state;
+  final String? name;
+  final String? role;
+  final int? definitionVersion;
+}
+
+class TalkGroundingSummary {
+  const TalkGroundingSummary({
+    required this.status,
+    required this.sourceCount,
+    required this.citedCount,
+    required this.invalidCitationCount,
+    required this.contextEvidenceCount,
+  });
+
+  final String status;
+  final int sourceCount;
+  final int citedCount;
+  final int invalidCitationCount;
+  final int contextEvidenceCount;
+}
+
+class TalkMediaArtifactSummary {
+  const TalkMediaArtifactSummary({
+    required this.assetId,
+    required this.kind,
+    required this.operation,
+    required this.filename,
+    required this.mediaType,
+    required this.byteCount,
+    required this.status,
+  });
+
+  final String assetId;
+  final String kind;
+  final String operation;
+  final String filename;
+  final String mediaType;
+  final int byteCount;
+  final String status;
+}
+
+class TalkRunInspection {
+  const TalkRunInspection({
+    required this.runId,
+    required this.status,
+    required this.grounding,
+    required this.agentIdentity,
+    required this.mediaArtifacts,
+  });
+
+  final String runId;
+  final String status;
+  final TalkGroundingSummary grounding;
+  final TalkAgentIdentitySummary agentIdentity;
+  final List<TalkMediaArtifactSummary> mediaArtifacts;
+
+  factory TalkRunInspection.fromJson(Json payload) {
+    final run = _jsonRecord(payload['run']);
+    final runId = _boundedDisplayText(run['id'], 200);
+    final status = _boundedDisplayText(run['status'], 40).toLowerCase();
+    if (runId.isEmpty || status.isEmpty) {
+      throw const FormatException('Invalid run evidence projection.');
+    }
+
+    final grounding = _jsonRecord(run['grounding']);
+    final groundingStatus = _boundedDisplayText(
+      grounding['status'],
+      40,
+    ).toLowerCase();
+    final sources = grounding['sources'] is List
+        ? (grounding['sources'] as List).take(64).length
+        : 0;
+    final cited = grounding['citedIds'] is List
+        ? (grounding['citedIds'] as List).take(64).length
+        : 0;
+    final invalid = grounding['invalidIds'] is List
+        ? (grounding['invalidIds'] as List).take(64).length
+        : 0;
+    final contextReceipt = _jsonRecord(payload['contextReceipt']);
+    final actualCount = _boundedCount(
+      contextReceipt['actualCount'],
+      fallback: contextReceipt['actualEvidenceIds'] is List
+          ? (contextReceipt['actualEvidenceIds'] as List).take(24).length
+          : 0,
+      maximum: 24,
+    );
+
+    final identity = _jsonRecord(payload['agentIdentity']);
+    final identityState = _boundedDisplayText(
+      identity['state'],
+      40,
+    ).toLowerCase();
+    final card = identityState == 'ready'
+        ? _jsonRecord(identity['card'])
+        : const <String, dynamic>{};
+    final name = _boundedDisplayText(card['name'], 120);
+    final role = _boundedDisplayText(card['role'], 120);
+    final definitionVersion = _boundedCount(
+      card['definitionVersion'],
+      fallback: 0,
+      maximum: 1000000,
+    );
+
+    final seenAssetIds = <String>{};
+    final mediaArtifacts = <TalkMediaArtifactSummary>[];
+    final rawArtifacts = payload['mediaArtifacts'];
+    if (rawArtifacts is List) {
+      for (final candidate in rawArtifacts.take(64)) {
+        final artifact = _jsonRecord(candidate);
+        final assetId = _boundedDisplayText(artifact['assetId'], 200);
+        final kind = _boundedDisplayText(artifact['kind'], 20).toLowerCase();
+        final operation = _boundedDisplayText(
+          artifact['operation'],
+          20,
+        ).toLowerCase();
+        final artifactStatus = _boundedDisplayText(
+          artifact['status'],
+          30,
+        ).toLowerCase();
+        final filename = _boundedDisplayText(artifact['filename'], 240);
+        final mediaType = _boundedDisplayText(
+          artifact['mediaType'],
+          160,
+        ).toLowerCase();
+        final byteCount = _boundedCount(
+          artifact['byteCount'],
+          fallback: -1,
+          maximum: 1024 * 1024 * 1024,
+        );
+        if (assetId.isEmpty ||
+            !RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(assetId) ||
+            !seenAssetIds.add(assetId) ||
+            (kind != 'image' && kind != 'video') ||
+            !const {'generate', 'edit', 'clip'}.contains(operation) ||
+            (kind == 'image' && operation == 'clip') ||
+            !const {
+              'stored',
+              'queued',
+              'indexed',
+              'unsupported',
+              'failed',
+            }.contains(artifactStatus) ||
+            filename.isEmpty ||
+            !mediaType.startsWith('$kind/') ||
+            byteCount < 0) {
+          continue;
+        }
+        mediaArtifacts.add(
+          TalkMediaArtifactSummary(
+            assetId: assetId,
+            kind: kind,
+            operation: operation,
+            filename: filename,
+            mediaType: mediaType,
+            byteCount: byteCount,
+            status: artifactStatus,
+          ),
+        );
+      }
+    }
+
+    return TalkRunInspection(
+      runId: runId,
+      status: status,
+      grounding: TalkGroundingSummary(
+        status:
+            const {
+              'verified',
+              'not_required',
+              'missing',
+              'invalid',
+            }.contains(groundingStatus)
+            ? groundingStatus
+            : 'unavailable',
+        sourceCount: sources,
+        citedCount: cited,
+        invalidCitationCount: invalid,
+        contextEvidenceCount: actualCount,
+      ),
+      agentIdentity: TalkAgentIdentitySummary(
+        state:
+            const {
+              'ready',
+              'unbound',
+              'definition_unavailable',
+            }.contains(identityState)
+            ? identityState
+            : 'unavailable',
+        name: name.isEmpty ? null : name,
+        role: role.isEmpty ? null : role,
+        definitionVersion: definitionVersion > 0 ? definitionVersion : null,
+      ),
+      mediaArtifacts: List.unmodifiable(mediaArtifacts),
+    );
+  }
+}
+
 class TalkMessage {
   const TalkMessage({
     required this.role,
@@ -121,13 +386,25 @@ abstract interface class TalkRepository {
   });
   Future<String> transcribeVoice(Uint8List bytes);
   Future<void> cancelRun(String runId);
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId);
+  Future<TalkRunInspection> inspectRun(String runId);
 }
 
 class TalkController extends ChangeNotifier {
-  TalkController(this.repository);
+  TalkController(
+    this.repository, {
+    this.workflowPollInterval = const Duration(seconds: 3),
+    this.workflowPollLimit = 20,
+  }) : assert(workflowPollLimit > 0 && workflowPollLimit <= 120);
+
   final TalkRepository repository;
+  final Duration workflowPollInterval;
+  final int workflowPollLimit;
   final messages = <TalkMessage>[];
   final activities = <TalkActivity>[];
+  final _workflowIds = <String>[];
+  final _workflowMonitorTokens = <String, Object>{};
+  final _inspectedRunIds = <String>{};
   String? threadId;
   String? runId;
   String? status;
@@ -135,6 +412,11 @@ class TalkController extends ChangeNotifier {
   bool canceling = false;
   bool transcribing = false;
   Object? voiceError;
+  bool _disposed = false;
+
+  List<String> get workflowIds => List.unmodifiable(_workflowIds);
+  Set<String> get monitoringWorkflowIds =>
+      Set.unmodifiable(_workflowMonitorTokens.keys);
   Future<void> send(
     String input, {
     String mode = 'orchestrate',
@@ -237,6 +519,7 @@ class TalkController extends ChangeNotifier {
     sending = true;
     status = 'Connecting';
     notifyListeners();
+    String? terminalInspectionRunId;
     try {
       await for (final event in repository.send(
         message: text,
@@ -357,6 +640,14 @@ class TalkController extends ChangeNotifier {
               state: TalkActivityState.waiting,
             );
           case 'delegated':
+            final delegatedWorkflowId = _boundedDisplayText(
+              event.data['workflowId'],
+              200,
+            );
+            if (delegatedWorkflowId.isNotEmpty) {
+              _rememberWorkflow(delegatedWorkflowId);
+              _startWorkflowMonitor(delegatedWorkflowId);
+            }
             messages[messages.length - 1] = messages.last.copyWith(
               text:
                   event.data['acknowledgement'] as String? ??
@@ -365,14 +656,21 @@ class TalkController extends ChangeNotifier {
             );
             status = 'Delegated';
             _recordActivity(
-              key: 'delegated',
+              key: delegatedWorkflowId.isEmpty
+                  ? 'delegated'
+                  : 'workflow:$delegatedWorkflowId',
               title: 'Background work started',
               detail:
                   event.data['reason'] as String? ??
                   'The run will continue durably.',
               state: TalkActivityState.active,
+              actionLabel: delegatedWorkflowId.isEmpty ? null : 'Open workflow',
+              actionRoute: delegatedWorkflowId.isEmpty
+                  ? null
+                  : _resultRoute('workflow', delegatedWorkflowId),
             );
           case 'done':
+            terminalInspectionRunId = runId;
             messages[messages.length - 1] = messages.last.copyWith(
               text: event.data['response'] as String? ?? messages.last.text,
               streaming: false,
@@ -427,6 +725,7 @@ class TalkController extends ChangeNotifier {
               state: TalkActivityState.waiting,
             );
           case 'canceled':
+            terminalInspectionRunId = runId;
             final message =
                 event.data['message'] as String? ?? 'The run was canceled.';
             messages[messages.length - 1] = messages.last.copyWith(
@@ -441,6 +740,7 @@ class TalkController extends ChangeNotifier {
               state: TalkActivityState.failed,
             );
           case 'error':
+            terminalInspectionRunId = runId;
             throw StateError(
               event.data['message'] as String? ?? 'Agent failed',
             );
@@ -472,6 +772,249 @@ class TalkController extends ChangeNotifier {
       status = null;
       notifyListeners();
     }
+    if (terminalInspectionRunId case final id?) {
+      await _inspectTerminalRun(id);
+    }
+  }
+
+  void _rememberWorkflow(String workflowId) {
+    _workflowIds.remove(workflowId);
+    _workflowIds.add(workflowId);
+    if (_workflowIds.length > 12) _workflowIds.removeAt(0);
+  }
+
+  void _startWorkflowMonitor(String workflowId) {
+    if (_disposed || _workflowMonitorTokens.containsKey(workflowId)) return;
+    final token = Object();
+    _workflowMonitorTokens[workflowId] = token;
+    unawaited(_monitorWorkflow(workflowId, token));
+  }
+
+  Future<void> _monitorWorkflow(String workflowId, Object token) async {
+    var receivedProjection = false;
+    for (var attempt = 0; attempt < workflowPollLimit; attempt += 1) {
+      if (attempt > 0 && workflowPollInterval > Duration.zero) {
+        await Future<void>.delayed(workflowPollInterval);
+      }
+      if (!_monitorIsCurrent(workflowId, token)) return;
+      try {
+        final snapshot = await repository.inspectWorkflow(workflowId);
+        if (!_monitorIsCurrent(workflowId, token)) return;
+        if (snapshot.id != workflowId) {
+          throw const FormatException('Workflow identity did not match.');
+        }
+        receivedProjection = true;
+        _projectWorkflowActivity(snapshot);
+        if (!_disposed) notifyListeners();
+        if (snapshot.terminal) {
+          _workflowMonitorTokens.remove(workflowId);
+          return;
+        }
+      } catch (_) {
+        if (!_monitorIsCurrent(workflowId, token)) return;
+        _recordActivity(
+          key: 'workflow:$workflowId',
+          title: receivedProjection
+              ? 'Background work continues'
+              : 'Connecting to background work',
+          detail: 'The next bounded status check will retry automatically.',
+          state: TalkActivityState.active,
+          actionLabel: 'Open workflow',
+          actionRoute: _resultRoute('workflow', workflowId),
+        );
+        if (!_disposed) notifyListeners();
+      }
+    }
+    if (!_monitorIsCurrent(workflowId, token)) return;
+    _workflowMonitorTokens.remove(workflowId);
+    _recordActivity(
+      key: 'workflow:$workflowId',
+      title: 'Background work still running',
+      detail:
+          'Live checks paused after $workflowPollLimit updates. Open the workflow for its current state.',
+      state: TalkActivityState.waiting,
+      actionLabel: 'Open workflow',
+      actionRoute: _resultRoute('workflow', workflowId),
+    );
+    if (!_disposed) notifyListeners();
+  }
+
+  bool _monitorIsCurrent(String workflowId, Object token) =>
+      !_disposed && identical(_workflowMonitorTokens[workflowId], token);
+
+  void _projectWorkflowActivity(TalkWorkflowSnapshot workflow) {
+    final step = workflow.currentStep == null
+        ? ''
+        : ' · ${_sentenceCase(workflow.currentStep!.replaceAll('_', ' '))}';
+    final (title, detail, state) = switch (workflow.status) {
+      'queued' => (
+        'Background work queued',
+        'Waiting for durable execution to begin.',
+        TalkActivityState.active,
+      ),
+      'running' => (
+        'Background work in progress',
+        'Running$step.',
+        TalkActivityState.active,
+      ),
+      'waiting_approval' => (
+        'Background work needs approval',
+        'A governed action is waiting for operator review$step.',
+        TalkActivityState.waiting,
+      ),
+      'paused' => (
+        'Background work paused',
+        'The durable workflow is paused$step.',
+        TalkActivityState.waiting,
+      ),
+      'completed' => (
+        'Background work complete',
+        'The durable workflow completed successfully.',
+        TalkActivityState.succeeded,
+      ),
+      'failed' => (
+        'Background work failed',
+        'The workflow ended without a verified completion.',
+        TalkActivityState.failed,
+      ),
+      _ => (
+        'Background work canceled',
+        'The durable workflow was canceled.',
+        TalkActivityState.failed,
+      ),
+    };
+    _recordActivity(
+      key: 'workflow:${workflow.id}',
+      title: title,
+      detail: detail,
+      state: state,
+      actionLabel: 'Open workflow',
+      actionRoute: _resultRoute('workflow', workflow.id),
+    );
+  }
+
+  Future<void> _inspectTerminalRun(String id) async {
+    if (_disposed || !_inspectedRunIds.add(id)) return;
+    final route = _resultRoute('agent', id);
+    try {
+      final inspection = await repository.inspectRun(id);
+      if (_disposed) return;
+      if (inspection.runId != id) {
+        throw const FormatException('Run identity did not match.');
+      }
+      _projectAgentIdentity(inspection, route);
+      _projectGrounding(inspection, route);
+      _projectMediaArtifacts(inspection, route);
+    } catch (_) {
+      if (_disposed) return;
+      _recordActivity(
+        key: 'evidence:$id',
+        title: 'Run evidence available in Results',
+        detail: 'The compact evidence summary could not refresh.',
+        state: TalkActivityState.info,
+        actionLabel: 'Open result',
+        actionRoute: route,
+      );
+    }
+    if (!_disposed) notifyListeners();
+  }
+
+  void _projectAgentIdentity(TalkRunInspection inspection, String route) {
+    final identity = inspection.agentIdentity;
+    if (identity.state == 'ready' && identity.name != null) {
+      final version = identity.definitionVersion == null
+          ? ''
+          : ' · definition v${identity.definitionVersion}';
+      _recordActivity(
+        key: 'identity:${inspection.runId}',
+        title: identity.name!,
+        detail: '${identity.role ?? 'Agent'}$version',
+        state: TalkActivityState.info,
+        actionLabel: 'Open result',
+        actionRoute: route,
+      );
+      return;
+    }
+    _recordActivity(
+      key: 'identity:${inspection.runId}',
+      title: 'Agent identity unavailable',
+      detail: identity.state == 'unbound'
+          ? 'This legacy run predates pinned agent identity.'
+          : 'The historical definition could not be projected.',
+      state: TalkActivityState.info,
+      actionLabel: 'Open result',
+      actionRoute: route,
+    );
+  }
+
+  void _projectGrounding(TalkRunInspection inspection, String route) {
+    final grounding = inspection.grounding;
+    final counts = <String>[
+      '${grounding.sourceCount} source${grounding.sourceCount == 1 ? '' : 's'}',
+      '${grounding.citedCount} cited',
+      if (grounding.contextEvidenceCount > 0)
+        '${grounding.contextEvidenceCount} context items used',
+      if (grounding.invalidCitationCount > 0)
+        '${grounding.invalidCitationCount} invalid',
+    ].join(' · ');
+    final (title, state) = switch (grounding.status) {
+      'verified' => ('Evidence verified', TalkActivityState.succeeded),
+      'not_required' => (
+        'No retrieved evidence required',
+        TalkActivityState.succeeded,
+      ),
+      'missing' => ('Evidence review needed', TalkActivityState.waiting),
+      'invalid' => ('Evidence validation failed', TalkActivityState.failed),
+      _ => ('Grounding unavailable', TalkActivityState.info),
+    };
+    _recordActivity(
+      key: 'evidence:${inspection.runId}',
+      title: title,
+      detail: counts,
+      state: state,
+      actionLabel: 'Open result',
+      actionRoute: route,
+    );
+  }
+
+  void _projectMediaArtifacts(TalkRunInspection inspection, String route) {
+    for (final artifact in inspection.mediaArtifacts.take(8)) {
+      final operation = _sentenceCase(artifact.operation);
+      final kind = artifact.kind == 'image' ? 'Image' : 'Video';
+      _recordActivity(
+        key: 'media:${artifact.assetId}',
+        title: '$kind $operation'.trim(),
+        detail:
+            '${artifact.filename} · ${artifact.mediaType} · ${_humanBytes(artifact.byteCount)}',
+        state: artifact.status == 'failed' || artifact.status == 'unsupported'
+            ? TalkActivityState.failed
+            : artifact.status == 'queued'
+            ? TalkActivityState.active
+            : TalkActivityState.succeeded,
+        actionLabel: 'Open result',
+        actionRoute: route,
+      );
+    }
+    final remaining = inspection.mediaArtifacts.length - 8;
+    if (remaining > 0) {
+      _recordActivity(
+        key: 'media-more:${inspection.runId}',
+        title: '$remaining more media artifacts',
+        detail: 'Open the result to inspect the complete bounded projection.',
+        state: TalkActivityState.info,
+        actionLabel: 'Open result',
+        actionRoute: route,
+      );
+    }
+  }
+
+  static String _resultRoute(String kind, String id) =>
+      '/results/${Uri.encodeComponent('$kind:$id')}';
+
+  static String _humanBytes(int value) {
+    if (value < 1024) return '$value B';
+    if (value < 1024 * 1024) return '${(value / 1024).toStringAsFixed(1)} KB';
+    return '${(value / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   void _recordActivity({
@@ -528,6 +1071,13 @@ class TalkController extends ChangeNotifier {
     final count = value is int ? value : 1;
     return '$count $label${count == 1 ? '' : 's'}';
   }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _workflowMonitorTokens.clear();
+    super.dispose();
+  }
 }
 
 abstract interface class VoiceDraftRecorder {
@@ -568,9 +1118,18 @@ class RecordVoiceDraftRecorder implements VoiceDraftRecorder {
 }
 
 class TalkView extends StatefulWidget {
-  const TalkView({super.key, required this.controller, this.voiceRecorder});
+  const TalkView({
+    super.key,
+    required this.controller,
+    this.voiceRecorder,
+    this.quickEntry = false,
+    this.onExitQuickEntry,
+  });
+
   final TalkController controller;
   final VoiceDraftRecorder? voiceRecorder;
+  final bool quickEntry;
+  final VoidCallback? onExitQuickEntry;
   @override
   State<TalkView> createState() => _TalkViewState();
 }
@@ -637,9 +1196,16 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 
   void submit() {
-    final value = input.text;
+    final value = input.text.trim();
+    if (value.isEmpty || widget.controller.sending) return;
     input.clear();
-    widget.controller.send(value, mode: 'orchestrate', strategy: strategy);
+    final work = widget.controller.send(
+      value,
+      mode: 'orchestrate',
+      strategy: strategy,
+    );
+    if (widget.quickEntry) widget.onExitQuickEntry?.call();
+    unawaited(work);
   }
 
   Future<void> toggleVoiceDraft() async {
@@ -704,294 +1270,117 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     }
   }
 
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Conversation'),
-      actions: [
-        Padding(
-          padding: const EdgeInsets.only(right: 12),
-          child: Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                borderRadius: BorderRadius.circular(99),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.shield_outlined, size: 15),
-                  SizedBox(width: 5),
-                  Text('Governed'),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    ),
-    body: ListenableBuilder(
-      listenable: widget.controller,
-      builder: (_, _) => LayoutBuilder(
-        builder: (context, constraints) {
-          final conversation = Column(
-            children: [
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
-                child: widget.controller.status != null
-                    ? Container(
-                        key: ValueKey(widget.controller.status),
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 18,
-                          vertical: 9,
-                        ),
-                        color: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerLow,
-                        child: Row(
-                          children: [
-                            const SizedBox.square(
-                              dimension: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                            const SizedBox(width: 10),
-                            Text(
-                              widget.controller.status!,
-                              style: Theme.of(context).textTheme.labelLarge,
-                            ),
-                          ],
-                        ),
-                      )
-                    : const SizedBox.shrink(key: ValueKey('idle')),
-              ),
-              Expanded(
-                child: widget.controller.messages.isEmpty
-                    ? const _TalkEmpty()
-                    : ListView.builder(
-                        controller: scroll,
-                        padding: const EdgeInsets.all(16),
-                        itemCount: widget.controller.messages.length,
-                        itemBuilder: (_, i) {
-                          final m = widget.controller.messages[i];
-                          return Align(
-                            alignment: m.role == TalkRole.user
-                                ? Alignment.centerRight
-                                : Alignment.centerLeft,
-                            child: Container(
-                              constraints: const BoxConstraints(maxWidth: 680),
-                              margin: const EdgeInsets.only(bottom: 14),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 14,
-                              ),
-                              decoration: BoxDecoration(
-                                color: m.role == TalkRole.user
-                                    ? Theme.of(context)
-                                          .colorScheme
-                                          .primaryContainer
-                                    : Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHigh,
-                                borderRadius: BorderRadius.only(
-                                  topLeft: const Radius.circular(20),
-                                  topRight: const Radius.circular(20),
-                                  bottomLeft: Radius.circular(
-                                    m.role == TalkRole.user ? 20 : 6,
-                                  ),
-                                  bottomRight: Radius.circular(
-                                    m.role == TalkRole.user ? 6 : 20,
-                                  ),
-                                ),
-                                border: m.failed
-                                    ? Border.all(
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .error,
-                                      )
-                                    : null,
-                              ),
-                              child: m.streaming && m.text.isEmpty
-                                  ? const SizedBox.square(
-                                      dimension: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    )
-                                  : Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        SelectableText(m.text),
-                                        if (m.failed &&
-                                            i ==
-                                                widget
-                                                        .controller
-                                                        .messages
-                                                        .length -
-                                                    1) ...[
-                                          const SizedBox(height: 8),
-                                          TextButton.icon(
-                                            onPressed:
-                                                widget.controller.canRetry
-                                                ? widget.controller.retryLast
-                                                : null,
-                                            icon: const Icon(
-                                              Icons.refresh_rounded,
-                                            ),
-                                            label: const Text('Retry'),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-              SafeArea(
-                top: false,
-                child: Container(
-                  margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surface,
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: .07),
-                        blurRadius: 24,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                  ),
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 820),
+  Widget _buildQuickEntry(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      backgroundColor: scheme.surface,
+      body: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): () =>
+              widget.onExitQuickEntry?.call(),
+        },
+        child: SafeArea(
+          child: ListenableBuilder(
+            listenable: widget.controller,
+            builder: (context, _) => Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(14),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: Material(
+                    color: scheme.surfaceContainerLow,
+                    elevation: 10,
+                    shadowColor: Colors.black.withValues(alpha: .16),
+                    borderRadius: BorderRadius.circular(22),
+                    clipBehavior: Clip.antiAlias,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 14, 14, 14),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: SegmentedButton<String>(
-                              segments: const [
-                                ButtonSegment(
-                                  value: 'auto',
-                                  label: Text('Orchestrate'),
-                                  icon: Icon(
-                                    Icons.account_tree_outlined,
-                                    size: 16,
-                                  ),
+                          Row(
+                            children: [
+                              const AsaelMark(size: 30),
+                              const SizedBox(width: 10),
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Quick Entry',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    Text(
+                                      'Start governed work from anywhere',
+                                      style: TextStyle(fontSize: 11.5),
+                                    ),
+                                  ],
                                 ),
-                                ButtonSegment(
-                                  value: 'direct',
-                                  label: Text('Direct'),
-                                  icon: Icon(
-                                    Icons.arrow_forward_rounded,
-                                    size: 16,
-                                  ),
-                                ),
-                              ],
-                              selected: {strategy},
-                              showSelectedIcon: false,
-                              style: const ButtonStyle(
-                                visualDensity: VisualDensity.compact,
                               ),
-                              onSelectionChanged: (value) =>
-                                  setState(() => strategy = value.first),
-                            ),
+                              if (widget.controller.sending)
+                                const Padding(
+                                  padding: EdgeInsets.only(right: 8),
+                                  child: SizedBox.square(
+                                    dimension: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                ),
+                              IconButton(
+                                tooltip: 'Close Quick Entry (Esc)',
+                                onPressed: widget.onExitQuickEntry,
+                                icon: const Icon(Icons.close_rounded),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 8),
-                          if (recording || widget.controller.transcribing)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 8),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    recording
-                                        ? Icons.mic_rounded
-                                        : Icons.graphic_eq,
-                                    color: recording
-                                        ? Theme.of(context).colorScheme.error
-                                        : Theme.of(context).colorScheme.primary,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    recording
-                                        ? 'Recording · tap stop to review transcript'
-                                        : 'Turning voice into an editable draft…',
-                                  ),
-                                ],
-                              ),
-                            ),
-                          if (recordingError != null ||
-                              widget.controller.voiceError != null)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 8),
-                              child: Align(
-                                alignment: Alignment.centerLeft,
-                                child: Text(
-                                  recordingError ?? 'Voice transcription is temporarily unavailable.',
-                                  style: TextStyle(
-                                    color: Theme.of(context).colorScheme.error,
-                                  ),
-                                ),
-                              ),
-                            ),
+                          const SizedBox(height: 10),
                           TextField(
+                            key: const ValueKey('quick-entry-input'),
                             controller: input,
                             focusNode: inputFocus,
-                            autofocus:
-                                !kIsWeb &&
-                                defaultTargetPlatform == TargetPlatform.macOS,
+                            autofocus: true,
                             minLines: 1,
-                            maxLines: 5,
+                            maxLines: 4,
                             textInputAction: TextInputAction.send,
-                            onSubmitted:
-                                widget.controller.sending ||
-                                    widget.controller.transcribing ||
-                                    recording
+                            onSubmitted: widget.controller.sending
                                 ? null
                                 : (_) => submit(),
                             decoration: InputDecoration(
-                              hintText: 'Describe an outcome or ask a question',
+                              hintText: 'What needs to move?',
                               filled: true,
-                              suffixIcon: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    tooltip: recording
-                                        ? 'Stop and transcribe voice draft'
-                                        : 'Record voice draft',
-                                    onPressed:
-                                        widget.controller.sending ||
-                                            widget.controller.transcribing
-                                        ? null
-                                        : toggleVoiceDraft,
-                                    color: recording
-                                        ? Theme.of(context).colorScheme.error
-                                        : null,
-                                    icon: Icon(
-                                      recording
-                                          ? Icons.stop_circle_outlined
-                                          : Icons.mic_none_rounded,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Send message',
-                                    onPressed:
-                                        widget.controller.sending || recording
-                                        ? null
-                                        : submit,
-                                    icon: const Icon(
-                                      Icons.arrow_upward_rounded,
-                                    ),
-                                  ),
-                                ],
+                              suffixIcon: IconButton(
+                                tooltip: 'Send and open Conversation',
+                                onPressed: widget.controller.sending
+                                    ? null
+                                    : submit,
+                                icon: const Icon(Icons.arrow_upward_rounded),
                               ),
                             ),
+                          ),
+                          const SizedBox(height: 9),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.shield_outlined,
+                                size: 14,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  widget.controller.status ??
+                                      'Orchestrate · governed · Esc to close',
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: scheme.onSurfaceVariant,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -999,22 +1388,339 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   ),
                 ),
               ),
-            ],
-          );
-          if (constraints.maxWidth < 1180) return conversation;
-          return Row(
-            children: [
-              Expanded(child: conversation),
-              SizedBox(
-                width: 348,
-                child: _TalkActivityPane(controller: widget.controller),
-              ),
-            ],
-          );
-        },
+            ),
+          ),
+        ),
       ),
-    ),
-  );
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.quickEntry) return _buildQuickEntry(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Conversation'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(99),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.shield_outlined, size: 15),
+                    SizedBox(width: 5),
+                    Text('Governed'),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+      body: ListenableBuilder(
+        listenable: widget.controller,
+        builder: (_, _) => LayoutBuilder(
+          builder: (context, constraints) {
+            final conversation = Column(
+              children: [
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 180),
+                  child: widget.controller.status != null
+                      ? Container(
+                          key: ValueKey(widget.controller.status),
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 18,
+                            vertical: 9,
+                          ),
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerLow,
+                          child: Row(
+                            children: [
+                              const SizedBox.square(
+                                dimension: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                widget.controller.status!,
+                                style: Theme.of(context).textTheme.labelLarge,
+                              ),
+                            ],
+                          ),
+                        )
+                      : const SizedBox.shrink(key: ValueKey('idle')),
+                ),
+                Expanded(
+                  child: widget.controller.messages.isEmpty
+                      ? const _TalkEmpty()
+                      : ListView.builder(
+                          controller: scroll,
+                          padding: const EdgeInsets.all(16),
+                          itemCount: widget.controller.messages.length,
+                          itemBuilder: (_, i) {
+                            final m = widget.controller.messages[i];
+                            return Align(
+                              alignment: m.role == TalkRole.user
+                                  ? Alignment.centerRight
+                                  : Alignment.centerLeft,
+                              child: Container(
+                                constraints: const BoxConstraints(
+                                  maxWidth: 680,
+                                ),
+                                margin: const EdgeInsets.only(bottom: 14),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 14,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: m.role == TalkRole.user
+                                      ? Theme.of(context)
+                                            .colorScheme
+                                            .primaryContainer
+                                      : Theme.of(context)
+                                            .colorScheme
+                                            .surfaceContainerHigh,
+                                  borderRadius: BorderRadius.only(
+                                    topLeft: const Radius.circular(20),
+                                    topRight: const Radius.circular(20),
+                                    bottomLeft: Radius.circular(
+                                      m.role == TalkRole.user ? 20 : 6,
+                                    ),
+                                    bottomRight: Radius.circular(
+                                      m.role == TalkRole.user ? 6 : 20,
+                                    ),
+                                  ),
+                                  border: m.failed
+                                      ? Border.all(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .error,
+                                        )
+                                      : null,
+                                ),
+                                child: m.streaming && m.text.isEmpty
+                                    ? const SizedBox.square(
+                                        dimension: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          SelectableText(m.text),
+                                          if (m.failed &&
+                                              i ==
+                                                  widget
+                                                          .controller
+                                                          .messages
+                                                          .length -
+                                                      1) ...[
+                                            const SizedBox(height: 8),
+                                            TextButton.icon(
+                                              onPressed:
+                                                  widget.controller.canRetry
+                                                  ? widget.controller.retryLast
+                                                  : null,
+                                              icon: const Icon(
+                                                Icons.refresh_rounded,
+                                              ),
+                                              label: const Text('Retry'),
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+                SafeArea(
+                  top: false,
+                  child: Container(
+                    margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surface,
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: .07),
+                          blurRadius: 24,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 820),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: SegmentedButton<String>(
+                                segments: const [
+                                  ButtonSegment(
+                                    value: 'auto',
+                                    label: Text('Orchestrate'),
+                                    icon: Icon(
+                                      Icons.account_tree_outlined,
+                                      size: 16,
+                                    ),
+                                  ),
+                                  ButtonSegment(
+                                    value: 'direct',
+                                    label: Text('Direct'),
+                                    icon: Icon(
+                                      Icons.arrow_forward_rounded,
+                                      size: 16,
+                                    ),
+                                  ),
+                                ],
+                                selected: {strategy},
+                                showSelectedIcon: false,
+                                style: const ButtonStyle(
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                                onSelectionChanged: (value) =>
+                                    setState(() => strategy = value.first),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            if (recording || widget.controller.transcribing)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      recording
+                                          ? Icons.mic_rounded
+                                          : Icons.graphic_eq,
+                                      color: recording
+                                          ? Theme.of(context).colorScheme.error
+                                          : Theme.of(context)
+                                                .colorScheme
+                                                .primary,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      recording
+                                          ? 'Recording · tap stop to review transcript'
+                                          : 'Turning voice into an editable draft…',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            if (recordingError != null ||
+                                widget.controller.voiceError != null)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    recordingError ?? 'Voice transcription is temporarily unavailable.',
+                                    style: TextStyle(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .error,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            TextField(
+                              controller: input,
+                              focusNode: inputFocus,
+                              autofocus:
+                                  !kIsWeb &&
+                                  defaultTargetPlatform == TargetPlatform.macOS,
+                              minLines: 1,
+                              maxLines: 5,
+                              textInputAction: TextInputAction.send,
+                              onSubmitted:
+                                  widget.controller.sending ||
+                                      widget.controller.transcribing ||
+                                      recording
+                                  ? null
+                                  : (_) => submit(),
+                              decoration: InputDecoration(
+                                hintText:
+                                    'Describe an outcome or ask a question',
+                                filled: true,
+                                suffixIcon: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      tooltip: recording
+                                          ? 'Stop and transcribe voice draft'
+                                          : 'Record voice draft',
+                                      onPressed:
+                                          widget.controller.sending ||
+                                              widget.controller.transcribing
+                                          ? null
+                                          : toggleVoiceDraft,
+                                      color: recording
+                                          ? Theme.of(context).colorScheme.error
+                                          : null,
+                                      icon: Icon(
+                                        recording
+                                            ? Icons.stop_circle_outlined
+                                            : Icons.mic_none_rounded,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip: 'Send message',
+                                      onPressed:
+                                          widget.controller.sending || recording
+                                          ? null
+                                          : submit,
+                                      icon: const Icon(
+                                        Icons.arrow_upward_rounded,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+            if (constraints.maxWidth < 1180) return conversation;
+            return Row(
+              children: [
+                Expanded(child: conversation),
+                SizedBox(
+                  width: 348,
+                  child: _TalkActivityPane(controller: widget.controller),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
 }
 
 class _TalkActivityPane extends StatelessWidget {
