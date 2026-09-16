@@ -21,6 +21,7 @@ import {
   marketForecastGenerateRequestSchema,
   marketForecastJournalQuerySchema,
   marketForecastScoreRequestSchema,
+  marketLiveCalendarQuerySchema,
   marketResearchOverviewSchema,
   marketTechnicalFeaturesQuerySchema,
 } from "@/lib/market-research/contracts";
@@ -32,6 +33,7 @@ import { buildMarketEventBaselines } from "@/lib/market-research/event-baselines
 import { listMarketBacktests } from "@/lib/market-research/backtest-store";
 import { enqueueMarketBacktestJob } from "@/lib/market-research/backtest-jobs";
 import { listMarketEvents } from "@/lib/market-research/event-store";
+import { buildMarketLiveCalendar } from "@/lib/market-research/live-calendar";
 import { listMarketEventReplays } from "@/lib/market-research/event-replay-store";
 import { generateMarketForwardForecast } from "@/lib/market-research/forward-shadow-agent";
 import {
@@ -95,7 +97,7 @@ export async function showMarketResearchOverviewService(
     providerReadiness({
       provider: "bls",
       label: "BLS official calendar",
-      purpose: "CPI, PPI, employment, and JOLTS release times",
+      purpose: "Inflation, employment, labor-cost, productivity, and JOLTS release times",
       setupVariable: "PUBLIC_OFFICIAL_SOURCE",
       configured: true,
       blocking: false,
@@ -103,7 +105,7 @@ export async function showMarketResearchOverviewService(
     providerReadiness({
       provider: "census",
       label: "U.S. Census calendar",
-      purpose: "Retail sales release times",
+      purpose: "Retail sales, housing starts, permits, and new-home release times",
       setupVariable: "PUBLIC_OFFICIAL_SOURCE",
       configured: true,
       blocking: false,
@@ -111,7 +113,7 @@ export async function showMarketResearchOverviewService(
     providerReadiness({
       provider: "bea",
       label: "BEA release schedule",
-      purpose: "GDP and personal income/outlays release times",
+      purpose: "GDP, PCE income/outlays, and international-trade release times",
       setupVariable: "PUBLIC_OFFICIAL_SOURCE",
       configured: true,
       blocking: false,
@@ -161,7 +163,7 @@ export async function showMarketResearchOverviewService(
         label: "High-impact event replay",
         state: historicalReplayReady ? "foundation" : "blocked",
         note: historicalReplayReady
-          ? "Official FRED release history is available for immutable event backfill."
+          ? "The reviewed 17-family official/FRED history is available for immutable event backfill."
           : "Needs both target price feeds and the FRED/ALFRED history feed.",
       },
       {
@@ -334,6 +336,22 @@ export async function listMarketResearchEventsService(
   return completeAppServiceCall(authorized, result, {
     resourceCount: result.events.length,
     occurredAt: result.lastImportedAt || new Date().toISOString(),
+  });
+}
+
+export async function showMarketLiveCalendarService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketLiveCalendarQuerySchema>,
+) {
+  const value = marketLiveCalendarQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.events.list"),
+  );
+  const result = await buildMarketLiveCalendar(value);
+  return completeAppServiceCall(authorized, result, {
+    resourceCount: result.events.length,
+    occurredAt: result.generatedAt,
   });
 }
 

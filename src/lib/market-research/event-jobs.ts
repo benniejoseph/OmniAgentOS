@@ -289,8 +289,14 @@ function officialScheduleSources(
   const keys = new Set(definitions.map(({ eventKey }) => eventKey));
   return [
     ...(definitions.some((definition) => definition.blsSchedule) ? ["bls" as const] : []),
-    ...(keys.has("us.retail_sales") ? ["census" as const] : []),
-    ...(keys.has("us.gdp") || keys.has("us.personal_income_outlays")
+    ...(keys.has("us.retail_sales") ||
+      keys.has("us.housing_starts") ||
+      keys.has("us.new_home_sales")
+      ? ["census" as const]
+      : []),
+    ...(keys.has("us.gdp") ||
+      keys.has("us.personal_income_outlays") ||
+      keys.has("us.trade_balance")
       ? ["bea" as const]
       : []),
     ...(keys.has("us.fomc") ? ["federal_reserve" as const] : []),

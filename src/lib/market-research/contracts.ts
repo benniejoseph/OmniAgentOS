@@ -155,6 +155,76 @@ export type MarketBarsResult = z.infer<typeof marketBarsResultSchema>;
 
 const marketDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+export const MARKET_LIVE_CALENDAR_VERSION =
+  "market-live-calendar:1" as const;
+
+export const marketLiveCalendarQuerySchema = z.object({
+  days: z.number().int().min(1).max(31).default(14),
+}).strict();
+
+export const marketLiveCalendarFamilySchema = z.object({
+  eventKey: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
+  name: z.string().min(1).max(160),
+  category: z.enum([
+    "inflation",
+    "labor",
+    "monetary_policy",
+    "growth",
+    "consumption",
+    "housing",
+    "trade",
+  ]),
+  components: z.array(z.string().min(1).max(100)).min(1).max(8),
+  aliases: z.array(z.string().min(1).max(100)).max(10),
+  scheduleCoverage: z.enum([
+    "official_exact",
+    "date_only_until_verified",
+  ]),
+  whyItMatters: z.string().min(1).max(360),
+  sourceUrl: z.string().url().max(1_000),
+}).strict();
+
+export const marketLiveCalendarEventSchema = z.object({
+  source: z.enum(["bls", "census", "bea", "federal_reserve"]),
+  eventKey: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
+  name: z.string().min(1).max(160),
+  category: marketLiveCalendarFamilySchema.shape.category,
+  components: z.array(z.string().min(1).max(100)).min(1).max(8),
+  whyItMatters: z.string().min(1).max(360),
+  sourceUrl: z.string().url().max(1_000),
+  releaseDate: marketDateSchema,
+  occurredAt: z.string().datetime({ offset: true }),
+  timezone: z.literal("America/New_York"),
+  dayState: z.enum(["today", "upcoming"]),
+  releaseState: z.enum(["scheduled", "released"]),
+}).strict();
+
+export const marketLiveCalendarResultSchema = z.object({
+  contractVersion: z.literal(MARKET_LIVE_CALENDAR_VERSION),
+  generatedAt: z.string().datetime({ offset: true }),
+  marketDate: marketDateSchema,
+  timezone: z.literal("America/New_York"),
+  windowDays: z.number().int().min(1).max(31),
+  catalog: z.object({
+    reviewedFamilies: z.number().int().nonnegative(),
+    exactTimeFamilies: z.number().int().nonnegative(),
+    dateOnlyFamilies: z.number().int().nonnegative(),
+    families: z.array(marketLiveCalendarFamilySchema).max(30),
+  }).strict(),
+  events: z.array(marketLiveCalendarEventSchema).max(120),
+  sourceHealth: z.array(z.object({
+    source: z.enum(["bls", "census", "bea", "federal_reserve"]),
+    status: z.enum(["connected", "unavailable"]),
+    eventCount: z.number().int().nonnegative(),
+    note: z.string().min(1).max(300),
+  }).strict()).length(4),
+  disclosures: z.array(z.string().min(1).max(600)).min(1).max(8),
+}).strict();
+
+export type MarketLiveCalendarResult = z.infer<
+  typeof marketLiveCalendarResultSchema
+>;
+
 export const MARKET_TECHNICAL_DETECTOR_VERSIONS = [
   "market-technical-primitives:1",
   "market-ict-quarterly-candidates:2",

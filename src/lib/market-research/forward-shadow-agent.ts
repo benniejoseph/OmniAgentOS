@@ -123,6 +123,10 @@ function marketForecastInstructions() {
     "Price zones, targets, and invalidations must stay near the supplied dealing range. Use null or an empty array when evidence does not support a price anchor.",
     "Treat the technical detectors as neutral deterministic primitives; do not claim they are transcript-authoritative ICT rules.",
     "Treat historical event frequencies as descriptive only, not predictive calibration.",
+    "For the Employment Situation, reason jointly over nonfarm payrolls, unemployment, earnings, participation, and revisions; never reduce it to the payroll headline alone.",
+    "For FOMC, distinguish the rate decision and statement from the economic projections and press conference. Warn that later communication can reverse the initial move.",
+    "Describe macro paths relative to expectations. A hot, cool, hawkish, or dovish label is invalid when consensus evidence is missing.",
+    "Do not assume XAU/USD and NASDAQ-100 react in the same direction: explicitly reason through yields, the U.S. dollar, growth expectations, and equity-duration sensitivity.",
     "State important missing inputs in warnings, especially missing consensus surprise, regime evidence, transcript authority, or qualified baseline samples.",
   ].join("\n");
 }

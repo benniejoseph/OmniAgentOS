@@ -42,11 +42,15 @@ export async function fetchCensusReleaseSchedule(input: {
   endDate: string;
   signal?: AbortSignal;
 }) {
-  const event = input.events.find(({ eventKey }) => eventKey === "us.retail_sales");
-  if (!event) return [];
+  const events = input.events.filter(({ eventKey }) =>
+    eventKey === "us.retail_sales" ||
+    eventKey === "us.housing_starts" ||
+    eventKey === "us.new_home_sales"
+  );
+  if (!events.length) return [];
   const sourceUrl = "https://www.census.gov/economic-indicators/calendar-listview.html";
   const html = await fetchOfficialHtml("Census", sourceUrl, input.signal);
-  return parseCensusSchedule(html, event).filter((entry) =>
+  return parseCensusSchedule(html, events).filter((entry) =>
     entry.releaseDate >= input.startDate && entry.releaseDate <= input.endDate
   );
 }
@@ -58,7 +62,9 @@ export async function fetchBeaReleaseSchedule(input: {
   signal?: AbortSignal;
 }) {
   const relevant = input.events.filter(({ eventKey }) =>
-    eventKey === "us.gdp" || eventKey === "us.personal_income_outlays"
+    eventKey === "us.gdp" ||
+    eventKey === "us.personal_income_outlays" ||
+    eventKey === "us.trade_balance"
   );
   if (!relevant.length) return [];
   const sourceUrl = "https://www.bea.gov/news/schedule/full";
@@ -85,22 +91,35 @@ export async function fetchFederalReserveReleaseSchedule(input: {
 
 export function parseCensusSchedule(
   html: string,
-  event: HighImpactEventDefinition,
+  inputEvents: HighImpactEventDefinition | readonly HighImpactEventDefinition[],
 ) {
+  const events = Array.isArray(inputEvents) ? inputEvents : [inputEvents];
+  const definitions = new Map(events.map((event) => [event.eventKey, event]));
   const entries: OfficialMarketScheduleEntry[] = [];
   for (const row of html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || []) {
-    if (!/Advance Monthly Sales for Retail and Food Services/i.test(row)) {
-      continue;
-    }
+    const eventKey = /Advance Monthly Sales for Retail and Food Services/i.test(row)
+      ? "us.retail_sales"
+      : /New Residential Construction/i.test(row)
+        ? "us.housing_starts"
+        : /New Residential Sales/i.test(row)
+          ? "us.new_home_sales"
+          : null;
+    const event = eventKey ? definitions.get(eventKey) : undefined;
+    if (!event) continue;
     const timestamp = row.match(/sorttable_customkey=["'](\d{12})["']/i)?.[1];
     if (!timestamp) continue;
     const local = compactDateTime(timestamp);
+    const sourceUrl = event.eventKey === "us.retail_sales"
+      ? "https://www.census.gov/retail/"
+      : event.eventKey === "us.housing_starts"
+        ? "https://www.census.gov/construction/nrc/"
+        : "https://www.census.gov/construction/nrs/";
     entries.push(officialMarketScheduleEntrySchema.parse({
       source: "census",
       eventKey: event.eventKey,
       name: event.name,
-      sourceUid: `census-retail:${timestamp}`,
-      sourceUrl: "https://www.census.gov/retail/",
+      sourceUid: `census:${event.eventKey}:${timestamp}`,
+      sourceUrl,
       releaseDate: dateFromParts(local),
       occurredAt: zonedDateTimeToIso(local, "America/New_York"),
       timezone: "America/New_York",
@@ -125,7 +144,9 @@ export function parseBeaSchedule(
       ? "us.gdp"
       : /^Personal Income and Outlays,/i.test(title)
         ? "us.personal_income_outlays"
-        : null;
+        : /^U\.S\. International Trade in Goods and Services,/i.test(title)
+          ? "us.trade_balance"
+          : null;
     const event = eventKey ? definitions.get(eventKey) : undefined;
     if (!event) continue;
     const dateText = cleanHtml(

@@ -8,33 +8,53 @@ import {
 } from "@/lib/market-research/official-schedules";
 
 describe("first-party market schedule adapters", () => {
-  it("maps only the reviewed Census retail release", () => {
-    const retail = highImpactEventCatalog.find(({ eventKey }) =>
-      eventKey === "us.retail_sales"
-    )!;
+  it("maps the reviewed Census retail and housing releases", () => {
+    const events = highImpactEventCatalog.filter(({ eventKey }) => [
+      "us.retail_sales",
+      "us.housing_starts",
+      "us.new_home_sales",
+    ].includes(eventKey));
     const html = `
       <table><tr>
         <td><a href="/retail">Advance Monthly Sales for Retail and Food Services</a></td>
         <td sorttable_customkey="202604010830">April 1, 2026</td>
         <td>8:30 AM</td>
       </tr><tr>
+        <td>New Residential Construction</td>
+        <td sorttable_customkey="202604020830">April 2, 2026</td>
+      </tr><tr>
+        <td>New Residential Sales</td>
+        <td sorttable_customkey="202604031000">April 3, 2026</td>
+      </tr><tr>
         <td>Unreviewed Census Release</td>
-        <td sorttable_customkey="202604021000">April 2, 2026</td>
+        <td sorttable_customkey="202604041000">April 4, 2026</td>
       </tr></table>`;
 
-    expect(parseCensusSchedule(html, retail)).toEqual([
+    expect(parseCensusSchedule(html, events)).toEqual([
       expect.objectContaining({
         source: "census",
         eventKey: "us.retail_sales",
         releaseDate: "2026-04-01",
         occurredAt: "2026-04-01T12:30:00.000Z",
       }),
+      expect.objectContaining({
+        eventKey: "us.housing_starts",
+        releaseDate: "2026-04-02",
+        sourceUrl: "https://www.census.gov/construction/nrc/",
+      }),
+      expect.objectContaining({
+        eventKey: "us.new_home_sales",
+        releaseDate: "2026-04-03",
+        sourceUrl: "https://www.census.gov/construction/nrs/",
+      }),
     ]);
   });
 
   it("maps national BEA releases and excludes state GDP", () => {
     const events = highImpactEventCatalog.filter(({ eventKey }) =>
-      eventKey === "us.gdp" || eventKey === "us.personal_income_outlays"
+      eventKey === "us.gdp" ||
+      eventKey === "us.personal_income_outlays" ||
+      eventKey === "us.trade_balance"
     );
     const html = `
       <table><thead><tr><th>Year 2026</th></tr></thead><tbody>
@@ -47,6 +67,8 @@ describe("first-party market schedule adapters", () => {
           <td class="release-title">Gross Domestic Product by State and Personal Income by State, 3rd Quarter 2025</td></tr>
         <tr><td><div class="release-date">February 20</div><small>8:30 AM</small></td>
           <td class="release-title">Personal Income and Outlays, December 2025</td></tr>
+        <tr><td><div class="release-date">March 5</div><small>8:30 AM</small></td>
+          <td class="release-title">U.S. International Trade in Goods and Services, January 2026</td></tr>
       </tbody></table>`;
 
     expect(parseBeaSchedule(html, events)).toEqual([
@@ -61,6 +83,11 @@ describe("first-party market schedule adapters", () => {
         source: "bea",
         eventKey: "us.personal_income_outlays",
         releaseDate: "2026-02-20",
+      }),
+      expect.objectContaining({
+        source: "bea",
+        eventKey: "us.trade_balance",
+        releaseDate: "2026-03-05",
       }),
     ]);
   });
