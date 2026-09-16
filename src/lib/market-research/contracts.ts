@@ -380,6 +380,140 @@ export type MarketTechnicalFeaturesResult = z.infer<
   typeof marketTechnicalFeaturesResultSchema
 >;
 
+export const MARKET_BACKTEST_VERSION =
+  "market-deterministic-backtest:1" as const;
+
+export const marketBacktestStrategySchema = z.object({
+  strategyId: z.literal("foundation.liquidity_sweep_reversal.v1"),
+  direction: z.enum(["both", "long_only", "short_only"]).default("both"),
+  session: z.enum(["all", "london", "new_york_am"]).default("all"),
+  rewardRiskRatio: z.number().finite().min(0.5).max(5).default(2),
+  maxHoldingBars: z.number().int().min(1).max(96).default(24),
+  stopBufferRangeMultiplier: z.number().finite().min(0).max(1).default(0.1),
+}).strict();
+
+export const marketBacktestCostModelSchema = z.object({
+  spreadBps: z.number().finite().nonnegative().max(100).default(2),
+  slippageBps: z.number().finite().nonnegative().max(100).default(1),
+  commissionBps: z.number().finite().nonnegative().max(100).default(0),
+}).strict();
+
+export const marketBacktestRequestSchema = z.object({
+  snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
+  strategy: marketBacktestStrategySchema.default({
+    strategyId: "foundation.liquidity_sweep_reversal.v1",
+    direction: "both",
+    session: "all",
+    rewardRiskRatio: 2,
+    maxHoldingBars: 24,
+    stopBufferRangeMultiplier: 0.1,
+  }),
+  costs: marketBacktestCostModelSchema.default({
+    spreadBps: 2,
+    slippageBps: 1,
+    commissionBps: 0,
+  }),
+  initialEquity: z.number().finite().min(100).max(100_000_000).default(10_000),
+  riskPerTradeBps: z.number().int().min(1).max(500).default(100),
+}).strict();
+
+export const marketBacktestsQuerySchema = z.object({
+  instrumentId: marketInstrumentIdSchema,
+  limit: z.number().int().min(1).max(100).default(20),
+}).strict();
+
+const marketBacktestSplitSchema = z.enum(["train", "validation", "test"]);
+const marketBacktestTradeSchema = z.object({
+  id: z.string().regex(/^market_backtest_trade_[a-f0-9]{48}$/),
+  split: marketBacktestSplitSchema,
+  direction: z.enum(["long", "short"]),
+  signalAt: z.string().datetime({ offset: true }),
+  enteredAt: z.string().datetime({ offset: true }),
+  exitedAt: z.string().datetime({ offset: true }),
+  entryPrice: z.number().finite().positive(),
+  exitPrice: z.number().finite().positive(),
+  stopPrice: z.number().finite().positive(),
+  targetPrice: z.number().finite().positive(),
+  exitReason: z.enum(["stop", "target", "timeout", "snapshot_end"]),
+  holdingBars: z.number().int().min(1).max(96),
+  grossR: z.number().finite(),
+  netR: z.number().finite(),
+  equityAfter: z.number().finite().nonnegative(),
+}).strict();
+
+const marketBacktestMetricsSchema = z.object({
+  trades: z.number().int().nonnegative().max(1_000),
+  wins: z.number().int().nonnegative().max(1_000),
+  losses: z.number().int().nonnegative().max(1_000),
+  breakEven: z.number().int().nonnegative().max(1_000),
+  winRate: z.number().finite().min(0).max(1).nullable(),
+  netR: z.number().finite(),
+  expectancyR: z.number().finite().nullable(),
+  profitFactor: z.number().finite().nonnegative().nullable(),
+  maxDrawdownPercent: z.number().finite().min(0).max(100),
+  endingEquity: z.number().finite().nonnegative(),
+}).strict();
+
+export const marketBacktestSchema = z.object({
+  contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
+  backtestVersion: z.literal(MARKET_BACKTEST_VERSION),
+  id: z.string().regex(/^market_backtest_[a-f0-9]{48}$/),
+  instrumentId: marketInstrumentIdSchema,
+  provider: z.enum(MARKET_PRICE_PROVIDERS),
+  providerSymbol: z.string().min(1).max(80),
+  interval: z.enum(MARKET_INTERVALS),
+  snapshotId: z.string().regex(/^market_snapshot_[a-f0-9]{48}$/),
+  snapshotSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  snapshotAsOf: z.string().datetime({ offset: true }),
+  firstBarAt: z.string().datetime({ offset: true }),
+  lastBarAt: z.string().datetime({ offset: true }),
+  barCount: z.number().int().min(21).max(1_000),
+  manifest: z.object({
+    strategy: marketBacktestStrategySchema,
+    costs: marketBacktestCostModelSchema,
+    initialEquity: z.number().finite().min(100).max(100_000_000),
+    riskPerTradeBps: z.number().int().min(1).max(500),
+    engineRulesSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    entryTiming: z.literal("next_bar_open"),
+    collisionPolicy: z.literal("stop_first"),
+    overlapPolicy: z.literal("single_position"),
+    evaluationLabel: z.literal("retrospective_rule_evaluation"),
+    splitRatios: z.tuple([z.literal(0.6), z.literal(0.2), z.literal(0.2)]),
+  }).strict(),
+  splitBoundaries: z.object({
+    validationStartsAt: z.string().datetime({ offset: true }),
+    testStartsAt: z.string().datetime({ offset: true }),
+  }).strict(),
+  leakageChecks: z.object({
+    strictChronology: z.literal(true),
+    immutableSnapshotBound: z.literal(true),
+    signalUsesPastAndPresentOnly: z.literal(true),
+    entryAfterSignal: z.literal(true),
+    costsApplied: z.literal(true),
+  }).strict(),
+  metrics: z.object({
+    overall: marketBacktestMetricsSchema,
+    train: marketBacktestMetricsSchema,
+    validation: marketBacktestMetricsSchema,
+    test: marketBacktestMetricsSchema,
+  }).strict(),
+  trades: z.array(marketBacktestTradeSchema).max(1_000),
+  warnings: z.array(z.string().min(1).max(300)).max(8),
+  resultSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  createdAt: z.string().datetime({ offset: true }),
+}).strict();
+
+export const marketBacktestsResultSchema = z.object({
+  contractVersion: z.literal(MARKET_RESEARCH_CONTRACT_VERSION),
+  instrumentId: marketInstrumentIdSchema,
+  backtests: z.array(marketBacktestSchema).max(100),
+  total: z.number().int().nonnegative(),
+}).strict();
+
+export type MarketBacktestRequest = z.infer<typeof marketBacktestRequestSchema>;
+export type MarketBacktest = z.infer<typeof marketBacktestSchema>;
+export type MarketBacktestsResult = z.infer<typeof marketBacktestsResultSchema>;
+
 export const MARKET_ANALYSIS_VERSION = "market-analysis-version:1" as const;
 
 const chartEntityIdSchema = z.union([
