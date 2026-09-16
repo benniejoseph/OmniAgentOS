@@ -45,7 +45,9 @@ describe("live market calendar", () => {
     });
 
     expect(result.marketDate).toBe("2026-09-16");
-    expect(result.catalog.reviewedFamilies).toBe(17);
+    expect(result.catalog.reviewedFamilies).toBe(18);
+    expect(result.catalog.families.find(({ eventKey }) => eventKey === "us.ism_manufacturing"))
+      .toMatchObject({ historyCoverage: "publisher_schedule_only" });
     expect(result.events).toEqual([
       expect.objectContaining({
         eventKey: "us.fomc",

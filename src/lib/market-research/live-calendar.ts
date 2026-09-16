@@ -90,6 +90,7 @@ export async function buildMarketLiveCalendar(input: {
         components: definition.components,
         aliases: definition.aliases,
         scheduleCoverage: definition.scheduleCoverage,
+        historyCoverage: definition.historyCoverage,
         whyItMatters: definition.whyItMatters,
         sourceUrl: definition.sourceUrl,
       })),
@@ -118,6 +119,7 @@ export async function buildMarketLiveCalendar(input: {
     disclosures: [
       "Coverage is a reviewed set of high-impact U.S. releases from official public calendars, not a claim to mirror every event on a commercial red-folder calendar.",
       "Official free sources do not provide a complete historical survey-consensus archive. Asael leaves unavailable consensus and surprise fields empty.",
+      "ISM remains publisher-schedule-only because FRED removed ISM data and API access in 2016; it is not counted as FRED-backed history.",
       "Date-only families remain visible in coverage but are excluded from intraday replay until an authoritative release time is verified.",
       "Historical reactions are descriptive evidence, not calibrated probabilities or trading advice.",
     ],

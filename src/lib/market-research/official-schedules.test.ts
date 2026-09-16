@@ -11,6 +11,7 @@ describe("first-party market schedule adapters", () => {
   it("maps the reviewed Census retail and housing releases", () => {
     const events = highImpactEventCatalog.filter(({ eventKey }) => [
       "us.retail_sales",
+      "us.durable_goods",
       "us.housing_starts",
       "us.new_home_sales",
     ].includes(eventKey));
@@ -20,11 +21,14 @@ describe("first-party market schedule adapters", () => {
         <td sorttable_customkey="202604010830">April 1, 2026</td>
         <td>8:30 AM</td>
       </tr><tr>
-        <td>New Residential Construction</td>
+        <td>Advance Report on Durable Goods--Manufacturers' Shipments, Inventories, and Orders</td>
         <td sorttable_customkey="202604020830">April 2, 2026</td>
       </tr><tr>
+        <td>New Residential Construction</td>
+        <td sorttable_customkey="202604030830">April 3, 2026</td>
+      </tr><tr>
         <td>New Residential Sales</td>
-        <td sorttable_customkey="202604031000">April 3, 2026</td>
+        <td sorttable_customkey="202604041000">April 4, 2026</td>
       </tr><tr>
         <td>Unreviewed Census Release</td>
         <td sorttable_customkey="202604041000">April 4, 2026</td>
@@ -38,13 +42,18 @@ describe("first-party market schedule adapters", () => {
         occurredAt: "2026-04-01T12:30:00.000Z",
       }),
       expect.objectContaining({
-        eventKey: "us.housing_starts",
+        eventKey: "us.durable_goods",
         releaseDate: "2026-04-02",
+        sourceUrl: "https://www.census.gov/manufacturing/m3/",
+      }),
+      expect.objectContaining({
+        eventKey: "us.housing_starts",
+        releaseDate: "2026-04-03",
         sourceUrl: "https://www.census.gov/construction/nrc/",
       }),
       expect.objectContaining({
         eventKey: "us.new_home_sales",
-        releaseDate: "2026-04-03",
+        releaseDate: "2026-04-04",
         sourceUrl: "https://www.census.gov/construction/nrs/",
       }),
     ]);

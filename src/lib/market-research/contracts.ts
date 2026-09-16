@@ -180,6 +180,10 @@ export const marketLiveCalendarFamilySchema = z.object({
     "official_exact",
     "date_only_until_verified",
   ]),
+  historyCoverage: z.enum([
+    "fred_release_dates",
+    "publisher_schedule_only",
+  ]),
   whyItMatters: z.string().min(1).max(360),
   sourceUrl: z.string().url().max(1_000),
 }).strict();

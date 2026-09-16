@@ -7,8 +7,9 @@ const highImpactEventDefinitionSchema = z.object({
   components: z.array(z.string().min(1).max(100)).min(1).max(8),
   aliases: z.array(z.string().min(1).max(100)).max(10),
   scheduleCoverage: z.enum(["official_exact", "date_only_until_verified"]),
+  historyCoverage: z.enum(["fred_release_dates", "publisher_schedule_only"]),
   whyItMatters: z.string().min(1).max(360),
-  fredReleaseId: z.number().int().positive(),
+  fredReleaseId: z.number().int().positive().optional(),
   sourceUrl: z.string().url(),
   blsSchedule: z.object({
     summary: z.string().min(1).max(160),
@@ -140,6 +141,15 @@ export const highImpactEventCatalog: readonly HighImpactEventDefinition[] = Obje
     fredSeries: [series("trade_balance", "BOPGSTB", "Trade balance: goods and services", "millions")],
   }),
   event({
+    eventKey: "us.durable_goods", name: "U.S. Durable Goods Orders", category: "growth",
+    components: ["Durable goods orders", "Core capital goods", "Shipments", "Revisions"],
+    aliases: ["Durable goods", "Core durable goods", "M3", "Factory orders"],
+    scheduleCoverage: "official_exact",
+    whyItMatters: "Orders and core capital-goods demand are forward-looking signals for manufacturing, investment, and growth.",
+    fredReleaseId: 95,
+    fredSeries: [series("durable_goods_orders", "DGORDER", "Manufacturers' new orders: durable goods", "millions")],
+  }),
+  event({
     eventKey: "us.housing_starts", name: "U.S. New Residential Construction", category: "housing",
     components: ["Housing starts", "Building permits"], aliases: ["Housing starts", "Building permits"],
     scheduleCoverage: "official_exact", whyItMatters: "Construction and permits are rate-sensitive leading indicators of domestic demand.",
@@ -176,7 +186,8 @@ export const highImpactEventCatalog: readonly HighImpactEventDefinition[] = Obje
     eventKey: "us.ism_manufacturing", name: "U.S. Manufacturing ISM Report on Business", category: "growth",
     components: ["Manufacturing PMI", "New orders", "Prices", "Employment"], aliases: ["ISM manufacturing", "Manufacturing PMI"],
     scheduleCoverage: "date_only_until_verified",
-    whyItMatters: "Survey breadth, new orders, prices, and employment can shift the near-term growth and inflation narrative.", fredReleaseId: 26,
+    whyItMatters: "Survey breadth, new orders, prices, and employment can shift the near-term growth and inflation narrative.",
+    sourceUrl: "https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/",
   }),
 ]);
 
@@ -191,13 +202,18 @@ export function selectedHighImpactEvents(eventKeys?: readonly string[]) {
 }
 
 function event(
-  definition: Omit<HighImpactEventDefinition, "sourceUrl" | "fredSeries"> & {
+  definition: Omit<HighImpactEventDefinition, "sourceUrl" | "fredSeries" | "historyCoverage"> & {
+    sourceUrl?: string;
     fredSeries?: HighImpactEventDefinition["fredSeries"];
   },
 ) {
   return highImpactEventDefinitionSchema.parse({
     ...definition,
-    sourceUrl: `https://fred.stlouisfed.org/release?rid=${definition.fredReleaseId}`,
+    historyCoverage: definition.fredReleaseId
+      ? "fred_release_dates"
+      : "publisher_schedule_only",
+    sourceUrl: definition.sourceUrl ||
+      `https://fred.stlouisfed.org/release?rid=${definition.fredReleaseId}`,
   });
 }
 

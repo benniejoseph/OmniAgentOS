@@ -163,7 +163,7 @@ export async function showMarketResearchOverviewService(
         label: "High-impact event replay",
         state: historicalReplayReady ? "foundation" : "blocked",
         note: historicalReplayReady
-          ? "The reviewed 17-family official/FRED history is available for immutable event backfill."
+          ? "The reviewed 18-family catalog and 17-family FRED history are available for immutable event backfill."
           : "Needs both target price feeds and the FRED/ALFRED history feed.",
       },
       {

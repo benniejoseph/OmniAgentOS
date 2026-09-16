@@ -127,13 +127,17 @@ export async function executeMarketEventBackfillJob(input: {
   }
 
   const definitions = selectedHighImpactEvents(request.eventKeys);
+  const fredDefinitions = definitions.filter(
+    (definition) => definition.historyCoverage === "fred_release_dates" &&
+      definition.fredReleaseId !== undefined,
+  );
   const totalSources = totalImportSources(definitions);
   let importedEvents = 0;
   let importedSchedules = 0;
   let importedObservations = 0;
   let discoveredObservations = 0;
   let discoveredDates = 0;
-  for (const [index, definition] of definitions.entries()) {
+  for (const [index, definition] of fredDefinitions.entries()) {
     input.abortSignal.throwIfAborted();
     await input.onProgress({
       stage: "fetching_release_history",
@@ -179,7 +183,7 @@ export async function executeMarketEventBackfillJob(input: {
     await input.onProgress({
       stage: "fetching_official_schedule",
       currentScheduleSource: source,
-      completedSources: definitions.length + sourceIndex,
+      completedSources: fredDefinitions.length + sourceIndex,
       totalSources,
       importedEvents,
       importedSchedules,
@@ -205,7 +209,7 @@ export async function executeMarketEventBackfillJob(input: {
     await input.onProgress({
       stage: "saving_official_schedule",
       currentScheduleSource: source,
-      completedSources: definitions.length + sourceIndex + 1,
+      completedSources: fredDefinitions.length + sourceIndex + 1,
       totalSources,
       importedEvents,
       importedSchedules,
@@ -219,7 +223,7 @@ export async function executeMarketEventBackfillJob(input: {
   );
   for (const [observationIndex, source] of observationSources.entries()) {
     input.abortSignal.throwIfAborted();
-    const completedSources = definitions.length + scheduleSources.length + observationIndex;
+    const completedSources = fredDefinitions.length + scheduleSources.length + observationIndex;
     await input.onProgress({
       stage: "fetching_initial_release_values",
       currentEventKey: source.definition.eventKey,
@@ -278,7 +282,9 @@ export async function executeMarketEventBackfillJob(input: {
 function totalImportSources(
   definitions: ReturnType<typeof selectedHighImpactEvents>,
 ) {
-  return definitions.length +
+  return definitions.filter(({ historyCoverage }) =>
+    historyCoverage === "fred_release_dates"
+  ).length +
     officialScheduleSources(definitions).length +
     definitions.reduce((count, definition) => count + definition.fredSeries.length, 0);
 }
@@ -290,6 +296,7 @@ function officialScheduleSources(
   return [
     ...(definitions.some((definition) => definition.blsSchedule) ? ["bls" as const] : []),
     ...(keys.has("us.retail_sales") ||
+      keys.has("us.durable_goods") ||
       keys.has("us.housing_starts") ||
       keys.has("us.new_home_sales")
       ? ["census" as const]

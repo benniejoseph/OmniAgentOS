@@ -431,7 +431,8 @@ export function MarketResearchWorkspace() {
     try {
       const importedEventKeys = new Set(events?.events.map(({ eventKey }) => eventKey));
       const catalogExpansionRequired = liveCalendar?.catalog.families.some(
-        ({ eventKey }) => !importedEventKeys.has(eventKey),
+        ({ eventKey, historyCoverage }) =>
+          historyCoverage === "fred_release_dates" && !importedEventKeys.has(eventKey),
       ) === true;
       const response = await fetch("/api/market-research/events", {
         method: "POST",
@@ -1175,7 +1176,7 @@ function LiveEventBrief({
           <div>
             {calendar.catalog.families.map((family) => (
               <article key={family.eventKey}>
-                <span><strong>{family.name}</strong><em>{family.scheduleCoverage === "official_exact" ? "Exact time" : "Date only"}</em></span>
+                <span><strong>{family.name}</strong><em>{family.historyCoverage === "publisher_schedule_only" ? "Publisher schedule" : family.scheduleCoverage === "official_exact" ? "Exact time" : "Date only"}</em></span>
                 <p>{family.components.join(" · ")}</p>
                 <small>{family.whyItMatters}</small>
               </article>
@@ -1234,7 +1235,8 @@ function NewsImpactLab({
   const importing = backfillJob && ["queued", "running"].includes(backfillJob.status);
   const importedEventKeys = new Set(events?.events.map(({ eventKey }) => eventKey));
   const catalogExpansionRequired = liveCalendar?.catalog.families.some(
-    ({ eventKey }) => !importedEventKeys.has(eventKey),
+    ({ eventKey, historyCoverage }) =>
+      historyCoverage === "fred_release_dates" && !importedEventKeys.has(eventKey),
   ) === true;
   const completedSources = numberProgress(backfillJob?.progress?.completedSources);
   const totalSources = numberProgress(backfillJob?.progress?.totalSources);
@@ -1263,7 +1265,7 @@ function NewsImpactLab({
               {importing
                 ? `Importing ${completedSources}/${totalSources || "…"}`
                 : catalogExpansionRequired
-                  ? `Expand to ${liveCalendar?.catalog.reviewedFamilies || 17} families`
+                  ? `Expand to ${liveCalendar?.catalog.reviewedFamilies || 18} families`
                   : events?.total
                     ? "Refresh history"
                     : "Import history"}
@@ -1397,6 +1399,7 @@ function eventKeyLabel(eventKey: string) {
     "us.productivity_costs": "Productivity & costs",
     "us.import_export_prices": "Import/export prices",
     "us.trade_balance": "Trade balance",
+    "us.durable_goods": "Durable goods",
     "us.housing_starts": "Housing starts",
     "us.new_home_sales": "New-home sales",
     "us.initial_jobless_claims": "Jobless claims",

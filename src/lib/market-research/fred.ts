@@ -65,13 +65,17 @@ export async function fetchFredReleaseDates(input: {
   endDate: string;
   signal?: AbortSignal;
 }): Promise<FredReleaseDate[]> {
+  const releaseId = input.event.fredReleaseId;
+  if (!releaseId) {
+    throw new FredProviderError(`${input.event.name} has no FRED release-history source.`);
+  }
   const apiKey = process.env.FRED_API_KEY?.trim();
   if (!apiKey) throw new FredCredentialRequiredError();
 
   const url = new URL("https://api.stlouisfed.org/fred/release/dates");
   url.searchParams.set("api_key", apiKey);
   url.searchParams.set("file_type", "json");
-  url.searchParams.set("release_id", String(input.event.fredReleaseId));
+  url.searchParams.set("release_id", String(releaseId));
   url.searchParams.set("limit", "10000");
   url.searchParams.set("sort_order", "asc");
   url.searchParams.set("include_release_dates_with_no_data", "false");
@@ -116,7 +120,7 @@ export async function fetchFredReleaseDates(input: {
     .map(({ date }) => ({
       eventKey: input.event.eventKey,
       name: input.event.name,
-      releaseId: input.event.fredReleaseId,
+      releaseId,
       releaseDate: date,
       sourceUrl: input.event.sourceUrl,
     }));

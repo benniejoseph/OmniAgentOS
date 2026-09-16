@@ -44,6 +44,7 @@ export async function fetchCensusReleaseSchedule(input: {
 }) {
   const events = input.events.filter(({ eventKey }) =>
     eventKey === "us.retail_sales" ||
+    eventKey === "us.durable_goods" ||
     eventKey === "us.housing_starts" ||
     eventKey === "us.new_home_sales"
   );
@@ -99,6 +100,8 @@ export function parseCensusSchedule(
   for (const row of html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || []) {
     const eventKey = /Advance Monthly Sales for Retail and Food Services/i.test(row)
       ? "us.retail_sales"
+      : /Advance Report on Durable Goods/i.test(row)
+        ? "us.durable_goods"
       : /New Residential Construction/i.test(row)
         ? "us.housing_starts"
         : /New Residential Sales/i.test(row)
@@ -111,6 +114,8 @@ export function parseCensusSchedule(
     const local = compactDateTime(timestamp);
     const sourceUrl = event.eventKey === "us.retail_sales"
       ? "https://www.census.gov/retail/"
+      : event.eventKey === "us.durable_goods"
+        ? "https://www.census.gov/manufacturing/m3/"
       : event.eventKey === "us.housing_starts"
         ? "https://www.census.gov/construction/nrc/"
         : "https://www.census.gov/construction/nrs/";
