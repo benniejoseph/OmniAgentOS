@@ -10,6 +10,8 @@ import {
   MARKET_RESEARCH_CONTRACT_VERSION,
   marketAnalysisGenerateRequestSchema,
   marketAnalysisVersionsQuerySchema,
+  marketBacktestRequestSchema,
+  marketBacktestsQuerySchema,
   marketBarsQuerySchema,
   marketEventBackfillRequestSchema,
   marketEventBaselinesQuerySchema,
@@ -27,6 +29,8 @@ import {
   saveMarketAnalysisVersion,
 } from "@/lib/market-research/analysis-store";
 import { buildMarketEventBaselines } from "@/lib/market-research/event-baselines";
+import { listMarketBacktests } from "@/lib/market-research/backtest-store";
+import { enqueueMarketBacktestJob } from "@/lib/market-research/backtest-jobs";
 import { listMarketEvents } from "@/lib/market-research/event-store";
 import { listMarketEventReplays } from "@/lib/market-research/event-replay-store";
 import { generateMarketForwardForecast } from "@/lib/market-research/forward-shadow-agent";
@@ -409,6 +413,44 @@ export async function backfillMarketResearchReplaysService(
     getAppServiceOperationContract("app.market_research.replays.backfill"),
   );
   const job = await enqueueMarketEventReplayBackfillJob({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    executionScope: caller.executionScope!,
+    idempotencyKey: caller.idempotencyKey!,
+    request: value,
+  });
+  return completeAppServiceCall(authorized, { job: projectOperationJobStatus(job) });
+}
+
+export async function listMarketBacktestsService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketBacktestsQuerySchema>,
+) {
+  const value = marketBacktestsQuerySchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.backtests.list"),
+  );
+  const result = await listMarketBacktests({
+    tenantId: caller.context.tenantId,
+    actorId: caller.context.actorId,
+    ...value,
+  });
+  return completeAppServiceCall(authorized, result, {
+    resourceCount: result.backtests.length,
+  });
+}
+
+export async function runMarketBacktestService(
+  caller: AppServiceCaller,
+  input: z.input<typeof marketBacktestRequestSchema>,
+) {
+  const value = marketBacktestRequestSchema.parse(input);
+  const authorized = authorizeAppServiceCall(
+    caller,
+    getAppServiceOperationContract("app.market_research.backtests.run"),
+  );
+  const job = await enqueueMarketBacktestJob({
     tenantId: caller.context.tenantId,
     actorId: caller.context.actorId,
     executionScope: caller.executionScope!,

@@ -27,6 +27,28 @@ export const FIRST_PARTY_APP_TOOLS = Object.freeze([
     snapshotId: { type: "string", pattern: "^market_snapshot_[a-f0-9]{48}$", maxLength: 64 },
     visibleLayerIds: { type: "array", maxItems: 8, uniqueItems: true, items: { type: "string", enum: ["liquidity", "imbalances", "blocks", "setups", "sessions", "quarterly", "structure", "gaps"] } },
   }, ["snapshotId"]), { reversible: false }),
+  readTool("app.market_research.backtests.list", "List market backtests", "Read the caller's immutable, leakage-checked, hypothetical market backtest results for one exact canonical instrument.", requiredObjectSchema({
+    instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
+    limit: integer(1, 100, 20),
+  }, ["instrumentId"])),
+  mutationTool("app.market_research.backtests.run", "Run deterministic market backtest", "Queue a reproducible actor-private backtest against one exact immutable snapshot. The frozen foundation strategy enters only on the next bar, applies explicit costs, and never places a trade.", requiredObjectSchema({
+    snapshotId: { type: "string", pattern: "^market_snapshot_[a-f0-9]{48}$", maxLength: 64 },
+    strategy: objectSchema({
+      strategyId: { type: "string", enum: ["foundation.liquidity_sweep_reversal.v1"] },
+      direction: { type: "string", enum: ["both", "long_only", "short_only"], default: "both" },
+      session: { type: "string", enum: ["all", "london", "new_york_am"], default: "all" },
+      rewardRiskRatio: { type: "number", minimum: 0.5, maximum: 5, default: 2 },
+      maxHoldingBars: integer(1, 96, 24),
+      stopBufferRangeMultiplier: { type: "number", minimum: 0, maximum: 1, default: 0.1 },
+    }),
+    costs: objectSchema({
+      spreadBps: { type: "number", minimum: 0, maximum: 100, default: 2 },
+      slippageBps: { type: "number", minimum: 0, maximum: 100, default: 1 },
+      commissionBps: { type: "number", minimum: 0, maximum: 100, default: 0 },
+    }),
+    initialEquity: { type: "number", minimum: 100, maximum: 100_000_000, default: 10_000 },
+    riskPerTradeBps: integer(1, 500, 100),
+  }, ["snapshotId"]), { reversible: false }),
   readTool("app.market_research.baselines.show", "Show market event baselines", "Read deterministic descriptive outcome distributions for the caller's immutable event-replay cohort. Historical frequencies are explicitly not predictive probabilities.", requiredObjectSchema({
     instrumentId: { type: "string", pattern: "^[a-z0-9][a-z0-9._-]+$", minLength: 3, maxLength: 120 },
     minimumSampleSize: integer(5, 100, 20),

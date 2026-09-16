@@ -21,6 +21,7 @@ export type OperationJobType =
   | "conversation.summary.enrich"
   | "market.events.backfill"
   | "market.replays.backfill"
+  | "market.backtest.run"
   | "evaluation.run"
   | "asset.object.commit"
   | "asset.object.delete"
@@ -37,6 +38,7 @@ export const BACKGROUND_OPERATION_JOB_TYPES = [
   "conversation.summary.enrich",
   "market.events.backfill",
   "market.replays.backfill",
+  "market.backtest.run",
   "evaluation.run",
   "asset.object.commit",
   "asset.object.delete",
@@ -81,6 +83,7 @@ const ACTOR_PRIVATE_OPERATION_JOB_TYPES = new Set<OperationJobType>([
   "conversation.summary.enrich",
   "market.events.backfill",
   "market.replays.backfill",
+  "market.backtest.run",
 ]);
 
 const SEMANTIC_SUMMARY_PUBLIC_STAGES = new Set([
