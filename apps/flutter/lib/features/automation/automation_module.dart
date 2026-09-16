@@ -25,5 +25,5 @@ const automationModule = AdminModule(
       description: 'Background execution health',
     ),
   ],
-  actions: [AdminAction('Process due workflows', NativePaths.adminWorkflowsTick)],
+  actions: [],
 );

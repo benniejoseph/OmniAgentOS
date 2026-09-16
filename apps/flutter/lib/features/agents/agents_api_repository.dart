@@ -37,28 +37,30 @@ class ApiAgentsRepository implements AgentsRepository {
   }
 
   @override
-  Future<AgentProfile> saveAgent(Json input, {String? id}) async {
-    final j = id == null
-        ? await api.postJson(NativePaths.agentsCreate, data: input)
-        : await api.patchJson(NativePaths.agentsUpdate(id), data: input);
-    return AgentProfile.fromJson(Map<String, dynamic>.from(j['agent'] as Map));
-  }
+  Future<AgentProfile> saveAgent(Json input, {String? id}) => Future.error(
+    UnsupportedError(
+      'Agent mutations are not published by native contract v8.',
+    ),
+  );
 
   @override
-  Future<AgentSkill> saveSkill(Json input, {String? id}) async {
-    final j = id == null
-        ? await api.postJson(NativePaths.skillsCreate, data: input)
-        : await api.patchJson(NativePaths.skillsUpdate(id), data: input);
-    return AgentSkill.fromJson(Map<String, dynamic>.from(j['skill'] as Map));
-  }
+  Future<AgentSkill> saveSkill(Json input, {String? id}) => Future.error(
+    UnsupportedError(
+      'Skill mutations are not published by native contract v8.',
+    ),
+  );
 
   @override
-  Future<void> deleteAgent(String id) async {
-    await api.deleteJson(NativePaths.agentsDelete(id));
-  }
+  Future<void> deleteAgent(String id) => Future.error(
+    UnsupportedError(
+      'Agent mutations are not published by native contract v8.',
+    ),
+  );
 
   @override
-  Future<void> deleteSkill(String id) async {
-    await api.deleteJson(NativePaths.skillsDelete(id));
-  }
+  Future<void> deleteSkill(String id) => Future.error(
+    UnsupportedError(
+      'Skill mutations are not published by native contract v8.',
+    ),
+  );
 }

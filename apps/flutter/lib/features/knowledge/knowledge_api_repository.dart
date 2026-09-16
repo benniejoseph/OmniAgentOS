@@ -81,11 +81,17 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
   }
 
   @override
-  Future<void> addMemory(Json input) async =>
-      api.postJson(NativePaths.memoryCreate, data: input);
+  Future<void> addMemory(Json input) => Future.error(
+    UnsupportedError(
+      'Memory mutations are not published by native contract v8.',
+    ),
+  );
   @override
-  Future<void> correctMemory(String id, Json input) async =>
-      api.patchJson(NativePaths.memoryUpdate(id), data: input);
+  Future<void> correctMemory(String id, Json input) => Future.error(
+    UnsupportedError(
+      'Memory mutations are not published by native contract v8.',
+    ),
+  );
   @override
   Future<MemoryForgetPreview> previewForgetMemory(String id) async {
     final response = await api.getJson(
@@ -109,18 +115,19 @@ class ApiKnowledgeRepository implements KnowledgeRepository {
 
   @override
   Future<void> forgetMemory(String id, String expectedManifestSha256) async {
-    await api.deleteJson(
-      NativePaths.memoryDelete(id),
-      headers: {'x-asael-deletion-preview': expectedManifestSha256},
+    throw UnsupportedError(
+      'Memory mutations are not published by native contract v8.',
     );
   }
 
   @override
-  Future<void> rebuildGraph() async =>
-      api.postJson(NativePaths.memoryGraphRebuild, data: {'source': 'flutter'});
+  Future<void> rebuildGraph() => Future.error(
+    UnsupportedError('Graph rebuild is not published by native contract v8.'),
+  );
   @override
-  Future<void> deleteConnectedSource(String source) async => api.deleteJson(
-    NativePaths.knowledgeSourceDelete,
-    query: {'source': source},
+  Future<void> deleteConnectedSource(String source) => Future.error(
+    UnsupportedError(
+      'Knowledge source deletion is not published by native contract v8.',
+    ),
   );
 }

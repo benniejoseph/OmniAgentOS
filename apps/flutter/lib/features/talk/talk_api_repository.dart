@@ -7,6 +7,18 @@ import 'talk.dart';
 class ApiTalkRepository implements TalkRepository {
   const ApiTalkRepository(this.api);
   final ApiClient api;
+
+  @override
+  Future<void> cancelRun(String runId) async {
+    await api.deleteJson(
+      NativePaths.evidenceRunCancel(runId),
+      headers: {
+        'idempotency-key':
+            'conversation-cancel-$runId-${DateTime.now().microsecondsSinceEpoch}',
+      },
+    );
+  }
+
   @override
   Stream<SseEvent> send({
     required String message,

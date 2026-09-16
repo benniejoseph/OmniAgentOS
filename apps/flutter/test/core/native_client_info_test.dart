@@ -7,6 +7,13 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   tearDown(() => debugDefaultTargetPlatformOverride = null);
 
+  test('publishes only callable native mutation operations', () {
+    expect(NativeContract.supportsOperation('market.backtests.run'), isTrue);
+    expect(NativeContract.supportsOperation('agents.create'), isFalse);
+    expect(NativeContract.supportsOperation('memory.graph.rebuild'), isFalse);
+    expect(NativeContract.supportsOperation('admin.workflows.tick'), isFalse);
+  });
+
   for (final expectation in <(TargetPlatform, String, String)>[
     (TargetPlatform.android, 'android', 'Android'),
     (TargetPlatform.iOS, 'ios', 'iOS'),

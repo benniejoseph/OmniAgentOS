@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
 
 import '../../app/brand/asael_mark.dart';
@@ -72,6 +73,26 @@ Stream<SseEvent> parseSse(Stream<List<int>> bytes) async* {
 
 enum TalkRole { user, assistant }
 
+enum TalkActivityState { active, succeeded, waiting, failed, info }
+
+class TalkActivity {
+  const TalkActivity({
+    required this.key,
+    required this.title,
+    required this.detail,
+    required this.state,
+    this.actionLabel,
+    this.actionRoute,
+  });
+
+  final String key;
+  final String title;
+  final String detail;
+  final TalkActivityState state;
+  final String? actionLabel;
+  final String? actionRoute;
+}
+
 class TalkMessage {
   const TalkMessage({
     required this.role,
@@ -99,15 +120,19 @@ abstract interface class TalkRepository {
     String strategy = 'auto',
   });
   Future<String> transcribeVoice(Uint8List bytes);
+  Future<void> cancelRun(String runId);
 }
 
 class TalkController extends ChangeNotifier {
   TalkController(this.repository);
   final TalkRepository repository;
   final messages = <TalkMessage>[];
+  final activities = <TalkActivity>[];
   String? threadId;
+  String? runId;
   String? status;
   bool sending = false;
+  bool canceling = false;
   bool transcribing = false;
   Object? voiceError;
   Future<void> send(
@@ -123,6 +148,38 @@ class TalkController extends ChangeNotifier {
   String? _retryStrategy;
 
   bool get canRetry => !sending && _retryInput != null;
+
+  Future<void> cancel() async {
+    final id = runId;
+    if (id == null || !sending || canceling) return;
+    canceling = true;
+    _recordActivity(
+      key: 'cancel',
+      title: 'Stopping run',
+      detail: 'A governed cancellation request was sent.',
+      state: TalkActivityState.active,
+    );
+    notifyListeners();
+    try {
+      await repository.cancelRun(id);
+      _recordActivity(
+        key: 'cancel',
+        title: 'Stop requested',
+        detail: 'Waiting for the run to confirm its terminal state.',
+        state: TalkActivityState.waiting,
+      );
+    } catch (_) {
+      _recordActivity(
+        key: 'cancel',
+        title: 'Stop request failed',
+        detail: 'The run may still be active. Try again from Results.',
+        state: TalkActivityState.failed,
+      );
+    } finally {
+      canceling = false;
+      notifyListeners();
+    }
+  }
 
   Future<void> retryLast() async {
     final input = _retryInput;
@@ -163,6 +220,8 @@ class TalkController extends ChangeNotifier {
   }) async {
     final text = input.trim();
     if (text.isEmpty || sending) return;
+    activities.clear();
+    runId = null;
     if (replaceFailedResponse && messages.lastOrNull?.failed == true) {
       messages[messages.length - 1] = const TalkMessage(
         role: TalkRole.assistant,
@@ -189,12 +248,114 @@ class TalkController extends ChangeNotifier {
           threadId = event.data['threadId'] as String;
         }
         switch (event.event) {
+          case 'run':
+            runId = event.data['runId'] as String?;
+            _recordActivity(
+              key: 'run',
+              title: 'Main agent',
+              detail: 'Started a governed run.',
+              state: TalkActivityState.active,
+            );
           case 'delta':
             messages[messages.length - 1] = messages.last.copyWith(
               text: messages.last.text + (event.data['text'] as String? ?? ''),
             );
           case 'status':
             status = event.data['label'] as String? ?? 'Working';
+            _recordActivity(
+              key: 'status',
+              title: _sentenceCase(status!),
+              detail: event.data['detail'] as String? ?? 'Work is in progress.',
+              state: TalkActivityState.active,
+            );
+          case 'harness':
+            final provider = event.data['provider']?.toString() ?? 'configured';
+            final model = event.data['model']?.toString() ?? 'model';
+            final toolCount = event.data['toolCount'] as int? ?? 0;
+            final skills = event.data['skillIds'] is List
+                ? (event.data['skillIds'] as List).length
+                : 0;
+            _recordActivity(
+              key: 'harness',
+              title: 'Run context prepared',
+              detail: '$provider · $model · $toolCount tools · $skills skills',
+              state: TalkActivityState.succeeded,
+            );
+          case 'memory':
+            _recordActivity(
+              key: 'memory:${event.data['title']}',
+              title: event.data['title'] as String? ?? 'Memory updated',
+              detail: _countDetail(event.data['count'], 'memory item'),
+              state: TalkActivityState.succeeded,
+            );
+          case 'model':
+            final provider = event.data['provider']?.toString() ?? 'provider';
+            final model = event.data['model']?.toString() ?? 'model';
+            final tokens = event.data['totalTokens'] as int? ?? 0;
+            final latency = event.data['latencyMs'] as int? ?? 0;
+            _recordActivity(
+              key: 'model:${event.data['iteration'] ?? activities.length}',
+              title: 'Model response',
+              detail: '$provider · $model · $tokens tokens · ${latency}ms',
+              state: TalkActivityState.succeeded,
+            );
+          case 'council_member':
+            final agentName =
+                event.data['agentName'] as String? ?? 'Specialist agent';
+            final lifecycle = event.data['lifecycleState']?.toString();
+            final memberStatus = event.data['status']?.toString() ?? 'thinking';
+            _recordActivity(
+              key:
+                  'agent:${event.data['taskId'] ?? event.data['delegationId'] ?? event.data['agentId'] ?? agentName}',
+              title: agentName,
+              detail:
+                  event.data['summary'] as String? ??
+                  event.data['role'] as String? ??
+                  'Specialist work',
+              state: _agentActivityState(lifecycle ?? memberStatus),
+            );
+          case 'council_verdict':
+            final verdict = event.data['status']?.toString() ?? 'completed';
+            _recordActivity(
+              key: 'council-verdict',
+              title: 'Council review',
+              detail:
+                  event.data['assessment'] as String? ??
+                  'Independent review $verdict.',
+              state: verdict == 'failed'
+                  ? TalkActivityState.failed
+                  : TalkActivityState.succeeded,
+            );
+          case 'tool':
+            final toolStatus = event.data['status']?.toString() ?? 'running';
+            final toolName =
+                event.data['toolName'] as String? ??
+                event.data['toolId'] as String? ??
+                'Tool';
+            _recordActivity(
+              key:
+                  'tool:${event.data['executionId'] ?? event.data['toolId'] ?? toolName}',
+              title: toolName,
+              detail:
+                  event.data['summary'] as String? ??
+                  _sentenceCase(toolStatus.replaceAll('_', ' ')),
+              state: _toolActivityState(toolStatus),
+            );
+          case 'clarification':
+            final message =
+                event.data['message'] as String? ??
+                'Asael needs one detail before continuing.';
+            messages[messages.length - 1] = messages.last.copyWith(
+              text: message,
+              streaming: false,
+            );
+            status = 'Needs your input';
+            _recordActivity(
+              key: 'clarification',
+              title: 'Clarification needed',
+              detail: message,
+              state: TalkActivityState.waiting,
+            );
           case 'delegated':
             messages[messages.length - 1] = messages.last.copyWith(
               text:
@@ -203,14 +364,82 @@ class TalkController extends ChangeNotifier {
               streaming: false,
             );
             status = 'Delegated';
+            _recordActivity(
+              key: 'delegated',
+              title: 'Background work started',
+              detail:
+                  event.data['reason'] as String? ??
+                  'The run will continue durably.',
+              state: TalkActivityState.active,
+            );
           case 'done':
             messages[messages.length - 1] = messages.last.copyWith(
               text: event.data['response'] as String? ?? messages.last.text,
               streaming: false,
             );
             status = null;
+            _recordActivity(
+              key: 'run',
+              title: 'Main agent',
+              detail: 'Response completed.',
+              state: TalkActivityState.succeeded,
+            );
+            _recordActivity(
+              key: 'status',
+              title: 'Response ready',
+              detail: 'The governed run reached a terminal response.',
+              state: TalkActivityState.succeeded,
+            );
           case 'waiting_approval':
             status = 'Waiting for approval';
+            final message =
+                event.data['message'] as String? ??
+                'Review the requested action before it continues.';
+            if (messages.last.text.isEmpty) {
+              messages[messages.length - 1] = messages.last.copyWith(
+                text: message,
+                streaming: false,
+              );
+            }
+            _recordActivity(
+              key: 'approval:${event.data['executionId'] ?? 'pending'}',
+              title: 'Approval required',
+              detail: message,
+              state: TalkActivityState.waiting,
+              actionLabel: 'Review approval',
+              actionRoute: event.data['executionId'] is String
+                  ? '/inbox/approvals/${Uri.encodeComponent(event.data['executionId'] as String)}'
+                  : '/inbox',
+            );
+          case 'budget_exhausted':
+            final message =
+                event.data['message'] as String? ??
+                'This run reached its authorized budget.';
+            messages[messages.length - 1] = messages.last.copyWith(
+              text: message,
+              streaming: false,
+            );
+            status = 'Authorization required';
+            _recordActivity(
+              key: 'budget',
+              title: 'Run budget reached',
+              detail: message,
+              state: TalkActivityState.waiting,
+            );
+          case 'canceled':
+            final message =
+                event.data['message'] as String? ?? 'The run was canceled.';
+            messages[messages.length - 1] = messages.last.copyWith(
+              text: message,
+              streaming: false,
+            );
+            status = null;
+            _recordActivity(
+              key: 'run',
+              title: 'Main agent',
+              detail: message,
+              state: TalkActivityState.failed,
+            );
           case 'error':
             throw StateError(
               event.data['message'] as String? ?? 'Agent failed',
@@ -232,11 +461,72 @@ class TalkController extends ChangeNotifier {
       _retryInput = text;
       _retryMode = mode;
       _retryStrategy = strategy;
+      _recordActivity(
+        key: 'run',
+        title: 'Main agent',
+        detail: 'The connection ended before the run completed.',
+        state: TalkActivityState.failed,
+      );
     } finally {
       sending = false;
       status = null;
       notifyListeners();
     }
+  }
+
+  void _recordActivity({
+    required String key,
+    required String title,
+    required String detail,
+    required TalkActivityState state,
+    String? actionLabel,
+    String? actionRoute,
+  }) {
+    final activity = TalkActivity(
+      key: key,
+      title: title,
+      detail: detail,
+      state: state,
+      actionLabel: actionLabel,
+      actionRoute: actionRoute,
+    );
+    final existing = activities.indexWhere((item) => item.key == key);
+    if (existing >= 0) {
+      activities[existing] = activity;
+    } else {
+      activities.add(activity);
+      if (activities.length > 40) activities.removeAt(0);
+    }
+  }
+
+  static TalkActivityState _agentActivityState(String value) => switch (value) {
+    'completed' ||
+    'completed_proposed' ||
+    'result_accepted' => TalkActivityState.succeeded,
+    'failed' ||
+    'rejected' ||
+    'canceled' ||
+    'expired' => TalkActivityState.failed,
+    'waiting' || 'challenged' => TalkActivityState.waiting,
+    _ => TalkActivityState.active,
+  };
+
+  static TalkActivityState _toolActivityState(String value) => switch (value) {
+    'executed' || 'dry_run' => TalkActivityState.succeeded,
+    'approval_required' => TalkActivityState.waiting,
+    'blocked' || 'failed' => TalkActivityState.failed,
+    _ => TalkActivityState.active,
+  };
+
+  static String _sentenceCase(String value) {
+    final text = value.trim();
+    if (text.isEmpty) return text;
+    return '${text[0].toUpperCase()}${text.substring(1)}';
+  }
+
+  static String _countDetail(Object? value, String label) {
+    final count = value is int ? value : 1;
+    return '$count $label${count == 1 ? '' : 's'}';
   }
 }
 
@@ -287,6 +577,7 @@ class TalkView extends StatefulWidget {
 
 class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   final input = TextEditingController();
+  final inputFocus = FocusNode(debugLabel: 'Asael command composer');
   final scroll = ScrollController();
   late final VoiceDraftRecorder recorder;
   String strategy = 'auto';
@@ -316,6 +607,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     voiceDraftGeneration += 1;
     input.dispose();
+    inputFocus.dispose();
     scroll.dispose();
     unawaited(_disposeRecorder());
     super.dispose();
@@ -441,249 +733,544 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
     ),
     body: ListenableBuilder(
       listenable: widget.controller,
-      builder: (_, _) => Column(
-        children: [
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
-            child: widget.controller.status != null
-                ? Container(
-                    key: ValueKey(widget.controller.status),
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 9,
-                    ),
-                    color: Theme.of(context).colorScheme.surfaceContainerLow,
-                    child: Row(
-                      children: [
-                        const SizedBox.square(
-                          dimension: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+      builder: (_, _) => LayoutBuilder(
+        builder: (context, constraints) {
+          final conversation = Column(
+            children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: widget.controller.status != null
+                    ? Container(
+                        key: ValueKey(widget.controller.status),
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 18,
+                          vertical: 9,
                         ),
-                        const SizedBox(width: 10),
-                        Text(
-                          widget.controller.status!,
-                          style: Theme.of(context).textTheme.labelLarge,
-                        ),
-                      ],
-                    ),
-                  )
-                : const SizedBox.shrink(key: ValueKey('idle')),
-          ),
-          Expanded(
-            child: widget.controller.messages.isEmpty
-                ? const _TalkEmpty()
-                : ListView.builder(
-                    controller: scroll,
-                    padding: const EdgeInsets.all(16),
-                    itemCount: widget.controller.messages.length,
-                    itemBuilder: (_, i) {
-                      final m = widget.controller.messages[i];
-                      return Align(
-                        alignment: m.role == TalkRole.user
-                            ? Alignment.centerRight
-                            : Alignment.centerLeft,
-                        child: Container(
-                          constraints: const BoxConstraints(maxWidth: 680),
-                          margin: const EdgeInsets.only(bottom: 14),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 14,
-                          ),
-                          decoration: BoxDecoration(
-                            color: m.role == TalkRole.user
-                                ? Theme.of(context).colorScheme.primaryContainer
-                                : Theme.of(context)
-                                      .colorScheme
-                                      .surfaceContainerHigh,
-                            borderRadius: BorderRadius.only(
-                              topLeft: const Radius.circular(20),
-                              topRight: const Radius.circular(20),
-                              bottomLeft: Radius.circular(
-                                m.role == TalkRole.user ? 20 : 6,
-                              ),
-                              bottomRight: Radius.circular(
-                                m.role == TalkRole.user ? 6 : 20,
-                              ),
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerLow,
+                        child: Row(
+                          children: [
+                            const SizedBox.square(
+                              dimension: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             ),
-                            border: m.failed
-                                ? Border.all(
-                                    color: Theme.of(context).colorScheme.error,
-                                  )
-                                : null,
-                          ),
-                          child: m.streaming && m.text.isEmpty
-                              ? const SizedBox.square(
-                                  dimension: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SelectableText(m.text),
-                                    if (m.failed &&
-                                        i ==
-                                            widget.controller.messages.length -
-                                                1) ...[
-                                      const SizedBox(height: 8),
-                                      TextButton.icon(
-                                        onPressed: widget.controller.canRetry
-                                            ? widget.controller.retryLast
-                                            : null,
-                                        icon: const Icon(Icons.refresh_rounded),
-                                        label: const Text('Retry'),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          SafeArea(
-            top: false,
-            child: Container(
-              margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-              padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface,
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: .07),
-                    blurRadius: 24,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 820),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: SegmentedButton<String>(
-                          segments: const [
-                            ButtonSegment(
-                              value: 'auto',
-                              label: Text('Orchestrate'),
-                              icon: Icon(Icons.account_tree_outlined, size: 16),
-                            ),
-                            ButtonSegment(
-                              value: 'direct',
-                              label: Text('Direct'),
-                              icon: Icon(Icons.arrow_forward_rounded, size: 16),
+                            const SizedBox(width: 10),
+                            Text(
+                              widget.controller.status!,
+                              style: Theme.of(context).textTheme.labelLarge,
                             ),
                           ],
-                          selected: {strategy},
-                          showSelectedIcon: false,
-                          style: const ButtonStyle(
-                            visualDensity: VisualDensity.compact,
-                          ),
-                          onSelectionChanged: (value) =>
-                              setState(() => strategy = value.first),
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      if (recording || widget.controller.transcribing)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Row(
-                            children: [
-                              Icon(
-                                recording
-                                    ? Icons.mic_rounded
-                                    : Icons.graphic_eq,
-                                color: recording
-                                    ? Theme.of(context).colorScheme.error
-                                    : Theme.of(context).colorScheme.primary,
+                      )
+                    : const SizedBox.shrink(key: ValueKey('idle')),
+              ),
+              Expanded(
+                child: widget.controller.messages.isEmpty
+                    ? const _TalkEmpty()
+                    : ListView.builder(
+                        controller: scroll,
+                        padding: const EdgeInsets.all(16),
+                        itemCount: widget.controller.messages.length,
+                        itemBuilder: (_, i) {
+                          final m = widget.controller.messages[i];
+                          return Align(
+                            alignment: m.role == TalkRole.user
+                                ? Alignment.centerRight
+                                : Alignment.centerLeft,
+                            child: Container(
+                              constraints: const BoxConstraints(maxWidth: 680),
+                              margin: const EdgeInsets.only(bottom: 14),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 14,
                               ),
-                              const SizedBox(width: 8),
-                              Text(
-                                recording
-                                    ? 'Recording · tap stop to review transcript'
-                                    : 'Turning voice into an editable draft…',
-                              ),
-                            ],
-                          ),
-                        ),
-                      if (recordingError != null ||
-                          widget.controller.voiceError != null)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              recordingError ?? 'Voice transcription is temporarily unavailable.',
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.error,
-                              ),
-                            ),
-                          ),
-                        ),
-                      TextField(
-                        controller: input,
-                        minLines: 1,
-                        maxLines: 5,
-                        textInputAction: TextInputAction.send,
-                        onSubmitted:
-                            widget.controller.sending ||
-                                widget.controller.transcribing ||
-                                recording
-                            ? null
-                            : (_) => submit(),
-                        decoration: InputDecoration(
-                          hintText: 'Describe an outcome or ask a question',
-                          filled: true,
-                          suffixIcon: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                tooltip: recording
-                                    ? 'Stop and transcribe voice draft'
-                                    : 'Record voice draft',
-                                onPressed:
-                                    widget.controller.sending ||
-                                        widget.controller.transcribing
-                                    ? null
-                                    : toggleVoiceDraft,
-                                color: recording
-                                    ? Theme.of(context).colorScheme.error
-                                    : null,
-                                icon: Icon(
-                                  recording
-                                      ? Icons.stop_circle_outlined
-                                      : Icons.mic_none_rounded,
+                              decoration: BoxDecoration(
+                                color: m.role == TalkRole.user
+                                    ? Theme.of(context)
+                                          .colorScheme
+                                          .primaryContainer
+                                    : Theme.of(context)
+                                          .colorScheme
+                                          .surfaceContainerHigh,
+                                borderRadius: BorderRadius.only(
+                                  topLeft: const Radius.circular(20),
+                                  topRight: const Radius.circular(20),
+                                  bottomLeft: Radius.circular(
+                                    m.role == TalkRole.user ? 20 : 6,
+                                  ),
+                                  bottomRight: Radius.circular(
+                                    m.role == TalkRole.user ? 6 : 20,
+                                  ),
                                 ),
+                                border: m.failed
+                                    ? Border.all(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error,
+                                      )
+                                    : null,
                               ),
-                              IconButton(
-                                tooltip: 'Send message',
-                                onPressed:
-                                    widget.controller.sending || recording
-                                    ? null
-                                    : submit,
-                                icon: const Icon(Icons.arrow_upward_rounded),
-                              ),
-                            ],
-                          ),
-                        ),
+                              child: m.streaming && m.text.isEmpty
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SelectableText(m.text),
+                                        if (m.failed &&
+                                            i ==
+                                                widget
+                                                        .controller
+                                                        .messages
+                                                        .length -
+                                                    1) ...[
+                                          const SizedBox(height: 8),
+                                          TextButton.icon(
+                                            onPressed:
+                                                widget.controller.canRetry
+                                                ? widget.controller.retryLast
+                                                : null,
+                                            icon: const Icon(
+                                              Icons.refresh_rounded,
+                                            ),
+                                            label: const Text('Retry'),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              SafeArea(
+                top: false,
+                child: Container(
+                  margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surface,
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: .07),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8),
                       ),
                     ],
                   ),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 820),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: SegmentedButton<String>(
+                              segments: const [
+                                ButtonSegment(
+                                  value: 'auto',
+                                  label: Text('Orchestrate'),
+                                  icon: Icon(
+                                    Icons.account_tree_outlined,
+                                    size: 16,
+                                  ),
+                                ),
+                                ButtonSegment(
+                                  value: 'direct',
+                                  label: Text('Direct'),
+                                  icon: Icon(
+                                    Icons.arrow_forward_rounded,
+                                    size: 16,
+                                  ),
+                                ),
+                              ],
+                              selected: {strategy},
+                              showSelectedIcon: false,
+                              style: const ButtonStyle(
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              onSelectionChanged: (value) =>
+                                  setState(() => strategy = value.first),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          if (recording || widget.controller.transcribing)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    recording
+                                        ? Icons.mic_rounded
+                                        : Icons.graphic_eq,
+                                    color: recording
+                                        ? Theme.of(context).colorScheme.error
+                                        : Theme.of(context).colorScheme.primary,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    recording
+                                        ? 'Recording · tap stop to review transcript'
+                                        : 'Turning voice into an editable draft…',
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (recordingError != null ||
+                              widget.controller.voiceError != null)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  recordingError ?? 'Voice transcription is temporarily unavailable.',
+                                  style: TextStyle(
+                                    color: Theme.of(context).colorScheme.error,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          TextField(
+                            controller: input,
+                            focusNode: inputFocus,
+                            autofocus:
+                                !kIsWeb &&
+                                defaultTargetPlatform == TargetPlatform.macOS,
+                            minLines: 1,
+                            maxLines: 5,
+                            textInputAction: TextInputAction.send,
+                            onSubmitted:
+                                widget.controller.sending ||
+                                    widget.controller.transcribing ||
+                                    recording
+                                ? null
+                                : (_) => submit(),
+                            decoration: InputDecoration(
+                              hintText: 'Describe an outcome or ask a question',
+                              filled: true,
+                              suffixIcon: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: recording
+                                        ? 'Stop and transcribe voice draft'
+                                        : 'Record voice draft',
+                                    onPressed:
+                                        widget.controller.sending ||
+                                            widget.controller.transcribing
+                                        ? null
+                                        : toggleVoiceDraft,
+                                    color: recording
+                                        ? Theme.of(context).colorScheme.error
+                                        : null,
+                                    icon: Icon(
+                                      recording
+                                          ? Icons.stop_circle_outlined
+                                          : Icons.mic_none_rounded,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Send message',
+                                    onPressed:
+                                        widget.controller.sending || recording
+                                        ? null
+                                        : submit,
+                                    icon: const Icon(
+                                      Icons.arrow_upward_rounded,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ),
+            ],
+          );
+          if (constraints.maxWidth < 1180) return conversation;
+          return Row(
+            children: [
+              Expanded(child: conversation),
+              SizedBox(
+                width: 348,
+                child: _TalkActivityPane(controller: widget.controller),
+              ),
+            ],
+          );
+        },
+      ),
+    ),
+  );
+}
+
+class _TalkActivityPane extends StatelessWidget {
+  const _TalkActivityPane({required this.controller});
+
+  final TalkController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final activeCount = controller.activities
+        .where((item) => item.state == TalkActivityState.active)
+        .length;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surface.withValues(alpha: .78),
+        border: Border(left: BorderSide(color: scheme.outlineVariant)),
+      ),
+      child: SafeArea(
+        left: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
+              child: Row(
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: scheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(
+                      Icons.hub_outlined,
+                      size: 18,
+                      color: scheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 11),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Live activity',
+                          style: TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          'Tools, specialists, and approvals',
+                          style: TextStyle(fontSize: 11.5),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (controller.sending || activeCount > 0)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: scheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(99),
+                      ),
+                      child: Text(
+                        activeCount > 0 ? '$activeCount active' : 'Live',
+                        style: TextStyle(
+                          color: scheme.primary,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  if (controller.sending && controller.runId != null) ...[
+                    const SizedBox(width: 4),
+                    IconButton(
+                      tooltip: 'Stop this run',
+                      onPressed: controller.canceling
+                          ? null
+                          : controller.cancel,
+                      icon: controller.canceling
+                          ? const SizedBox.square(
+                              dimension: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.stop_circle_outlined, size: 20),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            Divider(height: 1, color: scheme.outlineVariant),
+            Expanded(
+              child: controller.activities.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(28),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.route_outlined,
+                              size: 28,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              'Activity will appear here',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 5),
+                            Text(
+                              'Asael shows observable run decisions without exposing private reasoning.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                      itemCount: controller.activities.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 9),
+                      itemBuilder: (context, index) => _TalkActivityCard(
+                        activity: controller.activities[index],
+                      ),
+                    ),
+            ),
+            if (controller.runId != null)
+              Container(
+                padding: const EdgeInsets.fromLTRB(18, 10, 18, 12),
+                decoration: BoxDecoration(
+                  border: Border(top: BorderSide(color: scheme.outlineVariant)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.shield_outlined,
+                      size: 14,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        'Governed run ${_shortId(controller.runId!)}',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: scheme.onSurfaceVariant,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _shortId(String value) =>
+      value.length <= 12 ? value : value.substring(0, 12);
+}
+
+class _TalkActivityCard extends StatelessWidget {
+  const _TalkActivityCard({required this.activity});
+
+  final TalkActivity activity;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (icon, color) = switch (activity.state) {
+      TalkActivityState.active => (
+        Icons.motion_photos_on_outlined,
+        scheme.primary,
+      ),
+      TalkActivityState.succeeded => (
+        Icons.check_circle_outline,
+        scheme.tertiary,
+      ),
+      TalkActivityState.waiting => (Icons.schedule_rounded, scheme.secondary),
+      TalkActivityState.failed => (Icons.error_outline_rounded, scheme.error),
+      TalkActivityState.info => (
+        Icons.info_outline_rounded,
+        scheme.onSurfaceVariant,
+      ),
+    };
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow.withValues(alpha: .84),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: .8)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Icon(icon, size: 17, color: color),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  activity.title,
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  activity.detail,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 11.5,
+                    height: 1.35,
+                  ),
+                ),
+                if (activity.actionLabel != null &&
+                    activity.actionRoute != null) ...[
+                  const SizedBox(height: 7),
+                  TextButton.icon(
+                    onPressed: () => context.go(activity.actionRoute!),
+                    icon: const Icon(Icons.arrow_forward_rounded, size: 15),
+                    label: Text(activity.actionLabel!),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 5,
+                      ),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         ],
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _TalkEmpty extends StatelessWidget {

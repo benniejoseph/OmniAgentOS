@@ -191,9 +191,15 @@ abstract interface class KnowledgeRepository {
 }
 
 class KnowledgeController extends ChangeNotifier {
-  KnowledgeController(this.repository, {required this.canManage});
+  KnowledgeController(
+    this.repository, {
+    required this.canManage,
+    required this.mutationsAvailable,
+  });
   final KnowledgeRepository repository;
   final bool canManage;
+  final bool mutationsAvailable;
+  bool get canMutate => canManage && mutationsAvailable;
   KnowledgeState? state;
   bool loading = false;
   Object? error;
@@ -218,11 +224,13 @@ class KnowledgeController extends ChangeNotifier {
   }
 
   Future<void> add(Json v) async {
+    if (!canMutate) throw StateError('Memory changes are not available here.');
     await repository.addMemory(v);
     await refresh();
   }
 
   Future<void> correct(String id, Json v) async {
+    if (!canMutate) throw StateError('Memory changes are not available here.');
     await repository.correctMemory(id, v);
     await refresh();
   }
@@ -233,11 +241,13 @@ class KnowledgeController extends ChangeNotifier {
       repository.previewForgetMemory(id);
 
   Future<void> forget(String id, String expectedManifestSha256) async {
+    if (!canMutate) throw StateError('Memory changes are not available here.');
     await repository.forgetMemory(id, expectedManifestSha256);
     await refresh();
   }
 
   Future<void> rebuild() async {
+    if (!canMutate) throw StateError('Memory changes are not available here.');
     await repository.rebuildGraph();
     await refresh();
   }
@@ -287,7 +297,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
             ],
           ),
           actions: [
-            if (c.canManage)
+            if (c.canMutate)
               IconButton(
                 tooltip: 'Add memory',
                 onPressed: _add,
@@ -408,7 +418,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
                       ),
                       isThreeLine: true,
                       trailing:
-                          widget.controller.canManage &&
+                          widget.controller.canMutate &&
                               m.claimStatus != 'forgotten'
                           ? PopupMenuButton<String>(
                               onSelected: (v) => v == 'forget'
@@ -546,7 +556,7 @@ class _KnowledgeViewState extends State<KnowledgeView>
               Expanded(
                 child: _Metric('${stats['communities'] ?? '—'}', 'communities'),
               ),
-              if (widget.controller.canManage)
+              if (widget.controller.canMutate)
                 IconButton.filledTonal(
                   tooltip: 'Rebuild graph',
                   onPressed: () => _run(widget.controller.rebuild),

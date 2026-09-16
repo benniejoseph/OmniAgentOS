@@ -150,9 +150,15 @@ abstract interface class AgentsRepository {
 }
 
 class AgentsController extends ChangeNotifier {
-  AgentsController(this.repository, {required this.canManage});
+  AgentsController(
+    this.repository, {
+    required this.canManage,
+    required this.mutationsAvailable,
+  });
   final AgentsRepository repository;
   final bool canManage;
+  final bool mutationsAvailable;
+  bool get canMutate => canManage && mutationsAvailable;
   AgentLedger? ledger;
   bool loading = false;
   Object? error;
@@ -177,6 +183,7 @@ class AgentsController extends ChangeNotifier {
   }
 
   Future<void> saveSkill(Json value, {String? id}) async {
+    if (!canMutate) throw StateError('Agent changes are not available here.');
     await repository.saveSkill(value, id: id);
     await refresh();
   }
@@ -188,12 +195,13 @@ class AgentsController extends ChangeNotifier {
   }
 
   Future<void> removeSkill(String id) async {
+    if (!canMutate) throw StateError('Agent changes are not available here.');
     await repository.deleteSkill(id);
     await refresh();
   }
 
   void _requireManageableAgent(String? id) {
-    if (!canManage ||
+    if (!canMutate ||
         (id != null &&
             !(ledger?.agents.any(
                   (agent) => agent.id == id && agent.manageable,
@@ -244,7 +252,7 @@ class _AgentsViewState extends State<AgentsView>
             ],
           ),
           actions: [
-            if (c.canManage)
+            if (c.canMutate)
               IconButton(
                 tooltip: 'Create',
                 onPressed: () => tabs.index == 1 ? _editSkill() : _editAgent(),
@@ -353,7 +361,7 @@ class _AgentsViewState extends State<AgentsView>
                               ],
                             ),
                           ),
-                          if (a.manageable && widget.controller.canManage)
+                          if (a.manageable && widget.controller.canMutate)
                             PopupMenuButton<String>(
                               onSelected: (v) => v == 'edit'
                                   ? _editAgent(a)
@@ -400,7 +408,7 @@ class _AgentsViewState extends State<AgentsView>
                 maxLines: 3,
               ),
               isThreeLine: true,
-              trailing: !s.manageable || !widget.controller.canManage
+              trailing: !s.manageable || !widget.controller.canMutate
                   ? _Status(s.status)
                   : PopupMenuButton<String>(
                       onSelected: (v) => v == 'edit'

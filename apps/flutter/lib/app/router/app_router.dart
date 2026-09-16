@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -34,10 +35,15 @@ import '../navigation/adaptive_shell.dart';
 import '../navigation/app_destination.dart';
 import '../navigation/destination_placeholder.dart';
 
+String appHomePath() => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
+    ? '/talk'
+    : '/today';
+
 final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
+  final homePath = appHomePath();
   return GoRouter(
-    initialLocation: '/today',
+    initialLocation: homePath,
     redirect: (context, state) {
       final atLogin = state.matchedLocation == '/login';
       final atBootstrap = state.matchedLocation == '/bootstrap';
@@ -45,7 +51,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         return atBootstrap ? null : '/bootstrap';
       }
       if (session.value == null) return atLogin ? null : '/login';
-      if (atLogin || atBootstrap) return '/today';
+      if (atLogin || atBootstrap) return homePath;
       return null;
     },
     routes: [

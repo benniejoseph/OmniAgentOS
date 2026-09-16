@@ -28,6 +28,9 @@ class _TodayRepository implements TodayRepository {
 
 class _TalkRepository implements TalkRepository {
   @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
   Stream<SseEvent> send({
     required String message,
     String? threadId,
