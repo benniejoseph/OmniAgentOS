@@ -912,7 +912,8 @@ export async function createProjectBuilderPreviewDeploymentService(
   if (workspace.sha256 !== checkpoint.workspaceSha256) {
     throw new Error("The workspace changed after verification. Seal and verify the current revision again.");
   }
-  if (await getBuilderRepositoryWorkspace(session.sandboxName)) {
+  const repositoryWorkspace = await getBuilderRepositoryWorkspace(session.sandboxName);
+  if (repositoryWorkspace && !value.repositoryDeliveryId) {
     throw new Error("Repository-backed preview deployment must use its reviewed GitHub commit. Direct source upload remains limited to starter workspaces.");
   }
   let repositoryDelivery;

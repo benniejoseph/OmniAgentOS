@@ -64,6 +64,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
   const [agentOutput, setAgentOutput] = useState("");
   const [sentinelOutput, setSentinelOutput] = useState("");
   const [commandOutput, setCommandOutput] = useState("");
+  const [previewGeneration, setPreviewGeneration] = useState(0);
   const [fileSearch, setFileSearch] = useState("");
   const [githubOpen, setGithubOpen] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
@@ -310,8 +311,11 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
     try {
       const payload = await mutate<{ result: { exitCode: number; stdout: string; stderr: string; durationMs: number } }>(project.id, { action: "command.run", sessionId: session.id, command });
       setCommandOutput([payload.result.stdout, payload.result.stderr].filter(Boolean).join("\n") || `${command} completed with exit code ${payload.result.exitCode}.`);
-      if (command === "start_preview") await loadSession();
       await loadSession();
+      if (command === "start_preview") {
+        setPreviewGeneration((generation) => generation + 1);
+        setView("preview");
+      }
     } catch (commandError) {
       setError(message(commandError));
     } finally {
@@ -705,7 +709,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
         <div><span className={styles.liveDot} /><div><strong>Build studio</strong><small>{repositoryWorkspaceCurrent && snapshot.repositoryWorkspace ? `${snapshot.repositoryWorkspace.repositoryFullName} · ${snapshot.repositoryWorkspace.baseSha.slice(0, 10)}` : session.templateId} · revision {session.revision}</small></div></div>
         <div className={styles.headerActions}>
           <button type="button" onClick={() => void saveCheckpoint()} disabled={Boolean(busy) || dirty} title={dirty ? "Save the open file before sealing a checkpoint" : "Save a recoverable checkpoint"}><Save size={14} /> Checkpoint</button>
-          <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy)} title="Restart preview"><RefreshCw size={14} className={busy === "start_preview" ? "animate-spin" : undefined} /></button>
+          <button type="button" onClick={() => void runCommand("start_preview")} disabled={Boolean(busy)} title="Restart preview" aria-label="Restart live preview"><RefreshCw size={14} className={busy === "start_preview" ? "animate-spin" : undefined} /></button>
           {snapshot.previewUrl ? <a href={snapshot.previewUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open preview</a> : null}
           <button type="button" onClick={() => { setDeployOpen(false); void toggleGithub(); }} aria-expanded={githubOpen} disabled={Boolean(busy) && busy !== "github.repositories"} title="Review and deliver this build through the private GitHub App"><GitBranch size={14} /> GitHub</button>
           <button type="button" onClick={toggleDeploy} aria-expanded={deployOpen} disabled={Boolean(busy)} title="Create and verify a revision-bound Vercel preview"><Rocket size={14} /> Deploy</button>
@@ -810,7 +814,7 @@ export function AppBuilderStudio({ project }: { project: BuildProject }) {
 
         <div className={styles.canvas}>
           <div className={styles.canvasTabs} role="tablist"><button type="button" className={view === "preview" ? styles.selected : undefined} onClick={() => setView("preview")}><MonitorPlay size={14} /> Preview</button><button type="button" className={view === "code" ? styles.selected : undefined} onClick={() => setView("code")}><Code2 size={14} /> Code{dirty ? <i /> : null}</button><span>{file?.path || "No file selected"}</span></div>
-          {view === "preview" ? <div className={styles.previewFrame}>{snapshot.previewUrl ? <iframe key={snapshot.previewUrl} src={snapshot.previewUrl} title={`${project.title} live preview`} sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts" /> : <div><Loader2 className="animate-spin" /><span>Preview is waking up…</span></div>}</div> : <div className={styles.editor}><div><span>{file?.path}</span><small>{file ? `${formatBytes(file.size)} · ${file.sha256.slice(0, 10)}…` : ""}</small></div><textarea aria-label={`Edit ${file?.path || "file"}`} spellCheck={false} value={draft} onChange={(event) => setDraft(event.currentTarget.value)} disabled={!file} /><footer><span>{dirty ? "Unsaved change" : "Saved at exact revision"}</span><div className={styles.editorActions}><button type="button" className={styles.deleteAction} onClick={() => void deleteFile()} disabled={!file || dirty || Boolean(busy)}>{busy === "delete" ? <Loader2 className="animate-spin" size={13} /> : <Trash2 size={13} />} Delete</button><button type="button" onClick={() => void saveFile()} disabled={!dirty || busy === "save"}>{busy === "save" ? <Loader2 className="animate-spin" size={13} /> : <Save size={13} />} Save file</button></div></footer></div>}
+          {view === "preview" ? <div className={styles.previewFrame}>{snapshot.previewUrl ? <iframe key={`${snapshot.previewUrl}:${previewGeneration}`} src={snapshot.previewUrl} title={`${project.title} live preview`} sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts" /> : <div><Loader2 className="animate-spin" /><span>Preview is waking up…</span></div>}</div> : <div className={styles.editor}><div><span>{file?.path}</span><small>{file ? `${formatBytes(file.size)} · ${file.sha256.slice(0, 10)}…` : ""}</small></div><textarea aria-label={`Edit ${file?.path || "file"}`} spellCheck={false} value={draft} onChange={(event) => setDraft(event.currentTarget.value)} disabled={!file} /><footer><span>{dirty ? "Unsaved change" : "Saved at exact revision"}</span><div className={styles.editorActions}><button type="button" className={styles.deleteAction} onClick={() => void deleteFile()} disabled={!file || dirty || Boolean(busy)}>{busy === "delete" ? <Loader2 className="animate-spin" size={13} /> : <Trash2 size={13} />} Delete</button><button type="button" onClick={() => void saveFile()} disabled={!dirty || busy === "save"}>{busy === "save" ? <Loader2 className="animate-spin" size={13} /> : <Save size={13} />} Save file</button></div></footer></div>}
           <div className={styles.checks}><div><SquareTerminal size={14} /><span>Focused checks</span></div>{commands.map((command) => <button type="button" key={command} onClick={() => void runCommand(command)} disabled={Boolean(busy) || dirty}>{busy === command ? <Loader2 className="animate-spin" size={12} /> : <CheckCircle2 size={12} />} {command}</button>)}</div>
           {commandOutput ? <pre className={styles.output}>{commandOutput}</pre> : null}
         </div>
