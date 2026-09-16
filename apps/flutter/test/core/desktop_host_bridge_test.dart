@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('accepts only allowlisted desktop routes', () async {
     final opened = <String>[];
     final bridge = DesktopHostBridge(enabled: false)
@@ -59,5 +61,24 @@ void main() {
         ),
       ),
     );
+  });
+
+  test('asks AppKit to restore only window presentation', () async {
+    const channel = MethodChannel('test.asael.desktop');
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return null;
+        });
+    final bridge = DesktopHostBridge(channel: channel, enabled: true);
+
+    await bridge.showMainPresentation();
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'showMainPresentation');
+    expect(calls.single.arguments, isNull);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null);
   });
 }
