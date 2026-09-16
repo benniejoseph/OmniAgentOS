@@ -110,14 +110,31 @@ or sign that binary.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
-build. `apps/flutter/tool/build_macos_private_release.sh` creates the private DMG
-and prints its SHA-256. A local Xcode signature is sufficient for the owner's Mac;
-distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
-`ASAEL_MACOS_NOTARY_PROFILE`, which makes signing, notarization, stapling, and
-verification mandatory. The Firebase Apple configuration is bundled and matches
-the registered compatibility bundle ID. APNs still requires an Apple signing
-identity, Push Notifications capability, and the corresponding provider key;
-configuration alone is not treated as a delivery receipt.
+build. For the owner's Mac, run
+`apps/flutter/tool/install_macos_private_signing_identity.sh` once. It creates the
+dedicated `Asael Private Code Signing` identity in the user-only keychain at
+`~/Library/Application Support/Asael/signing/asael-private-signing.keychain-db`;
+the adjacent password file is mode 600 and the directory is mode 700. Back up both
+files together and never commit or print the password.
+
+`apps/flutter/tool/build_macos_private_release.sh` auto-discovers that private
+keychain, signs nested code before the application, verifies the result strictly,
+creates `build/distribution/macos/Asael-<version>-macOS.dmg`, and prints its
+SHA-256. The local self-signed mode is owner-Mac-only: it changes no system trust,
+cannot be notarized, and omits Hardened Runtime because the certificate has no Apple
+Team Identifier. The sandbox and release entitlements are still applied. After a
+private signing update, the first launch may briefly show the securing state while
+macOS reauthorizes existing ordinary-Keychain items; every credential operation is
+bounded and later launches use the restored session normally. On macOS 27 the
+packager uses `diskutil image create`, with `hdiutil` retained as the compatible
+fallback.
+
+Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
+`ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
+signing, notarization, stapling, and verification mandatory. The Firebase Apple
+configuration is bundled and matches the registered compatibility bundle ID. APNs
+still requires an Apple signing identity, Push Notifications capability, and the
+corresponding provider key; configuration alone is not treated as a delivery receipt.
 
 Android release builds fail closed when a production signing identity is not
 available. On the release Mac, `apps/flutter/tool/build_android_release.sh`

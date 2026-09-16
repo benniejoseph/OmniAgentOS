@@ -41,10 +41,14 @@ same Flutter routes and server services as every other client surface.
 
 The macOS client first enrolled on native contract v8 and advances through ADR 011's
 current/previous discovery window. The platform identifier is `macos`.
-The ordinary macOS Keychain protects native session credentials without a shared
-access group. Server membership, device/session
-state, exact native mutation capabilities, approvals, idempotency, and governed tool
-execution remain authoritative on every request.
+The ordinary file-based macOS Keychain protects native session credentials under a
+stable Asael service namespace without a shared access group. Every Keychain
+operation is bounded so an operating-system authorization stall cannot hold the
+application bootstrap indefinitely. An owner-only signing update may require a
+one-time macOS reauthorization of existing items; the UI reports that securing state
+and retries remain bounded. Server membership, device/session state, exact native
+mutation capabilities, approvals, idempotency, and governed tool execution remain
+authoritative on every request.
 
 ## Sandbox and local permission boundary
 
@@ -75,12 +79,18 @@ conflicts are presented for recovery instead of being silently overwritten.
 ## Distribution and updates
 
 Asael is a private application and does not require Mac App Store publication.
-Development builds run from Flutter/Xcode. Private releases use the existing bundle
-identity, Hardened Runtime, an Apple Development or Developer ID signature as
-appropriate, notarization for distribution to additional Macs, and a signed update
-feed with an explicit rollback path. The matching Firebase Apple application
-configuration is bundled; push remains configuration-required until Apple
-Developer signing and APNs credentials are proven.
+Development builds run from Flutter/Xcode. The owner's Mac may use the dedicated
+user-only self-signed Asael identity stored in a private keychain. That identity
+does not alter system trust, grant Apple distribution authority, or authorize
+installation elsewhere. Because a self-signed identity has no Apple Team Identifier,
+the local packager omits Hardened Runtime so nested Flutter libraries remain loadable;
+the application sandbox and least-privilege entitlements remain enforced.
+
+Distribution to another Mac uses the existing bundle identity, Hardened Runtime, an
+Apple Development or Developer ID signature as appropriate, notarization, and a
+signed update feed with an explicit rollback path. The matching Firebase Apple
+application configuration is bundled; push remains configuration-required until
+Apple Developer signing and APNs credentials are proven.
 
 The first release does not claim native payment signing, unrestricted local computer
 control, or background data access that has not been separately reviewed and proven.
@@ -108,15 +118,18 @@ its generated native contracts are already the supported shared-client foundatio
 
 1. Add `macos` to native contract v8, authentication policy, session storage schema,
    push registration boundary, and focused compatibility fixtures while preserving v7.
-2. Prove sandboxed network access, login, token rotation, Keychain restoration,
-   biometric lock, remote wipe, and desktop window lifecycle.
+2. Prove sandboxed network access, login, Keychain restoration, and desktop window
+   lifecycle; retain token rotation and remote wipe through the shared native session
+   contract.
 3. Deliver menu-bar Today, global Quick Entry, bulk file/microphone Capture,
    drag/drop, Share Extension intake, and notification actions through allowlisted
    native intents.
 4. Complete the high-use Today, Command, Inbox, Capture, Projects, and Memory desktop
    journeys before widening administrative parity.
 5. Add an encrypted projection cache and explicit reconnect/conflict presentation.
-6. Sign, notarize, package, and privately install only after focused release checks.
+6. Privately sign, package, and install on the owner's Mac only after focused release
+   checks; require Apple-issued signing and notarization before distributing to
+   another Mac.
 
 ## Rollback
 
@@ -134,5 +147,6 @@ intent quarantine, audit history, and server canonical state survive a client ro
 - Desktop quality still requires deliberate adaptive layouts, keyboard behavior,
   pointer states, accessibility, and focused macOS tests; route presence alone is not
   feature parity.
-- Apple signing, APNs, notarization, and a complete Xcode toolchain remain external
-  release prerequisites rather than reasons to fork the product architecture.
+- Xcode and owner-Mac private signing are proven; Apple Developer signing, APNs, and
+  notarization remain external distribution prerequisites rather than reasons to
+  fork the product architecture.
