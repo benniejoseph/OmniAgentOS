@@ -16,6 +16,7 @@ void main() {
 
     expect(options.usesDataProtectionKeychain, isFalse);
     expect(options.groupId, isNull);
+    expect(options.accountName, 'app.omniagent.omniagent.secure-store.v1');
     expect(options.synchronizable, isFalse);
     expect(options.accessibility, isNull);
   });

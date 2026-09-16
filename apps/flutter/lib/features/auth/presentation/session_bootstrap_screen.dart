@@ -84,6 +84,19 @@ class SessionBootstrapScreen extends ConsumerWidget {
                       dimension: 24,
                       child: CircularProgressIndicator(strokeWidth: 2.5),
                     ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Securing your private workspace…',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'The first launch after a private update can take a moment.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
                   ],
                 ),
         ),

@@ -9,6 +9,7 @@ import '../auth/biometric_gate.dart';
 
 class SecureSessionStore {
   SecureSessionStore(this._storage);
+  static const _operationTimeout = Duration(seconds: 20);
   static const _tokenKey = 'asael.session_token';
   static const _refreshTokenKey = 'asael.refresh_token';
   static const _accessExpiresAtKey = 'asael.access_expires_at';
@@ -23,6 +24,20 @@ class SecureSessionStore {
   final FlutterSecureStorage _storage;
   bool _biometricReleaseUnlocked = false;
 
+  Future<T> _bounded<T>(Future<T> operation) => operation.timeout(
+    _operationTimeout,
+    onTimeout: () => throw StateError(
+      'The operating system secure store did not respond. Reopen Asael and try again.',
+    ),
+  );
+
+  Future<String?> _read(String key) => _bounded(_storage.read(key: key));
+
+  Future<void> _write(String key, String value) =>
+      _bounded(_storage.write(key: key, value: value));
+
+  Future<void> _delete(String key) => _bounded(_storage.delete(key: key));
+
   Future<String?> readToken() async {
     await _requireBiometricRelease();
     return _readTokenWithoutRelease();
@@ -31,29 +46,30 @@ class SecureSessionStore {
   Future<String?> readTokenForRemoteWipe() => _readTokenWithoutRelease();
 
   Future<String?> _readTokenWithoutRelease() async {
-    final token = await _storage.read(key: _tokenKey);
+    final token = await _read(_tokenKey);
     if (token != null) return token;
-    final legacyToken = await _storage.read(key: _legacyTokenKey);
+    final legacyToken = await _read(_legacyTokenKey);
     if (legacyToken == null) return null;
-    await _storage.write(key: _tokenKey, value: legacyToken);
-    await _storage.delete(key: _legacyTokenKey);
+    await _write(_tokenKey, legacyToken);
+    await _delete(_legacyTokenKey);
     return legacyToken;
   }
 
   Future<void> writeToken(String token) async {
-    await _storage.write(key: _tokenKey, value: token);
-    await _storage.delete(key: _legacyTokenKey);
+    await _write(_tokenKey, token);
+    await _delete(_legacyTokenKey);
   }
 
   Future<String?> readRefreshToken() async {
     await _requireBiometricRelease();
-    return _storage.read(key: _refreshTokenKey);
+    return _read(_refreshTokenKey);
   }
 
-  Future<bool> hasStoredCredentials() async =>
-      await _storage.read(key: _tokenKey) != null ||
-      await _storage.read(key: _refreshTokenKey) != null ||
-      await _storage.read(key: _legacyTokenKey) != null;
+  Future<bool> hasStoredCredentials() async {
+    return await _read(_tokenKey) != null ||
+        await _read(_refreshTokenKey) != null ||
+        await _read(_legacyTokenKey) != null;
+  }
 
   Future<void> writeTokens({
     required String accessToken,
@@ -63,17 +79,17 @@ class SecureSessionStore {
     // Store the new refresh credential first and publish its matching access
     // token last. A crash cannot expose the new access token with an old
     // refresh token.
-    await _storage.write(key: _refreshTokenKey, value: refreshToken);
-    await _storage.write(key: _accessExpiresAtKey, value: accessExpiresAt);
-    await _storage.write(key: _tokenKey, value: accessToken);
-    await _storage.delete(key: _legacyTokenKey);
+    await _write(_refreshTokenKey, refreshToken);
+    await _write(_accessExpiresAtKey, accessExpiresAt);
+    await _write(_tokenKey, accessToken);
+    await _delete(_legacyTokenKey);
     _biometricReleaseUnlocked = true;
   }
 
   Future<bool> accessTokenNeedsRefresh({
     Duration leeway = const Duration(seconds: 30),
   }) async {
-    final value = await _storage.read(key: _accessExpiresAtKey);
+    final value = await _read(_accessExpiresAtKey);
     if (value == null) return false;
     final expiresAt = DateTime.tryParse(value)?.toUtc();
     if (expiresAt == null) return true;
@@ -81,28 +97,26 @@ class SecureSessionStore {
   }
 
   Future<String> readOrCreateDeviceId() async {
-    final existing = await _storage.read(key: _deviceIdKey);
+    final existing = await _read(_deviceIdKey);
     if (existing != null && existing.isNotEmpty) return existing;
     final random = Random.secure();
     final bytes = List<int>.generate(24, (_) => random.nextInt(256));
     final created = 'asael-${base64UrlEncode(bytes).replaceAll('=', '')}';
-    await _storage.write(key: _deviceIdKey, value: created);
+    await _write(_deviceIdKey, created);
     return created;
   }
 
-  Future<String?> readExistingDeviceId() => _storage.read(key: _deviceIdKey);
+  Future<String?> readExistingDeviceId() => _read(_deviceIdKey);
 
-  Future<String?> readPushRegistrationId() =>
-      _storage.read(key: _pushRegistrationIdKey);
+  Future<String?> readPushRegistrationId() => _read(_pushRegistrationIdKey);
 
   Future<void> writePushRegistrationId(String value) =>
-      _storage.write(key: _pushRegistrationIdKey, value: value);
+      _write(_pushRegistrationIdKey, value);
 
-  Future<void> clearPushRegistrationId() =>
-      _storage.delete(key: _pushRegistrationIdKey);
+  Future<void> clearPushRegistrationId() => _delete(_pushRegistrationIdKey);
 
   Future<String> readPushPreviewPolicy() async {
-    final value = await _storage.read(key: _pushPreviewPolicyKey);
+    final value = await _read(_pushPreviewPolicyKey);
     return const {'hidden', 'generic', 'title'}.contains(value)
         ? value!
         : 'hidden';
@@ -112,21 +126,21 @@ class SecureSessionStore {
     if (!const {'hidden', 'generic', 'title'}.contains(value)) {
       throw ArgumentError.value(value, 'value', 'Unknown push preview policy.');
     }
-    await _storage.write(key: _pushPreviewPolicyKey, value: value);
+    await _write(_pushPreviewPolicyKey, value);
   }
 
   Future<String?> readPendingPushAcknowledgement() =>
-      _storage.read(key: _pendingPushAcknowledgementKey);
+      _read(_pendingPushAcknowledgementKey);
 
   Future<void> writePendingPushAcknowledgement(String value) =>
-      _storage.write(key: _pendingPushAcknowledgementKey, value: value);
+      _write(_pendingPushAcknowledgementKey, value);
 
   Future<void> clearPendingPushAcknowledgement() =>
-      _storage.delete(key: _pendingPushAcknowledgementKey);
+      _delete(_pendingPushAcknowledgementKey);
 
   Future<DeviceSecretMaterial> readOrCreateCaptureOutboxSecret() async {
     await _requireBiometricRelease();
-    final encoded = await _storage.read(key: _captureOutboxSecretKey);
+    final encoded = await _read(_captureOutboxSecretKey);
     if (encoded != null) return DeviceSecretMaterial.decode(encoded);
     final random = Random.secure();
     final idBytes = List<int>.generate(18, (_) => random.nextInt(256));
@@ -135,22 +149,19 @@ class SecureSessionStore {
       id: base64UrlEncode(idBytes).replaceAll('=', ''),
       bytes: Uint8List.fromList(keyBytes),
     );
-    await _storage.write(
-      key: _captureOutboxSecretKey,
-      value: material.encode(),
-    );
+    await _write(_captureOutboxSecretKey, material.encode());
     return material;
   }
 
   Future<bool> readBiometricEnabled() async =>
-      await _storage.read(key: _biometricEnabledKey) == 'true';
+      await _read(_biometricEnabledKey) == 'true';
 
   Future<void> setBiometricEnabled(bool enabled) async {
     if (enabled) {
-      await _storage.write(key: _biometricEnabledKey, value: 'true');
+      await _write(_biometricEnabledKey, 'true');
       _biometricReleaseUnlocked = true;
     } else {
-      await _storage.delete(key: _biometricEnabledKey);
+      await _delete(_biometricEnabledKey);
       _biometricReleaseUnlocked = true;
     }
   }
@@ -166,28 +177,28 @@ class SecureSessionStore {
 
   Future<void> clear() async {
     await Future.wait([
-      _storage.delete(key: _tokenKey),
-      _storage.delete(key: _refreshTokenKey),
-      _storage.delete(key: _accessExpiresAtKey),
-      _storage.delete(key: _legacyTokenKey),
-      _storage.delete(key: _pushRegistrationIdKey),
-      _storage.delete(key: _pendingPushAcknowledgementKey),
+      _delete(_tokenKey),
+      _delete(_refreshTokenKey),
+      _delete(_accessExpiresAtKey),
+      _delete(_legacyTokenKey),
+      _delete(_pushRegistrationIdKey),
+      _delete(_pendingPushAcknowledgementKey),
     ]);
     _biometricReleaseUnlocked = false;
   }
 
   Future<void> clearForRemoteWipe() async {
     await Future.wait([
-      _storage.delete(key: _tokenKey),
-      _storage.delete(key: _refreshTokenKey),
-      _storage.delete(key: _accessExpiresAtKey),
-      _storage.delete(key: _legacyTokenKey),
-      _storage.delete(key: _deviceIdKey),
-      _storage.delete(key: _biometricEnabledKey),
-      _storage.delete(key: _captureOutboxSecretKey),
-      _storage.delete(key: _pushRegistrationIdKey),
-      _storage.delete(key: _pushPreviewPolicyKey),
-      _storage.delete(key: _pendingPushAcknowledgementKey),
+      _delete(_tokenKey),
+      _delete(_refreshTokenKey),
+      _delete(_accessExpiresAtKey),
+      _delete(_legacyTokenKey),
+      _delete(_deviceIdKey),
+      _delete(_biometricEnabledKey),
+      _delete(_captureOutboxSecretKey),
+      _delete(_pushRegistrationIdKey),
+      _delete(_pushPreviewPolicyKey),
+      _delete(_pendingPushAcknowledgementKey),
     ]);
     _biometricReleaseUnlocked = false;
   }
@@ -254,6 +265,7 @@ FlutterSecureStorage createAsaelSecureStorage({
   // silently widening this credential boundary.
   return const FlutterSecureStorage(
     mOptions: MacOsOptions(
+      accountName: 'app.omniagent.omniagent.secure-store.v1',
       // kSecAttrAccessible selects the data-protection Keychain on macOS.
       // Leave it unset when using the ordinary login Keychain.
       accessibility: null,

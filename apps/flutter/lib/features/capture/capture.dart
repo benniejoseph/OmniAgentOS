@@ -17,6 +17,14 @@ export 'capture_models.dart';
 
 bool get _isMacOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 
+@visibleForTesting
+bool shouldRecoverInterruptedImagePick({
+  bool? isWeb,
+  TargetPlatform? platform,
+}) =>
+    !(isWeb ?? kIsWeb) &&
+    (platform ?? defaultTargetPlatform) == TargetPlatform.android;
+
 class CaptureView extends StatefulWidget {
   const CaptureView({super.key, required this.controller});
   final CaptureController controller;
@@ -42,7 +50,12 @@ class _CaptureViewState extends State<CaptureView> {
   void initState() {
     super.initState();
     dropIntake = CaptureDropIntake(widget.controller);
-    unawaited(recoverInterruptedImagePick());
+    // image_picker's lost-data handoff is an Android lifecycle recovery API.
+    // Calling it on macOS throws before the user has selected anything and
+    // leaves Capture showing a false attachment failure on first open.
+    if (shouldRecoverInterruptedImagePick()) {
+      unawaited(recoverInterruptedImagePick());
+    }
   }
 
   @override

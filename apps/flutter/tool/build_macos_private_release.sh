@@ -4,9 +4,31 @@ set -euo pipefail
 task_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 task_flutter_dir="$(cd "$task_script_dir/.." && pwd)"
 task_xcode_path="$(xcode-select -p 2>/dev/null || true)"
-task_signing_identity="${ASAEL_MACOS_SIGNING_IDENTITY:-}"
+task_developer_signing_identity="${ASAEL_MACOS_SIGNING_IDENTITY:-}"
 task_notary_profile="${ASAEL_MACOS_NOTARY_PROFILE:-}"
 task_dist_dir="${ASAEL_MACOS_DIST_DIR:-$task_flutter_dir/build/distribution/macos}"
+task_local_signing_dir="${ASAEL_MACOS_LOCAL_SIGNING_DIR:-${HOME}/Library/Application Support/Asael/signing}"
+task_local_signing_keychain="${ASAEL_MACOS_LOCAL_SIGNING_KEYCHAIN:-$task_local_signing_dir/asael-private-signing.keychain-db}"
+task_local_signing_password_file="${ASAEL_MACOS_LOCAL_SIGNING_PASSWORD_FILE:-$task_local_signing_dir/asael-private-signing.password}"
+task_local_signing_identity="${ASAEL_MACOS_LOCAL_SIGNING_IDENTITY:-Asael Private Code Signing}"
+task_signing_identity="$task_developer_signing_identity"
+task_signing_mode="developer"
+task_codesign_keychain_args=()
+
+if [[ -z "$task_developer_signing_identity" ]]; then
+  if [[ -f "$task_local_signing_keychain" && -f "$task_local_signing_password_file" ]]; then
+    task_signing_identity="$task_local_signing_identity"
+    task_signing_mode="local"
+    task_local_signing_password="$(<"$task_local_signing_password_file")"
+    security unlock-keychain -p "$task_local_signing_password" "$task_local_signing_keychain"
+    task_codesign_keychain_args=(--keychain "$task_local_signing_keychain")
+  elif [[ -e "$task_local_signing_keychain" || -e "$task_local_signing_password_file" ]]; then
+    echo "The private macOS signing keychain is incomplete. Repair it before packaging." >&2
+    exit 1
+  else
+    task_signing_mode="adhoc"
+  fi
+fi
 
 if [[ -z "$task_xcode_path" || "$task_xcode_path" == *"CommandLineTools"* ]]; then
   echo "Full Xcode is required. Install Xcode, then select Xcode.app with xcode-select." >&2
@@ -43,12 +65,31 @@ task_dmg="$task_dist_dir/Asael-${task_version}-${task_build}-macOS.dmg"
 ditto "$task_source_app" "$task_staged_app"
 
 if [[ -n "$task_signing_identity" ]]; then
+  task_codesign_args=(
+    --force
+    --sign "$task_signing_identity"
+  )
+  if [[ "$task_signing_mode" == "developer" ]]; then
+    task_codesign_args+=(--options runtime --timestamp)
+  fi
+
+  while IFS= read -r -d '' task_nested_code; do
+    codesign \
+      "${task_codesign_keychain_args[@]}" \
+      "${task_codesign_args[@]}" \
+      "$task_nested_code"
+  done < <(
+    find "$task_staged_app/Contents" -depth \
+      \( \
+        -type d \( -name '*.framework' -o -name '*.bundle' -o -name '*.xpc' -o -name '*.appex' \) \
+        -o -type f -name '*.dylib' \
+      \) \
+      -print0
+  )
+
   codesign \
-    --force \
-    --deep \
-    --options runtime \
-    --timestamp \
-    --sign "$task_signing_identity" \
+    "${task_codesign_keychain_args[@]}" \
+    "${task_codesign_args[@]}" \
     --entitlements "$task_flutter_dir/macos/Runner/Release.entitlements" \
     "$task_staged_app"
 fi
@@ -71,7 +112,7 @@ else
     "$task_dmg"
 fi
 
-if [[ -n "$task_signing_identity" ]]; then
+if [[ "$task_signing_mode" == "developer" && -n "$task_signing_identity" ]]; then
   codesign --force --timestamp --sign "$task_signing_identity" "$task_dmg"
   codesign --verify --strict --verbose=2 "$task_dmg"
 
@@ -85,4 +126,5 @@ if [[ -n "$task_signing_identity" ]]; then
 fi
 
 shasum -a 256 "$task_dmg"
+echo "macOS signing mode: $task_signing_mode"
 echo "Private macOS release: $task_dmg"
