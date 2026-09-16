@@ -1183,8 +1183,10 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 **Current status:** P12.1 through P12.6 are implemented and server-deployed. The signed private
 Android client has been installed and proven on a physical Samsung Android 16
 device. Native contract v7 adds the governed deterministic market-backtest lab
-while retaining frozen v6 compatibility; its release binary can be installed
-when the owner wants the new surface on-device.
+while retaining frozen v6 compatibility. The signed private Android `1.2.0`
+build `3` APK is packaged with SHA-256
+`22fc8cd88a235b6cb89757167e7ffa2ace753b5a997f7c786fe6bff55f196d7e`;
+no device was connected for installation, as requested for this parity pass.
 The existing Asael API remains the only application backend; Firebase is a
 transport-only attachment to the existing production cloud project. Matching
 Android and iOS Firebase applications are registered for the compatibility

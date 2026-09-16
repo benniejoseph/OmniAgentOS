@@ -196,6 +196,11 @@ remain excluded until transcript-authoritative definitions pass review.
   completed over 480 bars with 28 trades and eight held-out-test trades. Wide
   and mobile browser checks rendered the sealed result without overflow or
   console/page errors.
+- The signed private Android v7 APK (`1.2.0+3`) built successfully and verifies
+  under APK Signature Scheme v2 with the existing Asael upload certificate;
+  SHA-256 is
+  `22fc8cd88a235b6cb89757167e7ffa2ace753b5a997f7c786fe6bff55f196d7e`.
+  No device was connected, so this pass did not install or test it on-phone.
 - Affected TypeScript and diff validation passed for each committed feature
   slice. No broad audit or full test suite was run.
 
