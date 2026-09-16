@@ -14,10 +14,10 @@ void main() {
       const MethodCall('openRoute', {'route': '/capture'}),
     );
     await bridge.handleNativeCall(
-      const MethodCall('openRoute', {'route': '/talk?entry=quick'}),
+      const MethodCall('openRoute', {'route': '/quick-entry'}),
     );
 
-    expect(opened, ['/capture', '/talk?entry=quick']);
+    expect(opened, ['/capture', '/quick-entry']);
     await expectLater(
       bridge.handleNativeCall(
         const MethodCall('openRoute', {'route': '/settings'}),
@@ -58,6 +58,26 @@ void main() {
           (error) => error.code,
           'code',
           'unsupported_desktop_intent',
+        ),
+      ),
+    );
+  });
+
+  test('rejects file or authority payloads on the navigation bridge', () async {
+    final bridge = DesktopHostBridge(enabled: false);
+
+    await expectLater(
+      bridge.handleNativeCall(
+        const MethodCall('openRoute', {
+          'route': '/capture',
+          'files': ['/tmp/private.vtt'],
+        }),
+      ),
+      throwsA(
+        isA<PlatformException>().having(
+          (error) => error.code,
+          'code',
+          'invalid_desktop_route',
         ),
       ),
     );

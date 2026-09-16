@@ -1227,7 +1227,7 @@ Flutter client with a deliberately thin AppKit host, migration 178 enrolls
 actor-scoped conversation and verified-asset reads needed by the desktop
 experience while retaining frozen v8 compatibility. The sandboxed host provides
 persistent window and menu-bar lifecycle, Today, Command, Quick Entry, Capture,
-and Inbox commands, a global Control-Option-Space Quick Entry shortcut, scoped
+and Inbox commands, a global Command-Shift-Space Quick Entry shortcut, scoped
 Keychain/file/microphone entitlements, the Asael icon, and a private DMG build,
 signing, and notarization path.
 

@@ -21,7 +21,7 @@ class DesktopHostBridge {
   static const allowedRoutes = <String>{
     '/today',
     '/talk',
-    '/talk?entry=quick',
+    '/quick-entry',
     '/capture',
     '/inbox',
   };
@@ -70,7 +70,9 @@ class DesktopHostBridge {
     }
 
     final arguments = call.arguments;
-    final route = arguments is Map ? arguments['route'] : null;
+    final route = arguments is Map && arguments.length == 1
+        ? arguments['route']
+        : null;
     if (route is! String || !allowedRoutes.contains(route)) {
       throw PlatformException(
         code: 'invalid_desktop_route',

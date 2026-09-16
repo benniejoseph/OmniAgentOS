@@ -68,6 +68,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/devices',
         builder: (_, _) => const DeviceSecurityScreen(),
       ),
+      GoRoute(
+        path: '/quick-entry',
+        builder: (context, _) => TalkView(
+          controller: ref.watch(talkControllerProvider),
+          quickEntry: true,
+          onExitQuickEntry: () {
+            unawaited(appDesktopHostBridge.showMainPresentation());
+            context.go('/talk');
+          },
+        ),
+      ),
       GoRoute(path: '/missions', redirect: (_, _) => '/projects'),
       GoRoute(path: '/missions/:id', redirect: (_, _) => '/projects'),
       GoRoute(
@@ -92,11 +103,6 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                     ),
                     '/talk' => TalkView(
                       controller: ref.watch(talkControllerProvider),
-                      quickEntry: state.uri.queryParameters['entry'] == 'quick',
-                      onExitQuickEntry: () {
-                        unawaited(appDesktopHostBridge.showMainPresentation());
-                        context.go('/talk');
-                      },
                     ),
                     '/capture' => CaptureView(
                       controller: ref.watch(captureControllerProvider),

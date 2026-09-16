@@ -7,7 +7,10 @@ class AppDelegate: FlutterAppDelegate {
   private let desktopHostController = DesktopHostController()
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
-    super.applicationDidFinishLaunching(notification)
+    // FlutterAppDelegate inherits this optional AppKit delegate callback but
+    // does not implement a super selector on macOS 27. Calling super raises an
+    // Objective-C forwarding exception and prevents the desktop host from
+    // registering its status item and global shortcut.
     desktopHostController.start()
   }
 
@@ -25,7 +28,6 @@ class AppDelegate: FlutterAppDelegate {
 
   override func applicationWillTerminate(_ notification: Notification) {
     desktopHostController.stop()
-    super.applicationWillTerminate(notification)
   }
 
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -43,7 +45,7 @@ private final class DesktopHostController: NSObject {
   private enum Route: String {
     case today = "/today"
     case command = "/talk"
-    case quickEntry = "/talk?entry=quick"
+    case quickEntry = "/quick-entry"
     case capture = "/capture"
     case inbox = "/inbox"
   }
@@ -57,6 +59,8 @@ private final class DesktopHostController: NSObject {
   private weak var window: NSWindow?
   private var channel: FlutterMethodChannel?
   private var statusItem: NSStatusItem?
+  private weak var statusQuickEntryMenuItem: NSMenuItem?
+  private weak var applicationQuickEntryMenuItem: NSMenuItem?
   private var hotKey: EventHotKeyRef?
   private var hotKeyEventHandler: EventHandlerRef?
   private var pendingRoute: Route?
@@ -68,8 +72,14 @@ private final class DesktopHostController: NSObject {
   func start() {
     guard !hasStarted else { return }
     hasStarted = true
+    configureApplicationMenu()
     configureStatusItem()
-    registerQuickEntryHotKey()
+    if !registerQuickEntryHotKey() {
+      for item in [statusQuickEntryMenuItem, applicationQuickEntryMenuItem].compactMap({ $0 }) {
+        item.title = "Quick Entry — shortcut unavailable"
+        item.toolTip = "Another application owns Command-Shift-Space. Quick Entry remains available from this menu."
+      }
+    }
   }
 
   func stop() {
@@ -89,6 +99,12 @@ private final class DesktopHostController: NSObject {
       NSStatusBar.system.removeStatusItem(statusItem)
       self.statusItem = nil
     }
+    statusQuickEntryMenuItem = nil
+    if let applicationQuickEntryMenuItem,
+       let menu = applicationQuickEntryMenuItem.menu {
+      menu.removeItem(applicationQuickEntryMenuItem)
+    }
+    applicationQuickEntryMenuItem = nil
   }
 
   func attach(channel: FlutterMethodChannel, window: NSWindow) {
@@ -239,8 +255,9 @@ private final class DesktopHostController: NSObject {
     menu.addItem(menuItem(title: "Command", key: "2", action: #selector(openCommand)))
 
     let quickEntry = menuItem(title: "Quick Entry", key: " ", action: #selector(openQuickEntry))
-    quickEntry.keyEquivalentModifierMask = [.control, .option]
+    quickEntry.keyEquivalentModifierMask = [.command, .shift]
     menu.addItem(quickEntry)
+    statusQuickEntryMenuItem = quickEntry
 
     menu.addItem(menuItem(title: "Quick Capture", key: "3", action: #selector(openQuickCapture)))
     menu.addItem(menuItem(title: "Inbox", key: "4", action: #selector(openInbox)))
@@ -255,6 +272,16 @@ private final class DesktopHostController: NSObject {
     statusItem = item
   }
 
+  private func configureApplicationMenu() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard let menu = NSApp.mainMenu?.items.first?.submenu else { return }
+
+    let item = menuItem(title: "Quick Entry", key: " ", action: #selector(openQuickEntry))
+    item.keyEquivalentModifierMask = [.command, .shift]
+    menu.insertItem(item, at: min(1, menu.items.count))
+    applicationQuickEntryMenuItem = item
+  }
+
   private func menuItem(title: String, key: String, action: Selector) -> NSMenuItem {
     let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
     item.keyEquivalentModifierMask = [.command]
@@ -262,7 +289,7 @@ private final class DesktopHostController: NSObject {
     return item
   }
 
-  private func registerQuickEntryHotKey() {
+  private func registerQuickEntryHotKey() -> Bool {
     dispatchPrecondition(condition: .onQueue(.main))
 
     var eventType = EventTypeSpec(
@@ -307,13 +334,13 @@ private final class DesktopHostController: NSObject {
       &hotKeyEventHandler
     )
 
-    guard handlerStatus == noErr else { return }
+    guard handlerStatus == noErr else { return false }
 
     let identifier = EventHotKeyID(
       signature: Self.hotKeySignature,
       id: Self.quickEntryHotKeyID
     )
-    let modifiers = UInt32(controlKey | optionKey)
+    let modifiers = UInt32(cmdKey | shiftKey)
     let registrationStatus = RegisterEventHotKey(
       UInt32(kVK_Space),
       modifiers,
@@ -327,6 +354,7 @@ private final class DesktopHostController: NSObject {
       RemoveEventHandler(hotKeyEventHandler)
       self.hotKeyEventHandler = nil
     }
+    return registrationStatus == noErr
   }
 
   @objc private func openToday() {

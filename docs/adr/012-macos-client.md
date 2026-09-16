@@ -41,20 +41,23 @@ same Flutter routes and server services as every other client surface.
 
 The macOS client first enrolled on native contract v8 and advances through ADR 011's
 current/previous discovery window. The platform identifier is `macos`.
-Keychain protects native session credentials. Server membership, device/session
+The ordinary macOS Keychain protects native session credentials without a shared
+access group. Server membership, device/session
 state, exact native mutation capabilities, approvals, idempotency, and governed tool
 execution remain authoritative on every request.
 
 ## Sandbox and local permission boundary
 
 The application remains sandboxed. Its initial entitlement floor is outbound network,
-Keychain, user-selected read/write files, and microphone input. Access is requested
+Keychain, user-selected read-only files, and microphone input. Access is requested
 only at the point of use, explained in product language, and remains visible and
 revocable in macOS System Settings. The app receives no broad filesystem, screen
 recording, automation, or Accessibility permission for ordinary product operation.
 
-Quick Entry uses a registered system hot key that does not require Accessibility
-permission. File intake begins with user selection, drag-and-drop, or a Share
+Quick Entry uses Command-Shift-Space through a registered system hot key that does
+not require Accessibility permission. Its native-to-Flutter route contains only an
+allowlisted route string and opens a shell-free command surface. File intake begins
+with user selection, drag-and-drop, or a Share
 Extension. A future Computer Use helper must be separately signed and isolated, show
 an active-use indicator, enforce domain/action allowlists and a kill switch, and send
 every effect through Asael's governed executor. It cannot inherit the application's
