@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/network/api_client.dart';
+import '../../core/platform/desktop_host_bridge.dart';
 import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
@@ -89,6 +92,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                     ),
                     '/talk' => TalkView(
                       controller: ref.watch(talkControllerProvider),
+                      quickEntry: state.uri.queryParameters['entry'] == 'quick',
+                      onExitQuickEntry: () {
+                        unawaited(appDesktopHostBridge.showMainPresentation());
+                        context.go('/talk');
+                      },
                     ),
                     '/capture' => CaptureView(
                       controller: ref.watch(captureControllerProvider),
