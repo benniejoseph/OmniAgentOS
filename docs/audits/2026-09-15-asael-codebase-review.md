@@ -187,9 +187,10 @@ Computer Use gateway remain healthy and required no rebuild.
 1. Memory: the fail-closed offline activation scorer now exists, but a qualifying
    human-reviewed production-shadow sample must still pass before semantic prompt
    serving; outcome-weighted ranking, paraphrase/conflict classification, and
-   automatic Mnemosyne execution remain separately gated. The Memory UI now shows
-   episode/thread progress; Supabase table statistics currently estimate zero
-   stored semantic episode enrichments.
+   automatic Mnemosyne execution remain separately gated. Memory Reviews now has
+   a bounded actor-scoped collector for sealed episode enrichments and tracks its
+   background jobs without affecting answers. Human adjudication across the ten
+   required dimensions and a qualifying gate result are still pending.
 2. Trading: transcript-authoritative ICT ontology and promotions, false-positive
    review, asynchronous deterministic backtesting, consensus/surprise and regime
    conditioning, statistically defensible calibration, deeper XAU/USD history,
@@ -221,6 +222,10 @@ Computer Use gateway remain healthy and required no rebuild.
 - Semantic shadow observability: 20 focused store, overview, and activation-gate
   checks passed before deployment; anonymous production access remains 401 with
   private/no-store caching.
+- Semantic shadow collection: 27 focused collector, scheduler, thread-route, and
+  job-projection checks passed with affected lint, TypeScript, diff validation,
+  and the Vercel production build; canonical production serves exact revision
+  `b73591b574060dec8a4fcd8801f38bc3d9a44667`.
 - Changed-file lint, TypeScript, and diff validation passed for the deployed
   retention, App Builder, and session-cache changes; no full suite or broad audit
   was run.
@@ -229,14 +234,16 @@ Computer Use gateway remain healthy and required no rebuild.
 
 1. Complete the authenticated App Builder preview click-through and prove one
    end-to-end Asael repo iteration in Build Studio.
-2. Profile the next Command interaction after the deployed live-refresh repair,
+2. Collect the bounded semantic episode sample from Memory Reviews, then build
+   the content-safe human adjudication workflow required by the activation gate.
+3. Profile the next Command interaction after the deployed live-refresh repair,
    then extract only the measured hot boundary.
-3. Close the Android notification receipt while a device is connected.
-4. Decide P9.13 scope for a private app; implement only the selected web/email
+4. Close the Android notification receipt while a device is connected.
+5. Decide P9.13 scope for a private app; implement only the selected web/email
    channels and preferences.
-5. Continue memory evaluation gates, then the transcript-authoritative trading
+6. Continue memory evaluation gates, then the transcript-authoritative trading
    ontology and deterministic backtesting.
-6. Incrementally extract domain repositories from `db/client.ts` as touched by
+7. Incrementally extract domain repositories from `db/client.ts` as touched by
    feature work.
 
 Phase 13 remains skipped.
