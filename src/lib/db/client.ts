@@ -17,6 +17,7 @@ import {
   ensureAppBuilderRepositoryGitPreviewV1,
   ensureAppBuilderRepositoryWorkspacesV1,
 } from "@/lib/db/app-builder-repository-schema";
+import { ensureMarketDeterministicBacktestsV1 } from "@/lib/db/market-backtest-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -155,6 +156,8 @@ export const tenantRootPolicyTables = [
   "omni_market_price_snapshot_events",
   "omni_market_event_replays",
   "omni_market_event_replay_events",
+  "omni_market_backtests",
+  "omni_market_backtest_events",
   "omni_entity_records",
   "omni_entity_aliases",
   "omni_entity_resolutions",
@@ -1583,6 +1586,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[175],
       up: ensureAppBuilderRepositoryGitPreviewV1,
+    },
+    {
+      ...databaseSchemaMigrations[176],
+      up: ensureMarketDeterministicBacktestsV1,
     },
   ];
 }
