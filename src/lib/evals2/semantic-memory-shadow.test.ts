@@ -20,6 +20,7 @@ describe("semantic memory shadow activation gate", () => {
       baselineImportantFactRecallBasisPoints: 5_000,
       semanticImportantFactRecallBasisPoints: 10_000,
       importantFactRecallImprovementBasisPoints: 5_000,
+      rankProbeCaseCount: 30,
       baselineFirstRelevantRankBasisPoints: 5_000,
       semanticFirstRelevantRankBasisPoints: 10_000,
       firstRelevantRankImprovementBasisPoints: 5_000,
@@ -59,6 +60,7 @@ describe("semantic memory shadow activation gate", () => {
         supportedSemanticItemCount: 0,
         baselineImportantFactHitCount: 2,
         semanticImportantFactHitCount: 0,
+        baselineFirstRelevantRank: null,
         semanticFirstRelevantRank: null,
         compressionJudgment: "needs_work",
         outputCharacterCount: 900,
@@ -83,6 +85,18 @@ describe("semantic memory shadow activation gate", () => {
     ]));
   });
 
+  it("requires measured retrieval evidence for every reviewed case", () => {
+    const observation = passingObservation();
+    observation.cases[0].baselineFirstRelevantRank = null;
+    observation.cases[0].semanticFirstRelevantRank = null;
+
+    const report = scoreSemanticMemoryShadowGate(observation);
+
+    expect(report.rankProbeCaseCount).toBe(29);
+    expect(report.activationReady).toBe(false);
+    expect(report.failureCodes).toContain("missing_rank_probe_evidence");
+  });
+
   it("rejects malformed populations, duplicate cases, and active ranking claims", () => {
     const invalidPopulation = passingObservation();
     invalidPopulation.cases[0].validQuoteBindingCount = 3;
@@ -105,8 +119,8 @@ describe("semantic memory shadow activation gate", () => {
 function passingObservation() {
   return {
     schemaVersion: 1 as const,
-    version: "semantic-memory-shadow-gate:1" as const,
-    scorerVersion: "semantic-memory-shadow-scorer:1" as const,
+    version: "semantic-memory-shadow-gate:2" as const,
+    scorerVersion: "semantic-memory-shadow-scorer:2" as const,
     observedAt: "2026-09-15T12:00:00.000Z",
     dataClassification: "private_content_free_metrics" as const,
     observationMode: "production_shadow_human_reviewed" as const,

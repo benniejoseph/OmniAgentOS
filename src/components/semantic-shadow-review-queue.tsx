@@ -86,11 +86,19 @@ export type SemanticShadowReviewCandidate = {
   reviewable: boolean;
   unavailableReason?: string;
   latestReview?: ReviewRecord;
+  latestRankProbe?: {
+    baselineFirstRelevantRank: number;
+    semanticFirstRelevantRank: number;
+    rankDelta: number;
+    corpusCount: number;
+    probedAt: string;
+  };
 };
 
 type GateReport = {
   caseCount: number;
   distinctThreadCount: number;
+  rankProbeCaseCount: number;
   coveredDimensions: string[];
   missingDimensions: string[];
   failureCodes: string[];
@@ -109,8 +117,6 @@ export type SemanticShadowReviewDraft = {
   importantFactCount: string;
   baselineImportantFactHitCount: string;
   semanticImportantFactHitCount: string;
-  baselineFirstRelevantRank: string;
-  semanticFirstRelevantRank: string;
   compressionJudgment: "good" | "needs_work" | "";
   scopeLeakCount: string;
   humanReviewed: boolean;
@@ -158,17 +164,6 @@ export function buildSemanticShadowReviewPayload(
   if (!draft.humanReviewed) {
     return { error: "Confirm that you compared the source and both summaries." };
   }
-  const baselineFirstRelevantRank = optionalRank(
-    draft.baselineFirstRelevantRank,
-  );
-  const semanticFirstRelevantRank = optionalRank(
-    draft.semanticFirstRelevantRank,
-  );
-  if (
-    baselineFirstRelevantRank === undefined ||
-    semanticFirstRelevantRank === undefined
-  ) return { error: "Result rank must be blank or a whole number from 1 to 100." };
-
   return {
     payload: {
       enrichmentId: candidate.id,
@@ -178,8 +173,6 @@ export function buildSemanticShadowReviewPayload(
       importantFactCount,
       baselineImportantFactHitCount,
       semanticImportantFactHitCount,
-      baselineFirstRelevantRank,
-      semanticFirstRelevantRank,
       compressionJudgment: draft.compressionJudgment,
       scopeLeakCount,
       humanReviewed: true as const,
@@ -197,6 +190,9 @@ export function SemanticShadowReviewQueue(props: {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [probing, setProbing] = useState(false);
+  const [probeQuery, setProbeQuery] = useState("");
+  const [humanConfirmedTarget, setHumanConfirmedTarget] = useState(false);
   const [error, setError] = useState<string>();
   const [feedback, setFeedback] = useState<string>();
   const workspaceRequestRef = useRef<AbortController | null>(null);
@@ -255,6 +251,8 @@ export function SemanticShadowReviewQueue(props: {
       }
       setDetail(candidate);
       setDraft(draftFromReview(candidate));
+      setProbeQuery("");
+      setHumanConfirmedTarget(false);
     } catch (loadError) {
       if (controller.signal.aborted) return;
       setDetail(undefined);
@@ -319,6 +317,53 @@ export function SemanticShadowReviewQueue(props: {
     }
   }
 
+  async function submitRankProbe() {
+    if (!detail || probing) return;
+    const query = probeQuery.trim();
+    if (query.length < 3) {
+      setError("Write a retrieval question with at least three characters.");
+      return;
+    }
+    if (!humanConfirmedTarget) {
+      setError("Confirm that this episode is a relevant answer to the query.");
+      return;
+    }
+    setProbing(true);
+    setError(undefined);
+    setFeedback(undefined);
+    try {
+      const response = await fetch("/api/memory/semantic-shadow/rank-probe", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-idempotency-key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({
+          enrichmentId: detail.id,
+          reviewSourceSha256: detail.reviewSourceSha256,
+          query,
+          humanConfirmedTarget: true,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(apiError(body, "The retrieval probe could not run."));
+      }
+      setFeedback(
+        "Retrieval ranks measured and sealed. Live memory ranking is unchanged.",
+      );
+      await Promise.all([
+        loadWorkspace(detail.id),
+        loadDetail(detail.id),
+        props.onProgressChanged(),
+      ]);
+    } catch (probeError) {
+      setError(message(probeError));
+    } finally {
+      setProbing(false);
+    }
+  }
+
   return (
     <section className={styles.reviewBench} aria-labelledby="semantic-review-bench-title">
       <header className={styles.heading}>
@@ -337,6 +382,7 @@ export function SemanticShadowReviewQueue(props: {
         <div><strong>{reviewedCount}</strong><span>of 24 reviewed cases</span></div>
         <div><strong>{workspace?.report?.distinctThreadCount || 0}</strong><span>of 6 conversations</span></div>
         <div><strong>{coveredDimensions.size}</strong><span>of 10 scenarios</span></div>
+        <div><strong>{workspace?.report?.rankProbeCaseCount || 0}</strong><span>of {reviewedCount || 24} rank probes</span></div>
         <div data-ready={workspace?.report?.activationReady ? "true" : undefined}>
           <strong>{workspace?.report?.activationReady ? "Passed" : "Locked"}</strong>
           <span>activation gate</span>
@@ -390,6 +436,12 @@ export function SemanticShadowReviewQueue(props: {
               draft={draft}
               onDraft={setDraft}
               onSubmit={() => void submitReview()}
+              probeQuery={probeQuery}
+              onProbeQuery={setProbeQuery}
+              humanConfirmedTarget={humanConfirmedTarget}
+              onHumanConfirmedTarget={setHumanConfirmedTarget}
+              onProbe={() => void submitRankProbe()}
+              probing={probing}
               saving={saving}
               submitError={payloadState?.error}
             />
@@ -411,6 +463,12 @@ function ReviewForm(props: {
   draft: SemanticShadowReviewDraft;
   onDraft: (draft: SemanticShadowReviewDraft) => void;
   onSubmit: () => void;
+  probeQuery: string;
+  onProbeQuery: (value: string) => void;
+  humanConfirmedTarget: boolean;
+  onHumanConfirmedTarget: (value: boolean) => void;
+  onProbe: () => void;
+  probing: boolean;
   saving: boolean;
   submitError?: string;
 }) {
@@ -469,13 +527,52 @@ function ReviewForm(props: {
           <label>Important source facts<input type="number" min="1" max="128" inputMode="numeric" value={draft.importantFactCount} onChange={(event) => update({ importantFactCount: event.target.value })} /></label>
           <label>Facts in baseline<input type="number" min="0" max="128" inputMode="numeric" value={draft.baselineImportantFactHitCount} onChange={(event) => update({ baselineImportantFactHitCount: event.target.value })} /></label>
           <label>Facts in semantic result<input type="number" min="0" max="128" inputMode="numeric" value={draft.semanticImportantFactHitCount} onChange={(event) => update({ semanticImportantFactHitCount: event.target.value })} /></label>
-          <label>Baseline first useful rank <small>Optional retrieval probe</small><input type="number" min="1" max="100" inputMode="numeric" placeholder="Not measured" value={draft.baselineFirstRelevantRank} onChange={(event) => update({ baselineFirstRelevantRank: event.target.value })} /></label>
-          <label>Semantic first useful rank <small>Optional retrieval probe</small><input type="number" min="1" max="100" inputMode="numeric" placeholder="Not measured" value={draft.semanticFirstRelevantRank} onChange={(event) => update({ semanticFirstRelevantRank: event.target.value })} /></label>
           <label>Unrelated or cross-scope facts<input type="number" min="0" max="128" inputMode="numeric" value={draft.scopeLeakCount} onChange={(event) => update({ scopeLeakCount: event.target.value })} /></label>
           <label>Useful compression<select value={draft.compressionJudgment} onChange={(event) => update({ compressionJudgment: event.target.value as SemanticShadowReviewDraft["compressionJudgment"] })}><option value="">Choose…</option><option value="good">Good — concise and complete</option><option value="needs_work">Needs work</option></select></label>
         </div>
-        <p className={styles.rankNote}>The rank fields are only for a separate retrieval probe. Leave them blank during a summary-only review; the activation gate will remain locked until ranking evidence exists.</p>
         <label className={styles.attestation}><input type="checkbox" checked={draft.humanReviewed} onChange={(event) => update({ humanReviewed: event.target.checked })} /><span><strong>I compared the source, baseline and every semantic item.</strong><small>This is a human evidence judgment, not an automatic model score.</small></span></label>
+      </section>
+
+      <section className={styles.rankProbe}>
+        <header>
+          <div><span>5 · Retrieval rank probe</span><small>Measured locally across the sealed evaluation corpus</small></div>
+          {candidate.latestRankProbe ? (
+            <em>Baseline #{candidate.latestRankProbe.baselineFirstRelevantRank} → Semantic #{candidate.latestRankProbe.semanticFirstRelevantRank}</em>
+          ) : <em>Not measured</em>}
+        </header>
+        <p>Ask a question that this episode should answer. Asael ranks the same episode corpus once with deterministic summaries and once with semantic summaries; you cannot type or alter the resulting ranks.</p>
+        <div className={styles.probeControls}>
+          <label>
+            Retrieval question
+            <input
+              type="text"
+              maxLength={500}
+              placeholder="What decision did we make about the Apollo release?"
+              value={props.probeQuery}
+              onChange={(event) => props.onProbeQuery(event.target.value)}
+            />
+          </label>
+          <button type="button" onClick={props.onProbe} disabled={props.probing || !candidate.reviewable}>
+            {props.probing ? <LoaderCircle size={16} className={styles.spin} /> : <Eye size={16} />}
+            {props.probing ? "Measuring…" : "Measure ranks"}
+          </button>
+        </div>
+        <label className={styles.probeAttestation}>
+          <input
+            type="checkbox"
+            checked={props.humanConfirmedTarget}
+            onChange={(event) => props.onHumanConfirmedTarget(event.target.checked)}
+          />
+          <span><strong>This episode is a relevant answer to my question.</strong><small>The question is used in-memory and only its SHA-256 digest is retained with the measured ranks.</small></span>
+        </label>
+        {candidate.latestRankProbe ? (
+          <div className={styles.probeResult}>
+            <span><strong>#{candidate.latestRankProbe.baselineFirstRelevantRank}</strong>Deterministic baseline</span>
+            <span><strong>#{candidate.latestRankProbe.semanticFirstRelevantRank}</strong>Semantic memory</span>
+            <span data-improved={candidate.latestRankProbe.rankDelta > 0 ? "true" : undefined}><strong>{candidate.latestRankProbe.rankDelta > 0 ? "+" : ""}{candidate.latestRankProbe.rankDelta}</strong>positions improved</span>
+            <span><strong>{candidate.latestRankProbe.corpusCount}</strong>episode corpus</span>
+          </div>
+        ) : <p className={styles.rankNote}>Collect 24 reviewable episodes first. A separate measured probe is required for every reviewed case before the activation gate can pass.</p>}
       </section>
 
       <footer className={styles.submitBar}>
@@ -493,8 +590,6 @@ function emptyDraft(): SemanticShadowReviewDraft {
     importantFactCount: "",
     baselineImportantFactHitCount: "",
     semanticImportantFactHitCount: "",
-    baselineFirstRelevantRank: "",
-    semanticFirstRelevantRank: "",
     compressionJudgment: "",
     scopeLeakCount: "0",
     humanReviewed: false,
@@ -510,8 +605,6 @@ function draftFromReview(candidate: SemanticShadowReviewCandidate) {
     importantFactCount: String(review.case.importantFactCount),
     baselineImportantFactHitCount: String(review.case.baselineImportantFactHitCount),
     semanticImportantFactHitCount: String(review.case.semanticImportantFactHitCount),
-    baselineFirstRelevantRank: review.case.baselineFirstRelevantRank === null ? "" : String(review.case.baselineFirstRelevantRank),
-    semanticFirstRelevantRank: review.case.semanticFirstRelevantRank === null ? "" : String(review.case.semanticFirstRelevantRank),
     compressionJudgment: review.case.compressionJudgment,
     scopeLeakCount: String(review.case.scopeLeakCount),
     humanReviewed: false,
@@ -523,16 +616,6 @@ function requiredCount(value: string) {
   if (!/^\d+$/.test(trimmed)) return undefined;
   const count = Number(trimmed);
   return Number.isSafeInteger(count) && count <= 128 ? count : undefined;
-}
-
-function optionalRank(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (!/^\d+$/.test(trimmed)) return undefined;
-  const rank = Number(trimmed);
-  return Number.isSafeInteger(rank) && rank >= 1 && rank <= 100
-    ? rank
-    : undefined;
 }
 
 function apiError(value: unknown, fallback: string) {

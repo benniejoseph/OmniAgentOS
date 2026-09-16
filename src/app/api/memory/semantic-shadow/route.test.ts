@@ -197,8 +197,6 @@ function validReview() {
     importantFactCount: 2,
     baselineImportantFactHitCount: 1,
     semanticImportantFactHitCount: 2,
-    baselineFirstRelevantRank: null,
-    semanticFirstRelevantRank: null,
     compressionJudgment: "good",
     scopeLeakCount: 0,
     humanReviewed: true,

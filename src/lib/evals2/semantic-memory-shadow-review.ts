@@ -15,6 +15,14 @@ import {
   type SemanticMemoryShadowGateReport,
   type SemanticMemoryShadowObservationSet,
 } from "@/lib/evals2/semantic-memory-shadow";
+import {
+  runSemanticMemoryShadowRankProbe,
+  SEMANTIC_MEMORY_SHADOW_RANK_PROBE_CONTRACT,
+  SEMANTIC_MEMORY_SHADOW_RANK_PROBE_EVENT_TYPE,
+  semanticMemoryShadowRankProbeInputSchema,
+  type SemanticMemoryShadowRankProbeInput,
+  type SemanticMemoryShadowRankProbeResult,
+} from "@/lib/evals2/semantic-memory-shadow-rank-probe";
 import { listOperationJobs } from "@/lib/operations/job-queue";
 import {
   parsePersistedExecutionScope,
@@ -52,8 +60,6 @@ export const semanticMemoryShadowReviewInputSchema = z.object({
   importantFactCount: z.number().int().min(1).max(128),
   baselineImportantFactHitCount: z.number().int().min(0).max(128),
   semanticImportantFactHitCount: z.number().int().min(0).max(128),
-  baselineFirstRelevantRank: z.number().int().min(1).max(100).nullable(),
-  semanticFirstRelevantRank: z.number().int().min(1).max(100).nullable(),
   compressionJudgment: z.enum(["good", "needs_work"]),
   scopeLeakCount: z.number().int().min(0).max(128),
   humanReviewed: z.literal(true),
@@ -109,6 +115,9 @@ export type SemanticMemoryShadowReviewRecord = Readonly<{
   reviewedAt: string;
 }>;
 
+export type SemanticMemoryShadowRankProbeRecord =
+  SemanticMemoryShadowRankProbeResult & Readonly<{ probedAt: string }>;
+
 export type SemanticMemoryShadowReviewCandidate = Readonly<{
   id: string;
   reviewSourceSha256: string;
@@ -135,6 +144,7 @@ export type SemanticMemoryShadowReviewCandidate = Readonly<{
   reviewable: boolean;
   unavailableReason?: string;
   latestReview?: SemanticMemoryShadowReviewRecord;
+  latestRankProbe?: SemanticMemoryShadowRankProbeRecord;
   scope: Readonly<{
     ownerActorId: string;
     threadId: string;
@@ -161,6 +171,58 @@ const reviewEventPayloadSchema = z.object({
   case: semanticMemoryShadowObservationCaseSchema,
 }).passthrough();
 
+const rankProbeEventPayloadSchema = z.object({
+  schemaVersion: z.literal(1),
+  contract: z.literal(SEMANTIC_MEMORY_SHADOW_RANK_PROBE_CONTRACT),
+  episodeSummaryId: identifierSchema,
+  enrichmentId: identifierSchema,
+  reviewSourceSha256: sha256Schema,
+  querySha256: sha256Schema,
+  corpusSha256: sha256Schema,
+  corpusCount: z.number().int().min(1).max(100),
+  baselineFirstRelevantRank: z.number().int().min(1).max(100),
+  semanticFirstRelevantRank: z.number().int().min(1).max(100),
+  rankDelta: z.number().int().min(-99).max(99),
+  rankingEngine: z.object({
+    version: z.literal("p4.4-reranker-receipt:1"),
+    modelVersion: z.literal("asael-local-pairwise-reranker:1"),
+    algorithm: z.literal("pairwise_logistic_regression"),
+    trainingFixtureVersion: z.literal("p4.4-reranker-training:1"),
+    trainingCaseCount: z.number().int().positive().max(1_000),
+    candidateCount: z.number().int().min(1).max(100),
+    externalDisclosure: z.literal(false),
+  }).strict(),
+  humanConfirmedTarget: z.literal(true),
+}).strict().superRefine((value, context) => {
+  if (
+    value.baselineFirstRelevantRank > value.corpusCount ||
+    value.semanticFirstRelevantRank > value.corpusCount
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["corpusCount"],
+      message: "Measured rank cannot exceed the sealed corpus.",
+    });
+  }
+  if (
+    value.rankDelta !==
+      value.baselineFirstRelevantRank - value.semanticFirstRelevantRank
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["rankDelta"],
+      message: "Rank delta must match the measured positions.",
+    });
+  }
+  if (value.rankingEngine.candidateCount !== value.corpusCount) {
+    context.addIssue({
+      code: "custom",
+      path: ["rankingEngine", "candidateCount"],
+      message: "Ranking engine receipt must cover the sealed corpus.",
+    });
+  }
+});
+
 export async function getSemanticMemoryShadowReviewWorkspace(input: {
   tenantId: string;
   actorIds: readonly string[];
@@ -168,7 +230,7 @@ export async function getSemanticMemoryShadowReviewWorkspace(input: {
 }): Promise<SemanticMemoryShadowReviewWorkspace> {
   const actorIds = boundedActorIds(input.actorIds);
   const limit = Math.min(Math.max(Math.round(input.limit || 24), 1), 100);
-  const [pairs, jobs, eventPages] = await Promise.all([
+  const [pairs, jobs, reviewEventPages, rankProbeEventPages] = await Promise.all([
     listOwnedSemanticSummaryEnrichments({
       tenantId: input.tenantId,
       actorIds,
@@ -183,6 +245,14 @@ export async function getSemanticMemoryShadowReviewWorkspace(input: {
         tenantId: input.tenantId,
         actorId,
         type: SEMANTIC_MEMORY_SHADOW_REVIEW_EVENT_TYPE,
+        limit: 500,
+      })
+    )),
+    Promise.all(actorIds.map((actorId) =>
+      listRecentEvents({
+        tenantId: input.tenantId,
+        actorId,
+        type: SEMANTIC_MEMORY_SHADOW_RANK_PROBE_EVENT_TYPE,
         limit: 500,
       })
     )),
@@ -207,12 +277,23 @@ export async function getSemanticMemoryShadowReviewWorkspace(input: {
     generationLatencyByEnrichment.set(enrichmentId, generationLatencyMs);
   }
 
-  const latestReviewByOwnerAndEnrichment = latestReviews(eventPages.flat());
+  const latestReviewByOwnerAndEnrichment = latestReviews(
+    reviewEventPages.flat(),
+  );
+  const latestRankProbeByOwnerAndEnrichment = latestRankProbes(
+    rankProbeEventPages.flat(),
+  );
   const candidates = pairs.map((pair) => buildReviewCandidate({
     pair,
     generationLatencyMs:
       generationLatencyByEnrichment.get(pair.record.contract.enrichmentId),
     latestReview: latestReviewByOwnerAndEnrichment.get(
+      reviewKey(
+        pair.record.contract.ownerActorId,
+        pair.record.contract.enrichmentId,
+      ),
+    ),
+    latestRankProbe: latestRankProbeByOwnerAndEnrichment.get(
       reviewKey(
         pair.record.contract.ownerActorId,
         pair.record.contract.enrichmentId,
@@ -228,9 +309,17 @@ export async function getSemanticMemoryShadowReviewWorkspace(input: {
       currentByOwnerAndId.get(key)?.reviewSourceSha256 ===
         review.reviewSourceSha256
     )
-    .map(([, review]) => review)
-    .sort((left, right) => left.case.caseId.localeCompare(right.case.caseId));
-  const observation = buildObservation(currentReviews);
+    .map(([key, review]) => Object.freeze({ key, review }))
+    .sort((left, right) =>
+      left.review.case.caseId.localeCompare(right.review.case.caseId)
+    );
+  const currentRankProbes = new Map(
+    [...latestRankProbeByOwnerAndEnrichment.entries()].filter(([key, probe]) =>
+      currentByOwnerAndId.get(key)?.reviewSourceSha256 ===
+        probe.reviewSourceSha256
+    ),
+  );
+  const observation = buildObservation(currentReviews, currentRankProbes);
   return Object.freeze({
     candidates: Object.freeze(candidates),
     observation,
@@ -307,8 +396,10 @@ export async function saveSemanticMemoryShadowReview(input: {
     importantFactCount: review.importantFactCount,
     baselineImportantFactHitCount: review.baselineImportantFactHitCount,
     semanticImportantFactHitCount: review.semanticImportantFactHitCount,
-    baselineFirstRelevantRank: review.baselineFirstRelevantRank,
-    semanticFirstRelevantRank: review.semanticFirstRelevantRank,
+    baselineFirstRelevantRank:
+      candidate.latestRankProbe?.baselineFirstRelevantRank ?? null,
+    semanticFirstRelevantRank:
+      candidate.latestRankProbe?.semanticFirstRelevantRank ?? null,
     compressionJudgment: review.compressionJudgment,
     scopeLeakCount: review.scopeLeakCount,
     deterministicReplayMatch: candidate.metrics.deterministicReplayMatch,
@@ -358,6 +449,85 @@ export async function saveSemanticMemoryShadowReview(input: {
   }
 }
 
+export async function saveSemanticMemoryShadowRankProbe(input: {
+  tenantId: string;
+  actorIds: readonly string[];
+  probe: SemanticMemoryShadowRankProbeInput;
+  executionScope: ExecutionScope;
+  correlationId?: string;
+}) {
+  const probe = semanticMemoryShadowRankProbeInputSchema.parse(input.probe);
+  const workspace = await getSemanticMemoryShadowReviewWorkspace({
+    tenantId: input.tenantId,
+    actorIds: input.actorIds,
+    limit: 100,
+  });
+  const candidate = workspace.candidates.find(({ id }) =>
+    id === probe.enrichmentId
+  );
+  if (!candidate || candidate.reviewSourceSha256 !== probe.reviewSourceSha256) {
+    throw new SemanticMemoryShadowReviewConflictError(
+      "This semantic shadow episode changed. Refresh it before running the probe.",
+    );
+  }
+  if (!candidate.reviewable) {
+    throw new SemanticMemoryShadowReviewConflictError(
+      candidate.unavailableReason || "This episode is not ready for a retrieval probe.",
+    );
+  }
+  const result = runSemanticMemoryShadowRankProbe({
+    query: probe.query,
+    targetEnrichmentId: candidate.id,
+    targetReviewSourceSha256: candidate.reviewSourceSha256,
+    candidates: workspace.candidates
+      .filter((item) => item.reviewable)
+      .map((item) => ({
+        enrichmentId: item.id,
+        reviewSourceSha256: item.reviewSourceSha256,
+        deterministicSummary: item.deterministicSummary,
+        semanticText: item.semanticItems.map(({ text }) => text).join("\n"),
+      })),
+  });
+  const payload = rankProbeEventPayloadSchema.parse({
+    ...result,
+    episodeSummaryId: candidate.scope.episodeSummaryId,
+  });
+  const correlationId = input.correlationId?.trim() || randomUUID();
+  assertRankProbeExecutionScope(
+    input.executionScope,
+    candidate,
+    input.tenantId,
+    correlationId,
+  );
+  try {
+    const event = await appendScopedDomainEvent({
+      id: `semantic-shadow-rank-probe:${sourceContractSha256({
+        domain: "asael:semantic-shadow-rank-probe-event:v1",
+        tenantId: input.tenantId,
+        ownerActorId: candidate.scope.ownerActorId,
+        enrichmentId: candidate.id,
+        correlationId,
+      })}`,
+      streamId: `conversation-summary:${candidate.scope.episodeSummaryId}`,
+      type: SEMANTIC_MEMORY_SHADOW_RANK_PROBE_EVENT_TYPE,
+      executionScope: input.executionScope,
+      payload,
+    });
+    return rankProbeFromEvent(event)!;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("Domain event id ") &&
+      error.message.includes("already bound to a different event")
+    ) {
+      throw new SemanticMemoryShadowReviewConflictError(
+        "This retrieval probe request was already used with different evidence.",
+      );
+    }
+    throw error;
+  }
+}
+
 export class SemanticMemoryShadowReviewConflictError extends Error {
   readonly code = "semantic_memory_shadow_review_conflict";
 
@@ -373,6 +543,7 @@ function buildReviewCandidate(input: {
   pair: OwnedSemanticSummaryEnrichment;
   generationLatencyMs?: number;
   latestReview?: SemanticMemoryShadowReviewRecord;
+  latestRankProbe?: SemanticMemoryShadowRankProbeRecord;
 }): SemanticMemoryShadowReviewCandidate {
   const { record, source } = input.pair;
   const contract = record.contract;
@@ -433,6 +604,10 @@ function buildReviewCandidate(input: {
       reviewSourceSha256
     ? input.latestReview
     : undefined;
+  const latestRankProbe = input.latestRankProbe?.reviewSourceSha256 ===
+      reviewSourceSha256
+    ? input.latestRankProbe
+    : undefined;
   const unavailableReason = sourceCharacterCount < 100
     ? "This episode is below the 100-character evaluation floor."
     : generationLatencyMs === null
@@ -463,6 +638,7 @@ function buildReviewCandidate(input: {
     reviewable: unavailableReason === undefined,
     ...(unavailableReason ? { unavailableReason } : {}),
     ...(latestReview ? { latestReview } : {}),
+    ...(latestRankProbe ? { latestRankProbe } : {}),
     scope: Object.freeze({
       ownerActorId: contract.ownerActorId,
       threadId: contract.threadId,
@@ -532,6 +708,22 @@ function latestReviews(events: readonly DomainEvent[]) {
   return latest;
 }
 
+function latestRankProbes(events: readonly DomainEvent[]) {
+  const probes = events
+    .map(rankProbeFromEvent)
+    .filter((probe): probe is SemanticMemoryShadowRankProbeRecord & {
+      actorId: string;
+      seq: number;
+    } => Boolean(probe))
+    .sort((left, right) => right.seq - left.seq);
+  const latest = new Map<string, SemanticMemoryShadowRankProbeRecord>();
+  for (const probe of probes) {
+    const key = reviewKey(probe.actorId, probe.enrichmentId);
+    if (!latest.has(key)) latest.set(key, probe);
+  }
+  return latest;
+}
+
 function reviewFromEvent(event: DomainEvent) {
   const parsed = reviewEventPayloadSchema.safeParse(event.payload);
   if (
@@ -551,12 +743,33 @@ function reviewFromEvent(event: DomainEvent) {
   });
 }
 
+function rankProbeFromEvent(event: DomainEvent) {
+  const parsed = rankProbeEventPayloadSchema.safeParse(event.payload);
+  if (
+    event.type !== SEMANTIC_MEMORY_SHADOW_RANK_PROBE_EVENT_TYPE ||
+    !parsed.success ||
+    event.streamId !==
+      `conversation-summary:${parsed.data.episodeSummaryId}`
+  ) return undefined;
+  const { episodeSummaryId: _episodeSummaryId, ...probe } = parsed.data;
+  return Object.freeze({
+    actorId: event.actorId,
+    seq: event.seq,
+    ...probe,
+    probedAt: event.at,
+  });
+}
+
 function reviewKey(actorId: string, enrichmentId: string) {
   return `${actorId}\u0000${enrichmentId}`;
 }
 
 function buildObservation(
-  reviews: readonly SemanticMemoryShadowReviewRecord[],
+  reviews: readonly Readonly<{
+    key: string;
+    review: SemanticMemoryShadowReviewRecord;
+  }>[],
+  rankProbes: ReadonlyMap<string, SemanticMemoryShadowRankProbeRecord>,
 ): SemanticMemoryShadowObservationSet | null {
   if (!reviews.length) return null;
   return Object.freeze({
@@ -564,7 +777,11 @@ function buildObservation(
     version: SEMANTIC_MEMORY_SHADOW_GATE_VERSION,
     scorerVersion: SEMANTIC_MEMORY_SHADOW_SCORER_VERSION,
     observedAt: reviews
-      .map(({ reviewedAt }) => reviewedAt)
+      .flatMap(({ key, review }) => [
+        review.reviewedAt,
+        rankProbes.get(key)?.probedAt,
+      ])
+      .filter((value): value is string => Boolean(value))
       .sort()
       .at(-1)!,
     dataClassification: "private_content_free_metrics" as const,
@@ -572,7 +789,17 @@ function buildObservation(
     sideEffectPolicy: "none" as const,
     shadowOnly: true as const,
     rankingEffect: "none" as const,
-    cases: reviews.map(({ case: testCase }) => testCase),
+    cases: reviews.map(({ key, review }) => {
+      const testCase = review.case;
+      const probe = rankProbes.get(key);
+      return Object.freeze({
+        ...testCase,
+        baselineFirstRelevantRank:
+          probe?.baselineFirstRelevantRank ?? null,
+        semanticFirstRelevantRank:
+          probe?.semanticFirstRelevantRank ?? null,
+      });
+    }),
   });
 }
 
@@ -608,6 +835,35 @@ function assertReviewExecutionScope(
   ) {
     throw new Error(
       "Semantic shadow review requires its exact actor and episode scope.",
+    );
+  }
+}
+
+function assertRankProbeExecutionScope(
+  value: ExecutionScope,
+  candidate: SemanticMemoryShadowReviewCandidate,
+  tenantId: string,
+  correlationId: string,
+) {
+  const scope = parsePersistedExecutionScope(value);
+  if (
+    !scope ||
+    scope.tenantId !== tenantId ||
+    scope.initiatingActorId !== candidate.scope.ownerActorId ||
+    scope.executingPrincipalType !== "user" ||
+    scope.executingPrincipalId !== candidate.scope.ownerActorId ||
+    scope.workspaceId !== null ||
+    scope.projectId !== candidate.scope.projectId ||
+    scope.missionId !== null ||
+    scope.delegationId !== null ||
+    scope.causationId !== candidate.id ||
+    scope.contextGrantIds.length !== 0 ||
+    scope.capabilityGrantIds.length !== 0 ||
+    scope.correlationId !== correlationId ||
+    scope.purpose !== "conversation.summary.semantic_shadow.rank_probe"
+  ) {
+    throw new Error(
+      "Semantic rank probing requires its exact actor and episode scope.",
     );
   }
 }

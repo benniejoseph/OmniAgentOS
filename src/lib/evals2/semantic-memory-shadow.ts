@@ -3,9 +3,9 @@ import { z } from "zod";
 import { sourceContractSha256 } from "@/lib/sources/contracts";
 
 export const SEMANTIC_MEMORY_SHADOW_GATE_VERSION =
-  "semantic-memory-shadow-gate:1" as const;
+  "semantic-memory-shadow-gate:2" as const;
 export const SEMANTIC_MEMORY_SHADOW_SCORER_VERSION =
-  "semantic-memory-shadow-scorer:1" as const;
+  "semantic-memory-shadow-scorer:2" as const;
 
 export const SEMANTIC_MEMORY_SHADOW_DIMENSIONS = [
   "decision",
@@ -78,6 +78,16 @@ export const semanticMemoryShadowObservationCaseSchema = z.object({
       });
     }
   }
+  if (
+    (value.baselineFirstRelevantRank === null) !==
+      (value.semanticFirstRelevantRank === null)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["baselineFirstRelevantRank"],
+      message: "Retrieval ranks must both be measured or both be absent.",
+    });
+  }
 });
 
 const observationSetSchema = z.object({
@@ -117,6 +127,7 @@ export type SemanticMemoryShadowFailureCode =
   | "supported_item_precision_below_threshold"
   | "semantic_recall_below_threshold"
   | "recall_improvement_below_threshold"
+  | "missing_rank_probe_evidence"
   | "rank_improvement_below_threshold"
   | "compression_quality_below_threshold"
   | "output_ratio_above_threshold"
@@ -139,6 +150,7 @@ export type SemanticMemoryShadowGateReport = Readonly<{
   baselineImportantFactRecallBasisPoints: number;
   semanticImportantFactRecallBasisPoints: number;
   importantFactRecallImprovementBasisPoints: number;
+  rankProbeCaseCount: number;
   baselineFirstRelevantRankBasisPoints: number;
   semanticFirstRelevantRankBasisPoints: number;
   firstRelevantRankImprovementBasisPoints: number;
@@ -217,13 +229,18 @@ export function scoreSemanticMemoryShadowGate(
   const importantFactRecallImprovementBasisPoints =
     semanticImportantFactRecallBasisPoints -
     baselineImportantFactRecallBasisPoints;
+  const rankProbeCases = observation.cases.filter((testCase) =>
+    testCase.baselineFirstRelevantRank !== null &&
+    testCase.semanticFirstRelevantRank !== null
+  );
+  const rankProbeCaseCount = rankProbeCases.length;
   const baselineFirstRelevantRankBasisPoints = averageBasisPoints(
-    observation.cases.map((testCase) => reciprocalRankBasisPoints(
+    rankProbeCases.map((testCase) => reciprocalRankBasisPoints(
       testCase.baselineFirstRelevantRank,
     )),
   );
   const semanticFirstRelevantRankBasisPoints = averageBasisPoints(
-    observation.cases.map((testCase) => reciprocalRankBasisPoints(
+    rankProbeCases.map((testCase) => reciprocalRankBasisPoints(
       testCase.semanticFirstRelevantRank,
     )),
   );
@@ -292,6 +309,9 @@ export function scoreSemanticMemoryShadowGate(
   ) {
     failureCodes.push("recall_improvement_below_threshold");
   }
+  if (rankProbeCaseCount !== observation.cases.length) {
+    failureCodes.push("missing_rank_probe_evidence");
+  }
   if (
     firstRelevantRankImprovementBasisPoints <
     thresholds.minimumFirstRelevantRankImprovementBasisPoints
@@ -345,6 +365,7 @@ export function scoreSemanticMemoryShadowGate(
     baselineImportantFactRecallBasisPoints,
     semanticImportantFactRecallBasisPoints,
     importantFactRecallImprovementBasisPoints,
+    rankProbeCaseCount,
     baselineFirstRelevantRankBasisPoints,
     semanticFirstRelevantRankBasisPoints,
     firstRelevantRankImprovementBasisPoints,

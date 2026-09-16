@@ -26,6 +26,7 @@ import { contentSha256Hex } from "@/lib/sources/text-lineage";
 import {
   getSemanticMemoryShadowReviewWorkspace,
   saveSemanticMemoryShadowReview,
+  saveSemanticMemoryShadowRankProbe,
   SEMANTIC_MEMORY_SHADOW_REVIEW_EVENT_TYPE,
   SemanticMemoryShadowReviewConflictError,
 } from "@/lib/evals2/semantic-memory-shadow-review";
@@ -139,8 +140,6 @@ describe("semantic shadow human review", () => {
         importantFactCount: 3,
         baselineImportantFactHitCount: 1,
         semanticImportantFactHitCount: 3,
-        baselineFirstRelevantRank: null,
-        semanticFirstRelevantRank: null,
         compressionJudgment: "good",
         scopeLeakCount: 0,
         humanReviewed: true,
@@ -202,8 +201,6 @@ describe("semantic shadow human review", () => {
       importantFactCount: 1,
       baselineImportantFactHitCount: 1,
       semanticImportantFactHitCount: 1,
-      baselineFirstRelevantRank: null,
-      semanticFirstRelevantRank: null,
       compressionJudgment: "good" as const,
       scopeLeakCount: 0,
       humanReviewed: true as const,
@@ -245,6 +242,84 @@ describe("semantic shadow human review", () => {
     })).rejects.toThrow("exact actor and episode scope");
     expect(mocks.append).not.toHaveBeenCalled();
   });
+
+  it("persists a separate measured rank probe without retaining its query", async () => {
+    mocks.pairs = Array.from({ length: 24 }, (_, index) => {
+      const summary = index === 23
+        ? {
+            ...fixture.contract.summary,
+            text: "Apollo release date was approved for Friday.",
+          }
+        : fixture.contract.summary;
+      return {
+        ...fixture.pair,
+        record: {
+          ...fixture.pair.record,
+          contract: {
+            ...fixture.contract,
+            enrichmentId:
+              `semantic_episode_enrichment_${index.toString(16).padStart(48, "0")}`,
+            summary,
+            enrichmentSha256: semanticEpisodeOutputSha256({
+              summary,
+              statements: fixture.contract.statements,
+            }),
+          },
+        },
+      };
+    });
+    mocks.jobs = mocks.pairs.map((pair) => ({
+      payload: {
+        actorId,
+        result: {
+          enrichmentId: (pair as typeof fixture.pair).record.contract.enrichmentId,
+          generationLatencyMs: 2_450,
+        },
+      },
+    }));
+    const workspace = await getSemanticMemoryShadowReviewWorkspace({
+      tenantId,
+      actorIds: [actorId],
+      limit: 100,
+    });
+    const candidate = workspace.candidates[23];
+    const probeCorrelationId = "rank-probe-correlation-1";
+
+    const saved = await saveSemanticMemoryShadowRankProbe({
+      tenantId,
+      actorIds: [actorId],
+      probe: {
+        enrichmentId: candidate.id,
+        reviewSourceSha256: candidate.reviewSourceSha256,
+        query: "Which Apollo release date was approved?",
+        humanConfirmedTarget: true,
+      },
+      correlationId: probeCorrelationId,
+      executionScope: rankProbeScope(candidate, probeCorrelationId),
+    });
+
+    expect(saved).toMatchObject({
+      enrichmentId: candidate.id,
+      corpusCount: 24,
+      semanticFirstRelevantRank: 1,
+      humanConfirmedTarget: true,
+    });
+    const payload = JSON.stringify(
+      (mocks.append.mock.calls.at(-1)?.[0] as Record<string, unknown>).payload,
+    );
+    expect(payload).not.toContain("Which Apollo release date was approved?");
+    expect(payload).toContain("semantic-memory-shadow-rank-probe:1");
+
+    const projected = await getSemanticMemoryShadowReviewWorkspace({
+      tenantId,
+      actorIds: [actorId],
+      limit: 100,
+    });
+    expect(projected.candidates[23].latestRankProbe).toMatchObject({
+      corpusCount: 24,
+      semanticFirstRelevantRank: 1,
+    });
+  });
 });
 
 function reviewScope(overrides: { correlationId?: string } = {}) {
@@ -262,6 +337,29 @@ function reviewScope(overrides: { correlationId?: string } = {}) {
     contextGrantIds: [],
     capabilityGrantIds: [],
     purpose: "conversation.summary.semantic_shadow.review",
+  });
+}
+
+function rankProbeScope(
+  candidate: Awaited<ReturnType<
+    typeof getSemanticMemoryShadowReviewWorkspace
+  >>["candidates"][number],
+  correlationId: string,
+) {
+  return createExecutionScope({
+    tenantId,
+    initiatingActorId: actorId,
+    executingPrincipalType: "user",
+    executingPrincipalId: actorId,
+    workspaceId: null,
+    projectId: candidate.scope.projectId,
+    missionId: null,
+    delegationId: null,
+    correlationId,
+    causationId: candidate.id,
+    contextGrantIds: [],
+    capabilityGrantIds: [],
+    purpose: "conversation.summary.semantic_shadow.rank_probe",
   });
 }
 

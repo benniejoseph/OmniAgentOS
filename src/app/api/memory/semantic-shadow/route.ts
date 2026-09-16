@@ -187,6 +187,9 @@ function publicReviewCandidate(
     ...(candidate.latestReview
       ? { latestReview: candidate.latestReview }
       : {}),
+    ...(candidate.latestRankProbe
+      ? { latestRankProbe: candidate.latestRankProbe }
+      : {}),
     ...(includeDetail
       ? {
           sourceTurns: candidate.sourceTurns,

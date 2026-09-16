@@ -6,7 +6,7 @@
 .heading > div:nth-child(2) > span { display: block; max-width: 52rem; margin-top: .16rem; color: var(--memory-muted); font-size: .82rem; line-height: 1.5; }
 .heading > button { display: inline-flex; min-height: 2.3rem; align-items: center; gap: .35rem; border: 1px solid var(--memory-line); border-radius: 999px; padding: 0 .65rem; color: var(--memory-muted); background: var(--memory-paper-solid); font-size: .74rem; font-weight: 700; }
 .heading > button:not(:disabled):hover { border-color: var(--memory-primary); color: var(--memory-primary); }
-.gateStrip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--memory-line); background: color-mix(in oklab, var(--memory-soft) 38%, transparent); }
+.gateStrip { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-bottom: 1px solid var(--memory-line); background: color-mix(in oklab, var(--memory-soft) 38%, transparent); }
 .gateStrip > div { display: grid; gap: .1rem; min-height: 4.5rem; align-content: center; padding: .7rem 1rem; }
 .gateStrip > div + div { border-left: 1px solid var(--memory-line); }
 .gateStrip strong { font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1.25rem; font-weight: 630; font-variant-numeric: tabular-nums; }
@@ -94,6 +94,29 @@
 .attestation span { display: grid; gap: .1rem; }
 .attestation strong { font-size: .74rem; }
 .attestation small { color: var(--memory-muted); font-size: .66rem; line-height: 1.45; }
+.rankProbe { display: grid; gap: .7rem; border-bottom: 1px solid var(--memory-line); padding: .8rem; background: linear-gradient(135deg, color-mix(in oklab, var(--memory-primary) 7%, var(--memory-paper-solid)), var(--memory-paper-solid) 62%); }
+.rankProbe > header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+.rankProbe > header > div { display: grid; gap: .12rem; }
+.rankProbe > header span { color: var(--memory-primary); font-size: .72rem; font-weight: 780; letter-spacing: .05em; text-transform: uppercase; }
+.rankProbe > header small { color: var(--memory-muted); font-size: .66rem; }
+.rankProbe > header em { border: 1px solid color-mix(in oklab, var(--memory-primary) 22%, var(--memory-line)); border-radius: 999px; padding: .28rem .55rem; color: var(--memory-primary); background: var(--memory-paper-solid); font-size: .67rem; font-style: normal; font-weight: 720; }
+.rankProbe > p { max-width: 72rem; color: var(--memory-muted); font-size: .71rem; line-height: 1.55; }
+.probeControls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: .65rem; }
+.probeControls label { display: grid; min-width: 0; gap: .32rem; color: var(--memory-muted); font-size: .69rem; font-weight: 680; }
+.probeControls input { width: 100%; min-height: 2.65rem; border: 1px solid var(--memory-line); border-radius: .7rem; padding: 0 .7rem; outline: 0; color: var(--memory-ink); background: var(--memory-paper-solid); font-size: .76rem; }
+.probeControls input:focus { border-color: var(--memory-primary); box-shadow: 0 0 0 3px color-mix(in oklab, var(--memory-primary) 8%, transparent); }
+.probeControls button { display: inline-flex; min-height: 2.65rem; align-items: center; justify-content: center; gap: .35rem; border: 1px solid color-mix(in oklab, var(--memory-primary) 30%, var(--memory-line)); border-radius: 999px; padding: 0 .8rem; color: var(--memory-primary); background: var(--memory-paper-solid); font-size: .72rem; font-weight: 760; }
+.probeControls button:disabled { cursor: not-allowed; opacity: .48; }
+.probeAttestation { display: flex; align-items: flex-start; gap: .5rem; border: 1px solid var(--memory-line); border-radius: .75rem; padding: .6rem .65rem; background: color-mix(in oklab, var(--memory-soft) 38%, var(--memory-paper-solid)); cursor: pointer; }
+.probeAttestation input { margin-top: .12rem; accent-color: var(--memory-primary); }
+.probeAttestation span { display: grid; gap: .1rem; }
+.probeAttestation strong { font-size: .72rem; }
+.probeAttestation small { color: var(--memory-muted); font-size: .65rem; line-height: 1.45; }
+.probeResult { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--memory-line); border-radius: .85rem; background: var(--memory-paper-solid); }
+.probeResult span { display: grid; min-height: 3.8rem; align-content: center; gap: .08rem; padding: .55rem .7rem; color: var(--memory-muted); font-size: .65rem; }
+.probeResult span + span { border-left: 1px solid var(--memory-line); }
+.probeResult strong { color: var(--memory-ink); font-family: Iowan Old Style, Baskerville, Georgia, ui-serif, serif; font-size: 1rem; font-variant-numeric: tabular-nums; }
+.probeResult [data-improved="true"] strong { color: var(--success); }
 .submitBar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 1rem; background: color-mix(in oklab, var(--memory-mint) 28%, var(--memory-paper-solid)); }
 .submitBar > div { display: grid; gap: .12rem; }
 .submitBar strong { font-size: .76rem; }
@@ -114,11 +137,15 @@
   .gateStrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .gateStrip > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--memory-line); }
   .gateStrip > div:nth-child(4) { border-top: 1px solid var(--memory-line); }
+  .gateStrip > div:nth-child(5) { grid-column: 1 / -1; border-top: 1px solid var(--memory-line); border-left: 0; }
   .benchGrid { grid-template-columns: 1fr; }
   .queue { border-right: 0; border-bottom: 1px solid var(--memory-line); }
   .queue > div { display: flex; overflow: auto; }
   .queue button { min-width: 13rem; border-right: 1px solid var(--memory-line); border-bottom: 0; }
   .queueEmpty, .queueLoading { width: 100%; min-height: 8rem; }
+  .probeResult { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .probeResult span:nth-child(3) { border-top: 1px solid var(--memory-line); border-left: 0; }
+  .probeResult span:nth-child(4) { border-top: 1px solid var(--memory-line); }
 }
 
 @media (max-width: 42rem) {
@@ -129,6 +156,9 @@
   .semanticPanel article { grid-template-columns: 1fr; }
   .semanticPanel fieldset { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .semanticPanel legend { grid-column: 1 / -1; }
+  .rankProbe > header { align-items: flex-start; flex-direction: column; }
+  .probeControls { grid-template-columns: 1fr; }
+  .probeControls button { width: 100%; }
   .detailHeading, .submitBar { align-items: stretch; flex-direction: column; }
   .submitBar button { width: 100%; }
 }
