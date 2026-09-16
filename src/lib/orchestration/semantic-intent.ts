@@ -153,9 +153,12 @@ export function applySemanticIntentPolicy(input: {
     };
   }
 
-  const cardSelection = input.agentCards?.length
+  const supportedAgentCards = input.agentCards?.filter((card) =>
+    isSupervisorAgentId(card.logicalAgentId)
+  );
+  const cardSelection = supportedAgentCards?.length
     ? selectAgentTeamFromCardsV1({
-        cards: input.agentCards,
+        cards: supportedAgentCards,
         query: input.message,
         taskKinds: semanticAgentTaskKinds(candidate, input.mode),
         consequential: candidate.consequential,
@@ -443,10 +446,14 @@ function semanticAgentTaskKinds(
 }
 
 function asSupervisorAgentId(value: string): SupervisorAgentId {
-  if (["atlas", "scout", "forge", "sentinel", "mnemosyne"].includes(value)) {
+  if (isSupervisorAgentId(value)) {
     return value as SupervisorAgentId;
   }
   throw new Error("Agent Card selected an unsupported internal Agent.");
+}
+
+function isSupervisorAgentId(value: string): value is SupervisorAgentId {
+  return ["atlas", "scout", "forge", "sentinel", "mnemosyne"].includes(value);
 }
 
 function buildSemanticCapabilityQuery(
