@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -237,6 +237,30 @@ List<int> _decodeBase64Url(String value) {
   return base64Url.decode(value.padRight(value.length + padding, '='));
 }
 
+@visibleForTesting
+FlutterSecureStorage createAsaelSecureStorage({
+  TargetPlatform? platform,
+  bool? isWeb,
+}) {
+  final usesMacOSKeychain =
+      !(isWeb ?? kIsWeb) &&
+      (platform ?? defaultTargetPlatform) == TargetPlatform.macOS;
+  if (!usesMacOSKeychain) return const FlutterSecureStorage();
+
+  // Asael does not share credentials with another application or extension.
+  // The ordinary device-bound macOS Keychain keeps the same OS-backed secret
+  // storage without requiring a provisioning-only Keychain Sharing group. A
+  // future Share Extension must introduce its own reviewed handoff rather than
+  // silently widening this credential boundary.
+  return const FlutterSecureStorage(
+    mOptions: MacOsOptions(
+      accessibility: KeychainAccessibility.unlocked_this_device,
+      synchronizable: false,
+      usesDataProtectionKeychain: false,
+    ),
+  );
+}
+
 final secureSessionStoreProvider = Provider<SecureSessionStore>(
-  (_) => SecureSessionStore(const FlutterSecureStorage()),
+  (_) => SecureSessionStore(createAsaelSecureStorage()),
 );

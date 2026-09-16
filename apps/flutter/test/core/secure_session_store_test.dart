@@ -1,10 +1,34 @@
 import 'package:asael/core/auth/biometric_gate.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
+
+  test('macOS uses a device-bound Keychain policy without sharing', () {
+    final storage = createAsaelSecureStorage(
+      platform: TargetPlatform.macOS,
+      isWeb: false,
+    );
+    final options = storage.mOptions as MacOsOptions;
+
+    expect(options.usesDataProtectionKeychain, isFalse);
+    expect(options.groupId, isNull);
+    expect(options.synchronizable, isFalse);
+    expect(options.accessibility, KeychainAccessibility.unlocked_this_device);
+  });
+
+  test('other native platforms retain their default secure-storage policy', () {
+    final storage = createAsaelSecureStorage(
+      platform: TargetPlatform.android,
+      isWeb: false,
+    );
+    final options = storage.mOptions as MacOsOptions;
+
+    expect(options.usesDataProtectionKeychain, isTrue);
+  });
 
   test(
     'biometric preference prevents credential release while locked',
