@@ -31,6 +31,8 @@ describe("market deterministic backtest schema", () => {
     expect(schema).toContain("market.backtest.completed");
     expect(schema).toContain("FORCE ROW LEVEL SECURITY");
     expect(checks).toContain("GRANT SELECT, INSERT");
+    expect(checks).toContain("GRANT SELECT ON ALL TABLES IN SCHEMA public");
+    expect(checks).toContain("Backup role table coverage is incomplete");
     expect(checks).not.toContain("GRANT UPDATE");
     expect(checks).not.toContain("GRANT DELETE");
     expect(checks).toContain("Market backtest isolation boundary is invalid");

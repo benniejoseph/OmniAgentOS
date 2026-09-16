@@ -142,8 +142,9 @@ export async function ensureMarketDeterministicBacktestsV1(
         GRANT SELECT, INSERT ON omni_market_backtest_events TO omni_maintenance;
       END IF;
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup') THEN
-        GRANT SELECT ON omni_market_backtests TO omni_backup;
-        GRANT SELECT ON omni_market_backtest_events TO omni_backup;
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO omni_backup;
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public
+          GRANT SELECT ON TABLES TO omni_backup;
       END IF;
     END
     $grants$
@@ -165,6 +166,22 @@ export async function ensureMarketDeterministicBacktestsV1(
         )
       ) <> 2 THEN
         RAISE EXCEPTION 'Market backtest isolation boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_backup')
+        AND EXISTS (
+          SELECT 1
+          FROM pg_class table_class
+          JOIN pg_namespace table_schema
+            ON table_schema.oid = table_class.relnamespace
+          WHERE table_schema.nspname = 'public'
+            AND table_class.relkind IN ('r', 'p')
+            AND NOT has_table_privilege(
+              'omni_backup', table_class.oid, 'SELECT'
+            )
+        )
+      THEN
+        RAISE EXCEPTION 'Backup role table coverage is incomplete'
           USING ERRCODE = '55000';
       END IF;
     END

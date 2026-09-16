@@ -763,7 +763,7 @@ describe("ordered database schema versions", () => {
     expect(databaseSchemaMigrations.at(-1)).toEqual({
       version: 177,
       name: "market_deterministic_backtests_v1",
-      checksum: "491a97bc5a3e7e90b73fc2641a53c6f952b2da168dad9084a56838928c0bf211",
+      checksum: "27b2d1959799b90893282bb78e1e74724ce62aa93597691627ae9b9757d25c6a",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
