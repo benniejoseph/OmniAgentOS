@@ -712,6 +712,13 @@ of creating a competing Mission memory store. The focused aggregate gate
 passes: unsupported assistant prose remains inactive, explicit corrections
 supersede their prior claim before recall, and private/shared reads reject
 sibling actor, Agent, Project, Workspace, tenant, and access-binding scopes.
+The later semantic-summary enhancement remains a separate fail-closed shadow
+lane: Memory Reviews can now collect sealed episodes and record content-free
+human adjudication over exact source evidence, but deterministic summaries stay
+authoritative. Semantic serving remains disabled until 24 reviewed cases across
+six conversations and all ten scenarios, a separate retrieval-rank probe, and
+the offline activation scorer all pass; a passing report still cannot activate
+runtime policy automatically.
 
 ### Phase 4 — Context Management
 
