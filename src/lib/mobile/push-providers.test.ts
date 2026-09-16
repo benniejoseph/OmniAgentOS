@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mobilePushProviderConfiguration } from "@/lib/mobile/push-providers";
+import {
+  asaelNotificationCategory,
+  mobilePushProviderConfiguration,
+} from "@/lib/mobile/push-providers";
 
 const names = [
   "OMNIAGENT_FCM_SERVICE_ACCOUNT_JSON",
@@ -19,6 +22,9 @@ afterEach(() => {
 });
 
 describe("mobile push provider configuration", () => {
+  it("pins the native actionable category across providers", () => {
+    expect(asaelNotificationCategory).toBe("ASAEL_ACTIONABLE_V1");
+  });
   it("fails closed without complete server credentials", () => {
     for (const name of names) delete process.env[name];
     expect(mobilePushProviderConfiguration()).toEqual({

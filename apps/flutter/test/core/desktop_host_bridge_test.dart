@@ -48,6 +48,65 @@ void main() {
     expect(opened, ['/inbox']);
   });
 
+  test('queues and validates one native notification action', () async {
+    final received = <DesktopNotificationAction>[];
+    final bridge = DesktopHostBridge(enabled: false);
+
+    await bridge.handleNativeCall(
+      const MethodCall('notificationAction', {
+        'action': 'snooze15',
+        'data': {'schemaVersion': '1', 'deliveryId': 'delivery-one'},
+      }),
+    );
+    bridge.attachNotificationHandler((action) async => received.add(action));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(received, hasLength(1));
+    expect(received.single.command, DesktopNotificationCommand.snooze15);
+    expect(received.single.data['deliveryId'], 'delivery-one');
+    await expectLater(
+      bridge.handleNativeCall(
+        const MethodCall('notificationAction', {
+          'action': 'execute',
+          'data': <String, dynamic>{},
+        }),
+      ),
+      throwsA(
+        isA<PlatformException>().having(
+          (error) => error.code,
+          'code',
+          'invalid_notification_action',
+        ),
+      ),
+    );
+  });
+
+  test('reports only bounded APNs registration receipts', () async {
+    final received = <DesktopApnsRegistration>[];
+    final bridge = DesktopHostBridge(enabled: false)
+      ..attachApnsRegistrationHandler((registration) async {
+        received.add(registration);
+      });
+
+    await bridge.handleNativeCall(
+      MethodCall('apnsRegistration', {
+        'token': List.filled(64, 'a').join(),
+        'environment': 'sandbox',
+      }),
+    );
+    await bridge.handleNativeCall(
+      const MethodCall('apnsRegistration', {
+        'errorCode': 'missing_entitlement',
+      }),
+    );
+
+    expect(received, hasLength(2));
+    expect(received.first.succeeded, isTrue);
+    expect(received.first.environment, 'sandbox');
+    expect(received.last.succeeded, isFalse);
+    expect(received.last.errorCode, 'missing_entitlement');
+  });
+
   test('rejects unknown native intents', () async {
     final bridge = DesktopHostBridge(enabled: false);
 

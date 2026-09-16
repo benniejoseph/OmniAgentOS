@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/network/api_exception.dart';
+import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/storage/secure_session_store.dart';
 import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
@@ -119,11 +120,17 @@ class MobilePushEnvelope {
 }
 
 class MobilePushCoordinator extends ChangeNotifier {
-  MobilePushCoordinator(this._api, this._store, this._session);
+  MobilePushCoordinator(
+    this._api,
+    this._store,
+    this._session, {
+    DesktopHostBridge? desktopHostBridge,
+  }) : _desktopHostBridge = desktopHostBridge ?? appDesktopHostBridge;
 
   final ApiClient _api;
   final SecureSessionStore _store;
   final AppSession _session;
+  final DesktopHostBridge _desktopHostBridge;
   MobilePushState state = MobilePushState.initializing;
   MobilePushPreviewPolicy previewPolicy = MobilePushPreviewPolicy.hidden;
   String? error;
@@ -176,13 +183,16 @@ class MobilePushCoordinator extends ChangeNotifier {
         (message) => _receive(message.data),
       );
       await _tokenSubscription?.cancel();
-      _tokenSubscription = messaging.onTokenRefresh.listen(
-        (token) => unawaited(_registerSafely(token)),
-      );
+      _tokenSubscription =
+          !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
+          ? null
+          : messaging.onTokenRefresh.listen(
+              (token) => unawaited(_registerSafely(token)),
+            );
       final settings = await messaging.getNotificationSettings();
       if (_authorized(settings.authorizationStatus)) {
         await messaging.setAutoInitEnabled(true);
-        await _registerCurrentToken();
+        await _registerCurrentInstallation();
       } else {
         state = settings.authorizationStatus == AuthorizationStatus.denied
             ? MobilePushState.denied
@@ -221,7 +231,7 @@ class MobilePushCoordinator extends ChangeNotifier {
         return;
       }
       await messaging.setAutoInitEnabled(true);
-      await _registerCurrentToken();
+      await _registerCurrentInstallation();
     } catch (value) {
       state = MobilePushState.error;
       error = 'Notification permission or registration failed.';
@@ -236,11 +246,19 @@ class MobilePushCoordinator extends ChangeNotifier {
     await _store.writePushPreviewPolicy(value.apiValue);
     notifyListeners();
     if (_messaging != null && state == MobilePushState.ready) {
-      await _registerCurrentToken();
+      await _registerCurrentInstallation();
     }
   }
 
-  Future<void> _registerCurrentToken() async {
+  Future<void> _registerCurrentInstallation() async {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.macOS) {
+      await _desktopHostBridge.requestRemoteNotifications();
+      return;
+    }
+    await _registerCurrentFcmToken();
+  }
+
+  Future<void> _registerCurrentFcmToken() async {
     final messaging = _messaging;
     if (messaging == null) return;
     final token = await messaging.getToken();
@@ -249,21 +267,25 @@ class MobilePushCoordinator extends ChangeNotifier {
       error = 'This installation did not receive a push token.';
       return;
     }
-    await _register(token);
+    await _register(token, provider: 'fcm', environment: 'production');
   }
 
-  Future<void> _register(String token) async {
+  Future<void> _register(
+    String token, {
+    required String provider,
+    required String environment,
+  }) async {
     final result = await _api.postJson(
       NativePaths.pushRegistrationsUpsert,
       data: {
-        'provider': 'fcm',
-        'environment': 'production',
+        'provider': provider,
+        'environment': environment,
         'token': token,
         'previewPolicy': previewPolicy.apiValue,
       },
       headers: {
         'idempotency-key':
-            'push-register-${await _store.readOrCreateDeviceId()}-${previewPolicy.apiValue}',
+            'push-register-${await _store.readOrCreateDeviceId()}-$provider-$environment-${previewPolicy.apiValue}',
       },
     );
     final registration = result['registration'];
@@ -272,7 +294,7 @@ class MobilePushCoordinator extends ChangeNotifier {
     }
     await _store.writePushRegistrationId(registration['id'] as String);
     final providers = result['providers'];
-    providerState = providers is Map ? providers['fcm']?.toString() : null;
+    providerState = providers is Map ? providers[provider]?.toString() : null;
     state = MobilePushState.ready;
     error = providerState == 'configured' ? null : 'This device is registered, but server delivery credentials are still required.';
     notifyListeners();
@@ -280,12 +302,66 @@ class MobilePushCoordinator extends ChangeNotifier {
 
   Future<void> _registerSafely(String token) async {
     try {
-      await _register(token);
+      await _register(token, provider: 'fcm', environment: 'production');
     } catch (value) {
       state = MobilePushState.error;
       error = 'The refreshed push token could not be registered.';
       debugPrint('Mobile push token refresh failed: $value');
       notifyListeners();
+    }
+  }
+
+  Future<void> handleDesktopApnsRegistration(
+    DesktopApnsRegistration registration,
+  ) async {
+    if (!registration.succeeded) {
+      state = MobilePushState.configurationRequired;
+      error = registration.errorCode == 'missing_entitlement'
+          ? 'APNs needs an Apple-signed build with the macOS push entitlement.'
+          : 'This Mac could not register with APNs (${registration.errorCode ?? 'unknown'}).';
+      notifyListeners();
+      return;
+    }
+    try {
+      await _register(
+        registration.token!,
+        provider: 'apns',
+        environment: registration.environment!,
+      );
+    } catch (value) {
+      state = MobilePushState.error;
+      error = 'The APNs token could not be registered with Asael.';
+      debugPrint('APNs token registration failed: $value');
+      notifyListeners();
+    }
+  }
+
+  Future<void> handleDesktopNotificationAction(
+    DesktopNotificationAction action,
+  ) async {
+    try {
+      final envelope = MobilePushEnvelope.fromData(action.data);
+      if (action.command == DesktopNotificationCommand.open) {
+        await _open(envelope);
+        return;
+      }
+      final notificationId = envelope.notificationId;
+      if (notificationId == null) {
+        throw const FormatException(
+          'This push does not bind a personal notification action.',
+        );
+      }
+      final record = {
+        'tenantId': _session.tenantId,
+        'actorId': _session.actorId,
+        'envelope': envelope.toJson(),
+        'action': action.command.name,
+      };
+      await _queueAcknowledgement(record);
+      await _applyDesktopNotificationAction(action.command, envelope);
+      await _acknowledge(envelope);
+    } catch (value) {
+      debugPrint('Native notification action remains queued: $value');
     }
   }
 
@@ -332,11 +408,17 @@ class MobilePushCoordinator extends ChangeNotifier {
           continue;
         }
         try {
-          await _acknowledge(
-            MobilePushEnvelope.fromData(
-              Map<String, dynamic>.from(value['envelope'] as Map),
-            ),
+          final envelope = MobilePushEnvelope.fromData(
+            Map<String, dynamic>.from(value['envelope'] as Map),
           );
+          final commandName = value['action'];
+          if (commandName is String) {
+            final command = DesktopNotificationCommand.values.firstWhere(
+              (item) => item.name == commandName,
+            );
+            await _applyDesktopNotificationAction(command, envelope);
+          }
+          await _acknowledge(envelope);
         } catch (value) {
           debugPrint('Pending push acknowledgement remains queued: $value');
         }
@@ -344,6 +426,34 @@ class MobilePushCoordinator extends ChangeNotifier {
     } catch (value) {
       debugPrint('Pending push acknowledgement remains queued: $value');
     }
+  }
+
+  Future<void> _applyDesktopNotificationAction(
+    DesktopNotificationCommand command,
+    MobilePushEnvelope envelope,
+  ) async {
+    final notificationId = envelope.notificationId;
+    if (notificationId == null) {
+      throw const FormatException('The notification id is missing.');
+    }
+    final action = switch (command) {
+      DesktopNotificationCommand.complete => 'complete',
+      DesktopNotificationCommand.snooze15 => 'snooze',
+      DesktopNotificationCommand.dismiss => 'dismiss',
+      DesktopNotificationCommand.open => throw const FormatException(
+        'Open is not a notification mutation.',
+      ),
+    };
+    await _api.patchJson(
+      NativePaths.notificationsAcknowledge(notificationId),
+      data: {
+        'action': action,
+        if (command == DesktopNotificationCommand.snooze15) 'minutes': 15,
+      },
+      headers: {
+        'idempotency-key': 'push-action-${envelope.deliveryId}-${command.name}',
+      },
+    );
   }
 
   Future<void> _queueAcknowledgement(Map<String, dynamic> record) async {

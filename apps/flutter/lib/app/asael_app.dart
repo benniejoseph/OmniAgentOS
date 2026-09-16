@@ -55,7 +55,14 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     ref.watch(captureOutboxLifecycleProvider);
     final router = ref.watch(appRouterProvider);
     _desktopHostBridge.attachRouter(router);
-    ref.watch(mobilePushCoordinatorProvider)?.attachRouter(router);
+    final push = ref.watch(mobilePushCoordinatorProvider);
+    push?.attachRouter(router);
+    _desktopHostBridge.attachNotificationHandler(
+      push?.handleDesktopNotificationAction,
+    );
+    _desktopHostBridge.attachApnsRegistrationHandler(
+      push?.handleDesktopApnsRegistration,
+    );
     return MaterialApp.router(
       title: 'Asael',
       debugShowCheckedModeBanner: false,

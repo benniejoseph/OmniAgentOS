@@ -11,6 +11,7 @@ const providerDeadlineMs = 10_000;
 const maxProviderResponseBytes = 16_384;
 const oauthScope = "https://www.googleapis.com/auth/firebase.messaging";
 const oauthAudience = "https://oauth2.googleapis.com/token";
+export const asaelNotificationCategory = "ASAEL_ACTIONABLE_V1";
 
 type PushProvider = "apns" | "fcm";
 type PushEnvironment = "sandbox" | "production";
@@ -90,7 +91,7 @@ async function deliverFcm(input: {
               },
               payload: {
                 aps: input.preview
-                  ? { sound: "default" }
+                  ? { sound: "default", category: asaelNotificationCategory }
                   : { "content-available": 1 },
               },
             },
@@ -156,7 +157,11 @@ async function deliverApns(input: {
   const pushType = input.preview ? "alert" : "background";
   const body = JSON.stringify({
     aps: input.preview
-      ? { alert: input.preview, sound: "default" }
+      ? {
+          alert: input.preview,
+          sound: "default",
+          category: asaelNotificationCategory,
+        }
       : { "content-available": 1 },
     asael: input.envelope,
   });

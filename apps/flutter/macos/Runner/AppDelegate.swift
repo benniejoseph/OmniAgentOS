@@ -1,9 +1,11 @@
 import Carbon
 import Cocoa
 import FlutterMacOS
+import Security
+import UserNotifications
 
 @main
-class AppDelegate: FlutterAppDelegate {
+class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   private let desktopHostController = DesktopHostController()
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
@@ -11,6 +13,8 @@ class AppDelegate: FlutterAppDelegate {
     // does not implement a super selector on macOS 27. Calling super raises an
     // Objective-C forwarding exception and prevents the desktop host from
     // registering its status item and global shortcut.
+    UNUserNotificationCenter.current().delegate = self
+    desktopHostController.registerNotificationCategories()
     desktopHostController.start()
   }
 
@@ -37,11 +41,55 @@ class AppDelegate: FlutterAppDelegate {
   func attachDesktopBridge(channel: FlutterMethodChannel, window: NSWindow) {
     desktopHostController.attach(channel: channel, window: window)
   }
+
+  override func application(
+    _ application: NSApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+    desktopHostController.reportApnsToken(token)
+  }
+
+  override func application(
+    _ application: NSApplication,
+    didFailToRegisterForRemoteNotificationsWithError error: Error
+  ) {
+    let code = (error as NSError).code
+    desktopHostController.reportApnsFailure("registration_\(code)")
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.banner, .sound, .badge])
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    desktopHostController.handleNotificationResponse(response)
+    completionHandler()
+  }
 }
 
 /// Owns Asael's small native desktop surface. Product behavior remains in Flutter;
 /// this controller only keeps the app available and forwards explicit navigation.
 private final class DesktopHostController: NSObject {
+  private enum NotificationAction: String {
+    case open
+    case complete
+    case snooze15
+    case dismiss
+  }
+
+  private static let notificationCategory = "ASAEL_ACTIONABLE_V1"
+  private static let completeNotificationAction = "ASAEL_COMPLETE_V1"
+  private static let snoozeNotificationAction = "ASAEL_SNOOZE_15_V1"
+  private static let dismissNotificationAction = "ASAEL_DISMISS_V1"
   private enum Route: String {
     case today = "/today"
     case command = "/talk"
@@ -136,9 +184,128 @@ private final class DesktopHostController: NSObject {
           self.showQuickEntryWindow()
         }
         result(nil)
+      case "requestRemoteNotifications":
+        DispatchQueue.main.async {
+          self.requestRemoteNotifications()
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
+    }
+  }
+
+  func registerNotificationCategories() {
+    let complete = UNNotificationAction(
+      identifier: Self.completeNotificationAction,
+      title: "Complete",
+      options: [.authenticationRequired]
+    )
+    let snooze = UNNotificationAction(
+      identifier: Self.snoozeNotificationAction,
+      title: "Snooze 15 min",
+      options: []
+    )
+    let dismiss = UNNotificationAction(
+      identifier: Self.dismissNotificationAction,
+      title: "Dismiss",
+      options: [.destructive]
+    )
+    let category = UNNotificationCategory(
+      identifier: Self.notificationCategory,
+      actions: [complete, snooze, dismiss],
+      intentIdentifiers: [],
+      hiddenPreviewsBodyPlaceholder: "Asael has an update.",
+      options: [.customDismissAction]
+    )
+    UNUserNotificationCenter.current().setNotificationCategories([category])
+  }
+
+  func handleNotificationResponse(_ response: UNNotificationResponse) {
+    let action: NotificationAction
+    switch response.actionIdentifier {
+    case UNNotificationDefaultActionIdentifier:
+      action = .open
+    case Self.completeNotificationAction:
+      action = .complete
+    case Self.snoozeNotificationAction:
+      action = .snooze15
+    case Self.dismissNotificationAction, UNNotificationDismissActionIdentifier:
+      action = .dismiss
+    default:
+      return
+    }
+    let data = Self.channelValue(response.notification.request.content.userInfo)
+    guard let data = data as? [String: Any] else { return }
+    DispatchQueue.main.async { [weak self] in
+      self?.channel?.invokeMethod(
+        "notificationAction",
+        arguments: ["action": action.rawValue, "data": data]
+      )
+    }
+  }
+
+  func reportApnsToken(_ token: String) {
+    let environment = apsEnvironment() ?? "production"
+    DispatchQueue.main.async { [weak self] in
+      self?.channel?.invokeMethod(
+        "apnsRegistration",
+        arguments: ["token": token, "environment": environment]
+      )
+    }
+  }
+
+  func reportApnsFailure(_ code: String) {
+    DispatchQueue.main.async { [weak self] in
+      self?.channel?.invokeMethod(
+        "apnsRegistration",
+        arguments: ["errorCode": code]
+      )
+    }
+  }
+
+  private func requestRemoteNotifications() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard apsEnvironment() != nil else {
+      reportApnsFailure("missing_entitlement")
+      return
+    }
+    NSApp.registerForRemoteNotifications()
+  }
+
+  private func apsEnvironment() -> String? {
+    guard let task = SecTaskCreateFromSelf(nil),
+          let value = SecTaskCopyValueForEntitlement(
+            task,
+            "com.apple.developer.aps-environment" as CFString,
+            nil
+          ) as? String,
+          value == "development" || value == "production"
+    else {
+      return nil
+    }
+    return value == "development" ? "sandbox" : "production"
+  }
+
+  private static func channelValue(_ value: Any) -> Any? {
+    switch value {
+    case let value as String:
+      return value
+    case let value as NSNumber:
+      return value
+    case let value as [Any]:
+      return value.compactMap(channelValue)
+    case let value as [AnyHashable: Any]:
+      var result: [String: Any] = [:]
+      for (key, nested) in value {
+        guard let key = key as? String, let safe = channelValue(nested) else {
+          continue
+        }
+        result[key] = safe
+      }
+      return result
+    default:
+      return nil
     }
   }
 
