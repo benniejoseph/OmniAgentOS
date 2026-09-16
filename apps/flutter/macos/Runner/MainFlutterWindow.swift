@@ -2,14 +2,35 @@ import Cocoa
 import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
+  private static let desktopChannelName = "app.omniagent.omniagent/desktop"
+
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
-    let windowFrame = self.frame
-    self.contentViewController = flutterViewController
-    self.setFrame(windowFrame, display: true)
+    let windowFrame = frame
+    contentViewController = flutterViewController
+    setFrame(windowFrame, display: true)
+
+    configureDesktopWindow()
+
+    let channel = FlutterMethodChannel(
+      name: Self.desktopChannelName,
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    (NSApp.delegate as? AppDelegate)?.attachDesktopBridge(channel: channel, window: self)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
-
     super.awakeFromNib()
+  }
+
+  private func configureDesktopWindow() {
+    title = "Asael"
+    minSize = NSSize(width: 1_024, height: 700)
+    setContentSize(NSSize(width: 1_360, height: 860))
+    center()
+
+    isReleasedWhenClosed = false
+    tabbingMode = .disallowed
+    collectionBehavior.insert(.fullScreenPrimary)
+    styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
   }
 }

@@ -13,3 +13,4 @@
 | [009](009-ap2-boundary.md) | Deterministic AP2 payment boundary | Accepted |
 | [010](010-workspace-model.md) | Workspace, project, and work-item model | Accepted |
 | [011](011-native-api.md) | Versioned, server-authoritative native API | Accepted |
+| [012](012-macos-client.md) | Shared Flutter macOS client with a thin native host | Accepted |

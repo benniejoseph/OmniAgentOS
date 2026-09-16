@@ -235,7 +235,7 @@ class _BoundaryNotice extends StatelessWidget {
               Text(
                 readiness?['summary']?.toString() ??
                     (trustPolicy
-                        ? 'The trusted payment boundary is available. Native signing will appear only when Android hardware-key attestation is enrolled.'
+                        ? 'The trusted payment boundary is available. Native signing will appear only after this platform has an enrolled hardware-backed attestation policy.'
                         : 'No reviewed attestation trust policy is available. Asael cannot authorize or submit a payment.'),
                 style: TextStyle(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -301,7 +301,7 @@ class _ReviewCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 10),
                 const Text(
-                  'Authorization requires a human-present hardware signature. The mobile app keeps this review read-only until native Android signer attestation is enrolled.',
+                  'Authorization requires a human-present hardware signature. Native clients keep this review read-only until a platform signer and its attestation policy are enrolled.',
                   style: TextStyle(fontSize: 12),
                 ),
               ],

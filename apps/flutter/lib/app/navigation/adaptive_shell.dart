@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/auth/native_client_info.dart';
 import '../brand/asael_mark.dart';
 import '../theme/daybook_backdrop.dart';
 import 'app_destination.dart';
@@ -456,10 +457,10 @@ class _WorkspaceDrawer extends StatelessWidget {
                     color: Theme.of(context).colorScheme.primary,
                   ),
                   const SizedBox(width: 8),
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Private workspace · This Android device',
-                      style: TextStyle(fontSize: 11.5),
+                      'Private workspace · This ${NativeClientInfo.platformLabel} device',
+                      style: const TextStyle(fontSize: 11.5),
                     ),
                   ),
                 ],

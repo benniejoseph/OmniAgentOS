@@ -28,6 +28,8 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Asael uses the microphone only when you choose to record a voice capture.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

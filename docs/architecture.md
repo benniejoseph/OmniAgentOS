@@ -2,14 +2,15 @@
 
 ## Governing architecture decisions
 
-ADRs 005–011 in the [architecture decision record index](adr/README.md) are
+ADRs 005–012 in the [architecture decision record index](adr/README.md) are
 authoritative for the target-state choices they record. They fix the
 canonical-truth boundary, split agent behavior from security authority, move
 large bytes behind a scoped
 object-storage plane, preserve Asael's internal delegation contract across the
 A2A adapter, keep AP2 deterministic and human-present first, converge work on
 `Workspace -> Project -> WorkItem`, and keep native clients on one
-server-authoritative versioned API. Each decision includes additive migration,
+server-authoritative versioned API while implementing macOS as a shared Flutter
+client with a thin, sandboxed AppKit host. Each decision includes additive migration,
 rollback, and security floors. Recording the decisions changes no runtime,
 schema, grant, event, rollout, or held authority.
 

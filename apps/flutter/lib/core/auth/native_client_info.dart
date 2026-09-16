@@ -9,12 +9,18 @@ class NativeClientInfo {
   static String get platform => switch (defaultTargetPlatform) {
     TargetPlatform.android => 'android',
     TargetPlatform.iOS => 'ios',
+    TargetPlatform.macOS => 'macos',
     _ => throw UnsupportedError(
-      'Native authentication currently supports Android and iOS only.',
+      'Native authentication supports Android, iOS, and macOS only.',
     ),
   };
 
-  static String get platformLabel => platform == 'ios' ? 'iOS' : 'Android';
+  static String get platformLabel => switch (platform) {
+    'android' => 'Android',
+    'ios' => 'iOS',
+    'macos' => 'macOS',
+    _ => throw StateError('Unsupported native platform.'),
+  };
 
   static Map<String, dynamic> attestation() => {
     'platform': platform,
@@ -27,8 +33,7 @@ class NativeClientInfo {
     'x-asael-native-platform': platform,
     'x-asael-native-app-version': AppConfig.appVersion,
     'x-asael-native-build-number': AppConfig.appBuildNumber.toString(),
-    'x-asael-native-contract-version':
-        NativeContract.currentVersion.toString(),
+    'x-asael-native-contract-version': NativeContract.currentVersion.toString(),
   };
 
   static Map<String, dynamic> legacyDevice(String deviceId) => {
