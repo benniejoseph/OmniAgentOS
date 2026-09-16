@@ -9,7 +9,7 @@ export const NATIVE_CLIENT_ADOPTION_SCHEMA_VERSION = 1 as const;
 export const NATIVE_CLIENT_ADOPTION_WINDOW_DAYS = 30 as const;
 export const NATIVE_CLIENT_ADOPTION_MAX_SESSION_FAMILIES = 10_000 as const;
 
-export type NativePlatform = "android" | "ios";
+export type NativePlatform = "android" | "ios" | "macos";
 export type NativeClientCompatibilityStatus =
   | "compatible"
   | "upgrade_required"
@@ -60,11 +60,12 @@ export function isNativeClientAttestation(
 }
 
 export function minimumNativeVersion(platform: NativePlatform) {
-  const configured = process.env[
-    platform === "android"
-      ? "OMNIAGENT_NATIVE_MIN_ANDROID_VERSION"
-      : "OMNIAGENT_NATIVE_MIN_IOS_VERSION"
-  ];
+  const environmentVariable = {
+    android: "OMNIAGENT_NATIVE_MIN_ANDROID_VERSION",
+    ios: "OMNIAGENT_NATIVE_MIN_IOS_VERSION",
+    macos: "OMNIAGENT_NATIVE_MIN_MACOS_VERSION",
+  } as const;
+  const configured = process.env[environmentVariable[platform]];
   if (configured === undefined || configured === "") {
     return DEFAULT_MINIMUM_NATIVE_VERSION;
   }
@@ -98,6 +99,7 @@ export function evaluateNativeClientCompatibility(
 export function nativeClientPolicy() {
   const android = minimumNativeVersion("android");
   const ios = minimumNativeVersion("ios");
+  const macos = minimumNativeVersion("macos");
   return Object.freeze({
     schemaVersion: NATIVE_CLIENT_POLICY_SCHEMA_VERSION,
     currentContractVersion: NATIVE_CLIENT_CONTRACT_VERSION,
@@ -105,9 +107,10 @@ export function nativeClientPolicy() {
     minimumVersions: Object.freeze({
       android: android || null,
       ios: ios || null,
+      macos: macos || null,
     }),
     configurationStatus:
-      android && ios ? "valid" as const : "invalid" as const,
+      android && ios && macos ? "valid" as const : "invalid" as const,
     adoptionWindowDays: NATIVE_CLIENT_ADOPTION_WINDOW_DAYS,
     agentCatalogEnrollment: Object.freeze({
       state: "held" as const,

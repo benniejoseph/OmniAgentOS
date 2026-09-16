@@ -37,9 +37,9 @@ Set these through the platform secret/configuration store, never in source contr
 - `SALESFORCE_WEBHOOK_SECRET`: independent server-only HMAC key for the optional Salesforce CDC relay. The relay signs `${unixSeconds}.${rawBody}` with SHA-256, sends `x-asael-salesforce-signature: sha256=<hex>` and `x-asael-salesforce-timestamp`, and must arrive within five minutes. Do not reuse the Connected App secret.
 - `SALESFORCE_WRITE_ENABLED` and `SALESFORCE_WRITE_EXTERNAL_ID_FIELD`: independent fail-closed gate for P10.11 provider mutations. Leave the gate `false` until migration 139 is installed and the named `__c` field exists as a unique, createable, updateable External ID on Contact, Task, Case, and Opportunity. The application rechecks provider describe metadata before every create; setting these variables does not activate any Account 360 or bypass its separate owner approval.
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
-- `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION` and `OMNIAGENT_NATIVE_MIN_IOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
+- `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed release inputs under `public/native-contracts/v6` and `public/native-contracts/v7`; v1-v5 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v6 document hashes drift. Keep v7 current and v6 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
+Native contract artifacts are committed release inputs under `public/native-contracts/v7` and `public/native-contracts/v8`; v1-v6 remain unadvertised archives. Run `npm run check:native-contracts` before a native-contract release; the check fails if the generated OpenAPI, event schema, fixtures, integrity manifests, Dart SDK, or frozen v7 document hashes drift. Keep v8 current and v7 supported as the previous version during this rollout. Removing an archived version requires a separately reviewed adoption decision and is not implied by a Vercel deployment.
 
 ### Licensed TradingView chart assets
 
@@ -52,8 +52,8 @@ P12.2 requires migration `20260908093000_p12_2_mobile_device_lifecycle.sql`
 migration validates predecessor v144, installs the constrained revocation/wipe
 state and challenge index, and commits its schema marker atomically. Native
 binary builds also require the `local_auth` platform setup committed under
-`apps/flutter/android` and `apps/flutter/ios`; Vercel deploys the server routes
-and contract documents, not an App Store or Play Store binary.
+`apps/flutter/android`, `apps/flutter/ios`, and `apps/flutter/macos`; Vercel
+deploys the server routes and contract documents, not a native binary.
 
 P12.4 is a Vercel route guard plus Flutter binary change and requires no schema
 or Fly release. The native build adds `cryptography`, `path_provider`,
@@ -61,7 +61,7 @@ or Fly release. The native build adds `cryptography`, `path_provider`,
 purposes, while Android disables application backup and declares camera access.
 Vercel must be promoted before distributing that binary because offline retries
 require the owner-digest and stable-correlation checks. A Vercel deployment does
-not publish the iOS or Android binary.
+not publish the iOS, Android, or macOS binary.
 
 P12.5 requires migration `20260908123000_p12_5_mobile_push_delivery.sql`
 (internal schema v146) before publishing the push routes. It installs exact
@@ -92,9 +92,18 @@ The deterministic market-backtest foundation requires migration
 actor-private forced-RLS append-only result and event ledgers. The web route
 only enqueues work; the Fly worker executes `market.backtest.run`, so web and
 worker must be released as one compatible feature revision. Native contract v7
-adds the Android read/run operations while retaining frozen v6 compatibility.
+adds the native read/run operations and remains the frozen v8 rollback contract.
 No market credential, raw provider payload, or trade-execution authority is
 introduced by this migration.
+
+P13.1 requires migration
+`20260916143000_p13_1_macos_native_platform.sql` (internal schema version 178)
+before a contract-v8 macOS client signs in. It widens only attested native
+session and push-registration platform checks to include `macos`; direct APNs
+registrations may originate from iOS or macOS. Contract v8 removes unenrolled
+legacy mutation declarations from its generated surface and does not activate
+new route capabilities. Publish the schema migration and server contract before
+distributing the macOS binary; Vercel does not distribute or sign that binary.
 
 Android release builds fail closed when a production signing identity is not
 available. On the release Mac, `apps/flutter/tool/build_android_release.sh`

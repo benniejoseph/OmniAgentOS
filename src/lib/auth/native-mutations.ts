@@ -72,7 +72,10 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
-  if (capability === "markets.backtest.run") return NATIVE_API_CURRENT_VERSION;
+  // Backtests were enrolled in v7. Keep that rollout floor stable when the
+  // current document advances so a supported v7 client does not lose an
+  // already granted capability.
+  if (capability === "markets.backtest.run") return 7;
   if (
     capability === "push.registration.update" ||
     capability === "push.delivery.acknowledge"

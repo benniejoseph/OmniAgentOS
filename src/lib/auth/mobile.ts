@@ -468,10 +468,15 @@ export async function getNativeClientAdoption(
   const byPlatform = {
     android: emptyCounts(),
     ios: emptyCounts(),
+    macos: emptyCounts(),
     unknown: emptyCounts(),
   };
   for (const row of rows) {
-    if (row.platform !== "android" && row.platform !== "ios") {
+    if (
+      row.platform !== "android" &&
+      row.platform !== "ios" &&
+      row.platform !== "macos"
+    ) {
       incrementUnknownCompatibilityCounts(sessionFamilyCounts);
       if (Number(row.enrollment_rank) === 1) {
         incrementUnknownCompatibilityCounts(deviceCounts);
@@ -1012,7 +1017,9 @@ function optionalPositiveInteger(value: unknown) {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : undefined;
 }
 function mobilePlatform(value: unknown): MobileDevice["platform"] {
-  if (value === "android" || value === "ios") return value;
+  if (value === "android" || value === "ios" || value === "macos") {
+    return value;
+  }
   throw new Error("Native session platform is invalid.");
 }
 function optionalRevocationReason(value: unknown): MobileRevocationReason | undefined {

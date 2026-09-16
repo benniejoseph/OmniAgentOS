@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 7 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 6 as const;
+export const NATIVE_API_CURRENT_VERSION = 8 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 7 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -14,7 +14,7 @@ const opaqueId = z.string().trim().min(1).max(200);
 const jsonObject = z.record(z.string(), z.unknown());
 
 export const nativeClientAttestationSchema = z.object({
-  platform: z.enum(["android", "ios"]),
+  platform: z.enum(["android", "ios", "macos"]),
   appVersion: z.string().regex(
     /^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/,
   ),
@@ -25,7 +25,7 @@ export const nativeClientAttestationSchema = z.object({
 export const nativeDeviceSchema = z.object({
   id: z.string().trim().min(8).max(200).regex(/^[A-Za-z0-9._:-]+$/),
   name: z.string().trim().min(1).max(120),
-  platform: z.enum(["android", "ios"]),
+  platform: z.enum(["android", "ios", "macos"]),
   appVersion: z.string().min(1).max(40).optional(),
   buildNumber: positiveDatabaseInteger.optional(),
   clientContractVersion: positiveDatabaseInteger.optional(),
@@ -69,7 +69,7 @@ export const nativeTokenPairSchema = z.object({
 
 export const nativeCompatibilitySchema = z.object({
   schemaVersion: z.literal(1),
-  platform: z.enum(["android", "ios"]),
+  platform: z.enum(["android", "ios", "macos"]),
   appVersion: z.string().nullable(),
   buildNumber: positiveDatabaseInteger.nullable(),
   clientContractVersion: z.number().int().min(0),
@@ -237,7 +237,7 @@ export const nativePushRegistrationRequestSchema = z.object({
 const nativePushRegistrationSchema = z.object({
   id: opaqueId,
   deviceId: opaqueId,
-  platform: z.enum(["android", "ios"]),
+  platform: z.enum(["android", "ios", "macos"]),
   provider: z.enum(["apns", "fcm"]),
   environment: z.enum(["sandbox", "production"]),
   previewPolicy: z.enum(["hidden", "generic", "title"]),
@@ -464,6 +464,31 @@ const v7Operations = [
   operation("market.backtests.run", "POST", "/api/market-research/backtests", "Queue one governed leakage-safe deterministic backtest.", "bearer", "JsonObject", "JsonObject"),
 ] as const satisfies readonly NativeOperation[];
 
+// Contract publication must describe only authority a native bearer can
+// actually exercise. These legacy v7 declarations have no enrolled route
+// capability, so v8 stops advertising them without changing the frozen v7
+// compatibility artifact or granting any new mutation authority.
+const v8UnenrolledMutationOperationIds = new Set<string>([
+  "agents.create",
+  "agents.update",
+  "agents.delete",
+  "skills.create",
+  "skills.update",
+  "skills.delete",
+  "memory.create",
+  "memory.update",
+  "memory.delete",
+  "memory.graph.rebuild",
+  "knowledge.source.delete",
+  "missions.create",
+  "missions.update",
+  "admin.workflows.tick",
+]);
+
+const v8Operations: readonly NativeOperation[] = v7Operations.filter(
+  (operation) => !v8UnenrolledMutationOperationIds.has(operation.id),
+);
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -517,6 +542,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 5) return v5Operations;
   if (version === 6) return v6Operations;
   if (version === 7) return v7Operations;
+  if (version === 8) return v8Operations;
   return undefined;
 }
 
@@ -526,7 +552,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [7, 6],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [8, 7],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

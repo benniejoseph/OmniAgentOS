@@ -16,10 +16,10 @@ import {
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checkOnly = process.argv.includes("--check");
 const frozenPreviousDocumentSha256 = Object.freeze({
-  "openapi.json": "5d41584d2a31b775349acf2e25a7b6dbe78bd15dd11355ba85ddedf102595c20",
+  "openapi.json": "5bd9b2d62d94caedee930a9b032ab55154a5ae3cddfa9f5295685cbd3fe5fee8",
   "events.schema.json": "54ad4d7e0a686efecd0b3a436ab16df640755c7c4da9b20f4f703cb45a835049",
-  "fixtures.json": "9a9e29520fc1452e87a37cbe1319791a33256d001c64848cefdf8b6d4ba42333",
-  "manifest.json": "71b9988879c433793425b846371a346865f75e924611b073e40d244c6fdba35a",
+  "fixtures.json": "f69fc5b08b1006e4943c4e5a38df63e91ac5ef3b4f7c325e873f98d64746edb0",
+  "manifest.json": "ba176b99472920cd9a4ca0ca34770e43812cc1653d5d99ce3e94c3e26e416f41",
 });
 
 const fixtures = Object.freeze({
@@ -28,8 +28,8 @@ const fixtures = Object.freeze({
     password: "fixture-password",
     device: {
       id: "asael-fixture-device",
-      name: "Asael on iOS",
-      platform: "ios",
+      name: "Asael on macOS",
+      platform: "macos",
       appVersion: "1.0.0",
       buildNumber: 2,
       clientContractVersion: NATIVE_API_CURRENT_VERSION,
@@ -39,7 +39,7 @@ const fixtures = Object.freeze({
     refreshToken: "fixture-refresh-token-00000000000000000000",
     deviceId: "asael-fixture-device",
     client: {
-      platform: "ios",
+      platform: "macos",
       appVersion: "1.0.0",
       buildNumber: 2,
       clientContractVersion: NATIVE_API_CURRENT_VERSION,
@@ -234,6 +234,9 @@ function ref(name: string) {
 }
 
 function renderDartContract(operations: readonly NativeOperation[]) {
+  const operationIds = operations
+    .map((operation) => `    '${operation.id}',`)
+    .join("\n");
   const paths = operations.map((operation) => {
     const name = dartName(operation.id);
     const parameters = [...operation.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
@@ -246,7 +249,7 @@ function renderDartContract(operations: readonly NativeOperation[]) {
     return `  static String ${name}(${args}) => '${rendered}';`;
   }).join("\n");
   const eventTypes = agentEventSchemasForDart().map((value) => `    '${value}',`).join("\n");
-  return `// GENERATED FILE. DO NOT EDIT.\n// Run npm run generate:native-contracts from the repository root.\n\nabstract final class NativeContract {\n  static const id = '${NATIVE_API_CONTRACT_ID}';\n  static const currentVersion = ${NATIVE_API_CURRENT_VERSION};\n  static const previousVersion = ${NATIVE_API_PREVIOUS_VERSION};\n  static const supportedVersions = <int>[${NATIVE_API_SUPPORTED_VERSIONS.join(", ")}];\n  static const discoveryPath = '/api/mobile/contracts';\n\n  static bool supports(int version) => supportedVersions.contains(version);\n\n  static void verifyBootstrap(Map<String, dynamic> response) {\n    final api = response['api'];\n    if (api is! Map || api['nativeContract'] == null) {\n      // The immediately previous server did not advertise discovery metadata.\n      return;\n    }\n    final contract = api['nativeContract'];\n    if (contract is! Map || contract['id'] != id) {\n      throw const FormatException('The service returned a different native contract.');\n    }\n    final versions = contract['supportedVersions'];\n    if (versions is! List || !versions.contains(currentVersion)) {\n      throw const FormatException('This native client contract is not supported by the service.');\n    }\n  }\n}\n\nabstract final class NativePaths {\n${paths}\n}\n\nabstract final class NativeConversationEvents {\n  static const supportedTypes = <String>{\n${eventTypes}\n  };\n\n  static Map<String, dynamic> parse(String eventName, Object? value) {\n    if (value is! Map) {\n      throw const FormatException('Native event payload must be an object.');\n    }\n    final event = Map<String, dynamic>.from(value);\n    final type = event['type'];\n    if (type is! String || type != eventName || !supportedTypes.contains(type)) {\n      throw const FormatException('Native event discriminant is invalid.');\n    }\n    return event;\n  }\n}\n`;
+  return `// GENERATED FILE. DO NOT EDIT.\n// Run npm run generate:native-contracts from the repository root.\n\nabstract final class NativeContract {\n  static const id = '${NATIVE_API_CONTRACT_ID}';\n  static const currentVersion = ${NATIVE_API_CURRENT_VERSION};\n  static const previousVersion = ${NATIVE_API_PREVIOUS_VERSION};\n  static const supportedVersions = <int>[${NATIVE_API_SUPPORTED_VERSIONS.join(", ")}];\n  static const discoveryPath = '/api/mobile/contracts';\n  static const operationIds = <String>{\n${operationIds}\n  };\n\n  static bool supports(int version) => supportedVersions.contains(version);\n  static bool supportsOperation(String operationId) => operationIds.contains(operationId);\n\n  static void verifyBootstrap(Map<String, dynamic> response) {\n    final api = response['api'];\n    if (api is! Map || api['nativeContract'] == null) {\n      // The immediately previous server did not advertise discovery metadata.\n      return;\n    }\n    final contract = api['nativeContract'];\n    if (contract is! Map || contract['id'] != id) {\n      throw const FormatException('The service returned a different native contract.');\n    }\n    final versions = contract['supportedVersions'];\n    if (versions is! List || !versions.contains(currentVersion)) {\n      throw const FormatException('This native client contract is not supported by the service.');\n    }\n  }\n}\n\nabstract final class NativePaths {\n${paths}\n}\n\nabstract final class NativeConversationEvents {\n  static const supportedTypes = <String>{\n${eventTypes}\n  };\n\n  static Map<String, dynamic> parse(String eventName, Object? value) {\n    if (value is! Map) {\n      throw const FormatException('Native event payload must be an object.');\n    }\n    final event = Map<String, dynamic>.from(value);\n    final type = event['type'];\n    if (type is! String || type != eventName || !supportedTypes.contains(type)) {\n      throw const FormatException('Native event discriminant is invalid.');\n    }\n    return event;\n  }\n}\n`;
 }
 
 function agentEventSchemasForDart() {

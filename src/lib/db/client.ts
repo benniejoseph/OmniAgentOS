@@ -1591,6 +1591,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[176],
       up: ensureMarketDeterministicBacktestsV1,
     },
+    {
+      ...databaseSchemaMigrations[177],
+      up: ensureMacosNativePlatformV1,
+    },
   ];
 }
 
@@ -21438,7 +21442,7 @@ async function ensureMobilePushDeliveryV1(sql: SqlClient) {
       user_id TEXT NOT NULL REFERENCES omni_auth_users(id) ON DELETE RESTRICT,
       mobile_session_id TEXT NOT NULL REFERENCES omni_mobile_sessions(id) ON DELETE RESTRICT,
       device_id TEXT NOT NULL,
-      platform TEXT NOT NULL CHECK (platform IN ('android', 'ios')),
+      platform TEXT NOT NULL CHECK (platform IN ('android', 'ios', 'macos')),
       provider TEXT NOT NULL CHECK (provider IN ('apns', 'fcm')),
       environment TEXT NOT NULL CHECK (environment IN ('sandbox', 'production')),
       token_sha256 TEXT NOT NULL CHECK (token_sha256 ~ '^[a-f0-9]{64}$'),
@@ -21455,7 +21459,7 @@ async function ensureMobilePushDeliveryV1(sql: SqlClient) {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (tenant_id, owner_actor_id, device_id, provider),
       UNIQUE (tenant_id, owner_actor_id, id),
-      CHECK (provider <> 'apns' OR platform = 'ios'),
+      CHECK (provider <> 'apns' OR platform IN ('ios', 'macos')),
       CHECK ((state = 'revoked') = (revoked_at IS NOT NULL))
     );
     CREATE UNIQUE INDEX IF NOT EXISTS omni_mobile_push_active_token_idx
@@ -61989,7 +61993,7 @@ async function ensureNativeClientCompatibilityTelemetry(sql: SqlClient) {
         AND app_build_number IS NOT NULL
         AND app_build_number BETWEEN 1 AND 2147483647
         AND platform IS NOT NULL
-        AND platform COLLATE "C" IN ('android', 'ios')
+        AND platform COLLATE "C" IN ('android', 'ios', 'macos')
         AND app_version IS NOT NULL
         AND app_version = btrim(app_version)
         AND client_attested_at IS NOT NULL
@@ -62086,7 +62090,7 @@ async function ensureNativeClientCompatibilityTelemetry(sql: SqlClient) {
               AND app_build_number IS NOT NULL
               AND app_build_number BETWEEN 1 AND 2147483647
               AND platform IS NOT NULL
-              AND platform COLLATE "C" IN ('android', 'ios')
+              AND platform COLLATE "C" IN ('android', 'ios', 'macos')
               AND app_version IS NOT NULL
               AND app_version = btrim(app_version)
               AND client_attested_at IS NOT NULL
@@ -62149,6 +62153,159 @@ async function ensureNativeClientCompatibilityTelemetry(sql: SqlClient) {
     END
     $migration$
   `;
+}
+
+async function ensureMacosNativePlatformV1(sql: SqlClient) {
+  await sql.query(`
+    LOCK TABLE omni_mobile_sessions IN SHARE ROW EXCLUSIVE MODE;
+    LOCK TABLE omni_mobile_push_registrations IN SHARE ROW EXCLUSIVE MODE;
+
+    ALTER TABLE omni_mobile_sessions
+      DROP CONSTRAINT IF EXISTS omni_mobile_sessions_client_attestation_check;
+    ALTER TABLE omni_mobile_sessions
+      ADD CONSTRAINT omni_mobile_sessions_client_attestation_check CHECK (
+        (
+          client_contract_version = 0
+          AND app_build_number IS NULL
+          AND client_attested_at IS NULL
+        ) OR (
+          client_contract_version BETWEEN 1 AND 2147483647
+          AND app_build_number IS NOT NULL
+          AND app_build_number BETWEEN 1 AND 2147483647
+          AND platform IS NOT NULL
+          AND platform COLLATE "C" IN ('android', 'ios', 'macos')
+          AND app_version IS NOT NULL
+          AND app_version = btrim(app_version)
+          AND client_attested_at IS NOT NULL
+          AND app_version COLLATE "C" ~
+            '^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$'
+        )
+      ) NOT VALID;
+    ALTER TABLE omni_mobile_sessions
+      VALIDATE CONSTRAINT omni_mobile_sessions_client_attestation_check;
+
+    DO $migration$
+    DECLARE
+      constraint_record RECORD;
+      platform_attribute SMALLINT;
+      provider_attribute SMALLINT;
+    BEGIN
+      SELECT attnum INTO STRICT platform_attribute
+      FROM pg_attribute
+      WHERE attrelid = 'omni_mobile_push_registrations'::regclass
+        AND attname = 'platform'
+        AND NOT attisdropped;
+
+      SELECT attnum INTO STRICT provider_attribute
+      FROM pg_attribute
+      WHERE attrelid = 'omni_mobile_push_registrations'::regclass
+        AND attname = 'provider'
+        AND NOT attisdropped;
+
+      ALTER TABLE omni_mobile_push_registrations
+        DROP CONSTRAINT IF EXISTS omni_mobile_push_registrations_platform_check_v2;
+      ALTER TABLE omni_mobile_push_registrations
+        DROP CONSTRAINT IF EXISTS omni_mobile_push_registrations_apns_platform_check_v2;
+
+      FOR constraint_record IN
+        SELECT constraint_row.conname
+        FROM pg_constraint constraint_row
+        WHERE constraint_row.conrelid =
+            'omni_mobile_push_registrations'::regclass
+          AND constraint_row.contype = 'c'
+          AND (
+            (
+              constraint_row.conkey = ARRAY[platform_attribute]::SMALLINT[]
+              AND position(
+                'android' IN lower(pg_get_constraintdef(constraint_row.oid, TRUE))
+              ) > 0
+              AND position(
+                'ios' IN lower(pg_get_constraintdef(constraint_row.oid, TRUE))
+              ) > 0
+            ) OR (
+              cardinality(constraint_row.conkey) = 2
+              AND constraint_row.conkey @>
+                ARRAY[platform_attribute, provider_attribute]::SMALLINT[]
+              AND position(
+                'apns' IN lower(pg_get_constraintdef(constraint_row.oid, TRUE))
+              ) > 0
+            )
+          )
+      LOOP
+        EXECUTE format(
+          'ALTER TABLE omni_mobile_push_registrations DROP CONSTRAINT %I',
+          constraint_record.conname
+        );
+      END LOOP;
+    END
+    $migration$;
+
+    ALTER TABLE omni_mobile_push_registrations
+      ADD CONSTRAINT omni_mobile_push_registrations_platform_check_v2
+      CHECK (platform COLLATE "C" IN ('android', 'ios', 'macos')) NOT VALID;
+    ALTER TABLE omni_mobile_push_registrations
+      VALIDATE CONSTRAINT omni_mobile_push_registrations_platform_check_v2;
+
+    ALTER TABLE omni_mobile_push_registrations
+      ADD CONSTRAINT omni_mobile_push_registrations_apns_platform_check_v2
+      CHECK (
+        provider <> 'apns'
+        OR platform COLLATE "C" IN ('ios', 'macos')
+      ) NOT VALID;
+    ALTER TABLE omni_mobile_push_registrations
+      VALIDATE CONSTRAINT omni_mobile_push_registrations_apns_platform_check_v2;
+
+    DO $verify$
+    BEGIN
+      IF (
+        SELECT count(*)
+        FROM pg_constraint constraint_row
+        WHERE constraint_row.conrelid IN (
+          'omni_mobile_sessions'::regclass,
+          'omni_mobile_push_registrations'::regclass
+        )
+          AND constraint_row.conname IN (
+            'omni_mobile_sessions_client_attestation_check',
+            'omni_mobile_push_registrations_platform_check_v2',
+            'omni_mobile_push_registrations_apns_platform_check_v2'
+          )
+          AND constraint_row.contype = 'c'
+          AND constraint_row.convalidated
+          AND COALESCE(
+            (to_jsonb(constraint_row) ->> 'conenforced')::BOOLEAN,
+            TRUE
+          )
+      ) <> 3 OR EXISTS (
+        SELECT 1
+        FROM omni_mobile_sessions
+        WHERE NOT (
+          (
+            client_contract_version = 0
+            AND app_build_number IS NULL
+            AND client_attested_at IS NULL
+          ) OR (
+            client_contract_version BETWEEN 1 AND 2147483647
+            AND app_build_number BETWEEN 1 AND 2147483647
+            AND platform COLLATE "C" IN ('android', 'ios', 'macos')
+            AND app_version IS NOT NULL
+            AND app_version = btrim(app_version)
+            AND client_attested_at IS NOT NULL
+            AND app_version COLLATE "C" ~
+              '^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$'
+          )
+        )
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_mobile_push_registrations
+        WHERE platform COLLATE "C" NOT IN ('android', 'ios', 'macos')
+          OR (provider = 'apns' AND platform COLLATE "C" NOT IN ('ios', 'macos'))
+      ) THEN
+        RAISE EXCEPTION 'macOS native platform constraints are invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $verify$;
+  `);
 }
 
 async function ensureRunCheckpointStore(sql: SqlClient) {

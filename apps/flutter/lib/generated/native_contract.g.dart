@@ -3,12 +3,118 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 7;
-  static const previousVersion = 6;
-  static const supportedVersions = <int>[7, 6];
+  static const currentVersion = 8;
+  static const previousVersion = 7;
+  static const supportedVersions = <int>[8, 7];
   static const discoveryPath = '/api/mobile/contracts';
+  static const operationIds = <String>{
+    'auth.login',
+    'auth.refresh',
+    'auth.logout',
+    'bootstrap.get',
+    'adoption.get',
+    'contracts.get',
+    'devices.list',
+    'devices.change',
+    'wipe.challenge',
+    'wipe.acknowledge',
+    'today.get',
+    'today.create',
+    'today.update',
+    'today.brief',
+    'conversation.send',
+    'approvals.list',
+    'approvals.decide',
+    'workspaces.list',
+    'workspaces.get',
+    'workspaces.create',
+    'workspaces.update',
+    'capture.create',
+    'meetings.list',
+    'meetings.get',
+    'notifications.list',
+    'notifications.acknowledge',
+    'evidence.run',
+    'evidence.run.cancel',
+    'evidence.workflow',
+    'workspace.summary',
+    'evaluations.list',
+    'agents.list',
+    'agents.performance',
+    'skills.list',
+    'memory.list',
+    'memory.graph.get',
+    'knowledge.list',
+    'missions.list',
+    'missions.get',
+    'missions.events',
+    'workspaces.plan',
+    'workspaces.tasks.create',
+    'workspaces.tasks.update',
+    'workspaces.execute',
+    'workspaces.artifacts.feedback',
+    'admin.workflows',
+    'admin.triggers',
+    'admin.operations',
+    'admin.connection.catalog',
+    'admin.connectors',
+    'admin.oauth',
+    'admin.openapi.connectors',
+    'admin.health',
+    'admin.observability',
+    'admin.slo',
+    'admin.incidents',
+    'admin.alerts',
+    'admin.release.evidence',
+    'admin.security.audits',
+    'admin.security.isolation',
+    'admin.security.retention',
+    'admin.security.context',
+    'admin.workspace.readiness',
+    'admin.auth.controlPlane',
+    'admin.system.migrations',
+    'admin.data.export',
+    'admin.tools',
+    'admin.capabilities',
+    'admin.trust',
+    'capture.transcribe',
+    'notifications.readAll',
+    'push.registrations.list',
+    'push.registrations.upsert',
+    'push.registrations.revoke',
+    'push.deliveries.acknowledge',
+    'customers.get',
+    'memory.intelligence.get',
+    'memory.get',
+    'customers.list',
+    'customers.portfolio',
+    'market.overview',
+    'market.bars',
+    'market.events',
+    'market.events.backfill',
+    'market.replays',
+    'market.replays.backfill',
+    'market.baselines',
+    'market.features',
+    'market.analysis',
+    'market.journal',
+    'market.journal.generate',
+    'market.journal.score',
+    'operations.job',
+    'payments.readiness',
+    'payments.reviews',
+    'payments.authenticators',
+    'payments.transactions',
+    'settings.get',
+    'settings.assignments.update',
+    'workspaces.builder.get',
+    'workspaces.builder.update',
+    'market.backtests',
+    'market.backtests.run',
+  };
 
   static bool supports(int version) => supportedVersions.contains(version);
+  static bool supportsOperation(String operationId) => operationIds.contains(operationId);
 
   static void verifyBootstrap(Map<String, dynamic> response) {
     final api = response['api'];
@@ -60,26 +166,13 @@ abstract final class NativePaths {
   static const workspaceSummary = '/api/workspace-summary';
   static const evaluationsList = '/api/evaluations';
   static const agentsList = '/api/agents';
-  static const agentsCreate = '/api/agents';
-  static String agentsUpdate(String id) => '/api/agents/${Uri.encodeComponent(id)}';
-  static String agentsDelete(String id) => '/api/agents/${Uri.encodeComponent(id)}';
   static const agentsPerformance = '/api/agents/performance';
   static const skillsList = '/api/skills';
-  static const skillsCreate = '/api/skills';
-  static String skillsUpdate(String id) => '/api/skills/${Uri.encodeComponent(id)}';
-  static String skillsDelete(String id) => '/api/skills/${Uri.encodeComponent(id)}';
   static const memoryList = '/api/memory';
-  static const memoryCreate = '/api/memory';
-  static String memoryUpdate(String id) => '/api/memory/${Uri.encodeComponent(id)}';
-  static String memoryDelete(String id) => '/api/memory/${Uri.encodeComponent(id)}';
   static const memoryGraphGet = '/api/memory/graph';
-  static const memoryGraphRebuild = '/api/memory/graph';
   static const knowledgeList = '/api/knowledge';
-  static const knowledgeSourceDelete = '/api/knowledge';
   static const missionsList = '/api/missions';
-  static const missionsCreate = '/api/missions';
   static String missionsGet(String id) => '/api/missions/${Uri.encodeComponent(id)}';
-  static String missionsUpdate(String id) => '/api/missions/${Uri.encodeComponent(id)}';
   static String missionsEvents(String id) => '/api/missions/${Uri.encodeComponent(id)}/events';
   static String workspacesPlan(String id) => '/api/projects/${Uri.encodeComponent(id)}/plan';
   static String workspacesTasksCreate(String id) => '/api/projects/${Uri.encodeComponent(id)}/tasks';
@@ -89,7 +182,6 @@ abstract final class NativePaths {
   static const adminWorkflows = '/api/workflows';
   static const adminTriggers = '/api/triggers';
   static const adminOperations = '/api/operations';
-  static const adminWorkflowsTick = '/api/workflows/tick';
   static const adminConnectionCatalog = '/api/connection-catalog';
   static const adminConnectors = '/api/connectors';
   static const adminOauth = '/api/oauth';

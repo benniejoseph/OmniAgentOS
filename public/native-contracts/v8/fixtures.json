@@ -1,0 +1,56 @@
+{
+  "loginRequest": {
+    "email": "operator@example.test",
+    "password": "fixture-password",
+    "device": {
+      "id": "asael-fixture-device",
+      "name": "Asael on macOS",
+      "platform": "macos",
+      "appVersion": "1.0.0",
+      "buildNumber": 2,
+      "clientContractVersion": 8
+    }
+  },
+  "refreshRequest": {
+    "refreshToken": "fixture-refresh-token-00000000000000000000",
+    "deviceId": "asael-fixture-device",
+    "client": {
+      "platform": "macos",
+      "appVersion": "1.0.0",
+      "buildNumber": 2,
+      "clientContractVersion": 8
+    }
+  },
+  "conversationRequest": {
+    "message": "Summarize what needs my attention.",
+    "mode": "orchestrate",
+    "strategy": "auto",
+    "requestId": "native-fixture-request"
+  },
+  "conversationEvents": [
+    {
+      "type": "run",
+      "runId": "run-fixture",
+      "threadId": "thread-fixture"
+    },
+    {
+      "type": "status",
+      "label": "Working",
+      "detail": "Reviewing evidence."
+    },
+    {
+      "type": "delta",
+      "text": "Here is what needs attention."
+    },
+    {
+      "type": "waiting_approval",
+      "executionId": "execution-fixture",
+      "toolId": "calendar.event.create",
+      "message": "Approval is required."
+    },
+    {
+      "type": "done",
+      "response": "Here is what needs attention."
+    }
+  ]
+}

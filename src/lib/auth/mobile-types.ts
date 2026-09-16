@@ -4,7 +4,7 @@ import type { SecurityContext } from "@/lib/security/types";
 export type MobileDevice = {
   id: string;
   name: string;
-  platform: "android" | "ios";
+  platform: "android" | "ios" | "macos";
   appVersion?: string;
   buildNumber?: number;
   clientContractVersion?: number;

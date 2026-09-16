@@ -883,5 +883,10 @@
     "version": 177,
     "name": "market_deterministic_backtests_v1",
     "checksum": "27b2d1959799b90893282bb78e1e74724ce62aa93597691627ae9b9757d25c6a"
+  },
+  {
+    "version": 178,
+    "name": "p13_1_macos_native_platform_v1",
+    "checksum": "b5cca5f81cd6cef3861d541d04ad4d15468476c8e954d610255fd3c70a237262"
   }
 ]

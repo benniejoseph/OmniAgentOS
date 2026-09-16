@@ -46,7 +46,7 @@ type MobilePushRegistration = Readonly<{
   userId: string;
   mobileSessionId: string;
   deviceId: string;
-  platform: "android" | "ios";
+  platform: "android" | "ios" | "macos";
   provider: PushProvider;
   environment: PushEnvironment;
   tokenSha256: string;
@@ -101,8 +101,12 @@ export async function registerMobilePushDevice(
   const native = exactNativeContext(context);
   requirePushStorage();
   validatePushToken(input.provider, input.token);
-  if (input.provider === "apns" && native.platform !== "ios") {
-    throw new Error("APNs registration requires an iOS native session.");
+  if (
+    input.provider === "apns" &&
+    native.platform !== "ios" &&
+    native.platform !== "macos"
+  ) {
+    throw new Error("APNs registration requires an Apple native session.");
   }
   const tokenSha256 = sha256(input.token);
   const registrationId = `mobile_push_registration_${mobilePushDedupeKey({
@@ -738,7 +742,7 @@ function registrationFromRow(row: Record<string, unknown>): MobilePushRegistrati
     userId: String(row.user_id),
     mobileSessionId: String(row.mobile_session_id),
     deviceId: String(row.device_id),
-    platform: row.platform === "ios" ? "ios" : "android",
+    platform: mobilePushPlatform(row.platform),
     provider: row.provider === "apns" ? "apns" : "fcm",
     environment: row.environment === "sandbox" ? "sandbox" : "production",
     tokenSha256: String(row.token_sha256),
@@ -814,6 +818,15 @@ function validatePushToken(provider: PushProvider, token: string) {
 
 function previewPolicy(value: unknown): MobilePushPreviewPolicy {
   return value === "generic" || value === "title" ? value : "hidden";
+}
+
+function mobilePushPlatform(
+  value: unknown,
+): MobilePushRegistration["platform"] {
+  if (value === "android" || value === "ios" || value === "macos") {
+    return value;
+  }
+  throw new Error("Native push registration platform is invalid.");
 }
 
 function invalidTokenCode(code: string) {

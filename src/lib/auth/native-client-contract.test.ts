@@ -9,6 +9,7 @@ import {
 afterEach(() => {
   delete process.env.OMNIAGENT_NATIVE_MIN_ANDROID_VERSION;
   delete process.env.OMNIAGENT_NATIVE_MIN_IOS_VERSION;
+  delete process.env.OMNIAGENT_NATIVE_MIN_MACOS_VERSION;
 });
 
 describe("native client compatibility contract", () => {
@@ -28,13 +29,19 @@ describe("native client compatibility contract", () => {
       platform: "ios",
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 4,
+      clientContractVersion: 9,
     })).toBe("unknown");
     expect(evaluateNativeClientCompatibility({
       platform: "ios",
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 2,
+      clientContractVersion: 6,
+    })).toBe("upgrade_required");
+    expect(evaluateNativeClientCompatibility({
+      platform: "macos",
+      appVersion: "1.0.0",
+      buildNumber: 1,
+      clientContractVersion: 7,
     })).toBe("compatible");
   });
 
@@ -44,7 +51,7 @@ describe("native client compatibility contract", () => {
       platform: "android",
       appVersion: "1.9.9",
       buildNumber: 20,
-      clientContractVersion: 3,
+      clientContractVersion: 8,
     })).toBe("upgrade_required");
     expect(nativeClientPolicy().agentCatalogEnrollment.state).toBe("held");
   });
@@ -52,12 +59,20 @@ describe("native client compatibility contract", () => {
   it("uses the default policy only when minimums are absent", () => {
     expect(nativeClientPolicy()).toMatchObject({
       configurationStatus: "valid",
-      minimumVersions: { android: "1.0.0", ios: "1.0.0" },
+      minimumVersions: {
+        android: "1.0.0",
+        ios: "1.0.0",
+        macos: "1.0.0",
+      },
     });
     process.env.OMNIAGENT_NATIVE_MIN_IOS_VERSION = "latest";
     expect(nativeClientPolicy()).toMatchObject({
       configurationStatus: "invalid",
-      minimumVersions: { android: "1.0.0", ios: null },
+      minimumVersions: {
+        android: "1.0.0",
+        ios: null,
+        macos: "1.0.0",
+      },
     });
   });
 
@@ -66,7 +81,7 @@ describe("native client compatibility contract", () => {
       platform: "ios" as const,
       appVersion: "1.0.0",
       buildNumber: 1,
-      clientContractVersion: 3,
+      clientContractVersion: 8,
     };
     const asOf = new Date("2026-09-04T12:00:00.000Z");
     expect(nativeClientCompatibility(client, { asOf }).status).toBe("unknown");

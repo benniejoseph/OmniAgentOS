@@ -14,7 +14,7 @@ export type SecurityContext = {
   };
   native?: {
     deviceId: string;
-    platform: "android" | "ios";
+    platform: "android" | "ios" | "macos";
     appVersion?: string;
     buildNumber?: number;
     clientContractVersion?: number;
