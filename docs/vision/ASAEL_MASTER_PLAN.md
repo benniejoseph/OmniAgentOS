@@ -827,13 +827,13 @@ The first external adapter is designed against the official [Agent2Agent Protoco
 | P8.7 | Add deadlock, timeout, fan-out, recursion, cost, and trust controls. | Modify budgets/policy. | Remote and peer delegation defaults to lower authority than local orchestration. | Cycles, runaway delegation, abandoned tasks, and budget cascades terminate predictably. |
 
 **Implementation status:** P8.1 through P8.7 and the Phase 8 gate are complete.
-P9.1 through P9.12 and P9.14 through P9.18 are complete. P9.13 is partially
-implemented for durable in-app reminders and causal mobile push, but web push,
-email delivery, and the full per-source/channel preference model remain pending.
-P9.19 remains held behind live proof of the human-present payment flow. Phase 12
-is implemented and server-deployed but remains operationally open for one observed
-Android notification delivery/deep-link/acknowledgement receipt. Phase 13 is
-intentionally deferred.
+P9.1 through P9.18 are complete for the selected private-app scope. P9.13 uses
+durable in-app notifications and causal Android push; background web push,
+notification email, and a per-customer/source channel matrix are explicitly
+excluded unless the owner later opts in. P9.19 remains held behind live proof of
+the human-present payment flow. Phase 12's private Android scope is complete,
+including the observed causal notification delivery, exact deep link and
+acknowledgement receipt. Phase 13 is intentionally deferred.
 
 **Phase gate:** malformed or over-scoped A2A fails closed; every accepted result is independently verified; parent-child causation coverage is 100%.
 
@@ -1095,7 +1095,7 @@ and merchant payment processor.
 
 | ID | Vertical slice | Reuse / Modify / Create | Isolation and compatibility | Done when |
 |---|---|---|---|---|
-| P9.13 | Build notification outbox and delivery service for in-app, web push, email, and later mobile push. | Modify notification center/service worker; create outbox. | Preferences apply by user, urgency, workspace, project, customer, source, and channel. | Accepted notifications deliver once, defer through quiet hours, deep-link to cause, and expose acknowledgement/snooze/escalation. |
+| P9.13 | Build the private-app notification outbox for durable in-app delivery and causal Android push; retain web push/email as opt-in future channels. | Modify notification center and mobile delivery service; create outbox. | Actor-private preferences govern quiet hours, lead time, sensitive previews, and the selected delivery surfaces. | Accepted notifications deliver once, defer through quiet hours, deep-link to cause, and expose acknowledgement/snooze/escalation; unselected channels are documented rather than implied. |
 | P9.14 | Define `PersonContactPolicy`, `CommunicationIntent`, `MessageDraft`, `DeliveryReceipt`, and `ConversationLink`; add draft-first outbound email/message/voice workflows and safe inbound reply mapping. | Reuse people/connector data; modify channel tools; create governed communication contract. | Person, channel, relationship, purpose, disclosure, consent, approval, anti-impersonation, frequency, quiet hours, and opt-out are explicit. | External communication cannot occur from a free-form model string; drafts, approvals, delivery, replies, and causal work links are attributable and reconciled. |
 
 #### AP2 — Agentic Payment Protocol
@@ -1180,9 +1180,11 @@ The domain is provider-neutral; Salesforce is the first CRM adapter, not the int
 | P12.5 | Add APNs/FCM delivery with causal deep links and notification actions. | Reuse delivery outbox; create device registrations. | Sensitive content previews follow device/user policy. | Notification opens the exact approval, work item, meeting, customer, or run and acknowledges once. |
 | P12.6 | Keep Android synchronized with post-P12 web workspaces. | Reuse authoritative server services and generated contracts; modify Flutter navigation and feature modules. | New mobile mutations remain exact-capability enrolled; trusted payment signing stays on an attested human-present surface. | Android exposes the same current destination map and native task flows for Accounts, Markets, Payments evidence, model Settings, administrative workspaces, and Project Build Studio, including exact GitHub repository checkout. |
 
-**Current status:** P12.1 through P12.6 are implemented and server-deployed.
-The signed private Android v6 binary is built and awaits a connected device for
-installation.
+**Current status:** P12.1 through P12.6 are implemented. The signed private
+Android client has been installed and proven on a physical Samsung Android 16
+device. Native contract v7 adds the governed deterministic market-backtest lab
+while retaining frozen v6 compatibility; its release binary can be installed
+when the owner wants the new surface on-device.
 The existing Asael API remains the only application backend; Firebase is a
 transport-only attachment to the existing production cloud project. Matching
 Android and iOS Firebase applications are registered for the compatibility
@@ -1196,13 +1198,13 @@ information architecture as the web workspace. P12 completion hardening
 cancels an interrupted voice draft, binds a push acknowledgement to the
 delivery registration's exact current device and mobile session, and safely
 reconstructs every discriminated causal target. Schema v146 and native
-contract v4 are live. The v6 Android client preserves those foundations while
-adding the post-P12 web navigation and task workspaces through the same API.
-Android remains operationally open only for one observed
-notification delivery/deep-link/acknowledgement receipt. The owner has
-explicitly deferred iOS implementation and all app-store publication; neither
-is a completion blocker for this private Android build. P9.12/P9.13 and Phase
-13 remain out of the current sequence.
+contract v4 are live. The Android client preserves those foundations while
+adding the post-P12 web navigation and task workspaces through the same API. A
+real FCM delivery opened its exact causal target and persisted the
+acknowledgement against the current device registration, closing the former
+operational gate. The owner has explicitly deferred iOS implementation and all
+app-store publication; neither is a completion blocker for this private Android
+build. Phase 13 remains out of the current sequence.
 
 **Phase gate:** revoked-device, reconnect, token rotation, offline capture, push, voice interruption, and cross-tenant isolation scenarios pass before public release.
 
@@ -3210,8 +3212,8 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 6 — Loop and Harness Engineering:** P6.1–P6.9 complete.
 - [x] **Phase 7 — agent identity and lifecycle:** P7.1–P7.6 complete.
 - [x] **Phase 8 — delegation and A2A:** P8.1–P8.7 complete.
-- [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.12 and P9.14–P9.18 complete; P9.13 is partial and P9.19 remains held behind reviewed live adapters and human-present proof.
+- [ ] **Phase 9 — app control, browser, voice, notifications, communications, and AP2:** P9.1–P9.18 complete for the selected private-app scope; P9.19 remains held behind reviewed live adapters and human-present proof.
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
-- [ ] **Phase 12 — mobile application:** P12.1–P12.6 complete; one real notification delivery/deep-link/ack receipt remains the operational gate.
+- [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
 - [ ] **Phase 13 — macOS application:** intentionally deferred; P13.1–P13.4 are not started.

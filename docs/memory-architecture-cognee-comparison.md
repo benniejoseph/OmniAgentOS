@@ -91,16 +91,17 @@ The first implemented slice follows these rules:
 - Sealed 12-turn episodes can be enriched into concise typed statements with independently verified exact-turn quotes. Migration v156 stores the immutable actor-private projection and its completed AI-usage receipt; the worker re-locks and revalidates the parent episode before commit.
 - Semantic enrichment resolves the `memory` model assignment from Settings, records the exact generation, coalesces per episode, and becomes superseded if the source or assignment changes. It is explicitly queued per thread and never runs on every turn.
 - Completed-run context receipts and explicit user ratings produce bounded actor-private retrieval-outcome observations and aggregate quality metrics. These observations are correlation evidence, not causal labels, and have no ranking effect.
+- A separate side-effect-free retrieval-rank probe deterministically compares the baseline and semantic candidate over content-free expected/retrieved identity lists. It records recall and first-relevant-rank deltas, validates replay digests, and grants no serving authority.
 - Mnemosyne recommendations use a versioned deterministic proposal contract with stable IDs and explicit user-action requirements. Automatic job execution and automatic truth mutation are both disabled.
 
 ### Still pending behind evaluation gates
 
 - Keep deterministic conversation summaries as the only active context authority until a representative shadow sample proves quote validity, compression quality, latency and retrieval usefulness. The side-effect-free `semantic-memory-shadow-gate:1` scorer and `npm run check:semantic-memory-shadow -- <content-free-observation.json>` operator command now enforce at least 24 human-reviewed cases across six threads and all ten declared scenario dimensions, with exact quote validity, supported-item precision, retrieval recall/rank improvement, compression and latency limits, zero scope leakage, zero important-evidence regression, and deterministic replay. No qualifying production-shadow observation set has passed yet, so semantic enrichments are not injected into prompts or durable truth.
 - The Memory Reviews panel now shows actor-scoped, content-free shadow episode and distinct-thread progress against those sample targets. Supabase table statistics on 2026-09-15 estimated zero stored semantic episode enrichments, so the current state is visibly “collecting,” not activation-ready.
-- Keep retrieval ranking unchanged until enough explicit ratings exist for an offline comparison that shows improvement without scope leakage, unsupported claims or important-evidence regression.
+- Keep retrieval ranking unchanged until the human-reviewed 24-case/six-thread sample supplies genuine probe observations and the combined activation scorer shows improvement without scope leakage, unsupported claims, or important-evidence regression. The deterministic probe mechanism is implemented; the qualifying human evidence is not.
 - Add a semantic paraphrase/temporal-conflict classifier only as a review hint after its precision gate passes; deterministic exact and rule-based groups remain the current production behavior.
 - Let Mnemosyne recommend backfill or repair work, but require the user or an existing governed workflow to start it. Online self-modifying policy remains out of scope.
-- Add ICT/trading ontology extensions only after the general shadow summary and retrieval-outcome gates pass. The trading research interface remains a separate future project and is not implemented by this memory slice.
+- Add ICT/trading ontology extensions only after the general shadow summary and retrieval-outcome gates pass. The separate trading research interface and foundation backtest engine are implemented, but transcript-derived concepts must not enter general memory or active strategy rules before this gate and their own domain review pass.
 
 ## External references
 

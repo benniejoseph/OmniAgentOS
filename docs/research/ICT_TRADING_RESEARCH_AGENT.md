@@ -1,7 +1,7 @@
 # ICT Trading Research Agent
 
-**Status:** Stage 0 foundation, authorized TradingView Advanced Charts rendering, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, renderer-neutral ICT/Quarterly annotations, actor-private saved analysis versions, descriptive comparable-event baselines, and the Stage 7 forward-shadow journal foundation are implemented; transcript ontology, transcript-authoritative ICT rules, sufficient calibration evidence, and deterministic backtesting remain pending
-**Research date:** 2026-09-10; implementation activated 2026-09-11 and annotation/version foundation extended 2026-09-12
+**Status:** Stage 0 foundation, authorized TradingView Advanced Charts rendering, Stage 2 provider access, immutable price snapshots, official macro schedules/vintages, event windows, renderer-neutral ICT/Quarterly annotations, actor-private saved analysis versions, descriptive comparable-event baselines, the deliberately scoped Stage 5 deterministic backtest service, and the Stage 7 forward-shadow journal foundation are implemented; transcript ontology, transcript-authoritative ICT rules, consensus/regime evidence, and sufficient calibration remain pending
+**Research date:** 2026-09-10; implementation activated 2026-09-11, annotation/version foundation extended 2026-09-12, and deterministic backtest foundation completed 2026-09-16
 **Initial instruments:** Nasdaq-100 exposure and gold exposure
 
 ## Current implementation boundary
@@ -10,7 +10,9 @@ The private `/app/markets` workspace, canonical instrument registry, provider-re
 
 `Meridian` is a built-in, read-only market-research specialist. Its text model uses the separately configurable `market_research` assignment in Settings; the market workspace does not consider a deployment fallback to be an explicit assignment. The application requires only `TWELVE_DATA_API_KEY` for market bars and `FRED_API_KEY` for leakage-safe historical release dates and later vintages. The official BLS calendar is a public source and requires no application credential.
 
-The current UI exposes four progressively loaded views: Research desk, News impact lab, ICT + Quarterly, and Forecast journal. The Research desk uses the owner's authorized TradingView Advanced Charts v32.2.0 checkout with a client Datafeed over the same immutable Asael snapshot shown in its evidence label; it does not fetch a second or hidden market feed. The renderer stays mounted while the user changes research tabs, supports responsive zoom/pan, indicators, and manual drawing tools, and changes intervals only after Asael loads the corresponding evidence-bound snapshot. The chart library is loaded only when verified bars exist, and its data label exposes the shortened snapshot digest plus whether the server created or reused the snapshot. The News Impact Lab can enqueue and track owner-private background imports for official event history and exact XAU/USD price windows. Reviewed BLS, Census, BEA, and Federal Reserve schedules supply exact release times; initial-release FRED observations retain the values available at the historical release. Every replay stores its bounded raw provider response, normalized bars, exact event coordinate, content digests, and deterministic post-event measurements.
+The current UI exposes five progressively loaded views: Research desk, News impact lab, ICT + Quarterly, Backtest lab, and Forecast journal. The Research desk uses the owner's authorized TradingView Advanced Charts v32.2.0 checkout with a client Datafeed over the same immutable Asael snapshot shown in its evidence label; it does not fetch a second or hidden market feed. The renderer stays mounted while the user changes research tabs, supports responsive zoom/pan, indicators, and manual drawing tools, and changes intervals only after Asael loads the corresponding evidence-bound snapshot. The chart library is loaded only when verified bars exist, and its data label exposes the shortened snapshot digest plus whether the server created or reused the snapshot. The News Impact Lab can enqueue and track owner-private background imports for official event history and exact XAU/USD price windows. Reviewed BLS, Census, BEA, and Federal Reserve schedules supply exact release times; initial-release FRED observations retain the values available at the historical release. Every replay stores its bounded raw provider response, normalized bars, exact event coordinate, content digests, and deterministic post-event measurements.
+
+The Backtest lab queues `foundation.liquidity_sweep_reversal.v1` through the governed operation worker and replays one exact immutable snapshot without model, web, or provider calls inside the loop. The frozen rule uses the prior 20-bar boundary, a close back inside, and next-bar entry. Costs, fixed-fraction risk, stop-first intrabar collision, maximum hold and one-position overlap are explicit. Results use chronological 60/20/20 train/validation/test slices, retain the complete manifest and snapshot lineage, and are append-only actor-private records with typed completion events. Web and Android show the same progress and sealed metrics. Results are labelled hypothetical retrospective rule evaluation; advanced transcript-derived setups are excluded.
 
 The ICT + Quarterly view now runs `market-ict-quarterly-candidates:2` against one caller-owned immutable snapshot. It reports New-York-time 90-minute/session context, only those day/week/month opens whose exact boundary exists inside the snapshot, range position, strict five-bar swings, lifecycle-aware three-bar FVGs, range-relative displacement, 20-bar boundary sweeps, equal-high/equal-low liquidity, session windows, and observed opening gaps. These deterministic foundations render as renderer-neutral typed annotations in the authorized TradingView chart. Order block, market-structure-shift, Turtle Soup, Unicorn, and Judas Swing formulas are available only as visibly review-gated candidates; they do not claim transcript authority. System overlays are locked and excluded from manual drawing persistence, while the owner's manual TradingView drawings, selected layers, exact snapshot/result digests, and counts can be stored in an append-only actor-private analysis version. The latest matching instrument/interval drawing state restores after reload without deleting manual work.
 
@@ -303,12 +305,12 @@ If paper or live execution is considered later, it must be a separate authorizat
 
 ### Stage 5 — asynchronous backtest service
 
-- Select LEAN or a deliberately scoped internal event-driven engine.
-- Versioned strategy schema, queue, cancellation and progress events.
-- Costs, fills, financing, rolls and downloadable run manifests.
-- Walk-forward and locked-holdout evaluation.
+- Select LEAN or a deliberately scoped internal event-driven engine. **Implemented as the deliberately scoped internal foundation engine.**
+- Versioned strategy schema, queue and progress events. **Implemented through the governed actor-private operation queue; a user-facing cancel action is not part of the first bounded run because replay is short and side-effect free.**
+- Costs, fills and immutable run manifests. **Implemented for spread, slippage, commission, next-bar fills, stop-first collisions and fixed-fraction risk. Financing and futures-roll policies remain inapplicable to the current spot/cash foundation and must be added before a futures strategy is accepted.**
+- Chronological and locked-holdout evaluation. **Implemented as fixed 60/20/20 train/validation/test slices. Broader walk-forward, purge/embargo and regime analysis remain required before optimization or calibration.**
 
-**Exit gate:** identical manifests reproduce identical results and leakage checks pass.
+**Current gate:** identical snapshot/manifests produce the same deterministic result digest, strict chronology and next-bar entry checks pass, and the held-out slice is visible. This closes the review's missing foundation backtest item; it does not establish strategy efficacy or calibrated prediction.
 
 ### Stage 6 — bounded trading research agent
 
@@ -342,7 +344,7 @@ The chart-analysis foundation is deployed. The following work is deliberately re
 
 - Promote advanced ICT candidates only after transcript-backed definition review with source timecodes.
 - Add a false-positive review workflow for order blocks, Turtle Soup, Unicorn and Judas Swing candidates.
-- Build deterministic historical backtesting with leakage controls, locked manifests and reproducible results.
+- Expand the implemented foundation backtester only after reviewed transcript rules exist; add walk-forward/purge controls, cost stress, regime slices and futures-roll/financing policy when an applicable instrument requires them.
 - Calibrate scenario probabilities against sufficient comparable-event and forward-shadow outcomes.
 - Complete historical macro replay coverage without exceeding provider credits.
 - Resolve the Twelve Data entitlement for the canonical `NDX` time series; never substitute a different instrument.
