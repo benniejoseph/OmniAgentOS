@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:asael/features/talk/talk.dart';
 import 'package:flutter/material.dart';
@@ -164,8 +165,10 @@ class _DelegatedTalkRepository implements TalkRepository {
   Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
 }
 
-class _TerminalTalkRepository implements TalkRepository {
+class _TerminalTalkRepository
+    implements TalkRepository, TalkArtifactRepository {
   final inspectedRunIds = <String>[];
+  final loadedAssetIds = <String>[];
 
   @override
   Future<void> cancelRun(String runId) async {}
@@ -218,6 +221,15 @@ class _TerminalTalkRepository implements TalkRepository {
   }
 
   @override
+  Future<TalkArtifactContent> loadArtifact(String assetId) async {
+    loadedAssetIds.add(assetId);
+    return TalkArtifactContent(
+      assetId: assetId,
+      bytes: Uint8List.fromList([1, 2, 3]),
+    );
+  }
+
+  @override
   Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
       throw UnimplementedError();
 
@@ -235,6 +247,40 @@ class _TerminalTalkRepository implements TalkRepository {
     yield const SseEvent(
       event: 'done',
       data: {'type': 'done', 'response': 'Finished with evidence.'},
+    );
+  }
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
+class _QueuedTalkRepository implements TalkRepository {
+  final calls = <String>[];
+  final firstRun = Completer<void>();
+
+  @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SseEvent> send({
+    required String message,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+  }) async* {
+    calls.add(message);
+    if (calls.length == 1) await firstRun.future;
+    yield SseEvent(
+      event: 'done',
+      data: {'type': 'done', 'response': 'Finished $message'},
     );
   }
 
@@ -310,6 +356,44 @@ void main() {
       expect(repository.calls, isEmpty);
     },
   );
+
+  test('queues prompts during a run and drains them in order', () async {
+    final repository = _QueuedTalkRepository();
+    final controller = TalkController(repository);
+
+    final first = controller.send('First prompt');
+    await _settleAsync(2);
+    await controller.send('Second prompt');
+    await controller.send('Third prompt', strategy: 'direct');
+
+    expect(controller.promptQueue.map((item) => item.input), [
+      'Second prompt',
+      'Third prompt',
+    ]);
+    expect(repository.calls, ['First prompt']);
+
+    repository.firstRun.complete();
+    await first;
+    await _settleAsync(20);
+
+    expect(repository.calls, ['First prompt', 'Second prompt', 'Third prompt']);
+    expect(controller.promptQueue, isEmpty);
+    expect(
+      controller.messages.where((item) => item.role == TalkRole.user),
+      hasLength(3),
+    );
+  });
+
+  test('pauses queued prompts behind a governed approval', () async {
+    final controller = TalkController(_ActivityTalkRepository());
+
+    await controller.send('Prepare an email');
+    controller.enqueuePrompt('Continue after approval');
+    await _settleAsync();
+
+    expect(controller.queuePaused, isTrue);
+    expect(controller.promptQueue.single.input, 'Continue after approval');
+  });
 
   test(
     'projects tools, specialists, and approvals as observable activity',
@@ -424,6 +508,10 @@ void main() {
     expect(projection, isNot(contains('private source content')));
     expect(projection, isNot(contains('untrusted.example')));
     expect(projection, isNot(contains('private tool payload')));
+    await _settleAsync();
+    expect(controller.artifacts.single.filename, 'portrait.png');
+    expect(repository.loadedAssetIds, ['capture_asset_portrait']);
+    expect(controller.selectedArtifactContent?.bytes, [1, 2, 3]);
   });
 
   testWidgets('shows the live activity rail at a desktop width', (

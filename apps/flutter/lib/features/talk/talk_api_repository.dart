@@ -5,7 +5,8 @@ import '../../generated/native_contract.g.dart';
 import 'talk.dart';
 import 'talk_history_api_repository.dart';
 
-class ApiTalkRepository implements TalkRepository, TalkHistoryRepository {
+class ApiTalkRepository
+    implements TalkRepository, TalkHistoryRepository, TalkArtifactRepository {
   ApiTalkRepository(this.api) : _history = ApiTalkHistoryRepository(api);
   final ApiClient api;
   final ApiTalkHistoryRepository _history;
@@ -43,6 +44,17 @@ class ApiTalkRepository implements TalkRepository, TalkHistoryRepository {
       throw StateError('The run projection did not match the request.');
     }
     return inspection;
+  }
+
+  @override
+  Future<TalkArtifactContent> loadArtifact(String assetId) async {
+    if (!RegExp(r'^[a-zA-Z0-9_-]{1,200}$').hasMatch(assetId)) {
+      throw ArgumentError.value(assetId, 'assetId');
+    }
+    final bytes = await api.getBytes(
+      NativePaths.captureAssetGet(assetId, content: true),
+    );
+    return TalkArtifactContent(assetId: assetId, bytes: bytes);
   }
 
   @override

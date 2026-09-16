@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/network/api_exception.dart';
@@ -69,6 +70,49 @@ void main() {
     );
     expect(projectionStore.readCount, 0);
   });
+
+  test(
+    'bounds authenticated artifact bytes before returning a preview',
+    () async {
+      final secureStore = SecureSessionStore(const FlutterSecureStorage());
+      final adapter = _BytesAdapter(Uint8List.fromList([1, 2, 3, 4]));
+      final dio = Dio(BaseOptions(baseUrl: 'https://asael.example'))
+        ..httpClientAdapter = adapter;
+      final client = ApiClient(dio, Dio(), secureStore);
+
+      expect(await client.getBytes('/api/capture/assets/a', maximumBytes: 4), [
+        1,
+        2,
+        3,
+        4,
+      ]);
+      await expectLater(
+        client.getBytes('/api/capture/assets/a', maximumBytes: 3),
+        throwsA(isA<ApiException>()),
+      );
+    },
+  );
+}
+
+class _BytesAdapter implements HttpClientAdapter {
+  _BytesAdapter(this.bytes);
+  final Uint8List bytes;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<List<int>>? requestStream,
+    Future<void>? cancelFuture,
+  ) async => ResponseBody(
+    Stream.fromIterable([bytes.sublist(0, 2), bytes.sublist(2)]),
+    200,
+    headers: {
+      Headers.contentTypeHeader: ['application/octet-stream'],
+    },
+  );
+
+  @override
+  void close({bool force = false}) {}
 }
 
 class _MemoryProjectionStore implements OfflineProjectionStore {

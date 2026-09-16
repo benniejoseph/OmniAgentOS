@@ -316,6 +316,27 @@ class ApiClient {
     }
   }
 
+  Future<Uint8List> getBytes(
+    String path, {
+    Map<String, dynamic>? query,
+    int maximumBytes = 64 * 1024 * 1024,
+  }) async {
+    if (maximumBytes <= 0 || maximumBytes > 64 * 1024 * 1024) {
+      throw ArgumentError.value(maximumBytes, 'maximumBytes');
+    }
+    final body = await getStream(path, query: query);
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in body.stream) {
+      if (builder.length + chunk.length > maximumBytes) {
+        throw const ApiException(
+          'This artifact is too large for the in-app preview.',
+        );
+      }
+      builder.add(chunk);
+    }
+    return builder.takeBytes();
+  }
+
   Future<ResponseBody> postStream(
     String path, {
     Map<String, dynamic>? data,

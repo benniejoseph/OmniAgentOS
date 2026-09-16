@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
 
@@ -206,6 +207,34 @@ class TalkMediaArtifactSummary {
   final String status;
 }
 
+class TalkArtifactContent {
+  const TalkArtifactContent({required this.assetId, required this.bytes});
+
+  final String assetId;
+  final Uint8List bytes;
+}
+
+class TalkQueuedPrompt {
+  const TalkQueuedPrompt({
+    required this.id,
+    required this.input,
+    required this.mode,
+    required this.strategy,
+  });
+
+  final String id;
+  final String input;
+  final String mode;
+  final String strategy;
+
+  TalkQueuedPrompt copyWith({String? input}) => TalkQueuedPrompt(
+    id: id,
+    input: input ?? this.input,
+    mode: mode,
+    strategy: strategy,
+  );
+}
+
 class TalkRunInspection {
   const TalkRunInspection({
     required this.runId,
@@ -394,6 +423,10 @@ abstract interface class TalkRepository {
   Future<TalkRunInspection> inspectRun(String runId);
 }
 
+abstract interface class TalkArtifactRepository {
+  Future<TalkArtifactContent> loadArtifact(String assetId);
+}
+
 class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkController(
     this.repository, {
@@ -406,6 +439,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   final int workflowPollLimit;
   final messages = <TalkMessage>[];
   final activities = <TalkActivity>[];
+  final artifacts = <TalkMediaArtifactSummary>[];
+  final promptQueue = <TalkQueuedPrompt>[];
   final _workflowIds = <String>[];
   final _workflowMonitorTokens = <String, Object>{};
   final _inspectedRunIds = <String>{};
@@ -414,8 +449,15 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   bool sending = false;
   bool canceling = false;
   bool transcribing = false;
+  bool queuePaused = false;
+  bool artifactLoading = false;
+  Object? artifactError;
+  TalkMediaArtifactSummary? selectedArtifact;
+  TalkArtifactContent? selectedArtifactContent;
   Object? voiceError;
   bool _disposed = false;
+  bool _drainingQueue = false;
+  int _promptSequence = 0;
 
   List<String> get workflowIds => List.unmodifiable(_workflowIds);
   Set<String> get monitoringWorkflowIds =>
@@ -444,6 +486,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       ),
     );
     activities.clear();
+    _clearArtifacts();
+    promptQueue.clear();
+    queuePaused = false;
     _workflowIds.clear();
     _workflowMonitorTokens.clear();
     _retryInput = null;
@@ -458,6 +503,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   void clearHistoryThreadProjection() {
     messages.clear();
     activities.clear();
+    _clearArtifacts();
+    promptQueue.clear();
+    queuePaused = false;
     _workflowIds.clear();
     _workflowMonitorTokens.clear();
     _retryInput = null;
@@ -472,7 +520,133 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String mode = 'orchestrate',
     String strategy = 'auto',
   }) async {
+    final text = input.trim();
+    if (text.isEmpty) return;
+    if (sending) {
+      enqueuePrompt(text, mode: mode, strategy: strategy);
+      return;
+    }
+    queuePaused = false;
     return _send(input, mode: mode, strategy: strategy);
+  }
+
+  void enqueuePrompt(
+    String input, {
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+  }) {
+    final text = input.trim();
+    if (text.isEmpty || text.length > 20000 || promptQueue.length >= 20) {
+      return;
+    }
+    promptQueue.add(
+      TalkQueuedPrompt(
+        id: 'prompt-${DateTime.now().microsecondsSinceEpoch}-${_promptSequence++}',
+        input: text,
+        mode: mode,
+        strategy: strategy,
+      ),
+    );
+    notifyListeners();
+  }
+
+  void updateQueuedPrompt(String id, String input) {
+    final text = input.trim();
+    if (text.isEmpty || text.length > 20000) return;
+    final index = promptQueue.indexWhere((item) => item.id == id);
+    if (index < 0) return;
+    promptQueue[index] = promptQueue[index].copyWith(input: text);
+    notifyListeners();
+  }
+
+  void removeQueuedPrompt(String id) {
+    promptQueue.removeWhere((item) => item.id == id);
+    notifyListeners();
+  }
+
+  void moveQueuedPrompt(String id, int offset) {
+    final index = promptQueue.indexWhere((item) => item.id == id);
+    final next = index + offset;
+    if (index < 0 || next < 0 || next >= promptQueue.length) return;
+    final item = promptQueue.removeAt(index);
+    promptQueue.insert(next, item);
+    notifyListeners();
+  }
+
+  void pauseQueue() {
+    if (queuePaused) return;
+    queuePaused = true;
+    notifyListeners();
+  }
+
+  void resumeQueue() {
+    if (!queuePaused && (sending || promptQueue.isEmpty)) return;
+    queuePaused = false;
+    notifyListeners();
+    unawaited(_drainPromptQueue());
+  }
+
+  Future<void> runQueuedPrompt(String id) async {
+    final index = promptQueue.indexWhere((item) => item.id == id);
+    if (index < 0) return;
+    if (sending) {
+      if (index > 0) {
+        final item = promptQueue.removeAt(index);
+        promptQueue.insert(0, item);
+        notifyListeners();
+      }
+      return;
+    }
+    final item = promptQueue.removeAt(index);
+    queuePaused = false;
+    notifyListeners();
+    await _send(item.input, mode: item.mode, strategy: item.strategy);
+  }
+
+  Future<void> selectArtifact(TalkMediaArtifactSummary artifact) async {
+    if (!artifacts.any((item) => item.assetId == artifact.assetId)) return;
+    selectedArtifact = artifact;
+    selectedArtifactContent = null;
+    artifactError = null;
+    final source = repository is TalkArtifactRepository
+        ? repository as TalkArtifactRepository
+        : null;
+    if (source == null ||
+        artifact.status == 'failed' ||
+        artifact.status == 'unsupported') {
+      artifactError = StateError(
+        'A preview is not available for this artifact.',
+      );
+      notifyListeners();
+      return;
+    }
+    artifactLoading = true;
+    notifyListeners();
+    try {
+      final content = await source.loadArtifact(artifact.assetId);
+      if (_disposed || selectedArtifact?.assetId != artifact.assetId) return;
+      if (content.assetId != artifact.assetId || content.bytes.isEmpty) {
+        throw const FormatException('The artifact preview did not match.');
+      }
+      selectedArtifactContent = content;
+    } catch (error) {
+      if (!_disposed && selectedArtifact?.assetId == artifact.assetId) {
+        artifactError = error;
+      }
+    } finally {
+      if (!_disposed && selectedArtifact?.assetId == artifact.assetId) {
+        artifactLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  void _clearArtifacts() {
+    artifacts.clear();
+    selectedArtifact = null;
+    selectedArtifactContent = null;
+    artifactError = null;
+    artifactLoading = false;
   }
 
   String? _retryInput;
@@ -673,6 +847,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               state: _toolActivityState(toolStatus),
             );
           case 'clarification':
+            queuePaused = true;
             final message =
                 event.data['message'] as String? ??
                 'Asael needs one detail before continuing.';
@@ -737,6 +912,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               state: TalkActivityState.succeeded,
             );
           case 'waiting_approval':
+            queuePaused = true;
             status = 'Waiting for approval';
             final message =
                 event.data['message'] as String? ??
@@ -758,6 +934,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
                   : '/inbox',
             );
           case 'budget_exhausted':
+            queuePaused = true;
             final message =
                 event.data['message'] as String? ??
                 'This run reached its authorized budget.';
@@ -799,6 +976,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       _retryMode = null;
       _retryStrategy = null;
     } catch (_) {
+      queuePaused = true;
       messages[messages.length - 1] = messages.last.copyWith(
         text: messages.last.text.isEmpty
             ? 'I could not reach Asael. Tap retry when you’re back online.'
@@ -825,6 +1003,21 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
     if (conversationHistorySupported && !_disposed) {
       unawaited(loadRecentThreads(force: true));
+    }
+    if (!_disposed) unawaited(_drainPromptQueue());
+  }
+
+  Future<void> _drainPromptQueue() async {
+    if (_drainingQueue || sending || queuePaused || promptQueue.isEmpty) return;
+    _drainingQueue = true;
+    try {
+      while (!_disposed && !sending && !queuePaused && promptQueue.isNotEmpty) {
+        final next = promptQueue.removeAt(0);
+        notifyListeners();
+        await _send(next.input, mode: next.mode, strategy: next.strategy);
+      }
+    } finally {
+      _drainingQueue = false;
     }
   }
 
@@ -956,6 +1149,16 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       _projectAgentIdentity(inspection, route);
       _projectGrounding(inspection, route);
       _projectMediaArtifacts(inspection, route);
+      artifacts
+        ..clear()
+        ..addAll(inspection.mediaArtifacts);
+      if (artifacts.isEmpty) {
+        selectedArtifact = null;
+        selectedArtifactContent = null;
+        artifactError = null;
+      } else {
+        unawaited(selectArtifact(artifacts.first));
+      }
     } catch (_) {
       if (_disposed) return;
       _recordActivity(
@@ -1276,7 +1479,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   void submit() {
     final value = input.text.trim();
-    if (value.isEmpty || widget.controller.sending) return;
+    if (value.isEmpty) return;
     input.clear();
     final work = widget.controller.send(
       value,
@@ -1451,18 +1654,20 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                             minLines: 1,
                             maxLines: 4,
                             textInputAction: TextInputAction.send,
-                            onSubmitted: widget.controller.sending
-                                ? null
-                                : (_) => submit(),
+                            onSubmitted: (_) => submit(),
                             decoration: InputDecoration(
                               hintText: 'What needs to move?',
                               filled: true,
                               suffixIcon: IconButton(
-                                tooltip: 'Send and open Conversation',
-                                onPressed: widget.controller.sending
-                                    ? null
-                                    : submit,
-                                icon: const Icon(Icons.arrow_upward_rounded),
+                                tooltip: widget.controller.sending
+                                    ? 'Add to prompt queue'
+                                    : 'Send and open Conversation',
+                                onPressed: submit,
+                                icon: Icon(
+                                  widget.controller.sending
+                                      ? Icons.playlist_add_rounded
+                                      : Icons.arrow_upward_rounded,
+                                ),
                               ),
                             ),
                           ),
@@ -1779,9 +1984,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                               maxLines: 5,
                               textInputAction: TextInputAction.send,
                               onSubmitted:
-                                  widget.controller.sending ||
-                                      widget.controller.transcribing ||
-                                      recording
+                                  widget.controller.transcribing || recording
                                   ? null
                                   : (_) => submit(),
                               decoration: InputDecoration(
@@ -1810,13 +2013,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                       ),
                                     ),
                                     IconButton(
-                                      tooltip: 'Send message',
-                                      onPressed:
-                                          widget.controller.sending || recording
-                                          ? null
-                                          : submit,
-                                      icon: const Icon(
-                                        Icons.arrow_upward_rounded,
+                                      tooltip: widget.controller.sending
+                                          ? 'Add to prompt queue'
+                                          : 'Send message',
+                                      onPressed: recording ? null : submit,
+                                      icon: Icon(
+                                        widget.controller.sending
+                                            ? Icons.playlist_add_rounded
+                                            : Icons.arrow_upward_rounded,
                                       ),
                                     ),
                                   ],
@@ -1872,10 +2076,21 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   }
 }
 
-class _TalkActivityPane extends StatelessWidget {
+enum _TalkRailSection { activity, artifacts, queue }
+
+class _TalkActivityPane extends StatefulWidget {
   const _TalkActivityPane({required this.controller});
 
   final TalkController controller;
+
+  @override
+  State<_TalkActivityPane> createState() => _TalkActivityPaneState();
+}
+
+class _TalkActivityPaneState extends State<_TalkActivityPane> {
+  _TalkRailSection section = _TalkRailSection.activity;
+
+  TalkController get controller => widget.controller;
 
   @override
   Widget build(BuildContext context) {
@@ -1883,6 +2098,23 @@ class _TalkActivityPane extends StatelessWidget {
     final activeCount = controller.activities
         .where((item) => item.state == TalkActivityState.active)
         .length;
+    final (icon, title, detail) = switch (section) {
+      _TalkRailSection.activity => (
+        Icons.hub_outlined,
+        'Live activity',
+        'Tools, specialists, and approvals',
+      ),
+      _TalkRailSection.artifacts => (
+        Icons.auto_awesome_mosaic_outlined,
+        'Artifacts',
+        'Preview and save generated work',
+      ),
+      _TalkRailSection.queue => (
+        Icons.playlist_play_rounded,
+        'Prompt queue',
+        'Shape what Asael does next',
+      ),
+    };
     return DecoratedBox(
       decoration: BoxDecoration(
         color: scheme.surface.withValues(alpha: .78),
@@ -1904,29 +2136,23 @@ class _TalkActivityPane extends StatelessWidget {
                       color: scheme.primaryContainer,
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: Icon(
-                      Icons.hub_outlined,
-                      size: 18,
-                      color: scheme.primary,
-                    ),
+                    child: Icon(icon, size: 18, color: scheme.primary),
                   ),
                   const SizedBox(width: 11),
-                  const Expanded(
+                  Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Live activity',
-                          style: TextStyle(fontWeight: FontWeight.w700),
+                          title,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
-                        Text(
-                          'Tools, specialists, and approvals',
-                          style: TextStyle(fontSize: 11.5),
-                        ),
+                        Text(detail, style: const TextStyle(fontSize: 11.5)),
                       ],
                     ),
                   ),
-                  if (controller.sending || activeCount > 0)
+                  if (section == _TalkRailSection.activity &&
+                      (controller.sending || activeCount > 0))
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,
@@ -1963,46 +2189,47 @@ class _TalkActivityPane extends StatelessWidget {
                 ],
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: SegmentedButton<_TalkRailSection>(
+                segments: [
+                  const ButtonSegment(
+                    value: _TalkRailSection.activity,
+                    icon: Icon(Icons.bolt_outlined, size: 16),
+                    tooltip: 'Live activity',
+                  ),
+                  ButtonSegment(
+                    value: _TalkRailSection.artifacts,
+                    icon: const Icon(Icons.description_outlined, size: 16),
+                    label: controller.artifacts.isEmpty
+                        ? null
+                        : Text('${controller.artifacts.length}'),
+                    tooltip: 'Artifacts',
+                  ),
+                  ButtonSegment(
+                    value: _TalkRailSection.queue,
+                    icon: const Icon(Icons.playlist_play_rounded, size: 16),
+                    label: controller.promptQueue.isEmpty
+                        ? null
+                        : Text('${controller.promptQueue.length}'),
+                    tooltip: 'Prompt queue',
+                  ),
+                ],
+                selected: {section},
+                showSelectedIcon: false,
+                expandedInsets: EdgeInsets.zero,
+                onSelectionChanged: (value) {
+                  setState(() => section = value.first);
+                },
+              ),
+            ),
             Divider(height: 1, color: scheme.outlineVariant),
             Expanded(
-              child: controller.activities.isEmpty
-                  ? Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(28),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.route_outlined,
-                              size: 28,
-                              color: scheme.onSurfaceVariant,
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              'Activity will appear here',
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                            const SizedBox(height: 5),
-                            Text(
-                              'Asael shows observable run decisions without exposing private reasoning.',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: scheme.onSurfaceVariant,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                      itemCount: controller.activities.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 9),
-                      itemBuilder: (context, index) => _TalkActivityCard(
-                        activity: controller.activities[index],
-                      ),
-                    ),
+              child: switch (section) {
+                _TalkRailSection.activity => _activityBody(context),
+                _TalkRailSection.artifacts => _artifactBody(context),
+                _TalkRailSection.queue => _queueBody(context),
+              },
             ),
             if (controller.runId != null)
               Container(
@@ -2039,6 +2266,446 @@ class _TalkActivityPane extends StatelessWidget {
 
   static String _shortId(String value) =>
       value.length <= 12 ? value : value.substring(0, 12);
+
+  Widget _activityBody(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    if (controller.activities.isEmpty) {
+      return _RailEmpty(
+        icon: Icons.route_outlined,
+        title: 'Activity will appear here',
+        detail: 'Asael shows observable run decisions without exposing private reasoning.',
+        color: scheme.onSurfaceVariant,
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      itemCount: controller.activities.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 9),
+      itemBuilder: (context, index) =>
+          _TalkActivityCard(activity: controller.activities[index]),
+    );
+  }
+
+  Widget _artifactBody(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    if (controller.artifacts.isEmpty) {
+      return _RailEmpty(
+        icon: Icons.description_outlined,
+        title: 'No artifacts yet',
+        detail: 'Images, video, files, and Computer Use evidence from completed runs appear here.',
+        color: scheme.onSurfaceVariant,
+      );
+    }
+    final selected = controller.selectedArtifact;
+    final content = controller.selectedArtifactContent;
+    return Column(
+      children: [
+        if (selected != null)
+          Container(
+            margin: const EdgeInsets.fromLTRB(14, 14, 14, 4),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerLowest,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: scheme.outlineVariant),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                AspectRatio(
+                  aspectRatio: 16 / 10,
+                  child: ColoredBox(
+                    color: scheme.surfaceContainerHighest,
+                    child: controller.artifactLoading
+                        ? const Center(child: CircularProgressIndicator())
+                        : content != null && selected.kind == 'image'
+                        ? Image.memory(
+                            content.bytes,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, _, _) => _artifactPlaceholder(
+                              context,
+                              selected,
+                              'Preview could not be decoded',
+                            ),
+                          )
+                        : _artifactPlaceholder(
+                            context,
+                            selected,
+                            controller.artifactError == null
+                                ? 'Ready to save'
+                                : 'Preview unavailable',
+                          ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              selected.filename,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            Text(
+                              '${selected.mediaType} · ${TalkController._humanBytes(selected.byteCount)}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: scheme.onSurfaceVariant,
+                                fontSize: 10.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Save artifact as…',
+                        onPressed: content == null
+                            ? null
+                            : () => _saveArtifact(selected, content.bytes),
+                        icon: const Icon(Icons.download_rounded, size: 19),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 22),
+            itemCount: controller.artifacts.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 7),
+            itemBuilder: (context, index) {
+              final artifact = controller.artifacts[index];
+              final isSelected = selected?.assetId == artifact.assetId;
+              return Material(
+                color: isSelected
+                    ? scheme.primaryContainer.withValues(alpha: .7)
+                    : scheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(12),
+                child: ListTile(
+                  dense: true,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  leading: Icon(
+                    artifact.kind == 'image'
+                        ? Icons.image_outlined
+                        : Icons.movie_outlined,
+                    color: isSelected ? scheme.primary : null,
+                  ),
+                  title: Text(
+                    artifact.filename,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    '${TalkController._sentenceCase(artifact.operation)} · ${artifact.status}',
+                    maxLines: 1,
+                  ),
+                  onTap: () => controller.selectArtifact(artifact),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _artifactPlaceholder(
+    BuildContext context,
+    TalkMediaArtifactSummary artifact,
+    String label,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            artifact.kind == 'video'
+                ? Icons.play_circle_outline_rounded
+                : Icons.broken_image_outlined,
+            size: 38,
+            color: scheme.onSurfaceVariant,
+          ),
+          const SizedBox(height: 7),
+          Text(
+            label,
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 11.5),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _saveArtifact(
+    TalkMediaArtifactSummary artifact,
+    Uint8List bytes,
+  ) async {
+    await FilePicker.saveFile(
+      dialogTitle: 'Save ${artifact.filename}',
+      fileName: artifact.filename,
+      bytes: bytes,
+    );
+  }
+
+  Widget _queueBody(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  controller.queuePaused
+                      ? 'Paused for review'
+                      : controller.sending
+                      ? 'Runs after the current prompt'
+                      : 'Runs in this order',
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 11.5,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: controller.promptQueue.isEmpty
+                    ? null
+                    : controller.queuePaused
+                    ? controller.resumeQueue
+                    : controller.pauseQueue,
+                icon: Icon(
+                  controller.queuePaused
+                      ? Icons.play_arrow_rounded
+                      : Icons.pause_rounded,
+                  size: 17,
+                ),
+                label: Text(controller.queuePaused ? 'Resume' : 'Pause'),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: controller.promptQueue.isEmpty
+              ? _RailEmpty(
+                  icon: Icons.playlist_add_check_circle_outlined,
+                  title: 'Queue is clear',
+                  detail: 'Send another prompt while Asael is working to add it here.',
+                  color: scheme.onSurfaceVariant,
+                )
+              : ReorderableListView.builder(
+                  padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
+                  itemCount: controller.promptQueue.length,
+                  onReorderItem: (oldIndex, newIndex) {
+                    controller.moveQueuedPrompt(
+                      controller.promptQueue[oldIndex].id,
+                      newIndex - oldIndex,
+                    );
+                  },
+                  itemBuilder: (context, index) {
+                    final prompt = controller.promptQueue[index];
+                    return Padding(
+                      key: ValueKey(prompt.id),
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Material(
+                        color: scheme.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 10, 6, 7),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Container(
+                                    width: 22,
+                                    height: 22,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: scheme.primaryContainer,
+                                      borderRadius: BorderRadius.circular(7),
+                                    ),
+                                    child: Text(
+                                      '${index + 1}',
+                                      style: TextStyle(
+                                        color: scheme.primary,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 9),
+                                  Expanded(
+                                    child: Text(
+                                      prompt.input,
+                                      maxLines: 4,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 5),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Edit prompt',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () => _editPrompt(prompt),
+                                    icon: const Icon(
+                                      Icons.edit_outlined,
+                                      size: 17,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: controller.sending
+                                        ? 'Make this next'
+                                        : 'Run now',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () =>
+                                        controller.runQueuedPrompt(prompt.id),
+                                    icon: const Icon(
+                                      Icons.play_arrow_rounded,
+                                      size: 19,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Remove prompt',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () => controller
+                                        .removeQueuedPrompt(prompt.id),
+                                    icon: const Icon(
+                                      Icons.close_rounded,
+                                      size: 17,
+                                    ),
+                                  ),
+                                  const Icon(
+                                    Icons.drag_handle_rounded,
+                                    size: 18,
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _editPrompt(TalkQueuedPrompt prompt) async {
+    final updated = await showDialog<String>(
+      context: context,
+      builder: (_) => _EditQueuedPromptDialog(prompt: prompt.input),
+    );
+    if (updated != null) controller.updateQueuedPrompt(prompt.id, updated);
+  }
+}
+
+class _RailEmpty extends StatelessWidget {
+  const _RailEmpty({
+    required this.icon,
+    required this.title,
+    required this.detail,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String title;
+  final String detail;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 28, color: color),
+          const SizedBox(height: 10),
+          Text(title, style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 5),
+          Text(
+            detail,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: color, fontSize: 12),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _EditQueuedPromptDialog extends StatefulWidget {
+  const _EditQueuedPromptDialog({required this.prompt});
+  final String prompt;
+
+  @override
+  State<_EditQueuedPromptDialog> createState() =>
+      _EditQueuedPromptDialogState();
+}
+
+class _EditQueuedPromptDialogState extends State<_EditQueuedPromptDialog> {
+  late final TextEditingController controller = TextEditingController(
+    text: widget.prompt,
+  );
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Edit queued prompt'),
+    content: SizedBox(
+      width: 520,
+      child: TextField(
+        controller: controller,
+        autofocus: true,
+        minLines: 4,
+        maxLines: 12,
+        maxLength: 20000,
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () {
+          final value = controller.text.trim();
+          if (value.isNotEmpty) Navigator.of(context).pop(value);
+        },
+        child: const Text('Save'),
+      ),
+    ],
+  );
 }
 
 class _TalkActivityCard extends StatelessWidget {
