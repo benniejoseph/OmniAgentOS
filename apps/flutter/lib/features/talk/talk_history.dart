@@ -260,8 +260,7 @@ mixin TalkHistoryControllerMixin on ChangeNotifier {
       return;
     }
     final generation = ++_threadLoadGeneration;
-    final refreshingCurrent =
-        threadId == id && threadState == TalkThreadState.ready;
+    final refreshingCurrent = threadId == id;
     openingThreadId = id;
     failedThreadId = null;
     threadState = TalkThreadState.loading;

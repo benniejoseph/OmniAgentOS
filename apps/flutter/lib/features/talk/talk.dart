@@ -1494,8 +1494,6 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     if (widget.quickEntry) return _buildQuickEntry(context);
-    final useHistorySheet =
-        MediaQuery.sizeOf(context).width < talkHistoryDesktopBreakpoint;
     return Scaffold(
       appBar: AppBar(
         title: ListenableBuilder(
@@ -1507,7 +1505,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
           ),
         ),
         actions: [
-          if (widget.controller.conversationHistorySupported && useHistorySheet)
+          if (widget.controller.conversationHistorySupported)
             IconButton(
               tooltip: 'Conversation history',
               onPressed: _openHistorySheet,
