@@ -253,6 +253,14 @@ describe("project App Builder boundary", () => {
     const repositoryWorkspace = await readFile(new URL("../../../supabase/migrations/20260915190000_app_builder_repository_workspaces.sql", import.meta.url), "utf8");
     expect(repositoryWorkspace).toContain("file_count BETWEEN 1 AND 10000");
     expect(repositoryWorkspace).toContain("app_builder.repository.checked_out");
+    expect(databaseSchemaMigrations.find((migration) => migration.version === 176)).toEqual({
+      version: 176,
+      name: "app_builder_repository_git_preview_v1",
+      checksum: "fe9e7e77a45fcbf2a17012c232859f0172d0cacac134da4373d38a60afd67e4c",
+    });
+    const repositoryGitPreview = await readFile(new URL("../../../supabase/migrations/20260916093000_app_builder_repository_git_previews.sql", import.meta.url), "utf8");
+    expect(repositoryGitPreview).toContain("file_count BETWEEN 1 AND 10000");
+    expect(repositoryGitPreview).toContain("App Builder repository Git preview capacity is invalid");
     const runner = await readFile(new URL("../orchestration/agent-runner.ts", import.meta.url), "utf8");
     expect(runner).toContain('agentId === "sentinel"');
     expect(runner).toContain('? "verifier" as const');

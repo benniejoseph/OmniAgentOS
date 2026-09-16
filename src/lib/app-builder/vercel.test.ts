@@ -69,8 +69,10 @@ describe("App Builder Vercel preview broker", () => {
       projectName: "asael-app-1234567890abcdef",
       checkpointId: `app_build_checkpoint_${"b".repeat(48)}`,
       workspaceSha256: "c".repeat(64),
-      commitSha: "d".repeat(40),
-      files: [{ path: "app/page.tsx", content, sha256: "e".repeat(64), size: Buffer.byteLength(content) }],
+      source: {
+        kind: "files",
+        files: [{ path: "app/page.tsx", content, sha256: "e".repeat(64), size: Buffer.byteLength(content) }],
+      },
     });
 
     expect(result).toEqual({
@@ -84,12 +86,47 @@ describe("App Builder Vercel preview broker", () => {
       name: "asael-app-1234567890abcdef",
       version: 2,
       files: [{ file: "app/page.tsx", sha, size: Buffer.byteLength(content), mode: 0o100644 }],
-      meta: { asaelWorkspaceSha256: "c".repeat(64), asaelCommitSha: "d".repeat(40) },
+      meta: { asaelWorkspaceSha256: "c".repeat(64) },
     });
     expect(firstBody.target).toBeUndefined();
     expect(String(fetchMock.mock.calls[1][0])).toContain("/v2/files?teamId=team_asaelprivate");
     expect(fetchMock.mock.calls[1][1].headers["x-now-digest"]).toBe(sha);
     expect(fetchMock.mock.calls[2][1].headers.authorization).toBe("Bearer vercel_test_token_abcdefghijklmnopqrstuvwxyz");
+  });
+
+  it("deploys a reviewed repository commit through Git without uploading workspace files", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({
+      id: "dpl_Git123",
+      projectId: "prj_Git456",
+      readyState: "QUEUED",
+      url: "omniagent-review.vercel.app",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createBuilderVercelPreview({
+      deploymentReceiptId: `app_build_deployment_${"a".repeat(48)}`,
+      projectName: "asael-app-1234567890abcdef",
+      checkpointId: `app_build_checkpoint_${"b".repeat(48)}`,
+      workspaceSha256: "c".repeat(64),
+      source: {
+        kind: "github",
+        repositoryId: "1260961340",
+        ref: "asael/omniagent-review-canary-30adb663",
+        commitSha: "d".repeat(40),
+      },
+    })).resolves.toMatchObject({ deploymentId: "dpl_Git123" });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({
+      name: "asael-app-1234567890abcdef",
+      gitSource: {
+        type: "github",
+        repoId: "1260961340",
+        ref: "asael/omniagent-review-canary-30adb663",
+        sha: "d".repeat(40),
+      },
+      meta: { asaelCommitSha: "d".repeat(40) },
+    });
   });
 
   it("reads bounded state and log evidence while retaining only a digest and count", async () => {

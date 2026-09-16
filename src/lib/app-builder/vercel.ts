@@ -41,20 +41,30 @@ export function builderVercelProjectName(tenantId: string, actorId: string, proj
   return `asael-app-${suffix}`;
 }
 
-export async function createBuilderVercelPreview(input: {
+type BuilderVercelPreviewBase = Readonly<{
   deploymentReceiptId: string;
   projectName: string;
   checkpointId: string;
   workspaceSha256: string;
-  commitSha?: string;
-  files: readonly AppBuilderFile[];
-}): Promise<BuilderVercelDeployment> {
-  assertDeploymentFiles(input.files);
+}>;
+
+type BuilderVercelPreviewSource =
+  | Readonly<{ kind: "files"; files: readonly AppBuilderFile[] }>
+  | Readonly<{
+      kind: "github";
+      repositoryId: string;
+      ref: string;
+      commitSha: string;
+    }>;
+
+export async function createBuilderVercelPreview(
+  input: BuilderVercelPreviewBase & Readonly<{ source: BuilderVercelPreviewSource }>,
+): Promise<BuilderVercelDeployment> {
   if (!/^asael-app-[a-f0-9]{16}$/.test(input.projectName)) {
     throw new Error("The App Builder Vercel project name is invalid.");
   }
   const config = vercelConfig();
-  const prepared = input.files.map((file) => {
+  const prepared = input.source.kind === "files" ? input.source.files.map((file) => {
     const bytes = Buffer.from(file.content, "utf8");
     return {
       file: file.path,
@@ -63,17 +73,31 @@ export async function createBuilderVercelPreview(input: {
       sha: createHash("sha1").update(bytes).digest("hex"),
       bytes,
     };
-  });
+  }) : [];
+  if (input.source.kind === "files") {
+    assertDeploymentFiles(input.source.files);
+  } else {
+    assertGithubDeploymentSource(input.source);
+  }
   const payload = {
     name: input.projectName,
     version: 2,
-    files: prepared.map(({ file, size, mode, sha }) => ({ file, size, mode, sha })),
+    ...(input.source.kind === "files"
+      ? { files: prepared.map(({ file, size, mode, sha }) => ({ file, size, mode, sha })) }
+      : {
+          gitSource: {
+            type: "github" as const,
+            repoId: input.source.repositoryId,
+            ref: input.source.ref,
+            sha: input.source.commitSha,
+          },
+        }),
     projectSettings: { framework: "nextjs" },
     meta: {
       asaelDeploymentId: input.deploymentReceiptId,
       asaelCheckpointId: input.checkpointId,
       asaelWorkspaceSha256: input.workspaceSha256,
-      ...(input.commitSha ? { asaelCommitSha: input.commitSha } : {}),
+      ...(input.source.kind === "github" ? { asaelCommitSha: input.source.commitSha } : {}),
     },
   };
 
@@ -83,7 +107,7 @@ export async function createBuilderVercelPreview(input: {
     body: payload,
     idempotencyKey: input.deploymentReceiptId,
   });
-  if (!response.ok) {
+  if (!response.ok && input.source.kind === "files") {
     const error = providerError(response.body);
     if (error.code !== "missing_files" || !Array.isArray(error.missing)) {
       throw vercelRejected(response.status, error.message);
@@ -110,6 +134,20 @@ export async function createBuilderVercelPreview(input: {
     throw vercelRejected(response.status, providerError(response.body).message);
   }
   return deploymentFromProvider(response.body);
+}
+
+function assertGithubDeploymentSource(
+  source: Extract<BuilderVercelPreviewSource, { kind: "github" }>,
+) {
+  if (!/^\d{1,24}$/.test(source.repositoryId)) {
+    throw new Error("The App Builder GitHub repository ID is invalid.");
+  }
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9._/-]{0,118}[A-Za-z0-9])?$/.test(source.ref) || source.ref.includes("..") || source.ref.includes("//")) {
+    throw new Error("The App Builder GitHub reference is invalid.");
+  }
+  if (!/^[a-f0-9]{40}$/.test(source.commitSha)) {
+    throw new Error("The App Builder GitHub commit is invalid.");
+  }
 }
 
 export async function getBuilderVercelDeployment(deploymentId: string) {

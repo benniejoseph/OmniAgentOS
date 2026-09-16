@@ -917,6 +917,7 @@ export async function createProjectBuilderPreviewDeploymentService(
     throw new Error("Repository-backed preview deployment must use its reviewed GitHub commit. Direct source upload remains limited to starter workspaces.");
   }
   let repositoryDelivery;
+  let repositoryBinding;
   if (value.repositoryDeliveryId) {
     repositoryDelivery = await getBuilderDelivery(value.repositoryDeliveryId, session.id, owner(caller));
     if (
@@ -928,9 +929,36 @@ export async function createProjectBuilderPreviewDeploymentService(
     ) {
       throw new Error("The selected pull request is not bound to this exact passing checkpoint.");
     }
+    repositoryBinding = await getBuilderRepositoryBindingById(
+      repositoryDelivery.repositoryBindingId,
+      session.id,
+      owner(caller),
+    );
+    if (
+      !repositoryWorkspace || !repositoryBinding ||
+      repositoryBinding.repositoryId !== repositoryWorkspace.repositoryId ||
+      repositoryBinding.baseSha !== repositoryWorkspace.baseSha ||
+      repositoryDelivery.baseSha !== repositoryBinding.baseSha
+    ) {
+      throw new Error("The reviewed GitHub delivery no longer matches the checked-out repository revision.");
+    }
   }
   const files = await readBuilderWorkspaceFiles(session.sandboxName);
-  const scan = scanBuilderFilesForSecrets(files);
+  const scanFiles = repositoryDelivery && repositoryBinding
+    ? (await readBuilderRepositoryChanges({
+        sandboxName: session.sandboxName,
+        repositoryId: repositoryBinding.repositoryId,
+        baseSha: repositoryBinding.baseSha,
+      })).flatMap((change) => change.kind === "upsert" ? [change.file] : [])
+    : files;
+  const scan = scanBuilderFilesForSecrets(scanFiles);
+  if (
+    repositoryDelivery &&
+    (scan.scanSha256 !== repositoryDelivery.secretScanSha256 ||
+      scan.findingCount !== repositoryDelivery.secretFindingCount)
+  ) {
+    throw new Error("The repository change scan no longer matches the reviewed GitHub delivery.");
+  }
   const idempotencyKey = requireIdempotency(caller);
   await recordBuilderActivity({
     ...owner(caller), session,
@@ -984,8 +1012,14 @@ export async function createProjectBuilderPreviewDeploymentService(
       projectName: builderVercelProjectName(session.tenantId, session.ownerActorId, session.projectId),
       checkpointId: checkpoint.id,
       workspaceSha256: checkpoint.workspaceSha256,
-      commitSha: repositoryDelivery?.commitSha,
-      files,
+      source: repositoryDelivery && repositoryBinding
+        ? {
+            kind: "github",
+            repositoryId: repositoryBinding.repositoryId,
+            ref: repositoryDelivery.branchName,
+            commitSha: repositoryDelivery.commitSha!,
+          }
+        : { kind: "files", files },
     });
     const deployment = await queueBuilderDeployment({
       ...owner(caller),

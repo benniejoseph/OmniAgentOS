@@ -873,5 +873,10 @@
     "version": 175,
     "name": "tool_execution_retention_redaction_v2",
     "checksum": "300aff0f20a6d42ce84437c5ae8c45ac0c9e7fcd0f64b5b52fd5a291bd385e57"
+  },
+  {
+    "version": 176,
+    "name": "app_builder_repository_git_preview_v1",
+    "checksum": "fe9e7e77a45fcbf2a17012c232859f0172d0cacac134da4373d38a60afd67e4c"
   }
 ]
