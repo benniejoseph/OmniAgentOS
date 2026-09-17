@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/network/api_exception.dart';
@@ -92,6 +91,43 @@ void main() {
       );
     },
   );
+
+  test('applies a stream-specific receive timeout', () async {
+    final secureStore = SecureSessionStore(const FlutterSecureStorage());
+    final adapter = _StreamOptionsAdapter();
+    final dio = Dio(
+      BaseOptions(
+        baseUrl: 'https://asael.example',
+        receiveTimeout: const Duration(seconds: 30),
+      ),
+    )..httpClientAdapter = adapter;
+    final client = ApiClient(dio, Dio(), secureStore);
+
+    final body = await client.postStream(
+      '/api/agent',
+      receiveTimeout: const Duration(minutes: 10),
+    );
+
+    expect(adapter.receiveTimeout, const Duration(minutes: 10));
+    expect(await body.stream.expand((chunk) => chunk).toList(), [1]);
+  });
+}
+
+class _StreamOptionsAdapter implements HttpClientAdapter {
+  Duration? receiveTimeout;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<List<int>>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    receiveTimeout = options.receiveTimeout;
+    return ResponseBody(Stream.value(Uint8List.fromList([1])), 200);
+  }
+
+  @override
+  void close({bool force = false}) {}
 }
 
 class _BytesAdapter implements HttpClientAdapter {

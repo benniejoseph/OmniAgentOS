@@ -341,12 +341,17 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? data,
     Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) async {
     try {
       final response = await _dio.post<ResponseBody>(
         path,
         data: data,
-        options: Options(responseType: ResponseType.stream, headers: headers),
+        options: Options(
+          responseType: ResponseType.stream,
+          headers: headers,
+          receiveTimeout: receiveTimeout,
+        ),
       );
       final body = response.data;
       if (body == null) throw const ApiException('The stream was empty.');

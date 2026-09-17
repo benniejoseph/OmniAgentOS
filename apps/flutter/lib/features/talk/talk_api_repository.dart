@@ -8,6 +8,7 @@ import 'talk_history_api_repository.dart';
 class ApiTalkRepository
     implements TalkRepository, TalkHistoryRepository, TalkArtifactRepository {
   ApiTalkRepository(this.api) : _history = ApiTalkHistoryRepository(api);
+  static const agentStreamReceiveTimeout = Duration(minutes: 10);
   final ApiClient api;
   final ApiTalkHistoryRepository _history;
 
@@ -98,6 +99,9 @@ class ApiTalkRepository
         'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
       },
       headers: const {'Accept': 'text/event-stream'},
+      // Computer-use and delegated tool turns can legitimately spend longer
+      // than the ordinary projection timeout between response bytes.
+      receiveTimeout: agentStreamReceiveTimeout,
     );
     yield* parseSse(body.stream);
   }
