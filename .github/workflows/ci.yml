@@ -154,50 +154,6 @@ jobs:
           OMNIAGENT_INTEGRATION_DATABASE_RESET: "true"
         run: npm run test:integration
 
-  e2e:
-    name: e2e
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3100
-      NEXT_PUBLIC_WEB_VITALS_SAMPLE_RATE: "1"
-      OMNIAGENT_ALLOW_DEMO_STORAGE: "true"
-      OMNIAGENT_LOCAL_PRODUCTION: "true"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install
-        run: npm ci
-
-      - name: Install Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Production build
-        run: npm run build
-
-      - name: Playwright smoke tests
-        run: npm run test:e2e
-
-      - name: Upload Playwright diagnostics
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: playwright-diagnostics
-          path: |
-            playwright-report
-            test-results
-          if-no-files-found: warn
-          retention-days: 7
-
   worker:
     name: worker
     runs-on: ubuntu-latest

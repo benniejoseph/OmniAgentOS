@@ -25,7 +25,6 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "coverage/**",
-    "playwright-report/**",
     "test-results/**",
     "artifacts/**",
     "apps/flutter/.dart_tool/**",

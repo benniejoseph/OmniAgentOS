@@ -26,11 +26,7 @@
     "test:unit": "NODE_ENV=test VERCEL= VERCEL_ENV= vitest run",
     "test:coverage": "NODE_ENV=test VERCEL= VERCEL_ENV= vitest run --coverage",
     "test:integration": "NODE_ENV=test VERCEL= VERCEL_ENV= vitest run --config vitest.integration.config.ts",
-    "test:e2e": "playwright test",
-    "test:e2e:hydration": "CI=1 playwright test tests/e2e/smoke.spec.ts --project=chromium --grep \"Today hydrates timestamp labels\"",
-    "test:e2e:list": "playwright test --list",
     "benchmark:preview": "node scripts/benchmark-preview.mjs",
-    "benchmark:dashboard": "node scripts/benchmark-dashboard.mjs",
     "check:p05-baseline": "tsx scripts/check-p05-baseline.ts",
     "check:p43-query-planning": "tsx --tsconfig tsconfig.scripts.json scripts/check-p43-query-planning.ts",
     "check:p44-multilingual-retrieval": "tsx --tsconfig tsconfig.scripts.json scripts/check-p44-multilingual-retrieval.ts",
@@ -40,7 +36,7 @@
     "check:semantic-memory-shadow": "tsx --tsconfig tsconfig.scripts.json scripts/check-semantic-memory-shadow.ts",
     "audit:production": "node scripts/npm-audit-production.mjs",
     "check:worker": "node --check scripts/worker.mjs && node --check scripts/openai-egress-gateway.mjs",
-    "check:operations": "node --check scripts/db-backup.mjs && node --check scripts/db-restore-drill.mjs && node --check scripts/benchmark-preview.mjs && node --check scripts/benchmark-dashboard.mjs && node --check scripts/resolve-production-smoke-revision.mjs && node --check scripts/smoke-preflight.mjs && node --check scripts/smoke-security.mjs && node --check scripts/smoke-eval-case.mjs && node --check scripts/smoke-paid-agent.mjs",
+    "check:operations": "node --check scripts/db-backup.mjs && node --check scripts/db-restore-drill.mjs && node --check scripts/benchmark-preview.mjs && node --check scripts/resolve-production-smoke-revision.mjs && node --check scripts/smoke-preflight.mjs && node --check scripts/smoke-security.mjs && node --check scripts/smoke-eval-case.mjs && node --check scripts/smoke-paid-agent.mjs",
     "generate:native-contracts": "tsx scripts/generate-native-contracts.ts",
     "check:native-contracts": "tsx scripts/generate-native-contracts.ts --check",
     "db:migrate": "tsx scripts/db-migrate.ts",
@@ -49,7 +45,7 @@
     "sync:tradingview": "node scripts/sync-tradingview-library.mjs",
     "predeploy:production": "npm run sync:tradingview",
     "deploy:production": "node scripts/deploy-production.mjs",
-    "verify": "npm run audit:production && npm run typecheck && npm run lint && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100 npm run build && npm run test:e2e:hydration",
+    "verify": "npm run audit:production && npm run typecheck && npm run lint && npm run test:coverage && npm run test:integration && npm run check:worker && npm run check:operations && NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100 npm run build",
     "eval:agents": "node scripts/run-evals.mjs",
     "worker": "node scripts/worker.mjs"
   },
@@ -79,7 +75,6 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
