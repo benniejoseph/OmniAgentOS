@@ -63,6 +63,35 @@ bool isInboxLocation(Uri location) {
   return path == '/inbox' || path.startsWith('/inbox/');
 }
 
+/// Keeps a mounted Conversation surface bound to the current authenticated
+/// owner's controller instances.
+///
+/// Watching the notifier projections is intentional: the route rebuilds when
+/// Riverpod replaces an owner-scoped controller, but not for ordinary
+/// [ChangeNotifier] state updates emitted by those controllers.
+@visibleForTesting
+class ProviderBoundTalkRoute extends ConsumerWidget {
+  const ProviderBoundTalkRoute({
+    super.key,
+    this.quickEntry = false,
+    this.onQuickEntryReady,
+    this.onExitQuickEntry,
+  });
+
+  final bool quickEntry;
+  final VoidCallback? onQuickEntryReady;
+  final VoidCallback? onExitQuickEntry;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => TalkView(
+    controller: ref.watch(talkControllerProvider.notifier),
+    localComputer: ref.watch(localComputerCoordinatorProvider.notifier),
+    quickEntry: quickEntry,
+    onQuickEntryReady: onQuickEntryReady,
+    onExitQuickEntry: onExitQuickEntry,
+  );
+}
+
 final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
   final initialLocation = ref.watch(appInitialLocationProvider);
@@ -102,9 +131,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/quick-entry',
-        builder: (context, _) => TalkView(
-          controller: ref.read(talkControllerProvider),
-          localComputer: ref.read(localComputerCoordinatorProvider),
+        builder: (context, _) => ProviderBoundTalkRoute(
           quickEntry: true,
           onQuickEntryReady: () {
             unawaited(appDesktopHostBridge.showQuickEntryPresentation());
@@ -139,10 +166,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       controller: ref.read(todayControllerProvider),
                       focusItemId: state.uri.queryParameters['workItemId'],
                     ),
-                    '/talk' => TalkView(
-                      controller: ref.read(talkControllerProvider),
-                      localComputer: ref.read(localComputerCoordinatorProvider),
-                    ),
+                    '/talk' => const ProviderBoundTalkRoute(),
                     '/capture' => CaptureView(
                       controller: ref.read(captureControllerProvider),
                     ),
