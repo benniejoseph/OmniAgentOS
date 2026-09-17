@@ -1,13 +1,6 @@
 *
 !Dockerfile.worker
-!Dockerfile.playwright-mcp
 !scripts/
 scripts/*
 !scripts/worker.mjs
 !scripts/openai-egress-gateway.mjs
-!infra/
-infra/*
-!infra/playwright-mcp/
-infra/playwright-mcp/*
-!infra/playwright-mcp/gateway.mjs
-!infra/playwright-mcp/playwright-mcp.config.json
