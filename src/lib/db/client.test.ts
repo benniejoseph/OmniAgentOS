@@ -761,9 +761,9 @@ describe("ordered database schema versions", () => {
       checksum: "30f4769a6fcccd41aa457882b6be2752583d7d5920be75597e3b2121e91604d0",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 180,
-      name: "p13_3_local_computer_run_binding_v1",
-      checksum: "ff0d067e14965b75e45532f9ee534480fd237ef514c735282652d36a779000b4",
+      version: 181,
+      name: "isolated_browser_runtime_retirement_v1",
+      checksum: "2d8bfc80ac843fe49ca79024022b873f5046a68822892ace7ff78d393025cf4d",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,

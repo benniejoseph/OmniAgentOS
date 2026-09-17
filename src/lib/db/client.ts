@@ -1607,6 +1607,10 @@ function schemaMigrations(): SchemaMigration[] {
       ...databaseSchemaMigrations[179],
       up: ensureLocalComputerRuntimeV2,
     },
+    {
+      ...databaseSchemaMigrations[180],
+      up: ensureIsolatedBrowserRuntimeRetirementV1,
+    },
   ];
 }
 
@@ -13465,6 +13469,79 @@ async function ensureBrowserTakeoverProfilesV1(sql: SqlClient) {
       END IF;
     END
     $migration$;
+  `);
+}
+
+async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
+  await sql.query(`
+    UPDATE omni_browser_takeovers
+    SET state = 'revoked',
+        released_at = clock_timestamp()
+    WHERE state = 'active';
+
+    UPDATE omni_browser_profiles
+    SET state = 'revoked',
+        lifecycle_revision = lifecycle_revision + 1,
+        revoked_at = clock_timestamp(),
+        updated_at = clock_timestamp()
+    WHERE state = 'active';
+
+    COMMENT ON TABLE omni_browser_profiles IS
+      'Historical audit records for the retired isolated-browser runtime. New runtime mutations are disabled.';
+    COMMENT ON TABLE omni_browser_profile_bindings IS
+      'Historical append-only bindings for the retired isolated-browser runtime.';
+    COMMENT ON TABLE omni_browser_takeovers IS
+      'Historical takeover records for the retired isolated-browser runtime. New runtime mutations are disabled.';
+
+    REVOKE ALL ON TABLE omni_browser_profiles FROM PUBLIC;
+    REVOKE ALL ON TABLE omni_browser_profile_bindings FROM PUBLIC;
+    REVOKE ALL ON TABLE omni_browser_takeovers FROM PUBLIC;
+
+    DO $retirement$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') THEN
+        REVOKE ALL ON TABLE omni_browser_profiles FROM omni_runtime;
+        REVOKE ALL ON TABLE omni_browser_profile_bindings FROM omni_runtime;
+        REVOKE ALL ON TABLE omni_browser_takeovers FROM omni_runtime;
+        GRANT SELECT ON TABLE omni_browser_profiles TO omni_runtime;
+        GRANT SELECT ON TABLE omni_browser_profile_bindings TO omni_runtime;
+        GRANT SELECT ON TABLE omni_browser_takeovers TO omni_runtime;
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') THEN
+        REVOKE ALL ON TABLE omni_browser_profiles FROM omni_maintenance;
+        REVOKE ALL ON TABLE omni_browser_profile_bindings FROM omni_maintenance;
+        REVOKE ALL ON TABLE omni_browser_takeovers FROM omni_maintenance;
+        GRANT SELECT ON TABLE omni_browser_profiles TO omni_maintenance;
+        GRANT SELECT ON TABLE omni_browser_profile_bindings TO omni_maintenance;
+        GRANT SELECT ON TABLE omni_browser_takeovers TO omni_maintenance;
+      END IF;
+    END
+    $retirement$;
+
+    DO $verify$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM omni_browser_profiles WHERE state = 'active')
+        OR EXISTS (SELECT 1 FROM omni_browser_takeovers WHERE state = 'active')
+      THEN
+        RAISE EXCEPTION 'Isolated browser retirement left active authority'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime') AND (
+        has_table_privilege('omni_runtime', 'omni_browser_profiles', 'INSERT')
+        OR has_table_privilege('omni_runtime', 'omni_browser_profiles', 'UPDATE')
+        OR has_table_privilege('omni_runtime', 'omni_browser_profiles', 'DELETE')
+        OR has_table_privilege('omni_runtime', 'omni_browser_profile_bindings', 'INSERT')
+        OR has_table_privilege('omni_runtime', 'omni_browser_profile_bindings', 'UPDATE')
+        OR has_table_privilege('omni_runtime', 'omni_browser_profile_bindings', 'DELETE')
+        OR has_table_privilege('omni_runtime', 'omni_browser_takeovers', 'INSERT')
+        OR has_table_privilege('omni_runtime', 'omni_browser_takeovers', 'UPDATE')
+        OR has_table_privilege('omni_runtime', 'omni_browser_takeovers', 'DELETE')
+      ) THEN
+        RAISE EXCEPTION 'Isolated browser runtime authority is still granted'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $verify$;
   `);
 }
 
