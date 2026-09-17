@@ -63,11 +63,6 @@ WHERE EXISTS (
     WHERE tool.connector_id = connector.id
       AND tool.tenant_id = connector.tenant_id
   )
-  OR lower(btrim(tool.name)) IN (
-    'execute_skill', 'get_cookies', 'get_session', 'get_session_messages',
-    'list_browser_profiles', 'list_sessions', 'monitor_task', 'run_session',
-    'send_task', 'stop_session'
-  )
   OR lower(btrim(tool.name)) ~
     '(^|[._:/-])(browser|playwright|chromium|webdriver|puppeteer|cdp|computer[._-]*use|remote[._-]*desktop)($|[._:/-])'
   OR (
@@ -75,12 +70,12 @@ WHERE EXISTS (
       ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
       tool.output_schema::text, tool.annotations::text
     )) ~
-      '(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinate)'
+      '(^|[^a-z0-9])(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinate)([^a-z0-9]|$)'
     AND lower(concat_ws(
       ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
       tool.output_schema::text, tool.annotations::text
     )) ~
-      '(navigate|click|type|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)'
+      '(^|[^a-z0-9])(navigate|click|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)([^a-z0-9]|$)'
   );
 
 UPDATE public.omni_mcp_connectors
@@ -231,24 +226,19 @@ BEGIN
     FROM public.omni_mcp_tools tool
     WHERE tool.status = 'active'
       AND (
-        lower(btrim(tool.name)) IN (
-          'execute_skill', 'get_cookies', 'get_session', 'get_session_messages',
-          'list_browser_profiles', 'list_sessions', 'monitor_task', 'run_session',
-          'send_task', 'stop_session'
-        )
-        OR lower(btrim(tool.name)) ~
+        lower(btrim(tool.name)) ~
           '(^|[._:/-])(browser|playwright|chromium|webdriver|puppeteer|cdp|computer[._-]*use|remote[._-]*desktop)($|[._:/-])'
         OR (
           lower(concat_ws(
             ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
             tool.output_schema::text, tool.annotations::text
           )) ~
-            '(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinate)'
+            '(^|[^a-z0-9])(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinate)([^a-z0-9]|$)'
           AND lower(concat_ws(
             ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
             tool.output_schema::text, tool.annotations::text
           )) ~
-            '(navigate|click|type|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)'
+            '(^|[^a-z0-9])(navigate|click|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)([^a-z0-9]|$)'
         )
       )
   ) THEN

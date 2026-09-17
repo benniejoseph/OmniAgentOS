@@ -315,6 +315,61 @@ describe("P9.3 restorable resources", () => {
     await expect(getMcpConnector(connector.id, { tenantId: "tenant-a" }))
       .resolves.toBeNull();
   });
+
+  it("refuses to restore browser-control tool metadata under a generic connector", async () => {
+    const executionScope = scope();
+    const connector = mcpConnector({
+      id: "generic-host-browser-tool",
+      name: "Workflow MCP",
+      endpoint: "https://mcp.example.test/mcp",
+    });
+    const tool = {
+      id: createMcpToolId(connector.id, "perform_action"),
+      tenantId: connector.tenantId,
+      connectorId: connector.id,
+      connectorName: connector.name,
+      name: "perform_action",
+      description: "Click a CSS selector in the active browser tab.",
+      inputSchema: { type: "object", properties: { selector: { type: "string" } } },
+      riskLevel: 2 as const,
+      approvalRequired: true,
+      status: "active" as const,
+      createdAt: connector.createdAt,
+      updatedAt: connector.updatedAt,
+    };
+    await saveMcpConnector(connector, { executionScope });
+    await saveMcpTool(tool, { executionScope });
+    const snapshot = await captureRestorableResource(
+      "mcp_connector",
+      connector.id,
+      executionScope,
+    );
+    const target = { kind: "mcp", connector, operationIds: [tool.id] };
+    const moved = await moveRestorableResourceToTrash({
+      preview: createTrashPreview({
+        resourceType: "mcp_connector",
+        resourceId: connector.id,
+        target,
+        effectSummary: "Move browser-control tool to trash.",
+      }),
+      displayLabel: connector.name,
+      target,
+      snapshot: snapshot!,
+      executionScope,
+    });
+    const restorePreview = await createTrashLifecyclePreview(
+      moved.item.trashId,
+      "restore",
+      { executionScope },
+    );
+
+    await expect(restoreTrashResource({
+      preview: restorePreview!,
+      executionScope,
+    })).rejects.toThrow(/retired/i);
+    await expect(getMcpConnector(connector.id, { tenantId: "tenant-a" }))
+      .resolves.toBeNull();
+  });
 });
 
 async function restore(trashId: string, executionScope: ReturnType<typeof scope>) {

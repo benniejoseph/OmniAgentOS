@@ -76,6 +76,28 @@ describe("isolated browser runtime retirement migration", () => {
     expect(migration).toContain("computer[._[:space:]-]*use");
   });
 
+  it("keeps generic task and database tools outside the SQL browser classifier", () => {
+    const classifierPatterns = [...migration.matchAll(
+      /~\n\s+'(\(\^\|\[\^a-z0-9\]\)[^']+)'/g,
+    )].map((match) => new RegExp(match[1], "i"));
+    expect(classifierPatterns.length).toBeGreaterThanOrEqual(2);
+    const [surfacePattern, actionPattern] = classifierPatterns;
+    const isBrowserControl = (signal: string) =>
+      surfacePattern.test(signal) && actionPattern.test(signal);
+
+    expect(isBrowserControl(
+      'query_table Read a database table {"type":"object"}',
+    )).toBe(false);
+    expect(isBrowserControl(
+      'send_task Send work to a background task queue {"type":"object"}',
+    )).toBe(false);
+    expect(isBrowserControl(
+      'perform_action Click a CSS selector in the active browser tab',
+    )).toBe(true);
+    expect(migration).not.toContain("'send_task'");
+    expect(migration).not.toContain("|type|");
+  });
+
   it("records the exact ordered schema marker", () => {
     expect(migration).toContain("latest_version IS DISTINCT FROM 180");
     expect(migration).toContain("181,");

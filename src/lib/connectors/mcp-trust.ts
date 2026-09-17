@@ -90,7 +90,6 @@ export function isRemoteBrowserMcpTool(tool: {
 }) {
   const name = normalizeSignal(tool.name);
   if (!name) return false;
-  if (knownRemoteBrowserToolNames.has(name.toLowerCase())) return true;
   if (
     /(?:^|[._:/-])(?:browser|playwright|chromium|webdriver|puppeteer|cdp|computer[._-]*use|remote[._-]*desktop)(?:$|[._:/-])/i
       .test(name)
@@ -103,7 +102,7 @@ export function isRemoteBrowserMcpTool(tool: {
     /\b(?:browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinates?)\b/i
       .test(signals);
   const hasControlAction =
-    /\b(?:navigate|click|type|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)\b/i
+    /\b(?:navigate|click|type text|type into|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)\b/i
       .test(signals);
   return hasBrowserSurface && hasControlAction;
 }
@@ -125,19 +124,6 @@ export function isAsaelPlaywrightMcpEndpoint(endpoint?: string) {
     return false;
   }
 }
-
-const knownRemoteBrowserToolNames = new Set([
-  "execute_skill",
-  "get_cookies",
-  "get_session",
-  "get_session_messages",
-  "list_browser_profiles",
-  "list_sessions",
-  "monitor_task",
-  "run_session",
-  "send_task",
-  "stop_session",
-]);
 
 function collectMetadataSignals(value: unknown) {
   const parts: string[] = [];

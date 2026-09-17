@@ -25,7 +25,11 @@ import {
   saveOpenApiOperation,
 } from "@/lib/connectors/openapi-store";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
-import { assertMcpConnectorIsSupported } from "@/lib/connectors/mcp-trust";
+import {
+  assertMcpConnectorIsSupported,
+  isRemoteBrowserMcpTool,
+  RETIRED_REMOTE_BROWSER_MCP_MESSAGE,
+} from "@/lib/connectors/mcp-trust";
 import type {
   OpenApiConnectorRecord,
   OpenApiOperationRecord,
@@ -263,6 +267,11 @@ async function restoreSnapshotResource(
   if (snapshot.resourceType === "mcp_connector") {
     const connector = snapshot.resource as unknown as McpConnectorRecord;
     assertMcpConnectorIsSupported(connector);
+    if (snapshot.children.some((child) =>
+      isRemoteBrowserMcpTool(child as unknown as McpToolRecord)
+    )) {
+      throw new Error(RETIRED_REMOTE_BROWSER_MCP_MESSAGE);
+    }
     const credentialUnavailable =
       connector.credentialConfigured === true || connector.authType === "bearer_vault";
     const restored = await saveMcpConnector({

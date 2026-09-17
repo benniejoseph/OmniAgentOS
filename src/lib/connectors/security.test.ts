@@ -180,6 +180,21 @@ describe("connector security", () => {
       description: "Search product documentation.",
       annotations: { readOnlyHint: true },
     })).toBe(false);
+    expect(isRemoteBrowserMcpTool({
+      name: "send_task",
+      description: "Send work to a background task queue.",
+      inputSchema: { type: "object" },
+    })).toBe(false);
+    expect(isRemoteBrowserMcpTool({
+      name: "query_table",
+      description: "Read a database table.",
+      inputSchema: { type: "object" },
+    })).toBe(false);
+    expect(isRemoteBrowserMcpTool({
+      name: "compatibility_lookup",
+      description: "Read browser compatibility metadata.",
+      inputSchema: { type: "object" },
+    })).toBe(false);
   });
 
   it("keeps remote prompt text out of model-facing tool metadata", () => {
