@@ -98,7 +98,7 @@ describe("governed local Mac tools", () => {
     });
   });
 
-  it("requires native contract v12 only when a screenshot must be shown", async () => {
+  it("does not use a caller-supplied native version as screenshot authority", async () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     const result = await executeGovernedTool({
       toolId: "local.macos.observe",
@@ -116,13 +116,62 @@ describe("governed local Mac tools", () => {
       idempotencyKey: "local-mac-observe-v11",
     });
 
-    expect(result).toMatchObject({
-      record: {
-        status: "failed",
-        reason: expect.stringContaining("current Asael Mac app"),
+    expect(result.record.status).toBe("executed");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledOnce();
+  });
+
+  it("presents one screenshot after approval reconstruction without a client-version claim", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const result = await executeGovernedTool({
+      toolId: "local.macos.observe",
+      input: { includeScreenshot: true, presentScreenshot: true },
+      dryRun: false,
+      context: {
+        tenantId: "tenant-local",
+        actorId: "owner-local",
+        role: "admin",
+        source: "session",
       },
-      result: null,
+      executionScope: executionScope("observe-after-approval"),
+      agentRunId: "run-local",
+      idempotencyKey: "local-mac-observe-after-approval",
     });
+
+    expect(result.record.status).toBe("executed");
+    expect(result.browserObservation?.screenshot).toEqual({
+      mimeType: "image/png",
+      dataBase64: expect.any(String),
+    });
+    expect(result.record.output).not.toHaveProperty("observation");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-local",
+        executionScope: expect.objectContaining({
+          tenantId: "tenant-local",
+          initiatingActorId: "owner-local",
+          correlationId: "local-mac-observe-after-approval",
+        }),
+      }),
+    );
+  });
+
+  it("validates native URL-opening input before it can reach the command store", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+
+    await expect(executeGovernedTool({
+      toolId: "local.macos.open_url",
+      input: {
+        browser: "chrome",
+        url: "file:///Users/example/private.html",
+        loadWaitSeconds: 3,
+      },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("open-url-invalid"),
+      agentRunId: "run-local",
+      idempotencyKey: "local-mac-open-url-invalid",
+    })).rejects.toMatchObject({ name: "ToolInputValidationError" });
+
     expect(mocks.executeLocalComputerCommand).not.toHaveBeenCalled();
   });
 

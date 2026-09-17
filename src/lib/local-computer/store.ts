@@ -12,6 +12,7 @@ import {
   LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
   LOCAL_COMPUTER_DEVICE_LEASE_SECONDS,
   LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION,
+  LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION,
   LOCAL_COMPUTER_PROTOCOL_VERSION,
   localComputerActionSchema,
   localComputerResultSchema,
@@ -522,29 +523,64 @@ async function enqueueLocalComputerCommand(input: {
     now.getTime() + LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
   ).toISOString();
   const inputSha256 = canonicalJsonSha256(input.toolInput);
+  const requiredNativeContractVersion =
+    requiredNativeContractVersionForCommand(action, input.toolInput);
+  // Approval resume deliberately carries no native-version authority. Resolve
+  // compatibility from the exact v180 run-bound local session and its current
+  // server-side device/native-login rows in the same transaction as enqueue.
   const binding = await getSql().transaction(async (sql: LocalComputerSql) => {
     const sessions = await sql`
+      WITH eligible_session AS MATERIALIZED (
+        SELECT
+          session.tenant_id,
+          session.id,
+          session.device_id,
+          run.id AS run_id
+        FROM omni_local_computer_sessions session
+        JOIN omni_local_computer_devices device
+          ON device.tenant_id = session.tenant_id
+         AND device.owner_actor_id = session.owner_actor_id
+         AND device.device_id = session.device_id
+         AND device.mobile_session_id = session.mobile_session_id
+        JOIN omni_mobile_sessions native_session
+          ON native_session.id = session.mobile_session_id
+         AND native_session.tenant_id = session.tenant_id
+         AND native_session.user_id = device.user_id
+         AND native_session.device_id = session.device_id
+        JOIN omni_agent_runs run
+          ON run.id = ${runId}
+         AND run.tenant_id = session.tenant_id
+         AND run.owner_actor_id = session.owner_actor_id
+        JOIN omni_events run_binding
+          ON run_binding.tenant_id = run.tenant_id
+         AND run_binding.actor_id = run.owner_actor_id
+         AND run_binding.stream_id = 'run:' || run.id
+         AND run_binding.type = 'run.scope_bound'
+         AND run_binding.correlation_id = session.correlation_id
+        WHERE session.tenant_id = ${input.executionScope.tenantId}
+          AND session.owner_actor_id = ${input.executionScope.initiatingActorId || ""}
+          AND session.correlation_id = ${input.executionScope.correlationId}
+          AND session.state = 'active'
+          AND session.expires_at > NOW()
+          AND (session.run_id IS NULL OR session.run_id = run.id)
+          AND device.platform = 'macos'
+          AND device.native_contract_version >= ${requiredNativeContractVersion}
+          AND device.enabled
+          AND device.lease_expires_at > NOW()
+          AND native_session.platform = 'macos'
+          AND native_session.client_contract_version >= ${requiredNativeContractVersion}
+          AND native_session.client_attested_at IS NOT NULL
+          AND native_session.revoked_at IS NULL
+          AND native_session.refresh_expires_at > NOW()
+      )
       UPDATE omni_local_computer_sessions session
-      SET run_id = run.id, updated_at = ${now.toISOString()}
-      FROM omni_agent_runs run
-      JOIN omni_events binding
-        ON binding.tenant_id = run.tenant_id
-       AND binding.actor_id = run.owner_actor_id
-       AND binding.stream_id = 'run:' || run.id
-       AND binding.type = 'run.scope_bound'
-      WHERE session.tenant_id = ${input.executionScope.tenantId}
-        AND session.owner_actor_id = ${input.executionScope.initiatingActorId || ""}
-        AND session.correlation_id = ${input.executionScope.correlationId}
-        AND session.state = 'active'
-        AND session.expires_at > NOW()
-        AND run.id = ${runId}
-        AND run.tenant_id = session.tenant_id
-        AND run.owner_actor_id = session.owner_actor_id
-        AND binding.correlation_id = session.correlation_id
-        AND (session.run_id IS NULL OR session.run_id = run.id)
-      RETURNING session.id, session.device_id
+      SET run_id = eligible_session.run_id, updated_at = ${now.toISOString()}
+      FROM eligible_session
+      WHERE session.tenant_id = eligible_session.tenant_id
+        AND session.id = eligible_session.id
+      RETURNING session.id, session.device_id, session.run_id
     `;
-    if (!sessions[0]) {
+    if (!sessions[0] || String(sessions[0].run_id) !== runId) {
       return { rows: [], sessionId: null, deviceId: null };
     }
     const sessionId = String(sessions[0].id);
@@ -565,6 +601,11 @@ async function enqueueLocalComputerCommand(input: {
        AND device.owner_actor_id = session.owner_actor_id
        AND device.device_id = session.device_id
        AND device.mobile_session_id = session.mobile_session_id
+      JOIN omni_mobile_sessions native_session
+        ON native_session.id = session.mobile_session_id
+       AND native_session.tenant_id = session.tenant_id
+       AND native_session.user_id = device.user_id
+       AND native_session.device_id = session.device_id
       WHERE session.tenant_id = ${input.executionScope.tenantId}
         AND session.owner_actor_id = ${input.executionScope.initiatingActorId || ""}
         AND session.id = ${sessionId}
@@ -573,8 +614,15 @@ async function enqueueLocalComputerCommand(input: {
         AND session.run_id = ${runId}
         AND session.state = 'active'
         AND session.expires_at > NOW()
+        AND device.platform = 'macos'
+        AND device.native_contract_version >= ${requiredNativeContractVersion}
         AND device.enabled
         AND device.lease_expires_at > NOW()
+        AND native_session.platform = 'macos'
+        AND native_session.client_contract_version >= ${requiredNativeContractVersion}
+        AND native_session.client_attested_at IS NOT NULL
+        AND native_session.revoked_at IS NULL
+        AND native_session.refresh_expires_at > NOW()
       ON CONFLICT (tenant_id, owner_actor_id, execution_id) DO UPDATE SET
         updated_at = omni_local_computer_commands.updated_at
       RETURNING *
@@ -588,7 +636,7 @@ async function enqueueLocalComputerCommand(input: {
   const rows = binding.rows;
   if (!rows[0]) {
     throw new LocalComputerUnavailableError(
-      "The exact local Mac session is offline, stopped, expired, or does not belong to this run.",
+      "The exact local Mac session is offline, stopped, expired, incompatible with this action, or does not belong to this run.",
     );
   }
   const row = rows[0];
@@ -843,6 +891,16 @@ function digest(parts: readonly string[]) {
 
 function toolIdForLocalComputerAction(action: LocalComputerAction) {
   return `local.macos.${action}`;
+}
+
+function requiredNativeContractVersionForCommand(
+  action: LocalComputerAction,
+  input: Record<string, unknown>,
+) {
+  return action === "open_url" ||
+      (action === "observe" && input.presentScreenshot === true)
+    ? LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION
+    : LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION;
 }
 
 function opaque(value: string, name: string, max: number) {

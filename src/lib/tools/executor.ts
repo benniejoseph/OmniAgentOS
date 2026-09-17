@@ -85,6 +85,7 @@ import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/o
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { readResponseTextLimited } from "@/lib/http/body";
+import { localComputerOpenUrlInputSchema } from "@/lib/local-computer/contracts";
 import { executeLocalComputerCommand } from "@/lib/local-computer/store";
 import {
   clipVideoMediaAsset,
@@ -2683,6 +2684,7 @@ function asObjectRecord(value: unknown): Record<string, unknown> {
 const LOCAL_COMPUTER_TOOL_ACTIONS = {
   "local.macos.observe": "observe",
   "local.macos.list_apps": "list_apps",
+  "local.macos.open_url": "open_url",
   "local.macos.activate_app": "activate_app",
   "local.macos.press": "press",
   "local.macos.click": "click",
@@ -3275,15 +3277,6 @@ async function runTool(
     if (!executionScope || !idempotencyKey || !agentRunId) {
       throw new Error(
         "Local Computer Use requires an exact governed execution, run, and request scope.",
-      );
-    }
-    if (
-      localComputerAction === "observe" &&
-      (parsed as Record<string, unknown>).presentScreenshot === true &&
-      (context?.native?.clientContractVersion || 0) < 12
-    ) {
-      throw new Error(
-        "Showing a local screenshot requires the current Asael Mac app.",
       );
     }
     const completed = await executeLocalComputerCommand({
@@ -4384,6 +4377,10 @@ function toolAppServiceCaller(
 function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
   if (tool.id === "local.macos.observe") {
     return localMacObserveSchema.parse(input);
+  }
+
+  if (tool.id === "local.macos.open_url") {
+    return localComputerOpenUrlInputSchema.parse(input);
   }
 
   if (tool.id === "memory.search" || tool.id === "knowledge.search") {
