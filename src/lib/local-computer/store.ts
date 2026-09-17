@@ -13,6 +13,7 @@ import {
   LOCAL_COMPUTER_DEVICE_LEASE_SECONDS,
   LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION,
   LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION,
+  LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION,
   LOCAL_COMPUTER_PROTOCOL_VERSION,
   localComputerActionSchema,
   localComputerResultSchema,
@@ -897,10 +898,13 @@ function requiredNativeContractVersionForCommand(
   action: LocalComputerAction,
   input: Record<string, unknown>,
 ) {
-  return action === "open_url" ||
-      (action === "observe" && input.presentScreenshot === true)
-    ? LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION
-    : LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION;
+  if (action === "open_url") {
+    return LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION;
+  }
+  if (action === "observe" && input.presentScreenshot === true) {
+    return LOCAL_COMPUTER_PRESENT_SCREENSHOT_CONTRACT_VERSION;
+  }
+  return LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION;
 }
 
 function opaque(value: string, name: string, max: number) {

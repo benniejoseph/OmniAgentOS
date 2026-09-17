@@ -201,7 +201,7 @@ describe("local Computer Use command binding", () => {
     expect(mocks.appendScopedDomainEvent).not.toHaveBeenCalled();
   });
 
-  it("requires the same server-authoritative v12 binding for native URL opening", async () => {
+  it("requires the same server-authoritative v13 binding for native URL opening", async () => {
     const transactionSql = vi.fn().mockResolvedValueOnce([]);
     const sql = Object.assign(vi.fn(), {
       transaction: vi.fn(
@@ -213,16 +213,16 @@ describe("local Computer Use command binding", () => {
 
     await expect(executeLocalComputerCommand({
       action: "open_url",
-      toolInput: { url: "https://example.test/chart" },
-      executionId: "run-v12-authorized:open-url",
-      runId: "run-v12-authorized",
-      executionScope: boundExecutionScope("run-v12-authorized"),
+      toolInput: { browser: "chrome", url: "https://example.test/chart" },
+      executionId: "run-v13-authorized:open-url",
+      runId: "run-v13-authorized",
+      executionScope: boundExecutionScope("run-v13-authorized"),
     })).rejects.toMatchObject({
       name: "LocalComputerUnavailableError",
       status: 409,
     });
 
-    expect(transactionSql.mock.calls[0]?.slice(1)).toContain(12);
+    expect(transactionSql.mock.calls[0]?.slice(1)).toContain(13);
     expect(sqlText(transactionSql.mock.calls[0]?.[0])).toContain(
       "native_session.client_contract_version >=",
     );
