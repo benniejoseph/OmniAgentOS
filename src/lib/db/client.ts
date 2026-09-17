@@ -18,6 +18,7 @@ import {
   ensureAppBuilderRepositoryWorkspacesV1,
 } from "@/lib/db/app-builder-repository-schema";
 import { ensureMarketDeterministicBacktestsV1 } from "@/lib/db/market-backtest-schema";
+import { ensureLocalComputerRuntimeV1 } from "@/lib/db/local-computer-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -1594,6 +1595,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[177],
       up: ensureMacosNativePlatformV1,
+    },
+    {
+      ...databaseSchemaMigrations[178],
+      up: ensureLocalComputerRuntimeV1,
     },
   ];
 }
