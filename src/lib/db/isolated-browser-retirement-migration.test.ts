@@ -109,6 +109,9 @@ describe("isolated browser runtime retirement migration", () => {
     expect(isBrowserControl(
       'perform {"css__selector":"#submit","type   text":"hello"}',
     )).toBe(true);
+    expect(isBrowserControl(
+      'perform {"css_ selector":"#submit","type_ text":"hello"}',
+    )).toBe(true);
     expect(migration).toContain(
       "regexp_replace(lower(concat_ws(",
     );
