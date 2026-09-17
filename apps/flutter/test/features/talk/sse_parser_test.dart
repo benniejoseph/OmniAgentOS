@@ -7,7 +7,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _TalkRepository implements TalkRepository {
-  final calls = <({String message, String mode, String strategy})>[];
+  final calls =
+      <
+        ({
+          String message,
+          String mode,
+          String strategy,
+          TalkExecutionTarget executionTarget,
+        })
+      >[];
   var failNext = false;
   var transcriptions = 0;
 
@@ -34,8 +42,14 @@ class _TalkRepository implements TalkRepository {
     String? threadId,
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async* {
-    calls.add((message: message, mode: mode, strategy: strategy));
+    calls.add((
+      message: message,
+      mode: mode,
+      strategy: strategy,
+      executionTarget: executionTarget,
+    ));
     if (failNext) {
       failNext = false;
       throw StateError('offline');
@@ -70,6 +84,7 @@ class _ActivityTalkRepository implements TalkRepository {
     String? threadId,
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -148,6 +163,7 @@ class _DelegatedTalkRepository implements TalkRepository {
     String? threadId,
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async* {
     yield const SseEvent(
       event: 'delegated',
@@ -259,6 +275,7 @@ class _TerminalTalkRepository
     String? threadId,
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async* {
     yield const SseEvent(
       event: 'run',
@@ -276,6 +293,7 @@ class _TerminalTalkRepository
 
 class _QueuedTalkRepository implements TalkRepository {
   final calls = <String>[];
+  final targets = <TalkExecutionTarget>[];
   final firstRun = Completer<void>();
 
   @override
@@ -295,8 +313,10 @@ class _QueuedTalkRepository implements TalkRepository {
     String? threadId,
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async* {
     calls.add(message);
+    targets.add(executionTarget);
     if (calls.length == 1) await firstRun.future;
     yield SseEvent(
       event: 'done',
@@ -346,7 +366,11 @@ void main() {
       final repository = _TalkRepository()..failNext = true;
       final controller = TalkController(repository);
 
-      await controller.send('Do this', strategy: 'direct');
+      await controller.send(
+        'Do this',
+        strategy: 'direct',
+        executionTarget: TalkExecutionTarget.thisMac,
+      );
       expect(controller.messages, hasLength(2));
       expect(controller.messages.last.failed, isTrue);
       expect(controller.canRetry, isTrue);
@@ -355,8 +379,18 @@ void main() {
       expect(controller.messages, hasLength(2));
       expect(controller.messages.last.text, 'Ready');
       expect(repository.calls, [
-        (message: 'Do this', mode: 'orchestrate', strategy: 'direct'),
-        (message: 'Do this', mode: 'orchestrate', strategy: 'direct'),
+        (
+          message: 'Do this',
+          mode: 'orchestrate',
+          strategy: 'direct',
+          executionTarget: TalkExecutionTarget.thisMac,
+        ),
+        (
+          message: 'Do this',
+          mode: 'orchestrate',
+          strategy: 'direct',
+          executionTarget: TalkExecutionTarget.thisMac,
+        ),
       ]);
     },
   );
@@ -383,12 +417,23 @@ void main() {
 
     final first = controller.send('First prompt');
     await _settleAsync(2);
-    await controller.send('Second prompt');
-    await controller.send('Third prompt', strategy: 'direct');
+    await controller.send(
+      'Second prompt',
+      executionTarget: TalkExecutionTarget.thisMac,
+    );
+    await controller.send(
+      'Third prompt',
+      strategy: 'direct',
+      executionTarget: TalkExecutionTarget.isolatedBrowser,
+    );
 
     expect(controller.promptQueue.map((item) => item.input), [
       'Second prompt',
       'Third prompt',
+    ]);
+    expect(controller.promptQueue.map((item) => item.executionTarget), [
+      TalkExecutionTarget.thisMac,
+      TalkExecutionTarget.isolatedBrowser,
     ]);
     expect(repository.calls, ['First prompt']);
 
@@ -397,6 +442,11 @@ void main() {
     await _settleAsync(20);
 
     expect(repository.calls, ['First prompt', 'Second prompt', 'Third prompt']);
+    expect(repository.targets, [
+      TalkExecutionTarget.agent,
+      TalkExecutionTarget.thisMac,
+      TalkExecutionTarget.isolatedBrowser,
+    ]);
     expect(controller.promptQueue, isEmpty);
     expect(
       controller.messages.where((item) => item.role == TalkRole.user),
@@ -589,6 +639,10 @@ void main() {
       expect(presentationReady, 1);
       expect(find.text('Quick Entry'), findsOneWidget);
       expect(find.text('Conversation'), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('talk-execution-target')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('This Mac').last);
+      await tester.pumpAndSettle();
       await tester.enterText(
         find.byKey(const ValueKey('quick-entry-input')),
         'Prepare my briefing',
@@ -598,6 +652,10 @@ void main() {
 
       expect(exits, 1);
       expect(repository.calls.single.message, 'Prepare my briefing');
+      expect(
+        repository.calls.single.executionTarget,
+        TalkExecutionTarget.thisMac,
+      );
       expect(controller.messages.first.text, 'Prepare my briefing');
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);

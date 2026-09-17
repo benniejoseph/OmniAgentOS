@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/network/api_client.dart';
 import '../../core/platform/desktop_host_bridge.dart';
+import '../../core/platform/local_computer_bridge.dart';
 import '../../generated/native_contract.g.dart';
+import '../computer_use/local_computer.dart';
 
 typedef Json = Map<String, dynamic>;
 
@@ -48,15 +51,15 @@ const _assignmentDescriptions = <String, String>{
   'realtime_transcription': 'Live voice-command transcription',
 };
 
-class ModelSettingsView extends StatefulWidget {
+class ModelSettingsView extends ConsumerStatefulWidget {
   const ModelSettingsView({super.key, required this.api});
   final ApiClient api;
 
   @override
-  State<ModelSettingsView> createState() => _ModelSettingsViewState();
+  ConsumerState<ModelSettingsView> createState() => _ModelSettingsViewState();
 }
 
-class _ModelSettingsViewState extends State<ModelSettingsView> {
+class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
   Json? snapshot;
   Object? error;
   bool loading = true;
@@ -174,6 +177,7 @@ class _ModelSettingsViewState extends State<ModelSettingsView> {
 
   @override
   Widget build(BuildContext context) {
+    final localComputer = ref.watch(localComputerCoordinatorProvider);
     final providers = (snapshot?['providers'] as List? ?? const [])
         .whereType<Map>()
         .map(Json.from)
@@ -440,6 +444,13 @@ class _ModelSettingsViewState extends State<ModelSettingsView> {
                               ),
                             ),
                           ),
+                          const SizedBox(height: 24),
+                          Text(
+                            'Local Computer Use',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          _LocalComputerControl(coordinator: localComputer),
                         ],
                         const SizedBox(height: 24),
                         Row(
@@ -514,6 +525,277 @@ class _ModelSettingsViewState extends State<ModelSettingsView> {
                   ),
                 ),
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LocalComputerControl extends StatelessWidget {
+  const _LocalComputerControl({required this.coordinator});
+
+  final LocalComputerCoordinator coordinator;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: coordinator,
+    builder: (context, _) {
+      final scheme = Theme.of(context).colorScheme;
+      final native = coordinator.status;
+      final phase = coordinator.phase;
+      final (title, detail, icon, color) = switch (phase) {
+        LocalComputerBrokerPhase.starting => (
+          'Checking this Mac',
+          'Reading the signed helper and macOS permission state.',
+          Icons.sync_rounded,
+          scheme.primary,
+        ),
+        LocalComputerBrokerPhase.unavailable => (
+          'Local control unavailable',
+          'Install the private signed Asael macOS build to use this device.',
+          Icons.laptop_mac_outlined,
+          scheme.onSurfaceVariant,
+        ),
+        LocalComputerBrokerPhase.disabled => (
+          'This Mac is not enabled',
+          'Enable it explicitly before an agent can receive governed actions.',
+          Icons.pause_circle_outline_rounded,
+          scheme.onSurfaceVariant,
+        ),
+        LocalComputerBrokerPhase.permissionsRequired => (
+          'macOS access is required',
+          'Grant Accessibility and Screen Recording, then enable this Mac.',
+          Icons.admin_panel_settings_outlined,
+          scheme.tertiary,
+        ),
+        LocalComputerBrokerPhase.ready => (
+          'This Mac is ready',
+          'Only explicitly targeted, governed commands can run here.',
+          Icons.check_circle_outline_rounded,
+          scheme.primary,
+        ),
+        LocalComputerBrokerPhase.active => (
+          'Asael is controlling this Mac',
+          'A visible, bounded local action is in progress.',
+          Icons.radio_button_checked_rounded,
+          scheme.error,
+        ),
+        LocalComputerBrokerPhase.stopped => (
+          'Local control stopped',
+          'The kill switch is active. Enable this Mac to start a new session.',
+          Icons.stop_circle_outlined,
+          scheme.error,
+        ),
+        LocalComputerBrokerPhase.degraded => (
+          'Reconnecting',
+          'No new local action will start until the governed service returns.',
+          Icons.sync_problem_rounded,
+          scheme.tertiary,
+        ),
+      };
+      final accessGranted =
+          native?.accessibility == LocalComputerPermission.granted &&
+          native?.screenRecording == LocalComputerPermission.granted;
+      final primary = coordinator.canClaimCommands;
+      return _Surface(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Icon(icon, color: color),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          detail,
+                          style: TextStyle(color: scheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (coordinator.changing)
+                    const Padding(
+                      padding: EdgeInsets.only(left: 12, top: 3),
+                      child: SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                ],
+              ),
+              const Divider(height: 28),
+              Wrap(
+                spacing: 24,
+                runSpacing: 10,
+                children: [
+                  _LocalPermissionState(
+                    label: 'Accessibility',
+                    value: native?.accessibility,
+                  ),
+                  _LocalPermissionState(
+                    label: 'Screen Recording',
+                    value: native?.screenRecording,
+                  ),
+                  _LocalPermissionState(
+                    label: 'Signed helper',
+                    ready: native?.helperInstalled == true,
+                    fallback: native?.helperVersion ?? 'Checking',
+                  ),
+                  _LocalPermissionState(
+                    label: 'Command broker',
+                    ready: coordinator.device?.online == true,
+                    fallback: coordinator.device?.online == true
+                        ? 'Online'
+                        : 'Waiting',
+                  ),
+                ],
+              ),
+              if (!primary) ...[
+                const SizedBox(height: 12),
+                Text(
+                  'Auxiliary window · status and Stop now are available here. Enablement and command claiming stay with the main Asael window.',
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+              if (coordinator.lastError case final message?) ...[
+                const SizedBox(height: 12),
+                Text(
+                  message,
+                  style: TextStyle(color: scheme.error, fontSize: 12),
+                ),
+              ],
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 9,
+                runSpacing: 9,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: coordinator.changing
+                        ? null
+                        : coordinator.refresh,
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('Refresh'),
+                  ),
+                  if (primary &&
+                      native?.helperInstalled == true &&
+                      !accessGranted)
+                    FilledButton.tonalIcon(
+                      onPressed: coordinator.changing
+                          ? null
+                          : coordinator.requestPermissions,
+                      icon: const Icon(Icons.lock_open_rounded, size: 18),
+                      label: const Text('Grant macOS access'),
+                    ),
+                  if (primary && accessGranted)
+                    FilledButton.icon(
+                      onPressed: coordinator.changing
+                          ? null
+                          : () =>
+                                coordinator.setEnabled(native?.enabled != true),
+                      icon: Icon(
+                        native?.enabled == true
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                        size: 18,
+                      ),
+                      label: Text(
+                        native?.enabled == true
+                            ? 'Disable this Mac'
+                            : 'Enable this Mac',
+                      ),
+                    ),
+                  if (native?.enabled == true || coordinator.active)
+                    OutlinedButton.icon(
+                      onPressed: coordinator.changing
+                          ? null
+                          : () => coordinator.stopNow(),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: scheme.error,
+                      ),
+                      icon: const Icon(Icons.stop_circle_outlined, size: 18),
+                      label: const Text('Stop now'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _LocalPermissionState extends StatelessWidget {
+  const _LocalPermissionState({
+    required this.label,
+    this.value,
+    this.ready,
+    this.fallback,
+  });
+
+  final String label;
+  final LocalComputerPermission? value;
+  final bool? ready;
+  final String? fallback;
+
+  @override
+  Widget build(BuildContext context) {
+    final granted = ready ?? value == LocalComputerPermission.granted;
+    final text =
+        fallback ??
+        switch (value) {
+          LocalComputerPermission.granted => 'Granted',
+          LocalComputerPermission.denied => 'Not granted',
+          LocalComputerPermission.unknown || null => 'Checking',
+        };
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 176,
+      child: Row(
+        children: [
+          Icon(
+            granted ? Icons.check_circle_rounded : Icons.circle_outlined,
+            size: 17,
+            color: granted ? scheme.primary : scheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                Text(
+                  text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: scheme.onSurfaceVariant,
+                    fontSize: 11.5,
+                  ),
+                ),
+              ],
             ),
           ),
         ],

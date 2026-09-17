@@ -10,6 +10,7 @@ import '../core/sync/reconnect_coordinator.dart';
 import '../features/auth/application/session_controller.dart';
 import '../features/capture/capture_providers.dart';
 import '../features/capture/capture_drop_intake.dart';
+import '../features/computer_use/local_computer.dart';
 import '../features/push/mobile_push.dart';
 
 class AsaelApp extends ConsumerStatefulWidget {
@@ -84,6 +85,7 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     ref.watch(reconnectCoordinatorProvider);
     final router = ref.watch(appRouterProvider);
     final reconnect = ref.watch(reconnectCoordinatorProvider);
+    final localComputer = ref.watch(localComputerCoordinatorProvider);
     _desktopHostBridge.attachRouter(router);
     final push = ref.watch(mobilePushCoordinatorProvider);
     push?.attachRouter(router);
@@ -106,12 +108,91 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
       highContrastDarkTheme: AppTheme.dark(highContrast: true),
       themeMode: ThemeMode.system,
       routerConfig: router,
-      builder: (context, child) => _ReconnectStatusLayer(
-        coordinator: reconnect,
-        child: child ?? const SizedBox.shrink(),
+      builder: (context, child) => _LocalComputerStatusLayer(
+        coordinator: localComputer,
+        child: _ReconnectStatusLayer(
+          coordinator: reconnect,
+          child: child ?? const SizedBox.shrink(),
+        ),
       ),
     );
   }
+}
+
+class _LocalComputerStatusLayer extends StatelessWidget {
+  const _LocalComputerStatusLayer({
+    required this.coordinator,
+    required this.child,
+  });
+
+  final LocalComputerCoordinator coordinator;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: coordinator,
+    child: child,
+    builder: (context, child) {
+      final visible = coordinator.active;
+      final scheme = Theme.of(context).colorScheme;
+      return Stack(
+        children: [
+          Positioned.fill(child: child!),
+          Positioned(
+            top: 10,
+            right: 14,
+            child: IgnorePointer(
+              ignoring: !visible,
+              child: AnimatedSlide(
+                offset: visible ? Offset.zero : const Offset(0, -1.4),
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                child: AnimatedOpacity(
+                  opacity: visible ? 1 : 0,
+                  duration: const Duration(milliseconds: 140),
+                  child: Material(
+                    color: scheme.errorContainer,
+                    elevation: 5,
+                    shadowColor: scheme.shadow.withValues(alpha: .15),
+                    borderRadius: BorderRadius.circular(999),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.radio_button_checked_rounded,
+                            size: 15,
+                            color: scheme.error,
+                          ),
+                          const SizedBox(width: 7),
+                          Text(
+                            'Asael is controlling this Mac',
+                            style: Theme.of(context).textTheme.labelLarge,
+                          ),
+                          const SizedBox(width: 7),
+                          TextButton(
+                            onPressed: coordinator.changing
+                                ? null
+                                : () => unawaited(coordinator.stopNow()),
+                            style: TextButton.styleFrom(
+                              foregroundColor: scheme.error,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            child: const Text('Stop now'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    },
+  );
 }
 
 class _ReconnectStatusLayer extends StatelessWidget {

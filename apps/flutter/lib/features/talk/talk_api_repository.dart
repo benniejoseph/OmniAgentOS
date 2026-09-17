@@ -102,6 +102,7 @@ class ApiTalkRepository
     String? threadId,
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async* {
     final recoveryAnchor = await _captureRecoveryAnchor(threadId);
     String? observedThreadId = threadId;
@@ -114,6 +115,7 @@ class ApiTalkRepository
           'threadId': ?threadId,
           'mode': mode,
           'strategy': strategy,
+          'computerUseTarget': ?executionTarget.apiValue,
           'requestId': 'flutter-${DateTime.now().microsecondsSinceEpoch}',
         },
         headers: const {'Accept': 'text/event-stream'},

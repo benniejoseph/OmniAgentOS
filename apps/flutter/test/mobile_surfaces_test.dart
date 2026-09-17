@@ -44,6 +44,7 @@ class _TalkRepository implements TalkRepository {
     String? threadId,
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) => const Stream.empty();
 
   @override

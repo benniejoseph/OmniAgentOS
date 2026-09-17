@@ -2,7 +2,6 @@ import 'package:asael/core/network/api_client.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
 import 'package:asael/features/talk/talk.dart';
 import 'package:asael/features/talk/talk_api_repository.dart';
-import 'package:asael/features/talk/talk_history.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -29,10 +28,15 @@ void main() {
       );
 
       final events = await repository
-          .send(message: 'Open example.com read only', mode: 'orchestrate')
+          .send(
+            message: 'Open example.com read only',
+            mode: 'orchestrate',
+            executionTarget: TalkExecutionTarget.isolatedBrowser,
+          )
           .toList();
 
       expect(api.sendCount, 1);
+      expect(api.lastData?['computerUseTarget'], 'isolated_browser');
       expect(events.map((event) => event.event), ['status', 'run', 'done']);
       expect(events.last.data['threadId'], 'thread-recovered');
       expect(events.last.data['response'], 'Example Domain');
@@ -46,6 +50,7 @@ class _DisconnectingStreamApiClient extends ApiClient {
     : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
 
   int sendCount = 0;
+  Map<String, dynamic>? lastData;
 
   @override
   Future<ResponseBody> postStream(
@@ -55,6 +60,7 @@ class _DisconnectingStreamApiClient extends ApiClient {
     Duration? receiveTimeout,
   }) async {
     sendCount += 1;
+    lastData = data;
     final error = DioException(
       requestOptions: RequestOptions(path: path),
       type: DioExceptionType.connectionError,

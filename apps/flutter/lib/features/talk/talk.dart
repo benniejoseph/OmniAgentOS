@@ -13,6 +13,7 @@ import '../../app/brand/asael_mark.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../generated/native_contract.g.dart';
+import '../computer_use/local_computer.dart';
 import 'talk_history.dart';
 import 'talk_history_view.dart';
 
@@ -154,6 +155,34 @@ enum TalkRole { user, assistant }
 
 enum TalkActivityState { active, succeeded, waiting, failed, info }
 
+enum TalkExecutionTarget { agent, thisMac, isolatedBrowser }
+
+extension TalkExecutionTargetPresentation on TalkExecutionTarget {
+  String get label => switch (this) {
+    TalkExecutionTarget.agent => 'Asael only',
+    TalkExecutionTarget.thisMac => 'This Mac',
+    TalkExecutionTarget.isolatedBrowser => 'Isolated browser',
+  };
+
+  String get detail => switch (this) {
+    TalkExecutionTarget.agent => 'No computer control',
+    TalkExecutionTarget.thisMac => 'Use this installed Mac',
+    TalkExecutionTarget.isolatedBrowser => 'Use the remote private browser',
+  };
+
+  String? get apiValue => switch (this) {
+    TalkExecutionTarget.agent => null,
+    TalkExecutionTarget.thisMac => 'local_macos',
+    TalkExecutionTarget.isolatedBrowser => 'isolated_browser',
+  };
+
+  IconData get icon => switch (this) {
+    TalkExecutionTarget.agent => Icons.auto_awesome_outlined,
+    TalkExecutionTarget.thisMac => Icons.laptop_mac_rounded,
+    TalkExecutionTarget.isolatedBrowser => Icons.language_rounded,
+  };
+}
+
 class TalkActivity {
   const TalkActivity({
     required this.key,
@@ -278,18 +307,21 @@ class TalkQueuedPrompt {
     required this.input,
     required this.mode,
     required this.strategy,
+    required this.executionTarget,
   });
 
   final String id;
   final String input;
   final String mode;
   final String strategy;
+  final TalkExecutionTarget executionTarget;
 
   TalkQueuedPrompt copyWith({String? input}) => TalkQueuedPrompt(
     id: id,
     input: input ?? this.input,
     mode: mode,
     strategy: strategy,
+    executionTarget: executionTarget,
   );
 }
 
@@ -545,6 +577,7 @@ abstract interface class TalkRepository {
     String? threadId,
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   });
   Future<String> transcribeVoice(Uint8List bytes);
   Future<void> cancelRun(String runId);
@@ -623,6 +656,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryInput = null;
     _retryMode = null;
     _retryStrategy = null;
+    _retryExecutionTarget = null;
     runId = null;
     status = null;
     canceling = false;
@@ -640,6 +674,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryInput = null;
     _retryMode = null;
     _retryStrategy = null;
+    _retryExecutionTarget = null;
     runId = null;
     status = null;
   }
@@ -648,21 +683,33 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String input, {
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async {
     final text = input.trim();
     if (text.isEmpty) return;
     if (sending) {
-      enqueuePrompt(text, mode: mode, strategy: strategy);
+      enqueuePrompt(
+        text,
+        mode: mode,
+        strategy: strategy,
+        executionTarget: executionTarget,
+      );
       return;
     }
     queuePaused = false;
-    return _send(input, mode: mode, strategy: strategy);
+    return _send(
+      input,
+      mode: mode,
+      strategy: strategy,
+      executionTarget: executionTarget,
+    );
   }
 
   void enqueuePrompt(
     String input, {
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) {
     final text = input.trim();
     if (text.isEmpty || text.length > 20000 || promptQueue.length >= 20) {
@@ -674,6 +721,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         input: text,
         mode: mode,
         strategy: strategy,
+        executionTarget: executionTarget,
       ),
     );
     notifyListeners();
@@ -729,7 +777,12 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     final item = promptQueue.removeAt(index);
     queuePaused = false;
     notifyListeners();
-    await _send(item.input, mode: item.mode, strategy: item.strategy);
+    await _send(
+      item.input,
+      mode: item.mode,
+      strategy: item.strategy,
+      executionTarget: item.executionTarget,
+    );
   }
 
   Future<void> selectArtifact(TalkMediaArtifactSummary artifact) async {
@@ -781,6 +834,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   String? _retryInput;
   String? _retryMode;
   String? _retryStrategy;
+  TalkExecutionTarget? _retryExecutionTarget;
 
   bool get canRetry => !sending && _retryInput != null;
 
@@ -823,6 +877,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       input,
       mode: _retryMode ?? 'orchestrate',
       strategy: _retryStrategy ?? 'auto',
+      executionTarget: _retryExecutionTarget ?? TalkExecutionTarget.agent,
       replaceFailedResponse: true,
     );
   }
@@ -851,6 +906,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     String input, {
     String mode = 'orchestrate',
     String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
     bool replaceFailedResponse = false,
   }) async {
     final text = input.trim();
@@ -879,6 +935,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         threadId: threadId,
         mode: mode,
         strategy: strategy,
+        executionTarget: executionTarget,
       )) {
         adoptConversationThreadId(event.data['threadId']);
         switch (event.event) {
@@ -1104,6 +1161,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       _retryInput = null;
       _retryMode = null;
       _retryStrategy = null;
+      _retryExecutionTarget = null;
     } catch (error) {
       final failure = _talkFailure(error);
       queuePaused = true;
@@ -1115,6 +1173,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       _retryInput = text;
       _retryMode = mode;
       _retryStrategy = strategy;
+      _retryExecutionTarget = executionTarget;
       _recordActivity(
         key: 'run',
         title: 'Main agent',
@@ -1142,7 +1201,12 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       while (!_disposed && !sending && !queuePaused && promptQueue.isNotEmpty) {
         final next = promptQueue.removeAt(0);
         notifyListeners();
-        await _send(next.input, mode: next.mode, strategy: next.strategy);
+        await _send(
+          next.input,
+          mode: next.mode,
+          strategy: next.strategy,
+          executionTarget: next.executionTarget,
+        );
       }
     } finally {
       _drainingQueue = false;
@@ -1526,6 +1590,7 @@ class TalkView extends StatefulWidget {
     this.quickEntry = false,
     this.onQuickEntryReady,
     this.onExitQuickEntry,
+    this.localComputer,
   });
 
   final TalkController controller;
@@ -1533,6 +1598,7 @@ class TalkView extends StatefulWidget {
   final bool quickEntry;
   final VoidCallback? onQuickEntryReady;
   final VoidCallback? onExitQuickEntry;
+  final LocalComputerCoordinator? localComputer;
   @override
   State<TalkView> createState() => _TalkViewState();
 }
@@ -1543,6 +1609,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   final scroll = ScrollController();
   late final VoiceDraftRecorder recorder;
   String strategy = 'auto';
+  TalkExecutionTarget executionTarget = TalkExecutionTarget.agent;
   bool recording = false;
   String? recordingError;
   int voiceDraftGeneration = 0;
@@ -1631,6 +1698,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       value,
       mode: 'orchestrate',
       strategy: strategy,
+      executionTarget: executionTarget,
     );
     if (widget.quickEntry) widget.onExitQuickEntry?.call();
     unawaited(work);
@@ -1792,6 +1860,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                             ],
                           ),
                           const SizedBox(height: 10),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: _ExecutionTargetMenu(
+                              value: executionTarget,
+                              compact: true,
+                              localComputer: widget.localComputer,
+                              onChanged: (value) =>
+                                  setState(() => executionTarget = value),
+                            ),
+                          ),
+                          const SizedBox(height: 9),
                           TextField(
                             key: const ValueKey('quick-entry-input'),
                             controller: input,
@@ -1829,7 +1908,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                               Expanded(
                                 child: Text(
                                   widget.controller.status ??
-                                      'Orchestrate · governed · Esc to close',
+                                      '${executionTarget.label} · governed · Esc to close',
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     color: scheme.onSurfaceVariant,
@@ -2058,32 +2137,45 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                           children: [
                             Align(
                               alignment: Alignment.centerLeft,
-                              child: SegmentedButton<String>(
-                                segments: const [
-                                  ButtonSegment(
-                                    value: 'auto',
-                                    label: Text('Orchestrate'),
-                                    icon: Icon(
-                                      Icons.account_tree_outlined,
-                                      size: 16,
+                              child: Wrap(
+                                spacing: 10,
+                                runSpacing: 8,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  SegmentedButton<String>(
+                                    segments: const [
+                                      ButtonSegment(
+                                        value: 'auto',
+                                        label: Text('Orchestrate'),
+                                        icon: Icon(
+                                          Icons.account_tree_outlined,
+                                          size: 16,
+                                        ),
+                                      ),
+                                      ButtonSegment(
+                                        value: 'direct',
+                                        label: Text('Direct'),
+                                        icon: Icon(
+                                          Icons.arrow_forward_rounded,
+                                          size: 16,
+                                        ),
+                                      ),
+                                    ],
+                                    selected: {strategy},
+                                    showSelectedIcon: false,
+                                    style: const ButtonStyle(
+                                      visualDensity: VisualDensity.compact,
                                     ),
+                                    onSelectionChanged: (value) =>
+                                        setState(() => strategy = value.first),
                                   ),
-                                  ButtonSegment(
-                                    value: 'direct',
-                                    label: Text('Direct'),
-                                    icon: Icon(
-                                      Icons.arrow_forward_rounded,
-                                      size: 16,
-                                    ),
+                                  _ExecutionTargetMenu(
+                                    value: executionTarget,
+                                    localComputer: widget.localComputer,
+                                    onChanged: (value) =>
+                                        setState(() => executionTarget = value),
                                   ),
                                 ],
-                                selected: {strategy},
-                                showSelectedIcon: false,
-                                style: const ButtonStyle(
-                                  visualDensity: VisualDensity.compact,
-                                ),
-                                onSelectionChanged: (value) =>
-                                    setState(() => strategy = value.first),
                               ),
                             ),
                             const SizedBox(height: 8),
@@ -2230,6 +2322,133 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 }
 
 enum _TalkRailSection { activity, artifacts, queue }
+
+class _ExecutionTargetMenu extends StatelessWidget {
+  const _ExecutionTargetMenu({
+    required this.value,
+    required this.onChanged,
+    this.localComputer,
+    this.compact = false,
+  });
+
+  final TalkExecutionTarget value;
+  final ValueChanged<TalkExecutionTarget> onChanged;
+  final LocalComputerCoordinator? localComputer;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final coordinator = localComputer;
+    if (coordinator == null) return _menu(context, null);
+    return ListenableBuilder(
+      listenable: coordinator,
+      builder: (context, _) => _menu(context, coordinator),
+    );
+  }
+
+  Widget _menu(BuildContext context, LocalComputerCoordinator? coordinator) {
+    final scheme = Theme.of(context).colorScheme;
+    final macReady = coordinator?.ready == true;
+    final macActive = coordinator?.active == true;
+    final status = coordinator == null
+        ? 'This Mac status is unavailable in this client.'
+        : switch (coordinator.phase) {
+            LocalComputerBrokerPhase.ready => 'This Mac is ready.',
+            LocalComputerBrokerPhase.active =>
+              'Asael is currently operating this Mac.',
+            LocalComputerBrokerPhase.permissionsRequired =>
+              'This Mac needs Accessibility and Screen Recording permission.',
+            LocalComputerBrokerPhase.disabled ||
+            LocalComputerBrokerPhase.stopped =>
+              'Local Computer Use is disabled in Settings.',
+            LocalComputerBrokerPhase.degraded =>
+              'This Mac is reconnecting to the command service.',
+            LocalComputerBrokerPhase.starting => 'This Mac status is loading.',
+            LocalComputerBrokerPhase.unavailable =>
+              'Local Computer Use is available only in the signed macOS app.',
+          };
+    return Semantics(
+      label: 'Execution target: ${value.label}. $status',
+      button: true,
+      child: Tooltip(
+        message: value == TalkExecutionTarget.thisMac ? status : value.detail,
+        child: PopupMenuButton<TalkExecutionTarget>(
+          key: const ValueKey('talk-execution-target'),
+          initialValue: value,
+          tooltip: 'Choose where computer actions run',
+          onSelected: onChanged,
+          itemBuilder: (context) => [
+            for (final target in TalkExecutionTarget.values)
+              PopupMenuItem(
+                value: target,
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(target.icon, size: 19),
+                  title: Text(target.label),
+                  subtitle: Text(target.detail),
+                  trailing: target == TalkExecutionTarget.thisMac
+                      ? Icon(
+                          macActive
+                              ? Icons.radio_button_checked_rounded
+                              : macReady
+                              ? Icons.check_circle_rounded
+                              : Icons.warning_amber_rounded,
+                          size: 17,
+                          color: macActive || macReady
+                              ? scheme.primary
+                              : scheme.onSurfaceVariant,
+                        )
+                      : null,
+                ),
+              ),
+          ],
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: value == TalkExecutionTarget.thisMac
+                  ? scheme.primaryContainer.withValues(alpha: .56)
+                  : scheme.surfaceContainerLow,
+              border: Border.all(color: scheme.outlineVariant),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: compact ? 9 : 11,
+                vertical: compact ? 6 : 7,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(value.icon, size: 16),
+                  const SizedBox(width: 7),
+                  Text(
+                    value.label,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  if (value == TalkExecutionTarget.thisMac) ...[
+                    const SizedBox(width: 7),
+                    Container(
+                      width: 7,
+                      height: 7,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: macActive || macReady
+                            ? scheme.primary
+                            : scheme.outline,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 4),
+                  const Icon(Icons.expand_more_rounded, size: 16),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _TalkActivityPane extends StatefulWidget {
   const _TalkActivityPane({required this.controller});
@@ -2723,8 +2942,23 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                               ),
                               const SizedBox(height: 5),
                               Row(
-                                mainAxisAlignment: MainAxisAlignment.end,
                                 children: [
+                                  Icon(
+                                    prompt.executionTarget.icon,
+                                    size: 14,
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Expanded(
+                                    child: Text(
+                                      prompt.executionTarget.label,
+                                      style: TextStyle(
+                                        color: scheme.onSurfaceVariant,
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
                                   IconButton(
                                     tooltip: 'Edit prompt',
                                     visualDensity: VisualDensity.compact,

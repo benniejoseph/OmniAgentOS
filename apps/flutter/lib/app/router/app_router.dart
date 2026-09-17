@@ -14,6 +14,7 @@ import '../../features/agents/agents.dart';
 import '../../features/agents/agents_providers.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
+import '../../features/computer_use/local_computer.dart';
 import '../../features/customers/customer_detail.dart';
 import '../../features/customers/accounts_view.dart';
 import '../../features/inbox/inbox.dart';
@@ -88,6 +89,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/quick-entry',
         builder: (context, _) => TalkView(
           controller: ref.read(talkControllerProvider),
+          localComputer: ref.read(localComputerCoordinatorProvider),
           quickEntry: true,
           onQuickEntryReady: () {
             unawaited(appDesktopHostBridge.showQuickEntryPresentation());
@@ -124,6 +126,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                     ),
                     '/talk' => TalkView(
                       controller: ref.read(talkControllerProvider),
+                      localComputer: ref.read(localComputerCoordinatorProvider),
                     ),
                     '/capture' => CaptureView(
                       controller: ref.read(captureControllerProvider),

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/asael_app.dart';
 import 'app/router/app_router.dart';
+import 'features/computer_use/local_computer.dart';
 
 void main(List<String> arguments) {
   WidgetsFlutterBinding.ensureInitialized();
@@ -11,6 +12,9 @@ void main(List<String> arguments) {
       overrides: [
         appInitialLocationProvider.overrideWithValue(
           initialAppLocation(arguments),
+        ),
+        localComputerWindowContextProvider.overrideWithValue(
+          LocalComputerWindowContext.fromArguments(arguments),
         ),
       ],
       child: const AsaelApp(),
