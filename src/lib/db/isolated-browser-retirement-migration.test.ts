@@ -83,8 +83,10 @@ describe("isolated browser runtime retirement migration", () => {
     )].map((match) => new RegExp(match[1], "i"));
     expect(classifierPatterns.length).toBeGreaterThanOrEqual(2);
     const [surfacePattern, actionPattern] = classifierPatterns;
-    const isBrowserControl = (signal: string) =>
-      surfacePattern.test(signal) && actionPattern.test(signal);
+    const isBrowserControl = (signal: string) => {
+      const normalized = signal.replace(/_+/g, " ");
+      return surfacePattern.test(normalized) && actionPattern.test(normalized);
+    };
 
     expect(isBrowserControl(
       'query_table Read a database table {"type":"object"}',
@@ -101,6 +103,10 @@ describe("isolated browser runtime retirement migration", () => {
     expect(isBrowserControl(
       'perform Click screen coordinates',
     )).toBe(true);
+    expect(isBrowserControl(
+      'perform {"css_selector":"#submit","type_text":"hello"}',
+    )).toBe(true);
+    expect(migration).toContain("translate(lower(concat_ws(");
     expect(migration).not.toContain("'send_task'");
     expect(migration).not.toContain("|type|");
   });

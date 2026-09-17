@@ -66,15 +66,15 @@ WHERE EXISTS (
   OR lower(btrim(tool.name)) ~
     '(^|[._:/-])(browser|playwright|chromium|webdriver|puppeteer|cdp|computer[._-]*use|remote[._-]*desktop)($|[._:/-])'
   OR (
-    lower(concat_ws(
+    translate(lower(concat_ws(
       ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
       tool.output_schema::text, tool.annotations::text
-    )) ~
+    )), '_', ' ') ~
       '(^|[^a-z0-9])(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinates?)([^a-z0-9]|$)'
-    AND lower(concat_ws(
+    AND translate(lower(concat_ws(
       ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
       tool.output_schema::text, tool.annotations::text
-    )) ~
+    )), '_', ' ') ~
       '(^|[^a-z0-9])(navigate|click|type text|type into|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)([^a-z0-9]|$)'
   );
 
@@ -229,15 +229,15 @@ BEGIN
         lower(btrim(tool.name)) ~
           '(^|[._:/-])(browser|playwright|chromium|webdriver|puppeteer|cdp|computer[._-]*use|remote[._-]*desktop)($|[._:/-])'
         OR (
-          lower(concat_ws(
+          translate(lower(concat_ws(
             ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
             tool.output_schema::text, tool.annotations::text
-          )) ~
+          )), '_', ' ') ~
             '(^|[^a-z0-9])(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinates?)([^a-z0-9]|$)'
-          AND lower(concat_ws(
+          AND translate(lower(concat_ws(
             ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
             tool.output_schema::text, tool.annotations::text
-          )) ~
+          )), '_', ' ') ~
             '(^|[^a-z0-9])(navigate|click|type text|type into|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)([^a-z0-9]|$)'
         )
       )
