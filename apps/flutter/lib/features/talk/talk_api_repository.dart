@@ -1,5 +1,8 @@
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
+
+import '../../core/network/api_exception.dart';
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 import 'talk.dart';
@@ -103,7 +106,13 @@ class ApiTalkRepository
       // than the ordinary projection timeout between response bytes.
       receiveTimeout: agentStreamReceiveTimeout,
     );
-    yield* parseSse(body.stream);
+    try {
+      yield* parseSse(body.stream);
+    } on DioException catch (error) {
+      // Dio can surface failures while the response body is being consumed,
+      // after postStream has already returned its ResponseBody.
+      throw ApiException.fromDio(error);
+    }
   }
 
   @override

@@ -111,6 +111,18 @@ void main() {
     expect(adapter.receiveTimeout, const Duration(minutes: 10));
     expect(await body.stream.expand((chunk) => chunk).toList(), [1]);
   });
+
+  test('classifies a live response timeout without claiming offline', () {
+    final error = ApiException.fromDio(
+      DioException(
+        requestOptions: RequestOptions(path: '/api/agent'),
+        type: DioExceptionType.receiveTimeout,
+      ),
+    );
+
+    expect(error.diagnosticCode, 'receiveTimeout');
+    expect(error.message, contains('run may still finish in History'));
+  });
 }
 
 class _StreamOptionsAdapter implements HttpClientAdapter {

@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
 
 import '../../app/brand/asael_mark.dart';
+import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../generated/native_contract.g.dart';
 import 'talk_history.dart';
@@ -26,6 +27,45 @@ String _boundedDisplayText(Object? value, int maximum) {
   if (value is! String) return '';
   final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
   return normalized.length <= maximum ? normalized : '';
+}
+
+({String message, String detail}) _talkFailure(Object error) {
+  if (error is ApiException) {
+    final code = _boundedDisplayText(error.diagnosticCode, 80);
+    return (
+      message: _boundedDisplayText(error.message, 400).isNotEmpty
+          ? _boundedDisplayText(error.message, 400)
+          : 'The live connection ended before the governed run completed.',
+      detail: code.isEmpty
+          ? 'The live connection ended before the run completed.'
+          : 'The live connection ended before the run completed ($code).',
+    );
+  }
+  if (error is FormatException) {
+    return (
+      message: 'Asael received a live response this app could not read. The completed run may still be available in History.',
+      detail: 'The native conversation contract rejected a stream event.',
+    );
+  }
+  if (error is TimeoutException) {
+    return (
+      message: 'The live response took too long. The governed run may still finish in History.',
+      detail: 'The native conversation wait reached its time limit.',
+    );
+  }
+  if (error is StateError) {
+    final message = _boundedDisplayText(error.message, 400);
+    return (
+      message: message.isEmpty
+          ? 'Asael could not complete this governed run.'
+          : message,
+      detail: 'The governed run returned a terminal error.',
+    );
+  }
+  return (
+    message: 'The live connection ended before the governed run completed. The run may still finish in History.',
+    detail: 'The connection ended before the run completed.',
+  );
 }
 
 int _boundedCount(
@@ -1064,12 +1104,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       _retryInput = null;
       _retryMode = null;
       _retryStrategy = null;
-    } catch (_) {
+    } catch (error) {
+      final failure = _talkFailure(error);
       queuePaused = true;
       messages[messages.length - 1] = messages.last.copyWith(
-        text: messages.last.text.isEmpty
-            ? 'I could not reach Asael. Tap retry when you’re back online.'
-            : messages.last.text,
+        text: messages.last.text.isEmpty ? failure.message : messages.last.text,
         streaming: false,
         failed: true,
       );
@@ -1079,7 +1118,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       _recordActivity(
         key: 'run',
         title: 'Main agent',
-        detail: 'The connection ended before the run completed.',
+        detail: failure.detail,
         state: TalkActivityState.failed,
       );
     } finally {
