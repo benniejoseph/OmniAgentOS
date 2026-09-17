@@ -1,7 +1,7 @@
 import type { ModelUsage } from "@/lib/openai/model-router";
 import type { AiUsageScope } from "@/lib/usage/types";
 import type { ModelConversationItem } from "@/lib/models/conversation";
-import type { ModelBrowserObservation } from "@/lib/models/browser-observation";
+import type { ModelComputerObservation } from "@/lib/models/computer-observation";
 
 export type ProviderId = "openai" | "google" | "anthropic" | "aws_bedrock" | "local";
 export type ModelTier = "fast" | "reasoning";
@@ -67,8 +67,8 @@ export type ModelToolResult = {
   name: string;
   output: string;
   isError?: boolean;
-  /** One-turn, provider-bound browser evidence. Never persist this field. */
-  browserObservation?: ModelBrowserObservation;
+  /** One-turn, provider-bound local computer evidence. Never persist this field. */
+  computerObservation?: ModelComputerObservation;
 };
 
 /**

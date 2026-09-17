@@ -49,12 +49,6 @@ export type McpSessionScope = {
   tenantId: string;
   actorId: string;
   executionId: string;
-  /** Ephemeral profile transport authority. Never persist this on a run. */
-  browserProfile?: {
-    id: string;
-    revision: number;
-    allowedDomains: string[];
-  };
 };
 
 export async function discoverMcpTools(

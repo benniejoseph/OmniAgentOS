@@ -78,7 +78,7 @@ describe("governed local Mac tools", () => {
     expect(execution.record.output).toEqual(execution.result);
     expect(execution.record.output).not.toHaveProperty("observation");
     expect(execution.record.output).not.toHaveProperty("presentScreenshot");
-    expect(execution.browserObservation).toMatchObject({
+    expect(execution.computerObservation).toMatchObject({
       source: "local_macos",
       snapshotRevision: "a".repeat(64),
       applicationState: {
@@ -92,7 +92,7 @@ describe("governed local Mac tools", () => {
         coordinateSpace: "screenshot_pixel",
       },
     });
-    expect(execution.browserObservation).not.toHaveProperty(
+    expect(execution.computerObservation).not.toHaveProperty(
       "screenshot.coordinateContract",
     );
   });
@@ -152,14 +152,14 @@ describe("governed local Mac tools", () => {
     });
 
     expect(result.record.status).toBe("executed");
-    expect(result.browserObservation?.screenshot).toEqual({
+    expect(result.computerObservation?.screenshot).toEqual({
       mimeType: "image/png",
       dataBase64: expect.any(String),
       widthPixels: 1_440,
       heightPixels: 900,
       coordinateSpace: "screenshot_pixel",
     });
-    expect(result.browserObservation).not.toHaveProperty(
+    expect(result.computerObservation).not.toHaveProperty(
       "screenshot.coordinateContract",
     );
     expect(result.record.output).not.toHaveProperty("observation");
@@ -208,7 +208,7 @@ describe("governed local Mac tools", () => {
     } as const;
 
     const first = await executeGovernedTool(input);
-    expect(first.browserObservation).toBeDefined();
+    expect(first.computerObservation).toBeDefined();
 
     await expect(executeGovernedTool(input)).rejects.toMatchObject({
       name: "LocalComputerObservationExpiredError",
@@ -240,7 +240,7 @@ describe("governed local Mac tools", () => {
       },
       result: null,
     });
-    expect(result).not.toHaveProperty("browserObservation");
+    expect(result).not.toHaveProperty("computerObservation");
   });
 
   it("does not enqueue a consequential local action before approval", async () => {

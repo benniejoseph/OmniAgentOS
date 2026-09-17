@@ -1,22 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
-  renderModelBrowserObservation,
-  sanitizeModelBrowserObservation,
-} from "@/lib/models/browser-observation";
+  renderModelComputerObservation,
+  sanitizeModelComputerObservation,
+} from "@/lib/models/computer-observation";
 
 const webp = Buffer.from([
   0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00,
   0x57, 0x45, 0x42, 0x50,
 ]).toString("base64");
 
-describe("browser model observation", () => {
-  it("bounds safe page state and keeps an authenticated image disclosure", () => {
-    const observation = sanitizeModelBrowserObservation({
+describe("local Computer Use model observation", () => {
+  it("bounds safe application state and keeps an authenticated image disclosure", () => {
+    const observation = sanitizeModelComputerObservation({
       schemaVersion: 1,
-      source: "browser",
+      source: "local_macos",
       trust: "untrusted_data",
       executionId: "execution-1",
-      operation: "browser_click",
+      operation: "local.macos.click",
+      snapshotRevision: "a".repeat(64),
       pageState: {
         url: "https://example.test/account?token=secret#private",
         origin: "https://example.test/ignored",
@@ -34,19 +35,20 @@ describe("browser model observation", () => {
       },
       screenshot: { mimeType: "image/webp" },
     });
-    const rendered = renderModelBrowserObservation(observation!);
-    expect(rendered).toContain("Untrusted browser observation");
+    const rendered = renderModelComputerObservation(observation!);
+    expect(rendered).toContain("Untrusted local Mac observation");
     expect(rendered).toContain("&lt;Continue&gt;");
     expect(rendered).not.toContain("token=secret");
   });
 
   it("removes image bytes when the target has no vision disclosure", () => {
-    const observation = sanitizeModelBrowserObservation({
+    const observation = sanitizeModelComputerObservation({
       schemaVersion: 1,
-      source: "browser",
+      source: "local_macos",
       trust: "untrusted_data",
       executionId: "execution-2",
-      operation: "browser_snapshot",
+      operation: "local.macos.observe",
+      snapshotRevision: "b".repeat(64),
       accessibilitySnapshot: "- heading \"Done\"",
       screenshot: { mimeType: "image/webp", dataBase64: webp },
     }, { includeImage: false });
@@ -56,7 +58,7 @@ describe("browser model observation", () => {
   });
 
   it("exposes only bounded screenshot-pixel dimensions from local provenance", () => {
-    const observation = sanitizeModelBrowserObservation({
+    const observation = sanitizeModelComputerObservation({
       schemaVersion: 1,
       source: "local_macos",
       trust: "untrusted_data",
@@ -86,13 +88,13 @@ describe("browser model observation", () => {
     expect(observation).not.toHaveProperty(
       "screenshot.coordinateContract",
     );
-    expect(renderModelBrowserObservation(observation!)).toContain(
+    expect(renderModelComputerObservation(observation!)).toContain(
       "1440 × 900 pixels; screenshot_pixel origin is upper-left",
     );
   });
 
   it("withholds incomplete coordinate metadata while retaining a valid image", () => {
-    const observation = sanitizeModelBrowserObservation({
+    const observation = sanitizeModelComputerObservation({
       schemaVersion: 1,
       source: "local_macos",
       trust: "untrusted_data",
@@ -111,22 +113,32 @@ describe("browser model observation", () => {
       mimeType: "image/webp",
       dataBase64: webp,
     });
-    expect(renderModelBrowserObservation(observation!)).toContain(
+    expect(renderModelComputerObservation(observation!)).toContain(
       "use an Accessibility element, not x/y",
     );
   });
 
-  it("rejects unlabeled or invalid image observations", () => {
-    expect(sanitizeModelBrowserObservation({
-      executionId: "execution-3",
-      screenshot: { mimeType: "image/webp", dataBase64: webp },
-    }, { includeImage: true })).toBeUndefined();
-    expect(sanitizeModelBrowserObservation({
+  it("rejects retired browser provenance, unlabeled input, and invalid images", () => {
+    expect(sanitizeModelComputerObservation({
       schemaVersion: 1,
       source: "browser",
       trust: "untrusted_data",
-      executionId: "execution-3",
+      executionId: "execution-retired",
       operation: "browser_click",
+      snapshotRevision: "c".repeat(64),
+      accessibilitySnapshot: "- heading Retired",
+    }, { includeImage: true })).toBeUndefined();
+    expect(sanitizeModelComputerObservation({
+      executionId: "execution-3",
+      screenshot: { mimeType: "image/webp", dataBase64: webp },
+    }, { includeImage: true })).toBeUndefined();
+    expect(sanitizeModelComputerObservation({
+      schemaVersion: 1,
+      source: "local_macos",
+      trust: "untrusted_data",
+      executionId: "execution-3",
+      operation: "local.macos.click",
+      snapshotRevision: "d".repeat(64),
       screenshot: { mimeType: "image/webp", dataBase64: "not-an-image" },
     }, { includeImage: true })).toBeUndefined();
   });

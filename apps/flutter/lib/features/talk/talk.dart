@@ -304,6 +304,14 @@ class TalkArtifactContent {
   final Uint8List bytes;
 }
 
+class LegacyComputerPreviewRetired implements Exception {
+  const LegacyComputerPreviewRetired();
+
+  @override
+  String toString() =>
+      'Legacy Isolated Browser previews are retired. Use This Mac to capture a new private screenshot.';
+}
+
 class TalkWaitingApprovalSummary {
   const TalkWaitingApprovalSummary({
     required this.executionId,
@@ -805,6 +813,15 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     final localPreview = _localPreviewContents[artifact.assetId];
     if (localPreview != null) {
       selectedArtifactContent = localPreview;
+      artifactLoading = false;
+      notifyListeners();
+      return;
+    }
+    if (artifact.kind == 'computer') {
+      // Historical remote-browser frames are no longer readable. Current
+      // This Mac screenshots return through the in-memory preview map above
+      // and never use the retired frame endpoint.
+      artifactError = const LegacyComputerPreviewRetired();
       artifactLoading = false;
       notifyListeners();
       return;
@@ -3335,7 +3352,10 @@ class _TalkActivityPaneState extends State<_TalkActivityPane> {
                         : _artifactPlaceholder(
                             context,
                             selected,
-                            controller.artifactError == null
+                            controller.artifactError
+                                    is LegacyComputerPreviewRetired
+                                ? 'Legacy browser preview retired'
+                                : controller.artifactError == null
                                 ? 'Ready to save'
                                 : 'Preview unavailable',
                           ),

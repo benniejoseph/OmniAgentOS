@@ -96,6 +96,45 @@ void main() {
     expect(inspection.waitingApproval?.toolName, 'Click chart');
     expect(inspection.terminal, isFalse);
   });
+
+  test('fails closed before fetching a retired computer frame', () async {
+    final api = _ArtifactApiClient();
+    final repository = ApiTalkRepository(api);
+
+    await expectLater(
+      repository.loadArtifact(
+        const TalkMediaArtifactSummary(
+          assetId: 'computer_frame_legacy',
+          kind: 'computer',
+          operation: 'observe',
+          filename: 'computer-use.png',
+          mediaType: 'image/png',
+          byteCount: 1024,
+          status: 'stored',
+          sourceRunId: 'run_legacy',
+        ),
+      ),
+      throwsA(isA<LegacyComputerPreviewRetired>()),
+    );
+    expect(api.byteReads, isEmpty);
+  });
+}
+
+class _ArtifactApiClient extends ApiClient {
+  _ArtifactApiClient()
+    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+
+  final byteReads = <String>[];
+
+  @override
+  Future<Uint8List> getBytes(
+    String path, {
+    Map<String, dynamic>? query,
+    int maximumBytes = 64 * 1024 * 1024,
+  }) async {
+    byteReads.add(path);
+    return Uint8List.fromList([1]);
+  }
 }
 
 class _DisconnectingStreamApiClient extends ApiClient {

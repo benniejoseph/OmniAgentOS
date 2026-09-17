@@ -193,10 +193,10 @@ describe("model gateway", () => {
     expect(disclosed.toolResults[0].output).toHaveLength(8_000);
   });
 
-  it("discloses browser images only to targets advertising vision", async () => {
+  it("discloses local computer images only to targets advertising vision", async () => {
     google.configured.mockReturnValue(true);
     google.generateToolTurn.mockResolvedValue(toolTurnResult("google"));
-    const browserObservation = modelBrowserObservation();
+    const computerObservation = modelComputerObservation();
     google.targets.mockReturnValue([
       target("google", "text-tool-model", ["text", "tools"]),
     ]);
@@ -206,16 +206,16 @@ describe("model gateway", () => {
       preferredProvider: "google",
       tools: [],
       toolResults: [{
-        callId: "call-browser",
-        name: "browser_click",
+        callId: "call-computer",
+        name: "local_macos_click",
         output: "clicked",
-        browserObservation,
+        computerObservation,
       }],
     });
     expect(google.generateToolTurn.mock.calls[0][0].toolResults[0])
-      .not.toHaveProperty("browserObservation.screenshot");
+      .not.toHaveProperty("computerObservation.screenshot");
     expect(google.generateToolTurn.mock.calls[0][0].toolResults[0])
-      .toHaveProperty("browserObservation.accessibilitySnapshot");
+      .toHaveProperty("computerObservation.accessibilitySnapshot");
 
     google.generateToolTurn.mockClear();
     google.targets.mockReturnValue([
@@ -226,14 +226,14 @@ describe("model gateway", () => {
       preferredProvider: "google",
       tools: [],
       toolResults: [{
-        callId: "call-browser",
-        name: "browser_click",
+        callId: "call-computer",
+        name: "local_macos_click",
         output: "clicked",
-        browserObservation,
+        computerObservation,
       }],
     });
     expect(google.generateToolTurn.mock.calls[0][0].toolResults[0])
-      .toHaveProperty("browserObservation.screenshot.mimeType", "image/webp");
+      .toHaveProperty("computerObservation.screenshot.mimeType", "image/webp");
   });
 
   it("rejects opaque continuation state from another provider", async () => {
@@ -330,13 +330,14 @@ function target(
   return { provider, model, tier: "fast", features };
 }
 
-function modelBrowserObservation() {
+function modelComputerObservation() {
   return {
     schemaVersion: 1 as const,
-    source: "browser" as const,
+    source: "local_macos" as const,
     trust: "untrusted_data" as const,
-    executionId: "execution-browser",
-    operation: "browser_click",
+    executionId: "execution-local",
+    operation: "local.macos.click",
+    snapshotRevision: "a".repeat(64),
     pageState: { origin: "https://example.test", title: "Example" },
     accessibilitySnapshot: "- button \"Continue\" [ref=e7]",
     screenshot: {

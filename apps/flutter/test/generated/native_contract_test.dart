@@ -3,9 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('retains current and previous contract compatibility', () {
-    expect(NativeContract.currentVersion, 13);
-    expect(NativeContract.previousVersion, 12);
-    expect(NativeContract.supportedVersions, [13, 12]);
+    expect(NativeContract.currentVersion, 14);
+    expect(NativeContract.previousVersion, 13);
+    expect(NativeContract.supportedVersions, [14, 13]);
     expect(
       NativePaths.workspacesTasksUpdate('project one', 'task/two'),
       '/api/projects/project%20one/tasks/task%2Ftwo',
@@ -19,8 +19,8 @@ void main() {
       '/api/capture/assets/asset%20one?content=1',
     );
     expect(
-      NativePaths.evidenceRunComputerFrame('run one', 'frame/two'),
-      '/api/runs/run%20one/activity/frames/frame%2Ftwo',
+      NativeContract.supportsOperation('evidence.run.computerFrame'),
+      isFalse,
     );
   });
 
@@ -34,7 +34,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [13, 12],
+            'supportedVersions': [14, 13],
           },
         },
       }),
@@ -45,7 +45,7 @@ void main() {
         'api': {
           'nativeContract': {
             'id': NativeContract.id,
-            'supportedVersions': [12, 11],
+            'supportedVersions': [13, 12],
           },
         },
       }),

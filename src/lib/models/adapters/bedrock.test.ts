@@ -83,7 +83,7 @@ describe("Amazon Bedrock prompt caching", () => {
     );
   });
 
-  it("uses redacted browser structure once without persisting it", async () => {
+  it("uses redacted local computer structure once without persisting it", async () => {
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(
       JSON.stringify({
         output: {
@@ -117,8 +117,8 @@ describe("Amazon Bedrock prompt caching", () => {
           role: "assistant",
           content: [{
             toolUse: {
-              toolUseId: "call-browser",
-              name: "browser_click",
+              toolUseId: "call-computer",
+              name: "local_macos_click",
               input: { ref: "e7" },
             },
           }],
@@ -127,22 +127,23 @@ describe("Amazon Bedrock prompt caching", () => {
           { type: "message", role: "user", content: "Continue." },
           {
             type: "tool_call",
-            callId: "call-browser",
-            name: "browser_click",
+            callId: "call-computer",
+            name: "local_macos_click",
             argumentsJson: "{\"ref\":\"e7\"}",
           },
         ],
       },
       toolResults: [{
-        callId: "call-browser",
-        name: "browser_click",
+        callId: "call-computer",
+        name: "local_macos_click",
         output: "{\"clicked\":true}",
-        browserObservation: {
+        computerObservation: {
           schemaVersion: 1,
-          source: "browser",
+          source: "local_macos",
           trust: "untrusted_data",
-          executionId: "execution-browser",
-          operation: "browser_click",
+          executionId: "execution-local",
+          operation: "local.macos.click",
+          snapshotRevision: "a".repeat(64),
           accessibilitySnapshot: "- heading \"Ready\" [level=1]",
         },
       }],
@@ -163,7 +164,7 @@ describe("Amazon Bedrock prompt caching", () => {
     expect(body.messages.at(-1).content[0].toolResult.content).toEqual([
       { text: "{\"clicked\":true}" },
       expect.objectContaining({
-        text: expect.stringContaining("Untrusted browser observation"),
+        text: expect.stringContaining("Untrusted local Mac observation"),
       }),
     ]);
     expect(JSON.stringify(result.continuation.state)).not.toContain("Ready");

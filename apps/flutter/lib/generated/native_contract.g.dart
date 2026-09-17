@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 13;
-  static const previousVersion = 12;
-  static const supportedVersions = <int>[13, 12];
+  static const currentVersion = 14;
+  static const previousVersion = 13;
+  static const supportedVersions = <int>[14, 13];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -114,7 +114,6 @@ abstract final class NativeContract {
     'threads.list',
     'threads.get',
     'capture.asset.get',
-    'evidence.run.computerFrame',
     'localComputer.device',
     'localComputer.device.update',
     'localComputer.command.claim',
@@ -280,7 +279,6 @@ abstract final class NativePaths {
         .join('&');
     return '$path?$encoded';
   }
-  static String evidenceRunComputerFrame(String id, String frameId) => '/api/runs/${Uri.encodeComponent(id)}/activity/frames/${Uri.encodeComponent(frameId)}';
   static const localComputerDevice = '/api/mobile/computer-use/device';
   static const localComputerDeviceUpdate = '/api/mobile/computer-use/device';
   static const localComputerCommandClaim = '/api/mobile/computer-use/commands/claim';

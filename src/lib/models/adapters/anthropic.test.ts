@@ -193,7 +193,7 @@ describe("Anthropic model adapter tool turns", () => {
     }]);
   });
 
-  it("attaches browser evidence to one tool result without retaining it", async () => {
+  it("attaches local computer evidence to one tool result without retaining it", async () => {
     process.env.ANTHROPIC_API_KEY = "test-key";
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       model: "claude-test",
@@ -212,8 +212,8 @@ describe("Anthropic model adapter tool turns", () => {
           role: "assistant",
           content: [{
             type: "tool_use",
-            id: "call-browser",
-            name: "browser_click",
+            id: "call-computer",
+            name: "local_macos_click",
             input: { ref: "e7" },
           }],
         }],
@@ -221,22 +221,23 @@ describe("Anthropic model adapter tool turns", () => {
           { type: "message", role: "user", content: "Continue" },
           {
             type: "tool_call",
-            callId: "call-browser",
-            name: "browser_click",
+            callId: "call-computer",
+            name: "local_macos_click",
             argumentsJson: "{\"ref\":\"e7\"}",
           },
         ],
       },
       toolResults: [{
-        callId: "call-browser",
-        name: "browser_click",
+        callId: "call-computer",
+        name: "local_macos_click",
         output: "{\"clicked\":true}",
-        browserObservation: {
+        computerObservation: {
           schemaVersion: 1,
-          source: "browser",
+          source: "local_macos",
           trust: "untrusted_data",
-          executionId: "execution-browser",
-          operation: "browser_click",
+          executionId: "execution-local",
+          operation: "local.macos.click",
+          snapshotRevision: "a".repeat(64),
           accessibilitySnapshot: "- heading \"Ready\" [level=1]",
           screenshot: {
             mimeType: "image/webp",
@@ -252,7 +253,7 @@ describe("Anthropic model adapter tool turns", () => {
       { type: "text", text: "{\"clicked\":true}" },
       expect.objectContaining({
         type: "text",
-        text: expect.stringContaining("Untrusted browser observation"),
+        text: expect.stringContaining("Untrusted local Mac observation"),
       }),
       {
         type: "image",

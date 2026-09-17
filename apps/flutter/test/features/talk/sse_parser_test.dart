@@ -965,6 +965,41 @@ void main() {
     expect(controller.selectedArtifactContent?.bytes, [1, 2, 3]);
   });
 
+  testWidgets(
+    'renders a retired state without fetching a historical computer frame',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1400, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final repository = _TerminalTalkRepository();
+      final controller = TalkController(repository);
+      const artifact = TalkMediaArtifactSummary(
+        assetId: 'computer_frame_legacy',
+        kind: 'computer',
+        operation: 'observe',
+        filename: 'computer-use.png',
+        mediaType: 'image/png',
+        byteCount: 4096,
+        status: 'stored',
+        sourceRunId: 'run_legacy',
+      );
+      controller.artifacts.add(artifact);
+
+      await controller.selectArtifact(artifact);
+
+      expect(controller.artifactError, isA<LegacyComputerPreviewRetired>());
+      expect(repository.loadedAssetIds, isEmpty);
+      await tester.pumpWidget(
+        MaterialApp(home: TalkView(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Artifacts'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Legacy browser preview retired'), findsOneWidget);
+      expect(repository.loadedAssetIds, isEmpty);
+    },
+  );
+
   test(
     'attaches an exact local screenshot once without loading a remote asset',
     () async {

@@ -33,9 +33,9 @@ import { listRunsService } from "@/lib/app-services/runs";
 import { executeFirstPartyAppTool } from "@/lib/app-services/tool-dispatcher";
 import { reconcileSalesforceRecordWriteService } from "@/lib/app-services/salesforce-writes";
 import {
-  sanitizeModelBrowserObservation,
-  type ModelBrowserObservation,
-} from "@/lib/models/browser-observation";
+  sanitizeModelComputerObservation,
+  type ModelComputerObservation,
+} from "@/lib/models/computer-observation";
 import {
   isSalesforceRecordWriteToolId,
   parseSalesforceRecordWriteInput,
@@ -380,8 +380,8 @@ export type GovernedToolEffectBinding = Readonly<{
 export type GovernedToolExecutionResult = {
   record: ToolExecutionRecord;
   result: unknown;
-  /** One-turn browser evidence; excluded from the persisted execution record. */
-  browserObservation?: ModelBrowserObservation;
+  /** One-turn local computer evidence; excluded from the persisted execution record. */
+  computerObservation?: ModelComputerObservation;
 };
 
 export type GovernedToolCheckpointInput = Readonly<{
@@ -1675,7 +1675,7 @@ export async function executeGovernedTool({
       }
       throw error;
     }
-    const browserObservation: ModelBrowserObservation | undefined =
+    const computerObservation: ModelComputerObservation | undefined =
       localComputerResult?.observation
         ? localComputerModelObservation({
             executionId: saved.id,
@@ -1692,7 +1692,7 @@ export async function executeGovernedTool({
     return {
       record: saved,
       result: safeResult,
-      ...(browserObservation ? { browserObservation } : {}),
+      ...(computerObservation ? { computerObservation } : {}),
     };
   } catch (error) {
     if (
@@ -2576,7 +2576,7 @@ function localComputerModelObservation(input: {
   observation: NonNullable<LocalComputerToolResult["observation"]>;
 }) {
   const application = input.observation.frontmostApplication;
-  return sanitizeModelBrowserObservation({
+  return sanitizeModelComputerObservation({
     schemaVersion: 1,
     source: "local_macos",
     trust: "untrusted_data",

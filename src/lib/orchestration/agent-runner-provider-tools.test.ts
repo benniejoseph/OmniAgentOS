@@ -113,22 +113,22 @@ describe("non-OpenAI governed provider tool loop", () => {
     ).toEqual([5, 6]);
   });
 
-  it("supplies the next provider turn with the governed browser observation", async () => {
+  it("supplies the next provider turn with the governed local Mac observation", async () => {
     const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
       if (!request.toolResults) {
         return turn({
           toolCalls: [{
-            callId: "call-browser",
-            name: "browser_click",
+            callId: "call-observe",
+            name: "local_observe",
             argumentsJson: "{\"ref\":\"e7\"}",
           }],
         });
       }
       expect(request.toolResults).toEqual([expect.objectContaining({
-        callId: "call-browser",
+        callId: "call-observe",
         output: expect.stringContaining("tool_result"),
-        browserObservation: expect.objectContaining({
-          executionId: "execution-browser",
+        computerObservation: expect.objectContaining({
+          executionId: "execution-local-observe",
           accessibilitySnapshot: expect.stringContaining("Success"),
           screenshot: expect.objectContaining({ mimeType: "image/webp" }),
         }),
@@ -138,13 +138,13 @@ describe("non-OpenAI governed provider tool loop", () => {
     const loop = runNonOpenAIProviderToolLoop({
       provider: "google",
       tier: "fast",
-      instructions: "Use what the browser actually shows.",
+      instructions: "Use what this Mac actually shows.",
       prompt: "Continue",
-      tools: [modelTool("browser_click")],
+      tools: [modelTool("local_observe")],
       toolbox: {
-        byFunctionName: new Map([["browser_click", {
-          definition: toolDefinition("mcp:browser:browser_click"),
-          functionName: "browser_click",
+        byFunctionName: new Map([["local_observe", {
+          definition: toolDefinition("local.macos.observe"),
+          functionName: "local_observe",
         }]]),
       },
       securityContext: {
@@ -153,14 +153,14 @@ describe("non-OpenAI governed provider tool loop", () => {
         role: "admin",
         source: "default",
       },
-      runId: "run-browser",
+      runId: "run-local-observe",
       generateTurn,
       executeTool: vi.fn(async () => ({
-        record: executionRecord("mcp:browser:browser_click", "executed", {
-          id: "execution-browser",
+        record: executionRecord("local.macos.observe", "executed", {
+          id: "execution-local-observe",
         }),
         result: { clicked: true },
-        browserObservation: browserObservation(),
+        computerObservation: computerObservation(),
       })) as never,
     });
 
@@ -187,7 +187,7 @@ describe("non-OpenAI governed provider tool loop", () => {
         expect(request.toolResults).toEqual([
           expect.objectContaining({
             callId: "call-observe",
-            browserObservation: expect.objectContaining({
+            computerObservation: expect.objectContaining({
               source: "local_macos",
               snapshotRevision: "c".repeat(64),
             }),
@@ -205,7 +205,7 @@ describe("non-OpenAI governed provider tool loop", () => {
         expect(request.toolResults).toEqual([
           expect.objectContaining({
             callId: "call-list-once",
-            browserObservation: expect.objectContaining({
+            computerObservation: expect.objectContaining({
               source: "local_macos",
               executionId: "execution-local-observe",
             }),
@@ -220,7 +220,7 @@ describe("non-OpenAI governed provider tool loop", () => {
         });
       }
       expect(request.toolResults).toEqual([
-        expect.not.objectContaining({ browserObservation: expect.anything() }),
+        expect.not.objectContaining({ computerObservation: expect.anything() }),
       ]);
       return turn({ text: "The observation expired after one app-list hop." });
     });
@@ -231,7 +231,7 @@ describe("non-OpenAI governed provider tool loop", () => {
               id: "execution-local-observe",
             }),
             result: { summary: "Observed Finder." },
-            browserObservation: localObservation(),
+            computerObservation: localObservation(),
           }
         : {
             record: executionRecord(request.toolId, "executed"),
@@ -288,7 +288,7 @@ describe("non-OpenAI governed provider tool loop", () => {
         });
       }
       if (turnIndex === 2) {
-        expect(request.toolResults?.[0]?.browserObservation).toMatchObject({
+        expect(request.toolResults?.[0]?.computerObservation).toMatchObject({
           source: "local_macos",
         });
         return turn({
@@ -300,7 +300,7 @@ describe("non-OpenAI governed provider tool loop", () => {
         });
       }
       expect(request.toolResults?.[0]).not.toHaveProperty(
-        "browserObservation",
+        "computerObservation",
       );
       return turn({ text: "A fresh observation is required." });
     });
@@ -337,7 +337,7 @@ describe("non-OpenAI governed provider tool loop", () => {
                 id: "execution-local-observe",
               }),
               result: { summary: "Observed Finder." },
-              browserObservation: localObservation(),
+              computerObservation: localObservation(),
             }
           : {
               record: executionRecord(request.toolId, "executed"),
@@ -363,7 +363,7 @@ describe("non-OpenAI governed provider tool loop", () => {
           }],
         });
       }
-      expect(request.toolResults?.[0]?.browserObservation).toMatchObject({
+      expect(request.toolResults?.[0]?.computerObservation).toMatchObject({
         source: "local_macos",
       });
       return turn({
@@ -411,7 +411,7 @@ describe("non-OpenAI governed provider tool loop", () => {
                 id: "execution-local-observe",
               }),
               result: { summary: "Observed Finder." },
-              browserObservation: localObservation(),
+              computerObservation: localObservation(),
             }
           : {
               record: executionRecord(request.toolId, "approval_required"),
@@ -429,8 +429,8 @@ describe("non-OpenAI governed provider tool loop", () => {
     ).toEqual([]);
   });
 
-  it("removes ephemeral browser evidence before parking provider state", async () => {
-    const browserDefinition = toolDefinition("mcp:browser:browser_snapshot");
+  it("removes ephemeral computer evidence before parking provider state", async () => {
+    const computerDefinition = toolDefinition("local.macos.observe");
     const approvalDefinition = toolDefinition("http.request", {
       riskLevel: 2,
       approvalRequired: true,
@@ -440,12 +440,12 @@ describe("non-OpenAI governed provider tool loop", () => {
       tier: "fast",
       instructions: "Use tools.",
       prompt: "Inspect then submit",
-      tools: [modelTool("browser_snapshot"), modelTool("http_request")],
+      tools: [modelTool("local_observe"), modelTool("http_request")],
       toolbox: {
         byFunctionName: new Map([
-          ["browser_snapshot", {
-            definition: browserDefinition,
-            functionName: "browser_snapshot",
+          ["local_observe", {
+            definition: computerDefinition,
+            functionName: "local_observe",
           }],
           ["http_request", {
             definition: approvalDefinition,
@@ -459,22 +459,22 @@ describe("non-OpenAI governed provider tool loop", () => {
         role: "admin",
         source: "default",
       },
-      runId: "run-browser-approval",
+      runId: "run-local-observe-approval",
       serializeToolCalls: true,
       generateTurn: vi.fn(async () => turn({
         toolCalls: [
-          { callId: "call-browser", name: "browser_snapshot", argumentsJson: "{}" },
+          { callId: "call-observe", name: "local_observe", argumentsJson: "{}" },
           { callId: "call-approval", name: "http_request", argumentsJson: "{}" },
         ],
       })),
       executeTool: vi.fn(async (request: { toolId: string }) =>
-        request.toolId === browserDefinition.id
+        request.toolId === computerDefinition.id
           ? {
               record: executionRecord(request.toolId, "executed", {
-                id: "execution-browser",
+                id: "execution-local-observe",
               }),
               result: { ok: true },
-              browserObservation: browserObservation(),
+              computerObservation: computerObservation(),
             }
           : {
               record: executionRecord(request.toolId, "approval_required"),
@@ -487,7 +487,7 @@ describe("non-OpenAI governed provider tool loop", () => {
     const parked = collected.result.waitingApproval?.providerState
       .toolResultsBeforeApproval[0];
     expect(parked?.output).toContain("tool_result");
-    expect(parked).not.toHaveProperty("browserObservation");
+    expect(parked).not.toHaveProperty("computerObservation");
   });
 
   it("parks approval-required calls without advancing the provider turn", async () => {
@@ -874,13 +874,14 @@ function modelTool(name: string) {
   };
 }
 
-function browserObservation() {
+function computerObservation() {
   return {
     schemaVersion: 1 as const,
-    source: "browser" as const,
+    source: "local_macos" as const,
     trust: "untrusted_data" as const,
-    executionId: "execution-browser",
-    operation: "browser_click",
+    executionId: "execution-local-observe",
+    operation: "local.macos.observe",
+    snapshotRevision: "b".repeat(64),
     pageState: { origin: "https://example.test", title: "Success" },
     accessibilitySnapshot: "- heading \"Success\" [level=1]",
     screenshot: {

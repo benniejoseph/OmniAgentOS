@@ -108,12 +108,12 @@ export const openAIModelAdapter: ModelProviderAdapter = {
     const input: ConversationItem[] = [
       ...prior,
       ...(request.toolResults || []).map((result) =>
-        result.browserObservation
+        result.computerObservation
           ? {
-              type: "ephemeral_browser_function_output" as const,
+              type: "ephemeral_computer_function_output" as const,
               call_id: result.callId,
               output: result.output,
-              observation: result.browserObservation,
+              observation: result.computerObservation,
             }
           : {
               type: "function_call_output" as const,

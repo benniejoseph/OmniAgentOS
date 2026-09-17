@@ -121,7 +121,7 @@ describe("local macOS Computer Use native routes", () => {
       activityState: "idle",
     }));
     expect(update.status).toBe(200);
-    expect(update.headers.get("x-asael-native-contract-version")).toBe("13");
+    expect(update.headers.get("x-asael-native-contract-version")).toBe("14");
     expect(mocks.updateDevice).toHaveBeenCalledWith(context, expect.objectContaining({
       enabled: true,
       helperVersion: "1.0.0",
@@ -162,10 +162,10 @@ describe("local macOS Computer Use native routes", () => {
     );
   });
 
-  it("preserves the complete command envelope for a compatible v12 Mac", async () => {
+  it("preserves the complete command envelope for a compatible v13 Mac", async () => {
     mocks.authorizeRequest.mockResolvedValueOnce({
       ...context,
-      native: { ...context.native, clientContractVersion: 12 },
+      native: { ...context.native, clientContractVersion: 13 },
     });
     mocks.claimCommand.mockResolvedValueOnce({
       schemaVersion: 1,

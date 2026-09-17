@@ -658,7 +658,7 @@ describe("agent memory scope", () => {
         ? {
             record: localExecutionRecord(toolId, "execution-local-observe"),
             result: { summary: "Observed Finder." },
-            browserObservation: localObservation(),
+            computerObservation: localObservation(),
           }
         : {
             record: localExecutionRecord(toolId, "execution-local-list"),
@@ -677,7 +677,7 @@ describe("agent memory scope", () => {
       if (modelTurn === 2) {
         expect(modelRequest.input).toEqual(expect.arrayContaining([
           expect.objectContaining({
-            type: "ephemeral_browser_function_output",
+            type: "ephemeral_computer_function_output",
             call_id: "call-observe",
             observation: expect.objectContaining({
               source: "local_macos",
@@ -692,7 +692,7 @@ describe("agent memory scope", () => {
       }
       expect(modelRequest.input).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          type: "ephemeral_browser_function_output",
+          type: "ephemeral_computer_function_output",
           call_id: "call-list-apps",
           observation: expect.objectContaining({
             source: "local_macos",
@@ -718,7 +718,7 @@ describe("agent memory scope", () => {
     });
     expect(durableWrites).not.toContain("LOCAL_OPENAI_PRIVATE_SNAPSHOT");
     expect(durableWrites).not.toContain("iVBORw0KGgo=");
-    expect(durableWrites).not.toContain("ephemeral_browser_function_output");
+    expect(durableWrites).not.toContain("ephemeral_computer_function_output");
   });
 
   it("revalidates standing consent and isolates automatic personal context", async () => {

@@ -25,7 +25,7 @@ import {
   renderUntrustedObservation,
   type ModelConversationItem,
 } from "@/lib/models/conversation";
-import { renderModelBrowserObservation } from "@/lib/models/browser-observation";
+import { renderModelComputerObservation } from "@/lib/models/computer-observation";
 
 const PROVIDER = "aws_bedrock" as const;
 const AWS_SERVICE = "bedrock";
@@ -744,7 +744,7 @@ function initialUserMessage(input: string): BedrockMessage {
 function bedrockToolMessages(
   request: ModelToolTurnRequest,
   conversation: readonly ModelConversationItem[],
-  includeBrowserObservation: boolean,
+  includeComputerObservation: boolean,
 ): BedrockMessage[] {
   if (request.continuation && request.continuation.provider !== PROVIDER) {
     throw new ModelProviderError(
@@ -793,10 +793,10 @@ function bedrockToolMessages(
         toolUseId: callId,
         content: [
           { text: result.output },
-          ...(includeBrowserObservation && result.browserObservation
+          ...(includeComputerObservation && result.computerObservation
             ? [{
-                text: renderModelBrowserObservation(
-                  result.browserObservation,
+                text: renderModelComputerObservation(
+                  result.computerObservation,
                 ),
               }]
             : []),

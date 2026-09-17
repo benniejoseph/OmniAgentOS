@@ -24,7 +24,7 @@ import {
   renderUntrustedObservation,
   type ModelConversationItem,
 } from "@/lib/models/conversation";
-import { renderModelBrowserObservation } from "@/lib/models/browser-observation";
+import { renderModelComputerObservation } from "@/lib/models/computer-observation";
 
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
@@ -210,7 +210,7 @@ async function callAnthropic(
 function anthropicToolMessages(
   request: ModelToolTurnRequest,
   conversation: readonly ModelConversationItem[],
-  includeBrowserObservation: boolean,
+  includeComputerObservation: boolean,
 ) {
   if (request.continuation && request.continuation.provider !== "anthropic") {
     throw new ModelProviderError(
@@ -231,24 +231,24 @@ function anthropicToolMessages(
         type: "tool_result",
         tool_use_id: result.callId,
         content:
-          includeBrowserObservation && result.browserObservation
+          includeComputerObservation && result.computerObservation
             ? [
                 { type: "text", text: result.output },
                 {
                   type: "text",
-                  text: renderModelBrowserObservation(
-                    result.browserObservation,
+                  text: renderModelComputerObservation(
+                    result.computerObservation,
                   ),
                 },
-                ...(result.browserObservation.screenshot
+                ...(result.computerObservation.screenshot
                   ? [{
                       type: "image",
                       source: {
                         type: "base64",
                         media_type:
-                          result.browserObservation.screenshot.mimeType,
+                          result.computerObservation.screenshot.mimeType,
                         data:
-                          result.browserObservation.screenshot.dataBase64,
+                          result.computerObservation.screenshot.dataBase64,
                       },
                     }]
                   : []),

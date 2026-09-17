@@ -70,11 +70,7 @@ class ApiTalkRepository
       throw ArgumentError.value(assetId, 'assetId');
     }
     final path = switch (artifact.kind) {
-      'computer'
-          when artifact.sourceRunId != null &&
-              RegExp(r'^[a-zA-Z0-9_-]{1,200}$')
-                  .hasMatch(artifact.sourceRunId!) =>
-        NativePaths.evidenceRunComputerFrame(artifact.sourceRunId!, assetId),
+      'computer' => throw const LegacyComputerPreviewRetired(),
       'image' || 'video' => NativePaths.captureAssetGet(assetId, content: true),
       _ => throw StateError('This artifact source is not supported.'),
     };

@@ -10,8 +10,8 @@ import {
 } from "@/lib/local-computer/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 13 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 12 as const;
+export const NATIVE_API_CURRENT_VERSION = 14 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 13 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -731,6 +731,14 @@ const v13Operations: readonly NativeOperation[] = [
   ...v12Operations,
 ];
 
+// Contract v14 removes the retired remote Computer Use frame projection from
+// the source-current native surface. Frozen v10-v13 documents retain the route
+// only as historical compatibility evidence; new clients receive screenshots
+// exclusively through the private, short-lived This Mac preview channel.
+const v14Operations: readonly NativeOperation[] = v13Operations.filter(
+  (operation) => operation.id !== "evidence.run.computerFrame",
+);
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -799,6 +807,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 11) return v11Operations;
   if (version === 12) return v12Operations;
   if (version === 13) return v13Operations;
+  if (version === 14) return v14Operations;
   return undefined;
 }
 
@@ -808,7 +817,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [13, 12],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [14, 13],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

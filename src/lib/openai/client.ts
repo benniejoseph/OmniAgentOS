@@ -22,9 +22,9 @@ import {
   type ModelConversationSeedItem,
 } from "@/lib/models/conversation";
 import {
-  renderModelBrowserObservation,
-  type ModelBrowserObservation,
-} from "@/lib/models/browser-observation";
+  renderModelComputerObservation,
+  type ModelComputerObservation,
+} from "@/lib/models/computer-observation";
 import { promptCacheKeyForScope } from "@/lib/models/prompt-cache";
 import { recordAiUsageSafely } from "@/lib/usage/ledger";
 import type { AiUsageScope } from "@/lib/usage/types";
@@ -280,10 +280,10 @@ export type ConversationItem =
   | ResponseFunctionCallItem
   | { type: "function_call_output"; call_id: string; output: string }
   | {
-      type: "ephemeral_browser_function_output";
+      type: "ephemeral_computer_function_output";
       call_id: string;
       output: string;
-      observation: ModelBrowserObservation;
+      observation: ModelComputerObservation;
     };
 
 export type ResponseTurnInput = string | ConversationItem[];
@@ -678,7 +678,7 @@ export function openAIResponseInput(input: ResponseTurnInput) {
         content: renderUntrustedObservation(item),
       };
     }
-    if (item.type === "ephemeral_browser_function_output") {
+    if (item.type === "ephemeral_computer_function_output") {
       const screenshot = item.observation.screenshot;
       return {
         type: "function_call_output" as const,
@@ -687,7 +687,7 @@ export function openAIResponseInput(input: ResponseTurnInput) {
           { type: "input_text" as const, text: item.output },
           {
             type: "input_text" as const,
-            text: renderModelBrowserObservation(item.observation),
+            text: renderModelComputerObservation(item.observation),
           },
           ...(screenshot
             ? [{

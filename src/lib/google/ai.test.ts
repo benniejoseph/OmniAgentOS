@@ -194,7 +194,7 @@ describe("Google AI provider", () => {
     });
   });
 
-  it("sends browser state and an image for one turn without retaining them", async () => {
+  it("sends local computer state and an image for one turn without retaining them", async () => {
     process.env.GEMINI_API_KEY = "test-key";
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       id: "interaction-vision",
@@ -216,30 +216,31 @@ describe("Google AI provider", () => {
         provider: "google",
         state: [{
           type: "function_call",
-          id: "call-browser",
-          name: "browser_click",
+          id: "call-computer",
+          name: "local_macos_click",
           arguments: { ref: "e7" },
         }],
         conversation: [
           { type: "message", role: "user", content: "Continue" },
           {
             type: "tool_call",
-            callId: "call-browser",
-            name: "browser_click",
+            callId: "call-computer",
+            name: "local_macos_click",
             argumentsJson: "{\"ref\":\"e7\"}",
           },
         ],
       },
       toolResults: [{
-        callId: "call-browser",
-        name: "browser_click",
+        callId: "call-computer",
+        name: "local_macos_click",
         output: "{\"clicked\":true}",
-        browserObservation: {
+        computerObservation: {
           schemaVersion: 1,
-          source: "browser",
+          source: "local_macos",
           trust: "untrusted_data",
-          executionId: "execution-browser",
-          operation: "browser_click",
+          executionId: "execution-local",
+          operation: "local.macos.click",
+          snapshotRevision: "a".repeat(64),
           pageState: { title: "Success" },
           accessibilitySnapshot: "- heading \"Success\" [level=1]",
           screenshot: {
@@ -253,12 +254,12 @@ describe("Google AI provider", () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.input.at(-1)).toEqual(expect.objectContaining({
       type: "function_result",
-      call_id: "call-browser",
+      call_id: "call-computer",
       result: [
         { type: "text", text: "{\"clicked\":true}" },
         expect.objectContaining({
           type: "text",
-          text: expect.stringContaining("Untrusted browser observation"),
+          text: expect.stringContaining("Untrusted local Mac observation"),
         }),
         {
           type: "image",

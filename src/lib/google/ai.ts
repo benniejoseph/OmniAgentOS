@@ -15,7 +15,7 @@ import {
   renderUntrustedObservation,
   type ModelConversationItem,
 } from "@/lib/models/conversation";
-import { renderModelBrowserObservation } from "@/lib/models/browser-observation";
+import { renderModelComputerObservation } from "@/lib/models/computer-observation";
 
 const INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions";
 const SPEECH_URL = "https://speech.googleapis.com/v1/speech:recognize";
@@ -178,7 +178,7 @@ export async function generateGeminiToolTurn(input: {
   }
   const history = durableHistory.map((step) => ({ ...step }));
   for (const result of input.toolResults || []) {
-    const observation = result.browserObservation;
+    const observation = result.computerObservation;
     if (!observation) continue;
     const functionResultIndex = history.findLastIndex((step) =>
       step.type === "function_result" && step.call_id === result.callId
@@ -188,7 +188,7 @@ export async function generateGeminiToolTurn(input: {
       ...history[functionResultIndex],
       result: [
         { type: "text", text: result.output },
-        { type: "text", text: renderModelBrowserObservation(observation) },
+        { type: "text", text: renderModelComputerObservation(observation) },
         ...(observation.screenshot
           ? [{
               type: "image",

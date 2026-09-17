@@ -40,7 +40,7 @@ import {
   getModelProviderResponseReceipt,
   ModelProviderError,
 } from "@/lib/models/types";
-import type { ModelBrowserObservation } from "@/lib/models/browser-observation";
+import type { ModelComputerObservation } from "@/lib/models/computer-observation";
 import {
   createMemoryAccessContext,
   usesDurableMemory,
@@ -193,20 +193,20 @@ type QueuedFunctionCall = ResponseFunctionCall & {
   skipReason?: string;
 };
 
-type PendingOpenAIBrowserObservation = Readonly<{
+type PendingOpenAIComputerObservation = Readonly<{
   callId: string;
-  observation: ModelBrowserObservation;
+  observation: ModelComputerObservation;
 }>;
 
 type EphemeralLocalObservationState = Readonly<{
-  observation: ModelBrowserObservation;
+  observation: ModelComputerObservation;
   /** A fresh observe may cross at most one sole list-apps turn. */
   listAppsCarryAvailable: boolean;
 }>;
 
 type EphemeralObservationTransition = Readonly<{
   nextState?: EphemeralLocalObservationState;
-  disclosedObservation?: ModelBrowserObservation;
+  disclosedObservation?: ModelComputerObservation;
   discardPriorLocalObservations: boolean;
 }>;
 
@@ -219,8 +219,8 @@ function transitionEphemeralLocalObservation(
   if (toolId === "local.macos.observe") {
     const fresh =
       execution.record.status === "executed" &&
-        execution.browserObservation?.source === "local_macos"
-        ? execution.browserObservation
+        execution.computerObservation
+        ? execution.computerObservation
         : undefined;
     if (!soleToolInTurn || !fresh) {
       return { discardPriorLocalObservations: true };
@@ -252,33 +252,24 @@ function transitionEphemeralLocalObservation(
   if (toolId.startsWith("local.macos.")) {
     return { discardPriorLocalObservations: true };
   }
-  return {
-    disclosedObservation: execution.browserObservation,
-    discardPriorLocalObservations: true,
-  };
+  return { discardPriorLocalObservations: true };
 }
 
 function withoutLocalOpenAIObservations(
-  observations: readonly PendingOpenAIBrowserObservation[],
+  _observations: readonly PendingOpenAIComputerObservation[],
 ) {
-  return observations.filter(
-    ({ observation }) => observation.source !== "local_macos",
-  );
+  return [];
 }
 
 function withoutLocalProviderObservations(
   results: readonly ModelToolResult[],
 ) {
-  return results.map((result) =>
-    result.browserObservation?.source === "local_macos"
-      ? withoutProviderObservation(result)
-      : result
-  );
+  return results.map(withoutProviderObservation);
 }
 
 function withoutProviderObservation(result: ModelToolResult): ModelToolResult {
-  const { browserObservation: _browserObservation, ...durable } = result;
-  void _browserObservation;
+  const { computerObservation: _computerObservation, ...durable } = result;
+  void _computerObservation;
   return durable;
 }
 
@@ -1882,7 +1873,7 @@ export async function* runAgent(
       // ZDR-safe multi-turn: build a full conversation array instead of
       // relying on previous_response_id (blocked when org has Zero Data Retention).
       let conversationItems: ConversationItem[] | null = null;
-      let pendingBrowserObservations: PendingOpenAIBrowserObservation[] = [];
+      let pendingComputerObservations: PendingOpenAIComputerObservation[] = [];
       let latestLocalObservation: EphemeralLocalObservationState | undefined;
       let toolSteps = 0;
 
@@ -1890,11 +1881,11 @@ export async function* runAgent(
       // through the governed executor and continue with the outputs.
       for (;;) {
         const durableTurnInput = conversationItems ?? initialConversationItems;
-        const turnInput: ResponseTurnInput = openAITurnInputWithBrowserObservations(
+        const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
           durableTurnInput,
-          pendingBrowserObservations,
+          pendingComputerObservations,
         );
-        pendingBrowserObservations = [];
+        pendingComputerObservations = [];
         const modelBudget = await checkpointBeforeModelTurn({
           attempt: toolSteps + 1,
           provider: "openai",
@@ -2150,12 +2141,12 @@ export async function* runAgent(
             latestLocalObservation =
               observationTransition.nextState;
             if (observationTransition.discardPriorLocalObservations) {
-              pendingBrowserObservations = withoutLocalOpenAIObservations(
-                pendingBrowserObservations,
+              pendingComputerObservations = withoutLocalOpenAIObservations(
+                pendingComputerObservations,
               );
             }
             if (observationTransition.disclosedObservation) {
-              pendingBrowserObservations.push({
+              pendingComputerObservations.push({
                 callId: item.call.callId,
                 observation: observationTransition.disclosedObservation,
               });
@@ -2309,12 +2300,12 @@ export async function* runAgent(
           latestLocalObservation =
             observationTransition.nextState;
           if (observationTransition.discardPriorLocalObservations) {
-            pendingBrowserObservations = withoutLocalOpenAIObservations(
-              pendingBrowserObservations,
+            pendingComputerObservations = withoutLocalOpenAIObservations(
+              pendingComputerObservations,
             );
           }
           if (observationTransition.disclosedObservation) {
-            pendingBrowserObservations.push({
+            pendingComputerObservations.push({
               callId: call.callId,
               observation: observationTransition.disclosedObservation,
             });
@@ -3611,7 +3602,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
       result: toolExecution.result,
     }),
   ];
-  let pendingBrowserObservations: PendingOpenAIBrowserObservation[] = [];
+  let pendingComputerObservations: PendingOpenAIComputerObservation[] = [];
   let latestLocalObservation: EphemeralLocalObservationState | undefined;
 
   // Buffer delta writes onto a background chain — a blocking DB write per
@@ -3795,12 +3786,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
       );
       latestLocalObservation = observationTransition.nextState;
       if (observationTransition.discardPriorLocalObservations) {
-        pendingBrowserObservations = withoutLocalOpenAIObservations(
-          pendingBrowserObservations,
+        pendingComputerObservations = withoutLocalOpenAIObservations(
+          pendingComputerObservations,
         );
       }
       if (observationTransition.disclosedObservation) {
-        pendingBrowserObservations.push({
+        pendingComputerObservations.push({
           callId: call.callId,
           observation: observationTransition.disclosedObservation,
         });
@@ -3809,11 +3800,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
     conversationItems = [...conversationItems, ...carriedOutputs];
 
     for (;;) {
-      const turnInput: ResponseTurnInput = openAITurnInputWithBrowserObservations(
+      const turnInput: ResponseTurnInput = openAITurnInputWithComputerObservations(
         conversationItems,
-        pendingBrowserObservations,
+        pendingComputerObservations,
       );
-      pendingBrowserObservations = [];
+      pendingComputerObservations = [];
       await checkpointBeforeResumeModelTurn({
         attempt: toolSteps + 1,
         provider: "openai",
@@ -4110,12 +4101,12 @@ async function resumeAgentRunAfterToolApprovalInScope({
         );
         latestLocalObservation = observationTransition.nextState;
         if (observationTransition.discardPriorLocalObservations) {
-          pendingBrowserObservations = withoutLocalOpenAIObservations(
-            pendingBrowserObservations,
+          pendingComputerObservations = withoutLocalOpenAIObservations(
+            pendingComputerObservations,
           );
         }
         if (observationTransition.disclosedObservation) {
-          pendingBrowserObservations.push({
+          pendingComputerObservations.push({
             callId: call.callId,
             observation: observationTransition.disclosedObservation,
           });
@@ -5195,9 +5186,9 @@ function functionCallOutput(call: ResponseFunctionCall, payload: unknown) {
   return functionCallOutputFromCallId(call.callId, payload);
 }
 
-function openAITurnInputWithBrowserObservations(
+function openAITurnInputWithComputerObservations(
   items: readonly ConversationItem[],
-  pending: readonly PendingOpenAIBrowserObservation[],
+  pending: readonly PendingOpenAIComputerObservation[],
 ): ConversationItem[] {
   if (!pending.length) return [...items];
   const observations = new Map(
@@ -5208,7 +5199,7 @@ function openAITurnInputWithBrowserObservations(
     const observation = observations.get(item.call_id);
     return observation
       ? {
-          type: "ephemeral_browser_function_output" as const,
+          type: "ephemeral_computer_function_output" as const,
           call_id: item.call_id,
           output: item.output,
           observation,
@@ -5229,20 +5220,20 @@ function providerToolResult(
   call: ModelToolCall,
   payload: unknown,
   isError = false,
-  browserObservation?: GovernedToolExecutionResult["browserObservation"],
+  computerObservation?: GovernedToolExecutionResult["computerObservation"],
 ): ModelToolResult {
   return {
     callId: call.callId,
     name: call.name,
     output: serializeToolResult(payload),
     ...(isError ? { isError: true } : {}),
-    ...(browserObservation ? { browserObservation } : {}),
+    ...(computerObservation ? { computerObservation } : {}),
   };
 }
 
 function durableModelToolResults(results: readonly ModelToolResult[]) {
-  return results.map(({ browserObservation: _browserObservation, ...result }) => {
-    void _browserObservation;
+  return results.map(({ computerObservation: _computerObservation, ...result }) => {
+    void _computerObservation;
     return result;
   });
 }
