@@ -1609,6 +1609,7 @@ export async function* runAgent(
             forceApproval: forceApprovalForTool(agentToolPolicy, tool.riskLevel),
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
             executionScope: delegatedToolScope,
+            agentRunId: run.id,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
           });
           await checkpointAfterGovernedTool({
@@ -2109,6 +2110,7 @@ export async function* runAgent(
               executionScope,
               item.call.callId,
             ),
+            agentRunId: run.id,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
           })));
           for (let index = 0; index < prepared.length; index += 1) {
@@ -2216,6 +2218,7 @@ export async function* runAgent(
             ),
             mcpSessionScope: agentMcpSessionScope(run.id, securityContext),
             executionScope: toolExecutionScope,
+            agentRunId: run.id,
             checkpointBeforeEffect: checkpointBeforeGovernedTool,
           });
           await checkpointAfterGovernedTool({
@@ -2859,6 +2862,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
               input.securityContext,
             ),
             executionScope: toolExecutionScope,
+            agentRunId: input.runId,
             checkpointBeforeEffect: input.checkpointBeforeTool,
           });
         }),
@@ -2961,6 +2965,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           ),
           mcpSessionScope: agentMcpSessionScope(input.runId, input.securityContext),
           executionScope: toolExecutionScope,
+          agentRunId: input.runId,
           checkpointBeforeEffect: input.checkpointBeforeTool,
         });
         if (toolExecutionScope && input.checkpointAfterTool) {
@@ -3684,6 +3689,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
         ),
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
         executionScope: toolExecutionScope,
+        agentRunId: run.id,
         checkpointBeforeEffect: checkpointBeforeResumeTool,
       });
       if (toolExecutionScope) {
@@ -3996,6 +4002,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           ),
           mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
           executionScope: toolExecutionScope,
+          agentRunId: run.id,
           checkpointBeforeEffect: checkpointBeforeResumeTool,
         });
         if (toolExecutionScope) {
@@ -4666,6 +4673,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
         ),
         mcpSessionScope: agentMcpSessionScope(run.id, continuation.context),
         executionScope: toolExecutionScope,
+        agentRunId: run.id,
         checkpointBeforeEffect: checkpointBeforeResumeTool,
       });
       if (toolExecutionScope) {

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:async';
 
+import 'package:asael/features/computer_use/local_computer.dart';
 import 'package:asael/features/talk/talk.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -289,6 +290,130 @@ class _TerminalTalkRepository
 
   @override
   Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
+class _LocalPreviewTalkRepository implements TalkRepository {
+  @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async => _runInspection(
+    runId,
+    'completed',
+    response: 'The requested screenshot is ready.',
+  );
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SseEvent> send({
+    required String message,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+  }) async* {
+    yield const SseEvent(
+      event: 'run',
+      data: {'type': 'run', 'runId': 'run-local-preview'},
+    );
+    yield const SseEvent(
+      event: 'tool',
+      data: {
+        'type': 'tool',
+        'toolId': 'local.macos.observe',
+        'toolName': 'Observe This Mac',
+        'status': 'executed',
+        'executionId': 'run-local-preview:execution-local-preview',
+      },
+    );
+    yield const SseEvent(
+      event: 'done',
+      data: {'type': 'done', 'response': 'The requested screenshot is ready.'},
+    );
+  }
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
+class _HeldLocalPreviewTalkRepository implements TalkRepository {
+  final events = StreamController<SseEvent>();
+
+  @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SseEvent> send({
+    required String message,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+  }) => events.stream;
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
+class _LocalPreviewSource implements LocalComputerPreviewSource {
+  _LocalPreviewSource({
+    Duration ttl = const Duration(minutes: 5),
+    String runId = 'run-local-preview',
+    String executionId = 'run-local-preview:execution-local-preview',
+  }) : _preview = LocalComputerScreenshotPreview(
+         runId: runId,
+         executionId: executionId,
+         mediaType: 'image/png',
+         bytes: base64Decode(
+           'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+         ),
+         capturedAt: DateTime.now().toUtc(),
+         expiresAt: DateTime.now().toUtc().add(ttl),
+         applicationName: 'Google Chrome',
+       );
+
+  LocalComputerScreenshotPreview? _preview;
+  final takeCalls = <String>[];
+  final takeRunCalls = <String>[];
+
+  @override
+  void discardRunPreviews(String runId) {
+    if (_preview?.runId == runId) _preview = null;
+  }
+
+  @override
+  LocalComputerScreenshotPreview? takePreview(
+    String runId,
+    String executionId,
+  ) {
+    takeCalls.add('$runId/$executionId');
+    final preview = _preview;
+    if (preview?.runId != runId || preview?.executionId != executionId) {
+      return null;
+    }
+    _preview = null;
+    return preview;
+  }
+
+  @override
+  List<LocalComputerScreenshotPreview> takeRunPreviews(String runId) {
+    takeRunCalls.add(runId);
+    final preview = _preview;
+    if (preview?.runId != runId) return const [];
+    _preview = null;
+    return [preview!];
+  }
 }
 
 class _QueuedTalkRepository implements TalkRepository {
@@ -843,6 +968,148 @@ void main() {
     expect(repository.loadedAssetIds, ['capture_asset_portrait']);
     expect(controller.selectedArtifactContent?.bytes, [1, 2, 3]);
   });
+
+  test(
+    'attaches an exact local screenshot once without loading a remote asset',
+    () async {
+      final previews = _LocalPreviewSource();
+      final controller = TalkController(
+        _LocalPreviewTalkRepository(),
+        localComputerPreviews: previews,
+      );
+
+      await controller.send(
+        'Show me a screenshot of the chart',
+        executionTarget: TalkExecutionTarget.thisMac,
+      );
+
+      expect(previews.takeCalls, [
+        'run-local-preview/run-local-preview:execution-local-preview',
+      ]);
+      expect(controller.artifacts, hasLength(1));
+      expect(controller.artifacts.single.status, 'temporary');
+      expect(
+        controller.artifacts.single.contextLabel,
+        contains('Google Chrome'),
+      );
+      expect(controller.selectedArtifactContent?.bytes, isNotEmpty);
+      expect(
+        controller.activities.map((activity) => activity.title),
+        contains('Screenshot ready'),
+      );
+    },
+  );
+
+  test('a disposed Conversation ignores late screenshot events', () async {
+    final repository = _HeldLocalPreviewTalkRepository();
+    final previews = _LocalPreviewSource();
+    final controller = TalkController(
+      repository,
+      localComputerPreviews: previews,
+    );
+    final send = controller.send(
+      'Show me a screenshot of the chart',
+      executionTarget: TalkExecutionTarget.thisMac,
+    );
+    await Future<void>.delayed(Duration.zero);
+    repository.events.add(
+      const SseEvent(
+        event: 'run',
+        data: {'type': 'run', 'runId': 'run-local-preview'},
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    controller.dispose();
+    repository.events.add(
+      const SseEvent(
+        event: 'tool',
+        data: {
+          'type': 'tool',
+          'toolId': 'local.macos.observe',
+          'status': 'executed',
+          'executionId': 'run-local-preview:execution-local-preview',
+        },
+      ),
+    );
+    await repository.events.close();
+    await send;
+
+    expect(previews.takeCalls, isEmpty);
+    expect(controller.artifacts, isEmpty);
+  });
+
+  test(
+    'reconnect polling attaches a screenshot before the run is terminal',
+    () async {
+      final previews = _LocalPreviewSource(
+        runId: 'run-recovery',
+        executionId: 'run-recovery:execution-observe',
+      );
+      final controller = TalkController(
+        _DisconnectedAcceptedRunRepository(),
+        localComputerPreviews: previews,
+        runRecoveryPollInterval: Duration.zero,
+        runRecoveryPollLimit: 1,
+      );
+
+      await controller.send(
+        'Open the chart and show me what you see',
+        executionTarget: TalkExecutionTarget.thisMac,
+      );
+      await _settleAsync();
+
+      expect(previews.takeRunCalls, ['run-recovery']);
+      expect(controller.artifacts, hasLength(1));
+      expect(controller.artifacts.single.kind, 'computer');
+    },
+  );
+
+  testWidgets(
+    'shows the temporary screenshot in Conversation at narrow width',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      final controller = TalkController(
+        _LocalPreviewTalkRepository(),
+        localComputerPreviews: _LocalPreviewSource(),
+      );
+      await controller.send(
+        'Show me a screenshot of the chart',
+        executionTarget: TalkExecutionTarget.thisMac,
+      );
+      final imageKey = MemoryImage(controller.selectedArtifactContent!.bytes);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TalkView(
+            controller: controller,
+            voiceRecorder: _VoiceDraftRecorder(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Screenshot from This Mac'), findsOneWidget);
+      expect(
+        find.text('Private temporary preview · not kept in Conversation'),
+        findsOneWidget,
+      );
+      expect(find.byTooltip('Run artifacts'), findsOneWidget);
+      expect(
+        PaintingBinding.instance.imageCache.statusForKey(imageKey).tracked,
+        isTrue,
+      );
+
+      await tester.pump(const Duration(minutes: 6));
+      expect(find.text('Screenshot from This Mac'), findsNothing);
+      expect(controller.artifacts, isEmpty);
+      expect(
+        PaintingBinding.instance.imageCache.statusForKey(imageKey).untracked,
+        isTrue,
+      );
+    },
+  );
 
   testWidgets('shows the live activity rail at a desktop width', (
     tester,

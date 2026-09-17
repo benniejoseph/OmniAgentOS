@@ -6,6 +6,7 @@ export const LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION = 11 as const;
 export const LOCAL_COMPUTER_DEVICE_LEASE_SECONDS = 24;
 export const LOCAL_COMPUTER_COMMAND_LEASE_SECONDS = 30;
 export const LOCAL_COMPUTER_COMMAND_TIMEOUT_MS = 45_000;
+export const LOCAL_COMPUTER_MAX_SCREENSHOT_BYTES = 1_300_000;
 
 export const localComputerActionSchema = z.enum([
   "observe",
@@ -41,8 +42,11 @@ export const localComputerClaimRequestSchema = z.object({
 export const localComputerCommandSchema = z.object({
   schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
   id: z.string().regex(/^local_computer_command_[a-f0-9]{48}$/),
+  runId: z.string().trim().min(1).max(240).regex(/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/),
+  executionId: z.string().trim().min(1).max(240).regex(/^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/),
   action: localComputerActionSchema,
   input: z.record(z.string(), z.unknown()),
+  presentScreenshot: z.boolean(),
   claimToken: z.string().min(32).max(256),
   claimGeneration: z.number().int().positive(),
   expiresAt: z.string().datetime({ offset: true }),
@@ -56,13 +60,13 @@ const frontmostApplicationSchema = z.object({
 
 const screenshotSchema = z.object({
   mimeType: z.enum(["image/jpeg", "image/png", "image/webp"]),
-  dataBase64: z.string().min(4).max(2_000_008),
+  dataBase64: z.string().min(4).max(1_733_336),
 }).strict().superRefine((value, context) => {
   const bytes = Buffer.from(value.dataBase64, "base64");
   const canonical = bytes.toString("base64").replace(/=+$/g, "");
   if (
     !bytes.byteLength ||
-    bytes.byteLength > 1_500_000 ||
+    bytes.byteLength > LOCAL_COMPUTER_MAX_SCREENSHOT_BYTES ||
     canonical !== value.dataBase64.replace(/=+$/g, "") ||
     !imageSignatureMatches(bytes, value.mimeType)
   ) {
@@ -88,6 +92,12 @@ export const localComputerResultSchema = z.object({
       code: "custom",
       path: ["data"],
       message: "The local computer result metadata is too large.",
+    });
+  }
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > 2_000_000) {
+    context.addIssue({
+      code: "custom",
+      message: "The combined local computer result is too large.",
     });
   }
 });

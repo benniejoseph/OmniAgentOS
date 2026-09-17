@@ -57,7 +57,7 @@ const context = {
     platform: "macos" as const,
     appVersion: "1.6.0",
     buildNumber: 7,
-    clientContractVersion: 11,
+    clientContractVersion: 12,
     clientAttestedAt: "2026-09-17T08:00:00.000Z",
   },
 };
@@ -121,7 +121,7 @@ describe("local macOS Computer Use native routes", () => {
       activityState: "idle",
     }));
     expect(update.status).toBe(200);
-    expect(update.headers.get("x-asael-native-contract-version")).toBe("11");
+    expect(update.headers.get("x-asael-native-contract-version")).toBe("12");
     expect(mocks.updateDevice).toHaveBeenCalledWith(context, expect.objectContaining({
       enabled: true,
       helperVersion: "1.0.0",
@@ -162,6 +162,48 @@ describe("local macOS Computer Use native routes", () => {
     );
   });
 
+  it("preserves the frozen command envelope for a compatible v11 Mac", async () => {
+    mocks.authorizeRequest.mockResolvedValueOnce({
+      ...context,
+      native: { ...context.native, clientContractVersion: 11 },
+    });
+    mocks.claimCommand.mockResolvedValueOnce({
+      schemaVersion: 1,
+      command: {
+        schemaVersion: 1,
+        id: commandId,
+        runId,
+        executionId,
+        action: "observe",
+        input: { includeScreenshot: true },
+        presentScreenshot: true,
+        claimToken: "claim-token-that-is-long-enough-123456",
+        claimGeneration: 1,
+        expiresAt: "2026-09-17T08:00:30.000Z",
+      },
+      pollAfterMs: 0,
+    });
+
+    const response = await claimCommand(request("/commands/claim", "POST", {
+      schemaVersion: 1,
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      schemaVersion: 1,
+      command: {
+        schemaVersion: 1,
+        id: commandId,
+        action: "observe",
+        input: { includeScreenshot: true },
+        claimToken: "claim-token-that-is-long-enough-123456",
+        claimGeneration: 1,
+        expiresAt: "2026-09-17T08:00:30.000Z",
+      },
+      pollAfterMs: 0,
+    });
+  });
+
   it("long-polls under one authorization instead of auditing a tight idle loop", async () => {
     vi.useFakeTimers();
     try {
@@ -176,8 +218,11 @@ describe("local macOS Computer Use native routes", () => {
           command: {
             schemaVersion: 1,
             id: commandId,
+            runId,
+            executionId,
             action: "observe",
             input: { includeScreenshot: true },
+            presentScreenshot: true,
             claimToken: "claim-token-that-is-long-enough-123456",
             claimGeneration: 1,
             expiresAt: "2026-09-17T08:00:30.000Z",
@@ -193,8 +238,21 @@ describe("local macOS Computer Use native routes", () => {
       const response = await responsePromise;
 
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
-        command: { id: commandId, action: "observe" },
+      await expect(response.json()).resolves.toEqual({
+        schemaVersion: 1,
+        command: {
+          schemaVersion: 1,
+          id: commandId,
+          runId,
+          executionId,
+          action: "observe",
+          input: { includeScreenshot: true },
+          presentScreenshot: true,
+          claimToken: "claim-token-that-is-long-enough-123456",
+          claimGeneration: 1,
+          expiresAt: "2026-09-17T08:00:30.000Z",
+        },
+        pollAfterMs: 0,
       });
       expect(mocks.claimCommand).toHaveBeenCalledTimes(2);
       expect(mocks.authorizeRequest).toHaveBeenCalledTimes(1);
@@ -245,6 +303,8 @@ describe("local macOS Computer Use native routes", () => {
 });
 
 const commandId = `local_computer_command_${"b".repeat(48)}`;
+const runId = "4f778556-e171-4af0-ae9c-c5a269276236";
+const executionId = `idem_${"a".repeat(64)}`;
 
 function request(
   path: string,

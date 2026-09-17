@@ -202,5 +202,10 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("local.macos.observe");
     expect(instructions).toContain("never switch targets or fall back silently");
     expect(instructions).toContain("secure fields or Terminal");
+    expect(instructions).toContain("Screenshots stay private and temporary");
+    expect(instructions).toContain("explicitly asks to see a screenshot");
+    expect(instructions).toContain("set presentScreenshot to true on the final");
+    expect(instructions).toContain("Otherwise leave it false");
+    expect(instructions).toContain("Never say a screenshot was shown");
   });
 });

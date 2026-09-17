@@ -4,6 +4,7 @@ import {
   ensureDatabaseSchema,
   getSql,
   hasDatabaseUrl,
+  runWithDatabaseSystemScope,
 } from "@/lib/db/client";
 import { appendScopedDomainEvent } from "@/lib/events/store";
 import {
@@ -31,6 +32,7 @@ import {
 } from "@/lib/tools/audit-store";
 
 type LocalComputerSql = ReturnType<typeof getSql>;
+const LOCAL_COMPUTER_OBSERVATION_TTL_SECONDS = 5 * 60;
 
 export class LocalComputerUnavailableError extends Error {
   readonly status = 409;
@@ -160,11 +162,11 @@ export async function startLocalComputerSession(
       AND device.permission_status ->> 'screenRecording' = 'granted'
     ON CONFLICT (tenant_id, owner_actor_id, correlation_id) DO UPDATE SET
       device_id = EXCLUDED.device_id,
-      mobile_session_id = EXCLUDED.mobile_session_id,
       state = 'active',
       expires_at = EXCLUDED.expires_at,
       stopped_at = NULL,
       updated_at = EXCLUDED.updated_at
+    WHERE omni_local_computer_sessions.mobile_session_id = EXCLUDED.mobile_session_id
     RETURNING *
   `;
   if (!rows[0]) {
@@ -241,6 +243,20 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
   requireStorage();
   await ensureDatabaseSchema();
   await getSql()`
+    UPDATE omni_local_computer_commands
+    SET result = result - 'observation', state = 'consumed',
+        consumed_at = COALESCE(consumed_at, NOW()),
+        error_code = COALESCE(error_code, 'observation_expired'),
+        updated_at = NOW()
+    WHERE tenant_id = ${context.tenantId}
+      AND owner_actor_id = ${context.actorId}
+      AND device_id = ${native.deviceId}
+      AND result ? 'observation'
+      AND completed_at <= NOW() - (
+        ${LOCAL_COMPUTER_OBSERVATION_TTL_SECONDS} * INTERVAL '1 second'
+      )
+  `;
+  await getSql()`
     UPDATE omni_local_computer_commands command
     SET state = 'failed', outcome = 'failed',
         error_code = 'execution_indeterminate', completed_at = NOW(),
@@ -263,7 +279,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
   ).toISOString();
   const rows = await getSql()`
     WITH candidate AS (
-      SELECT command.tenant_id, command.id
+      SELECT command.tenant_id, command.id, session.run_id
       FROM omni_local_computer_commands command
       JOIN omni_local_computer_sessions session
         ON session.tenant_id = command.tenant_id
@@ -276,6 +292,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
         AND command.owner_actor_id = ${context.actorId}
         AND command.device_id = ${native.deviceId}
         AND session.mobile_session_id = ${native.sessionId}
+        AND session.run_id IS NOT NULL
         AND session.state = 'active'
         AND session.expires_at > NOW()
         AND device.enabled
@@ -301,7 +318,7 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
     FROM candidate
     WHERE command.tenant_id = candidate.tenant_id
       AND command.id = candidate.id
-    RETURNING command.*
+    RETURNING command.*, candidate.run_id
   `;
   if (!rows[0]) {
     return {
@@ -350,13 +367,73 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
     command: {
       schemaVersion: LOCAL_COMPUTER_PROTOCOL_VERSION,
       id: String(row.id),
+      runId: opaque(String(row.run_id), "run id", 240),
+      executionId: opaque(String(row.execution_id), "execution id", 240),
       action: localComputerActionSchema.parse(row.action),
-      input: commandInput,
+      input: localComputerHelperInput(
+        localComputerActionSchema.parse(row.action),
+        commandInput,
+      ),
+      presentScreenshot:
+        row.action === "observe" && commandInput.presentScreenshot === true,
       claimToken,
       claimGeneration: Number(row.claim_generation),
       expiresAt: dateText(row.expires_at),
     },
     pollAfterMs: 0,
+  };
+}
+
+function localComputerHelperInput(
+  action: LocalComputerAction,
+  input: Record<string, unknown>,
+) {
+  if (action !== "observe") return input;
+  const { presentScreenshot: _presentScreenshot, ...helperInput } = input;
+  void _presentScreenshot;
+  return helperInput;
+}
+
+/**
+ * The fast worker calls this bounded scrub every few seconds. The ordinary
+ * retention sweep remains a backstop, but screenshot bytes do not wait for
+ * that multi-hour cadence.
+ */
+export async function scrubExpiredLocalComputerObservations(
+  input: { limit?: number } = {},
+) {
+  if (!hasDatabaseUrl()) {
+    return { scrubbed: 0, moreAvailable: false };
+  }
+  const limit = Math.min(Math.max(input.limit || 100, 1), 1_000);
+  await ensureDatabaseSchema();
+  const rows = await runWithDatabaseSystemScope(
+    "ephemeral local computer observation scrub",
+    () => getSql()`
+      WITH expired AS (
+        SELECT ctid
+        FROM omni_local_computer_commands
+        WHERE result ? 'observation'
+          AND completed_at <= NOW() - (
+            ${LOCAL_COMPUTER_OBSERVATION_TTL_SECONDS} * INTERVAL '1 second'
+          )
+        ORDER BY completed_at ASC, tenant_id ASC, id ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT ${limit}
+      )
+      UPDATE omni_local_computer_commands target
+      SET result = target.result - 'observation', state = 'consumed',
+          consumed_at = COALESCE(target.consumed_at, NOW()),
+          error_code = COALESCE(target.error_code, 'observation_expired'),
+          updated_at = NOW()
+      FROM expired
+      WHERE target.ctid = expired.ctid
+      RETURNING target.id
+    `,
+  );
+  return {
+    scrubbed: rows.length,
+    moreAvailable: rows.length >= limit,
   };
 }
 
@@ -415,6 +492,7 @@ export async function executeLocalComputerCommand(input: {
   action: LocalComputerAction;
   toolInput: Record<string, unknown>;
   executionId: string;
+  runId: string;
   executionScope: ExecutionScope;
   abortSignal?: AbortSignal;
 }) {
@@ -428,10 +506,12 @@ async function enqueueLocalComputerCommand(input: {
   action: LocalComputerAction;
   toolInput: Record<string, unknown>;
   executionId: string;
+  runId: string;
   executionScope: ExecutionScope;
 }) {
   const action = localComputerActionSchema.parse(input.action);
   const executionId = opaque(input.executionId, "execution id", 240);
+  const runId = opaque(input.runId, "run id", 240);
   const commandId = `local_computer_command_${digest([
     input.executionScope.tenantId,
     input.executionScope.initiatingActorId || "",
@@ -441,34 +521,71 @@ async function enqueueLocalComputerCommand(input: {
   const expiresAt = new Date(
     now.getTime() + LOCAL_COMPUTER_COMMAND_TIMEOUT_MS,
   ).toISOString();
-  const rows = await getSql()`
-    INSERT INTO omni_local_computer_commands (
-      id, tenant_id, owner_actor_id, session_id, device_id, execution_id,
-      action, input_sha256, state, claim_generation, expires_at, created_at,
-      updated_at
-    )
-    SELECT
-      ${commandId}, session.tenant_id, session.owner_actor_id, session.id,
-      session.device_id, ${executionId}, ${action},
-      ${canonicalJsonSha256(input.toolInput)},
-      'queued', 0, ${expiresAt}, ${now.toISOString()}, ${now.toISOString()}
-    FROM omni_local_computer_sessions session
-    JOIN omni_local_computer_devices device
-      ON device.tenant_id = session.tenant_id
-     AND device.owner_actor_id = session.owner_actor_id
-     AND device.device_id = session.device_id
-     AND device.mobile_session_id = session.mobile_session_id
-    WHERE session.tenant_id = ${input.executionScope.tenantId}
-      AND session.owner_actor_id = ${input.executionScope.initiatingActorId || ""}
-      AND session.correlation_id = ${input.executionScope.correlationId}
-      AND session.state = 'active'
-      AND session.expires_at > NOW()
-      AND device.enabled
-      AND device.lease_expires_at > NOW()
-    ON CONFLICT (tenant_id, owner_actor_id, execution_id) DO UPDATE SET
-      updated_at = omni_local_computer_commands.updated_at
-    RETURNING *
-  `;
+  const inputSha256 = canonicalJsonSha256(input.toolInput);
+  const binding = await getSql().transaction(async (sql: LocalComputerSql) => {
+    const sessions = await sql`
+      UPDATE omni_local_computer_sessions session
+      SET run_id = run.id, updated_at = ${now.toISOString()}
+      FROM omni_agent_runs run
+      JOIN omni_events binding
+        ON binding.tenant_id = run.tenant_id
+       AND binding.actor_id = run.owner_actor_id
+       AND binding.stream_id = 'run:' || run.id
+       AND binding.type = 'run.scope_bound'
+      WHERE session.tenant_id = ${input.executionScope.tenantId}
+        AND session.owner_actor_id = ${input.executionScope.initiatingActorId || ""}
+        AND session.correlation_id = ${input.executionScope.correlationId}
+        AND session.state = 'active'
+        AND session.expires_at > NOW()
+        AND run.id = ${runId}
+        AND run.tenant_id = session.tenant_id
+        AND run.owner_actor_id = session.owner_actor_id
+        AND binding.correlation_id = session.correlation_id
+        AND (session.run_id IS NULL OR session.run_id = run.id)
+      RETURNING session.id, session.device_id
+    `;
+    if (!sessions[0]) {
+      return { rows: [], sessionId: null, deviceId: null };
+    }
+    const sessionId = String(sessions[0].id);
+    const deviceId = String(sessions[0].device_id);
+    const rows = await sql`
+      INSERT INTO omni_local_computer_commands (
+        id, tenant_id, owner_actor_id, session_id, device_id, execution_id,
+        action, input_sha256, state, claim_generation, expires_at, created_at,
+        updated_at
+      )
+      SELECT
+        ${commandId}, session.tenant_id, session.owner_actor_id, session.id,
+        session.device_id, ${executionId}, ${action}, ${inputSha256},
+        'queued', 0, ${expiresAt}, ${now.toISOString()}, ${now.toISOString()}
+      FROM omni_local_computer_sessions session
+      JOIN omni_local_computer_devices device
+        ON device.tenant_id = session.tenant_id
+       AND device.owner_actor_id = session.owner_actor_id
+       AND device.device_id = session.device_id
+       AND device.mobile_session_id = session.mobile_session_id
+      WHERE session.tenant_id = ${input.executionScope.tenantId}
+        AND session.owner_actor_id = ${input.executionScope.initiatingActorId || ""}
+        AND session.id = ${sessionId}
+        AND session.device_id = ${deviceId}
+        AND session.correlation_id = ${input.executionScope.correlationId}
+        AND session.run_id = ${runId}
+        AND session.state = 'active'
+        AND session.expires_at > NOW()
+        AND device.enabled
+        AND device.lease_expires_at > NOW()
+      ON CONFLICT (tenant_id, owner_actor_id, execution_id) DO UPDATE SET
+        updated_at = omni_local_computer_commands.updated_at
+      RETURNING *
+    `;
+    return { rows, sessionId, deviceId };
+  }) as {
+    rows: Record<string, unknown>[];
+    sessionId: string | null;
+    deviceId: string | null;
+  };
+  const rows = binding.rows;
   if (!rows[0]) {
     throw new LocalComputerUnavailableError(
       "The exact local Mac session is offline, stopped, expired, or does not belong to this run.",
@@ -477,7 +594,9 @@ async function enqueueLocalComputerCommand(input: {
   const row = rows[0];
   if (
     row.action !== action ||
-    String(row.input_sha256) !== canonicalJsonSha256(input.toolInput)
+    String(row.input_sha256) !== inputSha256 ||
+    String(row.session_id) !== binding.sessionId ||
+    String(row.device_id) !== binding.deviceId
   ) {
     throw new LocalComputerCommandError(
       "command_binding_mismatch",
@@ -498,6 +617,7 @@ async function enqueueLocalComputerCommand(input: {
       schemaVersion: LOCAL_COMPUTER_PROTOCOL_VERSION,
       commandId,
       sessionId: String(row.session_id),
+      runId,
       deviceIdSha256: digest([String(row.device_id)]),
       executionId,
       action,
@@ -535,6 +655,28 @@ async function waitForLocalComputerCommand(
       );
     }
     if (row.state === "completed" || row.state === "consumed") {
+      if (
+        row.action === "observe" &&
+        Date.now() >=
+          Date.parse(dateText(row.completed_at)) +
+            LOCAL_COMPUTER_OBSERVATION_TTL_SECONDS * 1_000
+      ) {
+        await getSql()`
+          UPDATE omni_local_computer_commands
+          SET result = result - 'observation', state = 'consumed',
+              consumed_at = COALESCE(consumed_at, NOW()),
+              error_code = COALESCE(error_code, 'observation_expired'),
+              updated_at = NOW()
+          WHERE tenant_id = ${input.executionScope.tenantId}
+            AND owner_actor_id = ${input.executionScope.initiatingActorId || ""}
+            AND id = ${command.id}
+            AND result ? 'observation'
+        `;
+        throw new LocalComputerCommandError(
+          "observation_expired",
+          "The local Mac observation expired before it could be consumed.",
+        );
+      }
       if (row.state === "consumed" && row.action === "observe") {
         throw new LocalComputerCommandError(
           "observation_consumed",

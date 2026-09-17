@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   LOCAL_COMPUTER_PROTOCOL_VERSION,
+  localComputerActionSchema,
   localComputerClaimRequestSchema,
   localComputerCommandSchema,
   localComputerCompletionRequestSchema,
@@ -9,8 +10,8 @@ import {
 } from "@/lib/local-computer/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 11 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 10 as const;
+export const NATIVE_API_CURRENT_VERSION = 12 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 11 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -20,6 +21,7 @@ const positiveDatabaseInteger = z.number().int().min(1).max(2_147_483_647);
 const isoDateTime = z.string().datetime({ offset: true });
 const opaqueId = z.string().trim().min(1).max(200);
 const jsonObject = z.record(z.string(), z.unknown());
+const LOCAL_COMPUTER_PREVIEW_BINDING_CONTRACT_VERSION = 12;
 
 export const nativeClientAttestationSchema = z.object({
   platform: z.enum(["android", "ios", "macos"]),
@@ -324,6 +326,40 @@ export const nativeLocalComputerClaimResponseSchema = z.object({
   command: localComputerCommandSchema.nullable(),
   pollAfterMs: z.number().int().min(0).max(5_000),
 }).strict();
+
+// Contract v11 predates the run-bound preview routing fields carried by the
+// current courier envelope. Keep its wire shape explicit so an installed v11
+// client never receives fields rejected by its frozen strict contract.
+export const nativeLocalComputerV11ClaimResponseSchema = z.object({
+  schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
+  command: z.object({
+    schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
+    id: z.string().regex(/^local_computer_command_[a-f0-9]{48}$/),
+    action: localComputerActionSchema,
+    input: z.record(z.string(), z.unknown()),
+    claimToken: z.string().min(32).max(256),
+    claimGeneration: z.number().int().positive(),
+    expiresAt: isoDateTime,
+  }).strict().nullable(),
+  pollAfterMs: z.number().int().min(0).max(5_000),
+}).strict();
+
+export function nativeLocalComputerClaimResponseForClient(
+  value: unknown,
+  clientContractVersion: number,
+) {
+  const current = nativeLocalComputerClaimResponseSchema.parse(value);
+  if (clientContractVersion >= LOCAL_COMPUTER_PREVIEW_BINDING_CONTRACT_VERSION) {
+    return current;
+  }
+  const command = current.command
+    ? omitLocalComputerPreviewBinding(current.command)
+    : null;
+  return nativeLocalComputerV11ClaimResponseSchema.parse({
+    ...current,
+    command,
+  });
+}
 
 export const nativeLocalComputerCompletionResponseSchema = z.object({
   schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
@@ -681,6 +717,14 @@ const v11Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v12 keeps the governed courier operations and adds exact run and
+// execution binding plus an explicit presentation intent to claimed commands.
+// Those fields are used only to route a short-lived screenshot to the matching
+// conversation; they do not add computer-control authority.
+const v12Operations: readonly NativeOperation[] = [
+  ...v11Operations,
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -747,6 +791,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 9) return v9Operations;
   if (version === 10) return v10Operations;
   if (version === 11) return v11Operations;
+  if (version === 12) return v12Operations;
   return undefined;
 }
 
@@ -756,7 +801,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [11, 10],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [12, 11],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,
@@ -766,6 +811,18 @@ export function nativeContractDiscovery() {
       fixtures: `/native-contracts/v${version}/fixtures.json`,
     })),
   };
+}
+
+function omitLocalComputerPreviewBinding(
+  command: z.infer<typeof localComputerCommandSchema>,
+) {
+  const {
+    runId: _runId,
+    executionId: _executionId,
+    presentScreenshot: _presentScreenshot,
+    ...legacyCommand
+  } = command;
+  return legacyCommand;
 }
 
 function operation(

@@ -117,6 +117,11 @@ private enum FocusSafeSnapshotPolicyTests {
       ),
       "a moved target remains stale"
     )
+    expect(
+      sanitizedLocalComputerText("A\u{0000}B\u{001f}C\u{007f}D", limit: 7)
+        == "A B C D",
+      "untrusted accessibility controls are normalized before JSON size accounting"
+    )
   }
 
   private static func disposition(

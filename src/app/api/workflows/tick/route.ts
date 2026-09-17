@@ -21,6 +21,7 @@ import { recordSecurityAudit } from "@/lib/security/audit-store";
 import { redactSensitive, SecurityPolicyError } from "@/lib/security/context";
 import { authorizeRequest, forbiddenResponse } from "@/lib/security/guard";
 import { processPendingMemoryGraphRebuilds } from "@/lib/security/retention";
+import { scrubExpiredLocalComputerObservations } from "@/lib/local-computer/store";
 import { processPendingTemporalRelationProjections } from "@/lib/entities/relation-projection-queue";
 import { processPendingMemoryDeletionScrubs } from "@/lib/memory/deletion-scrub";
 import { runTenantMemoryMaintenance } from "@/lib/memory/maintenance-store";
@@ -554,6 +555,8 @@ function summarizeScheduledOutcome(
   scheduled: Awaited<ReturnType<typeof runAllTenantScheduledWork>>,
 ) {
   const counts = {
+    localComputerObservationsScrubbed:
+      scheduled.localComputerObservationScrub?.scrubbed || 0,
     workflowLeased: scheduled.queue?.leased || 0,
     workflowCompleted: scheduled.queue?.completed || 0,
     workflowFailed: scheduled.queue?.failed || 0,
@@ -651,7 +654,16 @@ async function runAllTenantScheduledWork({
   const runFast = lane === "fast" || lane === "all";
   const runBackground = lane === "background" || lane === "all";
   const runMaintenance = lane === "maintenance" || lane === "all";
-  const [queue, agentResumes, durableSpecialists, backgroundJobs] = await Promise.all([
+  const [
+    localComputerObservationScrub,
+    queue,
+    agentResumes,
+    durableSpecialists,
+    backgroundJobs,
+  ] = await Promise.all([
+    runFast
+      ? scrubExpiredLocalComputerObservations({ limit: 100 })
+      : Promise.resolve({ scrubbed: 0, moreAvailable: false }),
     runFast
       ? processAllTenantWorkflowQueues({
           limit: queueLimit,
@@ -799,6 +811,7 @@ async function runAllTenantScheduledWork({
   return {
     scope: "all_tenants" as const,
     lane,
+    localComputerObservationScrub,
     queue,
     agentResumes,
     durableSpecialists,

@@ -18,7 +18,10 @@ import {
   ensureAppBuilderRepositoryWorkspacesV1,
 } from "@/lib/db/app-builder-repository-schema";
 import { ensureMarketDeterministicBacktestsV1 } from "@/lib/db/market-backtest-schema";
-import { ensureLocalComputerRuntimeV1 } from "@/lib/db/local-computer-schema";
+import {
+  ensureLocalComputerRuntimeV1,
+  ensureLocalComputerRuntimeV2,
+} from "@/lib/db/local-computer-schema";
 import schemaMigrationManifest from "../../../schema-migrations.json";
 
 // ---------------------------------------------------------------------------
@@ -1599,6 +1602,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[178],
       up: ensureLocalComputerRuntimeV1,
+    },
+    {
+      ...databaseSchemaMigrations[179],
+      up: ensureLocalComputerRuntimeV2,
     },
   ];
 }

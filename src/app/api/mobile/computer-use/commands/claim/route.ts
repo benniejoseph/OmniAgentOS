@@ -3,7 +3,7 @@ import { withDatabaseRequestScope } from "@/lib/db/client";
 import { parseJsonBody } from "@/lib/http/body";
 import { localComputerClaimRequestSchema } from "@/lib/local-computer/contracts";
 import { claimLocalComputerCommand } from "@/lib/local-computer/store";
-import { nativeLocalComputerClaimResponseSchema } from "@/lib/mobile/contracts";
+import { nativeLocalComputerClaimResponseForClient } from "@/lib/mobile/contracts";
 import { authorizeRequest } from "@/lib/security/guard";
 import {
   localComputerErrorResponse,
@@ -37,8 +37,9 @@ async function POSTHandler(request: Request) {
     });
     const deadline = Date.now() + (parsed.data.waitSeconds || 0) * 1_000;
     for (;;) {
-      const claimed = nativeLocalComputerClaimResponseSchema.parse(
+      const claimed = nativeLocalComputerClaimResponseForClient(
         await claimLocalComputerCommand(context),
+        context.native?.clientContractVersion || 0,
       );
       if (claimed.command || Date.now() >= deadline || request.signal.aborted) {
         return Response.json(claimed, { headers: mobileNoStoreHeaders });

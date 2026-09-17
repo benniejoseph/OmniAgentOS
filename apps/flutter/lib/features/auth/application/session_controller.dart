@@ -49,3 +49,13 @@ final sessionControllerProvider =
     AsyncNotifierProvider<SessionController, AppSession?>(
       SessionController.new,
     );
+
+typedef SessionOwnerKey = ({String tenantId, String actorId});
+
+final sessionOwnerKeyProvider = Provider<SessionOwnerKey?>((ref) {
+  final state = ref.watch(sessionControllerProvider);
+  if (state.isLoading || state.hasError) return null;
+  final session = state.value;
+  if (session == null) return null;
+  return (tenantId: session.tenantId, actorId: session.actorId);
+});

@@ -588,6 +588,7 @@ async function POSTHandler(
     approvalReason: parsed.data.reason,
     executionClaimToken: claimToken,
     checkpointBeforeEffect,
+    agentRunId: waitingRun?.id,
     mcpSessionScope: waitingRun && waitingContext
       ? {
           tenantId: waitingContext.tenantId,

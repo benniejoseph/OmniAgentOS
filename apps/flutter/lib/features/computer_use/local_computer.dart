@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +11,9 @@ import '../../generated/native_contract.g.dart';
 import '../auth/application/session_controller.dart';
 
 const localComputerProtocolVersion = 1;
+const _localComputerPreviewTtl = Duration(minutes: 5);
+const _maximumLocalComputerPreviews = 8;
+const _maximumLocalComputerScreenshotBytes = 1300000;
 
 enum LocalComputerWindowRole { primary, auxiliary }
 
@@ -42,6 +46,32 @@ class LocalComputerWindowContext {
   final LocalComputerWindowRole role;
   final String? windowId;
   bool get canClaimCommands => role == LocalComputerWindowRole.primary;
+}
+
+class LocalComputerScreenshotPreview {
+  LocalComputerScreenshotPreview({
+    required this.runId,
+    required this.executionId,
+    required this.mediaType,
+    required Uint8List bytes,
+    required this.capturedAt,
+    required this.expiresAt,
+    this.applicationName,
+  }) : bytes = Uint8List.fromList(bytes);
+
+  final String runId;
+  final String executionId;
+  final String mediaType;
+  final Uint8List bytes;
+  final DateTime capturedAt;
+  final DateTime expiresAt;
+  final String? applicationName;
+}
+
+abstract interface class LocalComputerPreviewSource {
+  LocalComputerScreenshotPreview? takePreview(String runId, String executionId);
+  List<LocalComputerScreenshotPreview> takeRunPreviews(String runId);
+  void discardRunPreviews(String runId);
 }
 
 final localComputerWindowContextProvider = Provider<LocalComputerWindowContext>(
@@ -101,8 +131,11 @@ class LocalComputerDeviceSnapshot {
 class LocalComputerClaim {
   LocalComputerClaim({
     required this.id,
+    required this.runId,
+    required this.executionId,
     required this.action,
     required Map<String, Object?> input,
+    required this.presentScreenshot,
     required this.claimToken,
     required this.claimGeneration,
     required this.expiresAt,
@@ -111,13 +144,20 @@ class LocalComputerClaim {
   factory LocalComputerClaim.fromJson(Map<String, dynamic> json) {
     final rawInput = json['input'];
     final expiresAt = DateTime.tryParse(json['expiresAt']?.toString() ?? '');
+    final runId = json['runId'];
+    final executionId = json['executionId'];
     if (json['schemaVersion'] != localComputerProtocolVersion ||
         json['id'] is! String ||
         !RegExp(r'^local_computer_command_[a-f0-9]{48}$')
             .hasMatch(json['id'] as String) ||
+        runId is! String ||
+        !_safeLocalComputerOpaqueId(runId) ||
+        executionId is! String ||
+        !_safeLocalComputerOpaqueId(executionId) ||
         json['action'] is! String ||
         !LocalComputerCommand.allowedActions.contains(json['action']) ||
         rawInput is! Map ||
+        json['presentScreenshot'] is! bool ||
         json['claimToken'] is! String ||
         (json['claimToken'] as String).length < 32 ||
         (json['claimToken'] as String).length > 256 ||
@@ -131,8 +171,11 @@ class LocalComputerClaim {
     }
     return LocalComputerClaim(
       id: json['id'] as String,
+      runId: runId,
+      executionId: executionId,
       action: json['action'] as String,
       input: Map<String, Object?>.from(rawInput),
+      presentScreenshot: json['presentScreenshot'] as bool,
       claimToken: json['claimToken'] as String,
       claimGeneration: json['claimGeneration'] as int,
       expiresAt: expiresAt.toUtc(),
@@ -140,12 +183,20 @@ class LocalComputerClaim {
   }
 
   final String id;
+  final String runId;
+  final String executionId;
   final String action;
   final Map<String, Object?> input;
+  final bool presentScreenshot;
   final String claimToken;
   final int claimGeneration;
   final DateTime expiresAt;
 }
+
+bool _safeLocalComputerOpaqueId(String value) =>
+    value.isNotEmpty &&
+    value.length <= 240 &&
+    RegExp(r'^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$').hasMatch(value);
 
 class LocalComputerClaimResponse {
   const LocalComputerClaimResponse({
@@ -180,14 +231,20 @@ class LocalComputerClaimResponse {
 class LocalComputerCompletion {
   LocalComputerCompletion({
     required this.commandId,
+    required this.runId,
+    required this.executionId,
     required this.claimToken,
     required this.claimGeneration,
+    required this.expiresAt,
     required Map<String, dynamic> payload,
   }) : payload = Map<String, dynamic>.unmodifiable(payload);
 
   final String commandId;
+  final String runId;
+  final String executionId;
   final String claimToken;
   final int claimGeneration;
+  final DateTime expiresAt;
   final Map<String, dynamic> payload;
 }
 
@@ -317,7 +374,8 @@ class BridgeLocalComputerNativeHost implements LocalComputerNativeHost {
   Future<void> dispose() => bridge.dispose();
 }
 
-class LocalComputerCoordinator extends ChangeNotifier {
+class LocalComputerCoordinator extends ChangeNotifier
+    implements LocalComputerPreviewSource {
   LocalComputerCoordinator({
     required this.repository,
     required this.host,
@@ -326,7 +384,9 @@ class LocalComputerCoordinator extends ChangeNotifier {
     this.idleRefreshInterval = const Duration(seconds: 2),
     this.heartbeatInterval = const Duration(seconds: 8),
     this.failureRetryInterval = const Duration(seconds: 3),
-  }) {
+    this.previewTtl = _localComputerPreviewTtl,
+  }) : assert(previewTtl > Duration.zero),
+       assert(previewTtl <= _localComputerPreviewTtl) {
     unawaited(_initialize());
   }
 
@@ -336,12 +396,16 @@ class LocalComputerCoordinator extends ChangeNotifier {
   final Duration idleRefreshInterval;
   final Duration heartbeatInterval;
   final Duration failureRetryInterval;
+  final Duration previewTtl;
 
   LocalComputerStatus? status;
   LocalComputerDeviceSnapshot? device;
   String? activeCommandId;
   String? lastError;
   LocalComputerCompletion? _pendingCompletion;
+  Timer? _pendingCompletionExpiryTimer;
+  final Map<String, LocalComputerScreenshotPreview> _previews = {};
+  Timer? _previewExpiryTimer;
   DateTime? _lastHeartbeatAt;
   bool authenticated;
   bool _initialized = false;
@@ -385,6 +449,7 @@ class LocalComputerCoordinator extends ChangeNotifier {
     }
     try {
       await host.initialize();
+      if (_disposed || !authenticated) return;
       host.attachStoppedHandler(_handleNativeStop);
       status = await host.getStatus();
     } catch (_) {
@@ -430,12 +495,18 @@ class LocalComputerCoordinator extends ChangeNotifier {
     if (!host.supported || !authenticated || _changing) return;
     _changing = true;
     lastError = null;
-    if (enabled) _explicitlyStopped = false;
+    if (enabled) {
+      _explicitlyStopped = false;
+    } else {
+      _explicitlyStopped = true;
+      _loopGeneration += 1;
+      _clearPendingCompletion();
+      _clearPreviews();
+    }
     _notify();
     try {
       status = await host.setEnabled(enabled);
       if (!enabled) {
-        _explicitlyStopped = true;
         await repository.stop('user_stop');
       } else {
         _restartCommandLoop();
@@ -472,7 +543,8 @@ class LocalComputerCoordinator extends ChangeNotifier {
           : 'Local Computer Use stop could not be confirmed.';
     } finally {
       activeCommandId = null;
-      _pendingCompletion = null;
+      _clearPendingCompletion();
+      _clearPreviews();
       _changing = false;
       _notify();
     }
@@ -482,7 +554,8 @@ class LocalComputerCoordinator extends ChangeNotifier {
     _explicitlyStopped = true;
     _loopGeneration += 1;
     activeCommandId = null;
-    _pendingCompletion = null;
+    _clearPendingCompletion();
+    _clearPreviews();
     _notify();
     unawaited(
       repository
@@ -497,6 +570,7 @@ class LocalComputerCoordinator extends ChangeNotifier {
     while (_loopCurrent(generation)) {
       var delay = idleRefreshInterval;
       try {
+        _expirePendingCompletionIfNeeded();
         status = await host.getStatus();
         if (!_loopCurrent(generation)) return;
         if (status?.helperInstalled == true) {
@@ -515,8 +589,7 @@ class LocalComputerCoordinator extends ChangeNotifier {
         }
         if (_pendingCompletion case final pending?) {
           await repository.complete(pending);
-          _pendingCompletion = null;
-          activeCommandId = null;
+          _clearPendingCompletion(expected: pending);
           lastError = null;
           _notify();
           continue;
@@ -568,12 +641,44 @@ class LocalComputerCoordinator extends ChangeNotifier {
         ),
       );
       if (!_loopCurrent(generation)) return;
+      _stageRequestedScreenshot(claim, result);
       completion = _completion(claim, result);
     }
-    _pendingCompletion = completion;
+    _setPendingCompletion(completion);
     await repository.complete(completion);
+    _clearPendingCompletion(expected: completion);
+  }
+
+  void _setPendingCompletion(LocalComputerCompletion completion) {
+    _pendingCompletionExpiryTimer?.cancel();
+    _pendingCompletion = completion;
+    final remaining = completion.expiresAt.toUtc().difference(
+      DateTime.now().toUtc(),
+    );
+    _pendingCompletionExpiryTimer = Timer(
+      remaining > Duration.zero ? remaining : Duration.zero,
+      _expirePendingCompletionIfNeeded,
+    );
+  }
+
+  void _clearPendingCompletion({LocalComputerCompletion? expected}) {
+    if (expected != null && !identical(_pendingCompletion, expected)) return;
+    _pendingCompletionExpiryTimer?.cancel();
+    _pendingCompletionExpiryTimer = null;
     _pendingCompletion = null;
     activeCommandId = null;
+  }
+
+  void _expirePendingCompletionIfNeeded() {
+    final pending = _pendingCompletion;
+    if (pending == null || pending.expiresAt.isAfter(DateTime.now().toUtc())) {
+      return;
+    }
+    _previews.remove(_previewKey(pending.runId, pending.executionId));
+    _schedulePreviewExpiry();
+    _clearPendingCompletion(expected: pending);
+    lastError = 'The command receipt expired; its temporary result was erased.';
+    _notify();
   }
 
   LocalComputerCompletion _completion(
@@ -595,8 +700,11 @@ class LocalComputerCoordinator extends ChangeNotifier {
     };
     return LocalComputerCompletion(
       commandId: claim.id,
+      runId: claim.runId,
+      executionId: claim.executionId,
       claimToken: claim.claimToken,
       claimGeneration: claim.claimGeneration,
+      expiresAt: claim.expiresAt,
       payload: payload,
     );
   }
@@ -607,8 +715,11 @@ class LocalComputerCoordinator extends ChangeNotifier {
     required String errorCode,
   }) => LocalComputerCompletion(
     commandId: claim.id,
+    runId: claim.runId,
+    executionId: claim.executionId,
     claimToken: claim.claimToken,
     claimGeneration: claim.claimGeneration,
+    expiresAt: claim.expiresAt,
     payload: {
       'schemaVersion': localComputerProtocolVersion,
       'claimToken': claim.claimToken,
@@ -622,6 +733,114 @@ class LocalComputerCoordinator extends ChangeNotifier {
       authenticated &&
       canClaimCommands &&
       generation == _loopGeneration;
+
+  @override
+  LocalComputerScreenshotPreview? takePreview(
+    String runId,
+    String executionId,
+  ) {
+    _purgeExpiredPreviews();
+    final preview = _previews.remove(_previewKey(runId, executionId));
+    _schedulePreviewExpiry();
+    return preview;
+  }
+
+  @override
+  List<LocalComputerScreenshotPreview> takeRunPreviews(String runId) {
+    _purgeExpiredPreviews();
+    final matches =
+        _previews.values
+            .where((preview) => preview.runId == runId)
+            .toList(growable: false)
+          ..sort((left, right) => left.capturedAt.compareTo(right.capturedAt));
+    for (final preview in matches) {
+      _previews.remove(_previewKey(preview.runId, preview.executionId));
+    }
+    _schedulePreviewExpiry();
+    return matches;
+  }
+
+  @override
+  void discardRunPreviews(String runId) {
+    _previews.removeWhere((_, preview) => preview.runId == runId);
+    _schedulePreviewExpiry();
+  }
+
+  void _stageRequestedScreenshot(
+    LocalComputerClaim claim,
+    LocalComputerCommandResult result,
+  ) {
+    if (!claim.presentScreenshot ||
+        claim.action != 'observe' ||
+        result.outcome != LocalComputerOutcome.succeeded) {
+      return;
+    }
+    final observation = result.observation;
+    final screenshot = observation?['screenshot'];
+    if (screenshot is! Map) return;
+    final mediaType = screenshot['mimeType'];
+    final encoded = screenshot['dataBase64'];
+    if (mediaType is! String || encoded is! String) return;
+    final bytes = _decodeLocalComputerScreenshot(encoded, mediaType);
+    if (bytes == null) return;
+    final now = DateTime.now().toUtc();
+    final application = observation?['frontmostApplication'];
+    final applicationName = application is Map && application['name'] is String
+        ? _boundedLocalComputerLabel(application['name'] as String)
+        : null;
+    final preview = LocalComputerScreenshotPreview(
+      runId: claim.runId,
+      executionId: claim.executionId,
+      mediaType: mediaType,
+      bytes: bytes,
+      capturedAt: now,
+      expiresAt: now.add(previewTtl),
+      applicationName: applicationName,
+    );
+    _purgeExpiredPreviews(now);
+    _previews[_previewKey(claim.runId, claim.executionId)] = preview;
+    while (_previews.length > _maximumLocalComputerPreviews) {
+      final oldest = _previews.entries.reduce(
+        (left, right) => left.value.capturedAt.isBefore(right.value.capturedAt)
+            ? left
+            : right,
+      );
+      _previews.remove(oldest.key);
+    }
+    _schedulePreviewExpiry();
+  }
+
+  void _purgeExpiredPreviews([DateTime? at]) {
+    final now = at ?? DateTime.now().toUtc();
+    _previews.removeWhere((_, preview) => !preview.expiresAt.isAfter(now));
+  }
+
+  void _schedulePreviewExpiry() {
+    _previewExpiryTimer?.cancel();
+    _previewExpiryTimer = null;
+    if (_disposed || _previews.isEmpty) return;
+    final nextExpiry = _previews.values
+        .map((preview) => preview.expiresAt)
+        .reduce((left, right) => left.isBefore(right) ? left : right);
+    final remaining = nextExpiry.toUtc().difference(DateTime.now().toUtc());
+    _previewExpiryTimer = Timer(
+      remaining > Duration.zero ? remaining : Duration.zero,
+      () {
+        if (_disposed) return;
+        _purgeExpiredPreviews();
+        _schedulePreviewExpiry();
+      },
+    );
+  }
+
+  void _clearPreviews() {
+    _previewExpiryTimer?.cancel();
+    _previewExpiryTimer = null;
+    _previews.clear();
+  }
+
+  static String _previewKey(String runId, String executionId) =>
+      '$runId\u0000$executionId';
 
   void _restartCommandLoop() {
     if (_disposed || !authenticated || !canClaimCommands || !host.supported) {
@@ -643,15 +862,18 @@ class LocalComputerCoordinator extends ChangeNotifier {
   @override
   void dispose() {
     if (_disposed) return;
-    final stopForSignOut = authenticated && host.supported;
+    final stopForSignOut = authenticated && canClaimCommands && host.supported;
     _disposed = true;
+    _clearPreviews();
+    _clearPendingCompletion();
     authenticated = false;
     _loopGeneration += 1;
     host.attachStoppedHandler(null);
     if (stopForSignOut) {
       // SessionController enters its signed-out/loading state before erasing
-      // credentials. Trip the local kill switch immediately, then make a
-      // best-effort actor-scoped stop receipt while that session still exists.
+      // credentials. Trip the process-local kill switch immediately. The old
+      // server device lease expires in 24 seconds; sending after an await could
+      // accidentally use a newly signed-in actor's native credential.
       unawaited(_stopForSignOut());
     }
     super.dispose();
@@ -663,24 +885,71 @@ class LocalComputerCoordinator extends ChangeNotifier {
     } catch (_) {
       // AppDelegate owns the process-level kill switch if Flutter is exiting.
     }
-    try {
-      await repository.stop('sign_out');
-    } catch (_) {
-      // The 24-second device lease is the final fail-closed boundary if the
-      // signed-out credential disappeared before this receipt was accepted.
-    }
   }
 }
 
+Uint8List? _decodeLocalComputerScreenshot(String encoded, String mediaType) {
+  if (encoded.isEmpty || encoded.length > 1733336) return null;
+  if (!const {'image/jpeg', 'image/png', 'image/webp'}.contains(mediaType)) {
+    return null;
+  }
+  Uint8List bytes;
+  try {
+    bytes = base64Decode(encoded);
+  } catch (_) {
+    return null;
+  }
+  if (bytes.isEmpty || bytes.length > _maximumLocalComputerScreenshotBytes) {
+    return null;
+  }
+  final canonical = base64Encode(bytes).replaceFirst(RegExp(r'=+$'), '');
+  if (canonical != encoded.replaceFirst(RegExp(r'=+$'), '')) return null;
+  final signatureMatches = switch (mediaType) {
+    'image/png' =>
+      bytes.length >= 4 &&
+          bytes[0] == 0x89 &&
+          bytes[1] == 0x50 &&
+          bytes[2] == 0x4e &&
+          bytes[3] == 0x47,
+    'image/jpeg' => bytes.length >= 2 && bytes[0] == 0xff && bytes[1] == 0xd8,
+    'image/webp' =>
+      bytes.length >= 12 &&
+          bytes[0] == 0x52 &&
+          bytes[1] == 0x49 &&
+          bytes[2] == 0x46 &&
+          bytes[3] == 0x46 &&
+          bytes[8] == 0x57 &&
+          bytes[9] == 0x45 &&
+          bytes[10] == 0x42 &&
+          bytes[11] == 0x50,
+    _ => false,
+  };
+  return signatureMatches ? bytes : null;
+}
+
+String? _boundedLocalComputerLabel(String value) {
+  final normalized = value
+      .replaceAll(RegExp(r'[\u0000-\u001f\u007f]+'), ' ')
+      .trim();
+  if (normalized.isEmpty) return null;
+  return normalized.length <= 160 ? normalized : normalized.substring(0, 160);
+}
+
+final localComputerRepositoryProvider = Provider<LocalComputerRepository>(
+  (ref) => ApiLocalComputerRepository(ref.watch(apiClientProvider)),
+);
+
+final localComputerNativeHostProvider = Provider<LocalComputerNativeHost>(
+  (_) => BridgeLocalComputerNativeHost(appLocalComputerBridge),
+);
+
 final localComputerCoordinatorProvider =
     ChangeNotifierProvider<LocalComputerCoordinator>((ref) {
-      final authenticated = ref.watch(
-        sessionControllerProvider.select((session) => session.value != null),
-      );
+      final owner = ref.watch(sessionOwnerKeyProvider);
       return LocalComputerCoordinator(
-        repository: ApiLocalComputerRepository(ref.watch(apiClientProvider)),
-        host: BridgeLocalComputerNativeHost(appLocalComputerBridge),
+        repository: ref.watch(localComputerRepositoryProvider),
+        host: ref.watch(localComputerNativeHostProvider),
         windowContext: ref.watch(localComputerWindowContextProvider),
-        authenticated: authenticated,
+        authenticated: owner != null,
       );
     });

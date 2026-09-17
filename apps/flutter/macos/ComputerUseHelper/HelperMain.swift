@@ -11,6 +11,12 @@ private enum HelperFailure: Error {
   case rejected(String)
 }
 
+func sanitizedLocalComputerText(_ value: String, limit: Int) -> String {
+  value.unicodeScalars.prefix(limit).map { scalar in
+    scalar.value < 0x20 || scalar.value == 0x7f ? " " : String(scalar)
+  }.joined()
+}
+
 enum FocusSafeSnapshotDisposition: Equatable {
   case alreadyFocused
   case restoreFromTrustedHost
@@ -149,6 +155,11 @@ private enum ParentVerifier {
 }
 
 private final class ComputerUseExecutor {
+  private struct CompletedRequest {
+    let output: [String: Any]
+    let expiresAt: Date
+  }
+
   private static let allowedActions: Set<String> = [
     "status", "request_permissions", "observe", "list_apps", "activate_app",
     "press", "click", "type", "key", "scroll",
@@ -168,7 +179,7 @@ private final class ComputerUseExecutor {
   private static let maximumSnapshotNodes = 260
   private static let maximumSnapshotDepth = 8
   private static let maximumSnapshotBytes = 96 * 1_024
-  private static let maximumScreenshotBytes = 1_500_000
+  private static let maximumScreenshotBytes = 1_300_000
 
   private let trustedHostPID = getppid()
   private let snapshotNonce = UUID().uuidString.lowercased()
@@ -186,33 +197,46 @@ private final class ComputerUseExecutor {
   // They are never included in a command completion or persisted by the host.
   private var elements: [String: AXUIElement] = [:]
   private var elementIdentities: [String: SnapshotElementIdentity] = [:]
-  private var completed: [String: [String: Any]] = [:]
+  private let completedLock = NSLock()
+  private var completed: [String: CompletedRequest] = [:]
   private var completionOrder: [String] = []
+  private var completionExpiryWorkItem: DispatchWorkItem?
 
   func execute(_ envelope: [String: Any]) async -> [String: Any] {
     guard let id = envelope["id"] as? String else {
       return response(id: "invalid", outcome: "failed", errorCode: "invalid_command")
     }
-    if let prior = completed[id] { return prior }
+
+    let validated: (action: String, input: [String: Any], expiration: Date)
+    do {
+      validated = try validate(envelope, id: id)
+    } catch HelperFailure.rejected(let code) {
+      return response(id: id, outcome: "failed", errorCode: code)
+    } catch {
+      return response(id: id, outcome: "failed", errorCode: "helper_error")
+    }
+    if let prior = cachedOutput(id: id) { return prior }
 
     let output: [String: Any]
     do {
-      let (action, input) = try validate(envelope, id: id)
-      let result = try await perform(action: action, input: input)
+      let result = try await perform(
+        action: validated.action,
+        input: validated.input
+      )
       output = response(id: id, outcome: "succeeded", result: result)
     } catch HelperFailure.rejected(let code) {
       output = response(id: id, outcome: "failed", errorCode: code)
     } catch {
       output = response(id: id, outcome: "failed", errorCode: "helper_error")
     }
-    remember(id: id, output: output)
+    remember(id: id, output: output, expiresAt: validated.expiration)
     return output
   }
 
   private func validate(
     _ envelope: [String: Any],
     id: String
-  ) throws -> (String, [String: Any]) {
+  ) throws -> (action: String, input: [String: Any], expiration: Date) {
     guard envelope.count == 4,
           isCommandId(id),
           let action = envelope["action"] as? String,
@@ -221,12 +245,12 @@ private final class ComputerUseExecutor {
           let expiresAt = envelope["expiresAt"] as? String,
           let expiration = parseDate(expiresAt),
           expiration > Date(),
-          expiration.timeIntervalSinceNow <= 600,
+          expiration.timeIntervalSinceNow <= 300,
           JSONSerialization.isValidJSONObject(input),
           let bytes = try? JSONSerialization.data(withJSONObject: input),
           bytes.count <= Self.maximumInputBytes
     else { throw HelperFailure.rejected("invalid_command") }
-    return (action, input)
+    return (action, input, expiration)
   }
 
   private func perform(action: String, input: [String: Any]) async throws -> [String: Any] {
@@ -664,12 +688,54 @@ private final class ComputerUseExecutor {
     return value
   }
 
-  private func remember(id: String, output: [String: Any]) {
-    completed[id] = output
+  private func cachedOutput(id: String) -> [String: Any]? {
+    completedLock.lock()
+    defer { completedLock.unlock() }
+    purgeExpiredCompletionsLocked(at: Date())
+    return completed[id]?.output
+  }
+
+  private func remember(id: String, output: [String: Any], expiresAt: Date) {
+    completedLock.lock()
+    defer { completedLock.unlock() }
+    purgeExpiredCompletionsLocked(at: Date())
+    guard expiresAt > Date() else {
+      scheduleCompletionExpiryLocked()
+      return
+    }
+    completed[id] = CompletedRequest(output: output, expiresAt: expiresAt)
+    completionOrder.removeAll { $0 == id }
     completionOrder.append(id)
     while completionOrder.count > 128 {
       completed.removeValue(forKey: completionOrder.removeFirst())
     }
+    scheduleCompletionExpiryLocked()
+  }
+
+  private func purgeExpiredCompletions() {
+    completedLock.lock()
+    defer { completedLock.unlock() }
+    purgeExpiredCompletionsLocked(at: Date())
+    scheduleCompletionExpiryLocked()
+  }
+
+  private func purgeExpiredCompletionsLocked(at now: Date) {
+    completed = completed.filter { $0.value.expiresAt > now }
+    completionOrder.removeAll { completed[$0] == nil }
+  }
+
+  private func scheduleCompletionExpiryLocked() {
+    completionExpiryWorkItem?.cancel()
+    completionExpiryWorkItem = nil
+    guard let nextExpiry = completed.values.map(\.expiresAt).min() else { return }
+    let work = DispatchWorkItem { [weak self] in
+      self?.purgeExpiredCompletions()
+    }
+    completionExpiryWorkItem = work
+    DispatchQueue.global(qos: .utility).asyncAfter(
+      deadline: .now() + max(0, nextExpiry.timeIntervalSinceNow),
+      execute: work
+    )
   }
 
   private func copyAttribute(_ element: AXUIElement, _ attribute: String) -> AnyObject? {
@@ -791,8 +857,7 @@ private final class ComputerUseExecutor {
   }
 
   private func bounded(_ value: String, limit: Int) -> String {
-    let scalars = value.unicodeScalars.prefix(limit)
-    return String(String.UnicodeScalarView(scalars))
+    sanitizedLocalComputerText(value, limit: limit)
   }
 
   private func number(_ value: Any?) -> Double? {

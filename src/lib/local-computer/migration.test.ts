@@ -6,6 +6,10 @@ const migrationUrl = new URL(
   "../../../supabase/migrations/20260917110000_p13_3_local_computer_runtime.sql",
   import.meta.url,
 );
+const runBindingMigrationUrl = new URL(
+  "../../../supabase/migrations/20260917150000_p13_3_local_computer_run_binding.sql",
+  import.meta.url,
+);
 
 describe("local Computer Use migration", () => {
   it("adds device-bound actor-private routing without a helper credential", async () => {
@@ -21,6 +25,28 @@ describe("local Computer Use migration", () => {
     expect(migration).toContain("pg_column_size(result) <= 2097152");
     expect(migration).toContain("omni_local_computer_commands_actor_scope");
     expect(migration).toContain("VALUES (\n  179,\n  'p13_3_local_computer_runtime_v1'");
+    expect(migration.trimEnd()).toMatch(/COMMIT;$/);
+  });
+
+  it("binds native sessions to exact typed runs and indexes screenshot expiry", async () => {
+    const migration = await readFile(runBindingMigrationUrl, "utf8");
+
+    expect(migration).toContain("latest_version IS DISTINCT FROM 179");
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS run_id TEXT");
+    expect(migration).toContain("event.type = 'run.scope_bound'");
+    expect(migration).toContain("omni_local_computer_sessions_run_idx");
+    expect(migration).toContain(
+      "omni_local_computer_sessions_mobile_session_fkey",
+    );
+    expect(migration).toContain(
+      "tenant_id, owner_actor_id, device_id\n  ) REFERENCES public.omni_local_computer_devices",
+    );
+    expect(migration).toContain(
+      "omni_local_computer_commands_observation_expiry_idx",
+    );
+    expect(migration).toContain(
+      "VALUES (\n  180,\n  'p13_3_local_computer_run_binding_v1'",
+    );
     expect(migration.trimEnd()).toMatch(/COMMIT;$/);
   });
 });

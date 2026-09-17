@@ -8,6 +8,7 @@ const routeMocks = vi.hoisted(() => ({
   processPendingMemoryDeletionScrubs: vi.fn(),
   processPendingMemoryGraphRebuilds: vi.fn(),
   processPendingTemporalRelationProjections: vi.fn(),
+  scrubExpiredLocalComputerObservations: vi.fn(),
   runTenantMemoryMaintenance: vi.fn(),
   listMaintenanceTenantIds: vi.fn(),
   recoverInterruptedLoopV2Runs: vi.fn(),
@@ -76,6 +77,12 @@ vi.mock("@/lib/security/retention", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/security/retention")>()),
   processPendingMemoryGraphRebuilds:
     routeMocks.processPendingMemoryGraphRebuilds,
+}));
+
+vi.mock("@/lib/local-computer/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/local-computer/store")>()),
+  scrubExpiredLocalComputerObservations:
+    routeMocks.scrubExpiredLocalComputerObservations,
 }));
 
 vi.mock("@/lib/memory/deletion-scrub", async (importOriginal) => ({
@@ -199,6 +206,9 @@ beforeEach(() => {
   routeMocks.processAllTenantWorkflowQueues
     .mockReset()
     .mockResolvedValue(emptyWorkflowQueue);
+  routeMocks.scrubExpiredLocalComputerObservations
+    .mockReset()
+    .mockResolvedValue({ scrubbed: 0, moreAvailable: false });
   routeMocks.processAllTenantAgentResumeQueues
     .mockReset()
     .mockResolvedValue(emptyResumeQueue);
@@ -270,6 +280,25 @@ afterEach(() => {
 });
 
 describe("dedicated worker heartbeat timing", () => {
+  it("scrubs expired local screenshots on every fast-lane pass", async () => {
+    routeMocks.scrubExpiredLocalComputerObservations.mockResolvedValue({
+      scrubbed: 2,
+      moreAvailable: false,
+    });
+
+    const response = await POST(workerRequest({ startup: false }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      localComputerObservationScrub: { scrubbed: 2 },
+      idle: false,
+      activityCount: 2,
+    });
+    expect(routeMocks.scrubExpiredLocalComputerObservations).toHaveBeenCalledWith({
+      limit: 100,
+    });
+  });
+
   it("persists startup registration before responding without beginning scheduled work", async () => {
     const heartbeatGate = createGate();
     const order: string[] = [];

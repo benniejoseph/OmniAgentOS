@@ -184,6 +184,19 @@ const webSearchSchema = z.object({
   allowedDomains: z.array(z.string().min(1).max(253)).max(20).optional(),
 }).strict();
 
+const localMacObserveSchema = z.object({
+  includeScreenshot: z.boolean().default(true),
+  presentScreenshot: z.boolean().default(false),
+}).strict().superRefine((value, context) => {
+  if (value.presentScreenshot && !value.includeScreenshot) {
+    context.addIssue({
+      code: "custom",
+      path: ["includeScreenshot"],
+      message: "A requested screenshot preview requires screenshot capture.",
+    });
+  }
+});
+
 const mediaImageGenerateSchema = z.object({
   prompt: z.string().trim().min(3).max(4_000),
   aspectRatio: z.enum(["1:1", "16:9", "9:16", "4:3", "3:4"]).default("1:1"),
@@ -420,6 +433,7 @@ export async function executeGovernedTool({
   forceApproval = false,
   mcpSessionScope,
   executionScope,
+  agentRunId,
   effectBinding,
   approvalGrantClaim,
   checkpointBeforeEffect,
@@ -440,6 +454,8 @@ export async function executeGovernedTool({
   mcpSessionScope?: McpSessionScope;
   /** Durable attribution inherited from the initiating run or request. */
   executionScope?: ExecutionScope;
+  /** Exact owning agent run for run-bound native Computer Use commands. */
+  agentRunId?: string;
   /** Exact persisted execution-plan binding for the P1.4 memory-write canary. */
   effectBinding?: GovernedToolEffectBinding;
   /** Consumed P9.4 authority for a non-user principal executing a plan. */
@@ -1031,6 +1047,7 @@ export async function executeGovernedTool({
             forceApproval,
             mcpSessionScope,
             executionScope,
+            agentRunId,
             effectBinding,
             approvalGrantClaim,
             checkpointBeforeEffect,
@@ -1633,6 +1650,7 @@ export async function executeGovernedTool({
         scopedRequest.binding?.executionScope || executionScope,
         effectContext?.targetId || providerEffectIntent?.targetId,
         executionRecord?.createdAt,
+        agentRunId,
       );
     } catch (error) {
       if (effectContext || providerEffectIntent) {
@@ -3229,6 +3247,7 @@ async function runTool(
   executionScope?: ExecutionScope,
   effectTargetId?: string,
   executionObservedAt?: string,
+  agentRunId?: string,
 ) {
   const parsed = parseInput(tool, input);
   const aiUsageScope = (
@@ -3253,15 +3272,25 @@ async function runTool(
 
   const localComputerAction = localComputerActionForTool(tool.id);
   if (localComputerAction) {
-    if (!executionScope || !idempotencyKey) {
+    if (!executionScope || !idempotencyKey || !agentRunId) {
       throw new Error(
-        "Local Computer Use requires an exact governed execution and request scope.",
+        "Local Computer Use requires an exact governed execution, run, and request scope.",
+      );
+    }
+    if (
+      localComputerAction === "observe" &&
+      (parsed as Record<string, unknown>).presentScreenshot === true &&
+      (context?.native?.clientContractVersion || 0) < 12
+    ) {
+      throw new Error(
+        "Showing a local screenshot requires the current Asael Mac app.",
       );
     }
     const completed = await executeLocalComputerCommand({
       action: localComputerAction,
       toolInput: parsed,
       executionId: idempotencyKey,
+      runId: agentRunId,
       executionScope,
       abortSignal,
     });
@@ -4353,6 +4382,10 @@ function toolAppServiceCaller(
 }
 
 function parseInput(tool: ToolDefinition, input: Record<string, unknown>) {
+  if (tool.id === "local.macos.observe") {
+    return localMacObserveSchema.parse(input);
+  }
+
   if (tool.id === "memory.search" || tool.id === "knowledge.search") {
     return searchSchema.parse(input);
   }

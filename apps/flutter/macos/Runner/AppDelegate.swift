@@ -102,6 +102,11 @@ private final class LocalComputerController: NSObject {
     let timeout: DispatchWorkItem
   }
 
+  private struct CompletedRequest {
+    let output: [String: Any]
+    let expiresAt: Date
+  }
+
   private static let allowedActions: Set<String> = [
     "observe", "list_apps", "activate_app", "press", "click", "type", "key", "scroll",
   ]
@@ -118,8 +123,9 @@ private final class LocalComputerController: NSObject {
   private var errorPipe: Pipe?
   private var outputBuffer = Data()
   private var pending: [String: PendingRequest] = [:]
-  private var completed: [String: [String: Any]] = [:]
+  private var completed: [String: CompletedRequest] = [:]
   private var completionOrder: [String] = []
+  private var completionExpiryWorkItem: DispatchWorkItem?
   private var statusItem: NSStatusItem?
   private weak var statusMenuItem: NSMenuItem?
   private var expectedTermination = false
@@ -271,7 +277,7 @@ private final class LocalComputerController: NSObject {
           let expiresAt = values["expiresAt"] as? String,
           let expiration = Self.parseDate(expiresAt),
           expiration > Date(),
-          expiration.timeIntervalSinceNow <= 600,
+          expiration.timeIntervalSinceNow <= 300,
           JSONSerialization.isValidJSONObject(input),
           let inputData = try? JSONSerialization.data(withJSONObject: input),
           inputData.count <= 64 * 1_024
@@ -280,8 +286,9 @@ private final class LocalComputerController: NSObject {
       return
     }
 
+    purgeExpiredCompletions()
     if let prior = completed[id] {
-      result(prior)
+      result(prior.output)
       return
     }
     guard ensureHelper() else {
@@ -298,7 +305,7 @@ private final class LocalComputerController: NSObject {
       self.updatePermissions(from: response)
       var channelResponse = response
       channelResponse.removeValue(forKey: "id")
-      self.remember(id: id, output: channelResponse)
+      self.remember(id: id, output: channelResponse, expiresAt: expiration)
       result(channelResponse)
     }
   }
@@ -350,7 +357,7 @@ private final class LocalComputerController: NSObject {
       self.terminateHelper(expected: false, pendingOutcome: "canceled")
     }
     pending[id] = PendingRequest(callbacks: [completion], timeout: timeout)
-    DispatchQueue.main.asyncAfter(deadline: .now() + min(max(expiresIn, 0.25), 600), execute: timeout)
+    DispatchQueue.main.asyncAfter(deadline: .now() + min(max(expiresIn, 0.25), 300), execute: timeout)
     data.append(0x0a)
     do {
       try inputPipe.fileHandleForWriting.write(contentsOf: data)
@@ -444,6 +451,7 @@ private final class LocalComputerController: NSObject {
     let wasExpected = expectedTermination
     expectedTermination = false
     clearProcessReferences()
+    clearCompletedRequests()
     if !wasExpected {
       active = false
       enabled = false
@@ -502,6 +510,7 @@ private final class LocalComputerController: NSObject {
     enabled = false
     active = false
     terminateHelper(expected: true, pendingOutcome: "canceled")
+    clearCompletedRequests()
     removeStatusItem()
     if notifyFlutter { notifyStopped(reason: reason) }
   }
@@ -621,12 +630,49 @@ private final class LocalComputerController: NSObject {
     return version
   }
 
-  private func remember(id: String, output: [String: Any]) {
-    completed[id] = output
+  private func remember(id: String, output: [String: Any], expiresAt: Date) {
+    purgeExpiredCompletions(scheduleNext: false)
+    guard expiresAt > Date() else {
+      scheduleCompletionExpiry()
+      return
+    }
+    completed[id] = CompletedRequest(output: output, expiresAt: expiresAt)
+    completionOrder.removeAll { $0 == id }
     completionOrder.append(id)
     while completionOrder.count > 128 {
       completed.removeValue(forKey: completionOrder.removeFirst())
     }
+    scheduleCompletionExpiry()
+  }
+
+  private func purgeExpiredCompletions(
+    at now: Date = Date(),
+    scheduleNext: Bool = true
+  ) {
+    completed = completed.filter { $0.value.expiresAt > now }
+    completionOrder.removeAll { completed[$0] == nil }
+    if scheduleNext { scheduleCompletionExpiry() }
+  }
+
+  private func scheduleCompletionExpiry() {
+    completionExpiryWorkItem?.cancel()
+    completionExpiryWorkItem = nil
+    guard let nextExpiry = completed.values.map(\.expiresAt).min() else { return }
+    let work = DispatchWorkItem { [weak self] in
+      self?.purgeExpiredCompletions()
+    }
+    completionExpiryWorkItem = work
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + max(0, nextExpiry.timeIntervalSinceNow),
+      execute: work
+    )
+  }
+
+  private func clearCompletedRequests() {
+    completionExpiryWorkItem?.cancel()
+    completionExpiryWorkItem = nil
+    completed.removeAll(keepingCapacity: false)
+    completionOrder.removeAll(keepingCapacity: false)
   }
 
   private func invalidArguments() -> FlutterError {

@@ -8,7 +8,8 @@ export type LocalComputerSchemaSqlClient = {
 /**
  * Durable routing metadata for a local macOS executor. Raw screenshots and
  * accessibility snapshots may exist in a command row only until the waiting
- * governed tool consumes them; they are never copied into the tool ledger.
+ * governed tool consumes them or the five-minute scrub runs; they are never
+ * copied into the tool ledger.
  */
 export async function ensureLocalComputerRuntimeV1(
   sql: LocalComputerSchemaSqlClient,
@@ -273,6 +274,119 @@ export async function ensureLocalComputerRuntimeV1(
         )
       ) <> 3 THEN
         RAISE EXCEPTION 'Local Computer Use isolation boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $verify$
+  `;
+}
+
+/**
+ * Binds each short-lived native session to one exact durable agent run. The
+ * nullable column permits expired v1 sessions to remain auditable; every new
+ * command path binds and verifies the run before it can enqueue work.
+ */
+export async function ensureLocalComputerRuntimeV2(
+  sql: LocalComputerSchemaSqlClient,
+) {
+  await sql.query(`
+    ALTER TABLE omni_local_computer_sessions
+      ADD COLUMN IF NOT EXISTS run_id TEXT;
+
+    WITH unique_bindings AS (
+      SELECT
+        event.tenant_id,
+        event.actor_id AS owner_actor_id,
+        event.correlation_id,
+        min(substr(event.stream_id, char_length('run:') + 1)) AS run_id
+      FROM omni_events event
+      JOIN omni_agent_runs run
+        ON run.tenant_id = event.tenant_id
+       AND run.owner_actor_id = event.actor_id
+       AND event.stream_id = 'run:' || run.id
+      WHERE event.type = 'run.scope_bound'
+        AND event.correlation_id IS NOT NULL
+      GROUP BY event.tenant_id, event.actor_id, event.correlation_id
+      HAVING count(DISTINCT event.stream_id) = 1
+    )
+    UPDATE omni_local_computer_sessions session
+    SET run_id = binding.run_id
+    FROM unique_bindings binding
+    WHERE session.run_id IS NULL
+      AND binding.tenant_id = session.tenant_id
+      AND binding.owner_actor_id = session.owner_actor_id
+      AND binding.correlation_id = session.correlation_id;
+
+    ALTER TABLE omni_local_computer_sessions
+      DROP CONSTRAINT IF EXISTS omni_local_computer_sessions_run_id_check;
+    ALTER TABLE omni_local_computer_sessions
+      ADD CONSTRAINT omni_local_computer_sessions_run_id_check CHECK (
+        run_id IS NULL OR (
+          run_id = btrim(run_id)
+          AND char_length(run_id) BETWEEN 1 AND 240
+          AND run_id ~ '^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$'
+        )
+      ) NOT VALID;
+    ALTER TABLE omni_local_computer_sessions
+      VALIDATE CONSTRAINT omni_local_computer_sessions_run_id_check;
+
+    ALTER TABLE omni_local_computer_sessions
+      DROP CONSTRAINT IF EXISTS omni_local_computer_sessions_device_fkey;
+    ALTER TABLE omni_local_computer_sessions
+      DROP CONSTRAINT IF EXISTS omni_local_computer_sessions_mobile_session_fkey;
+    ALTER TABLE omni_local_computer_sessions
+      ADD CONSTRAINT omni_local_computer_sessions_device_fkey FOREIGN KEY (
+        tenant_id, owner_actor_id, device_id
+      ) REFERENCES omni_local_computer_devices (
+        tenant_id, owner_actor_id, device_id
+      ) ON UPDATE RESTRICT ON DELETE CASCADE NOT VALID;
+    ALTER TABLE omni_local_computer_sessions
+      ADD CONSTRAINT omni_local_computer_sessions_mobile_session_fkey
+      FOREIGN KEY (mobile_session_id) REFERENCES omni_mobile_sessions (id)
+      ON UPDATE RESTRICT ON DELETE CASCADE NOT VALID;
+    ALTER TABLE omni_local_computer_sessions
+      VALIDATE CONSTRAINT omni_local_computer_sessions_device_fkey;
+    ALTER TABLE omni_local_computer_sessions
+      VALIDATE CONSTRAINT omni_local_computer_sessions_mobile_session_fkey;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS
+      omni_local_computer_sessions_run_idx
+      ON omni_local_computer_sessions (tenant_id, owner_actor_id, run_id)
+      WHERE run_id IS NOT NULL;
+
+    CREATE INDEX IF NOT EXISTS
+      omni_local_computer_commands_observation_expiry_idx
+      ON omni_local_computer_commands (completed_at, tenant_id, id)
+      WHERE result ? 'observation';
+  `);
+  await sql`
+    DO $verify$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE attrelid = 'omni_local_computer_sessions'::regclass
+          AND attname = 'run_id'
+          AND NOT attisdropped
+      ) OR NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'omni_local_computer_sessions'::regclass
+          AND conname = 'omni_local_computer_sessions_run_id_check'
+          AND contype = 'c'
+          AND convalidated
+      ) OR (
+        SELECT count(*)
+        FROM pg_constraint
+        WHERE conrelid = 'omni_local_computer_sessions'::regclass
+          AND conname IN (
+            'omni_local_computer_sessions_device_fkey',
+            'omni_local_computer_sessions_mobile_session_fkey'
+          )
+          AND contype = 'f'
+          AND convalidated
+      ) <> 2 THEN
+        RAISE EXCEPTION 'Local Computer Use run binding is invalid'
           USING ERRCODE = '55000';
       END IF;
     END

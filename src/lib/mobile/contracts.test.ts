@@ -8,14 +8,15 @@ import {
   nativeContractDiscovery,
   nativeContractSchemas,
   nativeConversationEventSchema,
+  nativeLocalComputerClaimResponseForClient,
   nativeLoginRequestSchema,
   nativeOperationsForVersion,
 } from "@/lib/mobile/contracts";
 
 describe("native API contracts", () => {
   it("retains exactly the current and previous rollout versions", () => {
-    expect(NATIVE_API_CURRENT_VERSION).toBe(11);
-    expect(NATIVE_API_PREVIOUS_VERSION).toBe(10);
+    expect(NATIVE_API_CURRENT_VERSION).toBe(12);
+    expect(NATIVE_API_PREVIOUS_VERSION).toBe(11);
     expect(nativeOperationsForVersion(8)?.length).toBeLessThan(
       nativeOperationsForVersion(7)?.length || 0,
     );
@@ -28,9 +29,12 @@ describe("native API contracts", () => {
     expect(nativeOperationsForVersion(11)?.length).toBe(
       (nativeOperationsForVersion(10)?.length || 0) + 5,
     );
+    expect(nativeOperationsForVersion(12)?.length).toBe(
+      nativeOperationsForVersion(11)?.length,
+    );
     expect(nativeContractSchemas.NativeContractDiscovery.parse(
       nativeContractDiscovery(),
-    ).supportedVersions).toEqual([11, 10]);
+    ).supportedVersions).toEqual([12, 11]);
   });
 
   it("does not advertise unenrolled native mutations in v8", () => {
@@ -79,7 +83,7 @@ describe("native API contracts", () => {
     });
   });
 
-  it("generates a Dart capability set and local courier paths from v11", async () => {
+  it("generates a Dart capability set and local courier paths from v12", async () => {
     const dart = await readFile(
       new URL(
         "../../../apps/flutter/lib/generated/native_contract.g.dart",
@@ -100,7 +104,9 @@ describe("native API contracts", () => {
     expect(dart).toContain("'localComputer.stop',");
     expect(dart).toContain("static String evidenceRunComputerFrame(String id, String frameId)");
     expect(dart).toContain("static const localComputerDevice = '/api/mobile/computer-use/device';");
-    expect(dart).toContain("static const localComputerCommandClaim = '/api/mobile/computer-use/commands/claim';");
+    expect(dart).toMatch(
+      /static const localComputerCommandClaim\s*=\s*'\/api\/mobile\/computer-use\/commands\/claim';/,
+    );
     expect(dart).toContain("static String localComputerCommandComplete(String id)");
     expect(dart).toContain("static const localComputerStop = '/api/mobile/computer-use/stop';");
     expect(dart).toContain("static String memoryList({String? threadId, int? limit})");
@@ -118,18 +124,54 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 11,
+        clientContractVersion: 12,
       },
     };
     expect(nativeLoginRequestSchema.safeParse(request).success).toBe(true);
     expect(nativeLoginRequestSchema.safeParse({
       ...request,
-      device: { ...request.device, clientContractVersion: 10 },
+      device: { ...request.device, clientContractVersion: 11 },
     }).success).toBe(true);
     expect(nativeLoginRequestSchema.safeParse({
       ...request,
       device: { ...request.device, buildNumber: undefined },
     }).success).toBe(false);
+  });
+
+  it("keeps the frozen v11 local command envelope free of v12 preview bindings", () => {
+    const claimed = {
+      schemaVersion: 1,
+      command: {
+        schemaVersion: 1,
+        id: `local_computer_command_${"b".repeat(48)}`,
+        runId: "4f778556-e171-4af0-ae9c-c5a269276236",
+        executionId: `idem_${"a".repeat(64)}`,
+        action: "observe",
+        input: { includeScreenshot: true },
+        presentScreenshot: true,
+        claimToken: "claim-token-that-is-long-enough-123456",
+        claimGeneration: 1,
+        expiresAt: "2026-09-17T08:00:30.000Z",
+      },
+      pollAfterMs: 0,
+    };
+
+    expect(nativeLocalComputerClaimResponseForClient(claimed, 12)).toEqual(
+      claimed,
+    );
+    expect(nativeLocalComputerClaimResponseForClient(claimed, 11)).toEqual({
+      schemaVersion: 1,
+      command: {
+        schemaVersion: 1,
+        id: `local_computer_command_${"b".repeat(48)}`,
+        action: "observe",
+        input: { includeScreenshot: true },
+        claimToken: "claim-token-that-is-long-enough-123456",
+        claimGeneration: 1,
+        expiresAt: "2026-09-17T08:00:30.000Z",
+      },
+      pollAfterMs: 0,
+    });
   });
 
   it("publishes a discriminated event contract for every streamed event family", () => {
@@ -163,7 +205,7 @@ describe("native API contracts", () => {
       user: { id: "user-one", email: "operator@example.test", status: "active", createdAt: timestamp, updatedAt: timestamp },
       tenant: { id: "tenant-one", name: "Example", slug: "example", createdAt: timestamp, updatedAt: timestamp },
       membership: { id: "membership-one", tenantId: "tenant-one", userId: "user-one", role: "operator", status: "active", createdAt: timestamp, updatedAt: timestamp },
-      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 10 },
+      device: { id: "device-one", name: "Asael on macOS", platform: "macos", appVersion: "1.0.0", buildNumber: 2, clientContractVersion: 11 },
     };
     expect(nativeBootstrapResponseSchema.parse({
       authenticated: true,
@@ -175,9 +217,9 @@ describe("native API contracts", () => {
         mobileBasePath: "/api/mobile",
         nativeContract: {
           id: "asael.native-api",
-          currentVersion: 11,
-          previousVersion: 10,
-          supportedVersions: [11, 10],
+          currentVersion: 12,
+          previousVersion: 11,
+          supportedVersions: [12, 11],
           discoveryPath: "/api/mobile/contracts",
         },
       },
@@ -186,14 +228,14 @@ describe("native API contracts", () => {
         platform: "macos",
         appVersion: "1.0.0",
         buildNumber: 2,
-        clientContractVersion: 10,
+        clientContractVersion: 11,
         minimumVersion: "1.0.0",
-        requiredContractVersion: 11,
-        supportedContractVersions: [11, 10],
+        requiredContractVersion: 12,
+        supportedContractVersions: [12, 11],
         status: "compatible",
         agentCatalogEnrollment: { state: "held", clientReady: true },
       },
       nativeClientPolicy: { schemaVersion: 1 },
-    }).api.nativeContract.currentVersion).toBe(11);
+    }).api.nativeContract.currentVersion).toBe(12);
   });
 });

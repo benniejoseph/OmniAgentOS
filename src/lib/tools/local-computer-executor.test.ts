@@ -44,17 +44,22 @@ describe("governed local Mac tools", () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     const execution = await executeGovernedTool({
       toolId: "local.macos.observe",
-      input: { includeScreenshot: true },
+      input: { includeScreenshot: true, presentScreenshot: true },
       dryRun: false,
       context: securityContext(),
       executionScope: executionScope("observe"),
+      agentRunId: "run-local",
       idempotencyKey: "local-mac-observe",
     });
 
     expect(mocks.executeLocalComputerCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "observe",
-        toolInput: { includeScreenshot: true },
+        runId: "run-local",
+        toolInput: {
+          includeScreenshot: true,
+          presentScreenshot: true,
+        },
         executionScope: expect.objectContaining({
           tenantId: "tenant-local",
           initiatingActorId: "owner-local",
@@ -66,6 +71,7 @@ describe("governed local Mac tools", () => {
     });
     expect(execution.record.output).toEqual(execution.result);
     expect(execution.record.output).not.toHaveProperty("observation");
+    expect(execution.record.output).not.toHaveProperty("presentScreenshot");
     expect(execution.browserObservation).toMatchObject({
       source: "local_macos",
       snapshotRevision: "a".repeat(64),
@@ -77,6 +83,49 @@ describe("governed local Mac tools", () => {
     });
   });
 
+  it("exposes preview presentation as an explicit, default-off tool input", async () => {
+    const { getGovernedTool } = await import("@/lib/tools/registry");
+    const observe = getGovernedTool("local.macos.observe");
+    const properties = observe?.inputSchema.properties as
+      | Record<string, unknown>
+      | undefined;
+
+    expect(observe?.description).toContain("short-lived in-memory preview");
+    expect(properties?.presentScreenshot).toMatchObject({
+      type: "boolean",
+      default: false,
+      description: expect.stringContaining("explicit request"),
+    });
+  });
+
+  it("requires native contract v12 only when a screenshot must be shown", async () => {
+    const { executeGovernedTool } = await import("@/lib/tools/executor");
+    const result = await executeGovernedTool({
+      toolId: "local.macos.observe",
+      input: { includeScreenshot: true, presentScreenshot: true },
+      dryRun: false,
+      context: {
+        ...securityContext(),
+        native: {
+          ...securityContext().native,
+          clientContractVersion: 11,
+        },
+      },
+      executionScope: executionScope("observe-v11"),
+      agentRunId: "run-local",
+      idempotencyKey: "local-mac-observe-v11",
+    });
+
+    expect(result).toMatchObject({
+      record: {
+        status: "failed",
+        reason: expect.stringContaining("current Asael Mac app"),
+      },
+      result: null,
+    });
+    expect(mocks.executeLocalComputerCommand).not.toHaveBeenCalled();
+  });
+
   it("fails closed when an idempotent observe call tries to replay consumed evidence", async () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     const input = {
@@ -85,6 +134,7 @@ describe("governed local Mac tools", () => {
       dryRun: false,
       context: securityContext(),
       executionScope: executionScope("observe-replay"),
+      agentRunId: "run-local",
       idempotencyKey: "local-mac-observe-replay",
     } as const;
 
@@ -110,6 +160,7 @@ describe("governed local Mac tools", () => {
       dryRun: false,
       context: securityContext(),
       executionScope: executionScope("observe-empty"),
+      agentRunId: "run-local",
       idempotencyKey: "local-mac-observe-empty",
     });
 
@@ -136,6 +187,7 @@ describe("governed local Mac tools", () => {
       dryRun: false,
       context: securityContext(),
       executionScope: executionScope("press"),
+      agentRunId: "run-local",
       idempotencyKey: "local-mac-press",
     });
 
@@ -156,6 +208,7 @@ describe("governed local Mac tools", () => {
       dryRun: false,
       approved: true,
       context: securityContext(),
+      agentRunId: "run-local",
       existingRecord: claim.record,
       executionClaimToken: claimToken,
     });
@@ -180,7 +233,7 @@ function securityContext() {
     native: {
       deviceId: "device-local-macos",
       platform: "macos" as const,
-      clientContractVersion: 11,
+      clientContractVersion: 12,
     },
   };
 }

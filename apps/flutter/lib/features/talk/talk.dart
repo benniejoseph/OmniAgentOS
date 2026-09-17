@@ -676,6 +676,7 @@ abstract interface class TalkArtifactRepository {
 class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkController(
     this.repository, {
+    this.localComputerPreviews,
     this.workflowPollInterval = const Duration(seconds: 3),
     this.workflowPollLimit = 20,
     this.runRecoveryPollInterval = const Duration(seconds: 3),
@@ -684,6 +685,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
        assert(runRecoveryPollLimit > 0 && runRecoveryPollLimit <= 200);
 
   final TalkRepository repository;
+  final LocalComputerPreviewSource? localComputerPreviews;
   final Duration workflowPollInterval;
   final int workflowPollLimit;
   final Duration runRecoveryPollInterval;
@@ -691,6 +693,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   final messages = <TalkMessage>[];
   final activities = <TalkActivity>[];
   final artifacts = <TalkMediaArtifactSummary>[];
+  final _localPreviewArtifacts = <TalkMediaArtifactSummary>[];
+  final _localPreviewContents = <String, TalkArtifactContent>{};
+  final _localPreviewExpiryTimers = <String, Timer>{};
   final promptQueue = <TalkQueuedPrompt>[];
   final _workflowIds = <String>[];
   final _workflowMonitorTokens = <String, Object>{};
@@ -778,7 +783,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async {
     final text = input.trim();
-    if (text.isEmpty) return;
+    if (_disposed || text.isEmpty) return;
     if (sending) {
       enqueuePrompt(
         text,
@@ -804,7 +809,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) {
     final text = input.trim();
-    if (text.isEmpty || text.length > 20000 || promptQueue.length >= 20) {
+    if (_disposed ||
+        text.isEmpty ||
+        text.length > 20000 ||
+        promptQueue.length >= 20) {
       return;
     }
     promptQueue.add(
@@ -882,6 +890,13 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     selectedArtifact = artifact;
     selectedArtifactContent = null;
     artifactError = null;
+    final localPreview = _localPreviewContents[artifact.assetId];
+    if (localPreview != null) {
+      selectedArtifactContent = localPreview;
+      artifactLoading = false;
+      notifyListeners();
+      return;
+    }
     final source = repository is TalkArtifactRepository
         ? repository as TalkArtifactRepository
         : null;
@@ -916,11 +931,26 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }
 
   void _clearArtifacts() {
+    for (final timer in _localPreviewExpiryTimers.values) {
+      timer.cancel();
+    }
+    _localPreviewExpiryTimers.clear();
+    final temporaryContents = _localPreviewContents.values.toList(
+      growable: false,
+    );
     artifacts.clear();
+    _localPreviewArtifacts.clear();
+    _localPreviewContents.clear();
     selectedArtifact = null;
     selectedArtifactContent = null;
     artifactError = null;
     artifactLoading = false;
+    for (final content in temporaryContents) {
+      PaintingBinding.instance.imageCache.evict(
+        MemoryImage(content.bytes),
+        includeLive: true,
+      );
+    }
   }
 
   String? _retryInput;
@@ -940,6 +970,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   }
 
   void _abandonAcceptedRun() {
+    final abandonedRunId = runId;
+    if (abandonedRunId != null) {
+      localComputerPreviews?.discardRunPreviews(abandonedRunId);
+    }
     _runMonitorToken = null;
     _runLifecycleStatus = null;
     runId = null;
@@ -1017,8 +1051,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     bool replaceFailedResponse = false,
   }) async {
     final text = input.trim();
-    if (text.isEmpty || sending) return;
+    if (_disposed || text.isEmpty || sending) return;
     activities.clear();
+    _clearArtifacts();
     _abandonAcceptedRun();
     if (replaceFailedResponse && messages.lastOrNull?.failed == true) {
       messages[messages.length - 1] = const TalkMessage(
@@ -1044,6 +1079,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         strategy: strategy,
         executionTarget: executionTarget,
       )) {
+        if (_disposed) return;
         adoptConversationThreadId(event.data['threadId']);
         switch (event.event) {
           case 'run':
@@ -1134,6 +1170,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             );
           case 'tool':
             final toolStatus = event.data['status']?.toString() ?? 'running';
+            final toolId = event.data['toolId']?.toString() ?? '';
+            final executionId = _boundedDisplayText(
+              event.data['executionId'],
+              240,
+            );
             final toolName =
                 event.data['toolName'] as String? ??
                 event.data['toolId'] as String? ??
@@ -1147,6 +1188,17 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
                   _sentenceCase(toolStatus.replaceAll('_', ' ')),
               state: _toolActivityState(toolStatus),
             );
+            if (toolStatus == 'executed' &&
+                toolId == 'local.macos.observe' &&
+                executionId.isNotEmpty) {
+              final acceptedRunId = runId;
+              if (acceptedRunId != null) {
+                _attachLocalComputerPreviews(
+                  acceptedRunId,
+                  executionId: executionId,
+                );
+              }
+            }
           case 'clarification':
             _runLifecycleStatus = 'waiting_clarification';
             queuePaused = true;
@@ -1214,6 +1266,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               detail: 'The governed run reached a terminal response.',
               state: TalkActivityState.succeeded,
             );
+            final completedRunId = runId;
+            if (completedRunId != null) {
+              _attachLocalComputerPreviews(completedRunId);
+            }
           case 'waiting_approval':
             _runLifecycleStatus = 'waiting_approval';
             queuePaused = true;
@@ -1292,8 +1348,10 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         }
         notifyListeners();
       }
+      if (_disposed) return;
       _clearRetry();
     } catch (error) {
+      if (_disposed) return;
       final acceptedRunId = runId;
       if (acceptedRunId != null) {
         queuePaused = true;
@@ -1336,8 +1394,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     } finally {
       sending = false;
       status = null;
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     }
+    if (_disposed) return;
     if (terminalInspectionRunId case final id?) {
       await _inspectTerminalRun(id);
     } else if (runId != null && !_acceptedRunIsTerminal) {
@@ -1399,6 +1458,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         }
         receivedProjection = true;
         _applyRecoveredRun(inspection);
+        _attachLocalComputerPreviews(id);
         if (!_disposed) notifyListeners();
         if (inspection.terminal) {
           _runMonitorToken = null;
@@ -1706,6 +1766,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         throw const FormatException('Run identity did not match.');
       }
       _projectTerminalRunEvidence(inspection);
+      _attachLocalComputerPreviews(id);
     } catch (_) {
       if (_disposed) return;
       _recordActivity(
@@ -1729,13 +1790,121 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     artifacts
       ..clear()
       ..addAll(inspection.mediaArtifacts)
-      ..addAll(inspection.computerUseArtifacts);
+      ..addAll(inspection.computerUseArtifacts)
+      ..addAll(_localPreviewArtifacts);
     if (artifacts.isEmpty) {
       selectedArtifact = null;
       selectedArtifactContent = null;
       artifactError = null;
+    } else if (_localPreviewArtifacts.isNotEmpty) {
+      _selectLocalPreview(_localPreviewArtifacts.last);
     } else {
       unawaited(selectArtifact(artifacts.first));
+    }
+  }
+
+  void _attachLocalComputerPreviews(
+    String expectedRunId, {
+    String? executionId,
+  }) {
+    final source = localComputerPreviews;
+    if (source == null) return;
+    final previews = <LocalComputerScreenshotPreview>[];
+    if (executionId == null) {
+      previews.addAll(source.takeRunPreviews(expectedRunId));
+    } else {
+      final preview = source.takePreview(expectedRunId, executionId);
+      if (preview != null) previews.add(preview);
+    }
+    var attached = 0;
+    for (final preview in previews) {
+      if (preview.runId != expectedRunId ||
+          !preview.expiresAt.isAfter(DateTime.now().toUtc())) {
+        continue;
+      }
+      final assetId = 'local_preview_${preview.executionId}';
+      final extension = switch (preview.mediaType) {
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        _ => 'jpg',
+      };
+      final artifact = TalkMediaArtifactSummary(
+        assetId: assetId,
+        kind: 'computer',
+        operation: 'local_macos_observe',
+        filename: 'this-mac-screenshot.$extension',
+        mediaType: preview.mediaType,
+        byteCount: preview.bytes.length,
+        status: 'temporary',
+        sourceRunId: expectedRunId,
+        contextLabel: preview.applicationName == null
+            ? 'Temporary preview · This Mac'
+            : 'Temporary preview · ${preview.applicationName}',
+      );
+      _localPreviewArtifacts.removeWhere(
+        (candidate) => candidate.assetId == assetId,
+      );
+      _localPreviewArtifacts.add(artifact);
+      _localPreviewContents[assetId] = TalkArtifactContent(
+        assetId: assetId,
+        bytes: Uint8List.fromList(preview.bytes),
+      );
+      artifacts.removeWhere((candidate) => candidate.assetId == assetId);
+      artifacts.add(artifact);
+      _selectLocalPreview(artifact);
+      _scheduleLocalPreviewExpiry(assetId, preview.expiresAt);
+      attached += 1;
+    }
+    if (attached > 0) {
+      _recordActivity(
+        key: 'local-computer-preview:$expectedRunId',
+        title: attached == 1
+            ? 'Screenshot ready'
+            : '$attached screenshots ready',
+        detail: 'Private previews are available only in this app session and are not kept in Conversation history.',
+        state: TalkActivityState.succeeded,
+      );
+    }
+  }
+
+  void _selectLocalPreview(TalkMediaArtifactSummary artifact) {
+    selectedArtifact = artifact;
+    selectedArtifactContent = _localPreviewContents[artifact.assetId];
+    artifactLoading = false;
+    artifactError = null;
+  }
+
+  void _scheduleLocalPreviewExpiry(String assetId, DateTime expiresAt) {
+    _localPreviewExpiryTimers.remove(assetId)?.cancel();
+    final remaining = expiresAt.toUtc().difference(DateTime.now().toUtc());
+    if (remaining <= Duration.zero) {
+      _removeLocalPreview(assetId);
+      return;
+    }
+    _localPreviewExpiryTimers[assetId] = Timer(remaining, () {
+      _localPreviewExpiryTimers.remove(assetId);
+      _removeLocalPreview(assetId);
+      if (!_disposed) notifyListeners();
+    });
+  }
+
+  void _removeLocalPreview(String assetId) {
+    _localPreviewArtifacts.removeWhere(
+      (candidate) => candidate.assetId == assetId,
+    );
+    final content = _localPreviewContents.remove(assetId);
+    artifacts.removeWhere((candidate) => candidate.assetId == assetId);
+    if (selectedArtifact?.assetId == assetId) {
+      selectedArtifact = null;
+      selectedArtifactContent = null;
+      artifactLoading = false;
+      artifactError = null;
+    }
+    if (content != null) {
+      PaintingBinding.instance.imageCache.evict(
+        MemoryImage(content.bytes),
+        includeLive: true,
+      );
     }
   }
 
@@ -1911,6 +2080,11 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   @override
   void dispose() {
     _disposed = true;
+    final activeRunId = runId;
+    if (activeRunId != null) {
+      localComputerPreviews?.discardRunPreviews(activeRunId);
+    }
+    _clearArtifacts();
     _runMonitorToken = null;
     disposeTalkHistory();
     _workflowMonitorTokens.clear();
@@ -2076,6 +2250,15 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   void submit() {
     final value = input.text.trim();
     if (value.isEmpty) return;
+    if (executionTarget == TalkExecutionTarget.thisMac &&
+        widget.localComputer?.canClaimCommands == false) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Open the main Asael window to use This Mac.'),
+        ),
+      );
+      return;
+    }
     input.clear();
     final work = widget.controller.send(
       value,
@@ -2170,6 +2353,25 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               Navigator.of(sheetContext).pop();
               unawaited(widget.controller.openThread(id));
             },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openArtifactsSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (_) => FractionallySizedBox(
+        heightFactor: .86,
+        child: ListenableBuilder(
+          listenable: widget.controller,
+          builder: (_, _) => _TalkActivityPane(
+            controller: widget.controller,
+            initialSection: _TalkRailSection.artifacts,
           ),
         ),
       ),
@@ -2341,6 +2543,21 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               onPressed: _openHistorySheet,
               icon: const Icon(Icons.history_rounded),
             ),
+          ListenableBuilder(
+            listenable: widget.controller,
+            builder: (_, _) =>
+                MediaQuery.sizeOf(context).width < 1180 &&
+                    widget.controller.artifacts.isNotEmpty
+                ? IconButton(
+                    tooltip: 'Run artifacts',
+                    onPressed: _openArtifactsSheet,
+                    icon: Badge.count(
+                      count: widget.controller.artifacts.length,
+                      child: const Icon(Icons.auto_awesome_mosaic_outlined),
+                    ),
+                  )
+                : const SizedBox.shrink(),
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: Center(
@@ -2418,6 +2635,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                           itemCount: widget.controller.messages.length,
                           itemBuilder: (_, i) {
                             final m = widget.controller.messages[i];
+                            final artifact = widget.controller.selectedArtifact;
+                            final artifactContent =
+                                widget.controller.selectedArtifactContent;
+                            final showArtifact =
+                                m.role == TalkRole.assistant &&
+                                i == widget.controller.messages.length - 1 &&
+                                artifact != null &&
+                                artifactContent != null &&
+                                artifactContent.assetId == artifact.assetId &&
+                                (artifact.kind == 'image' ||
+                                    artifact.kind == 'computer');
                             return Align(
                               alignment: m.role == TalkRole.user
                                   ? Alignment.centerRight
@@ -2470,6 +2698,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           SelectableText(m.text),
+                                          if (showArtifact) ...[
+                                            const SizedBox(height: 12),
+                                            _TalkInlineArtifactPreview(
+                                              artifact: artifact,
+                                              content: artifactContent,
+                                            ),
+                                          ],
                                           if (m.failed &&
                                               i ==
                                                   widget
@@ -2706,6 +2941,101 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
 enum _TalkRailSection { activity, artifacts, queue }
 
+class _TalkInlineArtifactPreview extends StatelessWidget {
+  const _TalkInlineArtifactPreview({
+    required this.artifact,
+    required this.content,
+  });
+
+  final TalkMediaArtifactSummary artifact;
+  final TalkArtifactContent content;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final temporary = artifact.status == 'temporary';
+    final title = artifact.kind == 'computer'
+        ? 'Screenshot from This Mac'
+        : artifact.filename;
+    return Semantics(
+      label: title,
+      image: true,
+      child: Container(
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerLowest,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            AspectRatio(
+              aspectRatio: 16 / 10,
+              child: ColoredBox(
+                color: scheme.surfaceContainerHighest,
+                child: Image.memory(
+                  content.bytes,
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                  errorBuilder: (_, _, _) => Center(
+                    child: Text(
+                      'Screenshot preview unavailable',
+                      style: TextStyle(color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
+              child: Row(
+                children: [
+                  Icon(
+                    artifact.kind == 'computer'
+                        ? Icons.screenshot_monitor_outlined
+                        : Icons.image_outlined,
+                    size: 18,
+                    color: scheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          temporary
+                              ? 'Private temporary preview · not kept in Conversation'
+                              : '${artifact.mediaType} · ${TalkController._humanBytes(artifact.byteCount)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: scheme.onSurfaceVariant,
+                            fontSize: 10.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ExecutionTargetMenu extends StatelessWidget {
   const _ExecutionTargetMenu({
     required this.value,
@@ -2733,7 +3063,11 @@ class _ExecutionTargetMenu extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final macReady = coordinator?.ready == true;
     final macActive = coordinator?.active == true;
-    final status = coordinator == null
+    final auxiliaryWindow =
+        coordinator != null && !coordinator.canClaimCommands;
+    final status = auxiliaryWindow
+        ? 'Use the main Asael window for This Mac.'
+        : coordinator == null
         ? 'This Mac status is unavailable in this client.'
         : switch (coordinator.phase) {
             LocalComputerBrokerPhase.ready => 'This Mac is ready.',
@@ -2764,12 +3098,18 @@ class _ExecutionTargetMenu extends StatelessWidget {
             for (final target in TalkExecutionTarget.values)
               PopupMenuItem(
                 value: target,
+                enabled:
+                    target != TalkExecutionTarget.thisMac || !auxiliaryWindow,
                 child: ListTile(
                   dense: true,
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(target.icon, size: 19),
                   title: Text(target.label),
-                  subtitle: Text(target.detail),
+                  subtitle: Text(
+                    target == TalkExecutionTarget.thisMac && auxiliaryWindow
+                        ? 'Open Conversation in the main Asael window to use this Mac.'
+                        : target.detail,
+                  ),
                   trailing: target == TalkExecutionTarget.thisMac
                       ? Icon(
                           macActive
@@ -2834,16 +3174,26 @@ class _ExecutionTargetMenu extends StatelessWidget {
 }
 
 class _TalkActivityPane extends StatefulWidget {
-  const _TalkActivityPane({required this.controller});
+  const _TalkActivityPane({
+    required this.controller,
+    this.initialSection = _TalkRailSection.activity,
+  });
 
   final TalkController controller;
+  final _TalkRailSection initialSection;
 
   @override
   State<_TalkActivityPane> createState() => _TalkActivityPaneState();
 }
 
 class _TalkActivityPaneState extends State<_TalkActivityPane> {
-  _TalkRailSection section = _TalkRailSection.activity;
+  late _TalkRailSection section;
+
+  @override
+  void initState() {
+    super.initState();
+    section = widget.initialSection;
+  }
 
   TalkController get controller => widget.controller;
 

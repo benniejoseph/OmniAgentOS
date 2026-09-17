@@ -50,6 +50,7 @@ export type RetentionSweepResult = {
     expiredAccessRequests: number;
     accessRequests: number;
     authSessions: number;
+    localComputerObservations: number;
     memoryGraphEdges: number;
     memoryGraphNodes: number;
     memories: number;
@@ -218,6 +219,52 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         )
       `;
     }
+    const localComputerObservations = tenantId
+      ? await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_local_computer_commands
+            WHERE tenant_id = ${tenantId}
+              AND result ? 'observation'
+              AND completed_at <= NOW() - INTERVAL '5 minutes'
+            ORDER BY completed_at ASC, id ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          UPDATE omni_local_computer_commands target
+          SET result = target.result - 'observation', state = 'consumed',
+              consumed_at = COALESCE(target.consumed_at, NOW()),
+              error_code = COALESCE(
+                target.error_code,
+                'observation_expired'
+              ),
+              updated_at = NOW()
+          FROM expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `
+      : await transaction`
+          WITH expired AS (
+            SELECT ctid
+            FROM omni_local_computer_commands
+            WHERE result ? 'observation'
+              AND completed_at <= NOW() - INTERVAL '5 minutes'
+            ORDER BY completed_at ASC, tenant_id ASC, id ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT ${batchLimit}
+          )
+          UPDATE omni_local_computer_commands target
+          SET result = target.result - 'observation', state = 'consumed',
+              consumed_at = COALESCE(target.consumed_at, NOW()),
+              error_code = COALESCE(
+                target.error_code,
+                'observation_expired'
+              ),
+              updated_at = NOW()
+          FROM expired
+          WHERE target.ctid = expired.ctid
+          RETURNING target.id
+        `;
     // Purge expired/revoked source-map proposals first. The guarded database
     // function also shortens any linked reviewed memory to NOW(), allowing
     // the ordinary memory-retention path below to scrub it in this transaction.
@@ -1432,6 +1479,7 @@ async function sweepPostgres(policy: RetentionPolicy, tenantId?: string) {
         expiredAccessRequests: expiredAccessRequests.length,
         accessRequests: accessRequests.length,
         authSessions: authSessions.length,
+        localComputerObservations: localComputerObservations.length,
         memoryGraphEdges: memoryGraphEdges.length,
         memoryGraphNodes: memoryGraphNodes.length,
         memories: memories.length,
@@ -1666,6 +1714,7 @@ function emptyDeletedCounts(): RetentionSweepResult["deleted"] {
     expiredAccessRequests: 0,
     accessRequests: 0,
     authSessions: 0,
+    localComputerObservations: 0,
     memoryGraphEdges: 0,
     memoryGraphNodes: 0,
     memories: 0,

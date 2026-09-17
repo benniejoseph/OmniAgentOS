@@ -761,9 +761,9 @@ describe("ordered database schema versions", () => {
       checksum: "30f4769a6fcccd41aa457882b6be2752583d7d5920be75597e3b2121e91604d0",
     });
     expect(databaseSchemaMigrations.at(-1)).toEqual({
-      version: 178,
-      name: "p13_1_macos_native_platform_v1",
-      checksum: "b5cca5f81cd6cef3861d541d04ad4d15468476c8e954d610255fd3c70a237262",
+      version: 180,
+      name: "p13_3_local_computer_run_binding_v1",
+      checksum: "ff0d067e14965b75e45532f9ee534480fd237ef514c735282652d36a779000b4",
     });
     expect(databaseSchemaMigrations.find((migration) => migration.version === 139)).toEqual({
       version: 139,
