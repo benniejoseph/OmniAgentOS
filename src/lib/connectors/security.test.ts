@@ -221,6 +221,16 @@ describe("connector security", () => {
         },
       },
     })).toBe(true);
+    expect(isRemoteBrowserMcpTool({
+      name: "perform",
+      inputSchema: {
+        type: "object",
+        properties: {
+          css__selector: { type: "string" },
+          type___text: { type: "string" },
+        },
+      },
+    })).toBe(true);
   });
 
   it("keeps remote prompt text out of model-facing tool metadata", () => {

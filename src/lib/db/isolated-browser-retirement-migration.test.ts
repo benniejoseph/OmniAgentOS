@@ -84,7 +84,7 @@ describe("isolated browser runtime retirement migration", () => {
     expect(classifierPatterns.length).toBeGreaterThanOrEqual(2);
     const [surfacePattern, actionPattern] = classifierPatterns;
     const isBrowserControl = (signal: string) => {
-      const normalized = signal.replace(/_+/g, " ");
+      const normalized = signal.replace(/[\s_]+/g, " ");
       return surfacePattern.test(normalized) && actionPattern.test(normalized);
     };
 
@@ -106,7 +106,13 @@ describe("isolated browser runtime retirement migration", () => {
     expect(isBrowserControl(
       'perform {"css_selector":"#submit","type_text":"hello"}',
     )).toBe(true);
-    expect(migration).toContain("translate(lower(concat_ws(");
+    expect(isBrowserControl(
+      'perform {"css__selector":"#submit","type   text":"hello"}',
+    )).toBe(true);
+    expect(migration).toContain(
+      "regexp_replace(lower(concat_ws(",
+    );
+    expect(migration).toContain("'[[:space:]_]+', ' ', 'g'");
     expect(migration).not.toContain("'send_task'");
     expect(migration).not.toContain("|type|");
   });
