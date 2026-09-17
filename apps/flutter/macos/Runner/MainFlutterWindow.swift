@@ -3,6 +3,7 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
   private static let desktopChannelName = "app.omniagent.omniagent/desktop"
+  private static let localComputerChannelName = "app.omniagent.omniagent/local-computer"
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -17,6 +18,12 @@ class MainFlutterWindow: NSWindow {
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
     (NSApp.delegate as? AppDelegate)?.attachDesktopBridge(channel: channel, window: self)
+
+    let localComputerChannel = FlutterMethodChannel(
+      name: Self.localComputerChannelName,
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    (NSApp.delegate as? AppDelegate)?.attachLocalComputerBridge(channel: localComputerChannel)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     super.awakeFromNib()

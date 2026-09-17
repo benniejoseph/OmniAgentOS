@@ -7,6 +7,7 @@ import UserNotifications
 @main
 class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   private let desktopHostController = DesktopHostController()
+  private let localComputerController = LocalComputerController()
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     // FlutterAppDelegate inherits this optional AppKit delegate callback but
@@ -31,6 +32,7 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   }
 
   override func applicationWillTerminate(_ notification: Notification) {
+    localComputerController.stopForApplicationTermination()
     desktopHostController.stop()
   }
 
@@ -44,6 +46,14 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 
   func attachDesktopBridge(channel: FlutterMethodChannel, window: NSWindow) {
     desktopHostController.attach(channel: channel, window: window)
+  }
+
+  func attachLocalComputerBridge(channel: FlutterMethodChannel) {
+    localComputerController.attach(channel: channel)
+  }
+
+  func detachLocalComputerBridge(channel: FlutterMethodChannel) {
+    localComputerController.detach(channel: channel)
   }
 
   override func application(
@@ -77,6 +87,585 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   ) {
     desktopHostController.handleNotificationResponse(response)
     completionHandler()
+  }
+}
+
+/// A credential-free broker for Asael's separately signed local Computer Use helper.
+///
+/// The Flutter client holds the authenticated server session. The helper receives
+/// only an already-governed, expiring action over child-process pipes and therefore
+/// cannot inherit bearer credentials, call Asael APIs, open files, or make network
+/// requests. A menu-bar indicator remains visible for the entire enabled session.
+private final class LocalComputerController: NSObject {
+  private struct PendingRequest {
+    let callbacks: [([String: Any]) -> Void]
+    let timeout: DispatchWorkItem
+  }
+
+  private static let allowedActions: Set<String> = [
+    "observe", "list_apps", "activate_app", "press", "click", "type", "key", "scroll",
+  ]
+  private static let helperBundleName = "AsaelComputerUseHelper.app"
+  private static let helperExecutableName = "AsaelComputerUseHelper"
+  private static let helperBundleIdentifier = "app.omniagent.omniagent.computer-use-helper"
+  private static let maximumResponseBytes = 4 * 1_024 * 1_024
+  private static let maximumRequestBytes = 96 * 1_024
+
+  private var channels: [ObjectIdentifier: FlutterMethodChannel] = [:]
+  private var process: Process?
+  private var inputPipe: Pipe?
+  private var outputPipe: Pipe?
+  private var errorPipe: Pipe?
+  private var outputBuffer = Data()
+  private var pending: [String: PendingRequest] = [:]
+  private var completed: [String: [String: Any]] = [:]
+  private var completionOrder: [String] = []
+  private var statusItem: NSStatusItem?
+  private weak var statusMenuItem: NSMenuItem?
+  private var expectedTermination = false
+  private var enabled = false
+  private var active = false
+  private var accessibility = "unknown"
+  private var screenRecording = "unknown"
+
+  func attach(channel: FlutterMethodChannel) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    channels[ObjectIdentifier(channel)] = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self else {
+        result(FlutterError(
+          code: "local_computer_unavailable",
+          message: "The local Computer Use broker is unavailable.",
+          details: nil
+        ))
+        return
+      }
+      DispatchQueue.main.async {
+        self.handle(call: call, result: result)
+      }
+    }
+  }
+
+  func detach(channel: FlutterMethodChannel) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    channel.setMethodCallHandler(nil)
+    channels.removeValue(forKey: ObjectIdentifier(channel))
+  }
+
+  func stopForApplicationTermination() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    stop(reason: "application_terminated", notifyFlutter: false)
+    for channel in channels.values { channel.setMethodCallHandler(nil) }
+    channels.removeAll()
+  }
+
+  private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    switch call.method {
+    case "getStatus":
+      guard call.arguments == nil else {
+        result(invalidArguments())
+        return
+      }
+      refreshStatus { status in result(status) }
+    case "requestPermissions":
+      guard call.arguments == nil, !active else {
+        result(invalidArguments())
+        return
+      }
+      requestPermissions { status in result(status) }
+    case "setEnabled":
+      guard let values = call.arguments as? [String: Any],
+            values.count == 1,
+            let requested = values["enabled"] as? Bool
+      else {
+        result(invalidArguments())
+        return
+      }
+      setEnabled(requested) { status in result(status) }
+    case "executeLocalComputerCommand":
+      execute(call.arguments, result: result)
+    case "stop":
+      guard call.arguments == nil else {
+        result(invalidArguments())
+        return
+      }
+      stop(reason: "user_stopped", notifyFlutter: false)
+      result(status())
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func setEnabled(
+    _ requested: Bool,
+    completion: @escaping ([String: Any]) -> Void
+  ) {
+    if !requested {
+      stop(reason: "disabled", notifyFlutter: false)
+      completion(status())
+      return
+    }
+    guard helperInstalled, supported, ensureHelper() else {
+      enabled = false
+      completion(status())
+      return
+    }
+    enabled = true
+    configureStatusItem()
+    refreshStatus(completion: completion)
+  }
+
+  private func refreshStatus(completion: @escaping ([String: Any]) -> Void) {
+    guard helperInstalled, supported, !active else {
+      completion(status())
+      return
+    }
+    let shouldClose = !enabled && process == nil
+    guard ensureHelper() else {
+      completion(status())
+      return
+    }
+    let id = Self.makeCommandId()
+    send(
+      envelope(id: id, action: "status", input: [:], lifetime: 20),
+      expiresIn: 20
+    ) { [weak self] response in
+      guard let self else { return }
+      self.updatePermissions(from: response)
+      if shouldClose { self.terminateHelper(expected: true, pendingOutcome: "canceled") }
+      completion(self.status())
+    }
+  }
+
+  private func requestPermissions(completion: @escaping ([String: Any]) -> Void) {
+    guard helperInstalled, supported else {
+      completion(status())
+      return
+    }
+    let shouldClose = !enabled && process == nil
+    guard ensureHelper() else {
+      completion(status())
+      return
+    }
+    let id = Self.makeCommandId()
+    send(
+      envelope(id: id, action: "request_permissions", input: [:], lifetime: 120),
+      expiresIn: 120
+    ) { [weak self] response in
+      guard let self else { return }
+      self.updatePermissions(from: response)
+      if shouldClose { self.terminateHelper(expected: true, pendingOutcome: "canceled") }
+      completion(self.status())
+    }
+  }
+
+  private func execute(_ arguments: Any?, result: @escaping FlutterResult) {
+    guard enabled, !active, let values = arguments as? [String: Any],
+          values.count == 4,
+          let id = values["id"] as? String,
+          Self.isCommandId(id),
+          let action = values["action"] as? String,
+          Self.allowedActions.contains(action),
+          let input = values["input"] as? [String: Any],
+          let expiresAt = values["expiresAt"] as? String,
+          let expiration = Self.parseDate(expiresAt),
+          expiration > Date(),
+          expiration.timeIntervalSinceNow <= 600,
+          JSONSerialization.isValidJSONObject(input),
+          let inputData = try? JSONSerialization.data(withJSONObject: input),
+          inputData.count <= 64 * 1_024
+    else {
+      result(commandFailure("invalid_or_disabled_command"))
+      return
+    }
+
+    if let prior = completed[id] {
+      result(prior)
+      return
+    }
+    guard ensureHelper() else {
+      result(commandFailure("helper_unavailable"))
+      return
+    }
+
+    active = true
+    updateStatusItem()
+    send(values, expiresIn: max(0.25, expiration.timeIntervalSinceNow)) { [weak self] response in
+      guard let self else { return }
+      self.active = false
+      self.updateStatusItem()
+      self.updatePermissions(from: response)
+      var channelResponse = response
+      channelResponse.removeValue(forKey: "id")
+      self.remember(id: id, output: channelResponse)
+      result(channelResponse)
+    }
+  }
+
+  private func envelope(
+    id: String,
+    action: String,
+    input: [String: Any],
+    lifetime: TimeInterval
+  ) -> [String: Any] {
+    [
+      "id": id,
+      "action": action,
+      "input": input,
+      "expiresAt": ISO8601DateFormatter().string(from: Date().addingTimeInterval(lifetime)),
+    ]
+  }
+
+  private func send(
+    _ envelope: [String: Any],
+    expiresIn: TimeInterval,
+    completion: @escaping ([String: Any]) -> Void
+  ) {
+    guard let id = envelope["id"] as? String else {
+      completion(Self.ipcFailure(id: "invalid", code: "invalid_command"))
+      return
+    }
+    if let existing = pending[id] {
+      pending[id] = PendingRequest(
+        callbacks: existing.callbacks + [completion],
+        timeout: existing.timeout
+      )
+      return
+    }
+    guard JSONSerialization.isValidJSONObject(envelope),
+          var data = try? JSONSerialization.data(withJSONObject: envelope),
+          data.count <= Self.maximumRequestBytes,
+          let inputPipe
+    else {
+      completion(Self.ipcFailure(id: id, code: "invalid_command"))
+      return
+    }
+
+    let timeout = DispatchWorkItem { [weak self] in
+      guard let self, let request = self.pending.removeValue(forKey: id) else { return }
+      let failure = Self.ipcFailure(id: id, code: "helper_timeout")
+      request.callbacks.forEach { $0(failure) }
+      // Never leave an uncertain local effect running after its governed lease.
+      self.terminateHelper(expected: false, pendingOutcome: "canceled")
+    }
+    pending[id] = PendingRequest(callbacks: [completion], timeout: timeout)
+    DispatchQueue.main.asyncAfter(deadline: .now() + min(max(expiresIn, 0.25), 600), execute: timeout)
+    data.append(0x0a)
+    do {
+      try inputPipe.fileHandleForWriting.write(contentsOf: data)
+    } catch {
+      timeout.cancel()
+      pending.removeValue(forKey: id)
+      completion(Self.ipcFailure(id: id, code: "helper_unavailable"))
+      terminateHelper(expected: false, pendingOutcome: "failed")
+    }
+  }
+
+  private func ensureHelper() -> Bool {
+    if let process, process.isRunning { return true }
+    guard let executableURL = helperExecutableURL,
+          FileManager.default.isExecutableFile(atPath: executableURL.path)
+    else { return false }
+
+    let launched = Process()
+    let input = Pipe()
+    let output = Pipe()
+    let errors = Pipe()
+    launched.executableURL = executableURL
+    launched.arguments = []
+    // Do not inherit API keys, user shell configuration, HOME, or Asael's
+    // credential environment. The helper needs no network and receives only IPC.
+    launched.environment = [
+      "LANG": "en_US.UTF-8",
+      "PATH": "/usr/bin:/bin",
+    ]
+    launched.standardInput = input
+    launched.standardOutput = output
+    launched.standardError = errors
+    output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+      let data = handle.availableData
+      guard !data.isEmpty else { return }
+      DispatchQueue.main.async { self?.ingest(data) }
+    }
+    errors.fileHandleForReading.readabilityHandler = { handle in
+      // Drain but never surface potentially sensitive operating-system details.
+      _ = handle.availableData
+    }
+    launched.terminationHandler = { [weak self, weak launched] _ in
+      DispatchQueue.main.async {
+        guard let self, let launched, self.process === launched else { return }
+        self.handleHelperTermination()
+      }
+    }
+
+    do {
+      try launched.run()
+      process = launched
+      inputPipe = input
+      outputPipe = output
+      errorPipe = errors
+      outputBuffer.removeAll(keepingCapacity: true)
+      expectedTermination = false
+      return true
+    } catch {
+      output.fileHandleForReading.readabilityHandler = nil
+      errors.fileHandleForReading.readabilityHandler = nil
+      return false
+    }
+  }
+
+  private func ingest(_ data: Data) {
+    outputBuffer.append(data)
+    guard outputBuffer.count <= Self.maximumResponseBytes * 2 else {
+      terminateHelper(expected: false, pendingOutcome: "failed")
+      return
+    }
+    while let newline = outputBuffer.firstIndex(of: 0x0a) {
+      let line = Data(outputBuffer[..<newline])
+      outputBuffer.removeSubrange(...newline)
+      guard !line.isEmpty,
+            line.count <= Self.maximumResponseBytes,
+            let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+            let id = response["id"] as? String,
+            let outcome = response["outcome"] as? String,
+            ["succeeded", "failed", "canceled"].contains(outcome),
+            let request = pending.removeValue(forKey: id)
+      else {
+        terminateHelper(expected: false, pendingOutcome: "failed")
+        return
+      }
+      request.timeout.cancel()
+      request.callbacks.forEach { $0(response) }
+    }
+  }
+
+  private func handleHelperTermination() {
+    let wasExpected = expectedTermination
+    expectedTermination = false
+    clearProcessReferences()
+    if !wasExpected {
+      active = false
+      enabled = false
+      removeStatusItem()
+    }
+    failPending(outcome: "failed", code: "helper_unavailable")
+    if !wasExpected {
+      notifyStopped(reason: "helper_unavailable")
+    }
+  }
+
+  private func terminateHelper(expected: Bool, pendingOutcome: String) {
+    expectedTermination = expected
+    let terminating = process
+    failPending(
+      outcome: pendingOutcome,
+      code: pendingOutcome == "canceled" ? "stopped" : "helper_unavailable"
+    )
+    outputPipe?.fileHandleForReading.readabilityHandler = nil
+    errorPipe?.fileHandleForReading.readabilityHandler = nil
+    try? inputPipe?.fileHandleForWriting.close()
+    if let terminating, terminating.isRunning {
+      terminating.terminate()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak terminating] in
+        guard let self, let terminating, self.process === terminating,
+              terminating.isRunning
+        else { return }
+        kill(terminating.processIdentifier, SIGKILL)
+      }
+    } else {
+      clearProcessReferences()
+    }
+  }
+
+  private func clearProcessReferences() {
+    outputPipe?.fileHandleForReading.readabilityHandler = nil
+    errorPipe?.fileHandleForReading.readabilityHandler = nil
+    process = nil
+    inputPipe = nil
+    outputPipe = nil
+    errorPipe = nil
+    outputBuffer.removeAll(keepingCapacity: false)
+  }
+
+  private func failPending(outcome: String, code: String) {
+    let requests = pending
+    pending.removeAll()
+    for (id, request) in requests {
+      request.timeout.cancel()
+      let failure = Self.ipcResponse(id: id, outcome: outcome, code: code)
+      request.callbacks.forEach { $0(failure) }
+    }
+  }
+
+  private func stop(reason: String, notifyFlutter: Bool) {
+    enabled = false
+    active = false
+    terminateHelper(expected: true, pendingOutcome: "canceled")
+    removeStatusItem()
+    if notifyFlutter { notifyStopped(reason: reason) }
+  }
+
+  private func notifyStopped(reason: String) {
+    for channel in channels.values {
+      channel.invokeMethod("localComputerStopped", arguments: ["reason": reason])
+    }
+  }
+
+  private func configureStatusItem() {
+    guard statusItem == nil else {
+      updateStatusItem()
+      return
+    }
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let menu = NSMenu()
+    let state = NSMenuItem(title: "Local Computer Use is ready", action: nil, keyEquivalent: "")
+    state.isEnabled = false
+    statusMenuItem = state
+    menu.addItem(state)
+    menu.addItem(.separator())
+    let stop = NSMenuItem(
+      title: "Stop Asael Computer Use",
+      action: #selector(stopFromMenu),
+      keyEquivalent: "."
+    )
+    stop.keyEquivalentModifierMask = [.command]
+    stop.target = self
+    menu.addItem(stop)
+    item.menu = menu
+    statusItem = item
+    updateStatusItem()
+  }
+
+  private func updateStatusItem() {
+    guard let statusItem else { return }
+    statusItem.button?.title = active ? "● Asael is controlling" : "◉ Asael ready"
+    statusItem.button?.toolTip = active
+      ? "Asael is currently operating this Mac. Click to stop immediately."
+      : "Local Computer Use is enabled. Click to review or stop."
+    statusMenuItem?.title = active
+      ? "Asael is controlling this Mac"
+      : "Local Computer Use is ready"
+  }
+
+  private func removeStatusItem() {
+    if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
+    statusItem = nil
+    statusMenuItem = nil
+  }
+
+  @objc private func stopFromMenu() {
+    stop(reason: "kill_switch", notifyFlutter: true)
+  }
+
+  private func updatePermissions(from response: [String: Any]) {
+    guard response["outcome"] as? String == "succeeded",
+          let result = response["result"] as? [String: Any],
+          let data = result["data"] as? [String: Any]
+    else { return }
+    if let value = data["accessibility"] as? String,
+       ["granted", "denied", "unknown"].contains(value) {
+      accessibility = value
+    }
+    if let value = data["screenRecording"] as? String,
+       ["granted", "denied", "unknown"].contains(value) {
+      screenRecording = value
+    }
+  }
+
+  private func status() -> [String: Any] {
+    [
+      "supported": supported,
+      "helperInstalled": helperInstalled,
+      "enabled": enabled,
+      "active": active,
+      "accessibility": accessibility,
+      "screenRecording": screenRecording,
+      "helperVersion": helperVersion,
+    ]
+  }
+
+  private var supported: Bool {
+    if #available(macOS 14.0, *) { return true }
+    return false
+  }
+
+  private var helperInstalled: Bool {
+    guard let helperBundleURL,
+          let bundle = Bundle(url: helperBundleURL),
+          bundle.bundleIdentifier == Self.helperBundleIdentifier,
+          let executable = helperExecutableURL
+    else { return false }
+    return FileManager.default.isExecutableFile(atPath: executable.path)
+  }
+
+  private var helperBundleURL: URL? {
+    Bundle.main.bundleURL
+      .appendingPathComponent("Contents", isDirectory: true)
+      .appendingPathComponent("Helpers", isDirectory: true)
+      .appendingPathComponent(Self.helperBundleName, isDirectory: true)
+  }
+
+  private var helperExecutableURL: URL? {
+    helperBundleURL?
+      .appendingPathComponent("Contents/MacOS", isDirectory: true)
+      .appendingPathComponent(Self.helperExecutableName, isDirectory: false)
+  }
+
+  private var helperVersion: String {
+    guard let helperBundleURL,
+          let bundle = Bundle(url: helperBundleURL),
+          let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+          version.count <= 40
+    else { return "unavailable" }
+    return version
+  }
+
+  private func remember(id: String, output: [String: Any]) {
+    completed[id] = output
+    completionOrder.append(id)
+    while completionOrder.count > 128 {
+      completed.removeValue(forKey: completionOrder.removeFirst())
+    }
+  }
+
+  private func invalidArguments() -> FlutterError {
+    FlutterError(
+      code: "invalid_local_computer_arguments",
+      message: "The local Computer Use request is invalid.",
+      details: nil
+    )
+  }
+
+  private func commandFailure(_ code: String) -> [String: Any] {
+    ["outcome": "failed", "errorCode": code]
+  }
+
+  private static func ipcFailure(id: String, code: String) -> [String: Any] {
+    ipcResponse(id: id, outcome: "failed", code: code)
+  }
+
+  private static func ipcResponse(id: String, outcome: String, code: String) -> [String: Any] {
+    ["id": id, "outcome": outcome, "errorCode": code]
+  }
+
+  private static func isCommandId(_ value: String) -> Bool {
+    value.range(
+      of: #"^local_computer_command_[a-f0-9]{48}$"#,
+      options: .regularExpression
+    ) != nil
+  }
+
+  private static func makeCommandId() -> String {
+    let first = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    let second = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    return "local_computer_command_\(first)\(second.prefix(16))"
+  }
+
+  private static func parseDate(_ value: String) -> Date? {
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
   }
 }
 
@@ -992,6 +1581,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
   private let id: UUID
   private let flutterViewController: FlutterViewController
   private let channel: FlutterMethodChannel
+  private let localComputerChannel: FlutterMethodChannel
   private let onClose: (UUID) -> Void
   private var closed = false
 
@@ -1017,6 +1607,10 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
       name: "app.omniagent.omniagent/desktop",
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
+    localComputerChannel = FlutterMethodChannel(
+      name: "app.omniagent.omniagent/local-computer",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
 
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1_240, height: 800),
@@ -1035,6 +1629,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     window.delegate = self
     window.center()
     desktopHost.attachAuxiliary(channel: channel, window: window)
+    (NSApp.delegate as? AppDelegate)?.attachLocalComputerBridge(channel: localComputerChannel)
   }
 
   @available(*, unavailable)
@@ -1046,6 +1641,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     guard !closed else { return }
     closed = true
     channel.setMethodCallHandler(nil)
+    (NSApp.delegate as? AppDelegate)?.detachLocalComputerBridge(channel: localComputerChannel)
     flutterViewController.engine.shutDownEngine()
     onClose(id)
   }

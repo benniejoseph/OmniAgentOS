@@ -93,8 +93,55 @@ task_stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/asael-macos.XXXXXX")"
 trap 'rm -rf "$task_stage_dir"' EXIT
 task_staged_app="$task_stage_dir/Asael.app"
 task_dmg="$task_dist_dir/Asael-${task_version}-${task_build}-macOS.dmg"
+task_helper_source_dir="$task_flutter_dir/macos/ComputerUseHelper"
+task_helper_app="$task_staged_app/Contents/Helpers/AsaelComputerUseHelper.app"
+task_helper_executable="$task_helper_app/Contents/MacOS/AsaelComputerUseHelper"
 
 ditto "$task_source_app" "$task_staged_app"
+
+# Build the credential-free local Computer Use process outside the Flutter
+# target and embed it as a separately signed helper. It has no package
+# dependencies, network entitlement, inherited environment, XPC service, shell,
+# file, or Apple Events interface; the host communicates over child-only pipes.
+if [[ ! -f "$task_helper_source_dir/HelperMain.swift" || ! -f "$task_helper_source_dir/Info.plist" ]]; then
+  echo "The local Computer Use helper sources are incomplete." >&2
+  exit 1
+fi
+task_helper_build_dir="$task_stage_dir/helper-build"
+task_helper_sdk="$(xcrun --sdk macosx --show-sdk-path)"
+task_main_executable="$task_staged_app/Contents/MacOS/omniagent"
+task_helper_architectures="$(lipo -archs "$task_main_executable")"
+mkdir -p "$task_helper_build_dir" "$task_helper_app/Contents/MacOS"
+cp "$task_helper_source_dir/Info.plist" "$task_helper_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $task_version" "$task_helper_app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $task_build" "$task_helper_app/Contents/Info.plist"
+
+task_helper_slices=()
+for task_helper_architecture in $task_helper_architectures; do
+  task_helper_slice="$task_helper_build_dir/AsaelComputerUseHelper-$task_helper_architecture"
+  xcrun swiftc \
+    -parse-as-library \
+    -O \
+    -whole-module-optimization \
+    -sdk "$task_helper_sdk" \
+    -target "$task_helper_architecture-apple-macos14.0" \
+    -framework AppKit \
+    -framework ApplicationServices \
+    -framework Carbon \
+    -framework CoreGraphics \
+    -framework CryptoKit \
+    -framework ScreenCaptureKit \
+    -framework Security \
+    "$task_helper_source_dir/HelperMain.swift" \
+    -o "$task_helper_slice"
+  task_helper_slices+=("$task_helper_slice")
+done
+if [[ "${#task_helper_slices[@]}" -eq 1 ]]; then
+  cp "${task_helper_slices[0]}" "$task_helper_executable"
+else
+  lipo -create "${task_helper_slices[@]}" -output "$task_helper_executable"
+fi
+chmod 0755 "$task_helper_executable"
 
 if [[ -n "$task_signing_identity" ]]; then
   task_codesign_args=(
@@ -126,6 +173,12 @@ if [[ -n "$task_signing_identity" ]]; then
       \) \
       -print0
   )
+
+  codesign \
+    "${task_codesign_keychain_args[@]}" \
+    "${task_codesign_args[@]}" \
+    --identifier "app.omniagent.omniagent.computer-use-helper" \
+    "$task_helper_app"
 
   codesign \
     "${task_codesign_keychain_args[@]}" \
