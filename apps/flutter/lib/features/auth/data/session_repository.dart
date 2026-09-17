@@ -15,6 +15,7 @@ class SessionRepository {
   final BiometricGate _biometricGate;
 
   Future<AppSession?> restore() async {
+    await _store.prepare();
     if (!await _store.hasStoredCredentials()) return null;
     if (await _api.clearAndAcknowledgeRemoteWipe()) return null;
     await unlockBiometricRelease();
@@ -50,6 +51,11 @@ class SessionRepository {
       await _store.clear();
       return null;
     }
+  }
+
+  Future<AppSession?> migrateLegacyCredentials() async {
+    await _store.migrateLegacyCredentials();
+    return restore();
   }
 
   Future<AppSession> signIn({

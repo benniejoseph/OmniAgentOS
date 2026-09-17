@@ -11,6 +11,9 @@ task_local_signing_dir="${ASAEL_MACOS_LOCAL_SIGNING_DIR:-${HOME}/Library/Applica
 task_local_signing_keychain="${ASAEL_MACOS_LOCAL_SIGNING_KEYCHAIN:-$task_local_signing_dir/asael-private-signing.keychain-db}"
 task_local_signing_password_file="${ASAEL_MACOS_LOCAL_SIGNING_PASSWORD_FILE:-$task_local_signing_dir/asael-private-signing.password}"
 task_local_signing_identity="${ASAEL_MACOS_LOCAL_SIGNING_IDENTITY:-Asael Private Code Signing}"
+task_credential_broker_dir="${ASAEL_MACOS_CREDENTIAL_BROKER_DIR:-$task_local_signing_dir/credential-broker-v1}"
+task_credential_broker_source_app="$task_credential_broker_dir/AsaelCredentialBroker.app"
+task_credential_broker_manifest="$task_credential_broker_dir/manifest.json"
 task_signing_identity="$task_developer_signing_identity"
 task_signing_mode="developer"
 task_main_entitlements="$task_flutter_dir/macos/Runner/Release.entitlements"
@@ -62,6 +65,37 @@ if ! command -v flutter >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ "$task_signing_mode" == "adhoc" ]]; then
+  echo "A stable signing certificate is required for the frozen credential broker." >&2
+  echo "Install Asael's private signing identity, then provision broker v1 once." >&2
+  exit 1
+fi
+"$task_script_dir/install_macos_credential_broker.sh" --verify-only
+task_expected_broker_cdhash="$(jq -r '.cdhash' "$task_credential_broker_manifest")"
+task_expected_broker_bundle_digest="$(jq -r '.bundleDigest' "$task_credential_broker_manifest")"
+task_expected_broker_requirement="$(jq -r '.designatedRequirement' "$task_credential_broker_manifest")"
+
+credential_broker_bundle_digest() {
+  local task_bundle="$1"
+  (
+    cd "$task_bundle"
+    while IFS= read -r task_file; do
+      shasum -a 256 "$task_file"
+    done < <(find . -type f -print | LC_ALL=C sort)
+  ) | shasum -a 256 | awk '{print $1}'
+}
+
+signed_certificate_digest() {
+  local task_signed="$1"
+  local task_certificate_dir
+  task_certificate_dir="$(mktemp -d "${TMPDIR:-/tmp}/asael-release-cert.XXXXXX")"
+  codesign -d --extract-certificates "$task_certificate_dir/cert" "$task_signed" >/dev/null 2>&1
+  local task_digest
+  task_digest="$(shasum -a 256 "$task_certificate_dir/cert0" | awk '{print $1}')"
+  rm -rf "$task_certificate_dir"
+  printf '%s\n' "$task_digest"
+}
+
 cd "$task_flutter_dir"
 if [[ "$task_signing_mode" == "developer" ]]; then
   flutter build macos --release "${task_flutter_build_args[@]}"
@@ -96,8 +130,16 @@ task_dmg="$task_dist_dir/Asael-${task_version}-${task_build}-macOS.dmg"
 task_helper_source_dir="$task_flutter_dir/macos/ComputerUseHelper"
 task_helper_app="$task_staged_app/Contents/Helpers/AsaelComputerUseHelper.app"
 task_helper_executable="$task_helper_app/Contents/MacOS/AsaelComputerUseHelper"
+task_credential_broker_app="$task_staged_app/Contents/Helpers/AsaelCredentialBroker.app"
 
 ditto "$task_source_app" "$task_staged_app"
+mkdir -p "$task_staged_app/Contents/Helpers"
+ditto "$task_credential_broker_source_app" "$task_credential_broker_app"
+codesign --verify --strict --verbose=2 "$task_credential_broker_app"
+if [[ "$(credential_broker_bundle_digest "$task_credential_broker_app")" != "$task_expected_broker_bundle_digest" ]]; then
+  echo "Embedding changed the immutable credential broker bundle." >&2
+  exit 1
+fi
 
 # Build the credential-free local Computer Use process outside the Flutter
 # target and embed it as a separately signed helper. It has no package
@@ -153,6 +195,10 @@ if [[ -n "$task_signing_identity" ]]; then
   fi
 
   while IFS= read -r -d '' task_nested_code; do
+    if [[ "$task_nested_code" == "$task_credential_broker_app"/* ]]; then
+      echo "Refusing to re-sign any part of the immutable credential broker." >&2
+      exit 1
+    fi
     if [[ "$task_nested_code" == *.appex ]]; then
       codesign \
         "${task_codesign_keychain_args[@]}" \
@@ -185,6 +231,23 @@ if [[ -n "$task_signing_identity" ]]; then
     "${task_codesign_args[@]}" \
     --entitlements "$task_main_entitlements" \
     "$task_staged_app"
+fi
+
+task_observed_broker_cdhash="$(codesign -d -vvv "$task_credential_broker_app" 2>&1 | awk -F= '/^CDHash=/{print $2; exit}')"
+if [[ "$task_observed_broker_cdhash" != "$task_expected_broker_cdhash" || \
+      "$(credential_broker_bundle_digest "$task_credential_broker_app")" != "$task_expected_broker_bundle_digest" ]]; then
+  echo "The credential broker CDHash or bundle digest changed during packaging." >&2
+  exit 1
+fi
+if [[ "$(signed_certificate_digest "$task_credential_broker_app")" != \
+      "$(signed_certificate_digest "$task_staged_app")" ]]; then
+  echo "The app and frozen credential broker were not signed by the same certificate." >&2
+  exit 1
+fi
+task_host_requirement="$(codesign -d -r- "$task_staged_app" 2>&1 | sed -n 's/^designated => //p' | head -1)"
+if [[ "$task_host_requirement" != "$task_expected_broker_requirement" ]]; then
+  echo "The app and frozen credential broker do not share the recorded designated requirement." >&2
+  exit 1
 fi
 
 codesign --verify --deep --strict --verbose=2 "$task_staged_app"

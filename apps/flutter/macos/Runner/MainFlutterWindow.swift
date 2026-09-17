@@ -4,6 +4,7 @@ import FlutterMacOS
 class MainFlutterWindow: NSWindow {
   private static let desktopChannelName = "app.omniagent.omniagent/desktop"
   private static let localComputerChannelName = "app.omniagent.omniagent/local-computer"
+  private static let secureStorageChannelName = "app.omniagent.omniagent/secure-storage"
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -24,6 +25,12 @@ class MainFlutterWindow: NSWindow {
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
     (NSApp.delegate as? AppDelegate)?.attachLocalComputerBridge(channel: localComputerChannel)
+
+    let secureStorageChannel = FlutterMethodChannel(
+      name: Self.secureStorageChannelName,
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    (NSApp.delegate as? AppDelegate)?.attachCredentialBrokerBridge(channel: secureStorageChannel)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     super.awakeFromNib()

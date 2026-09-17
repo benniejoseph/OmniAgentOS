@@ -8,6 +8,7 @@ import UserNotifications
 class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   private let desktopHostController = DesktopHostController()
   private let localComputerController = LocalComputerController()
+  private let credentialBrokerController = CredentialBrokerController()
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     // FlutterAppDelegate inherits this optional AppKit delegate callback but
@@ -32,6 +33,7 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   }
 
   override func applicationWillTerminate(_ notification: Notification) {
+    credentialBrokerController.stopForApplicationTermination()
     localComputerController.stopForApplicationTermination()
     desktopHostController.stop()
   }
@@ -54,6 +56,14 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 
   func detachLocalComputerBridge(channel: FlutterMethodChannel) {
     localComputerController.detach(channel: channel)
+  }
+
+  func attachCredentialBrokerBridge(channel: FlutterMethodChannel) {
+    credentialBrokerController.attach(channel: channel)
+  }
+
+  func detachCredentialBrokerBridge(channel: FlutterMethodChannel) {
+    credentialBrokerController.detach(channel: channel)
   }
 
   override func application(
@@ -87,6 +97,307 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   ) {
     desktopHostController.handleNotificationResponse(response)
     completionHandler()
+  }
+}
+
+/// A bounded bridge to the frozen, separately signed Keychain owner.
+///
+/// Synchronous Security.framework calls occur only in the child. If securityd
+/// wedges, the host fails every pending call and terminates (then SIGKILLs)
+/// the broker. No environment credential or error detail crosses the pipes.
+private final class CredentialBrokerController: NSObject {
+  private struct PendingRequest {
+    let result: FlutterResult
+    let timeout: DispatchWorkItem
+  }
+
+  private struct QueuedRequest {
+    let envelope: [String: Any]
+    let timeout: TimeInterval
+    let result: FlutterResult
+  }
+
+  private static let helperBundleName = "AsaelCredentialBroker.app"
+  private static let helperExecutableName = "AsaelCredentialBroker"
+  private static let helperBundleIdentifier = "app.omniagent.omniagent.credential-broker"
+  private static let maximumRequestBytes = 512 * 1_024
+  private static let maximumResponseBytes = 512 * 1_024
+  private static let allowedKeys: Set<String> = [
+    "asael.session_token", "asael.refresh_token", "asael.access_expires_at",
+    "asael.device_id", "asael.biometric_enabled", "asael.capture_outbox_secret_v1",
+    "asael.offline_projection_secret_v1", "asael.offline_projection_owner_v1",
+    "asael.push_registration_id_v1", "asael.push_preview_policy_v1",
+    "asael.pending_push_acknowledgement_v1", "omniagent.session_token",
+  ]
+
+  private var channels: [ObjectIdentifier: FlutterMethodChannel] = [:]
+  private var process: Process?
+  private var inputPipe: Pipe?
+  private var outputPipe: Pipe?
+  private var errorPipe: Pipe?
+  private var outputBuffer = Data()
+  private var pending: [String: PendingRequest] = [:]
+  private var queued: [QueuedRequest] = []
+  private var activeAction: String?
+  private var expectedTermination = false
+
+  func attach(channel: FlutterMethodChannel) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    channels[ObjectIdentifier(channel)] = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      DispatchQueue.main.async {
+        guard let self else {
+          result(Self.flutterFailure("secure_store_unavailable"))
+          return
+        }
+        self.handle(call: call, result: result)
+      }
+    }
+  }
+
+  func detach(channel: FlutterMethodChannel) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    channel.setMethodCallHandler(nil)
+    channels.removeValue(forKey: ObjectIdentifier(channel))
+  }
+
+  func stopForApplicationTermination() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    terminate(expected: true, code: "secure_store_unavailable")
+    for channel in channels.values { channel.setMethodCallHandler(nil) }
+    channels.removeAll()
+  }
+
+  private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let values = call.arguments as? [String: Any]
+    var envelope: [String: Any] = [
+      "id": UUID().uuidString.lowercased(),
+      "action": call.method,
+    ]
+    switch call.method {
+    case "probe", "migrate":
+      guard call.arguments == nil else {
+        result(Self.flutterFailure("invalid_secure_store_arguments")); return
+      }
+    case "read", "delete":
+      guard let values, values.count == 1,
+            let key = values["key"] as? String, Self.allowedKeys.contains(key)
+      else { result(Self.flutterFailure("invalid_secure_store_arguments")); return }
+      envelope["key"] = key
+    case "write":
+      guard let values, values.count == 2,
+            let key = values["key"] as? String, Self.allowedKeys.contains(key),
+            let value = values["value"] as? String,
+            value.lengthOfBytes(using: .utf8) <= 64 * 1_024
+      else { result(Self.flutterFailure("invalid_secure_store_arguments")); return }
+      envelope["key"] = key
+      envelope["value"] = value
+    default:
+      result(FlutterMethodNotImplemented); return
+    }
+    enqueue(envelope, timeout: call.method == "migrate" ? 180 : 8, result: result)
+  }
+
+  private func enqueue(
+    _ envelope: [String: Any], timeout seconds: TimeInterval,
+    result: @escaping FlutterResult
+  ) {
+    let migrationQueued = activeAction == "migrate"
+      || queued.contains { $0.envelope["action"] as? String == "migrate" }
+    guard !migrationQueued,
+          queued.count + pending.count < 32,
+          JSONSerialization.isValidJSONObject(envelope),
+          let data = try? JSONSerialization.data(withJSONObject: envelope),
+          data.count <= Self.maximumRequestBytes
+    else { result(Self.flutterFailure("secure_store_unavailable")); return }
+    queued.append(QueuedRequest(envelope: envelope, timeout: seconds, result: result))
+    dispatchNext()
+  }
+
+  private func dispatchNext() {
+    guard pending.isEmpty, !queued.isEmpty else { return }
+    let requestToDispatch = queued.removeFirst()
+    guard let id = requestToDispatch.envelope["id"] as? String,
+          var data = try? JSONSerialization.data(withJSONObject: requestToDispatch.envelope),
+          ensureBroker(), let inputPipe
+    else {
+      requestToDispatch.result(Self.flutterFailure("secure_store_unavailable"))
+      failQueued(code: "secure_store_unavailable")
+      return
+    }
+
+    let deadline = DispatchWorkItem { [weak self] in
+      guard let self, let request = self.pending.removeValue(forKey: id) else { return }
+      request.result(Self.flutterFailure("secure_store_timeout"))
+      self.terminate(expected: false, code: "secure_store_timeout")
+    }
+    pending[id] = PendingRequest(result: requestToDispatch.result, timeout: deadline)
+    activeAction = requestToDispatch.envelope["action"] as? String
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + requestToDispatch.timeout,
+      execute: deadline
+    )
+    data.append(0x0a)
+    do {
+      try inputPipe.fileHandleForWriting.write(contentsOf: data)
+    } catch {
+      deadline.cancel()
+      pending.removeValue(forKey: id)
+      requestToDispatch.result(Self.flutterFailure("secure_store_unavailable"))
+      terminate(expected: false, code: "secure_store_unavailable")
+    }
+  }
+
+  private func ensureBroker() -> Bool {
+    if let process, process.isRunning { return true }
+    guard let bundleURL = helperBundleURL,
+          let bundle = Bundle(url: bundleURL),
+          bundle.bundleIdentifier == Self.helperBundleIdentifier,
+          let executableURL = helperExecutableURL,
+          FileManager.default.isExecutableFile(atPath: executableURL.path)
+    else { return false }
+
+    let launched = Process()
+    let input = Pipe(), output = Pipe(), errors = Pipe()
+    launched.executableURL = executableURL
+    launched.arguments = []
+    // Intentionally omit HOME, shell state, API keys, and session credentials.
+    launched.environment = ["LANG": "en_US.UTF-8", "PATH": "/usr/bin:/bin"]
+    launched.standardInput = input
+    launched.standardOutput = output
+    launched.standardError = errors
+    output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+      let data = handle.availableData
+      guard !data.isEmpty else { return }
+      DispatchQueue.main.async { self?.ingest(data) }
+    }
+    errors.fileHandleForReading.readabilityHandler = { handle in
+      _ = handle.availableData
+    }
+    launched.terminationHandler = { [weak self, weak launched] _ in
+      DispatchQueue.main.async {
+        guard let self, let launched, self.process === launched else { return }
+        let expected = self.expectedTermination
+        self.clearProcessReferences()
+        if !expected {
+          self.failPending(code: "secure_store_unavailable")
+          self.failQueued(code: "secure_store_unavailable")
+        }
+      }
+    }
+    do {
+      try launched.run()
+      process = launched
+      inputPipe = input; outputPipe = output; errorPipe = errors
+      outputBuffer.removeAll(keepingCapacity: true)
+      expectedTermination = false
+      return true
+    } catch {
+      output.fileHandleForReading.readabilityHandler = nil
+      errors.fileHandleForReading.readabilityHandler = nil
+      return false
+    }
+  }
+
+  private func ingest(_ data: Data) {
+    outputBuffer.append(data)
+    guard outputBuffer.count <= Self.maximumResponseBytes * 2 else {
+      terminate(expected: false, code: "secure_store_unavailable"); return
+    }
+    while let newline = outputBuffer.firstIndex(of: 0x0a) {
+      let line = Data(outputBuffer[..<newline])
+      outputBuffer.removeSubrange(...newline)
+      guard !line.isEmpty, line.count <= Self.maximumResponseBytes,
+            let response = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+            let id = response["id"] as? String,
+            let outcome = response["outcome"] as? String,
+            let request = pending.removeValue(forKey: id)
+      else { terminate(expected: false, code: "secure_store_unavailable"); return }
+      request.timeout.cancel()
+      activeAction = nil
+      if outcome == "succeeded" {
+        var value = response
+        value.removeValue(forKey: "id"); value.removeValue(forKey: "outcome")
+        request.result(value)
+      } else if outcome == "failed", let code = response["code"] as? String {
+        request.result(Self.flutterFailure(Self.allowedErrorCode(code)))
+      } else {
+        request.result(Self.flutterFailure("secure_store_unavailable"))
+      }
+      dispatchNext()
+    }
+  }
+
+  private func terminate(expected: Bool, code: String) {
+    expectedTermination = expected
+    activeAction = nil
+    failPending(code: code)
+    failQueued(code: code)
+    outputPipe?.fileHandleForReading.readabilityHandler = nil
+    errorPipe?.fileHandleForReading.readabilityHandler = nil
+    try? inputPipe?.fileHandleForWriting.close()
+    let terminating = process
+    if let terminating, terminating.isRunning {
+      terminating.terminate()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak terminating] in
+        guard let self, let terminating, self.process === terminating,
+              terminating.isRunning else { return }
+        kill(terminating.processIdentifier, SIGKILL)
+      }
+    } else { clearProcessReferences() }
+  }
+
+  private func failPending(code: String) {
+    let requests = pending
+    pending.removeAll()
+    for request in requests.values {
+      request.timeout.cancel()
+      request.result(Self.flutterFailure(code))
+    }
+  }
+
+  private func failQueued(code: String) {
+    let requests = queued
+    queued.removeAll(keepingCapacity: false)
+    for request in requests {
+      request.result(Self.flutterFailure(code))
+    }
+  }
+
+  private func clearProcessReferences() {
+    outputPipe?.fileHandleForReading.readabilityHandler = nil
+    errorPipe?.fileHandleForReading.readabilityHandler = nil
+    process = nil; inputPipe = nil; outputPipe = nil; errorPipe = nil
+    activeAction = nil
+    outputBuffer.removeAll(keepingCapacity: false)
+  }
+
+  private var helperBundleURL: URL? {
+    Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers", isDirectory: true)
+      .appendingPathComponent(Self.helperBundleName, isDirectory: true)
+  }
+
+  private var helperExecutableURL: URL? {
+    helperBundleURL?.appendingPathComponent("Contents/MacOS", isDirectory: true)
+      .appendingPathComponent(Self.helperExecutableName)
+  }
+
+  private static func allowedErrorCode(_ code: String) -> String {
+    let allowed: Set<String> = [
+      "invalid_request", "secure_store_unavailable", "secure_store_interaction_required",
+      "secure_store_unreadable", "secure_store_legacy_unknown_keys",
+      "secure_store_target_unknown_keys", "secure_store_migration_conflict",
+      "secure_store_migration_verification_failed",
+    ]
+    return allowed.contains(code) ? code : "secure_store_unavailable"
+  }
+
+  private static func flutterFailure(_ code: String) -> FlutterError {
+    FlutterError(
+      code: code,
+      message: "The protected credential operation could not be completed.",
+      details: nil
+    )
   }
 }
 
@@ -1628,6 +1939,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
   private let flutterViewController: FlutterViewController
   private let channel: FlutterMethodChannel
   private let localComputerChannel: FlutterMethodChannel
+  private let secureStorageChannel: FlutterMethodChannel
   private let onClose: (UUID) -> Void
   private var closed = false
 
@@ -1657,6 +1969,10 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
       name: "app.omniagent.omniagent/local-computer",
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
+    secureStorageChannel = FlutterMethodChannel(
+      name: "app.omniagent.omniagent/secure-storage",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
 
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 1_240, height: 800),
@@ -1676,6 +1992,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     window.center()
     desktopHost.attachAuxiliary(channel: channel, window: window)
     (NSApp.delegate as? AppDelegate)?.attachLocalComputerBridge(channel: localComputerChannel)
+    (NSApp.delegate as? AppDelegate)?.attachCredentialBrokerBridge(channel: secureStorageChannel)
   }
 
   @available(*, unavailable)
@@ -1688,6 +2005,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     closed = true
     channel.setMethodCallHandler(nil)
     (NSApp.delegate as? AppDelegate)?.detachLocalComputerBridge(channel: localComputerChannel)
+    (NSApp.delegate as? AppDelegate)?.detachCredentialBrokerBridge(channel: secureStorageChannel)
     flutterViewController.engine.shutDownEngine()
     onClose(id)
   }

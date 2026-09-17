@@ -14,6 +14,7 @@ class SecureSessionStore {
 
   SecureSessionStore.withStorage(this._storage);
   static const _operationTimeout = Duration(seconds: 20);
+  static const _migrationTimeout = Duration(minutes: 3);
   static const _tokenKey = 'asael.session_token';
   static const _refreshTokenKey = 'asael.refresh_token';
   static const _accessExpiresAtKey = 'asael.access_expires_at';
@@ -30,6 +31,19 @@ class SecureSessionStore {
   static const _legacyTokenKey = 'omniagent.session_token';
   final AsaelSecureValueStore _storage;
   bool _biometricReleaseUnlocked = false;
+
+  /// Performs only a non-interactive readiness probe. On macOS this never
+  /// reads legacy secret bytes; an old store is surfaced as an explicit
+  /// migration state for the bootstrap UI.
+  Future<void> prepare() => _bounded(_storage.prepare());
+
+  Future<void> migrateLegacyCredentials() =>
+      _storage.migrateLegacyCredentials().timeout(
+        _migrationTimeout,
+        onTimeout: () => throw const SecureStoreUnavailableException(
+          'Credential migration did not finish. Your original session is still safe.',
+        ),
+      );
 
   Future<T> _bounded<T>(Future<T> operation) => operation.timeout(
     _operationTimeout,
@@ -262,6 +276,10 @@ class SecureSessionStore {
 }
 
 abstract interface class AsaelSecureValueStore {
+  Future<void> prepare();
+
+  Future<void> migrateLegacyCredentials();
+
   Future<String?> read({required String key});
 
   Future<void> write({required String key, required String value});
@@ -275,6 +293,12 @@ class FlutterSecureValueStore implements AsaelSecureValueStore {
   final FlutterSecureStorage storage;
 
   @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<void> migrateLegacyCredentials() async {}
+
+  @override
   Future<String?> read({required String key}) => storage.read(key: key);
 
   @override
@@ -285,21 +309,19 @@ class FlutterSecureValueStore implements AsaelSecureValueStore {
   Future<void> delete({required String key}) => storage.delete(key: key);
 }
 
-/// Uses the ordinary file-based login Keychain on macOS.
+/// Debug-only adapter for ordinary `flutter run`, whose Xcode product does not
+/// embed the separately provisioned release broker.
 ///
-/// `flutter_secure_storage` always serializes `synchronizable=false`. On
-/// macOS that attribute opts the query into the data-protection access-group
-/// path, which requires an Apple-authorized provisioning profile. Asael's
-/// owner-only self-signed build intentionally has no Team Identifier or shared
-/// Keychain group, so this adapter invokes the same native plugin while
-/// omitting the access-group and synchronizable attributes entirely.
+/// This is never selected in a release build. Owner-private releases must fail
+/// closed if the frozen broker is missing rather than silently returning to an
+/// app-CDHash-owned Keychain item.
 class MacOsFileKeychainStore implements AsaelSecureValueStore {
   const MacOsFileKeychainStore({
     this.channel = const MethodChannel(_channelName),
   });
 
   static const _channelName = 'plugins.it_nomads.com/flutter_secure_storage';
-  static const _serviceName = 'app.omniagent.omniagent.file-keychain.v2';
+  static const _serviceName = 'app.omniagent.omniagent.debug-file-keychain.v1';
   final MethodChannel channel;
 
   @visibleForTesting
@@ -315,6 +337,12 @@ class MacOsFileKeychainStore implements AsaelSecureValueStore {
   };
 
   @override
+  Future<void> prepare() async {}
+
+  @override
+  Future<void> migrateLegacyCredentials() async {}
+
+  @override
   Future<String?> read({required String key}) =>
       channel.invokeMethod<String>('read', _arguments(key));
 
@@ -325,6 +353,133 @@ class MacOsFileKeychainStore implements AsaelSecureValueStore {
   @override
   Future<void> delete({required String key}) =>
       channel.invokeMethod<void>('delete', _arguments(key));
+}
+
+/// Talks to Asael's frozen, separately signed macOS credential broker.
+///
+/// Private self-signed app releases receive a new CodeDirectory hash on every
+/// build. Keeping Keychain calls in a versioned helper lets the Keychain ACL
+/// retain one stable identity across host-app updates. The helper is a direct
+/// child with an allowlisted protocol and never receives process credentials.
+class MacOsCredentialBrokerStore implements AsaelSecureValueStore {
+  const MacOsCredentialBrokerStore({
+    this.channel = const MethodChannel(_channelName),
+  });
+
+  static const _channelName = 'app.omniagent.omniagent/secure-storage';
+  final MethodChannel channel;
+
+  @override
+  Future<void> prepare() async {
+    final response = await _invokeMap('probe');
+    if (response['migrationRequired'] == true) {
+      final count = response['legacyItemCount'];
+      throw SecureStoreMigrationRequiredException(
+        legacyItemCount: count is int ? count : null,
+      );
+    }
+  }
+
+  @override
+  Future<void> migrateLegacyCredentials() => _invokeVoid('migrate');
+
+  @override
+  Future<String?> read({required String key}) async {
+    final response = await _invokeMap('read', {'key': key});
+    final value = response['value'];
+    if (value == null) return null;
+    if (value is! String) {
+      throw const SecureStoreUnavailableException(
+        'The credential broker returned an invalid response.',
+      );
+    }
+    return value;
+  }
+
+  @override
+  Future<void> write({required String key, required String value}) =>
+      _invokeVoid('write', {'key': key, 'value': value});
+
+  @override
+  Future<void> delete({required String key}) =>
+      _invokeVoid('delete', {'key': key});
+
+  Future<void> _invokeVoid(
+    String method, [
+    Map<String, Object>? arguments,
+  ]) async {
+    await _invokeMap(method, arguments);
+  }
+
+  Future<Map<Object?, Object?>> _invokeMap(
+    String method, [
+    Map<String, Object>? arguments,
+  ]) async {
+    try {
+      final response = await channel.invokeMethod<Map<Object?, Object?>>(
+        method,
+        arguments,
+      );
+      if (response == null) {
+        throw const SecureStoreUnavailableException(
+          'The credential broker returned no response.',
+        );
+      }
+      return response;
+    } on PlatformException catch (error) {
+      switch (error.code) {
+        case 'secure_store_migration_required':
+          throw const SecureStoreMigrationRequiredException();
+        case 'secure_store_migration_conflict':
+          throw const SecureStoreMigrationConflictException();
+        case 'secure_store_legacy_unknown_keys':
+        case 'secure_store_target_unknown_keys':
+          throw const SecureStoreMigrationSafetyException();
+        default:
+          throw const SecureStoreUnavailableException(
+            'Asael could not reach the protected credential store. Reopen the app and try again.',
+          );
+      }
+    } on MissingPluginException {
+      throw const SecureStoreUnavailableException(
+        'This Asael build does not include its protected credential broker.',
+      );
+    }
+  }
+}
+
+sealed class SecureStoreException implements Exception {
+  const SecureStoreException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class SecureStoreMigrationRequiredException extends SecureStoreException {
+  const SecureStoreMigrationRequiredException({this.legacyItemCount})
+    : super(
+        'A one-time credential upgrade is required. Your existing session will remain intact until the upgrade is verified.',
+      );
+  final int? legacyItemCount;
+}
+
+class SecureStoreMigrationConflictException extends SecureStoreException {
+  const SecureStoreMigrationConflictException()
+    : super(
+        'The old and new credential stores do not match. Nothing was deleted; sign out or contact support before continuing.',
+      );
+}
+
+class SecureStoreMigrationSafetyException extends SecureStoreException {
+  const SecureStoreMigrationSafetyException()
+    : super(
+        'Unexpected Keychain entries were found. Asael left every existing item unchanged.',
+      );
+}
+
+class SecureStoreUnavailableException extends SecureStoreException {
+  const SecureStoreUnavailableException(super.message);
 }
 
 class DeviceSecretMaterial {
@@ -375,6 +530,7 @@ List<int> _decodeBase64Url(String value) {
 AsaelSecureValueStore createAsaelSecureStorage({
   TargetPlatform? platform,
   bool? isWeb,
+  bool? isDebugMode,
 }) {
   final usesMacOSKeychain =
       !(isWeb ?? kIsWeb) &&
@@ -383,12 +539,14 @@ AsaelSecureValueStore createAsaelSecureStorage({
     return const FlutterSecureValueStore(FlutterSecureStorage());
   }
 
-  // Asael does not share credentials with another application or extension.
-  // The ordinary device-bound macOS Keychain keeps the same OS-backed secret
-  // storage without requiring a provisioning-only Keychain Sharing group. A
-  // future Share Extension must introduce its own reviewed handoff rather than
-  // silently widening this credential boundary.
-  return const MacOsFileKeychainStore();
+  if (isDebugMode ?? kDebugMode) {
+    return const MacOsFileKeychainStore();
+  }
+
+  // Credentials remain device-bound and are not shared with an extension. The
+  // separately signed broker owns only Asael's compile-time Keychain allowlist;
+  // the Share Extension must continue using its reviewed intake handoff.
+  return const MacOsCredentialBrokerStore();
 }
 
 final secureSessionStoreProvider = Provider<SecureSessionStore>(

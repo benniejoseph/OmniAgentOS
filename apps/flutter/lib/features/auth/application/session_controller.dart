@@ -34,6 +34,13 @@ class SessionController extends AsyncNotifier<AppSession?> {
     );
   }
 
+  Future<void> migrateLegacyCredentials() async {
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(
+      () => ref.read(sessionRepositoryProvider).migrateLegacyCredentials(),
+    );
+  }
+
   Future<void> lockForBiometrics() async {
     if (!await ref.read(sessionRepositoryProvider).lockBiometricRelease()) {
       return;

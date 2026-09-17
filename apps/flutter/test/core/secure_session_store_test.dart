@@ -1,25 +1,118 @@
 import 'package:asael/core/auth/biometric_gate.dart';
 import 'package:asael/core/storage/secure_session_store.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
-  test('macOS uses a device-bound Keychain policy without sharing', () {
+  test('macOS release always uses the frozen credential broker', () {
     final storage = createAsaelSecureStorage(
       platform: TargetPlatform.macOS,
       isWeb: false,
+      isDebugMode: false,
+    );
+    expect(storage, isA<MacOsCredentialBrokerStore>());
+  });
+
+  test('macOS debug retains the explicit flutter-run adapter', () {
+    final storage = createAsaelSecureStorage(
+      platform: TargetPlatform.macOS,
+      isWeb: false,
+      isDebugMode: true,
     );
     expect(storage, isA<MacOsFileKeychainStore>());
     final options = (storage as MacOsFileKeychainStore).channelOptions;
-
+    expect(
+      options['accountName'],
+      'app.omniagent.omniagent.debug-file-keychain.v1',
+    );
     expect(options['usesDataProtectionKeychain'], 'false');
-    expect(options['accountName'], 'app.omniagent.omniagent.file-keychain.v2');
     expect(options, isNot(contains('groupId')));
-    expect(options, isNot(contains('synchronizable')));
-    expect(options, isNot(contains('accessibility')));
+  });
+
+  test('broker probe reports migration without reading a secret', () async {
+    const channel = MethodChannel('test/secure-storage');
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          calls.add(call);
+          return {
+            'state': 'migration_required',
+            'migrationRequired': true,
+            'legacyItemCount': 7,
+          };
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+    final store = MacOsCredentialBrokerStore(channel: channel);
+
+    await expectLater(
+      store.prepare(),
+      throwsA(
+        isA<SecureStoreMigrationRequiredException>().having(
+          (error) => error.legacyItemCount,
+          'legacy count',
+          7,
+        ),
+      ),
+    );
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'probe');
+    expect(calls.single.arguments, isNull);
+  });
+
+  test('broker forwards only the requested key/value operation', () async {
+    const channel = MethodChannel('test/secure-storage-write');
+    MethodCall? observed;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          observed = call;
+          return <String, Object?>{};
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+    final store = MacOsCredentialBrokerStore(channel: channel);
+
+    await store.write(key: 'asael.session_token', value: 'secret-value');
+    expect(observed?.method, 'write');
+    expect(observed?.arguments, {
+      'key': 'asael.session_token',
+      'value': 'secret-value',
+    });
+  });
+
+  test('broker migration conflict is exposed as a typed safe state', () async {
+    const channel = MethodChannel('test/secure-storage-conflict');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          channel,
+          (_) => throw PlatformException(
+            code: 'secure_store_migration_conflict',
+            message: 'native details that must not escape',
+          ),
+        );
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+
+    await expectLater(
+      MacOsCredentialBrokerStore(channel: channel).migrateLegacyCredentials(),
+      throwsA(
+        isA<SecureStoreMigrationConflictException>().having(
+          (error) => error.toString(),
+          'safe message',
+          isNot(contains('native details')),
+        ),
+      ),
+    );
   });
 
   test('other native platforms retain their default secure-storage policy', () {
