@@ -26,6 +26,7 @@ import '../../features/payments/payments_view.dart';
 import '../../features/meetings/meetings_providers.dart';
 import '../../features/meetings/meetings_view.dart';
 import '../../features/projects/projects_providers.dart';
+import '../../features/projects/macos_projects_view.dart';
 import '../../features/projects/projects_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/results_view.dart';
@@ -36,6 +37,7 @@ import '../../features/security/device_security_screen.dart';
 import '../../features/talk/talk.dart';
 import '../../features/talk/talk_providers.dart';
 import '../../features/today/today.dart';
+import '../../features/today/macos_today_view.dart';
 import '../../features/today/today_providers.dart';
 import '../navigation/adaptive_shell.dart';
 import '../navigation/app_destination.dart';
@@ -169,19 +171,34 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                 GoRoute(
                   path: destination.path,
                   builder: (context, state) => switch (destination.path) {
-                    '/today' => TodayView(
-                      controller: ref.read(todayControllerProvider),
-                      focusItemId: state.uri.queryParameters['workItemId'],
-                    ),
+                    '/today' =>
+                      usesMacosPresentation()
+                          ? MacosTodayView(
+                              controller: ref.read(todayControllerProvider),
+                              focusItemId:
+                                  state.uri.queryParameters['workItemId'],
+                            )
+                          : TodayView(
+                              controller: ref.read(todayControllerProvider),
+                              focusItemId:
+                                  state.uri.queryParameters['workItemId'],
+                            ),
                     '/talk' => const ProviderBoundTalkRoute(),
                     '/capture' => CaptureView(
                       controller: ref.read(captureControllerProvider),
                     ),
-                    '/projects' => ProjectsView(
-                      controller: ref.read(projectsControllerProvider),
-                      onOpen: (project) =>
-                          context.push('/projects/${project.id}'),
-                    ),
+                    '/projects' =>
+                      usesMacosPresentation()
+                          ? MacosProjectsView(
+                              controller: ref.read(projectsControllerProvider),
+                              onOpen: (project) =>
+                                  context.push('/projects/${project.id}'),
+                            )
+                          : ProjectsView(
+                              controller: ref.read(projectsControllerProvider),
+                              onOpen: (project) =>
+                                  context.push('/projects/${project.id}'),
+                            ),
                     '/meetings' => MeetingsView(
                       controller: ref.read(meetingsControllerProvider),
                       onOpen: (meeting) =>
