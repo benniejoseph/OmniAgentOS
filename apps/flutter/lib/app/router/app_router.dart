@@ -144,7 +144,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/bootstrap',
         builder: (_, _) => const SessionBootstrapScreen(),
       ),
-      GoRoute(path: '/administration', builder: (_, _) => const AdminConsole()),
+      GoRoute(
+        path: '/administration',
+        redirect: (_, _) => usesMacosPresentation() ? '/monitoring' : null,
+        builder: (_, _) => const AdminConsole(),
+      ),
       GoRoute(
         path: '/devices',
         builder: (_, _) => const DeviceSecurityScreen(),
