@@ -74,6 +74,7 @@ fi
 task_expected_broker_cdhash="$(jq -r '.cdhash' "$task_credential_broker_manifest")"
 task_expected_broker_bundle_digest="$(jq -r '.bundleDigest' "$task_credential_broker_manifest")"
 task_expected_broker_requirement="$(jq -r '.designatedRequirement' "$task_credential_broker_manifest")"
+task_expected_broker_certificate="$(jq -r '.certificateDigest' "$task_credential_broker_manifest")"
 
 credential_broker_bundle_digest() {
   local task_bundle="$1"
@@ -85,16 +86,28 @@ credential_broker_bundle_digest() {
   ) | shasum -a 256 | awk '{print $1}'
 }
 
-signed_certificate_digest() {
-  local task_signed="$1"
-  local task_certificate_dir
-  task_certificate_dir="$(mktemp -d "${TMPDIR:-/tmp}/asael-release-cert.XXXXXX")"
-  codesign -d --extract-certificates "$task_certificate_dir/cert" "$task_signed" >/dev/null 2>&1
-  local task_digest
-  task_digest="$(shasum -a 256 "$task_certificate_dir/cert0" | awk '{print $1}')"
-  rm -rf "$task_certificate_dir"
-  printf '%s\n' "$task_digest"
+signing_certificate_digest() {
+  local task_certificate_output
+  if [[ -f "$task_local_signing_keychain" ]]; then
+    task_certificate_output="$(
+      security find-certificate -c "$task_signing_identity" -a -Z "$task_local_signing_keychain"
+    )"
+  else
+    task_certificate_output="$(security find-certificate -c "$task_signing_identity" -a -Z)"
+  fi
+  printf '%s\n' "$task_certificate_output" | awk '
+    /^SHA-256 hash:/ { digest=tolower($3); matches += 1 }
+    END {
+      if (matches != 1 || digest == "") exit 1
+      print digest
+    }
+  '
 }
+
+if [[ "$(signing_certificate_digest)" != "$task_expected_broker_certificate" ]]; then
+  echo "The active signing certificate does not match the frozen credential broker." >&2
+  exit 1
+fi
 
 cd "$task_flutter_dir"
 if [[ "$task_signing_mode" == "developer" ]]; then
@@ -233,18 +246,13 @@ if [[ -n "$task_signing_identity" ]]; then
     "$task_staged_app"
 fi
 
-task_observed_broker_cdhash="$(codesign -d -vvv "$task_credential_broker_app" 2>&1 | awk -F= '/^CDHash=/{print $2; exit}')"
+task_observed_broker_cdhash="$(codesign -d -vvv "$task_credential_broker_app" 2>&1 | awk -F= '/^CDHash=/{value=$2} END{print value}')"
 if [[ "$task_observed_broker_cdhash" != "$task_expected_broker_cdhash" || \
       "$(credential_broker_bundle_digest "$task_credential_broker_app")" != "$task_expected_broker_bundle_digest" ]]; then
   echo "The credential broker CDHash or bundle digest changed during packaging." >&2
   exit 1
 fi
-if [[ "$(signed_certificate_digest "$task_credential_broker_app")" != \
-      "$(signed_certificate_digest "$task_staged_app")" ]]; then
-  echo "The app and frozen credential broker were not signed by the same certificate." >&2
-  exit 1
-fi
-task_host_requirement="$(codesign -d -r- "$task_staged_app" 2>&1 | sed -n 's/^designated => //p' | head -1)"
+task_host_requirement="$(codesign -d -r- "$task_staged_app" 2>&1 | sed -n 's/^designated => //p')"
 if [[ "$task_host_requirement" != "$task_expected_broker_requirement" ]]; then
   echo "The app and frozen credential broker do not share the recorded designated requirement." >&2
   exit 1

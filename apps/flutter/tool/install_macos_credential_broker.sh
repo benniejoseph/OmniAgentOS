@@ -47,22 +47,29 @@ bundle_digest() {
 }
 
 code_hash() {
-  codesign -d -vvv "$1" 2>&1 | awk -F= '/^CDHash=/{print $2; exit}'
+  codesign -d -vvv "$1" 2>&1 | awk -F= '/^CDHash=/{value=$2} END{print value}'
 }
 
 designated_requirement() {
-  codesign -d -r- "$1" 2>&1 | sed -n 's/^designated => //p' | head -1
+  codesign -d -r- "$1" 2>&1 | sed -n 's/^designated => //p'
 }
 
-certificate_digest() {
-  local task_signed="$1"
-  local task_certificate_dir
-  task_certificate_dir="$(mktemp -d "${TMPDIR:-/tmp}/asael-broker-cert.XXXXXX")"
-  codesign -d --extract-certificates "$task_certificate_dir/cert" "$task_signed" >/dev/null 2>&1
-  local task_digest
-  task_digest="$(shasum -a 256 "$task_certificate_dir/cert0" | awk '{print $1}')"
-  rm -rf "$task_certificate_dir"
-  printf '%s\n' "$task_digest"
+signing_certificate_digest() {
+  local task_certificate_output
+  if [[ -f "$task_local_keychain" ]]; then
+    task_certificate_output="$(
+      security find-certificate -c "$task_identity" -a -Z "$task_local_keychain"
+    )"
+  else
+    task_certificate_output="$(security find-certificate -c "$task_identity" -a -Z)"
+  fi
+  printf '%s\n' "$task_certificate_output" | awk '
+    /^SHA-256 hash:/ { digest=tolower($3); matches += 1 }
+    END {
+      if (matches != 1 || digest == "") exit 1
+      print digest
+    }
+  '
 }
 
 verify_artifact() {
@@ -84,7 +91,7 @@ verify_artifact() {
   task_observed_executable="$(shasum -a 256 "$task_executable" | awk '{print $1}')"
   task_observed_info="$(shasum -a 256 "$task_info" | awk '{print $1}')"
   task_observed_hash="$(code_hash "$task_artifact_app")"
-  task_observed_certificate="$(certificate_digest "$task_artifact_app")"
+  task_observed_certificate="$(signing_certificate_digest)"
   task_observed_requirement="$(designated_requirement "$task_artifact_app")"
   task_observed_architectures="$(lipo -archs "$task_executable")"
 
@@ -170,7 +177,7 @@ task_bundle_hash="$(bundle_digest "$task_stage_app")"
 task_executable_hash="$(shasum -a 256 "$task_stage_executable" | awk '{print $1}')"
 task_info_hash="$(shasum -a 256 "$task_stage_app/Contents/Info.plist" | awk '{print $1}')"
 task_cdhash="$(code_hash "$task_stage_app")"
-task_certificate_hash="$(certificate_digest "$task_stage_app")"
+task_certificate_hash="$(signing_certificate_digest)"
 task_requirement="$(designated_requirement "$task_stage_app")"
 task_archs="$(lipo -archs "$task_stage_executable")"
 
