@@ -3,11 +3,19 @@ import { describe, expect, it } from "vitest";
 import {
   MODEL_ASSIGNMENT_CONTRACT_VERSION,
   modelAssignmentConfigurationSha256,
+  modelAssignmentRoleContracts,
   modelAssignmentRoleSupportsFallback,
   modelSupportsAssignmentRole,
 } from "@/lib/settings/model-assignment-contract";
 
 describe("functional model assignment contract", () => {
+  it("describes Computer Use as explicit installed-Mac interaction", () => {
+    const description = modelAssignmentRoleContracts.computer_use.description;
+
+    expect(description).toMatch(/explicitly selected installed Mac/i);
+    expect(description).not.toMatch(/isolated|remote browser/i);
+  });
+
   it("admits only provider and capability combinations backed by a runtime", () => {
     expect(modelSupportsAssignmentRole("planner", "openai", {
       capabilities: ["text", "tools"],

@@ -132,7 +132,7 @@ export const modelAssignmentRoleContracts: Readonly<
   }),
   computer_use: assignmentRoleContract({
     title: "Computer use",
-    description: "Model-driven browser and desktop operation through an isolated runtime",
+    description: "Model-driven visual interaction on the explicitly selected installed Mac",
     runtimePurpose: "Governed computer-use planning and visual interaction",
     supportedProviders: ["openai", "google"],
     acceptedCapabilities: ["computer_use"],

@@ -101,7 +101,6 @@ const actionSynonyms: ReadonlyArray<readonly [RegExp, readonly string[]]> = [
   [/\b(?:deploy|release|publish)\b/i, ["deploy", "release", "publish"]],
   [/\b(?:connect|configure|setup|integrate)\b/i, ["connect", "configure", "integration", "oauth", "mcp"]],
   [/\b(?:approve|approval|authorize|confirm)\b/i, ["approve", "approval", "authorize", "confirm"]],
-  [/\b(?:browse|navigate|click|fill|submit|log ?in|sign ?in)\b/i, ["browser", "navigate", "click", "type", "form", "automation"]],
 ];
 
 const resourceSynonyms: ReadonlyArray<readonly [RegExp, readonly string[]]> = [
@@ -115,7 +114,6 @@ const resourceSynonyms: ReadonlyArray<readonly [RegExp, readonly string[]]> = [
   [/\b(?:memory|history|context|remember)\b/i, ["memory", "history", "context", "knowledge"]],
   [/\b(?:issue|ticket|bug)\b/i, ["issue", "ticket", "bug"]],
   [/\b(?:pull request|merge request|pr)\b/i, ["pull request", "merge request", "pr"]],
-  [/\b(?:browser|website|web ?page|site|form|portal)\b/i, ["browser", "website", "page", "browser task", "automation"]],
 ];
 
 const referentialRequestPattern =

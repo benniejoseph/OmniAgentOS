@@ -41,14 +41,13 @@ describe("capability-aware autonomy", () => {
     expect(query).toMatch(/workflow|action/);
   });
 
-  it("keeps natural browser wording as capability search, not target authority", () => {
+  it("does not expand natural portal wording into remote browser discovery terms", () => {
     const query = buildCapabilitySearchQuery({
       request: "Sign in to the portal and submit the form",
     });
 
-    expect(query).toMatch(/browser/);
-    expect(query).toMatch(/navigate|click|form|automation/);
-    expect(query).not.toMatch(/playwright/i);
+    expect(query.startsWith("Sign in to the portal and submit the form")).toBe(true);
+    expect(query).not.toMatch(/browser|navigate|click|automation|playwright/i);
   });
 
   it("keeps the newest useful history when discovery reaches its query limit", () => {
