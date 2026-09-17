@@ -180,6 +180,89 @@ describe("MCP client", () => {
     expect(networkMocks.fetchPublicHttpUrl).not.toHaveBeenCalled();
   });
 
+  it("omits image, audio, and binary resource bytes without breaking text or structured content", async () => {
+    const imageBytes = Buffer.from("private-image-bytes").toString("base64");
+    const audioBytes = Buffer.from("private-audio-bytes").toString("base64");
+    const resourceBytes = Buffer.from("private-resource-bytes").toString("base64");
+    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const method = init?.method || "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      const message = parseMcpMessage(init);
+      if (message.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === "initialize") {
+        return initializationResponse(message.id);
+      }
+      if (message.method === "tools/call") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            content: [
+              { type: "text", text: "Analysis complete." },
+              { type: "image", mimeType: "image/png", data: imageBytes },
+              { type: "audio", mimeType: "audio/mpeg", data: audioBytes },
+              {
+                type: "resource",
+                resource: {
+                  uri: "file:///private.bin",
+                  mimeType: "application/octet-stream",
+                  blob: resourceBytes,
+                },
+              },
+              {
+                type: "resource",
+                resource: {
+                  uri: "file:///notes.txt",
+                  mimeType: "text/plain",
+                  text: "Resource text remains available.",
+                },
+              },
+            ],
+            structuredContent: {
+              status: "complete",
+              citations: [{ id: "note-1" }],
+            },
+          },
+        });
+      }
+      throw new Error(`Unexpected MCP method ${message.method || method}`);
+    });
+
+    const result = await callMcpTool({
+      connector: connector(),
+      toolName: "query-docs",
+      args: { query: "contracts" },
+    });
+    const serialized = JSON.stringify(result);
+
+    expect(serialized).not.toContain(imageBytes);
+    expect(serialized).not.toContain(audioBytes);
+    expect(serialized).not.toContain(resourceBytes);
+    expect(result).toMatchObject({
+      content: expect.arrayContaining([
+        { type: "text", text: "Analysis complete." },
+        expect.objectContaining({
+          type: "resource",
+          resource: expect.objectContaining({ text: "Resource text remains available." }),
+        }),
+        {
+          type: "text",
+          text: "[1 image, 1 audio, 1 binary resource MCP blocks were omitted.]",
+        },
+      ]),
+      structuredContent: {
+        status: "complete",
+        citations: [{ id: "note-1" }],
+      },
+    });
+  });
+
   it("rejects MCP tool results that carry the protocol error flag", async () => {
     networkMocks.fetchPublicHttpUrl.mockImplementation(async (
       _input: RequestInfo | URL,

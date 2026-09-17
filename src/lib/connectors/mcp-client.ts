@@ -128,7 +128,7 @@ export async function callMcpTool({
   abortSignal?: AbortSignal;
   actorRole?: SecurityRole;
   sessionScope?: McpSessionScope;
-  /** Reserved for trusted server-side evidence capture. Model tool results omit image bytes. */
+  /** Binary MCP content is never returned; retained only to reject legacy evidence callers. */
   includeImages?: boolean;
 }) {
   assertSupportedMcpConnector(connector);
@@ -164,7 +164,7 @@ export async function callMcpTool({
     receivedToolResult = true;
     const safeResult = redactExactSecrets(
       toBoundedJsonValue(
-        result,
+        omitMcpBinaryContent(result),
         MCP_MAX_TOOL_RESULT_BYTES,
         "MCP tool result",
       ),
@@ -183,6 +183,63 @@ export async function callMcpTool({
   } finally {
     await lease.release();
   }
+}
+
+function omitMcpBinaryContent(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const result = value as Record<string, unknown>;
+  if (!Array.isArray(result.content)) {
+    return result;
+  }
+  const omitted = {
+    image: 0,
+    audio: 0,
+    resourceBlob: 0,
+  };
+  const content = result.content.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return [item];
+    }
+    const block = item as Record<string, unknown>;
+    if (block.type === "image") {
+      omitted.image += 1;
+      return [];
+    }
+    if (block.type === "audio") {
+      omitted.audio += 1;
+      return [];
+    }
+    if (
+      block.type === "resource" &&
+      block.resource &&
+      typeof block.resource === "object" &&
+      !Array.isArray(block.resource) &&
+      typeof (block.resource as Record<string, unknown>).blob === "string"
+    ) {
+      omitted.resourceBlob += 1;
+      return [];
+    }
+    return [item];
+  });
+  const omittedCount = omitted.image + omitted.audio + omitted.resourceBlob;
+  if (!omittedCount) return result;
+  const labels = [
+    omitted.image ? `${omitted.image} image` : "",
+    omitted.audio ? `${omitted.audio} audio` : "",
+    omitted.resourceBlob ? `${omitted.resourceBlob} binary resource` : "",
+  ].filter(Boolean);
+  return {
+    ...result,
+    content: [
+      ...content,
+      {
+        type: "text",
+        text: `[${labels.join(", ")} MCP ${omittedCount === 1 ? "block was" : "blocks were"} omitted.]`,
+      },
+    ],
+  };
 }
 
 async function acquireToolSession(
