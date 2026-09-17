@@ -109,6 +109,7 @@ describe("run feedback effects", () => {
     expect(JSON.stringify(body.mediaArtifacts)).not.toContain("untrusted.example");
     expect(JSON.stringify(body.mediaArtifacts)).not.toContain("private-image-bytes");
     expect(JSON.stringify(body.mediaArtifacts)).not.toContain("private prompt");
+    expect(body).not.toHaveProperty("computerUseEvidence");
   });
 
   it("hides sibling media records and enforces the owner boundary for replay reads", async () => {

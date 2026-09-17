@@ -21,7 +21,6 @@ import {
   listAgentRuns,
   recordAgentRunFeedback,
 } from "@/lib/runs/store";
-import { listRunBrowserActivity } from "@/lib/runs/activity";
 import { listRunForkLineage } from "@/lib/runs/fork-store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
 import { getOwnedThread } from "@/lib/threads/store";
@@ -93,24 +92,6 @@ export async function showRunService(
     contextReceipt: run ? contextReceipt : null,
     agentIdentity: run ? agentIdentity : null,
   }, { resourceCount: run ? 1 : 0 });
-}
-
-export async function inspectRunActivityService(
-  caller: AppServiceCaller,
-  input: z.input<typeof runInspectionServiceInputSchema>,
-) {
-  const value = runInspectionServiceInputSchema.parse(input);
-  const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.runs.activity"));
-  const run = await getAgentRun(value.runId, { tenantId: caller.context.tenantId });
-  await assertRunReadable(run, caller);
-  const browserActivity = run
-    ? await listRunBrowserActivity(run.id, { tenantId: caller.context.tenantId, actorId: caller.context.actorId })
-    : [];
-  return completeAppServiceCall(authorized, {
-    runId: run?.id || value.runId,
-    status: run?.status || null,
-    browserActivity,
-  }, { resourceCount: browserActivity.length });
 }
 
 export async function inspectRunTrajectoryService(

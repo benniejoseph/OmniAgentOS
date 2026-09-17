@@ -90,4 +90,18 @@ describe("Conversation progress client contract", () => {
     invalidVersion.version = "future-contract";
     expect(parseConversationProgress(invalidVersion)).toBeUndefined();
   });
+
+  it("keeps historical browser receipts content-free without exposing a retired viewer action", () => {
+    const historical = payload();
+    historical.items[0].category = "browser";
+    historical.items[0].action = {
+      kind: "browser",
+      label: "Open browser evidence",
+      href: "https://attacker.example",
+    };
+
+    expect(parseConversationProgress(historical)?.items).toEqual([
+      expect.objectContaining({ category: "browser", action: undefined }),
+    ]);
+  });
 });

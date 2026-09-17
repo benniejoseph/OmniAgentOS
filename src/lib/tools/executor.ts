@@ -32,15 +32,6 @@ import {
 import { listRunsService } from "@/lib/app-services/runs";
 import { executeFirstPartyAppTool } from "@/lib/app-services/tool-dispatcher";
 import { reconcileSalesforceRecordWriteService } from "@/lib/app-services/salesforce-writes";
-import { captureBrowserFrameAfterToolSafely } from "@/lib/browser/frames";
-import {
-  specializeBrowserActionTool,
-  type BrowserActionPolicyDecision,
-} from "@/lib/browser/action-policy";
-import {
-  browserProfileTargetHostname,
-  resolveBrowserProfileSession,
-} from "@/lib/browser/profiles";
 import {
   sanitizeModelBrowserObservation,
   type ModelBrowserObservation,
@@ -83,7 +74,6 @@ import { callOpenApiOperation } from "@/lib/connectors/openapi-client";
 import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/openapi-store";
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
-import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { readResponseTextLimited } from "@/lib/http/body";
 import { localComputerOpenUrlInputSchema } from "@/lib/local-computer/contracts";
 import { executeLocalComputerCommand } from "@/lib/local-computer/store";
@@ -103,7 +93,6 @@ import { redactSensitive } from "@/lib/security/context";
 import {
   assertExecutionScopeTenant,
   executionScopesEqual,
-  executionScopeFromSecurityContext,
   type ExecutionScope,
 } from "@/lib/security/execution-scope";
 import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network";
@@ -559,7 +548,7 @@ export async function executeGovernedTool({
     existingRecord?.approvalRequired && !registeredTool.approvalRequired && registeredTool.riskLevel > 0,
   );
   const registeredApprovalFingerprint = toolApprovalFingerprint(registeredTool);
-  let tool = effectiveForceApproval
+  const tool = effectiveForceApproval
     ? {
         ...registeredTool,
         approvalRequired: true,
@@ -822,16 +811,7 @@ export async function executeGovernedTool({
     existingRecord,
     scopedRequest,
   );
-  const browserExecutionPolicy = await resolveBrowserExecutionPolicy({
-    tool,
-    toolInput: preparedInput,
-    sessionScope: mcpSessionScope,
-    executionScope: scopedRequest.executionScope || executionScope,
-    tenantId: context?.tenantId,
-    forceApproval: effectiveForceApproval,
-  });
-  tool = browserExecutionPolicy.tool;
-  const effectiveMcpSessionScope = browserExecutionPolicy.sessionScope;
+  const effectiveMcpSessionScope = mcpSessionScope;
   if (existingRecord && executionClaimToken) {
     const reviewedFingerprint =
       getToolExecutionApprovalFingerprint(existingRecord);
@@ -849,15 +829,6 @@ export async function executeGovernedTool({
         idempotencyKey,
       );
     }
-  }
-  if (browserExecutionPolicy.decision) {
-    await recordBrowserActionClassificationSafely({
-      decision: browserExecutionPolicy.decision,
-      tool,
-      executionScope: scopedRequest.executionScope,
-      context,
-      profileBound: Boolean(effectiveMcpSessionScope?.browserProfile),
-    });
   }
   const effectCanaryRequest = Boolean(
     !dryRun &&
@@ -1704,7 +1675,7 @@ export async function executeGovernedTool({
       }
       throw error;
     }
-    let browserObservation: ModelBrowserObservation | undefined =
+    const browserObservation: ModelBrowserObservation | undefined =
       localComputerResult?.observation
         ? localComputerModelObservation({
             executionId: saved.id,
@@ -1712,31 +1683,6 @@ export async function executeGovernedTool({
             observation: localComputerResult.observation,
           })
         : undefined;
-    if (!browserObservation && tool.category === "mcp") {
-      const frameExecutionScope = scopedRequest.executionScope ||
-        (toolRuntimeContext
-          ? executionScopeFromSecurityContext(toolRuntimeContext, {
-              executingPrincipalType: "system",
-              executingPrincipalId: "browser-frame-recorder",
-              correlationId: saved.id,
-              causationId: saved.id,
-              purpose: "browser.frame.capture.legacy",
-            })
-          : undefined);
-      if (frameExecutionScope) {
-        const captured = await captureBrowserFrameAfterToolSafely({
-          toolId: tool.id,
-          toolInput: preparedInput,
-          toolResult: safeResult,
-          executionId: saved.id,
-          executionScope: frameExecutionScope,
-          context: toolRuntimeContext,
-          sessionScope: effectiveMcpSessionScope,
-          abortSignal,
-        });
-        browserObservation = captured?.modelObservation;
-      }
-    }
     await recordTrustOutcomeSafely(
       tool,
       toolRuntimeContext,
@@ -1794,95 +1740,6 @@ export async function executeGovernedTool({
     );
     return { record: saved, result: null };
   }
-}
-
-async function resolveBrowserExecutionPolicy(input: {
-  tool: ToolDefinition;
-  toolInput: Record<string, unknown>;
-  sessionScope?: McpSessionScope;
-  executionScope?: ExecutionScope;
-  tenantId?: string;
-  forceApproval?: boolean;
-}): Promise<{
-  tool: ToolDefinition;
-  sessionScope?: McpSessionScope;
-  decision?: BrowserActionPolicyDecision;
-}> {
-  const unchanged = {
-    tool: input.tool,
-    sessionScope: input.sessionScope,
-    decision: undefined,
-  };
-  if (input.tool.category !== "mcp") {
-    return unchanged;
-  }
-  const mcpTool = await getMcpToolById(input.tool.id, {
-    tenantId: input.sessionScope?.tenantId || input.tenantId,
-  });
-  if (!mcpTool) return unchanged;
-  const connector = await getMcpConnector(mcpTool.connectorId, {
-    tenantId: input.sessionScope?.tenantId || input.tenantId,
-  });
-  if (!connector || !isAsaelPlaywrightMcpEndpoint(connector.endpoint)) {
-    return unchanged;
-  }
-  const profile = input.sessionScope
-    ? await resolveBrowserProfileSession({
-        tenantId: input.sessionScope.tenantId,
-        ownerActorId: input.sessionScope.actorId,
-        executionId: input.sessionScope.executionId,
-        targetHostname: browserProfileTargetHostname(
-          mcpTool.name,
-          input.toolInput,
-        ),
-        executionScope: input.executionScope,
-      })
-    : undefined;
-  let sessionScope = input.sessionScope;
-  if (profile && input.sessionScope) {
-    sessionScope = { ...input.sessionScope, browserProfile: profile };
-  }
-  const specialized = specializeBrowserActionTool({
-    tool: input.tool,
-    toolName: mcpTool.name,
-    toolInput: input.toolInput,
-    forceApproval: input.forceApproval || connector.approvalRequired,
-  });
-  return {
-    tool: specialized.tool,
-    sessionScope,
-    decision: specialized.decision,
-  };
-}
-
-async function recordBrowserActionClassificationSafely(input: {
-  decision: BrowserActionPolicyDecision;
-  tool: ToolDefinition;
-  executionScope?: ExecutionScope;
-  context?: SecurityContext;
-  profileBound: boolean;
-}) {
-  await recordRuntimeEventSafely({
-    level: "info",
-    category: "workflow",
-    action: "browser.action.classified",
-    tenantId: input.executionScope?.tenantId || input.context?.tenantId,
-    actorId:
-      input.executionScope?.initiatingActorId || input.context?.actorId,
-    resourceType: "tool",
-    resourceId: input.tool.id,
-    message: "Browser action classified by the governed action policy.",
-    metadata: {
-      policyVersion: input.decision.version,
-      disposition: input.decision.disposition,
-      riskLevel: input.decision.riskLevel,
-      approvalRequired: input.decision.approvalRequired,
-      operationClass: input.decision.operationClass,
-      reversible: input.decision.reversible,
-      profileBound: input.profileBound,
-    },
-    correlationId: input.executionScope?.correlationId,
-  });
 }
 
 type ResolvedToolExecutionScope = Readonly<{

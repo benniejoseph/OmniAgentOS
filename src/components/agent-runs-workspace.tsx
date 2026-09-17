@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -9,7 +8,6 @@ import {
   Brain,
   Check,
   CheckCircle2,
-  ChevronLeft,
   ChevronRight,
   Clock3,
   Database,
@@ -24,7 +22,6 @@ import {
   Map as MapIcon,
   MessageSquareText,
   MessagesSquare,
-  MonitorPlay,
   PanelLeftClose,
   PanelLeftOpen,
   Play,
@@ -253,67 +250,6 @@ type ConversationMemory = {
   updatedAt: string;
   claimStatus?: string;
 };
-type BrowserActivityItem = {
-  id: string;
-  sequence: number;
-  at: string;
-  action: string;
-  operation: string;
-  status: "dry_run" | "executed" | "executing" | "approval_required" | "blocked" | "failed" | "rejected";
-  targetOrigin?: string;
-  durationMs?: number;
-  summary: string;
-  error?: string;
-  frame?: {
-    id: string;
-    at: string;
-    mimeType: string;
-    byteCount: number;
-    executionId: string;
-    operation: string;
-    pageOrigin?: string;
-    pageTitle?: string;
-    contentUrl: string;
-  };
-  accessibilitySnapshot?: {
-    id: string;
-    at: string;
-    mimeType: "text/plain";
-    byteCount: number;
-    contentSha256: string;
-    executionId: string;
-    operation: string;
-    contentUrl: string;
-  };
-  frameStatus?: "captured" | "suppressed" | "unavailable";
-  accessibilitySnapshotStatus?: "captured" | "suppressed" | "unavailable";
-};
-type BrowserActivityMode = "live" | "replay";
-type BrowserProfile = {
-  id: string;
-  name: string;
-  allowedDomains: string[];
-  state: "active" | "revoked";
-  lifecycleRevision: number;
-  consentedAt: string;
-  lastUsedAt: string | null;
-};
-type BrowserTakeover = {
-  id: string;
-  runId: string;
-  state: "active" | "released" | "expired" | "revoked";
-  actionCount: number;
-  profileActive: boolean;
-  startedAt: string;
-  expiresAt: string;
-};
-type BrowserActivityStreamState =
-  | "idle"
-  | "connecting"
-  | "connected"
-  | "reconnecting"
-  | "replay"
-  | "error";
 type TraceStageStatus = "observed" | "pending" | "missing" | "not_applicable";
 type RunTraceStage = {
   id: "intent" | "plan" | "agent" | "model" | "tool" | "evidence" | "effect" | "verification" | "memory";
@@ -511,25 +447,15 @@ export function AgentRunsWorkspace({
   const [confirmForgetMemoryId, setConfirmForgetMemoryId] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedActivityRunId, setSelectedActivityRunId] = useState("");
-  const [browserActivity, setBrowserActivity] = useState<BrowserActivityItem[]>([]);
-  const [browserActivityState, setBrowserActivityState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [browserActivityError, setBrowserActivityError] = useState<string>();
-  const [browserActivityMode, setBrowserActivityMode] = useState<BrowserActivityMode>();
-  const [browserActivityStreamState, setBrowserActivityStreamState] = useState<BrowserActivityStreamState>("idle");
   const abortControllerRef = useRef<AbortController | null>(null);
   const contextControllerRef = useRef<AbortController | null>(null);
   const contextVersionRef = useRef(0);
   const contextSelectionReviewedRef = useRef(false);
   const evidenceControllerRef = useRef<AbortController | null>(null);
   const evidenceVersionRef = useRef(0);
-  const browserActivityControllerRef = useRef<AbortController | null>(null);
-  const browserActivityVersionRef = useRef(0);
-  const browserActivityStreamControllerRef = useRef<AbortController | null>(null);
   const conversationCanvasControllerRef = useRef<AbortController | null>(null);
   const threadLoadControllerRef = useRef<AbortController | null>(null);
   const threadLoadVersionRef = useRef(0);
-  const browserActivityModeRef = useRef<BrowserActivityMode | undefined>(undefined);
-  const browserActivityRunIdRef = useRef("");
   const pendingDeltasRef = useRef<string[]>([]);
   const deltaFlushTimerRef = useRef<number | null>(null);
   const initialThreadLoadedRef = useRef(false);
@@ -841,8 +767,6 @@ export function AgentRunsWorkspace({
       abortControllerRef.current?.abort();
       contextControllerRef.current?.abort();
       evidenceControllerRef.current?.abort();
-      browserActivityControllerRef.current?.abort();
-      browserActivityStreamControllerRef.current?.abort();
       conversationCanvasControllerRef.current?.abort();
       threadLoadControllerRef.current?.abort();
       if (deltaFlushTimerRef.current !== null) {
@@ -1091,104 +1015,6 @@ export function AgentRunsWorkspace({
   }, [activeAgentRunId, agentRunTerminal, loading]);
 
   useEffect(() => {
-    if (!selectedActivityRunId || sessionStatus !== "ready" || readPermission) {
-      browserActivityStreamControllerRef.current?.abort();
-      return;
-    }
-    const runId = selectedActivityRunId;
-    const controller = new AbortController();
-    browserActivityStreamControllerRef.current?.abort();
-    browserActivityStreamControllerRef.current = controller;
-    browserActivityModeRef.current = undefined;
-    const runChanged = browserActivityRunIdRef.current !== runId;
-    browserActivityRunIdRef.current = runId;
-    queueMicrotask(() => {
-      if (controller.signal.aborted) return;
-      if (runChanged) setBrowserActivity([]);
-      setBrowserActivityMode(undefined);
-      setBrowserActivityStreamState("connecting");
-      if (runChanged) setBrowserActivityState("loading");
-      setBrowserActivityError(undefined);
-    });
-    let reconnectAttempt = 0;
-
-    const connect = async () => {
-      while (!controller.signal.aborted) {
-        if (document.visibilityState !== "visible") {
-          await browserReconnectDelay(1_000, controller.signal);
-          continue;
-        }
-        try {
-          setBrowserActivityStreamState(reconnectAttempt ? "reconnecting" : "connecting");
-          const response = await fetch(
-            `/api/runs/${encodeURIComponent(runId)}/activity/stream`,
-            {
-              cache: "no-store",
-              headers: { accept: "text/event-stream" },
-              signal: controller.signal,
-            },
-          );
-          if (!response.ok || !response.body) {
-            const payload = asRecord(await response.json().catch(() => ({})));
-            throw new BrowserActivityStreamError(
-              stringValue(payload.error, `Browser activity stream returned ${response.status}.`),
-              response.status < 500,
-            );
-          }
-          await readBrowserActivitySse(response.body, (payload) => {
-            if (
-              stringValue(payload.type) !== "browser_activity" ||
-              stringValue(payload.runId) !== runId
-            ) {
-              return;
-            }
-            const mode = stringValue(payload.mode) === "replay" ? "replay" : "live";
-            browserActivityModeRef.current = mode;
-            setBrowserActivityMode(mode);
-            setBrowserActivity(
-              (Array.isArray(payload.browserActivity)
-                ? payload.browserActivity
-                : []) as BrowserActivityItem[],
-            );
-            setBrowserActivityState("ready");
-            setBrowserActivityError(undefined);
-            setBrowserActivityStreamState(mode === "replay" ? "replay" : "connected");
-            reconnectAttempt = 0;
-          });
-          if (controller.signal.aborted || browserActivityModeRef.current === "replay") {
-            break;
-          }
-        } catch (streamError) {
-          if (controller.signal.aborted) break;
-          if (streamError instanceof BrowserActivityStreamError && streamError.terminal) {
-            setBrowserActivityError(streamError.message);
-            setBrowserActivityState("error");
-            setBrowserActivityStreamState("error");
-            break;
-          }
-          setBrowserActivityStreamState("reconnecting");
-          if (!browserActivityModeRef.current) {
-            setBrowserActivityError("Live browser activity is reconnecting.");
-          }
-        }
-        reconnectAttempt += 1;
-        await browserReconnectDelay(
-          Math.min(4_000, 750 * Math.max(1, reconnectAttempt)),
-          controller.signal,
-        );
-      }
-    };
-    void connect();
-    return () => {
-      controller.abort();
-      if (browserActivityStreamControllerRef.current === controller) {
-        browserActivityStreamControllerRef.current = null;
-      }
-    };
-    // The selected run owns one reconnectable server-pushed observation stream.
-  }, [readPermission, selectedActivityRunId, sessionStatus]);
-
-  useEffect(() => {
     if (
       sessionStatus !== "ready" ||
       readPermission ||
@@ -1422,78 +1248,8 @@ export function AgentRunsWorkspace({
     }
   }
 
-  function clearBrowserActivity() {
-    browserActivityControllerRef.current?.abort();
-    browserActivityStreamControllerRef.current?.abort();
-    browserActivityVersionRef.current += 1;
-    browserActivityModeRef.current = undefined;
-    browserActivityRunIdRef.current = "";
+  function clearSelectedActivity() {
     setSelectedActivityRunId("");
-    setBrowserActivity([]);
-    setBrowserActivityState("idle");
-    setBrowserActivityError(undefined);
-    setBrowserActivityMode(undefined);
-    setBrowserActivityStreamState("idle");
-  }
-
-  async function refreshBrowserActivity(runId: string) {
-    if (!runId) {
-      setBrowserActivity([]);
-      setBrowserActivityState("ready");
-      setBrowserActivityError(undefined);
-      return;
-    }
-    const version = ++browserActivityVersionRef.current;
-    browserActivityControllerRef.current?.abort();
-    const controller = new AbortController();
-    browserActivityControllerRef.current = controller;
-    setBrowserActivityState("loading");
-    setBrowserActivityError(undefined);
-    try {
-      const payload = asRecord(await readJson(
-        `/api/runs/${encodeURIComponent(runId)}/activity`,
-        { signal: controller.signal },
-      ));
-      if (
-        controller.signal.aborted ||
-        version !== browserActivityVersionRef.current
-      ) {
-        return;
-      }
-      setBrowserActivity(
-        (Array.isArray(payload.browserActivity)
-          ? payload.browserActivity
-          : []) as BrowserActivityItem[],
-      );
-      const status = stringValue(payload.status).toLowerCase();
-      const mode: BrowserActivityMode = ["completed", "failed", "canceled"].includes(status)
-        ? "replay"
-        : "live";
-      browserActivityModeRef.current = mode;
-      browserActivityRunIdRef.current = runId;
-      setBrowserActivityMode(mode);
-      setBrowserActivityStreamState(mode === "replay" ? "replay" : "connected");
-      setBrowserActivityState("ready");
-    } catch (activityError) {
-      if (
-        controller.signal.aborted ||
-        version !== browserActivityVersionRef.current
-      ) {
-        return;
-      }
-      setBrowserActivity([]);
-      setBrowserActivityError(
-        activityError instanceof Error
-          ? activityError.message
-          : "Browser activity could not be loaded.",
-      );
-      setBrowserActivityState("error");
-      setBrowserActivityStreamState("error");
-    } finally {
-      if (browserActivityControllerRef.current === controller) {
-        browserActivityControllerRef.current = null;
-      }
-    }
   }
 
   function selectTaskDetailsTab(tab: TabKey, activityRunId?: string) {
@@ -2076,7 +1832,7 @@ export function AgentRunsWorkspace({
     if (!resumeRunId) setContextUseReceipt(undefined);
     setActiveAgentRunId(resumeRunId || "");
     currentRunIdRef.current = resumeRunId || "";
-    clearBrowserActivity();
+    clearSelectedActivity();
     setRunFeedback(undefined);
     setStreamEvents([{ type: "status", label: "Starting", detail: "Opening the durable conversation." }]);
     directRunStatusRef.current = "";
@@ -2471,7 +2227,7 @@ export function AgentRunsWorkspace({
           setActiveAgentRunId("");
           setClarificationRunId("");
           currentRunIdRef.current = "";
-          clearBrowserActivity();
+          clearSelectedActivity();
           directRunStatusRef.current = "";
           setStreamEvents([]);
           setWaitingApproval(undefined);
@@ -2604,7 +2360,7 @@ export function AgentRunsWorkspace({
     setActiveAgentRunId("");
     setClarificationRunId("");
     currentRunIdRef.current = "";
-    clearBrowserActivity();
+    clearSelectedActivity();
     directRunStatusRef.current = "";
     setWaitingApproval(undefined);
     setGrounding(undefined);
@@ -2938,14 +2694,6 @@ export function AgentRunsWorkspace({
                   summary={taskProgressSummary({ workflowRun, streamEvents, loading })}
                   count={activityCount}
                   onOpen={() => openTaskDetails("execute")}
-                />
-              ) : null}
-
-              {activeAgentRunId && selectedActivityRunId === activeAgentRunId && browserActivity.some((item) => item.frame) ? (
-                <InlineBrowserView
-                  items={browserActivity}
-                  live={browserActivityMode === "live"}
-                  onOpen={() => openTaskDetails("execute", activeAgentRunId)}
                 />
               ) : null}
 
@@ -3689,22 +3437,8 @@ export function AgentRunsWorkspace({
                     live={loading === "agent" && (!selectedActivityRunId || selectedActivityRunId === activeAgentRunId)}
                     canCancel={Boolean(activeAgentRunId && (selectedActivityRunId || activeAgentRunId) === activeAgentRunId)}
                     onCancel={() => void stopAgent()}
-                    onOpenBrowser={() => document.getElementById("conversation-browser-evidence")?.scrollIntoView({ behavior: "smooth", block: "start" })}
                   />
                 ) : null}
-                <BrowserActivityTimeline
-                  runId={selectedActivityRunId}
-                  items={browserActivity}
-                  state={browserActivityState}
-                  error={browserActivityError}
-                  mode={browserActivityMode}
-                  streamState={browserActivityStreamState}
-                  takeoverEligible={Boolean(
-                    waitingApproval &&
-                    selectedActivityRunId === activeAgentRunId
-                  )}
-                  onRefresh={() => void refreshBrowserActivity(selectedActivityRunId)}
-                />
                 {workflowRun ? (
                   <>
                     <TaskProgressTimeline
@@ -4342,67 +4076,6 @@ function ContextReceiptItems({
   );
 }
 
-function InlineBrowserView({
-  items,
-  live,
-  onOpen,
-}: {
-  items: BrowserActivityItem[];
-  live: boolean;
-  onOpen: () => void;
-}) {
-  const latestItem = [...items].reverse().find((item) => item.frame);
-  const frame = latestItem?.frame;
-  if (!frame) return null;
-  return (
-    <article className={clsx("flex justify-start", workspaceStyles.browserInlineTurn)}>
-      <button
-        type="button"
-        onClick={onOpen}
-        className={workspaceStyles.browserInline}
-        aria-haspopup="dialog"
-        aria-label="Open browser replay"
-      >
-        <span className={workspaceStyles.browserInlineHeader}>
-          <span className="inline-flex min-w-0 items-center gap-2">
-            <MonitorPlay size={15} aria-hidden="true" />
-            <span className="truncate text-xs font-semibold">Browser view</span>
-          </span>
-          <span className={workspaceStyles.browserLiveLabel} data-live={live || undefined}>
-            <span aria-hidden="true" />
-            {live ? "Live" : "Replay"}
-          </span>
-        </span>
-        <span className={workspaceStyles.browserInlineFrame}>
-          <Image
-            key={frame.id}
-            src={frame.contentUrl}
-            alt=""
-            fill
-            sizes="(max-width: 640px) 92vw, 560px"
-            unoptimized
-            className={workspaceStyles.browserFrameImage}
-          />
-        </span>
-        <span className={workspaceStyles.browserInlineFooter}>
-          <span className="min-w-0">
-            <span className="block truncate text-xs font-semibold">
-              {frame.pageTitle || latestItem.action}
-            </span>
-            <span className="mt-0.5 block truncate font-mono text-[10px] text-white/55">
-              {frame.pageOrigin || latestItem.targetOrigin || "Isolated browser"}
-            </span>
-          </span>
-          <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-semibold text-white/75">
-            {items.filter((item) => item.frame).length} frames
-            <ChevronRight size={13} aria-hidden="true" />
-          </span>
-        </span>
-      </button>
-    </article>
-  );
-}
-
 function RunTraceJourney({
   runId,
   kind,
@@ -4613,659 +4286,6 @@ function traceStageClasses(status: TraceStageStatus) {
   if (status === "pending") return "bg-primary/15 text-primary";
   if (status === "missing") return "bg-danger/15 text-danger";
   return "bg-surface-raised text-muted";
-}
-
-function BrowserActivityTimeline({
-  runId,
-  items,
-  state,
-  error,
-  mode,
-  streamState,
-  takeoverEligible,
-  onRefresh,
-}: {
-  runId: string;
-  items: BrowserActivityItem[];
-  state: "idle" | "loading" | "ready" | "error";
-  error?: string;
-  mode?: BrowserActivityMode;
-  streamState: BrowserActivityStreamState;
-  takeoverEligible: boolean;
-  onRefresh: () => void;
-}) {
-  const live = mode === "live";
-  const framedItems = useMemo(() => items.filter((item) => item.frame), [items]);
-  const latestFrameId = framedItems.at(-1)?.frame?.id || "";
-  const [requestedFrameId, setRequestedFrameId] = useState("");
-  const selectedFrameId = !live && framedItems.some(
-    (item) => item.frame?.id === requestedFrameId,
-  )
-    ? requestedFrameId
-    : latestFrameId;
-  const selectedIndex = Math.max(
-    0,
-    framedItems.findIndex((item) => item.frame?.id === selectedFrameId),
-  );
-  const selectedItem = framedItems[selectedIndex];
-  const selectedFrame = selectedItem?.frame;
-  const selectedSnapshot = selectedItem?.accessibilitySnapshot;
-  const [snapshotText, setSnapshotText] = useState("");
-  const [snapshotState, setSnapshotState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  useEffect(() => {
-    if (!selectedSnapshot?.contentUrl) {
-      return;
-    }
-    const controller = new AbortController();
-    queueMicrotask(() => {
-      if (controller.signal.aborted) return;
-      setSnapshotText("");
-      setSnapshotState("loading");
-    });
-    void fetch(selectedSnapshot.contentUrl, {
-      cache: "no-store",
-      headers: { accept: "text/plain" },
-      signal: controller.signal,
-    }).then(async (response) => {
-      if (!response.ok) throw new Error("Snapshot unavailable.");
-      return response.text();
-    }).then((text) => {
-      if (controller.signal.aborted) return;
-      setSnapshotText(text);
-      setSnapshotState("ready");
-    }).catch(() => {
-      if (!controller.signal.aborted) setSnapshotState("error");
-    });
-    return () => controller.abort();
-  }, [selectedSnapshot?.contentUrl]);
-  if (!runId) return null;
-  const selectRelativeFrame = (offset: number) => {
-    const next = framedItems[selectedIndex + offset]?.frame;
-    if (next) setRequestedFrameId(next.id);
-  };
-
-  return (
-    <section id="conversation-browser-evidence" className={workspaceStyles.browserViewer} aria-label="Browser activity">
-      <header className={workspaceStyles.browserViewerHeader}>
-        <div className="flex min-w-0 items-start gap-3">
-          <span className={workspaceStyles.browserViewerIcon}>
-            <MonitorPlay size={17} aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold">Browser view</p>
-              {framedItems.length || mode ? (
-                <span className={workspaceStyles.browserLiveLabel} data-live={(live && streamState === "connected") || undefined}>
-                  <span aria-hidden="true" />
-                  {mode === "replay"
-                    ? "Replay"
-                    : streamState === "reconnecting"
-                      ? "Reconnecting"
-                      : streamState === "connecting"
-                        ? "Connecting"
-                        : "Live"}
-                </span>
-              ) : null}
-            </div>
-            <p className="mt-1 text-xs leading-5 text-muted">
-              {mode === "replay"
-                ? "Review the retained frames and redacted page structure from this completed run."
-                : "Watch fresh activity from the isolated Playwright session as the run proceeds."}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          {framedItems.length ? (
-            <span className="hidden pr-2 text-[11px] text-muted sm:inline">
-              {selectedIndex + 1} of {framedItems.length}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            onClick={onRefresh}
-            disabled={state === "loading" || streamState === "connecting"}
-            className="inline-flex min-h-9 items-center gap-2 rounded-full px-3 text-xs font-semibold text-muted transition hover:bg-surface-raised hover:text-foreground disabled:opacity-50"
-          >
-            <RefreshCw size={13} className={state === "loading" ? "animate-spin" : ""} aria-hidden="true" />
-            {mode === "live" ? "Sync now" : "Refresh"}
-          </button>
-        </div>
-      </header>
-      <BrowserTakeoverPanel runId={runId} eligible={takeoverEligible} />
-      {state === "loading" && !items.length ? (
-        <div className="flex min-h-72 items-center justify-center gap-2 px-4 text-sm text-muted">
-          <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-          Opening browser view…
-        </div>
-      ) : error ? (
-        <div className="m-3 rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm leading-6 text-muted" role="status">
-          {error}
-        </div>
-      ) : items.length ? (
-        <div className={workspaceStyles.browserViewerLayout}>
-          <div className={workspaceStyles.browserStageColumn}>
-            {selectedFrame && selectedItem ? (
-              <div className={workspaceStyles.browserStage}>
-                <div className={workspaceStyles.browserChrome}>
-                  <span className={workspaceStyles.browserTrafficLights} aria-hidden="true"><i /><i /><i /></span>
-                  <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-white/60">
-                    {selectedFrame.pageOrigin || selectedItem.targetOrigin || "Isolated browser session"}
-                  </span>
-                  <ShieldCheck size={13} className="shrink-0 text-emerald-300/75" aria-label="Governed browser" />
-                </div>
-                <div className={workspaceStyles.browserFrameCanvas}>
-                  <Image
-                    key={selectedFrame.id}
-                    src={selectedFrame.contentUrl}
-                    alt={`Browser frame after ${selectedItem.action.toLowerCase()}${selectedFrame.pageTitle ? ` on ${selectedFrame.pageTitle}` : ""}.`}
-                    fill
-                    sizes="(max-width: 1024px) 94vw, 760px"
-                    unoptimized
-                    className={workspaceStyles.browserFrameImage}
-                  />
-                </div>
-                <div className={workspaceStyles.browserStageCaption}>
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-white">
-                      {selectedFrame.pageTitle || selectedItem.action}
-                    </p>
-                    <p className="mt-1 truncate text-xs text-white/55">
-                      {selectedItem.action} · {formatRelativeThreadTime(selectedFrame.at)}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => selectRelativeFrame(-1)}
-                      disabled={selectedIndex === 0}
-                      className={workspaceStyles.browserFrameControl}
-                      aria-label="Previous browser frame"
-                    >
-                      <ChevronLeft size={15} aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => selectRelativeFrame(1)}
-                      disabled={selectedIndex >= framedItems.length - 1}
-                      className={workspaceStyles.browserFrameControl}
-                      aria-label="Next browser frame"
-                    >
-                      <ChevronRight size={15} aria-hidden="true" />
-                    </button>
-                  </div>
-                </div>
-                {selectedSnapshot ? (
-                  <details className={workspaceStyles.browserAccessibility}>
-                    <summary>
-                      <span className="inline-flex items-center gap-2">
-                        <FileText size={13} aria-hidden="true" />
-                        Accessibility structure
-                      </span>
-                      <span>Redacted · {formatBrowserBytes(selectedSnapshot.byteCount)}</span>
-                    </summary>
-                    <div aria-live="polite">
-                      {snapshotState === "loading" ? (
-                        <p>Loading structured page state…</p>
-                      ) : snapshotState === "error" ? (
-                        <p>The retained page structure could not be opened.</p>
-                      ) : (
-                        <pre>{snapshotText}</pre>
-                      )}
-                    </div>
-                  </details>
-                ) : null}
-              </div>
-            ) : (
-              <div className={workspaceStyles.browserStageEmpty}>
-                <MonitorPlay size={26} aria-hidden="true" />
-                <p className="mt-3 text-sm font-semibold">Visual replay is not available yet</p>
-                <p className="mt-1 max-w-md text-center text-xs leading-5 text-muted">
-                  These receipts predate frame capture, or the page could not be safely retained.
-                </p>
-              </div>
-            )}
-
-            {framedItems.length > 1 ? (
-              <div className={workspaceStyles.browserFilmstrip} aria-label="Browser replay frames">
-                {framedItems.map((item, index) => {
-                  const frame = item.frame!;
-                  const selected = frame.id === selectedFrame?.id;
-                  return (
-                    <button
-                      type="button"
-                      key={frame.id}
-                      onClick={() => setRequestedFrameId(frame.id)}
-                      className={workspaceStyles.browserFilmstripItem}
-                      aria-label={`Show browser frame ${index + 1}: ${item.action}`}
-                      aria-current={selected ? "true" : undefined}
-                    >
-                      <span className={workspaceStyles.browserFilmstripImage}>
-                        <Image
-                          src={frame.contentUrl}
-                          alt=""
-                          fill
-                          sizes="112px"
-                          unoptimized
-                          className="object-cover"
-                        />
-                      </span>
-                      <span>{index + 1}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
-
-          <div className={workspaceStyles.browserActionRail}>
-            <div className="flex items-center justify-between gap-3 px-3 pb-2">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">Action trail</p>
-              <span className="text-[11px] text-muted">{items.length} steps</span>
-            </div>
-            <ol>
-              {items.map((item, index) => {
-                const selected = item.frame?.id === selectedFrame?.id;
-                return (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                      onClick={() => item.frame && setRequestedFrameId(item.frame.id)}
-                      disabled={!item.frame}
-                      className={clsx(workspaceStyles.browserAction, selected && workspaceStyles.browserActionSelected)}
-                      aria-current={selected ? "step" : undefined}
-                    >
-                      <span className={clsx(
-                        workspaceStyles.browserActionNode,
-                        item.status === "executed"
-                          ? workspaceStyles.browserActionSuccess
-                          : item.status === "approval_required"
-                            ? workspaceStyles.browserActionWarning
-                            : item.status === "failed" || item.status === "blocked" || item.status === "rejected"
-                              ? workspaceStyles.browserActionDanger
-                              : workspaceStyles.browserActionNeutral,
-                      )}>
-                        {item.status === "executed" ? <Check size={12} aria-hidden="true" /> : index + 1}
-                      </span>
-                      <span className="min-w-0 flex-1 text-left">
-                        <span className="block truncate text-xs font-semibold">{item.action}</span>
-                        <span className="mt-0.5 block truncate text-[11px] text-muted">
-                          {item.frameStatus === "suppressed"
-                            ? "Frame hidden for text entry"
-                            : item.frameStatus === "unavailable"
-                              ? "Frame unavailable"
-                              : item.accessibilitySnapshotStatus === "suppressed"
-                                ? "Page structure hidden for text entry"
-                                : item.error || item.targetOrigin || item.status.replaceAll("_", " ")}
-                        </span>
-                      </span>
-                      <time className="shrink-0 text-[10px] text-muted" dateTime={item.at}>
-                        {item.durationMs !== undefined ? formatBrowserDuration(item.durationMs) : formatRelativeThreadTime(item.at)}
-                      </time>
-                    </button>
-                  </li>
-                );
-              })}
-            </ol>
-          </div>
-        </div>
-      ) : (
-        <div className={workspaceStyles.browserStageEmpty}>
-          <Globe2 size={24} aria-hidden="true" />
-          <p className="mt-3 text-sm font-semibold">No browser activity</p>
-          <p className="mt-1 text-xs leading-5 text-muted">This run did not use the connected Playwright browser.</p>
-        </div>
-      )}
-      <BrowserProfilePanel />
-      <p className={workspaceStyles.browserPrivacyNote}>
-        Retained frames and accessibility structure are owner-scoped run evidence. Text-entry and file-upload steps omit both; screenshots may still reflect what the visited page renders. Tool inputs, selectors, credentials, and private reasoning are not included in the action trail.
-      </p>
-    </section>
-  );
-}
-
-function BrowserTakeoverPanel({ runId, eligible }: { runId: string; eligible: boolean }) {
-  const [takeover, setTakeover] = useState<BrowserTakeover>();
-  const [observation, setObservation] = useState("");
-  const [target, setTarget] = useState("");
-  const [secretText, setSecretText] = useState("");
-  const [key, setKey] = useState("Enter");
-  const [busy, setBusy] = useState("");
-  const [message, setMessage] = useState<{ tone: "error" | "success"; text: string }>();
-
-  useEffect(() => {
-    if (!runId || !eligible) return;
-    const controller = new AbortController();
-    void readJson(`/api/runs/${encodeURIComponent(runId)}/takeover`, {
-      cache: "no-store",
-      signal: controller.signal,
-    }).then((payload) => {
-      if (controller.signal.aborted) return;
-      const current = asRecord(payload).takeover;
-      setTakeover(current && typeof current === "object" ? current as BrowserTakeover : undefined);
-    }).catch(() => undefined);
-    return () => controller.abort();
-  }, [eligible, runId]);
-
-  const targetOptions = useMemo(() => browserSnapshotTargets(observation), [observation]);
-  if (!eligible && takeover?.state !== "active") return null;
-
-  async function act(
-    action: "start" | "observe" | "click" | "type" | "press_key" | "handback",
-    input: Record<string, unknown> = {},
-  ) {
-    setBusy(action);
-    setMessage(undefined);
-    try {
-      const payload = asRecord(await readJson(
-        `/api/runs/${encodeURIComponent(runId)}/takeover`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "idempotency-key": `browser-takeover-${action}-${crypto.randomUUID()}`,
-          },
-          body: JSON.stringify({ action, ...input }),
-        },
-      ));
-      const next = payload.takeover;
-      if (next && typeof next === "object") setTakeover(next as BrowserTakeover);
-      if (typeof payload.observation === "string") setObservation(payload.observation);
-      if (action === "start") {
-        setMessage({ tone: "success", text: "You have exclusive browser control for ten minutes." });
-      } else if (action === "type") {
-        setSecretText("");
-        setMessage({
-          tone: "success",
-          text: stringValue(payload.message, "Text sent directly without retaining it in the run."),
-        });
-      } else if (action === "handback") {
-        setObservation("");
-        setMessage({ tone: "success", text: "Control returned. The agent is queued with a fresh page observation." });
-      }
-      return payload;
-    } catch (actionError) {
-      setMessage({ tone: "error", text: refreshMessage(actionError) });
-      return undefined;
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function start() {
-    const started = await act("start");
-    if (started) await act("observe");
-  }
-
-  const active = takeover?.state === "active";
-  return (
-    <section className="mx-3 mt-3 rounded-lg border border-primary/25 bg-primary/5 p-3" aria-label="Browser takeover">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold">Take over this browser</p>
-          <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">
-            The agent is paused. Your clicks and typed values go directly to this isolated session; typed values are not written to run history or sent to a model.
-          </p>
-        </div>
-        {!active ? (
-          <button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => void start()}>
-            {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <MonitorPlay size={14} aria-hidden="true" />}
-            Take control
-          </button>
-        ) : (
-          <span className="rounded-full bg-success/15 px-2.5 py-1 text-[11px] font-semibold text-success">
-            You are in control
-          </span>
-        )}
-      </div>
-      {message ? (
-        <p className={clsx(
-          "mt-3 rounded-md border px-3 py-2 text-xs leading-5",
-          message.tone === "error"
-            ? "border-danger/35 bg-danger/10 text-danger"
-            : "border-success/30 bg-success/10 text-success",
-        )} role="status">{message.text}</p>
-      ) : null}
-      {active ? (
-        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
-          <div className="min-w-0 rounded-md border border-line bg-background p-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-xs font-semibold">Interactive page structure</p>
-              <button
-                type="button"
-                className="action-button"
-                disabled={Boolean(busy)}
-                onClick={() => void act("observe")}
-              >
-                <RefreshCw size={13} className={busy === "observe" ? "animate-spin" : ""} aria-hidden="true" />
-                Refresh
-              </button>
-            </div>
-            <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface p-3 text-[11px] leading-5 text-muted">
-              {observation || "Refresh to load the current page controls."}
-            </pre>
-          </div>
-          <div className="space-y-3 rounded-md border border-line bg-background p-3">
-            <label className="block text-xs font-semibold">
-              Control reference
-              <input
-                value={target}
-                onChange={(event) => setTarget(event.target.value)}
-                list={`takeover-targets-${runId}`}
-                placeholder="e.g. e12"
-                autoComplete="off"
-                className="mt-1.5 w-full rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs"
-              />
-              <datalist id={`takeover-targets-${runId}`}>
-                {targetOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </datalist>
-            </label>
-            <button
-              type="button"
-              className="action-button w-full justify-center"
-              disabled={Boolean(busy) || !target.trim()}
-              onClick={() => void act("click", { target: target.trim() })}
-            >
-              Click selected control
-            </button>
-            <label className="block text-xs font-semibold">
-              Private text
-              <input
-                type="password"
-                value={secretText}
-                onChange={(event) => setSecretText(event.target.value)}
-                autoComplete="off"
-                placeholder="Password, code, or account value"
-                className="mt-1.5 w-full rounded-md border border-line bg-surface px-3 py-2 text-xs"
-              />
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                className="action-button justify-center"
-                disabled={Boolean(busy) || !target.trim() || !secretText}
-                onClick={() => void act("type", { target: target.trim(), text: secretText })}
-              >
-                Type
-              </button>
-              <button
-                type="button"
-                className="action-button justify-center"
-                disabled={Boolean(busy) || !target.trim() || !secretText}
-                onClick={() => void act("type", { target: target.trim(), text: secretText, submit: true })}
-              >
-                Type + enter
-              </button>
-            </div>
-            <label className="block text-xs font-semibold">
-              Keyboard key
-              <input
-                value={key}
-                onChange={(event) => setKey(event.target.value)}
-                autoComplete="off"
-                className="mt-1.5 w-full rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs"
-              />
-            </label>
-            <button
-              type="button"
-              className="action-button w-full justify-center"
-              disabled={Boolean(busy) || !key.trim()}
-              onClick={() => void act("press_key", { key: key.trim() })}
-            >
-              Press key
-            </button>
-            <button
-              type="button"
-              className="primary-button w-full justify-center"
-              disabled={Boolean(busy)}
-              onClick={() => void act("handback")}
-            >
-              {busy === "handback" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
-              Return to agent
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function BrowserProfilePanel() {
-  const [profiles, setProfiles] = useState<BrowserProfile[]>([]);
-  const [name, setName] = useState("");
-  const [domains, setDomains] = useState("");
-  const [state, setState] = useState<"loading" | "ready" | "saving" | "error">("loading");
-  const [message, setMessage] = useState("");
-
-  async function loadProfiles() {
-    setState("loading");
-    try {
-      const payload = asRecord(await readJson("/api/browser/profiles", { cache: "no-store" }));
-      setProfiles(Array.isArray(payload.profiles) ? payload.profiles as BrowserProfile[] : []);
-      setState("ready");
-    } catch (loadError) {
-      setMessage(refreshMessage(loadError));
-      setState("error");
-    }
-  }
-
-  useEffect(() => {
-    queueMicrotask(() => void loadProfiles());
-  }, []);
-
-  async function createProfile() {
-    const allowedDomains = domains.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
-    if (!name.trim() || !allowedDomains.length) return;
-    setState("saving");
-    setMessage("");
-    try {
-      await readJson("/api/browser/profiles", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), allowedDomains }),
-      });
-      setName("");
-      setDomains("");
-      await loadProfiles();
-      setMessage("Persistent profile consent saved. A matching future run will use it automatically.");
-    } catch (profileError) {
-      setMessage(refreshMessage(profileError));
-      setState("error");
-    }
-  }
-
-  async function revokeProfile(profile: BrowserProfile) {
-    setState("saving");
-    setMessage("");
-    try {
-      await readJson(`/api/browser/profiles/${encodeURIComponent(profile.id)}`, {
-        method: "DELETE",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ expectedRevision: profile.lifecycleRevision }),
-      });
-      await loadProfiles();
-      setMessage("Profile revoked. New and resumed browser actions can no longer use it.");
-    } catch (profileError) {
-      setMessage(refreshMessage(profileError));
-      setState("error");
-    }
-  }
-
-  return (
-    <details className="mx-3 mt-3 rounded-lg border border-line bg-background px-3">
-      <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 text-xs font-semibold">
-        <span className="flex items-center gap-2"><ShieldCheck size={14} aria-hidden="true" />Persistent browser profiles</span>
-        <span className="text-[11px] font-normal text-muted">{profiles.filter((profile) => profile.state === "active").length} active</span>
-      </summary>
-      <div className="border-t border-line py-3">
-        <p className="text-xs leading-5 text-muted">
-          Opt in to an encrypted profile for specific domains. Cookies stay in the encrypted browser service store and are excluded from Agent memory, tool output, and page observations.
-        </p>
-        {profiles.length ? (
-          <ul className="mt-3 space-y-2">
-            {profiles.map((profile) => (
-              <li key={profile.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold">{profile.name}</p>
-                  <p className="mt-1 break-words text-[11px] leading-5 text-muted">{profile.allowedDomains.join(" · ")}</p>
-                </div>
-                {profile.state === "active" ? (
-                  <button
-                    type="button"
-                    className="action-button"
-                    disabled={state === "saving"}
-                    onClick={() => void revokeProfile(profile)}
-                  >
-                    Revoke
-                  </button>
-                ) : (
-                  <span className="rounded-full bg-surface-raised px-2 py-1 text-[10px] font-semibold text-muted">Revoked</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,.7fr)_minmax(0,1.3fr)_auto]">
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Profile name"
-            maxLength={120}
-            className="rounded-md border border-line bg-surface px-3 py-2 text-xs"
-          />
-          <input
-            value={domains}
-            onChange={(event) => setDomains(event.target.value)}
-            placeholder="example.com, accounts.example.com"
-            className="rounded-md border border-line bg-surface px-3 py-2 text-xs"
-          />
-          <button
-            type="button"
-            className="primary-button justify-center"
-            disabled={state === "saving" || !name.trim() || !domains.trim()}
-            onClick={() => void createProfile()}
-          >
-            {state === "saving" ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
-            Consent
-          </button>
-        </div>
-        {message ? <p className="mt-2 text-[11px] leading-5 text-muted" role="status">{message}</p> : null}
-      </div>
-    </details>
-  );
-}
-
-function browserSnapshotTargets(snapshot: string) {
-  const targets: Array<{ value: string; label: string }> = [];
-  for (const line of snapshot.split("\n")) {
-    const match = line.match(/\[ref=([^\]\s]+)\]/);
-    if (!match || targets.some((target) => target.value === match[1])) continue;
-    targets.push({
-      value: match[1],
-      label: line.replace(/\s+/g, " ").trim().slice(0, 120),
-    });
-    if (targets.length >= 200) break;
-  }
-  return targets;
 }
 
 function TaskProgressTimeline({
@@ -6087,65 +5107,6 @@ async function readSse(stream: ReadableStream<Uint8Array>, onEvent: (event: Stre
   }
 }
 
-async function readBrowserActivitySse(
-  stream: ReadableStream<Uint8Array>,
-  onEvent: (event: JsonRecord) => void,
-) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.replaceAll("\r\n", "\n").split("\n\n");
-    buffer = blocks.pop() || "";
-    for (const block of blocks) emitBrowserActivitySse(block, onEvent);
-  }
-  buffer += decoder.decode();
-  for (const block of buffer.replaceAll("\r\n", "\n").split("\n\n")) {
-    emitBrowserActivitySse(block, onEvent);
-  }
-}
-
-function emitBrowserActivitySse(
-  block: string,
-  onEvent: (event: JsonRecord) => void,
-) {
-  const payload = block
-    .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart())
-    .join("\n")
-    .trim();
-  if (!payload) return;
-  const parsed: unknown = JSON.parse(payload);
-  onEvent(asRecord(parsed));
-}
-
-class BrowserActivityStreamError extends Error {
-  constructor(message: string, readonly terminal: boolean) {
-    super(message);
-    this.name = "BrowserActivityStreamError";
-  }
-}
-
-function browserReconnectDelay(milliseconds: number, signal: AbortSignal) {
-  return new Promise<void>((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const timer = window.setTimeout(finish, milliseconds);
-    signal.addEventListener("abort", finish, { once: true });
-    function finish() {
-      window.clearTimeout(timer);
-      signal.removeEventListener("abort", finish);
-      resolve();
-    }
-  });
-}
-
 function emitSseEvent(
   block: string,
   onEvent: (event: StreamEvent) => void,
@@ -6751,18 +5712,6 @@ function formatCheckpointTime(value: string) {
   return Number.isFinite(date.getTime())
     ? date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
     : "recorded time unavailable";
-}
-
-function formatBrowserDuration(durationMs: number) {
-  if (durationMs < 1_000) return `${Math.max(0, Math.round(durationMs))}ms`;
-  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)}s`;
-  return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1_000)}s`;
-}
-
-function formatBrowserBytes(byteCount: number) {
-  const bounded = Math.max(0, byteCount);
-  if (bounded < 1_024) return `${bounded} B`;
-  return `${Math.max(0.1, bounded / 1_024).toFixed(1)} KB`;
 }
 
 function formatMediaBytes(byteCount: number) {

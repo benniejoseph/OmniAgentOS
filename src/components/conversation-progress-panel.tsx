@@ -64,7 +64,7 @@ type ProgressItem = {
     lifecycleState: string;
     resumeDisposition: string;
   };
-  action?: { kind: "approval" | "browser" | "checkpoint" | "result"; label: string };
+  action?: { kind: "approval" | "checkpoint" | "result"; label: string };
 };
 
 export type ConversationProgress = {
@@ -113,13 +113,11 @@ export function ConversationProgressPanel({
   live,
   canCancel,
   onCancel,
-  onOpenBrowser,
 }: {
   runId: string;
   live: boolean;
   canCancel: boolean;
   onCancel: () => void;
-  onOpenBrowser: () => void;
 }) {
   const [progress, setProgress] = useState<ConversationProgress>();
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -292,10 +290,6 @@ export function ConversationProgressPanel({
                       <Link href="/app/approvals" className="inline-flex min-h-8 items-center gap-1 text-xs font-semibold text-primary">
                         Review <ChevronRight size={12} aria-hidden="true" />
                       </Link>
-                    ) : item.action?.kind === "browser" ? (
-                      <button type="button" onClick={onOpenBrowser} className="inline-flex min-h-8 items-center gap-1 text-xs font-semibold text-primary">
-                        Browser evidence <ChevronRight size={12} aria-hidden="true" />
-                      </button>
                     ) : item.action?.kind === "result" ? (
                       <Link href={`/app/results?run=${encodeURIComponent(`agent:${runId}`)}`} className="inline-flex min-h-8 items-center gap-1 text-xs font-semibold text-primary">
                         Result evidence <ChevronRight size={12} aria-hidden="true" />
@@ -451,7 +445,7 @@ function parseProgressItem(record: JsonRecord): ProgressItem[] {
   if (source === "checkpoint" && !checkpoint) return [];
   const actionRecord = asRecord(record.action);
   const actionKind = stringValue(actionRecord.kind);
-  const action = ["approval", "browser", "checkpoint", "result"].includes(actionKind)
+  const action = ["approval", "checkpoint", "result"].includes(actionKind)
     ? { kind: actionKind as NonNullable<ProgressItem["action"]>["kind"], label: safeDisplayText(actionRecord.label) || "Open" }
     : undefined;
   return [{

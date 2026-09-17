@@ -7,7 +7,6 @@ import {
   claimApprovalGrant,
   issueApprovalGrant,
 } from "@/lib/approval-grants/store";
-import { specializeBrowserActionTool } from "@/lib/browser/action-policy";
 import {
   WORKFLOW_EXECUTOR_TIMEOUT_MS,
   WORKFLOW_PLAN_MAX_COST_UNITS,
@@ -16,8 +15,6 @@ import {
   WORKFLOW_PLAN_NODES_PER_TICK,
 } from "@/lib/config";
 import { getMcpGovernedTool, getOpenApiGovernedTool } from "@/lib/connectors/governed-tools";
-import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
-import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import type { DelegationContractV1 } from "@/lib/delegation/contracts";
 import { buildWorkflowNodeDelegationContractV1 } from "@/lib/delegation/workflow-adapter";
 import {
@@ -1506,13 +1503,8 @@ export async function authorizeWorkflowToolWithGrant(input: {
     id: input.planId,
     plan: input.plan,
   });
-  const grantTool = await browserActionToolForWorkflowGrant(
-    input.tool,
-    input.toolInput,
-    input.executionScope.tenantId,
-  );
   const request = buildToolApprovalGrantRequest({
-    tool: grantTool,
+    tool: input.tool,
     toolInput: input.toolInput,
     executionScope: input.executionScope,
     planId: input.planId,
@@ -1546,26 +1538,6 @@ export async function authorizeWorkflowToolWithGrant(input: {
   return claimed.outcome === "claimed" || claimed.outcome === "existing"
     ? { grant: claimed.grant, claim: claimed.claim }
     : undefined;
-}
-
-async function browserActionToolForWorkflowGrant(
-  tool: ToolDefinition,
-  toolInput: Record<string, unknown>,
-  tenantId: string,
-) {
-  if (tool.category !== "mcp") return tool;
-  const mcpTool = await getMcpToolById(tool.id, { tenantId });
-  if (!mcpTool) return tool;
-  const connector = await getMcpConnector(mcpTool.connectorId, { tenantId });
-  if (!connector || !isAsaelPlaywrightMcpEndpoint(connector.endpoint)) {
-    return tool;
-  }
-  return specializeBrowserActionTool({
-    tool,
-    toolName: mcpTool.name,
-    toolInput,
-    forceApproval: connector.approvalRequired,
-  }).tool;
 }
 
 function workflowApprovalEvidence(detail: WorkflowRunDetail) {
