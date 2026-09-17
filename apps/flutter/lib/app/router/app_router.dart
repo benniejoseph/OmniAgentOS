@@ -17,18 +17,21 @@ import '../../features/capture/capture_providers.dart';
 import '../../features/computer_use/local_computer.dart';
 import '../../features/customers/customer_detail.dart';
 import '../../features/customers/accounts_view.dart';
+import '../../features/inbox/macos_inbox_view.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
 import '../../features/knowledge/knowledge.dart';
 import '../../features/knowledge/knowledge_providers.dart';
 import '../../features/markets/markets_view.dart';
 import '../../features/payments/payments_view.dart';
+import '../../features/meetings/macos_meetings_view.dart';
 import '../../features/meetings/meetings_providers.dart';
 import '../../features/meetings/meetings_view.dart';
 import '../../features/projects/projects_providers.dart';
 import '../../features/projects/macos_projects_view.dart';
 import '../../features/projects/projects_view.dart';
 import '../../features/results/results_providers.dart';
+import '../../features/results/macos_results_view.dart';
 import '../../features/results/results_view.dart';
 import '../../features/settings/admin_console.dart';
 import '../../features/settings/macos_admin_workspace_view.dart';
@@ -199,20 +202,40 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                               onOpen: (project) =>
                                   context.push('/projects/${project.id}'),
                             ),
-                    '/meetings' => MeetingsView(
-                      controller: ref.read(meetingsControllerProvider),
-                      onOpen: (meeting) =>
-                          context.push('/meetings/${meeting.id}'),
-                    ),
-                    '/results' => ResultsView(
-                      controller: ref.read(resultsControllerProvider),
-                      onOpen: (result) => context.push(
-                        '/results/${Uri.encodeComponent(result.key)}',
-                      ),
-                    ),
-                    '/inbox' => InboxView(
-                      controller: ref.read(inboxControllerProvider),
-                    ),
+                    '/meetings' =>
+                      usesMacosPresentation()
+                          ? MacosMeetingsView(
+                              controller: ref.read(meetingsControllerProvider),
+                              onOpen: (meeting) =>
+                                  context.push('/meetings/${meeting.id}'),
+                            )
+                          : MeetingsView(
+                              controller: ref.read(meetingsControllerProvider),
+                              onOpen: (meeting) =>
+                                  context.push('/meetings/${meeting.id}'),
+                            ),
+                    '/results' =>
+                      usesMacosPresentation()
+                          ? MacosResultsView(
+                              controller: ref.read(resultsControllerProvider),
+                              onOpen: (result) => context.push(
+                                '/results/${Uri.encodeComponent(result.key)}',
+                              ),
+                            )
+                          : ResultsView(
+                              controller: ref.read(resultsControllerProvider),
+                              onOpen: (result) => context.push(
+                                '/results/${Uri.encodeComponent(result.key)}',
+                              ),
+                            ),
+                    '/inbox' =>
+                      usesMacosPresentation()
+                          ? MacosInboxView(
+                              controller: ref.read(inboxControllerProvider),
+                            )
+                          : InboxView(
+                              controller: ref.read(inboxControllerProvider),
+                            ),
                     '/agents' => AgentsView(
                       controller: ref.read(agentsControllerProvider),
                     ),
@@ -312,10 +335,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       ? [
                           GoRoute(
                             path: 'approvals/:id',
-                            builder: (_, state) => InboxView(
-                              controller: ref.read(inboxControllerProvider),
-                              focusApprovalId: state.pathParameters['id'],
-                            ),
+                            builder: (_, state) => usesMacosPresentation()
+                                ? MacosInboxView(
+                                    controller: ref.read(
+                                      inboxControllerProvider,
+                                    ),
+                                    focusApprovalId: state.pathParameters['id'],
+                                  )
+                                : InboxView(
+                                    controller: ref.read(
+                                      inboxControllerProvider,
+                                    ),
+                                    focusApprovalId: state.pathParameters['id'],
+                                  ),
                           ),
                         ]
                       : const [],
