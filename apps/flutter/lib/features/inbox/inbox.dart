@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 typedef Json = Map<String, dynamic>;
@@ -141,6 +143,7 @@ class NotificationCenter {
 class InboxController extends ChangeNotifier {
   InboxController(this.repository);
   final InboxRepository repository;
+  Future<void>? _refreshing;
   ApprovalQueue? queue;
   NotificationCenter? notificationCenter;
   Object? approvalsError;
@@ -153,15 +156,32 @@ class InboxController extends ChangeNotifier {
   bool get hasData => queue != null || notificationCenter != null;
   bool get hasLoadError => approvalsError != null || notificationsError != null;
 
-  Future<void> refresh() async {
+  Future<void> refresh() {
+    final refreshing = _refreshing;
+    if (refreshing != null) return refreshing;
+
+    final completion = Completer<void>();
+    _refreshing = completion.future;
+    unawaited(_refresh(completion));
+    return completion.future;
+  }
+
+  Future<void> _refresh(Completer<void> completion) async {
     loading = true;
     approvalsError = null;
     notificationsError = null;
     actionError = null;
     notifyListeners();
-    await Future.wait([_loadApprovals(), _loadNotifications()]);
-    loading = false;
-    notifyListeners();
+    try {
+      await Future.wait([_loadApprovals(), _loadNotifications()]);
+      completion.complete();
+    } catch (error, stackTrace) {
+      completion.completeError(error, stackTrace);
+    } finally {
+      loading = false;
+      _refreshing = null;
+      notifyListeners();
+    }
   }
 
   Future<void> _loadApprovals() async {

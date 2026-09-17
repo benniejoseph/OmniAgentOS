@@ -57,6 +57,12 @@ String initialAppLocation(List<String> arguments) {
 
 final appInitialLocationProvider = Provider<String>((_) => appHomePath());
 
+@visibleForTesting
+bool isInboxLocation(Uri location) {
+  final path = location.path;
+  return path == '/inbox' || path.startsWith('/inbox/');
+}
+
 final appRouterProvider = Provider<GoRouter>((ref) {
   final session = ref.watch(sessionControllerProvider);
   final initialLocation = ref.watch(appInitialLocationProvider);
@@ -64,6 +70,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     debugLogDiagnostics: kDebugMode,
     initialLocation: initialLocation,
+    onEnter: (_, _, nextState, _) {
+      if (!session.isLoading &&
+          !session.hasError &&
+          session.value != null &&
+          isInboxLocation(nextState.uri)) {
+        unawaited(ref.read(inboxControllerProvider).refresh());
+      }
+      return const Allow();
+    },
     redirect: (context, state) {
       final atLogin = state.matchedLocation == '/login';
       final atBootstrap = state.matchedLocation == '/bootstrap';

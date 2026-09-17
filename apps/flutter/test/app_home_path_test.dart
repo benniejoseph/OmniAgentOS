@@ -14,4 +14,11 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     expect(appHomePath(), '/today');
   });
+
+  test('recognizes Inbox root and focused approval navigation', () {
+    expect(isInboxLocation(Uri.parse('/inbox')), isTrue);
+    expect(isInboxLocation(Uri.parse('/inbox/approvals/execution-1')), isTrue);
+    expect(isInboxLocation(Uri.parse('/inbox?source=sidebar')), isTrue);
+    expect(isInboxLocation(Uri.parse('/results/inbox')), isFalse);
+  });
 }
