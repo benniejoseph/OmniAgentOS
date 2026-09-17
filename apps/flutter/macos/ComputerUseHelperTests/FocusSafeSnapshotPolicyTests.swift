@@ -189,14 +189,65 @@ private enum FocusSafeSnapshotPolicyTests {
       "terminal never resolves as a browser target"
     )
     expect(
-      SafeBrowserNavigationPolicy.effectVerdict(browserFrontmost: true)
+      SafeBrowserNavigationPolicy.effectVerdict(browserObservationConfirmed: true)
         == "confirmed",
       "accepted delivery is confirmed only when the exact browser is frontmost"
     )
     expect(
-      SafeBrowserNavigationPolicy.effectVerdict(browserFrontmost: false)
+      SafeBrowserNavigationPolicy.effectVerdict(browserObservationConfirmed: false)
         == "unverifiable",
       "a focus mismatch never becomes a false success claim"
+    )
+    expect(
+      SafeBrowserNavigationPolicy.matchesExpectedApplication(
+        expectedPID: chromePID,
+        expectedBundleIdentifier: chromeBundleIdentifier,
+        observedPID: chromePID,
+        observedBundleIdentifier: chromeBundleIdentifier
+      ),
+      "post-navigation observation is bound to the exact opened browser process"
+    )
+    expect(
+      !SafeBrowserNavigationPolicy.matchesExpectedApplication(
+        expectedPID: chromePID,
+        expectedBundleIdentifier: chromeBundleIdentifier,
+        observedPID: 900,
+        observedBundleIdentifier: "com.apple.mail"
+      ),
+      "post-navigation observation refuses an unrelated foreground application"
+    )
+    expect(
+      !SafeBrowserNavigationPolicy.matchesExpectedApplication(
+        expectedPID: chromePID,
+        expectedBundleIdentifier: chromeBundleIdentifier,
+        observedPID: chromePID,
+        observedBundleIdentifier: "com.google.Chrome.canary"
+      ),
+      "post-navigation observation requires the expected browser bundle identity"
+    )
+    expect(
+      SnapshotPixelHitPolicy.disposition(
+        hitFound: true,
+        hitBelongsToSnapshot: true,
+        identityMatches: true
+      ) == .exactSnapshotElement,
+      "a live z-order hit is accepted only when its exact identity remains in the snapshot"
+    )
+    expect(
+      SnapshotPixelHitPolicy.disposition(
+        hitFound: true,
+        hitBelongsToSnapshot: false,
+        identityMatches: false
+      ) == .refuse,
+      "a newly covering overlay that was not in the snapshot is refused"
+    )
+    expect(
+      SnapshotPixelHitPolicy.disposition(
+        hitFound: true,
+        hitBelongsToSnapshot: true,
+        identityMatches: false
+      ) == .refuse,
+      "a changed live hit identity is refused instead of clicking through"
     )
     expect(
       SafeBrowserNavigationPolicy.validatedURL(

@@ -171,8 +171,35 @@ enum SafeBrowserNavigationPolicy {
     return url
   }
 
-  static func effectVerdict(browserFrontmost: Bool) -> String {
-    browserFrontmost ? "confirmed" : "unverifiable"
+  static func effectVerdict(browserObservationConfirmed: Bool) -> String {
+    browserObservationConfirmed ? "confirmed" : "unverifiable"
+  }
+
+  static func matchesExpectedApplication(
+    expectedPID: pid_t,
+    expectedBundleIdentifier: String,
+    observedPID: pid_t?,
+    observedBundleIdentifier: String?
+  ) -> Bool {
+    observedPID == expectedPID
+      && observedBundleIdentifier == expectedBundleIdentifier
+  }
+}
+
+enum SnapshotPixelHitDisposition: Equatable {
+  case exactSnapshotElement
+  case refuse
+}
+
+enum SnapshotPixelHitPolicy {
+  static func disposition(
+    hitFound: Bool,
+    hitBelongsToSnapshot: Bool,
+    identityMatches: Bool
+  ) -> SnapshotPixelHitDisposition {
+    hitFound && hitBelongsToSnapshot && identityMatches
+      ? .exactSnapshotElement
+      : .refuse
   }
 }
 
@@ -514,15 +541,26 @@ private final class ComputerUseExecutor {
       )
     }
 
-    let postActionResult = try await observe(["includeScreenshot": false])
-    guard let observation = postActionResult["observation"] as? [String: Any]
-    else { throw HelperFailure.rejected("post_action_observation_failed") }
+    // The URL open is already an external effect once LaunchServices returns.
+    // A failed or focus-shifted readback must therefore become unverifiable,
+    // never turn the action into a replayable failure and never disclose the
+    // Accessibility tree of whichever unrelated app became frontmost.
+    let postActionResult = try? await observe(
+      ["includeScreenshot": false],
+      expectedApplication: application,
+      expectedBundleIdentifier: bundleIdentifier
+    )
+    let observation = postActionResult?["observation"] as? [String: Any]
     let frontmost = NSWorkspace.shared.frontmostApplication
-    let browserIsFrontmost = frontmost?.processIdentifier
-        == application.processIdentifier
-      && frontmost?.bundleIdentifier == bundleIdentifier
+    let browserIsFrontmost = SafeBrowserNavigationPolicy.matchesExpectedApplication(
+      expectedPID: application.processIdentifier,
+      expectedBundleIdentifier: bundleIdentifier,
+      observedPID: frontmost?.processIdentifier,
+      observedBundleIdentifier: frontmost?.bundleIdentifier
+    )
+    let browserObservationConfirmed = observation != nil
     let effectVerdict = SafeBrowserNavigationPolicy.effectVerdict(
-      browserFrontmost: browserIsFrontmost
+      browserObservationConfirmed: browserObservationConfirmed
     )
     let effect: [String: Any] = [
       "kind": "browser_url_delivery",
@@ -533,9 +571,9 @@ private final class ComputerUseExecutor {
       "pageLoadConfirmed": false,
       "verdict": effectVerdict,
     ]
-    let summary = browserIsFrontmost
-      ? "Chrome accepted the web address and was frontmost after the bounded wait. Inspect the fresh observation to determine the page state."
-      : "Chrome accepted the web address, but it was not confirmed as frontmost after the bounded wait. Inspect the fresh observation before continuing."
+    let summary = browserObservationConfirmed
+      ? "Chrome accepted the web address and the exact browser was observed after the bounded wait. Inspect the fresh observation to determine the page state."
+      : "Chrome accepted the web address, but an exact browser observation could not be confirmed after the bounded wait. Observe the Mac again before continuing."
     return result(
       summary: summary,
       data: ["effectVerdict": effectVerdict, "effect": effect],
@@ -543,7 +581,11 @@ private final class ComputerUseExecutor {
     )
   }
 
-  private func observe(_ input: [String: Any]) async throws -> [String: Any] {
+  private func observe(
+    _ input: [String: Any],
+    expectedApplication: NSRunningApplication? = nil,
+    expectedBundleIdentifier: String? = nil
+  ) async throws -> [String: Any] {
     guard input.keys.allSatisfy({ $0 == "includeScreenshot" }),
           input["includeScreenshot"] == nil || input["includeScreenshot"] is Bool
     else { throw HelperFailure.rejected("invalid_input") }
@@ -554,6 +596,18 @@ private final class ComputerUseExecutor {
     elements.removeAll(keepingCapacity: true)
     elementIdentities.removeAll(keepingCapacity: true)
     let app = NSWorkspace.shared.frontmostApplication
+    if let expectedApplication {
+      guard let expectedBundleIdentifier,
+            SafeBrowserNavigationPolicy.matchesExpectedApplication(
+              expectedPID: expectedApplication.processIdentifier,
+              expectedBundleIdentifier: expectedBundleIdentifier,
+              observedPID: app?.processIdentifier,
+              observedBundleIdentifier: app?.bundleIdentifier
+            )
+      else { throw HelperFailure.rejected("post_action_target_changed") }
+    } else if expectedBundleIdentifier != nil {
+      throw HelperFailure.rejected("invalid_input")
+    }
     if let bundleId = app?.bundleIdentifier,
        Self.restrictedAutomationBundleIdentifiers.contains(bundleId) {
       throw HelperFailure.rejected("restricted_application_refused")
@@ -591,6 +645,11 @@ private final class ComputerUseExecutor {
       let screenshot = try await captureScreenshot()
       snapshotScreenshotMapping = screenshot.coordinateMapping
       observation["screenshot"] = screenshot.payload
+    }
+    if expectedApplication != nil {
+      guard captureTargetIsCurrent() else {
+        throw HelperFailure.rejected("post_action_target_changed")
+      }
     }
     return result(summary: "Observed the active Mac workspace.", observation: observation)
   }
@@ -712,7 +771,20 @@ private final class ComputerUseExecutor {
               revision: revision
             ),
             pointIsOnActiveDisplay(globalPoint),
-            let observedTarget = observedTarget(at: globalPoint)
+            let snapshotFocusedWindow,
+            let snapshotWindowIdentity
+      else { throw HelperFailure.rejected("screenshot_coordinate_refused") }
+      // Approval UI may have brought Asael forward. Restore and validate the
+      // exact captured window before asking macOS which element is currently
+      // topmost at the screenshot point. Frame-area guessing cannot establish
+      // z-order and can authorize a covered element that will not receive the
+      // actual click.
+      try verifyObservedTarget(
+        revision: revision,
+        expectedElement: snapshotFocusedWindow,
+        expectedIdentity: snapshotWindowIdentity
+      )
+      guard let observedTarget = currentObservedHitTarget(at: globalPoint)
       else { throw HelperFailure.rejected("screenshot_coordinate_refused") }
       point = globalPoint
       expectedElement = observedTarget.element
@@ -1066,33 +1138,34 @@ private final class ComputerUseExecutor {
     return (snapshotFocusedWindow, snapshotWindowIdentity)
   }
 
-  private func observedTarget(
+  private func currentObservedHitTarget(
     at point: CGPoint
   ) -> (element: AXUIElement, identity: SnapshotElementIdentity)? {
-    var selected: (
-      element: AXUIElement,
-      identity: SnapshotElementIdentity,
-      area: CGFloat,
-      order: Int
-    )?
-    for (identifier, element) in elements {
-      guard let identity = elementIdentities[identifier],
-            let candidateFrame = identity.frame,
-            candidateFrame.contains(point)
-      else { continue }
-      let candidateArea = max(1, candidateFrame.width * candidateFrame.height)
-      let candidateOrder = Int(identifier.split(separator: ":").last ?? "0") ?? 0
-      if let current = selected {
-        if candidateArea < current.area
-          || (candidateArea == current.area && candidateOrder > current.order) {
-          selected = (element, identity, candidateArea, candidateOrder)
-        }
-      } else {
-        selected = (element, identity, candidateArea, candidateOrder)
-      }
+    guard let expectedPID = snapshotFrontmostPID else { return nil }
+    let application = AXUIElementCreateApplication(expectedPID)
+    var hitElement: AXUIElement?
+    let status = AXUIElementCopyElementAtPosition(
+      application,
+      Float(point.x),
+      Float(point.y),
+      &hitElement
+    )
+    guard status == .success, let hitElement else { return nil }
+    let snapshotMatch = elements.first { _, element in
+      CFEqual(element, hitElement)
     }
-    guard let selected else { return nil }
-    return (selected.element, selected.identity)
+    let storedIdentity = snapshotMatch.flatMap { identifier, _ in
+      elementIdentities[identifier]
+    }
+    let currentIdentity = elementIdentity(hitElement)
+    guard SnapshotPixelHitPolicy.disposition(
+      hitFound: true,
+      hitBelongsToSnapshot: snapshotMatch != nil,
+      identityMatches: storedIdentity != nil && currentIdentity == storedIdentity
+    ) == .exactSnapshotElement,
+      let storedIdentity
+    else { return nil }
+    return (hitElement, storedIdentity)
   }
 
   private func frame(_ element: AXUIElement) -> CGRect? {
