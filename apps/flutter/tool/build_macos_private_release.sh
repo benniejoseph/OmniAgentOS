@@ -13,6 +13,7 @@ task_local_signing_password_file="${ASAEL_MACOS_LOCAL_SIGNING_PASSWORD_FILE:-$ta
 task_local_signing_identity="${ASAEL_MACOS_LOCAL_SIGNING_IDENTITY:-Asael Private Code Signing}"
 task_signing_identity="$task_developer_signing_identity"
 task_signing_mode="developer"
+task_main_entitlements="$task_flutter_dir/macos/Runner/Release.entitlements"
 task_codesign_keychain_args=()
 task_version_line="$(awk '/^version:/ { print $2; exit }' "$task_flutter_dir/pubspec.yaml")"
 task_version="${task_version_line%%+*}"
@@ -39,6 +40,16 @@ if [[ -z "$task_developer_signing_identity" ]]; then
   else
     task_signing_mode="adhoc"
   fi
+fi
+
+if [[ "$task_signing_mode" != "developer" ]]; then
+  # A self-signed identity has no Apple Team Identifier or provisioning
+  # profile, so macOS cannot assign a default Keychain access group to a
+  # sandboxed process. Keep Apple-signed releases on Release.entitlements,
+  # while the owner-Mac package uses the ordinary file-based login Keychain.
+  # TCC still protects microphone and other private resources, and the Share
+  # Extension retains its own sandboxed entitlement profile.
+  task_main_entitlements="$task_flutter_dir/macos/Runner/LocalRelease.entitlements"
 fi
 
 if [[ -z "$task_xcode_path" || "$task_xcode_path" == *"CommandLineTools"* ]]; then
@@ -119,7 +130,7 @@ if [[ -n "$task_signing_identity" ]]; then
   codesign \
     "${task_codesign_keychain_args[@]}" \
     "${task_codesign_args[@]}" \
-    --entitlements "$task_flutter_dir/macos/Runner/Release.entitlements" \
+    --entitlements "$task_main_entitlements" \
     "$task_staged_app"
 fi
 
