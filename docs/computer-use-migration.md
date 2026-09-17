@@ -1,8 +1,8 @@
 # Computer Use targets
 
-Status: native-only source, data-plane, web, signed owner-Mac, and schema-repair
-checkpoints are released; the new owner-Mac canary and Fly browser-service
-decommission remain pending · 2026-09-17
+Status: native-only source, data-plane, web, signed owner-Mac, live canary,
+durable privacy inspection, and Fly browser-service decommission are complete
+· 2026-09-17
 
 ## Decision
 
@@ -48,13 +48,14 @@ limited the historical profile/takeover tables to read-only access for runtime
 roles. The post-install aggregate found zero active profile, takeover,
 connector, or remote-browser tool authority. Historical audit rows remain.
 
-The complete Playwright development runtime is also gone: no tracked or
-installed Playwright package, executable test suite, CI job, benchmark,
-visual-smoke script, product proxy, connector preset, container definition, or
-Fly source definition remains. The only executable isolated-browser component
-left is the already deployed legacy Fly app and its exact machine, volume, and
-secrets. It is not product authority and remains only until the owner-Mac
-canary passes and the release operator performs the explicit decommission.
+The complete Playwright development and deployed product runtime is also gone:
+no tracked or installed Playwright package, executable test suite, CI job,
+benchmark, visual-smoke script, product proxy, connector preset, container
+definition, Fly source definition, or live Fly browser resource remains.
+The release operator removed Fly app `omniagent-os-browser`, machine
+`287920db963048`, persistent volume `vol_vz8x9p55j9876djv`, and both remaining
+Playwright secrets after the native canary and rollback checks passed. The
+separate `omniagent-os-worker` service remains healthy at version `v335`.
 
 The browser-automation development dependency, CI job, benchmark, and visual-smoke
 scripts are removed as well. Focused component/contract tests and the production
@@ -150,8 +151,10 @@ interface. Ordinary startup is non-interactive and bounded. The explicit
 one-time legacy migration copies, reads back, and marks every broker-owned value
 before deleting only its verified legacy source; disagreement or an unknown key
 fails closed and preserves the source. The installed broker artifact is
-verified, while the live migration/restart proof is part of the pending
-owner-Mac canary.
+verified. Commit `0f5477a` adds the exact versioned, monotonic cutover receipt;
+the installed 1.6.8+15 restart proof confirmed that the broker target stays
+canonical without repeating legacy migration or transferring Computer Use
+authority to the credential broker.
 
 ### First-slice restrictions
 
@@ -215,45 +218,56 @@ read-only activation and observation proof; it does not claim that this run
 performed a risk-two edit, browser navigation, screenshot presentation, or
 image-coordinate click.
 
-The current native-only release checkpoint is newer and does not replace that
-historical canary:
+The completed native-only release is newer and does not replace that historical
+canary:
 
-1. migration 181 is installed and its authority audit reports zero active
-   isolated-browser authority while retaining read-only history;
-2. commit `b2736075b1e799cb5b18e90515d5ef73e0d9c056` is canonical through
-   Vercel deployment `dpl_ADbmrbWVowwnqY7T1SsTGqVCKDM4`; contract discovery
+1. migrations 181-182 are installed. The isolated-browser authority audit is
+   zero while read-only history remains; `open_url` is the sole addition to the
+   validated local command-action constraint. The migration-182 pre-change
+   logical backup is 137,605,166 bytes with SHA-256
+   `a51ef0adf76a0cf50540991d27175746fc1a1ce6e778ed7e9c7dd28a669e81bd`;
+2. commit `590b213a5d869273476c3aeee89ddf7e8493c23f` is canonical through
+   Vercel deployment `dpl_4fwASuVj564h5rLdipRWWT3kkwWN`; contract discovery
    reports v14 current and v13 previous, and retired product routes return
    `410`;
-3. signed owner-only Asael `1.6.6` build `13` is installed at
+3. cutover fix `0f5477a` persists and reuses the exact credential-broker
+   migration receipt, while screenshot/natural-open fix `590b213` carries the
+   explicit screenshot request through governed `open_url` and presents the
+   fresh post-navigation image;
+4. signed owner-only Asael `1.6.8` build `15` is installed at
    `/Applications/Asael.app`. Its package
-   `apps/flutter/build/distribution/macos/Asael-1.6.6-13-macOS.dmg` has SHA-256
-   `bfe7eb3d8d5cce2125d927926bc45a97a1dce63a2d9d399e3491832c00d91a8b`;
-   the installed host CDHash is `c8bfdca6ea87724596750f63aa39865a2020141e`
+   `apps/flutter/build/distribution/macos/Asael-1.6.8-15-macOS.dmg` has SHA-256
+   `c92c10a56ad09d1f006f9cbf33f2160aaa314431f46f1c4e7555627ff89858d2`;
+   the installed host CDHash is `b8ba3feb5edf66e0b3eadd68e47ab3398fdd5027`
    and its embedded frozen broker retains CDHash
-   `056b6bc5ce0709b430fd48dfb38f8d7d01b380e0`; and
-4. migration 182 is installed with checksum
-   `46a2975c9099d954bc7f7ff6aa537076f14f8dce274e53f33826a38471d1f5e4`.
-   It adds `open_url` as the sole new allowed database command action; the
-   replacement constraint is validated. Its pre-change logical backup is
-   137,605,166 bytes with SHA-256
-   `a51ef0adf76a0cf50540991d27175746fc1a1ce6e778ed7e9c7dd28a669e81bd`.
+   `056b6bc5ce0709b430fd48dfb38f8d7d01b380e0`;
+5. live runs `122ff0d5-b208-4152-a0f6-3b4be6c99e0a` and
+   `1a105c0c-d1b2-42be-8ba5-2c2de599d499` successfully exercised the explicit
+   **This Mac** path, credential continuity/restart, and the natural-language
+   Chrome open → fresh screenshot → grounded response flow through governed
+   approval;
+6. the post-canary durable privacy inspection found no retained screenshot bytes
+   or Accessibility snapshot content in command, tool, run, approval, event, or
+   conversation records. Only the permitted bounded public metadata and digests
+   remain; and
+7. the release operator removed Fly app `omniagent-os-browser`, machine
+   `287920db963048`, persistent volume `vol_vz8x9p55j9876djv`, and both remaining
+   Playwright secrets. The independent worker/OpenAI egress app
+   `omniagent-os-worker` remains healthy at version `v335`.
+
+Deleting the Fly app, machine, persistent volume, and encrypted profile snapshot
+lineage is irreversible. That deletion removed the executable browser/profile
+state only; migration-181 database audit rows and historical effect receipts
+remain under their existing retention policy.
 
 ## Native-only release gate
 
-The source cutover is not operationally complete until the remaining release
-evidence proves all of the following together:
+The native-only P13.3 gate is complete. Source/runtime Playwright removal,
+migrations 181-182, canonical v14/v13, signed Asael 1.6.8+15, broker restart,
+natural-language Chrome screenshot canaries, durable screenshot/Accessibility
+privacy inspection, and removal of the obsolete Fly app/machine/volume/secrets
+are all proven together. The surviving worker/OpenAI egress service is healthy.
 
-1. the matching signed macOS build reports v14, **This Mac** is explicitly
-   enabled, and one natural-language Chrome navigation produces a fresh bounded
-   screenshot plus grounded analysis through the governed approval path;
-2. durable inspection finds no screenshot bytes, Accessibility content, prompt,
-   or private reasoning in command, run, approval, event, or conversation rows;
-   and
-3. the obsolete Fly browser app, its persistent volume, and its secrets are
-   removed only after rollback evidence is captured. The worker/OpenAI egress
-   Fly app remains a separate required service.
-
-Migrations 181-182, canonical v14/v13 promotion, source/runtime Playwright
-removal, and the signed 1.6.6+13 install are proven checkpoints. Until the
-remaining checks are recorded, Fly decommission and the new live canary must be
-reported as pending rather than inferred from those checkpoints.
+This closes only the P13.3 Computer Use cutover. It does not claim that the
+separate real provider-delivered APNs receipt is complete; that P13.2 operational
+proof remains open.

@@ -282,17 +282,24 @@ Migration 181 is the installed retirement boundary. Production records checksum
 zero active remote-browser profile, takeover, connector, or tool authority, and
 read-only runtime access to retained profile/takeover history. It does not delete
 historical browsing rows or transfer their authority to **This Mac**. Canonical
-Vercel deployment `dpl_ADbmrbWVowwnqY7T1SsTGqVCKDM4` advertises v14 current/v13
-previous at revision
-`b2736075b1e799cb5b18e90515d5ef73e0d9c056`; the v14 surface removes the
-retired remote-frame operation while retaining local `open_url` and screenshot
+Vercel deployment `dpl_4fwASuVj564h5rLdipRWWT3kkwWN` serves revision
+`590b213a5d869273476c3aeee89ddf7e8493c23f`; the v14 surface removes the retired
+remote-frame operation while retaining local `open_url` and screenshot
 presentation. Installed migration 182 repairs the local command-action constraint
 by adding only `open_url`; its validated checksum is
 `46a2975c9099d954bc7f7ff6aa537076f14f8dce274e53f33826a38471d1f5e4`.
-The new owner-Mac navigation/screenshot canary and Fly browser-service
-decommission remain pending.
-The earlier migration-179/native-v11 read-only canary remains historical evidence
-only.
+
+The signed owner-Mac canaries
+`122ff0d5-b208-4152-a0f6-3b4be6c99e0a` and
+`1a105c0c-d1b2-42be-8ba5-2c2de599d499` completed the native-only release gate.
+The natural second request opened the exact TradingView URL in Chrome and showed
+the fresh screenshot in Asael; read-only durable inspection found only governed
+command and approval metadata, with no screenshot bytes, Accessibility snapshot,
+or private observation in durable records. Fly app `omniagent-os-browser`, machine
+`287920db963048`, encrypted profile volume `vol_vz8x9p55j9876djv`, and its two
+Playwright secrets were then removed. The unrelated `omniagent-os-worker` v335 is
+the only remaining Fly runtime and remains healthy. The earlier
+migration-179/native-v11 read-only canary remains historical evidence only.
 
 App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness

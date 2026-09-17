@@ -1,6 +1,6 @@
 # Deployment (Vercel + Supabase + Fly)
 
-Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the existing Fly application remains in US Ashburn (`iad`) and provides both the durable worker and bounded OpenAI US egress gateway. The remote Playwright product runtime is retired in source. Its separate Fly app may remain deployed only until the native-only release gate captures rollback evidence and explicitly decommissions it; do not treat a still-running legacy service as product authority. Static assets remain globally cached, and the daily Vercel cron remains only a backstop.
+Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the sole remaining Asael Fly application is `omniagent-os-worker` in US Ashburn (`iad`), providing the durable worker and bounded OpenAI US egress gateway. The former remote Playwright product runtime and its separate Fly application were decommissioned on 2026-09-17 after the native-only release gate passed. Static assets remain globally cached, and the daily Vercel cron remains only a backstop.
 
 ## Required production configuration
 
@@ -149,15 +149,17 @@ Production installed it with checksum
 replacement constraint is validated and explicitly permits `open_url`. Its fresh
 pre-change logical backup is 137,605,166 bytes with SHA-256
 `a51ef0adf76a0cf50540991d27175746fc1a1ce6e778ed7e9c7dd28a669e81bd`.
-The owner-Mac navigation canary and Fly browser-app/volume/secret decommission
-remain pending. Do not delete the Fly app before the canary and historical-read
-evidence are captured.
+The owner-Mac navigation and screenshot canaries completed as governed runs
+`122ff0d5-b208-4152-a0f6-3b4be6c99e0a` and
+`1a105c0c-d1b2-42be-8ba5-2c2de599d499`. The latter opened the exact allowlisted
+TradingView URL in Chrome, presented the fresh post-navigation screenshot as a
+private temporary Asael preview, and completed with no screenshot bytes,
+Accessibility snapshot, or other private observation in the durable command,
+tool, event, answer, or conversation records.
 
-Canonical Vercel deployment `dpl_ADbmrbWVowwnqY7T1SsTGqVCKDM4` serves exact
-revision `b2736075b1e799cb5b18e90515d5ef73e0d9c056`. Health reports database,
-OpenAI, and cron configured; native discovery reports v14 current/v13 previous;
-the retired profile route returns `410`; and the licensed TradingView asset returns
-HTTP 200.
+Canonical Vercel deployment `dpl_4fwASuVj564h5rLdipRWWT3kkwWN` serves exact
+revision `590b213a5d869273476c3aeee89ddf7e8493c23f`. Canonical health reports healthy,
+and the retired profile route continues to return `410`.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
@@ -488,16 +490,19 @@ metadata, and reduces the profile/takeover tables to read-only access for runtim
 roles. The migration retains rows; it does not synthesize replacement authority
 or erase audit history.
 
-Migration 181 and canonical v14/v13 are now verified checkpoints. New remote
-requests and retired product routes fail closed, database history remains under
-read-only runtime authority, and source contains no Playwright development or
-product runtime. The dedicated Fly browser app may still exist only until the
-release operator performs the remaining decommission gate. Record its app and
-machine identity, persistent-volume identity, rollback release, and secret
-inventory without printing secret values; complete the owner-Mac canary; then
-remove the browser app, its volume, and its secrets
-explicitly. Recheck that the separate worker/OpenAI egress Fly app remains healthy.
-This document does not claim the canary or Fly deletion completed.
+Migration 181 and canonical v14/v13 are verified checkpoints. New remote requests
+and retired product routes fail closed, database history remains under read-only
+runtime authority, and source contains no Playwright development or product
+runtime. After the owner-Mac canary passed on 2026-09-17, the release operator
+stopped and destroyed Fly machine `287920db963048`, destroyed encrypted profile
+volume `vol_vz8x9p55j9876djv`, removed secrets
+`OMNIAGENT_PLAYWRIGHT_MCP_TOKEN` and
+`OMNIAGENT_PLAYWRIGHT_PROFILE_KEY`, and destroyed app
+`omniagent-os-browser`. The volume and its profile snapshot lineage are not
+recoverable; retained database audit history was not deleted. The separate
+`omniagent-os-worker` app remains started and healthy at release v335, and its
+public health endpoint reports service `asael-openai-egress`, region `iad`, and
+protocol 1.
 
 App Builder no longer captures product browser evidence. Checkpoint readiness
 requires deterministic lint and typecheck results. Preview and production
