@@ -68,6 +68,45 @@ Use the platform sans family throughout. Headings use weight 700 and modest nega
 - Expanded `>=1024dp`: extended rail, master-detail workspaces, persistent evidence inspector where useful.
 - Content width is capped at 1440dp. Reading text is capped near 72 characters.
 
+## Installed macOS application
+
+The installed application has its own presentation layer. It reuses the same
+controllers, repositories, generated contracts, and server authority as Android
+and web, but it does not reuse their page composition. The branch is activated
+only for a non-web macOS target.
+
+- Use the native system typeface, unified compact title bar, permanently labelled
+  source sidebar, keyboard focus rings, pointer hover states, conventional menus,
+  and 32–38pt desktop control heights.
+- Prefer a three-part desktop workspace: searchable or filterable source list,
+  dominant working canvas, and a resizable 270–460pt inspector. Collapse the
+  inspector to an explicit sheet below the minimum useful width.
+- Use border-separated tables and ledgers for repeatable records. Avoid mobile
+  card stacks, oversized touch spacing, pull-to-refresh, marketing heroes,
+  ornamental glass, and decorative 3D scenes.
+- Preserve selection while data refreshes. Search and filter locally after one
+  bounded projection load; never restart a visualization because the pointer
+  moved. Expensive detail and Build Studio surfaces load only when selected.
+- Keep exact status, freshness, source, actor, and approval context visible beside
+  every consequential action. Destructive device, run, and project actions retain
+  explicit confirmation and the existing governed mutation path.
+- Support wide monitors without stretching prose: lists and evidence canvases may
+  expand, reading columns remain bounded, and inspectors remain resizable.
+
+The macOS route families are:
+
+- **Work:** Today command desk, Conversation cockpit, focused Capture intake,
+  Project browser/detail/Build Studio, Meeting agenda/detail, and Results ledger.
+- **Knowledge:** practical indexed Memory browser with stable pan/zoom graph,
+  Agent roster/capabilities/outcomes, Customer Accounts and Customer 360, and the
+  market research terminal.
+- **Review:** attention Inbox and approval detail, trusted read-only Payments,
+  Quality Checks, and evidence inspectors.
+- **Control:** Workflows, Integrations, Tools, Monitoring, Security, model/provider
+  Settings, and a signed-installation Devices & Security ledger.
+- **Lifecycle:** native sign-in, protected-session bootstrap, Quick Entry, auxiliary
+  windows, empty/loading/error/offline states, and narrow-window inspector sheets.
+
 ## Components
 
 - **App frame:** adaptive navigation, current-work context, status-aware destination selection.

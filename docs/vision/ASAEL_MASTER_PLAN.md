@@ -1231,6 +1231,16 @@ obsolete Playwright Fly app, machine, volume, and secrets are removed. The
 separate worker/OpenAI egress service remains healthy at `v335`. The earlier
 native-v11 TextEdit canary remains valid historical first-slice evidence.
 
+The macOS presentation is now independently designed rather than stretching the
+Android/web composition. Asael 1.7.0 build 16 at source revision `6d3a670`
+covers every current main destination, detail route, authentication state,
+Quick Entry, and device-management surface with a native labelled sidebar,
+desktop density, keyboard/pointer behavior, searchable master-detail layouts,
+stable graph interaction, and resizable inspectors. The 40-case focused macOS
+presentation gate passes, and the owner-only package is installed with strict
+nested signing. The previous 1.6.8+15 application remains recoverable in Trash.
+This presentation slice does not change the remaining external APNs receipt.
+
 ADR 012 selects the shared Flutter client with a deliberately thin AppKit host,
 and migration 178 enrolls `macos` without adding a second backend. Production
 native contract v14 retains frozen v13 and publishes only the macOS local-device
@@ -3336,6 +3346,10 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
 - [ ] **Phase 13 — macOS application:** P13.1, P13.3, and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migrations 181-182 with zero active remote-browser authority and the repaired `open_url` boundary, canonical native v14/v13, signed Asael `1.6.8` build `15`, credential-restart and natural-language Chrome screenshot canaries, zero durable screenshot/Accessibility content, and deletion of the obsolete Fly browser app, machine, volume, and secrets. The surviving worker/OpenAI egress service is healthy at `v335`. Developer ID/notarized distribution is outside the private-install scope.
+
+The latest installed presentation checkpoint is Asael 1.7.0 build 16 at
+revision `6d3a670`; it adds no new Phase 13 infrastructure gate. The unchecked
+Phase 13 state continues to mean only the external provider-delivered APNs proof.
 
 ## 16. Native-only Computer Use cutover addendum
 

@@ -223,16 +223,17 @@ without evidence-blind sibling council rewriting, and exposes bounded non-secure
 Accessibility text while retaining secure-field redaction and Secure Event Input
 refusal.
 
-The current signed install checkpoint is Asael `1.6.6` build `13` at
+The current signed install checkpoint is Asael `1.7.0` build `16` at
 `/Applications/Asael.app`, packaged as
-`apps/flutter/build/distribution/macos/Asael-1.6.6-13-macOS.dmg` with SHA-256
-`bfe7eb3d8d5cce2125d927926bc45a97a1dce63a2d9d399e3491832c00d91a8b`.
+`apps/flutter/build/distribution/macos/Asael-1.7.0-16-macOS.dmg` with SHA-256
+`80850008abcfd799b7c799291ef807fd151be7238b28f0eb63c41ab20cfe8499`.
 Strict nested signing passes. The installed host CDHash is
-`c8bfdca6ea87724596750f63aa39865a2020141e`; the embedded broker CDHash is the
-frozen `056b6bc5ce0709b430fd48dfb38f8d7d01b380e0`, and both designated
-requirements match. Installation alone does not prove the one-time credential
-migration, a restart without a Keychain prompt, local readiness, or the requested
-Chrome navigation/screenshot; those remain part of the pending live canary.
+`60f5570ef221d5dd34a1825ff9abc0608828b11f`; the embedded broker CDHash remains
+the frozen `056b6bc5ce0709b430fd48dfb38f8d7d01b380e0`, and both designated
+requirements match. The prior `1.6.8` build `15` remains the credential-restart
+and natural-language Chrome screenshot canary checkpoint; the 1.7.0 update is a
+presentation-only release over the same native v14 courier and server runtime.
+The prior application bundle is retained in Trash for rollback.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
