@@ -89,11 +89,13 @@ class TalkThreadTurn {
   const TalkThreadTurn({
     required this.role,
     required this.text,
+    this.runId,
     this.createdAt,
   });
 
   final TalkThreadRole role;
   final String text;
+  final String? runId;
   final DateTime? createdAt;
 
   static TalkThreadTurn? tryFromJson(TalkHistoryJson payload, String threadId) {
@@ -109,6 +111,10 @@ class TalkThreadTurn {
     return TalkThreadTurn(
       role: role,
       text: text,
+      runId: switch (safeTalkHistoryId(payload['runId'])) {
+        final value when value.isNotEmpty => value,
+        _ => null,
+      },
       createdAt: _safeProjectionDate(payload['createdAt']),
     );
   }

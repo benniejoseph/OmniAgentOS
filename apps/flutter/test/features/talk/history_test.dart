@@ -140,6 +140,7 @@ void main() {
           'threadId': _threadA,
           'role': 'assistant',
           'content': 'Public answer',
+          'runId': 'run-public-result',
           'toolPayload': 'must not project',
         },
         {
@@ -165,6 +166,7 @@ void main() {
       'Public question',
       'Public answer',
     ]);
+    expect(detail.turns.last.runId, 'run-public-result');
     expect(
       detail.turns.map((turn) => turn.text).join(' '),
       isNot(contains('private')),
