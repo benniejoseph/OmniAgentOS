@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:asael/app/router/app_router.dart';
+import 'package:asael/app/theme/app_theme.dart';
 import 'package:asael/core/platform/local_computer_bridge.dart';
 import 'package:asael/core/sync/reconnect_coordinator.dart';
 import 'package:asael/features/auth/application/session_controller.dart';
@@ -16,13 +18,19 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets(
-    'mounted Conversation follows owner-scoped controller replacement',
+    'routed Conversation submits through the live owner-scoped controller',
     (tester) async {
+      final bootstrap = Completer<AppSession?>();
       final firstRepository = _RecordingTalkRepository();
       final liveRepository = _RecordingTalkRepository();
+      late _TestSessionController sessions;
       final container = ProviderContainer(
         overrides: [
-          sessionControllerProvider.overrideWith(_TestSessionController.new),
+          sessionControllerProvider.overrideWith(() {
+            sessions = _TestSessionController(bootstrap);
+            return sessions;
+          }),
+          appInitialLocationProvider.overrideWithValue('/talk'),
           talkRepositoryProvider.overrideWith((ref) {
             final owner = ref.watch(sessionOwnerKeyProvider);
             return owner?.actorId == _ownerB.actorId
@@ -41,19 +49,24 @@ void main() {
         ],
       );
       addTearDown(container.dispose);
-      await container.read(sessionControllerProvider.future);
 
-      tester.view.physicalSize = const Size(1280, 900);
+      tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: container,
-          child: const MaterialApp(home: ProviderBoundTalkRoute()),
+          child: const _RouterHarness(),
         ),
       );
       await tester.pump();
+      expect(find.text('Securing your private workspace…'), findsOneWidget);
+
+      bootstrap.complete(_ownerA);
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
       final firstView = tester.widget<TalkView>(find.byType(TalkView));
       final firstController = firstView.controller;
@@ -73,11 +86,16 @@ void main() {
         reason: 'controller notifications must not rebuild the route binding',
       );
 
-      final sessions = container.read(
-        sessionControllerProvider.notifier,
-      ) as _TestSessionController;
+      await tester.enterText(find.byType(TextField), 'Open my XAUUSD chart');
       sessions.replace(_ownerB);
+      await tester.tap(find.byTooltip('Send message'));
+
+      expect(firstRepository.messages, isEmpty);
+      expect(liveRepository.messages, ['Open my XAUUSD chart']);
+
       await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
       final liveView = tester.widget<TalkView>(find.byType(TalkView));
       expect(identical(liveView.controller, firstController), isFalse);
@@ -92,14 +110,18 @@ void main() {
         ),
         isTrue,
       );
-
-      await tester.enterText(find.byType(TextField), 'Open my XAUUSD chart');
-      await tester.tap(find.byTooltip('Send message'));
-      await tester.pump();
-
-      expect(firstRepository.messages, isEmpty);
-      expect(liveRepository.messages, ['Open my XAUUSD chart']);
     },
+  );
+}
+
+class _RouterHarness extends ConsumerWidget {
+  const _RouterHarness();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => MaterialApp.router(
+    theme: AppTheme.light(),
+    darkTheme: AppTheme.dark(),
+    routerConfig: ref.watch(appRouterProvider),
   );
 }
 
@@ -122,8 +144,12 @@ const _ownerB = AppSession(
 );
 
 class _TestSessionController extends SessionController {
+  _TestSessionController(this.bootstrap);
+
+  final Completer<AppSession?> bootstrap;
+
   @override
-  Future<AppSession?> build() async => _ownerA;
+  Future<AppSession?> build() => bootstrap.future;
 
   void replace(AppSession? session) {
     state = AsyncData(session);

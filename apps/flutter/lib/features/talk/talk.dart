@@ -2027,6 +2027,7 @@ class TalkView extends StatefulWidget {
   const TalkView({
     super.key,
     required this.controller,
+    this.controllerResolver,
     this.voiceRecorder,
     this.quickEntry = false,
     this.onQuickEntryReady,
@@ -2035,6 +2036,7 @@ class TalkView extends StatefulWidget {
   });
 
   final TalkController controller;
+  final TalkController Function()? controllerResolver;
   final VoiceDraftRecorder? voiceRecorder;
   final bool quickEntry;
   final VoidCallback? onQuickEntryReady;
@@ -2153,8 +2155,9 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       );
       return;
     }
+    final controller = widget.controllerResolver?.call() ?? widget.controller;
     input.clear();
-    final work = widget.controller.send(
+    final work = controller.send(
       value,
       mode: 'orchestrate',
       strategy: strategy,

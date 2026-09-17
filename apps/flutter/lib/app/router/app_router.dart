@@ -66,9 +66,9 @@ bool isInboxLocation(Uri location) {
 /// Keeps a mounted Conversation surface bound to the current authenticated
 /// owner's controller instances.
 ///
-/// Watching the notifier projections is intentional: the route rebuilds when
-/// Riverpod replaces an owner-scoped controller, but not for ordinary
-/// [ChangeNotifier] state updates emitted by those controllers.
+/// Selecting the controller values is intentional: the route rebuilds when
+/// Riverpod replaces an owner-scoped controller, while ordinary
+/// [ChangeNotifier] updates keep selecting the same identity and are ignored.
 @visibleForTesting
 class ProviderBoundTalkRoute extends ConsumerWidget {
   const ProviderBoundTalkRoute({
@@ -84,8 +84,13 @@ class ProviderBoundTalkRoute extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) => TalkView(
-    controller: ref.watch(talkControllerProvider.notifier),
-    localComputer: ref.watch(localComputerCoordinatorProvider.notifier),
+    controller: ref.watch(
+      talkControllerProvider.select((controller) => controller),
+    ),
+    controllerResolver: () => ref.read(talkControllerProvider),
+    localComputer: ref.watch(
+      localComputerCoordinatorProvider.select((coordinator) => coordinator),
+    ),
     quickEntry: quickEntry,
     onQuickEntryReady: onQuickEntryReady,
     onExitQuickEntry: onExitQuickEntry,
