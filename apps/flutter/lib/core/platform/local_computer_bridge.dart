@@ -89,6 +89,7 @@ class LocalComputerCommand {
     if (!expiration.isAfter(now) ||
         expiration.difference(now) > const Duration(minutes: 10) ||
         !_isSafeChannelValue(this.input) ||
+        !_isValidActionInput(action, this.input) ||
         utf8.encode(jsonEncode(this.input)).length > 64 * 1024) {
       throw ArgumentError('The local Computer Use command is invalid.');
     }
@@ -98,6 +99,7 @@ class LocalComputerCommand {
     'observe',
     'list_apps',
     'activate_app',
+    'open_url',
     'press',
     'click',
     'type',
@@ -140,6 +142,38 @@ class LocalComputerCommand {
           );
     }
     return false;
+  }
+
+  static bool _isValidActionInput(String action, Map<String, Object?> input) {
+    if (action != 'open_url') return true;
+    if (input.keys.any(
+      (key) => !const {'browser', 'url', 'loadWaitSeconds'}.contains(key),
+    )) {
+      return false;
+    }
+    if (input.length < 2 || input.length > 3 || input['browser'] != 'chrome') {
+      return false;
+    }
+    final rawUrl = input['url'];
+    if (rawUrl is! String ||
+        rawUrl.length < 8 ||
+        rawUrl.length > 4096 ||
+        rawUrl != rawUrl.trim() ||
+        rawUrl.contains('\\') ||
+        rawUrl.contains(RegExp(r'[\x00-\x20\x7f]'))) {
+      return false;
+    }
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null ||
+        !uri.hasScheme ||
+        !uri.hasAuthority ||
+        !const {'http', 'https'}.contains(uri.scheme.toLowerCase()) ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty) {
+      return false;
+    }
+    final wait = input['loadWaitSeconds'];
+    return wait == null || (wait is int && wait >= 0 && wait <= 15);
   }
 }
 
@@ -205,6 +239,17 @@ class LocalComputerCommandResult {
     if ((data != null && data is! Map) ||
         (observation != null && observation is! Map)) {
       throw const FormatException('The local Computer Use result is invalid.');
+    }
+    final effectVerdict = data is Map ? data['effectVerdict'] : null;
+    if (effectVerdict != null &&
+        !const {
+          'confirmed',
+          'suspected_noop',
+          'unverifiable',
+        }.contains(effectVerdict)) {
+      throw const FormatException(
+        'The local Computer Use effect verdict is invalid.',
+      );
     }
 
     return LocalComputerCommandResult(

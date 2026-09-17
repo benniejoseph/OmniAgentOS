@@ -114,6 +114,60 @@ void main() {
     );
   });
 
+  test('accepts only bounded allowlisted web navigation input', () {
+    LocalComputerCommand webCommand(Map<String, Object?> input) =>
+        LocalComputerCommand(
+          id: 'local_computer_command_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          action: 'open_url',
+          input: input,
+          expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 1)),
+        );
+
+    expect(
+      webCommand(const {
+        'browser': 'chrome',
+        'url': 'https://in.tradingview.com/chart/example?symbol=OANDA%3AXAUUSD',
+        'loadWaitSeconds': 3,
+      }).action,
+      'open_url',
+    );
+    for (final input in <Map<String, Object?>>[
+      const {'browser': 'terminal', 'url': 'https://example.test'},
+      const {'browser': 'chrome', 'url': 'file:///private/secret'},
+      const {'browser': 'chrome', 'url': 'javascript:alert(1)'},
+      const {
+        'browser': 'chrome',
+        'url': 'https://user:secret@example.test/chart',
+      },
+      const {'browser': 'chrome', 'url': 'https://example.test/bad path'},
+      const {
+        'browser': 'chrome',
+        'url': 'https://example.test',
+        'loadWaitSeconds': 16,
+      },
+      const {
+        'browser': 'chrome',
+        'url': 'https://example.test',
+        'unknown': true,
+      },
+    ]) {
+      expect(() => webCommand(input), throwsArgumentError);
+    }
+  });
+
+  test('rejects an invented native effect verdict', () {
+    expect(
+      () => LocalComputerCommandResult.fromArguments(const {
+        'outcome': 'succeeded',
+        'result': {
+          'summary': 'Browser navigation returned.',
+          'data': {'effectVerdict': 'definitely_loaded'},
+        },
+      }),
+      throwsFormatException,
+    );
+  });
+
   test('delivers only a bounded native kill-switch event', () async {
     const channel = MethodChannel('test.asael.local-computer.events');
     final reasons = <String>[];

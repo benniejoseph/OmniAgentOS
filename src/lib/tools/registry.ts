@@ -844,6 +844,40 @@ function localMacComputerTools(): ToolDefinition[] {
       required: ["bundleId"],
     }),
     localTool({
+      id: "local.macos.open_url",
+      name: "Open a Web Page on This Mac",
+      description:
+        "Open one absolute HTTP or HTTPS URL in an allowlisted browser on the explicitly selected installed Mac. This launches or activates the browser, waits for a short bounded settling period, and returns a fresh observation plus a closed effectVerdict; it does not claim that the page finished loading. URL credentials, arbitrary schemes, Terminal, and System Settings are refused.",
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "mutation",
+      properties: {
+        browser: {
+          type: "string",
+          enum: ["chrome"],
+          description: "The allowlisted browser to launch or activate.",
+        },
+        url: {
+          type: "string",
+          format: "uri",
+          minLength: 8,
+          maxLength: 4_096,
+          pattern: "^https?://[^\\u0000-\\u0020\\u007f\\\\]+$",
+          description:
+            "An absolute HTTP or HTTPS URL without embedded username or password credentials.",
+        },
+        loadWaitSeconds: {
+          type: "integer",
+          minimum: 0,
+          maximum: 15,
+          default: 3,
+          description:
+            "A bounded delay before Asael takes the fresh post-navigation observation. This is not a page-load guarantee.",
+        },
+      },
+      required: ["browser", "url"],
+    }),
+    localTool({
       id: "local.macos.press",
       name: "Press Element on This Mac",
       description:

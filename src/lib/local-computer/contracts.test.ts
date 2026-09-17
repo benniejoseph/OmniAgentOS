@@ -96,6 +96,40 @@ describe("local computer protocol", () => {
     }).success).toBe(false);
   });
 
+  it("accepts only an allowlisted browser and credential-free web URL", () => {
+    const command = {
+      schemaVersion: 1,
+      id: `local_computer_command_${"b".repeat(48)}`,
+      runId: "run-local-navigation",
+      executionId: "run-local-navigation:execution-local-navigation",
+      action: "open_url",
+      input: {
+        browser: "chrome",
+        url: "https://in.tradingview.com/chart/example?symbol=OANDA%3AXAUUSD",
+        loadWaitSeconds: 3,
+      },
+      presentScreenshot: false,
+      claimToken: "claim-token-that-is-long-enough-123456",
+      claimGeneration: 1,
+      expiresAt: "2026-09-17T08:00:30.000Z",
+    } as const;
+
+    expect(localComputerCommandSchema.safeParse(command).success).toBe(true);
+    for (const input of [
+      { ...command.input, browser: "terminal" },
+      { ...command.input, url: "file:///etc/passwd" },
+      { ...command.input, url: "javascript:alert(1)" },
+      { ...command.input, url: "https://user:secret@example.test/chart" },
+      { ...command.input, url: "https://example.test/unsafe path" },
+      { ...command.input, loadWaitSeconds: 16 },
+      { ...command.input, extra: "not-allowed" },
+    ]) {
+      expect(
+        localComputerCommandSchema.safeParse({ ...command, input }).success,
+      ).toBe(false);
+    }
+  });
+
   it("rejects malformed screenshot bytes before they reach a model", () => {
     const parsed = localComputerCompletionRequestSchema.safeParse({
       schemaVersion: 1,
@@ -154,6 +188,29 @@ describe("local computer protocol", () => {
             dataBase64: oversized.toString("base64"),
           },
         },
+      },
+    }).success).toBe(false);
+  });
+
+  it("accepts only closed post-action effect verdicts", () => {
+    const completion = {
+      schemaVersion: 1,
+      claimToken: "a".repeat(32),
+      outcome: "succeeded",
+      result: {
+        summary: "Chrome accepted the web address.",
+        data: { effectVerdict: "confirmed" },
+        observation: { snapshotRevision: "f".repeat(64) },
+      },
+    } as const;
+
+    expect(localComputerCompletionRequestSchema.safeParse(completion).success)
+      .toBe(true);
+    expect(localComputerCompletionRequestSchema.safeParse({
+      ...completion,
+      result: {
+        ...completion.result,
+        data: { effectVerdict: "definitely_loaded" },
       },
     }).success).toBe(false);
   });

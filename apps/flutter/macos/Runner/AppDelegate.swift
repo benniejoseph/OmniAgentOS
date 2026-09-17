@@ -108,7 +108,7 @@ private final class LocalComputerController: NSObject {
   }
 
   private static let allowedActions: Set<String> = [
-    "observe", "list_apps", "activate_app", "press", "click", "type", "key", "scroll",
+    "observe", "list_apps", "activate_app", "open_url", "press", "click", "type", "key", "scroll",
   ]
   private static let helperBundleName = "AsaelComputerUseHelper.app"
   private static let helperExecutableName = "AsaelComputerUseHelper"

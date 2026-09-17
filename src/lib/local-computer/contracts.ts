@@ -3,6 +3,7 @@ import { z } from "zod";
 
 export const LOCAL_COMPUTER_PROTOCOL_VERSION = 1 as const;
 export const LOCAL_COMPUTER_NATIVE_CONTRACT_VERSION = 11 as const;
+export const LOCAL_COMPUTER_OPEN_URL_CONTRACT_VERSION = 12 as const;
 export const LOCAL_COMPUTER_DEVICE_LEASE_SECONDS = 24;
 export const LOCAL_COMPUTER_COMMAND_LEASE_SECONDS = 30;
 export const LOCAL_COMPUTER_COMMAND_TIMEOUT_MS = 45_000;
@@ -12,6 +13,7 @@ export const localComputerActionSchema = z.enum([
   "observe",
   "list_apps",
   "activate_app",
+  "open_url",
   "press",
   "click",
   "type",
@@ -39,6 +41,36 @@ export const localComputerClaimRequestSchema = z.object({
   waitSeconds: z.number().int().min(0).max(20).optional(),
 }).strict();
 
+export const localComputerOpenUrlInputSchema = z.object({
+  browser: z.literal("chrome"),
+  url: z.string().min(8).max(4_096)
+    .regex(/^https?:\/\/[^\u0000-\u0020\u007f\\]+$/)
+    .superRefine((value, context) => {
+      let parsed: URL;
+      try {
+        parsed = new URL(value);
+      } catch {
+        context.addIssue({
+          code: "custom",
+          message: "The browser URL must be an absolute HTTP or HTTPS URL.",
+        });
+        return;
+      }
+      if (
+        !["http:", "https:"].includes(parsed.protocol) ||
+        !parsed.hostname ||
+        parsed.username ||
+        parsed.password
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "The browser URL is not permitted.",
+        });
+      }
+    }),
+  loadWaitSeconds: z.number().int().min(0).max(15).optional(),
+}).strict();
+
 export const localComputerCommandSchema = z.object({
   schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
   id: z.string().regex(/^local_computer_command_[a-f0-9]{48}$/),
@@ -50,7 +82,18 @@ export const localComputerCommandSchema = z.object({
   claimToken: z.string().min(32).max(256),
   claimGeneration: z.number().int().positive(),
   expiresAt: z.string().datetime({ offset: true }),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (
+    value.action === "open_url" &&
+    !localComputerOpenUrlInputSchema.safeParse(value.input).success
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["input"],
+      message: "The browser navigation input is invalid.",
+    });
+  }
+});
 
 const frontmostApplicationSchema = z.object({
   name: z.string().trim().min(1).max(240),
@@ -87,6 +130,20 @@ export const localComputerResultSchema = z.object({
     screenshot: screenshotSchema.optional(),
   }).strict().optional(),
 }).strict().superRefine((value, context) => {
+  const effectVerdict = value.data?.effectVerdict;
+  if (
+    effectVerdict !== undefined &&
+    (typeof effectVerdict !== "string" ||
+      !["confirmed", "suspected_noop", "unverifiable"].includes(
+        effectVerdict,
+      ))
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["data", "effectVerdict"],
+      message: "The local computer effect verdict is invalid.",
+    });
+  }
   if (Buffer.byteLength(JSON.stringify(value.data || {}), "utf8") > 160_000) {
     context.addIssue({
       code: "custom",

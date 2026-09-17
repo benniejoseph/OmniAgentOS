@@ -60,6 +60,43 @@ struct SnapshotElementIdentity: Equatable {
   let frame: CGRect?
 }
 
+enum SafeBrowserNavigationPolicy {
+  private static let browserBundleIdentifiers = [
+    "chrome": "com.google.Chrome",
+  ]
+
+  static func bundleIdentifier(for browser: String) -> String? {
+    browserBundleIdentifiers[browser]
+  }
+
+  static func validatedURL(_ rawValue: String) -> URL? {
+    guard rawValue.utf8.count >= 8,
+          rawValue.utf8.count <= 4_096,
+          rawValue == rawValue.trimmingCharacters(in: .whitespacesAndNewlines),
+          !rawValue.contains("\\"),
+          !rawValue.unicodeScalars.contains(where: {
+            $0.value <= 0x20 || $0.value == 0x7f
+          }),
+          let components = URLComponents(string: rawValue),
+          let scheme = components.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          components.user == nil,
+          components.password == nil,
+          let host = components.host,
+          !host.isEmpty,
+          host.utf8.count <= 253,
+          let url = components.url,
+          url.scheme?.lowercased() == scheme,
+          url.host != nil
+    else { return nil }
+    return url
+  }
+
+  static func effectVerdict(browserFrontmost: Bool) -> String {
+    browserFrontmost ? "confirmed" : "unverifiable"
+  }
+}
+
 private enum ParentVerifier {
   static let parentIdentifier = "app.omniagent.omniagent"
   private static let helperIdentifier = "app.omniagent.omniagent.computer-use-helper"
@@ -162,7 +199,7 @@ private final class ComputerUseExecutor {
 
   private static let allowedActions: Set<String> = [
     "status", "request_permissions", "observe", "list_apps", "activate_app",
-    "press", "click", "type", "key", "scroll",
+    "open_url", "press", "click", "type", "key", "scroll",
   ]
   private static let restrictedAutomationBundleIdentifiers: Set<String> = [
     "com.apple.Terminal",
@@ -273,6 +310,8 @@ private final class ComputerUseExecutor {
       return result(summary: "Listed visible applications.", data: ["applications": runningApps()])
     case "activate_app":
       return try activateApp(input)
+    case "open_url":
+      return try await openURL(input)
     case "observe":
       return try await observe(input)
     case "press":
@@ -336,6 +375,86 @@ private final class ComputerUseExecutor {
     return result(
       summary: "Activated \(bounded(app.localizedName ?? "application", limit: 100)).",
       data: ["bundleId": bundleId]
+    )
+  }
+
+  private func openURL(_ input: [String: Any]) async throws -> [String: Any] {
+    guard input.keys.allSatisfy({
+            $0 == "browser" || $0 == "url" || $0 == "loadWaitSeconds"
+          }),
+          input.count == 2 || input.count == 3,
+          let browser = input["browser"] as? String,
+          let bundleIdentifier = SafeBrowserNavigationPolicy.bundleIdentifier(
+            for: browser
+          ),
+          !Self.restrictedAutomationBundleIdentifiers.contains(bundleIdentifier),
+          let rawURL = input["url"] as? String,
+          let url = SafeBrowserNavigationPolicy.validatedURL(rawURL),
+          let loadWaitSeconds = boundedLoadWaitSeconds(
+            input["loadWaitSeconds"]
+          ),
+          let applicationURL = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: bundleIdentifier
+          )
+    else { throw HelperFailure.rejected("browser_navigation_refused") }
+
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = true
+    configuration.createsNewApplicationInstance = false
+    configuration.promptsUserIfNeeded = false
+    let application = try await withCheckedThrowingContinuation {
+      (continuation: CheckedContinuation<NSRunningApplication, Error>) in
+      NSWorkspace.shared.open(
+        [url],
+        withApplicationAt: applicationURL,
+        configuration: configuration
+      ) { openedApplication, error in
+        guard error == nil,
+              let openedApplication,
+              openedApplication.bundleIdentifier == bundleIdentifier,
+              openedApplication.activationPolicy == .regular
+        else {
+          continuation.resume(
+            throwing: HelperFailure.rejected("browser_open_failed")
+          )
+          return
+        }
+        continuation.resume(returning: openedApplication)
+      }
+    }
+
+    if loadWaitSeconds > 0 {
+      try? await Task.sleep(
+        nanoseconds: UInt64(loadWaitSeconds) * 1_000_000_000
+      )
+    }
+
+    let postActionResult = try await observe(["includeScreenshot": false])
+    guard let observation = postActionResult["observation"] as? [String: Any]
+    else { throw HelperFailure.rejected("post_action_observation_failed") }
+    let frontmost = NSWorkspace.shared.frontmostApplication
+    let browserIsFrontmost = frontmost?.processIdentifier
+        == application.processIdentifier
+      && frontmost?.bundleIdentifier == bundleIdentifier
+    let effectVerdict = SafeBrowserNavigationPolicy.effectVerdict(
+      browserFrontmost: browserIsFrontmost
+    )
+    let effect: [String: Any] = [
+      "kind": "browser_url_delivery",
+      "browser": browser,
+      "browserBundleId": bundleIdentifier,
+      "navigationRequestAccepted": true,
+      "browserFrontmostAfterWait": browserIsFrontmost,
+      "pageLoadConfirmed": false,
+      "verdict": effectVerdict,
+    ]
+    let summary = browserIsFrontmost
+      ? "Chrome accepted the web address and was frontmost after the bounded wait. Inspect the fresh observation to determine the page state."
+      : "Chrome accepted the web address, but it was not confirmed as frontmost after the bounded wait. Inspect the fresh observation before continuing."
+    return result(
+      summary: summary,
+      data: ["effectVerdict": effectVerdict, "effect": effect],
+      observation: observation
     )
   }
 
@@ -864,6 +983,20 @@ private final class ComputerUseExecutor {
     guard let number = value as? NSNumber else { return nil }
     let result = number.doubleValue
     return result.isFinite ? result : nil
+  }
+
+  private func boundedLoadWaitSeconds(_ value: Any?) -> Int? {
+    guard let value else { return 3 }
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID()
+    else { return nil }
+    let candidate = number.doubleValue
+    guard candidate.isFinite,
+          candidate.rounded(.towardZero) == candidate,
+          candidate >= 0,
+          candidate <= 15
+    else { return nil }
+    return Int(candidate)
   }
 
   private func isCommandId(_ value: String) -> Bool {

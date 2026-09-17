@@ -122,6 +122,45 @@ private enum FocusSafeSnapshotPolicyTests {
         == "A B C D",
       "untrusted accessibility controls are normalized before JSON size accounting"
     )
+    expect(
+      SafeBrowserNavigationPolicy.bundleIdentifier(for: "chrome")
+        == chromeBundleIdentifier,
+      "only the known Chrome browser key resolves to its exact bundle identity"
+    )
+    expect(
+      SafeBrowserNavigationPolicy.bundleIdentifier(for: "terminal") == nil,
+      "terminal never resolves as a browser target"
+    )
+    expect(
+      SafeBrowserNavigationPolicy.effectVerdict(browserFrontmost: true)
+        == "confirmed",
+      "accepted delivery is confirmed only when the exact browser is frontmost"
+    )
+    expect(
+      SafeBrowserNavigationPolicy.effectVerdict(browserFrontmost: false)
+        == "unverifiable",
+      "a focus mismatch never becomes a false success claim"
+    )
+    expect(
+      SafeBrowserNavigationPolicy.validatedURL(
+        "https://in.tradingview.com/chart/example?symbol=OANDA%3AXAUUSD"
+      ) != nil,
+      "an absolute credential-free HTTPS URL is accepted"
+    )
+    for refused in [
+      "file:///private/etc/hosts",
+      "javascript:alert(1)",
+      "data:text/plain,secret",
+      "https://user:secret@example.test/chart",
+      "https://example.test/unsafe path",
+      "https:\\example.test\\chart",
+      " https://example.test",
+    ] {
+      expect(
+        SafeBrowserNavigationPolicy.validatedURL(refused) == nil,
+        "unsafe or non-web navigation is refused: \(refused)"
+      )
+    }
   }
 
   private static func disposition(
