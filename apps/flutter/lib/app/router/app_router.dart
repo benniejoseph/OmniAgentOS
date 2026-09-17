@@ -16,8 +16,9 @@ import '../../features/agents/agents_providers.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
 import '../../features/computer_use/local_computer.dart';
-import '../../features/customers/customer_detail.dart';
 import '../../features/customers/accounts_view.dart';
+import '../../features/customers/customer_detail.dart';
+import '../../features/customers/macos_accounts_view.dart';
 import '../../features/inbox/macos_inbox_view.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
@@ -25,6 +26,7 @@ import '../../features/knowledge/knowledge.dart';
 import '../../features/knowledge/macos_knowledge_view.dart';
 import '../../features/knowledge/knowledge_providers.dart';
 import '../../features/markets/markets_view.dart';
+import '../../features/payments/macos_payments_view.dart';
 import '../../features/payments/payments_view.dart';
 import '../../features/meetings/macos_meetings_view.dart';
 import '../../features/meetings/meetings_providers.dart';
@@ -254,15 +256,23 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                           : KnowledgeView(
                               controller: ref.read(knowledgeControllerProvider),
                             ),
-                    '/accounts' => AccountsView(
-                      api: ref.read(apiClientProvider),
-                      onOpen: (account) =>
-                          context.push('/accounts/${account.id}'),
-                    ),
+                    '/accounts' =>
+                      usesMacosPresentation()
+                          ? MacosAccountsView(
+                              api: ref.read(apiClientProvider),
+                              onOpen: (account) =>
+                                  context.push('/accounts/${account.id}'),
+                            )
+                          : AccountsView(
+                              api: ref.read(apiClientProvider),
+                              onOpen: (account) =>
+                                  context.push('/accounts/${account.id}'),
+                            ),
                     '/markets' => MarketsView(api: ref.read(apiClientProvider)),
-                    '/payments' => PaymentsView(
-                      api: ref.read(apiClientProvider),
-                    ),
+                    '/payments' =>
+                      usesMacosPresentation()
+                          ? MacosPaymentsView(api: ref.read(apiClientProvider))
+                          : PaymentsView(api: ref.read(apiClientProvider)),
                     '/workflows' =>
                       usesMacosPresentation()
                           ? const MacosAdminWorkspaceView(
