@@ -45,13 +45,12 @@ WHERE state = 'active';
 WITH retired_connectors AS (
   SELECT id, tenant_id
   FROM public.omni_mcp_connectors
-  WHERE regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
-      'https://asael.bennierichard.com/api/integrations/playwright/mcp',
-      'https://omniagent-os-browser.fly.dev/mcp',
-      'https://api.browser-use.com/v3/mcp',
-      'https://api.browser-use.com/mcp'
-    )
-    OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%'
+  WHERE lower(btrim(endpoint)) ~
+      '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+    OR lower(btrim(endpoint)) ~
+      '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+    OR lower(btrim(endpoint)) ~
+      '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$'
 )
 UPDATE public.omni_mcp_tools tool
 SET status = 'disabled',
@@ -74,13 +73,12 @@ SET status = 'disabled',
     credential_rotated_at = NULL,
     last_error = 'Remote browser automation was retired in schema version 181.',
     updated_at = clock_timestamp()
-WHERE regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
-    'https://asael.bennierichard.com/api/integrations/playwright/mcp',
-    'https://omniagent-os-browser.fly.dev/mcp',
-    'https://api.browser-use.com/v3/mcp',
-    'https://api.browser-use.com/mcp'
-  )
-  OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%';
+WHERE lower(btrim(endpoint)) ~
+    '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+  OR lower(btrim(endpoint)) ~
+    '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+  OR lower(btrim(endpoint)) ~
+    '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$';
 
 COMMENT ON TABLE public.omni_browser_profiles IS
   'Historical audit records for the retired isolated-browser runtime. New runtime mutations are disabled.';
@@ -181,13 +179,12 @@ BEGIN
     SELECT 1
     FROM public.omni_mcp_connectors
     WHERE (
-      regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
-        'https://asael.bennierichard.com/api/integrations/playwright/mcp',
-        'https://omniagent-os-browser.fly.dev/mcp',
-        'https://api.browser-use.com/v3/mcp',
-        'https://api.browser-use.com/mcp'
-      )
-      OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%'
+      lower(btrim(endpoint)) ~
+        '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+      OR lower(btrim(endpoint)) ~
+        '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+      OR lower(btrim(endpoint)) ~
+        '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$'
     ) AND (
       status <> 'disabled'
       OR sealed_credential IS NOT NULL

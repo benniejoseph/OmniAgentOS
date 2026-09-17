@@ -13424,13 +13424,6 @@ async function ensureBrowserTakeoverProfilesV1(sql: SqlClient) {
         REVOKE ALL ON TABLE omni_browser_profiles FROM omni_runtime;
         REVOKE ALL ON TABLE omni_browser_profile_bindings FROM omni_runtime;
         REVOKE ALL ON TABLE omni_browser_takeovers FROM omni_runtime;
-        REVOKE UPDATE (
-          name, allowed_domains, state, lifecycle_revision,
-          last_used_at, revoked_at, updated_at
-        ) ON omni_browser_profiles FROM omni_runtime;
-        REVOKE UPDATE (
-          state, action_count, last_action_at, released_at
-        ) ON omni_browser_takeovers FROM omni_runtime;
         GRANT SELECT, INSERT ON omni_browser_profiles TO omni_runtime;
         GRANT UPDATE (
           name, allowed_domains, state, lifecycle_revision,
@@ -13445,8 +13438,6 @@ async function ensureBrowserTakeoverProfilesV1(sql: SqlClient) {
         REVOKE ALL ON TABLE omni_browser_profiles FROM omni_maintenance;
         REVOKE ALL ON TABLE omni_browser_profile_bindings FROM omni_maintenance;
         REVOKE ALL ON TABLE omni_browser_takeovers FROM omni_maintenance;
-        REVOKE UPDATE (state, released_at)
-          ON omni_browser_takeovers FROM omni_maintenance;
         GRANT SELECT ON omni_browser_profiles TO omni_maintenance;
         GRANT SELECT ON omni_browser_profile_bindings TO omni_maintenance;
         GRANT SELECT ON omni_browser_takeovers TO omni_maintenance;
@@ -13498,13 +13489,12 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
     WITH retired_connectors AS (
       SELECT id, tenant_id
       FROM omni_mcp_connectors
-      WHERE regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
-          'https://asael.bennierichard.com/api/integrations/playwright/mcp',
-          'https://omniagent-os-browser.fly.dev/mcp',
-          'https://api.browser-use.com/v3/mcp',
-          'https://api.browser-use.com/mcp'
-        )
-        OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%'
+      WHERE lower(btrim(endpoint)) ~
+          '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+        OR lower(btrim(endpoint)) ~
+          '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+        OR lower(btrim(endpoint)) ~
+          '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$'
     )
     UPDATE omni_mcp_tools tool
     SET status = 'disabled',
@@ -13527,13 +13517,12 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         credential_rotated_at = NULL,
         last_error = 'Remote browser automation was retired in schema version 181.',
         updated_at = clock_timestamp()
-    WHERE regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
-        'https://asael.bennierichard.com/api/integrations/playwright/mcp',
-        'https://omniagent-os-browser.fly.dev/mcp',
-        'https://api.browser-use.com/v3/mcp',
-        'https://api.browser-use.com/mcp'
-      )
-      OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%';
+    WHERE lower(btrim(endpoint)) ~
+        '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+      OR lower(btrim(endpoint)) ~
+        '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+      OR lower(btrim(endpoint)) ~
+        '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$';
 
     COMMENT ON TABLE omni_browser_profiles IS
       'Historical audit records for the retired isolated-browser runtime. New runtime mutations are disabled.';
@@ -13552,6 +13541,13 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         REVOKE ALL ON TABLE omni_browser_profiles FROM omni_runtime;
         REVOKE ALL ON TABLE omni_browser_profile_bindings FROM omni_runtime;
         REVOKE ALL ON TABLE omni_browser_takeovers FROM omni_runtime;
+        REVOKE UPDATE (
+          name, allowed_domains, state, lifecycle_revision,
+          last_used_at, revoked_at, updated_at
+        ) ON omni_browser_profiles FROM omni_runtime;
+        REVOKE UPDATE (
+          state, action_count, last_action_at, released_at
+        ) ON omni_browser_takeovers FROM omni_runtime;
         GRANT SELECT ON TABLE omni_browser_profiles TO omni_runtime;
         GRANT SELECT ON TABLE omni_browser_profile_bindings TO omni_runtime;
         GRANT SELECT ON TABLE omni_browser_takeovers TO omni_runtime;
@@ -13560,6 +13556,8 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         REVOKE ALL ON TABLE omni_browser_profiles FROM omni_maintenance;
         REVOKE ALL ON TABLE omni_browser_profile_bindings FROM omni_maintenance;
         REVOKE ALL ON TABLE omni_browser_takeovers FROM omni_maintenance;
+        REVOKE UPDATE (state, released_at)
+          ON omni_browser_takeovers FROM omni_maintenance;
         GRANT SELECT ON TABLE omni_browser_profiles TO omni_maintenance;
         GRANT SELECT ON TABLE omni_browser_profile_bindings TO omni_maintenance;
         GRANT SELECT ON TABLE omni_browser_takeovers TO omni_maintenance;
@@ -13625,13 +13623,12 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         SELECT 1
         FROM omni_mcp_connectors
         WHERE (
-          regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
-            'https://asael.bennierichard.com/api/integrations/playwright/mcp',
-            'https://omniagent-os-browser.fly.dev/mcp',
-            'https://api.browser-use.com/v3/mcp',
-            'https://api.browser-use.com/mcp'
-          )
-          OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%'
+          lower(btrim(endpoint)) ~
+            '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+          OR lower(btrim(endpoint)) ~
+            '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+          OR lower(btrim(endpoint)) ~
+            '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$'
         ) AND (
           status <> 'disabled'
           OR sealed_credential IS NOT NULL
