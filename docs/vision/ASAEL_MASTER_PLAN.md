@@ -3293,3 +3293,38 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
 - [ ] **Phase 13 — macOS application:** P13.1 and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. The bounded P13.3 installed-Mac Computer Use first slice is complete: migration 179 and native v11 are live, Asael `1.6.1` build `8` is installed with Accessibility and Screen Recording granted, the broker is online, and the focused read-only installed-Mac canary passed without retaining observations in durable rows. Developer ID/notarized distribution is outside the private-install scope.
+
+## 16. Native-only Computer Use cutover addendum
+
+This 2026-09-17 addendum supersedes the future execution direction—but not the
+historical release record—where earlier P9/P13 entries retained an isolated
+Playwright browser beside **This Mac**. Asael's product Computer Use target is now
+**This Mac** only and always requires explicit user selection. Prompt inference,
+connector metadata, a saved remote target, or a model cannot grant or redirect
+local authority.
+
+The source-ready cutover removes the Playwright Fly gateway/proxy and Browser Use
+product connector paths, returns `410 computer_use_target_retired` for new
+transition-compatible remote requests, and fails saved remote continuations with
+a bounded typed event. Former browser profile, takeover, activity, frame,
+snapshot, and stream product routes return `410`; retained database rows remain
+audit history but non-authoritative. App Builder now uses
+deterministic lint/typecheck, build-log, and route-smoke evidence; legacy browser
+evidence is readable history and no longer a release gate. Playwright may remain
+only in CI or operator release/visual smoke tests, with no Agent tool or product
+runtime authority.
+
+Native v13 retains immutable v12 and adds governed Chrome `open_url`, screenshot
+presentation, and snapshot-bound `screenshot_pixel` mapping. Migration 180 binds
+the native session to its exact run. Prepared migration 181 revokes active remote
+profiles/takeovers, disables and credential-scrubs known remote-browser connectors,
+and preserves their tables as read-only audit. The `computer_use` assignment stays
+tenant-configurable and must resolve a single runtime that supports both tools and
+vision.
+
+This addendum records source readiness only. Migration 181 installation,
+canonical v13/v12 promotion, the matching signed macOS client, removal of the
+obsolete Fly browser app/volume/secrets, and the natural-language owner-Mac
+navigation/screenshot canary remain pending until exact release evidence is
+recorded. The worker/OpenAI egress Fly service remains part of the production
+topology and is not part of the browser-runtime retirement.

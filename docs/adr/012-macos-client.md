@@ -44,9 +44,12 @@ the helper receives no bearer, connector content, domain object, or credential.
 
 The macOS client first enrolled on native contract v8 and advances through ADR 011's
 current/previous discovery window. The platform identifier is `macos`.
-Contract v11 adds only the device readiness, claim, completion, and stop courier
-needed by the local helper; v10 remains the frozen previous contract and contains
-the remote Computer Use artifact-frame read.
+Source-current contract v13 retains frozen v12 as its supported previous version.
+V11 introduced the device readiness, claim, completion, and stop courier needed by
+the local helper; v12 added exact run/execution screenshot presentation; v13 adds
+governed Chrome URL delivery and a snapshot-bound `screenshot_pixel` coordinate
+contract. Canonical v13 promotion remains a release gate and is not implied by the
+source contract.
 The ordinary file-based macOS Keychain protects native session credentials under a
 stable Asael service namespace without a shared access group. Every Keychain
 operation is bounded so an operating-system authorization stall cannot hold the
@@ -81,13 +84,17 @@ allowlisted route string and opens a shell-free command surface. File intake beg
 with user selection, drag-and-drop, or a Share Extension.
 
 Local Computer Use is a separate capability. Talk defaults to no computer control
-and requires the user to select **This Mac**; **Isolated browser** remains the remote
-Playwright target. Target selection persists through queue and retry, and neither
-target may silently fall back to the other. The helper is spawned on demand as a
+and requires the user to select **This Mac** explicitly. The remote **Isolated
+browser** target is retired; transition-compatible requests fail closed and never
+redirect to the Mac. Target selection persists through queue and retry. The helper is spawned on demand as a
 direct child, verifies the host's bundle containment and matching signing identity,
 and uses ScreenCaptureKit, Accessibility, `NSWorkspace`, and Quartz only through the
-closed `observe`, `list_apps`, `activate_app`, `press`, `click`, `type`, `key`, and
-`scroll` contract.
+closed `observe`, `list_apps`, `activate_app`, `open_url`, `press`, `click`, `type`,
+`key`, and `scroll` contract. `open_url` accepts only a credential-free absolute
+HTTP(S) URL for allowlisted Chrome and returns a fresh observation plus a closed
+effect verdict without claiming page-load success. Image clicks use only coordinates
+inside the exact v13 screenshot, declared as `screenshot_pixel`; raw macOS global
+coordinates are rejected.
 
 Terminal applications and System Settings are refused. The helper has no shell,
 arbitrary AppleScript, general filesystem, Apple Events, or credential interface;
@@ -165,7 +172,13 @@ its generated native contracts are already the supported shared-client foundatio
 6. Add native-v11 device courier routes and the separately signed local helper;
    require explicit target selection, stable signing, local permissions, governed
    tools, approvals, idempotent receipts, a visible indicator, and an immediate stop.
-7. Privately sign, package, and install on the owner's Mac only after focused release
+7. Bind local sessions to their exact run in migration 180; publish native v13/v12,
+   governed Chrome URL delivery, screenshot presentation, and snapshot-pixel mapping.
+8. Retire the product Playwright runtime: fail closed for transition-compatible
+   isolated-browser requests, preserve historical evidence as read-only, apply
+   migration 181 to revoke profiles/takeovers and scrub known connector credentials,
+   then decommission the separate Fly browser service after rollback capture.
+9. Privately sign, package, and install on the owner's Mac only after focused release
    checks; require Apple-issued signing and notarization before distributing to
    another Mac.
 
@@ -193,3 +206,12 @@ intent quarantine, audit history, and server canonical state survive a client ro
   release and run evidence is retained in the
   [Computer Use target decision](../computer-use-migration.md). That read-only
   canary does not imply a consequential edit occurred.
+- The native-only v13/v12 source cutover adds migration 180 run binding, governed
+  Chrome URL delivery, screenshot-pixel mapping, configurable tools-and-vision model
+  resolution, and deterministic App Builder readiness without product browser
+  automation. Migration 181 installation, canonical deployment, the matching signed
+  client, Fly browser-service decommission, and a new local navigation/screenshot
+  canary remain pending release evidence.
+- Playwright may remain in focused CI or operator release/visual smoke tests. Test
+  code is not an Agent tool, connector, profile service, or product Computer Use
+  authority.

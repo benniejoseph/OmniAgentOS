@@ -1932,3 +1932,46 @@ still re-enter the existing Project or Mission application service and must
 commit their ordinary typed domain event and canonical shadow atomically. No
 event is synthesized merely because a legacy URL or workspace reads that
 compatibility projection.
+
+## Native Computer Use and retired-target projections
+
+The native-only P13.3 cutover keeps `local_macos` actions inside the existing
+governed-tool event and effect-receipt boundary. A screenshot, Accessibility
+snapshot, display mapping, page content, prompt, or model reasoning never enters
+a domain event. V13 may expose bounded screenshot width, height, revision, and
+`screenshot_pixel` coordinate metadata to the assigned vision-capable model for
+one turn; private display provenance and image bytes are stripped after the
+command is consumed. Durable records retain only the execution coordinates,
+closed action/result state, public effect metadata, and digests already allowed
+by the governed executor.
+
+A transition-compatible new request for `isolated_browser` returns before a run
+is created. If a historical paused continuation contains that target, resumption
+appends `execution_target_retired` to the owned run with only the fixed retirement
+code, retired target enum, and bounded operator-facing message, then fails that
+run without executing or redirecting it to **This Mac**. It contains no saved
+prompt, browser content, credential, screenshot, tool argument, or private
+reasoning and grants no authority.
+
+Migration 181 is a schema/authority retirement, not a source of reconstructed
+domain history. It revokes active browser profiles and takeovers, disables known
+remote-browser connectors, scrubs their credential material, and retains the
+existing profile/takeover rows as read-only audit. It does not synthesize profile
+revocation events for migrated rows, erase historical effect receipts, or convert
+old browser observations into local-computer authority.
+
+## App Builder deterministic readiness projections
+
+App Builder continues to use its existing checkpoint, preview, and release
+activity events, but new readiness no longer depends on browser capture.
+Checkpoint events project deterministic lint/typecheck signals. Preview and
+release events project bounded build-log and route-smoke status, counts, and
+digests. The compatibility `browserEvidence` field remains readable on historical
+records and is marked retired on new records; its screenshot metadata never
+contributes to readiness.
+
+These projections observe verification evidence only. They contain no source
+file content, raw build log, route response body, browser frame, credential,
+prompt, or private reasoning, and they do not authorize deployment or production
+promotion. Release authority still requires the exact reviewed checkpoint,
+provider deployment binding, governed approval, and ordinary effect receipt.

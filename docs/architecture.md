@@ -173,54 +173,36 @@ revoked events contain only bounded grant coordinates and digests. The approval
 workspace displays exact reviewed targets and grant eligibility, while the
 trust endpoint returns only the authenticated actor's grants and authority mode.
 
-P9.5 projects browser activity as a versioned reconnectable server-sent stream
-from the durable run, tool, event, and internal Capture ledgers. It does not
-open a browser-to-client control path. The server derives `live` or `replay`
-from the persisted run status and pushes a new digest revision only when that
-bounded projection changes. The viewer reconnects after each bounded serverless
-stream window and follows the newest frame while live; terminal runs permit
-historical frame selection.
+P9.5/P9.6 browser activity and observation are retired product projections.
+Their activity, frame, snapshot, and stream routes return `410`; they cannot
+deliver old bytes, open a browser, create a session, restore a profile, or
+authorize a new action. Historical database rows remain subject to retention
+and audit controls so old run/effect receipts can still name the runtime that
+produced them, but they are not exposed as a live product workspace. App Builder's
+separate legacy browser-evidence field remains readable as non-gating history.
 
-Observation capture reuses the exact opaque tenant/actor/run Playwright scope
-and its existing keeper session. Safe browser actions retain one bounded image
-and one separately redacted accessibility snapshot as internal actor-owned
-Capture assets. Text entry, form fill, and file upload write suppression events
-and retain neither representation. Password/security controls, entered values,
-and recognizable credentials are removed before structured text is stored. Raw
-image and snapshot bytes require a separately authorized owner/run request,
-use private/no-store delivery, and are excluded from Agent tool transcripts.
+### Computer Use execution target
 
-P9.6 adds a private in-memory observation beside the ordinary governed tool
-result. It binds one browser action's execution ID to safe page state, the
-redacted accessibility structure, and the bounded screenshot. The model gateway
-validates the bundle and includes image bytes only for a selected target that
-advertises vision. Every provider receives the content as untrusted tool data;
-OpenAI, Gemini, and Anthropic use native multimodal tool-result blocks, while a
-non-vision Bedrock target receives text only. The observation is consumed by the
-next model turn and never enters tool records, domain events, canonical
-conversations, or persisted approval continuations. Approval resumes rehydrate
-only exact actor/run/execution-owned internal evidence and retain the same
-one-turn rule.
+The [Computer Use target decision](computer-use-migration.md) retires remote
+browser automation and keeps one product execution target: `local_macos`, shown
+to the user as **This Mac**. Talk defaults to **Asael only**, which carries no
+computer-control grant. The user must explicitly choose **This Mac**; natural
+language, a saved remote-browser target, connector metadata, or model output
+cannot infer or widen that selection. A missing Mac, helper, permission, model,
+or action fails explicitly and never falls back to another runtime.
 
-### Computer Use execution targets
+The transition-compatible API parser still recognizes `isolated_browser` only
+to return `410 computer_use_target_retired`. A saved continuation with that
+target records the bounded typed run event `execution_target_retired` and fails
+without executing or redirecting the work. This compatibility shape is not an
+execution target.
 
-The [Computer Use target decision](computer-use-migration.md) separates remote
-browser automation from control of the installed Mac. Talk defaults to no computer
-control and persists one explicit target through queue and retry:
-
-- `isolated_browser` keeps the existing actor/run-scoped Playwright session and P9.5/
-  P9.6 observation boundary. Browser Use remains only a rollback-compatible
-  connector during its own removal gate.
-- `local_macos` requires an authenticated compatible macOS client (current v13
-  or previous v12) and a current device lease with both Accessibility and Screen
-  Recording granted. The purpose-built browser URL action additionally requires
-  v13. It never switches to Playwright when the Mac, helper, permission, or
-  action is unavailable.
-
-Both targets resolve the tenant-configured `computer_use` model and enter the same
-governed executor. Only the local target exposes `local.macos.*` tools; the isolated
-target does not receive them, and the local target does not receive remote browser
-operations.
+`local_macos` requires an authenticated compatible macOS client (source-current
+native v13 or frozen previous v12), a current device lease, and both Accessibility
+and Screen Recording. Its assigned `computer_use` model is tenant-configurable;
+the resolver requires one configured runtime that supports both governed tools
+and vision. No hard-coded provider/model fallback may split those requirements
+across runtimes. Every local action still enters the governed tool executor.
 
 ```mermaid
 sequenceDiagram
@@ -241,25 +223,35 @@ sequenceDiagram
   Q-->>A: public result + one-turn observation
 ```
 
-Migration 179 adds forced-RLS device, session, and command routing tables. Device,
-session, claim, execution, and correlation identities are checked independently.
-The command input comes from the sealed governed tool record and must match its
-digest before claim. Uncertain state-changing claims are not replayed after lease
-expiry. The primary Flutter engine is the only claimant and uses a bounded courier
-long poll instead of high-frequency empty requests; auxiliary workspace engines can
-observe status and invoke stop.
+Migration 179 adds forced-RLS device, session, and command routing tables.
+Migration 180 adds an exact run binding to each local session and an observation
+expiry index. Device, native-login session, local session, claim, governed tool
+execution, correlation, and run identities are checked independently in the same
+enqueue transaction. The command input comes from the sealed governed tool record
+and must match its digest before claim. Uncertain state-changing claims are not
+replayed after lease expiry. The primary Flutter engine is the only claimant and
+uses a bounded courier long poll instead of high-frequency empty requests;
+auxiliary workspace engines can observe status and invoke stop.
 
 The host spawns `AsaelComputerUseHelper.app` on demand from `Contents/Helpers`. The
 helper verifies its signed parent and bundle containment, receives a stripped
 environment and no credential, and has no server, socket, shell, filesystem, or
 Apple Events interface. Its closed action set is observe, list apps, activate an
-already-running app, open one validated HTTP(S) URL in allowlisted Chrome,
-press, click, type, key, and scroll. Terminal applications,
-System Settings, secure fields, Secure Event Input, and stale screen/Accessibility
-revisions fail closed. Risk-two browser navigation, press, click, type, and key
-actions remain
-approval-gated. A persistent ready/active menu-bar indicator and immediate stop
-terminate the helper and cancel pending work.
+already-running app, open one validated HTTP(S) URL in allowlisted Chrome, press,
+click, type, key, and scroll. `open_url` uses LaunchServices rather than shell or
+AppleScript, rejects credentials and unsafe schemes, waits for at most 15 seconds,
+then returns a fresh observation with a `confirmed`, `suspected_noop`, or
+`unverifiable` effect verdict without claiming that the page loaded. Terminal
+applications, System Settings, secure fields, Secure Event Input, and stale
+screen/Accessibility revisions fail closed. Risk-two browser navigation, press,
+click, type, and key actions remain approval-gated. A persistent ready/active
+menu-bar indicator and immediate stop terminate the helper and cancel pending work.
+
+For image-based clicks, v13 binds each screenshot's exact pixel dimensions,
+display provenance, snapshot revision, and `screenshot_pixel` coordinate space.
+The helper privately maps the top-left image point to current macOS global logical
+coordinates and refuses missing, stale, out-of-bounds, display-drifted, or raw
+global coordinate input. Element IDs remain preferred when available.
 
 The local screenshot and Accessibility snapshot are treated as untrusted, bounded
 one-turn model input. They may transit the command row while the governed call waits,
@@ -271,11 +263,23 @@ evidence and must not rewrite a verified result. Bounded string values from non-
 Accessibility elements are readable, while secure elements remain redacted and
 Secure Event Input remains refused.
 
-Migration 179 and native v11 are production-published at exact revision
-`7a4bd41d0c42abad8f8da0911258ac341e2318f3`. Asael `1.6.1` build `8` is
-installed with both TCC permissions granted and its broker online. The exact
-owner-Mac activation/read canary and package evidence are recorded in the
-[Computer Use target decision](computer-use-migration.md).
+Migration 181 is the retirement boundary. When promoted, it revokes every active
+remote browser profile and takeover, disables the known Playwright/Browser Use
+connector endpoints, scrubs their sealed credential material, and reduces the
+historical profile/takeover tables to read-only audit for runtime roles. It does
+not delete historical browsing rows or transfer their authority to **This Mac**.
+Its production installation, the native-v13 server/app release, Fly browser-service
+decommission, and a new owner-Mac navigation/screenshot canary remain pending until
+their release evidence is recorded. The earlier migration-179/native-v11 read-only
+canary remains historical evidence only.
+
+App Builder no longer depends on browser automation. New checkpoint readiness is
+derived deterministically from lint and typecheck; preview and production readiness
+are derived from captured build logs and route smokes. The legacy `browserEvidence`
+field remains readable for old receipts and is marked retired for new records; it
+does not participate in a readiness decision. Playwright may remain in CI or
+operator-run release/visual smoke tests, but test code has no Agent tool authority,
+connector credential, persistent browser profile, or product runtime path.
 
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped

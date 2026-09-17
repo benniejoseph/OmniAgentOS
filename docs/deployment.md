@@ -1,6 +1,6 @@
 # Deployment (Vercel + Supabase + Fly)
 
-Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the existing Fly application remains in US Ashburn (`iad`) and provides both the durable worker and bounded OpenAI US egress gateway. The optional Playwright MCP browser service runs as a separate, isolated Fly application in Singapore so Chromium never shares the 256 MB worker machine. Its pinned Microsoft image is the sole vendor-runtime exception to the Node 24 policy. Static assets remain globally cached, and the daily Vercel cron remains only a backstop.
+Production uses Node.js 24.x and npm 11.x across local metadata, CI, and the worker image. Vercel Functions run in Singapore (`sin1`) beside the existing Supabase Singapore Postgres project; the existing Fly application remains in US Ashburn (`iad`) and provides both the durable worker and bounded OpenAI US egress gateway. The remote Playwright product runtime is retired in source. Its separate Fly app may remain deployed only until the native-only release gate captures rollback evidence and explicitly decommissions it; do not treat a still-running legacy service as product authority. Static assets remain globally cached, and the daily Vercel cron remains only a backstop.
 
 ## Required production configuration
 
@@ -14,9 +14,6 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_OPENAI_GATEWAY_TOKEN`: an independent URL-safe 32-256 character secret stored with the same value in Vercel and Fly. Proxy routes require it; it is never returned in release evidence.
 - `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`: optional Fly-only overlap secret during a token rotation. When present it must independently be URL-safe, 32-256 characters, and different from the primary token. Never set it on Vercel.
 - `OMNIAGENT_OPENAI_UPSTREAM_HOST`: Fly-only OpenAI API origin. It accepts exactly `api.openai.com` or `us.api.openai.com`; production uses `us.api.openai.com` for the regional API key. Arbitrary origins, URLs, paths, and ports fail before the gateway binds.
-- `OMNIAGENT_PLAYWRIGHT_MCP_TOKEN`: independent URL-safe 32-256 character secret stored on the dedicated browser Fly app and, for each authorized workspace, in Asael's encrypted Playwright connector credential. It is not a Vercel environment variable.
-- `OMNIAGENT_PLAYWRIGHT_MCP_PREVIOUS_TOKEN`: optional Fly-only overlap secret during browser-service token rotation.
-- `OMNIAGENT_PLAYWRIGHT_PROFILE_KEY`: independent Fly-only 32-byte base64url AES-256-GCM key for consented persistent browser profile archives. Back it up before enabling profiles; losing or changing it makes existing archives unreadable. Key rotation requires an explicit archive re-encryption procedure.
 - `CRON_SECRET`: authenticates the scheduled `/api/workflows/tick` backstop.
 - `OMNIAGENT_INTERNAL_AUTH_SECRET`: shared by the worker and production smoke runner. Generate an independent high-entropy value.
 - `BLOB_READ_WRITE_TOKEN`: private Vercel Blob store credential for immutable Capture asset candidates. Link only a private store; never expose this token or a direct Blob URL to clients.
@@ -40,8 +37,9 @@ Set these through the platform secret/configuration store, never in source contr
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
 Native contract artifacts are committed immutable release inputs. Contract v13 is
-current and v12 is the one supported previous version; v1-v12 remain historical
-archives and a published version is never regenerated in place. Run
+source-current and v12 is the one supported previous version; older versions remain
+historical archives and a published version is never regenerated in place. Canonical
+v13 promotion remains pending until its release evidence is recorded. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
 Dart SDK, or frozen v7-v12 document hashes drift. Removing an archived version
@@ -117,16 +115,29 @@ The installed-Mac P13.3 slice additionally requires
 before publishing the original native contract v11 or enabling **This Mac**. It installs
 actor-scoped forced-RLS device, session, and command routing tables; it stores no
 helper credential and grants no action-creation API to the native client. Migration
-179 is installed in production. Contract v13 is the source current contract and
-retains published v12 byte-for-byte as the supported previous version. V12 added
-exact run/execution screenshot-preview routing; v13 adds the approval-gated
-`local.macos.open_url` command and requires an exact active v13 Mac session for
-that action. The four courier capabilities remain macOS-only with their original
-v11 capability floor, while authentication advertises only v13 and v12. The
-original owner-Mac production proof serves
+179 is installed in production. Migration
+`20260917150000_p13_3_local_computer_run_binding.sql` (internal version 180) is
+also installed and binds each local session to one exact run while indexing bounded
+observation expiry. Contract v13 is the source-current contract and retains published
+v12 byte-for-byte as the supported previous version. V12 added exact run/execution
+screenshot-preview routing; v13 adds the approval-gated `local.macos.open_url`
+command plus snapshot-bound `screenshot_pixel` metadata and requires an exact active
+v13 Mac session for those actions. The four courier capabilities remain macOS-only
+with their original v11 capability floor. The original owner-Mac production proof serves
 exact revision `7a4bd41d0c42abad8f8da0911258ac341e2318f3` through Vercel
 deployment `dpl_64Hw4o58FyC1hfB645oo2J6mXGeB`. Vercel does not distribute or
-sign the binary, and this slice required no Fly worker or Playwright-service release.
+sign the binary. This historical proof predates v13 and does not prove the current
+native-only release gate.
+
+The source-ready retirement requires
+`20260917170000_p13_3_retire_isolated_browser.sql` (internal schema version 181).
+It revokes active browser profiles and takeovers, disables known Playwright and
+Browser Use connectors, scrubs their sealed credential material, and retains the
+profile/takeover tables as read-only audit for runtime roles. Migration 181 is not
+recorded as installed here. Canonical v13 promotion, the matching signed native
+build, Fly browser-app/volume/secret decommission, and a new owner-Mac canary also
+remain pending until their exact evidence is appended. Do not delete the Fly app
+before rollback coordinates and historical-read smoke evidence are captured.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
@@ -202,12 +213,12 @@ Keep `OPENAI_API_KEY` only on Vercel; the normal release shell does not need it,
 
 - Models and retrieval: `OPENAI_AGENT_MODEL`, `OPENAI_WEB_SEARCH_MODEL`, `OPENAI_EMBEDDING_MODEL`, `OPENAI_EMBEDDING_DIMENSIONS`, `OMNIAGENT_OPENAI_GATEWAY_URL`, `OMNIAGENT_OPENAI_GATEWAY_TOKEN`, optional Fly-only `OMNIAGENT_OPENAI_GATEWAY_PREVIOUS_TOKEN`, Fly-only `OMNIAGENT_OPENAI_UPSTREAM_HOST`, `OMNIAGENT_OPENAI_GATEWAY_HEALTH_TIMEOUT_MS`, `OMNIAGENT_WEB_SEARCH_TIMEOUT_MS`, and the optional Bedrock fallback group (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_BEDROCK_MODEL`, `AWS_BEDROCK_FAST_MODEL`, `AWS_BEDROCK_REASONING_MODEL`).
 - Database reads: `OMNIAGENT_DATABASE_POOL_MAX` bounds each process's runtime and maintenance pools. Durable production runtimes default to 4 so overlapping requests cannot be starved by a long workflow tick; size them against the upstream pooler's connection budget. Vercel is intentionally stricter: each runtime or maintenance pool inside a route bundle/isolate enforces a maximum of 1 connection even when the generic override is higher. Its postgres.js `idle_timeout` and `max_lifetime` timers are disabled: Vercel may freeze an isolate while a JavaScript connection timer is armed, then thaw it after the deadline while a new reservation is starting. Avoiding that timer race keeps the one-slot pool reusable; Vercel's isolate lifecycle and connection failures still retire sockets. Durable runtimes retain the 20-second idle timeout and postgres.js's randomized maximum-lifetime default. The single-slot Vercel pools prevent independent serverless functions from multiplying Supavisor frontends during burst traffic; work inside one warm pool is serialized through the existing admission queue, and bounded Workspace Summary reads are issued sequentially so a cold Today request cannot queue its own siblings past the acquisition deadline. Runtimes with a larger pool retain parallel summary reads. `OMNIAGENT_DATABASE_ACQUIRE_TIMEOUT_MS` bounds that cancellable application queue plus postgres.js pool-slot reservation for every tenant- and system-scoped query or callback transaction (20s by default, clamped to 0.5-30s). The 20s ceiling remains a rollback-safe bound from the former IAD-to-Singapore topology; warm requests do not wait for it. An independent `sin1` canary completed the security and tenant-scoped connector/workflow CRUD checks with a 15.7ms database `Server-Timing` sample, validating the regional direction while remaining too small a sample to justify lowering the rollback bound. Re-baseline it only after sustained production measurements prove a tighter safe value. Admission waiters that time out never enter postgres.js. If the sole Vercel reservation itself times out, Asael synchronously detaches that exact raw client and asks postgres.js to destroy it; queued reservations reject and release their existing admission permits, while the next request creates a fresh client and gate. This recovery is deliberately limited to Vercel's one-slot pools so one timeout never aborts valid concurrent work in a durable runtime. Every tenant- and system-scoped transaction applies `OMNIAGENT_DATABASE_STATEMENT_TIMEOUT_MS` (15s by default, clamped to 1-60s), `OMNIAGENT_DATABASE_LOCK_TIMEOUT_MS` (1s by default, clamped to 0.1-10s and never above the statement timeout), and `OMNIAGENT_DATABASE_IDLE_TRANSACTION_TIMEOUT_MS` (15s by default, clamped to 1-60s) on the database server. Together they bound statement execution, lock acquisition, and idle gaps between statements after a connection is leased; an abandoned transaction is terminated so its lease can be discarded and released. Request/platform deadlines remain responsible for other transport waits. `OMNIAGENT_SCHEMA_VERIFICATION_TIMEOUT_MS` is the production migration-marker verification watchdog and resets timed-out checks so later requests can retry. `OMNIAGENT_SETTINGS_CAPABILITY_TIMEOUT_MS` bounds the tenant-scoped Settings response and returns explicit unavailable fields when the database misses that deadline; `OMNIAGENT_SETTINGS_CAPABILITY_STATEMENT_TIMEOUT_MS` may lower the shared database deadline for the aggregate query. `OMNIAGENT_TODAY_SNAPSHOT_STATEMENT_TIMEOUT_MS` provides the same shorter override for the single owner-scoped Today projection query.
-- Agent limits: `OMNIAGENT_AGENT_MAX_TOOL_STEPS`, the installed-Mac-only `OMNIAGENT_LOCAL_COMPUTER_MAX_TOOL_STEPS`, `OMNIAGENT_AGENT_MAX_MESSAGE_CHARS`, `OMNIAGENT_AGENT_MAX_MESSAGES`, `OMNIAGENT_AGENT_RUNS_PER_MINUTE`, `OMNIAGENT_AGENT_REASONING_EFFORT`, and `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`. The installed-Mac default is 12 governed action/model rounds with 14 model turns (one additional semantic-plan reservation and one final-answer turn); ordinary and isolated-browser runs remain at 6 rounds and 7 turns. Token, cost, wall-clock, browser-action, approval, and other run limits are unchanged.
+- Agent limits: `OMNIAGENT_AGENT_MAX_TOOL_STEPS`, the installed-Mac-only `OMNIAGENT_LOCAL_COMPUTER_MAX_TOOL_STEPS`, `OMNIAGENT_AGENT_MAX_MESSAGE_CHARS`, `OMNIAGENT_AGENT_MAX_MESSAGES`, `OMNIAGENT_AGENT_RUNS_PER_MINUTE`, `OMNIAGENT_AGENT_REASONING_EFFORT`, and `OMNIAGENT_AGENT_MAX_OUTPUT_TOKENS`. The installed-Mac default is 12 governed action/model rounds with 14 model turns (one additional semantic-plan reservation and one final-answer turn); ordinary runs remain at 6 rounds and 7 turns. Token, cost, wall-clock, approval, and other run limits are unchanged. Historical browser-action counters remain readable but grant no remote-browser execution authority.
 - Workflow limits: `OMNIAGENT_QUEUE_LEASE_SECONDS`, `OMNIAGENT_WORKFLOW_DRAIN_LIMIT`, `OMNIAGENT_WORKFLOW_PLANNER_TIMEOUT_MS`, `OMNIAGENT_WORKFLOW_EXECUTOR_TIMEOUT_MS`, and the independent `OMNIAGENT_WORKFLOW_VERIFIER_TIMEOUT_MS`. Model-verifier transport failures retry the unchanged verification step within the run budget; they do not trigger a semantic replan or invalidate an existing approval.
 - Identity and native delivery: `OMNIAGENT_DEFAULT_TENANT`, `OMNIAGENT_DEFAULT_ACTOR`, `OMNIAGENT_DEFAULT_ROLE`, `OMNIAGENT_SESSION_DAYS`, bounded mobile token lifetimes, native platform minimum versions, bootstrap name/tenant, auth mode, `OMNIAGENT_FCM_SERVICE_ACCOUNT_JSON`, and the direct APNs configuration group.
 - Trust: `OMNIAGENT_GRADUATED_AUTONOMY` and `OMNIAGENT_AUTONOMY_GRADUATION_THRESHOLD`.
 - Alerts: queue/dispatch limits, signed webhook URL/secret, Slack webhook, Resend key, and email addresses.
-- Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. The Playwright service token uses this vault path and is scoped again with an opaque tenant+actor+run HMAC on every request. Salesforce read synchronization uses `SALESFORCE_OAUTH_CLIENT_ID`, `SALESFORCE_OAUTH_CLIENT_SECRET`, and the independent optional `SALESFORCE_WEBHOOK_SECRET`; provider tokens remain sealed in the actor-owned OAuth grant. Guarded writes additionally require `SALESFORCE_WRITE_ENABLED=true` and the reviewed `SALESFORCE_WRITE_EXTERNAL_ID_FIELD`, while each Account 360 remains disabled until a separate owner activation. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
+- Connectors: app-managed MCP bearer credentials use `OMNIAGENT_CREDENTIAL_KEYRING` and require no per-connector environment binding. Remote-browser MCP endpoints are retired and denied; do not restore a Playwright or Browser Use credential. Salesforce read synchronization uses `SALESFORCE_OAUTH_CLIENT_ID`, `SALESFORCE_OAUTH_CLIENT_SECRET`, and the independent optional `SALESFORCE_WEBHOOK_SECRET`; provider tokens remain sealed in the actor-owned OAuth grant. Guarded writes additionally require `SALESFORCE_WRITE_ENABLED=true` and the reviewed `SALESFORCE_WRITE_EXTERNAL_ID_FIELD`, while each Account 360 remains disabled until a separate owner activation. The legacy advanced `bearer_env` path uses `OMNIAGENT_CONNECTOR_SECRET_ALLOWLIST`, JSON `OMNIAGENT_CONNECTOR_SECRET_BINDINGS`, and referenced `OMNIAGENT_CONNECTOR_*` values; every such credential requires an exact tenant-and-origin deployer binding. Keep `OMNIAGENT_CONNECTOR_ALLOW_LEGACY_SYSTEM_SECRETS=false`.
 - Model credentials and inbound MCP: `OMNIAGENT_CREDENTIAL_KEYRING`, `OMNIAGENT_MCP_ALLOWED_HOSTS`, and `OMNIAGENT_MCP_ALLOWED_ORIGINS`. MCP remains disabled per actor until enabled in Settings and requires a scoped, hash-only service key.
 - Workflow triggers: use dedicated `OMNIAGENT_TRIGGER_*` HMAC keys. Put legacy server-only names in `OMNIAGENT_TRIGGER_SECRET_ALLOWLIST`; platform credentials are always rejected, and unauthenticated triggers remain disabled at dispatch time in production.
 - Diagnostics/storage: `BLOB_READ_WRITE_TOKEN`, `OMNIAGENT_ASSET_DELIVERY_SECRET`, `OMNIAGENT_LOG_PGVECTOR_FAILURES`, `OMNIAGENT_DATA_DIR`, and the demo-storage switch.
@@ -310,9 +321,9 @@ claims. Both tables force exact-actor RLS. Runtime and maintenance roles may
 select and insert; only grant payload, state, used-use count, last-used time,
 lifecycle revision, and revoked time may be updated. Claims are immutable and
 neither table grants serving roles delete or truncate. Grant issuance and
-consumption remain web/database operations; P9.4 does not change the standalone
-worker or Playwright images, so a compatible healthy Fly release must not be
-rebuilt solely for this migration.
+consumption remain web/database operations. At the historical P9.4 release this
+did not change either Fly image; it is not an instruction to restore the retired
+browser image.
 
 Migration 122 adds actor-private browser profiles, immutable execution bindings,
 and bounded takeover leases. Migration 123 corrects the policy kind on the 12
@@ -321,7 +332,8 @@ actor-owned A2A, Trash, approval, and browser tables created by migrations
 tenant+actor or audited system scope, with forced RLS still enabled. A
 restrictive policy without any permissive policy rejects every row; do not
 reintroduce that standalone configuration. The migration asserts exactly one
-policy on every repaired table.
+policy on every repaired table. Migration 181 later preserves these browser rows
+as read-only audit while revoking their active runtime authority.
 
 ## Dedicated worker and monitoring
 
@@ -415,53 +427,43 @@ committed. Unknown provider outcomes remain reconciliation-only to prevent a
 blind duplicate send. Inbound sync treats message content as untrusted and
 links replies only by an already recorded external Gmail thread.
 
-## Self-hosted Playwright browser service
+## Retired remote browser runtime
 
-The Playwright option uses the Apache-2.0 [Microsoft Playwright MCP server](https://github.com/microsoft/playwright-mcp), not a paid browser API. `Dockerfile.playwright-mcp` pins the official browser image by version and digest, while `fly.playwright-mcp.toml` keeps Chromium in a separate 1 GB Singapore machine. The gateway accepts only its bearer token, converts Asael's opaque tenant+actor+run scope into one private browser process, and removes the bearer secret before starting Playwright. A DNS-validating outbound proxy permits public web ports only and blocks loopback, private, link-local, metadata, and internal Fly destinations.
+The self-hosted Playwright MCP gateway, Browser Use product integration, proxy
+route, connector presets, container definition, and Fly deployment definition
+are removed from the source product path. Do not create a new remote browser
+connector or restore its credential variables. Transition-compatible
+`isolated_browser` requests return `410 computer_use_target_retired`, and saved
+continuations fail closed without being redirected to **This Mac**.
 
-Each scoped process has its own temporary profile and a private keeper connection so Asael's short MCP calls retain the same tabs and page state. Connector discovery retires immediately; execution scopes expire after 30 minutes without activity. The service deliberately allows at most two simultaneous browser scopes on the default machine. Page output remains untrusted tool data, and Playwright's arbitrary-code and file-transfer tools remain risk level 3.
+Historical P9.5-P9.8 activity, frames, profiles, takeovers, and effect receipts
+remain in their database audit/retention plane, while the corresponding product
+delivery routes return `410`. Migration 181 revokes all active profile/takeover authority, disables
+known remote-browser connectors, scrubs their sealed credentials and credential
+metadata, and reduces the profile/takeover tables to read-only access for runtime
+roles. The migration retains rows; it does not synthesize replacement authority
+or erase audit history.
 
-P9.7 adds actor-owned, opt-in persistent profiles and user takeover. Profile
-authority is short-lived, signed, bound to the exact actor/run/profile revision,
-and restricted to the consented HTTPS domains. The gateway stores only an
-opaque profile locator and an AES-256-GCM encrypted archive on the dedicated
-`playwright_profiles` Fly volume; credentials and page contents remain excluded
-from agent memory and domain events. Revoking a profile invalidates future
-authority immediately. Because Fly volumes cannot use blue/green replacement,
-the browser service uses a rolling deploy and its health response must report
-`persistentProfiles: true` before the web release is promoted.
+The dedicated Fly browser app may still exist until the release operator performs
+the decommission gate. Record its app and machine identity, persistent-volume
+identity, rollback release, and secret inventory without printing secret values;
+apply and verify migration 181; promote the compatible web/native release; verify
+that new remote requests and retired product routes fail closed, database audit
+rows remain, and legacy App Builder evidence still parses; then remove the browser
+app, its volume, and its secrets explicitly. Recheck that the separate
+worker/OpenAI egress Fly app remains healthy. This document does not claim those
+operations have completed.
 
-P9.5 reuses this existing scoped process; it adds no public Fly event endpoint and
-does not expose the Playwright bearer token to the browser. Vercel captures
-bounded frame and redacted accessibility evidence after a governed action in
-the same opaque scope, persists it as actor-private internal assets, and serves
-the reconnectable `/api/runs/:id/activity/stream` from the run ledger. A P9.5
-web release therefore requires no Fly rebuild while the pinned browser gateway
-remains compatible and healthy.
+App Builder no longer captures product browser evidence. Checkpoint readiness
+requires deterministic lint and typecheck results. Preview and production
+readiness require captured build logs and passing route smokes. The legacy
+`browserEvidence` field stays readable on historical checkpoints/deployments and
+is written as retired compatibility metadata for new records; it is not a gate.
 
-P9.6 also reuses the same pinned browser process and retained internal evidence.
-The Vercel executor passes a bounded, one-turn observation to the selected model
-provider after a governed action. Image bytes are disclosed only when that
-provider target advertises vision, and the observation is removed before any
-continuation is persisted. This is a web-only release; no database migration,
-public browser endpoint, bearer-token change, or Fly image rebuild is required.
-
-Create the app and token once, save the token in the owner's password manager, and deploy the dedicated image. The token value never belongs in Vercel:
-
-```bash
-playwright_token="$(openssl rand -hex 32)"
-printf 'OMNIAGENT_PLAYWRIGHT_MCP_TOKEN=%s\n' "$playwright_token" |
-  fly secrets import --app omniagent-os-browser --stage
-profile_key="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
-printf 'OMNIAGENT_PLAYWRIGHT_PROFILE_KEY=%s\n' "$profile_key" |
-  fly secrets import --app omniagent-os-browser --stage
-fly volumes create playwright_profiles --app omniagent-os-browser --region sin --size 1 --yes
-fly deploy --config fly.playwright-mcp.toml --remote-only
-# Save both values in the owner's password manager before this line.
-unset playwright_token profile_key
-```
-
-In Asael, open Settings → Tools & integrations → MCP connections, apply the Playwright preset, and store that same token in the encrypted app vault. Clients use the canonical endpoint `https://asael.bennierichard.com/api/integrations/playwright/mcp`; Asael proxies that bounded MCP stream to the pinned browser service without exposing the internal host as the product domain. Existing connectors that still hold the former direct endpoint remain supported during rotation. If Fly requires another globally unique app name, update the internal Fly host, proxy upstream, connector trust rule, and deployment configuration together. The software has no provider subscription, but the separate Fly compute resource can still incur hosting charges.
+The `@playwright/test` development dependency and focused Playwright scripts may
+remain for CI, benchmarks, release smoke, or operator-run visual regression. They
+run outside the Agent/tool executor and have no connector credential, browser
+profile, takeover lease, or product Computer Use authority.
 
 ### Two-phase gateway token rotation
 
@@ -722,14 +724,12 @@ Connector endpoints are SSRF-checked and secret references are restricted, but o
 - keep risky or side-effecting operations approval-gated;
 - monitor redirects, DNS changes, response size/latency, vendor outages, and unexpected tool catalog drift.
 
-The managed Playwright connector additionally applies the fixed
-`p9.8-browser-action-policy:1` policy after validated input and actor/profile
-resolution. Observation, direct navigation, and the closed set of tab actions
-are routine and reversible. Clicks, typing/forms, selections, keys, drags,
-dialogs, and unknown operations are irreversible consequential actions that
-always require per-action approval and a governed effect receipt; page labels
-and remote metadata never downgrade them. Code execution, file transfer, and
-direct network operations remain risk three.
+Remote-browser MCP endpoints are denied by connector trust policy and the known
+legacy endpoints are disabled and credential-scrubbed by migration 181. Retained
+connector, tool, profile, takeover, and execution rows are historical evidence;
+they must not be re-enabled, rediscovered, or treated as approval authority.
+Local macOS actions instead use only the registered `local.macos.*` contracts
+through the governed executor and their independent native-device/run binding.
 
 ## AP2 payment boundary
 

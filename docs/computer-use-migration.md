@@ -1,44 +1,58 @@
 # Computer Use targets
 
-Status: base runtime production-published and owner-Mac canary-proven; v13
-browser navigation is source-ready and awaits its release canary · 2026-09-17
+Status: native-only cutover is source-ready; migration 181, the v13 release,
+Fly browser-service decommission, and the new owner-Mac canary are pending
+release evidence · 2026-09-17
 
 ## Decision
 
-Computer Use has two deliberately separate execution targets:
-
-- **Isolated browser** runs in Asael's tenant-, actor-, and run-scoped
-  Playwright MCP service on Fly. It is the remote private browser; it does not
-  control the owner's macOS desktop.
-- **This Mac** operates the Mac on which the authenticated Asael app is
-  installed. It uses the compatible native device courier and a separately signed,
-  credential-free helper spawned on demand by Asael.
+Computer Use has one product execution target: **This Mac**. It operates the
+Mac on which the authenticated Asael app is installed through the compatible
+native device courier and a separately signed, credential-free helper spawned
+on demand by Asael.
 
 Native Talk defaults to **Asael only**, which grants no local computer-control
-target. Current native requests select **This Mac** or **Isolated browser**
-explicitly, and preserve that target through prompt queueing and retry. Legacy
-browser-intent inference can select only the isolated browser; **This Mac** is
-never inferred from prompt text. A failed local session never falls back to
-Playwright, and a browser request never widens into local desktop control.
+target. The user must select **This Mac** explicitly, and the native client
+preserves that choice through prompt queueing and retry. Prompt text, historical
+connector metadata, and model output never infer local authority. A failed local
+session fails explicitly; it never falls back to a browser service.
 
-The selected target changes only the runtime that performs a governed action.
-The `computer_use` model assignment remains tenant-configurable, and every
-action still enters the governed tool executor. A model, Agent persona, screen,
-web page, or tool result cannot grant tools, credentials, budget, or approval
-authority.
+The `computer_use` model assignment remains tenant-configurable. One configured
+runtime must advertise both tool use and vision; neither capability may be
+borrowed from a different provider/model fallback. Every action still enters
+the governed tool executor. A model, Agent persona, screen, web page, or tool
+result cannot grant tools, credentials, budget, or approval authority.
 
-## Isolated browser
+## Retired isolated browser
 
-The remote target retains the existing Playwright security boundary:
+The Fly Playwright runtime, its product proxy, and the Playwright/Browser Use
+connector presets are removed from the source execution path. The
+transition-compatible `/api/agent` input still recognizes
+`computerUseTarget: "isolated_browser"` only to return
+`410 computer_use_target_retired`; saved continuations record a bounded typed
+`execution_target_retired` run event and fail without executing or redirecting
+to **This Mac**.
 
-- one opaque tenant, actor, and run scope with a bounded session lifetime;
-- independent connector credentials and optional encrypted browser profiles;
-- governed browser actions with the existing risk and approval policy;
-- untrusted page, download, accessibility, and screenshot content; and
-- owner/run-scoped observation evidence and private frame delivery.
+The former browser profile, takeover, activity, frame, snapshot, and stream
+product routes return `410`. Their retained database rows remain subject to
+retention and audit controls, but are not a product read or execution surface.
+App Builder's separate legacy browser-evidence fields remain readable on old
+records; new readiness uses deterministic lint/typecheck, build-log, and
+route-smoke evidence only.
 
-The Browser Use connector remains a rollback-compatible connector during its
-separate removal gate. It is not an implementation of **This Mac**.
+Migration 181 completes the data-plane retirement when installed: it revokes
+active profiles and takeovers, disables known remote-browser connectors, scrubs
+their sealed credentials and credential metadata, and limits the historical
+profile/takeover tables to read-only access for runtime roles. It intentionally
+retains audit rows. Applying migration 181, deleting the Fly browser app and its
+volume/secrets, promoting the compatible web/native release, and recording a
+new local canary are separate release operations and remain pending until their
+exact evidence is appended here.
+
+Playwright can remain a development dependency for CI, release, benchmark, or
+visual smoke tests. Those tests run outside Agent authority and are not a
+product connector, user-facing Computer Use target, persistent profile service,
+or fallback runtime.
 
 ## This Mac
 
@@ -56,10 +70,12 @@ V12 remains compatible for the earlier action set and screenshot-preview
 routing, but cannot receive `open_url`.
 
 The server binds each local session to the exact tenant, actor, native device,
-mobile session, and agent-run correlation ID. Three forced-RLS tables retain
-device leases, local sessions, and command routing metadata. A governed tool
-execution supplies the command identity and sealed input; a claim reopens that
-exact audit input and verifies its digest before sending it to the Mac.
+mobile session, agent-run correlation ID, and run ID. Migration 180 adds the
+run-binding uniqueness fence and bounded observation-expiry index to the three
+forced-RLS routing tables. A governed tool execution supplies the command
+identity and sealed input; the enqueue transaction resolves the exact active
+run-bound native session and a claim reopens that exact audit input and verifies
+its digest before sending it to the Mac.
 Completion uses a device-bound, expiring claim token and an idempotent receipt.
 Expired uncertain mutations are not replayed.
 
@@ -95,10 +111,16 @@ The helper uses:
   credential-free absolute HTTP(S) URL to allowlisted Chrome; and
 - Quartz events for bounded clicks, text, keys, and scrolling.
 
-Every pointer or keyboard effect after observation must carry the exact current snapshot revision.
-Element actions use an exact element identifier when available. Changing the
-frontmost app, focused window, or display layout makes the observation stale
-and causes the helper to refuse the action.
+Every pointer or keyboard effect after observation must carry the exact current
+snapshot revision. Element actions use an exact element identifier when available.
+A v13 image click instead carries `coordinateSpace: "screenshot_pixel"` and a
+point inside the exact bounded screenshot. The observation privately binds that
+image's width, height, captured display, logical bounds, scale, and revision;
+the helper maps from top-left image pixels to current macOS global logical
+coordinates only after revalidating the display. It rejects raw global,
+out-of-bounds, stale, display-drifted, and secure-target coordinates. Changing
+the frontmost app, focused window, or display layout also makes the observation
+stale and causes the helper to refuse the action.
 
 ### First-slice restrictions
 
@@ -133,8 +155,9 @@ execution.
 
 ## Owner-Mac release evidence
 
-The additive first slice is published and installed for the private owner-Mac
-scope:
+The earlier additive first slice is published and installed for the private
+owner-Mac scope. It is historical evidence for the local security boundary, not
+evidence that the native-only v13 cutover has been released:
 
 1. migration 179 is installed and production advertises native contract v11
    with frozen v10 compatibility;
@@ -152,10 +175,35 @@ scope:
    `ASAEL INSTALLED MAC CANARY 179`. It made no edit. Post-run inspection found
    no observation payload in durable rows.
 
-The release fix keeps that one-turn local evidence with the assigned agent and
+The historical release fix keeps that one-turn local evidence with the assigned agent and
 bypasses evidence-blind sibling council rewriting for the local run. The helper
 also exposes bounded string values from non-secure Accessibility elements, which
 made the synthetic TextEdit content readable. Secure elements remain redacted,
 and Secure Event Input still fails closed. This live canary is deliberately a
 read-only activation and observation proof; it does not claim that this run
-performed a risk-two edit.
+performed a risk-two edit, browser navigation, screenshot presentation, or
+image-coordinate click.
+
+## Native-only release gate
+
+The source cutover is not operationally complete until release evidence proves
+all of the following together:
+
+1. migration 181 is installed after verified migration 180 and reports its exact
+   marker/checksum;
+2. canonical Vercel advertises immutable v13 current and v12 previous, rejects
+   new isolated-browser and retired browser-product routes with `410`, preserves
+   database audit rows, and still parses legacy App Builder evidence;
+3. the matching signed macOS build reports v13, **This Mac** is explicitly
+   enabled, and one natural-language Chrome navigation produces a fresh bounded
+   screenshot plus grounded analysis through the governed approval path;
+4. durable inspection finds no screenshot bytes, Accessibility content, prompt,
+   or private reasoning in command, run, approval, event, or conversation rows;
+   and
+5. the obsolete Fly browser app, its persistent volume, and its secrets are
+   removed only after rollback evidence is captured. The worker/OpenAI egress
+   Fly app remains a separate required service.
+
+Until those checks are recorded, migration 181, canonical promotion, Fly
+decommission, and the new live canary must be reported as pending rather than
+inferred from source readiness.
