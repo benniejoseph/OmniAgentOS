@@ -94,6 +94,12 @@ describe("isolated browser runtime retirement migration", () => {
     expect(isBrowserControl(
       'perform_action Click a CSS selector in the active browser tab',
     )).toBe(true);
+    expect(isBrowserControl(
+      'perform Type into the current browser tab',
+    )).toBe(true);
+    expect(isBrowserControl(
+      'perform Click screen coordinates',
+    )).toBe(true);
     expect(migration).not.toContain("'send_task'");
     expect(migration).not.toContain("|type|");
   });

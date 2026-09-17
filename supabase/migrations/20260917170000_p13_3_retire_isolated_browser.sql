@@ -70,12 +70,12 @@ WHERE EXISTS (
       ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
       tool.output_schema::text, tool.annotations::text
     )) ~
-      '(^|[^a-z0-9])(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinate)([^a-z0-9]|$)'
+      '(^|[^a-z0-9])(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinates?)([^a-z0-9]|$)'
     AND lower(concat_ws(
       ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
       tool.output_schema::text, tool.annotations::text
     )) ~
-      '(^|[^a-z0-9])(navigate|click|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)([^a-z0-9]|$)'
+      '(^|[^a-z0-9])(navigate|click|type text|type into|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)([^a-z0-9]|$)'
   );
 
 UPDATE public.omni_mcp_connectors
@@ -233,12 +233,12 @@ BEGIN
             ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
             tool.output_schema::text, tool.annotations::text
           )) ~
-            '(^|[^a-z0-9])(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinate)([^a-z0-9]|$)'
+            '(^|[^a-z0-9])(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinates?)([^a-z0-9]|$)'
           AND lower(concat_ws(
             ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
             tool.output_schema::text, tool.annotations::text
           )) ~
-            '(^|[^a-z0-9])(navigate|click|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)([^a-z0-9]|$)'
+            '(^|[^a-z0-9])(navigate|click|type text|type into|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)([^a-z0-9]|$)'
         )
       )
   ) THEN
