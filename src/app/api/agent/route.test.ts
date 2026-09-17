@@ -26,6 +26,7 @@ const routeMocks = vi.hoisted(() => ({
   runAgent: vi.fn(),
   runLoopV2ModelText: vi.fn(),
   runLoopV2ReadOnlyCanary: vi.fn(),
+  startLocalComputerSession: vi.fn(),
   syncMissionExecutor: vi.fn(),
   transitionMission: vi.fn(),
 }));
@@ -104,6 +105,11 @@ vi.mock("@/lib/orchestration/loop-v2-model-text-runtime", () => ({
 
 vi.mock("@/lib/orchestration/semantic-intent-resolver", () => ({
   resolveSemanticIntent: routeMocks.resolveSemanticIntent,
+}));
+
+vi.mock("@/lib/local-computer/store", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/local-computer/store")>()),
+  startLocalComputerSession: routeMocks.startLocalComputerSession,
 }));
 
 vi.mock("@/lib/memory/shared-context", async (importOriginal) => ({
@@ -244,6 +250,11 @@ beforeEach(() => {
   routeMocks.runAgent.mockReset();
   routeMocks.runLoopV2ModelText.mockReset();
   routeMocks.runLoopV2ReadOnlyCanary.mockReset();
+  routeMocks.startLocalComputerSession.mockReset().mockResolvedValue({
+    id: `local_computer_session_${"a".repeat(48)}`,
+    deviceId: "mac-device-local",
+    expiresAt: "2026-09-17T12:00:00.000Z",
+  });
 });
 
 describe("agent intent clarification", () => {
@@ -306,6 +317,89 @@ describe("agent intent clarification", () => {
 });
 
 describe("agent semantic intent routing", () => {
+  it("binds This Mac explicitly, forces the direct runner, and skips rollout canaries", async () => {
+    const macContext = {
+      ...context,
+      source: "mobile" as const,
+      native: {
+        deviceId: "mac-device-local",
+        platform: "macos" as const,
+        clientContractVersion: 11,
+      },
+    };
+    routeMocks.authorizeRequest.mockResolvedValue(macContext);
+    routeMocks.resolveSemanticIntent.mockResolvedValue({
+      decision: {
+        route: "durable_workflow",
+        score: 1,
+        reasons: ["A caller strategy cannot move local control away from its request."],
+        requiresApproval: false,
+        primaryAgentId: "atlas",
+        specialistIds: [],
+        ambiguity: { state: "none" },
+      },
+      capabilitySearchQuery: "control this installed mac",
+      receipt: {
+        schemaVersion: 1,
+        policyVersion: "semantic-intent-policy-v2",
+        source: "deterministic_fallback",
+        intent: "execute",
+        executionShape: "single_action",
+        confidence: 1,
+        entityCount: 1,
+        unresolvedEntityCount: 0,
+        capabilityQuery: "control this installed mac",
+        matchedCapabilityIds: [],
+        route: "durable_workflow",
+        requiresApproval: false,
+        clarificationAdvisory: false,
+      },
+    });
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-local-mac", threadId: "thread-a" };
+      yield { type: "done", response: "The installed Mac was observed." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Observe Finder on this Mac.",
+        requestId: "local-mac-request-a",
+        strategy: "durable",
+        computerUseTarget: "local_macos",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.startLocalComputerSession).toHaveBeenCalledWith(
+      macContext,
+      "local-mac-request-a",
+    );
+    expect(routeMocks.resolveLoopV2ReadOnlyCanaryEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.resolveLoopV2ModelTextEnrollment).not.toHaveBeenCalled();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computerUseTarget: "local_macos",
+        securityContext: macContext,
+        executionScope: expect.objectContaining({
+          correlationId: "local-mac-request-a",
+        }),
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(routeMocks.appendScopedDomainEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "intent.semantic_resolved",
+        payload: expect.objectContaining({
+          appliedRoute: "direct",
+          selectedTargetIds: ["computer:local_macos"],
+        }),
+      }),
+    );
+  });
+
   it("binds a reviewed voice command to its owned conversation and governed runner", async () => {
     const voiceThreadId = "22222222-2222-4222-8222-222222222222";
     const voiceSessionId = "33333333-3333-4333-8333-333333333333";

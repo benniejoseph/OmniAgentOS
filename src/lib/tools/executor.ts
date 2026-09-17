@@ -41,7 +41,10 @@ import {
   browserProfileTargetHostname,
   resolveBrowserProfileSession,
 } from "@/lib/browser/profiles";
-import type { ModelBrowserObservation } from "@/lib/models/browser-observation";
+import {
+  sanitizeModelBrowserObservation,
+  type ModelBrowserObservation,
+} from "@/lib/models/browser-observation";
 import {
   isSalesforceRecordWriteToolId,
   parseSalesforceRecordWriteInput,
@@ -82,6 +85,7 @@ import { getOpenApiConnector, getOpenApiOperationById } from "@/lib/connectors/o
 import { getMcpConnector, getMcpToolById } from "@/lib/connectors/store";
 import { isAsaelPlaywrightMcpEndpoint } from "@/lib/connectors/mcp-trust";
 import { readResponseTextLimited } from "@/lib/http/body";
+import { executeLocalComputerCommand } from "@/lib/local-computer/store";
 import {
   clipVideoMediaAsset,
   createImageMediaAsset,
@@ -147,6 +151,26 @@ import { RISK3_QUORUM, type ToolDefinition, type ToolExecutionRecord } from "@/l
 import { actionClassFor, recordActionOutcome } from "@/lib/trust/ledger";
 import { runLiveWebSearch } from "@/lib/web-search/search";
 import type { AiUsageOperation, AiUsageScope } from "@/lib/usage/types";
+
+const LOCAL_COMPUTER_TOOL_RESULT = Symbol("local-computer-tool-result");
+
+type LocalComputerToolResult = Readonly<{
+  [LOCAL_COMPUTER_TOOL_RESULT]: true;
+  publicResult: unknown;
+  observation?: Readonly<{
+    snapshotRevision: string;
+    frontmostApplication?: Readonly<{
+      name: string;
+      bundleId?: string | null;
+      pid: number;
+    }>;
+    accessibilitySnapshot?: string;
+    screenshot?: Readonly<{
+      mimeType: "image/jpeg" | "image/png" | "image/webp";
+      dataBase64: string;
+    }>;
+  }>;
+}>;
 
 const searchSchema = z.object({
   query: z.string().min(1).max(4_000),
@@ -1602,20 +1626,22 @@ export async function executeGovernedTool({
       }
       throw error;
     }
+    const localComputerResult = asLocalComputerToolResult(result);
+    const durableResult = localComputerResult?.publicResult ?? result;
     let effectReceipt: ToolExecutionRecord["effectReceipt"];
     try {
       effectReceipt = effectContext
         ? await buildMemoryWriteEffectReceipt({
-            result,
+            result: durableResult,
             context: effectContext,
           })
         : providerEffectIntent
-          ? finalizeProviderEffectIntent(tool, providerEffectIntent, result)
+          ? finalizeProviderEffectIntent(tool, providerEffectIntent, durableResult)
           : undefined;
     } catch (error) {
       throw new EffectReceiptFinalizationError({ cause: error });
     }
-    const safeResult = redactSensitive(withoutEffectCommitMetadata(result));
+    const safeResult = redactSensitive(withoutEffectCommitMetadata(durableResult));
     const record = createRecord({
       ...baseRecord,
       status: "executed" as const,
@@ -1639,8 +1665,15 @@ export async function executeGovernedTool({
       }
       throw error;
     }
-    let browserObservation: ModelBrowserObservation | undefined;
-    if (tool.category === "mcp") {
+    let browserObservation: ModelBrowserObservation | undefined =
+      localComputerResult?.observation
+        ? localComputerModelObservation({
+            executionId: saved.id,
+            operation: tool.id,
+            observation: localComputerResult.observation,
+          })
+        : undefined;
+    if (!browserObservation && tool.category === "mcp") {
       const frameExecutionScope = scopedRequest.executionScope ||
         (toolRuntimeContext
           ? executionScopeFromSecurityContext(toolRuntimeContext, {
@@ -2609,6 +2642,68 @@ function asObjectRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+const LOCAL_COMPUTER_TOOL_ACTIONS = {
+  "local.macos.observe": "observe",
+  "local.macos.list_apps": "list_apps",
+  "local.macos.activate_app": "activate_app",
+  "local.macos.press": "press",
+  "local.macos.click": "click",
+  "local.macos.type": "type",
+  "local.macos.key": "key",
+  "local.macos.scroll": "scroll",
+} as const;
+
+function localComputerActionForTool(toolId: string) {
+  return Object.hasOwn(LOCAL_COMPUTER_TOOL_ACTIONS, toolId)
+    ? LOCAL_COMPUTER_TOOL_ACTIONS[
+        toolId as keyof typeof LOCAL_COMPUTER_TOOL_ACTIONS
+      ]
+    : undefined;
+}
+
+function asLocalComputerToolResult(
+  value: unknown,
+): LocalComputerToolResult | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return LOCAL_COMPUTER_TOOL_RESULT in value &&
+      (value as Partial<LocalComputerToolResult>)[LOCAL_COMPUTER_TOOL_RESULT] === true
+    ? value as LocalComputerToolResult
+    : undefined;
+}
+
+function localComputerModelObservation(input: {
+  executionId: string;
+  operation: string;
+  observation: NonNullable<LocalComputerToolResult["observation"]>;
+}) {
+  const application = input.observation.frontmostApplication;
+  return sanitizeModelBrowserObservation({
+    schemaVersion: 1,
+    source: "local_macos",
+    trust: "untrusted_data",
+    executionId: input.executionId,
+    operation: input.operation,
+    snapshotRevision: input.observation.snapshotRevision,
+    ...(application
+      ? {
+          applicationState: {
+            name: application.name,
+            ...(application.bundleId ? { bundleId: application.bundleId } : {}),
+            pid: application.pid,
+          },
+        }
+      : {}),
+    ...(input.observation.accessibilitySnapshot
+      ? { accessibilitySnapshot: input.observation.accessibilitySnapshot }
+      : {}),
+    ...(input.observation.screenshot
+      ? { screenshot: input.observation.screenshot }
+      : {}),
+  }, { includeImage: true });
+}
+
 function executionClaimTokenFromRecord(record: ToolExecutionRecord) {
   if (!record.output || typeof record.output !== "object" || Array.isArray(record.output)) {
     return undefined;
@@ -3135,6 +3230,27 @@ async function runTool(
     idempotencyKey,
   });
   if (appDispatch.handled) return appDispatch.result;
+
+  const localComputerAction = localComputerActionForTool(tool.id);
+  if (localComputerAction) {
+    if (!executionScope || !idempotencyKey) {
+      throw new Error(
+        "Local Computer Use requires an exact governed execution and request scope.",
+      );
+    }
+    const completed = await executeLocalComputerCommand({
+      action: localComputerAction,
+      toolInput: parsed,
+      executionId: idempotencyKey,
+      executionScope,
+      abortSignal,
+    });
+    return {
+      [LOCAL_COMPUTER_TOOL_RESULT]: true,
+      publicResult: completed.publicResult,
+      ...(completed.observation ? { observation: completed.observation } : {}),
+    } satisfies LocalComputerToolResult;
+  }
 
   if (tool.id === "memory.search") {
     const { query, limit } = searchSchema.parse(parsed);

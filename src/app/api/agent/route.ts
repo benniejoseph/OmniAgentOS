@@ -53,6 +53,10 @@ import {
   requireActivePersonalContextConsent,
 } from "@/lib/memory/personal-context-consent-store";
 import {
+  LocalComputerUnavailableError,
+  startLocalComputerSession,
+} from "@/lib/local-computer/store";
+import {
   requestSharedMemoryAccessFromSecurityContext,
   SharedContextAuthorityError,
   type RequestSharedMemoryAccessV1,
@@ -156,6 +160,7 @@ const requestSchema = z.object({
   agentId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9_.:-]+$/).optional(),
   specialistIds: z.array(z.enum(["atlas", "scout", "forge", "sentinel", "mnemosyne"])).max(5).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
+  computerUseTarget: z.enum(["local_macos", "isolated_browser"]).optional(),
   contextScope: z.enum(CONTEXT_SCOPE_IDS).optional(),
   contextSelection: contextSelectionRequestSchema.optional(),
   budgets: runBudgetCountersV1Schema.partial().optional(),
@@ -443,6 +448,21 @@ async function POSTHandler(request: Request) {
     );
   }
 
+  if (parsed.data.computerUseTarget === "local_macos") {
+    try {
+      await startLocalComputerSession(context, requestId);
+    } catch (error) {
+      if (!(error instanceof LocalComputerUnavailableError)) throw error;
+      return Response.json({
+        error: "This Mac is unavailable",
+        message: error.message,
+      }, {
+        status: error.status,
+        headers: { "cache-control": "private, no-store" },
+      });
+    }
+  }
+
   const mode = parsed.data.mode || "orchestrate";
   const requestedBuiltInAgent = isBuiltInAgentId(parsed.data.agentId) ? parsed.data.agentId : undefined;
   const customAgent = parsed.data.agentId && !requestedBuiltInAgent
@@ -560,7 +580,9 @@ async function POSTHandler(request: Request) {
   });
   const preliminaryDecision = applySupervisorStrategy(
     semanticResolution.decision,
-    parsed.data.strategy,
+    parsed.data.computerUseTarget === "local_macos"
+      ? "direct"
+      : parsed.data.strategy,
   );
 
   try {
@@ -604,7 +626,9 @@ async function POSTHandler(request: Request) {
         model: semanticResolution.receipt.model || null,
         fallbackReasonCode:
           semanticResolution.receipt.fallbackReasonCode || null,
-        selectedTargetIds: [],
+        selectedTargetIds: parsed.data.computerUseTarget
+          ? [`computer:${parsed.data.computerUseTarget}`]
+          : [],
         selectedToolIds: [],
         effectCount: 0,
       },
@@ -692,7 +716,8 @@ async function POSTHandler(request: Request) {
         let loopV2ModelTextEnrollment;
         let loopV2ContextTextEnrollment;
         try {
-          loopV2CanaryEnrollment = parsed.data.budgets || parsed.data.contextScope || parsed.data.voiceInput
+          loopV2CanaryEnrollment = parsed.data.budgets || parsed.data.contextScope ||
+              parsed.data.voiceInput || parsed.data.computerUseTarget
             ? undefined
             :
             await resolveLoopV2ReadOnlyCanaryEnrollment({
@@ -713,7 +738,8 @@ async function POSTHandler(request: Request) {
           if (
             !loopV2CanaryEnrollment &&
             !parsed.data.budgets &&
-            !parsed.data.voiceInput
+            !parsed.data.voiceInput &&
+            !parsed.data.computerUseTarget
           ) {
             if (parsed.data.contextScope) {
               loopV2ContextTextEnrollment =
@@ -1267,6 +1293,7 @@ async function POSTHandler(request: Request) {
                 mode: parsed.data.mode,
                 threadId,
                 messages: safeMessages,
+                computerUseTarget: parsed.data.computerUseTarget,
                 securityContext: context,
                 semanticRouting: {
                   capabilitySearchQuery:

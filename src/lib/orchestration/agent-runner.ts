@@ -234,8 +234,14 @@ export async function* runAgent(
   );
   const browserCapabilityIntent = analyzeBrowserCapabilityIntent(query);
   const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
-  const computerUseRequested =
+  const localComputerUseRequested = request.computerUseTarget === "local_macos";
+  const computerUseRequested = Boolean(request.computerUseTarget) ||
     browserCapabilityIntent.requiredOperationNames.length > 0;
+  const computerUseTarget = localComputerUseRequested
+    ? "local_macos" as const
+    : computerUseRequested
+      ? "isolated_browser" as const
+      : undefined;
   const deploymentModelRoute = computerUseRequested
     ? {
         provider: "openai" as const,
@@ -788,12 +794,15 @@ export async function* runAgent(
         ? `Specialist team: ${request.specialistIds.map(agentDisplayName).join(", ")}.`
         : "Primary specialist selected by Atlas.",
     });
-    if (computerUseRequested) {
+    if (computerUseTarget) {
       yield await emit({
         type: "status",
-        label: "Computer Use workspace ready",
-        detail:
-          "Using an isolated, actor-scoped browser session. Consequential actions still pause for approval.",
+        label: computerUseTarget === "local_macos"
+          ? "This Mac connected"
+          : "Computer Use workspace ready",
+        detail: computerUseTarget === "local_macos"
+          ? "Using the explicitly selected Mac where Asael is installed. Consequential actions still pause for approval."
+          : "Using an isolated, actor-scoped browser session. Consequential actions still pause for approval.",
       });
     }
     if (sharedPromptMemoryAccessScope) {
@@ -906,10 +915,27 @@ export async function* runAgent(
               }),
         })
       : Promise.resolve(fallbackContextPack(query));
-    const configuredToolIds = request.agentProfile ? [...new Set([
+    const profileConfiguredToolIds = request.agentProfile ? [...new Set([
       ...request.agentProfile.toolIds,
       ...request.agentProfile.skills.flatMap((skill) => skill.toolIds),
     ])] : undefined;
+    const localComputerToolIds = [
+      "local.macos.observe",
+      "local.macos.list_apps",
+      "local.macos.activate_app",
+      "local.macos.press",
+      "local.macos.click",
+      "local.macos.type",
+      "local.macos.key",
+      "local.macos.scroll",
+    ] as const;
+    const configuredToolIds = localComputerUseRequested
+      ? request.agentProfile
+        ? localComputerToolIds.filter((id) =>
+            profileConfiguredToolIds?.includes(id)
+          )
+        : [...localComputerToolIds]
+      : profileConfiguredToolIds;
     const groundToolDiscoveryInMemory = !isolatedMemoryContext &&
       durableMemoryEnabled &&
       request.contextSelection?.evidenceIds.length !== 0 &&
@@ -922,8 +948,9 @@ export async function* runAgent(
         : buildAgentToolbox(request.tenantId, {
             query: baseCapabilitySearchQuery || query,
             preferredToolIds: configuredToolIds,
-            requiredExternalOperationNames:
-              browserCapabilityIntent.requiredOperationNames,
+            requiredExternalOperationNames: localComputerUseRequested
+              ? []
+              : browserCapabilityIntent.requiredOperationNames,
             excludedExternalOperationNames:
               browserCapabilityIntent.excludedOperationNames,
           });
@@ -1004,8 +1031,9 @@ export async function* runAgent(
     const resolvedToolboxPromise = toolboxPromise || buildAgentToolbox(request.tenantId, {
       query: capabilitySearchQuery || query,
       preferredToolIds: configuredToolIds,
-      requiredExternalOperationNames:
-        browserCapabilityIntent.requiredOperationNames,
+      requiredExternalOperationNames: localComputerUseRequested
+        ? []
+        : browserCapabilityIntent.requiredOperationNames,
       excludedExternalOperationNames:
         browserCapabilityIntent.excludedOperationNames,
     });
@@ -1056,9 +1084,14 @@ export async function* runAgent(
     // filters the OpenAI tool list, the instructions, and the dispatch map together.
     let toolbox = filterAgentToolbox(
       await resolvedToolboxPromise,
-      liveWebContext || browserCapabilityIntent.excludeWebSearch
-        ? ["web.search"]
-        : [],
+      [
+        ...(liveWebContext || browserCapabilityIntent.excludeWebSearch
+          ? ["web.search"]
+          : []),
+        ...(!localComputerUseRequested
+          ? localComputerToolIds
+          : []),
+      ],
     );
     let agentToolPolicy: AgentRunContinuation["toolPolicy"];
     if (request.agentProfile) {
@@ -1139,7 +1172,7 @@ export async function* runAgent(
       specialistIds: request.specialistIds,
       adaptationGuidance,
       profile: request.agentProfile,
-      computerUse: computerUseRequested,
+      computerUse: computerUseTarget,
     });
     const toolIds = toolbox.tools
       .map((entry) => entry.definition.id)

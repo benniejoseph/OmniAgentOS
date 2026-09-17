@@ -20,6 +20,7 @@ export type ChatMessage = {
 };
 
 export type AgentMode = "orchestrate" | "research" | "execute" | "learn";
+export type ComputerUseTarget = "isolated_browser" | "local_macos";
 
 export type AgentToolEvent = {
   type: "tool";
@@ -150,6 +151,8 @@ export type AgentEvent =
 
 export type AgentRunRequest = {
   messages: ChatMessage[];
+  /** Explicit owner-selected execution surface. Never inferred or silently changed. */
+  computerUseTarget?: ComputerUseTarget;
   /**
    * Live authenticated request identity for owner-scoped governed tools.
    * This value is never persisted in a continuation; approval resumes under

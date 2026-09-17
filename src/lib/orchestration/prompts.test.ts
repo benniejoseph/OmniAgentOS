@@ -185,9 +185,22 @@ describe("agent prompt provenance", () => {
       computerUse: true,
     });
 
-    expect(instructions).toContain("Computer Use workspace:");
+    expect(instructions).toContain("Computer Use — Isolated browser:");
     expect(instructions).toContain("isolated actor- and run-scoped session");
     expect(instructions).toContain("do not control the owner's wider macOS desktop");
     expect(instructions).toContain("captured evidence establish it");
+  });
+
+  it("keeps local Computer Use on the explicitly selected installed Mac", () => {
+    const instructions = buildAgentInstructions({
+      mode: "execute",
+      computerUse: "local_macos",
+    });
+
+    expect(instructions).toContain("Computer Use — This Mac:");
+    expect(instructions).toContain("where Asael is installed");
+    expect(instructions).toContain("local.macos.observe");
+    expect(instructions).toContain("never switch targets or fall back silently");
+    expect(instructions).toContain("secure fields or Terminal");
   });
 });

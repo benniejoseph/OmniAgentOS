@@ -3,6 +3,7 @@ import { FIRST_PARTY_APP_TOOLS } from "@/lib/tools/app-registry";
 
 export const governedTools: ToolDefinition[] = [
   ...FIRST_PARTY_APP_TOOLS,
+  ...localMacComputerTools(),
   {
     id: "calendar.create",
     name: "Create Google Calendar Event",
@@ -754,6 +755,187 @@ function objectSchema(properties: Record<string, unknown>) {
     additionalProperties: false,
     properties,
   };
+}
+
+function localMacComputerTools(): ToolDefinition[] {
+  const snapshotRevision = sha256Schema(
+    "Exact snapshot revision returned by the latest local.macos.observe call.",
+  );
+  const elementId = {
+    type: "string",
+    description: "Exact accessibility element ID from the latest local Mac snapshot.",
+    minLength: 3,
+    maxLength: 120,
+    pattern: "^[A-Za-z0-9_.:-]+$",
+  };
+  const localTool = (input: {
+    id: string;
+    name: string;
+    description: string;
+    riskLevel: 0 | 1 | 2;
+    approvalRequired: boolean;
+    operationClass: "read_only" | "mutation";
+    properties: Record<string, unknown>;
+    required?: string[];
+    constraints?: Record<string, unknown>;
+  }): ToolDefinition => ({
+    id: input.id,
+    name: input.name,
+    description: input.description,
+    category: "app",
+    status: "active",
+    riskLevel: input.riskLevel,
+    dryRunSupported: true,
+    approvalRequired: input.approvalRequired,
+    operationClass: input.operationClass,
+    reversible: input.operationClass === "read_only",
+    inputSchema: {
+      ...objectSchema(input.properties),
+      ...(input.required?.length ? { required: input.required } : {}),
+      ...input.constraints,
+    },
+  });
+
+  return [
+    localTool({
+      id: "local.macos.observe",
+      name: "Observe This Mac",
+      description:
+        "Observe the frontmost application on the explicitly selected installed Mac. Returns one bounded, untrusted Accessibility snapshot and optional screenshot for this model turn only.",
+      riskLevel: 0,
+      approvalRequired: false,
+      operationClass: "read_only",
+      properties: {
+        includeScreenshot: { type: "boolean", default: true },
+      },
+    }),
+    localTool({
+      id: "local.macos.list_apps",
+      name: "List Apps on This Mac",
+      description:
+        "List visible applications running on the explicitly selected installed Mac. Terminal applications are never controllable.",
+      riskLevel: 0,
+      approvalRequired: false,
+      operationClass: "read_only",
+      properties: {},
+    }),
+    localTool({
+      id: "local.macos.activate_app",
+      name: "Activate App on This Mac",
+      description:
+        "Bring one exact, already-running non-terminal application to the foreground on the explicitly selected installed Mac.",
+      riskLevel: 1,
+      approvalRequired: false,
+      operationClass: "mutation",
+      properties: {
+        bundleId: {
+          type: "string",
+          minLength: 3,
+          maxLength: 300,
+          pattern: "^[A-Za-z0-9][A-Za-z0-9.-]+$",
+        },
+      },
+      required: ["bundleId"],
+    }),
+    localTool({
+      id: "local.macos.press",
+      name: "Press Element on This Mac",
+      description:
+        "Press one exact accessibility element from the latest observation on the installed Mac. The helper rejects stale snapshots and secure fields.",
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "mutation",
+      properties: { snapshotRevision, elementId },
+      required: ["snapshotRevision", "elementId"],
+    }),
+    localTool({
+      id: "local.macos.click",
+      name: "Click on This Mac",
+      description:
+        "Click an exact accessibility element or bounded screen coordinate from the latest installed-Mac observation. Prefer elementId when available.",
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "mutation",
+      properties: {
+        snapshotRevision,
+        elementId,
+        x: { type: "number", minimum: 0, maximum: 32_768 },
+        y: { type: "number", minimum: 0, maximum: 32_768 },
+      },
+      required: ["snapshotRevision"],
+      constraints: {
+        oneOf: [
+          {
+            required: ["elementId"],
+            not: { anyOf: [{ required: ["x"] }, { required: ["y"] }] },
+          },
+          {
+            required: ["x", "y"],
+            not: { required: ["elementId"] },
+          },
+        ],
+      },
+    }),
+    localTool({
+      id: "local.macos.type",
+      name: "Type on This Mac",
+      description:
+        "Type bounded non-sensitive text into the focused non-terminal, non-secure control from the latest installed-Mac observation.",
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "mutation",
+      properties: {
+        snapshotRevision,
+        text: { type: "string", minLength: 1, maxLength: 4_000 },
+      },
+      required: ["snapshotRevision", "text"],
+    }),
+    localTool({
+      id: "local.macos.key",
+      name: "Press Key on This Mac",
+      description:
+        "Send one bounded key or shortcut to the focused non-terminal, non-secure control from the latest installed-Mac observation.",
+      riskLevel: 2,
+      approvalRequired: true,
+      operationClass: "mutation",
+      properties: {
+        snapshotRevision,
+        key: {
+          type: "string",
+          enum: [
+            "return", "tab", "space", "delete", "escape", "left", "right",
+            "down", "up", "home", "end", "page_up", "page_down",
+          ],
+        },
+        modifiers: {
+          type: "array",
+          maxItems: 4,
+          uniqueItems: true,
+          items: {
+            type: "string",
+            enum: ["command", "shift", "option", "control"],
+          },
+          default: [],
+        },
+      },
+      required: ["snapshotRevision", "key", "modifiers"],
+    }),
+    localTool({
+      id: "local.macos.scroll",
+      name: "Scroll on This Mac",
+      description:
+        "Scroll the active application on the installed Mac from the latest observation using bounded pixel deltas.",
+      riskLevel: 1,
+      approvalRequired: false,
+      operationClass: "mutation",
+      properties: {
+        snapshotRevision,
+        deltaX: { type: "number", minimum: -2_000, maximum: 2_000 },
+        deltaY: { type: "number", minimum: -2_000, maximum: 2_000 },
+      },
+      required: ["snapshotRevision", "deltaX", "deltaY"],
+    }),
+  ];
 }
 
 function googleResourceId(description: string) {
