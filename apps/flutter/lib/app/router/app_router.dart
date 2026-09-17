@@ -11,6 +11,7 @@ import '../../features/auth/application/session_controller.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/session_bootstrap_screen.dart';
 import '../../features/agents/agents.dart';
+import '../../features/agents/macos_agents_view.dart';
 import '../../features/agents/agents_providers.dart';
 import '../../features/capture/capture.dart';
 import '../../features/capture/capture_providers.dart';
@@ -21,6 +22,7 @@ import '../../features/inbox/macos_inbox_view.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
 import '../../features/knowledge/knowledge.dart';
+import '../../features/knowledge/macos_knowledge_view.dart';
 import '../../features/knowledge/knowledge_providers.dart';
 import '../../features/markets/markets_view.dart';
 import '../../features/payments/payments_view.dart';
@@ -236,12 +238,22 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                           : InboxView(
                               controller: ref.read(inboxControllerProvider),
                             ),
-                    '/agents' => AgentsView(
-                      controller: ref.read(agentsControllerProvider),
-                    ),
-                    '/knowledge' => KnowledgeView(
-                      controller: ref.read(knowledgeControllerProvider),
-                    ),
+                    '/agents' =>
+                      usesMacosPresentation()
+                          ? MacosAgentsView(
+                              controller: ref.read(agentsControllerProvider),
+                            )
+                          : AgentsView(
+                              controller: ref.read(agentsControllerProvider),
+                            ),
+                    '/knowledge' =>
+                      usesMacosPresentation()
+                          ? MacosKnowledgeView(
+                              controller: ref.read(knowledgeControllerProvider),
+                            )
+                          : KnowledgeView(
+                              controller: ref.read(knowledgeControllerProvider),
+                            ),
                     '/accounts' => AccountsView(
                       api: ref.read(apiClientProvider),
                       onOpen: (account) =>
