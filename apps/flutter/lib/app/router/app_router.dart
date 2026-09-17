@@ -30,6 +30,7 @@ import '../../features/projects/projects_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/results_view.dart';
 import '../../features/settings/admin_console.dart';
+import '../../features/settings/macos_admin_workspace_view.dart';
 import '../../features/settings/model_settings_view.dart';
 import '../../features/security/device_security_screen.dart';
 import '../../features/talk/talk.dart';
@@ -39,6 +40,7 @@ import '../../features/today/today_providers.dart';
 import '../navigation/adaptive_shell.dart';
 import '../navigation/app_destination.dart';
 import '../navigation/destination_placeholder.dart';
+import '../platform/macos_presentation.dart';
 
 String appHomePath() => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS
     ? '/talk'
@@ -209,20 +211,36 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                     '/payments' => PaymentsView(
                       api: ref.read(apiClientProvider),
                     ),
-                    '/workflows' => const AdminWorkspaceView(
-                      moduleId: 'automation',
-                    ),
-                    '/integrations' => const AdminWorkspaceView(
-                      moduleId: 'integrations',
-                    ),
-                    '/tools' => const AdminWorkspaceView(moduleId: 'tools'),
-                    '/quality' => const AdminWorkspaceView(moduleId: 'quality'),
-                    '/monitoring' => const AdminWorkspaceView(
-                      moduleId: 'monitoring',
-                    ),
-                    '/security' => const AdminWorkspaceView(
-                      moduleId: 'security',
-                    ),
+                    '/workflows' =>
+                      usesMacosPresentation()
+                          ? const MacosAdminWorkspaceView(
+                              moduleId: 'automation',
+                            )
+                          : const AdminWorkspaceView(moduleId: 'automation'),
+                    '/integrations' =>
+                      usesMacosPresentation()
+                          ? const MacosAdminWorkspaceView(
+                              moduleId: 'integrations',
+                            )
+                          : const AdminWorkspaceView(moduleId: 'integrations'),
+                    '/tools' =>
+                      usesMacosPresentation()
+                          ? const MacosAdminWorkspaceView(moduleId: 'tools')
+                          : const AdminWorkspaceView(moduleId: 'tools'),
+                    '/quality' =>
+                      usesMacosPresentation()
+                          ? const MacosAdminWorkspaceView(moduleId: 'quality')
+                          : const AdminWorkspaceView(moduleId: 'quality'),
+                    '/monitoring' =>
+                      usesMacosPresentation()
+                          ? const MacosAdminWorkspaceView(
+                              moduleId: 'monitoring',
+                            )
+                          : const AdminWorkspaceView(moduleId: 'monitoring'),
+                    '/security' =>
+                      usesMacosPresentation()
+                          ? const MacosAdminWorkspaceView(moduleId: 'security')
+                          : const AdminWorkspaceView(moduleId: 'security'),
                     '/settings' => ModelSettingsView(
                       api: ref.read(apiClientProvider),
                     ),
