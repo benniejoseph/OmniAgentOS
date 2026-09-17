@@ -55,7 +55,7 @@ import {
   type RunContractEnvelopeV1,
   type RunContractEventPayloadV1,
 } from "@/lib/runs/contracts";
-import { runBudgetStateV1Schema } from "@/lib/runs/budgets";
+import { parsePersistedRunBudgetStateV1 } from "@/lib/runs/budgets";
 import {
   parseApprovalCheckpointShadowEnrollment,
   recordApprovalWaitingCheckpointShadow,
@@ -2285,6 +2285,9 @@ function requiredOwnerActorId(value: string) {
 }
 
 function sanitizeAgentRunRecord(run: AgentRunRecord): AgentRunRecord {
+  const continuation = run.continuation
+    ? sanitizeAgentRunContinuation(run.continuation)
+    : undefined;
   return {
     ...run,
     prompt: String(redactSensitive(run.prompt)).slice(0, 20_000),
@@ -2301,9 +2304,19 @@ function sanitizeAgentRunRecord(run: AgentRunRecord): AgentRunRecord {
     consolidationError: run.consolidationError
       ? String(redactSensitive(run.consolidationError)).slice(0, 2_000)
       : undefined,
-    continuation: run.continuation
-      ? (redactSensitive(run.continuation) as AgentRunContinuation)
-      : undefined,
+    continuation,
+  };
+}
+
+function sanitizeAgentRunContinuation(value: AgentRunContinuation) {
+  const parsed = parseAgentRunContinuation(value);
+  if (!parsed) return undefined;
+  const redacted = redactSensitive(parsed) as AgentRunContinuation;
+  return {
+    ...redacted,
+    // Token counts are bounded execution metadata, not provider credentials.
+    // Preserve the validated numeric state after the generic key redactor.
+    budgetState: parsed.budgetState,
   };
 }
 
@@ -2448,8 +2461,8 @@ export function parseAgentRunContinuation(
   }
   const budgetState = candidate.budgetState === undefined
     ? undefined
-    : runBudgetStateV1Schema.safeParse(candidate.budgetState);
-  if (budgetState && !budgetState.success) return undefined;
+    : parsePersistedRunBudgetStateV1(candidate.budgetState);
+  if (candidate.budgetState !== undefined && !budgetState) return undefined;
   if (
     candidate.maxToolSteps !== undefined &&
     (
@@ -2469,7 +2482,7 @@ export function parseAgentRunContinuation(
     runContractEnvelope,
     checkpointShadowEnrollment,
     checkpointResumeClaim,
-    budgetState: budgetState?.success ? budgetState.data : undefined,
+    budgetState,
     conversationItems: Array.isArray(candidate.conversationItems)
       ? (candidate.conversationItems as Array<Record<string, unknown>>)
       : [],

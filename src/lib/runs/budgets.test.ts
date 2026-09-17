@@ -5,6 +5,7 @@ import {
   createRunBudgetState,
   isBrowserActionTool,
   narrowRunBudgetLimits,
+  parsePersistedRunBudgetStateV1,
   remainingRunBudget,
   reserveRunBudget,
   zeroRunBudgetCounters,
@@ -67,6 +68,26 @@ describe("complete run budgets", () => {
     })).toMatchObject({ tokens: 10_000, agents: 1, fanOut: 0 });
     expect(() => narrowRunBudgetLimits(limits, { fanOut: 3 }))
       .toThrow("cannot exceed its parent limit");
+  });
+
+  it("normalizes only legacy decimal token counters from durable state", () => {
+    const state = createRunBudgetState(limits, {
+      used: { modelTurns: 1, tokens: 2_000 },
+      startedAt: "2026-09-06T00:00:00.000Z",
+    });
+
+    expect(parsePersistedRunBudgetStateV1({
+      ...state,
+      limits: { ...state.limits, tokens: "20000" },
+      used: { ...state.used, tokens: "2000" },
+    })).toMatchObject({
+      limits: { tokens: 20_000 },
+      used: { tokens: 2_000 },
+    });
+    expect(parsePersistedRunBudgetStateV1({
+      ...state,
+      limits: { ...state.limits, tokens: "[redacted]" },
+    })).toBeUndefined();
   });
 
   it("recognizes native and connector browser operations without counting web search", () => {

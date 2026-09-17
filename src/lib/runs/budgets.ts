@@ -34,6 +34,44 @@ export const runBudgetStateV1Schema = z.object({
 export type RunBudgetCountersV1 = z.infer<typeof runBudgetCountersV1Schema>;
 export type RunBudgetStateV1 = z.infer<typeof runBudgetStateV1Schema>;
 
+/**
+ * Reads durable v1 state while accepting the decimal token strings emitted by
+ * an older continuation sanitization path. No other counter or string form is
+ * coerced, so malformed or broadened budget authority still fails closed.
+ */
+export function parsePersistedRunBudgetStateV1(
+  value: unknown,
+): RunBudgetStateV1 | undefined {
+  const exact = runBudgetStateV1Schema.safeParse(value);
+  if (exact.success) return exact.data;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Record<string, unknown>;
+  const limits = normalizeLegacyTokenCounter(candidate.limits);
+  const used = normalizeLegacyTokenCounter(candidate.used);
+  if (!limits || !used) return undefined;
+  const compatible = runBudgetStateV1Schema.safeParse({
+    ...candidate,
+    limits,
+    used,
+  });
+  return compatible.success ? compatible.data : undefined;
+}
+
+function normalizeLegacyTokenCounter(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const counter = value as Record<string, unknown>;
+  const tokens = counter.tokens;
+  if (typeof tokens !== "string") return counter;
+  if (!/^(?:0|[1-9][0-9]{0,12})$/.test(tokens)) return undefined;
+  const parsed = Number(tokens);
+  if (!Number.isSafeInteger(parsed)) return undefined;
+  return { ...counter, tokens: parsed };
+}
+
 /** Safe compatibility limits for internal callers that predate request budgets. */
 export const DEFAULT_AGENT_RUN_BUDGET_LIMITS: RunBudgetCountersV1 = Object.freeze({
   modelTurns: 7,

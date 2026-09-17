@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { listStreamEvents } from "@/lib/events/store";
+import {
+  createRunBudgetState,
+  DEFAULT_AGENT_RUN_BUDGET_LIMITS,
+} from "@/lib/runs/budgets";
 import { publicAgentRun } from "@/lib/runs/public";
 import type { AgentRunContinuation } from "@/lib/runs/types";
 
@@ -47,6 +51,58 @@ describe("agent run approval continuations (file mode)", () => {
       ...continuationFor("exec-invalid-cap"),
       maxToolSteps: 0,
     })).toBeUndefined();
+
+    const budgetState = createRunBudgetState(DEFAULT_AGENT_RUN_BUDGET_LIMITS, {
+      used: { modelTurns: 2, tokens: 18_284 },
+    });
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-string-token-budget"),
+      budgetState: {
+        ...budgetState,
+        limits: {
+          ...budgetState.limits,
+          tokens: String(budgetState.limits.tokens),
+        },
+        used: {
+          ...budgetState.used,
+          tokens: String(budgetState.used.tokens),
+        },
+      },
+    })?.budgetState).toMatchObject({
+      limits: { tokens: DEFAULT_AGENT_RUN_BUDGET_LIMITS.tokens },
+      used: { tokens: 18_284 },
+    });
+  });
+
+  it("keeps validated continuation token budgets numeric when reading a parked run", async () => {
+    const store = await import("@/lib/runs/store");
+    const run = await store.createAgentRun({
+      mode: "orchestrate",
+      prompt: "preserve resume budget",
+      messages: [{ role: "user", content: "preserve resume budget" }],
+    });
+    const budgetState = createRunBudgetState(DEFAULT_AGENT_RUN_BUDGET_LIMITS, {
+      used: { modelTurns: 2, tokens: 18_284 },
+    });
+
+    await store.markAgentRunWaitingForApproval(run.id, {
+      response: "partial",
+      continuation: {
+        ...continuationFor("exec-budget-roundtrip"),
+        budgetState,
+      },
+    });
+
+    const found = await store.findAgentRunWaitingForToolApproval(
+      "exec-budget-roundtrip",
+    );
+    expect(found?.continuation?.budgetState).toEqual(budgetState);
+    expect(typeof found?.continuation?.budgetState?.limits.tokens).toBe(
+      "number",
+    );
+    expect(typeof found?.continuation?.budgetState?.used.tokens).toBe(
+      "number",
+    );
   });
 
   it("pauses, finds by execution id, and resumes exactly once", async () => {
