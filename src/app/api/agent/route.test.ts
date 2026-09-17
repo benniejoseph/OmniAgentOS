@@ -382,6 +382,15 @@ describe("agent semantic intent routing", () => {
     expect(routeMocks.runAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         computerUseTarget: "local_macos",
+        maxToolSteps: 12,
+        budgetLimits: expect.objectContaining({
+          modelTurns: 14,
+          tokens: 64_000,
+          costMicrousd: 2_500_000,
+          wallTimeMs: 240_000,
+          toolCalls: 30,
+          browserActions: 12,
+        }),
         securityContext: macContext,
         executionScope: expect.objectContaining({
           correlationId: "local-mac-request-a",
@@ -397,6 +406,42 @@ describe("agent semantic intent routing", () => {
           selectedTargetIds: ["computer:local_macos"],
         }),
       }),
+    );
+  });
+
+  it.each([
+    { label: "ordinary", computerUseTarget: undefined },
+    { label: "isolated browser", computerUseTarget: "isolated_browser" as const },
+  ])("keeps $label runs at six tool steps and seven model turns", async ({
+    computerUseTarget,
+  }) => {
+    routeMocks.runAgent.mockImplementation(async function* () {
+      yield { type: "run", runId: "run-standard-cap", threadId: "thread-a" };
+      yield { type: "done", response: "Bounded result." };
+    });
+
+    const response = await POST(new Request("http://asael.test/api/agent", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Inspect the requested context.",
+        requestId: computerUseTarget
+          ? "isolated-browser-budget-a"
+          : "ordinary-budget-a",
+        strategy: "direct",
+        ...(computerUseTarget ? { computerUseTarget } : {}),
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(routeMocks.runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computerUseTarget,
+        maxToolSteps: 6,
+        budgetLimits: expect.objectContaining({ modelTurns: 7 }),
+      }),
+      expect.any(AbortSignal),
     );
   });
 

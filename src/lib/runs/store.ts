@@ -2266,7 +2266,7 @@ function runFromRow(row: Record<string, unknown>): AgentRunRecord {
     grounding: parseGroundingReport(row.grounding),
     error: row.error ? String(row.error) : undefined,
     consolidationError: row.consolidation_error ? String(row.consolidation_error) : undefined,
-    continuation: parseContinuation(row.continuation),
+    continuation: parseAgentRunContinuation(row.continuation),
     terminalReceipt: row.terminal_receipt
       ? terminalReceiptV1Schema.parse(row.terminal_receipt)
       : undefined,
@@ -2399,7 +2399,9 @@ function parseAgentRunFeedback(value: unknown): AgentRunFeedback | undefined {
   };
 }
 
-function parseContinuation(value: unknown): AgentRunContinuation | undefined {
+export function parseAgentRunContinuation(
+  value: unknown,
+): AgentRunContinuation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
@@ -2448,6 +2450,15 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
     ? undefined
     : runBudgetStateV1Schema.safeParse(candidate.budgetState);
   if (budgetState && !budgetState.success) return undefined;
+  if (
+    candidate.maxToolSteps !== undefined &&
+    (
+      !Number.isSafeInteger(candidate.maxToolSteps) ||
+      Number(candidate.maxToolSteps) < 1
+    )
+  ) {
+    return undefined;
+  }
   const canonicalConversation = candidate.canonicalConversation === undefined
     ? undefined
     : modelConversationSchema.safeParse(candidate.canonicalConversation);
@@ -2468,6 +2479,9 @@ function parseContinuation(value: unknown): AgentRunContinuation | undefined {
     instructions: candidate.instructions,
     response: typeof candidate.response === "string" ? candidate.response : "",
     toolSteps: Number.isInteger(candidate.toolSteps) ? (candidate.toolSteps as number) : 0,
+    maxToolSteps: candidate.maxToolSteps === undefined
+      ? undefined
+      : Number(candidate.maxToolSteps),
     outputsBeforeApproval: Array.isArray(candidate.outputsBeforeApproval)
       ? (candidate.outputsBeforeApproval as unknown[]).filter(isFunctionCallOutput)
       : [],

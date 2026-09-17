@@ -442,6 +442,11 @@ describe("agent memory scope", () => {
       type: "status",
       label: "This Mac evidence isolated",
     }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "harness",
+      maxToolSteps: 12,
+      budgetLimits: expect.objectContaining({ modelTurns: 14 }),
+    }));
     expect(events).not.toContainEqual(expect.objectContaining({
       type: "council_verdict",
       status: "revised",

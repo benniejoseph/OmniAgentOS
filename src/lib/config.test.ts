@@ -1,12 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AGENT_MAX_TOOL_STEPS,
+  AGENT_RUN_BUDGET_LIMITS,
   getAppBaseUrl,
   getOpenAIGatewayConfig,
+  LOCAL_COMPUTER_MAX_TOOL_STEPS,
+  LOCAL_COMPUTER_RUN_BUDGET_LIMITS,
   OPENAI_GATEWAY_PRODUCTION_BASE_URL,
 } from "@/lib/config";
 import { ASAEL_PUBLIC_ORIGIN } from "@/lib/identity";
 
 const gatewayToken = "a".repeat(64);
+
+describe("agent execution limits", () => {
+  it("keeps installed-Mac capacity separate from ordinary agent runs", () => {
+    expect(AGENT_MAX_TOOL_STEPS).toBe(6);
+    expect(AGENT_RUN_BUDGET_LIMITS.modelTurns).toBe(7);
+    expect(LOCAL_COMPUTER_MAX_TOOL_STEPS).toBe(12);
+    expect(LOCAL_COMPUTER_RUN_BUDGET_LIMITS).toEqual({
+      ...AGENT_RUN_BUDGET_LIMITS,
+      modelTurns: 14,
+    });
+  });
+});
 
 describe("getAppBaseUrl", () => {
   afterEach(() => {

@@ -31,6 +31,24 @@ function continuationFor(executionId: string): AgentRunContinuation {
 }
 
 describe("agent run approval continuations (file mode)", () => {
+  it("parses the persisted tool-step cap and accepts legacy continuations without it", async () => {
+    const store = await import("@/lib/runs/store");
+    const capped = store.parseAgentRunContinuation({
+      ...continuationFor("exec-capped"),
+      maxToolSteps: 12,
+    });
+    const legacy = store.parseAgentRunContinuation(
+      continuationFor("exec-legacy-cap"),
+    );
+
+    expect(capped?.maxToolSteps).toBe(12);
+    expect(legacy?.maxToolSteps).toBeUndefined();
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-invalid-cap"),
+      maxToolSteps: 0,
+    })).toBeUndefined();
+  });
+
   it("pauses, finds by execution id, and resumes exactly once", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({

@@ -13,6 +13,8 @@ import {
   hasAnthropicKey,
   hasGeminiKey,
   hasOpenAIKey,
+  LOCAL_COMPUTER_MAX_TOOL_STEPS,
+  LOCAL_COMPUTER_RUN_BUDGET_LIMITS,
 } from "@/lib/config";
 import { getActiveAgentAdaptationGuidance } from "@/lib/agents/adaptation-store";
 import {
@@ -216,7 +218,19 @@ export async function* runAgent(
   abortSignal?: AbortSignal,
 ): AsyncGenerator<AgentEvent> {
   const mode = request.mode || "orchestrate";
-  const budgetLimits = request.budgetLimits || DEFAULT_AGENT_RUN_BUDGET_LIMITS;
+  const localComputerUseRequested = request.computerUseTarget === "local_macos";
+  const toolStepAuthority = localComputerUseRequested
+    ? LOCAL_COMPUTER_MAX_TOOL_STEPS
+    : AGENT_MAX_TOOL_STEPS;
+  const maxToolSteps = resolveMaxToolSteps(
+    request.maxToolSteps,
+    toolStepAuthority,
+  );
+  const budgetLimits = request.budgetLimits || (
+    localComputerUseRequested
+      ? LOCAL_COMPUTER_RUN_BUDGET_LIMITS
+      : DEFAULT_AGENT_RUN_BUDGET_LIMITS
+  );
   const safeMessages = redactSensitive(
     request.messages,
   ) as AgentRunRequest["messages"];
@@ -234,7 +248,6 @@ export async function* runAgent(
   );
   const browserCapabilityIntent = analyzeBrowserCapabilityIntent(query);
   const automaticRetrievalQuery = buildAutomaticRetrievalQuery(autonomyQuery);
-  const localComputerUseRequested = request.computerUseTarget === "local_macos";
   const computerUseRequested = Boolean(request.computerUseTarget) ||
     browserCapabilityIntent.requiredOperationNames.length > 0;
   const computerUseTarget = localComputerUseRequested
@@ -1312,7 +1325,7 @@ export async function* runAgent(
         .sort((left, right) => left.localeCompare(right)),
       toolboxSha256: stableToolboxFingerprint(toolbox.tools),
       instructionsSha256: createHash("sha256").update(instructions).digest("hex"),
-      maxToolSteps: AGENT_MAX_TOOL_STEPS,
+      maxToolSteps,
       maxToolCallsPerTurn: MAX_TOOL_CALLS_PER_TURN,
       maxToolResultChars: MAX_TOOL_RESULT_CHARS,
       maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
@@ -1641,6 +1654,7 @@ export async function* runAgent(
           serializeToolCalls: isExpandedCheckpointShadowEnrollment(
             checkpointShadowEnrollment,
           ),
+          maxToolSteps,
         });
         let result: NonOpenAIProviderLoopResult;
         try {
@@ -1732,6 +1746,7 @@ export async function* runAgent(
             instructions,
             response,
             toolSteps: result.toolSteps,
+            maxToolSteps,
             outputsBeforeApproval: [],
             pendingToolCall: {
               callId: waiting.providerState.pendingCall.callId,
@@ -1807,7 +1822,7 @@ export async function* runAgent(
           (apiKey) => streamResponseTurn({
             instructions,
             input: turnInput,
-            tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
+            tools: toolSteps < maxToolSteps ? toolbox.openAITools : undefined,
             abortSignal: runAbortSignal,
             reasoningEffort: AGENT_REASONING_EFFORT,
             maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
@@ -2128,6 +2143,7 @@ export async function* runAgent(
               instructions,
               response,
               toolSteps,
+              maxToolSteps,
               outputsBeforeApproval: outputs,
               pendingToolCall: {
                 callId: call.callId,
@@ -2186,11 +2202,11 @@ export async function* runAgent(
           outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
         }
 
-        if (toolSteps >= AGENT_MAX_TOOL_STEPS) {
+        if (toolSteps >= maxToolSteps) {
           yield await emit({
             type: "status",
             label: "tool budget reached",
-            detail: `Tool step budget (${AGENT_MAX_TOOL_STEPS}) reached; asking the model for its final answer.`,
+            detail: `Tool step budget (${maxToolSteps}) reached; asking the model for its final answer.`,
           });
         }
 
@@ -2401,6 +2417,18 @@ type NonOpenAIProviderLoopResult = {
   };
 };
 
+function resolveMaxToolSteps(
+  requested: number | undefined,
+  authority: number,
+  fallback = authority,
+) {
+  if (requested === undefined) return fallback;
+  if (!Number.isSafeInteger(requested) || requested < 1) {
+    throw new Error("Agent tool-step limit is invalid.");
+  }
+  return Math.min(requested, authority);
+}
+
 /**
  * Provider-neutral governed tool loop used by Gemini, Anthropic, and Bedrock runs.
  * Dependency injection keeps the policy/continuation behavior directly
@@ -2427,6 +2455,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   continuation?: ModelToolTurnResult["continuation"];
   toolResults?: readonly ModelToolResult[];
   toolSteps?: number;
+  maxToolSteps?: number;
   modelAttemptOffset?: number;
   generateTurn?: (request: ModelToolTurnRequest) => Promise<ModelToolTurnResult>;
   bindModelRequest?: (request: ModelToolTurnRequest) => ModelToolTurnRequest;
@@ -2454,6 +2483,11 @@ export async function* runNonOpenAIProviderToolLoop(input: {
 }): AsyncGenerator<NonOpenAIProviderLoopEvent, NonOpenAIProviderLoopResult> {
   const generateTurn = input.generateTurn || generateModelToolTurn;
   const executeTool = input.executeTool || executeGovernedTool;
+  const maxToolSteps = resolveMaxToolSteps(
+    input.maxToolSteps,
+    Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
+    AGENT_MAX_TOOL_STEPS,
+  );
   if (
     input.continuation &&
     (input.continuation.provider === "local" ||
@@ -2503,7 +2537,7 @@ export async function* runNonOpenAIProviderToolLoop(input: {
   });
 
   for (;;) {
-    const toolsEnabled = toolSteps < AGENT_MAX_TOOL_STEPS;
+    const toolsEnabled = toolSteps < maxToolSteps;
     const modelAttempt = modelAttemptOffset + turns + 1;
     const modelBudget = await input.beforeModelTurn?.({
       attempt: modelAttempt,
@@ -2855,12 +2889,12 @@ export async function* runNonOpenAIProviderToolLoop(input: {
           `${turn.toolCalls.length - MAX_TOOL_CALLS_PER_TURN} excess tool call(s) were rejected.`,
       };
     }
-    if (toolSteps >= AGENT_MAX_TOOL_STEPS) {
+    if (toolSteps >= maxToolSteps) {
       yield {
         type: "status",
         label: "tool budget reached",
         detail:
-          `Tool step budget (${AGENT_MAX_TOOL_STEPS}) reached; asking the model for its final answer.`,
+          `Tool step budget (${maxToolSteps}) reached; asking the model for its final answer.`,
       };
     }
     toolResults = outputs;
@@ -3119,6 +3153,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
   if (!run || !continuation || run.status !== expectedStatus) {
     return { resumed: false, reason: "No waiting agent run continuation found." };
   }
+  const maxToolSteps = resolveMaxToolSteps(
+    continuation.maxToolSteps,
+    Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
+    AGENT_MAX_TOOL_STEPS,
+  );
   const executionScope = await resolveContinuationExecutionScope(
     run,
     continuation,
@@ -3534,6 +3573,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             instructions: continuation.instructions,
             response,
             toolSteps,
+            maxToolSteps,
             outputsBeforeApproval: carriedOutputs,
             pendingToolCall: {
               callId: call.callId,
@@ -3598,7 +3638,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           (apiKey) => streamResponseTurn({
             instructions: continuation.instructions,
             input: turnInput,
-            tools: toolSteps < AGENT_MAX_TOOL_STEPS ? toolbox.openAITools : undefined,
+            tools: toolSteps < maxToolSteps ? toolbox.openAITools : undefined,
             abortSignal: resumeAbortSignal,
             reasoningEffort: AGENT_REASONING_EFFORT,
             maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
@@ -3827,6 +3867,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
               instructions: continuation.instructions,
               response,
               toolSteps,
+              maxToolSteps,
               outputsBeforeApproval: outputs,
               pendingToolCall: {
                 callId: call.callId,
@@ -3872,11 +3913,11 @@ async function resumeAgentRunAfterToolApprovalInScope({
         outputs.push(functionCallOutput(call, { error: "Per-turn tool call limit reached; call skipped." }));
       }
 
-      if (toolSteps >= AGENT_MAX_TOOL_STEPS) {
+      if (toolSteps >= maxToolSteps) {
         await appendScopedRunEvent({
           type: "status",
           label: "tool budget reached",
-          detail: `Tool step budget (${AGENT_MAX_TOOL_STEPS}) reached; asking the model for its final answer.`,
+          detail: `Tool step budget (${maxToolSteps}) reached; asking the model for its final answer.`,
         });
       }
 
@@ -4000,6 +4041,11 @@ async function resumeProviderBoundAgentRunAfterApproval({
   approvedBrowserObservation?: ModelBrowserObservation;
 }) {
   const providerState = continuation.providerToolState;
+  const maxToolSteps = resolveMaxToolSteps(
+    continuation.maxToolSteps,
+    Math.max(AGENT_MAX_TOOL_STEPS, LOCAL_COMPUTER_MAX_TOOL_STEPS),
+    AGENT_MAX_TOOL_STEPS,
+  );
   const runMutationOptions = {
     tenantId: normalizeTenantId(tenantId),
     resumeFence,
@@ -4320,6 +4366,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       instructions: continuation.instructions,
       response,
       toolSteps,
+      maxToolSteps,
       outputsBeforeApproval: [],
       pendingToolCall: {
         callId: waiting.providerState.pendingCall.callId,
@@ -4499,6 +4546,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
       continuation: providerState.continuation,
       toolResults: carriedResults,
       toolSteps,
+      maxToolSteps,
       modelAttemptOffset: toolSteps,
       bindModelRequest: runtimeCarriesProvider && resumeRuntimeModel.configured
         ? (turnRequest) => resumeRuntimeModel.bind(turnRequest)

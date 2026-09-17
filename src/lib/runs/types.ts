@@ -68,6 +68,8 @@ export type AgentRunContinuation = {
   instructions: string;
   response: string;
   toolSteps: number;
+  /** Exact server-selected cap retained across governed approval pauses. */
+  maxToolSteps?: number;
   outputsBeforeApproval: Array<{ type: "function_call_output"; call_id: string; output: string }>;
   pendingToolCall: {
     callId: string;

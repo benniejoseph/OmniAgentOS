@@ -240,6 +240,10 @@ export const AGENT_MAX_TOOL_STEPS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_TOOL_STEPS,
   6,
 );
+export const LOCAL_COMPUTER_MAX_TOOL_STEPS = normalizePositiveInteger(
+  process.env.OMNIAGENT_LOCAL_COMPUTER_MAX_TOOL_STEPS,
+  12,
+);
 export const AGENT_MAX_MESSAGE_CHARS = normalizePositiveInteger(
   process.env.OMNIAGENT_AGENT_MAX_MESSAGE_CHARS,
   32_000,
@@ -305,6 +309,16 @@ export const AGENT_RUN_BUDGET_LIMITS = Object.freeze({
   fanOut: AGENT_MAX_FAN_OUT,
   retries: AGENT_MAX_RETRIES,
   replans: AGENT_MAX_REPLANS,
+});
+
+/**
+ * Installed-Mac runs reserve one model turn for semantic planning and one for
+ * the final answer in addition to their bounded action/model rounds. Every
+ * other budget dimension remains identical to the ordinary agent authority.
+ */
+export const LOCAL_COMPUTER_RUN_BUDGET_LIMITS = Object.freeze({
+  ...AGENT_RUN_BUDGET_LIMITS,
+  modelTurns: LOCAL_COMPUTER_MAX_TOOL_STEPS + 2,
 });
 
 function normalizePositiveInteger(value: string | undefined, fallback: number) {

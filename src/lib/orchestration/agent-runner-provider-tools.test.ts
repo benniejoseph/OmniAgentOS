@@ -394,6 +394,93 @@ describe("non-OpenAI governed provider tool loop", () => {
     expect(executeTool).not.toHaveBeenCalled();
   });
 
+  it("uses a supplied local tool-step cap beyond the ordinary six-step boundary", async () => {
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      if (!request.toolResults) {
+        expect(request.tools).toHaveLength(1);
+        return turn({
+          toolCalls: [{
+            callId: "call-local-seven",
+            name: "local_observe",
+            argumentsJson: "{}",
+          }],
+        });
+      }
+      return turn({ text: "The seventh local round completed." });
+    });
+    const executeTool = vi.fn(async () => ({
+      record: executionRecord("local.macos.observe", "executed"),
+      result: { observed: true },
+    }));
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "reasoning",
+      instructions: "Observe the selected Mac.",
+      prompt: "Continue the local task.",
+      tools: [modelTool("local_observe")],
+      toolbox: {
+        byFunctionName: new Map([["local_observe", {
+          definition: toolDefinition("local.macos.observe"),
+          functionName: "local_observe",
+        }]]),
+      },
+      securityContext: {
+        tenantId: "tenant-local",
+        actorId: "owner-local",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-local-cap",
+      toolSteps: 6,
+      maxToolSteps: 12,
+      generateTurn,
+      executeTool: executeTool as never,
+    });
+
+    const collected = await collect(loop);
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect(generateTurn).toHaveBeenCalledTimes(2);
+    expect(collected.result).toMatchObject({
+      text: "The seventh local round completed.",
+      toolSteps: 7,
+    });
+  });
+
+  it("keeps the six-step fallback when a legacy loop has no persisted cap", async () => {
+    const generateTurn = vi.fn(async (request: ModelToolTurnRequest) => {
+      expect(request.tools).toEqual([]);
+      return turn({ text: "Final answer only." });
+    });
+    const executeTool = vi.fn();
+    const loop = runNonOpenAIProviderToolLoop({
+      provider: "google",
+      tier: "fast",
+      instructions: "Finish within the legacy boundary.",
+      prompt: "Finish.",
+      tools: [modelTool("memory_search")],
+      toolbox: {
+        byFunctionName: new Map([["memory_search", {
+          definition: toolDefinition("memory.search"),
+          functionName: "memory_search",
+        }]]),
+      },
+      securityContext: {
+        tenantId: "default",
+        actorId: "owner",
+        role: "admin",
+        source: "default",
+      },
+      runId: "run-legacy-cap",
+      toolSteps: 6,
+      generateTurn,
+      executeTool: executeTool as never,
+    });
+
+    const collected = await collect(loop);
+    expect(collected.result.text).toBe("Final answer only.");
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
   it("forces approval only for risk-bearing tools under the voice policy", async () => {
     const executeTool = vi.fn(async (request: {
       toolId: string;

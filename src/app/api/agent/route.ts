@@ -3,8 +3,11 @@ import { z } from "zod";
 import {
   AGENT_MAX_MESSAGE_CHARS,
   AGENT_MAX_MESSAGES,
+  AGENT_MAX_TOOL_STEPS,
   AGENT_RUN_BUDGET_LIMITS,
   AGENT_RUNS_PER_MINUTE,
+  LOCAL_COMPUTER_MAX_TOOL_STEPS,
+  LOCAL_COMPUTER_RUN_BUDGET_LIMITS,
   WORKFLOW_RUN_BUDGET_LIMITS,
 } from "@/lib/config";
 import { hasDatabaseUrl, withDatabaseRequestScope } from "@/lib/db/client";
@@ -403,8 +406,12 @@ async function POSTHandler(request: Request) {
   let budgetLimits;
   let workflowBudgetLimits;
   try {
+    const agentBudgetAuthority =
+      parsed.data.computerUseTarget === "local_macos"
+        ? LOCAL_COMPUTER_RUN_BUDGET_LIMITS
+        : AGENT_RUN_BUDGET_LIMITS;
     budgetLimits = narrowRunBudgetLimits(
-      AGENT_RUN_BUDGET_LIMITS,
+      agentBudgetAuthority,
       parsed.data.budgets,
     );
     workflowBudgetLimits = narrowRunBudgetLimits(
@@ -1318,6 +1325,10 @@ async function POSTHandler(request: Request) {
                 adaptationEvidence: decision.adaptationEvidence,
                 agentProfile,
                 budgetLimits,
+                maxToolSteps:
+                  parsed.data.computerUseTarget === "local_macos"
+                    ? LOCAL_COMPUTER_MAX_TOOL_STEPS
+                    : AGENT_MAX_TOOL_STEPS,
                 voiceInput: parsed.data.voiceInput,
               },
               request.signal,

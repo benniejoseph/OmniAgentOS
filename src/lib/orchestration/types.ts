@@ -187,6 +187,8 @@ export type AgentRunRequest = {
   promptEntityGraphAccess?: RequestEntityAccessV1;
   /** Server-validated effective limits; delegated callers may only narrow them. */
   budgetLimits?: RunBudgetCountersV1;
+  /** Trusted server-selected tool/model round cap for the chosen execution surface. */
+  maxToolSteps?: number;
   /** Internal durable dispatch: the worker has already CAS-claimed this run. */
   preclaimedRunId?: string;
   /**
