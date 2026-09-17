@@ -19,6 +19,7 @@ import '../../features/computer_use/local_computer.dart';
 import '../../features/customers/accounts_view.dart';
 import '../../features/customers/customer_detail.dart';
 import '../../features/customers/macos_accounts_view.dart';
+import '../../features/customers/macos_customer_detail_view.dart';
 import '../../features/inbox/macos_inbox_view.dart';
 import '../../features/inbox/inbox.dart';
 import '../../features/inbox/inbox_providers.dart';
@@ -29,11 +30,14 @@ import '../../features/markets/markets_view.dart';
 import '../../features/payments/macos_payments_view.dart';
 import '../../features/payments/payments_view.dart';
 import '../../features/meetings/macos_meetings_view.dart';
+import '../../features/meetings/macos_meeting_detail_view.dart';
 import '../../features/meetings/meetings_providers.dart';
 import '../../features/meetings/meetings_view.dart';
+import '../../features/projects/macos_project_detail_view.dart';
 import '../../features/projects/projects_providers.dart';
 import '../../features/projects/macos_projects_view.dart';
 import '../../features/projects/projects_view.dart';
+import '../../features/results/macos_result_detail_view.dart';
 import '../../features/results/results_providers.dart';
 import '../../features/results/macos_results_view.dart';
 import '../../features/results/results_view.dart';
@@ -164,10 +168,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/missions/:id', redirect: (_, _) => '/projects'),
       GoRoute(
         path: '/customers/:id',
-        builder: (_, state) => CustomerDetailView(
-          id: state.pathParameters['id']!,
-          api: ref.read(apiClientProvider),
-        ),
+        builder: (_, state) => usesMacosPresentation()
+            ? MacosCustomerDetailView(
+                id: state.pathParameters['id']!,
+                api: ref.read(apiClientProvider),
+              )
+            : CustomerDetailView(
+                id: state.pathParameters['id']!,
+                api: ref.read(apiClientProvider),
+              ),
       ),
       StatefulShellRoute.indexedStack(
         builder: (_, _, shell) => AdaptiveShell(navigationShell: shell),
@@ -312,45 +321,82 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                       ? [
                           GoRoute(
                             path: ':id',
-                            builder: (_, state) => CustomerDetailView(
-                              id: state.pathParameters['id']!,
-                              api: ref.read(apiClientProvider),
-                            ),
+                            builder: (_, state) => usesMacosPresentation()
+                                ? MacosCustomerDetailView(
+                                    id: state.pathParameters['id']!,
+                                    api: ref.read(apiClientProvider),
+                                  )
+                                : CustomerDetailView(
+                                    id: state.pathParameters['id']!,
+                                    api: ref.read(apiClientProvider),
+                                  ),
                           ),
                         ]
                       : destination.path == '/projects'
                       ? [
                           GoRoute(
                             path: ':id',
-                            builder: (_, state) => ProjectDetailView(
-                              id: state.pathParameters['id']!,
-                              repository: ref.read(projectsRepositoryProvider),
-                              api: ref.read(apiClientProvider),
-                              focusWorkItemId:
-                                  state.uri.queryParameters['workItemId'],
-                            ),
+                            builder: (_, state) => usesMacosPresentation()
+                                ? MacosProjectDetailView(
+                                    id: state.pathParameters['id']!,
+                                    repository: ref.read(
+                                      projectsRepositoryProvider,
+                                    ),
+                                    api: ref.read(apiClientProvider),
+                                    focusWorkItemId:
+                                        state.uri.queryParameters['workItemId'],
+                                  )
+                                : ProjectDetailView(
+                                    id: state.pathParameters['id']!,
+                                    repository: ref.read(
+                                      projectsRepositoryProvider,
+                                    ),
+                                    api: ref.read(apiClientProvider),
+                                    focusWorkItemId:
+                                        state.uri.queryParameters['workItemId'],
+                                  ),
                           ),
                         ]
                       : destination.path == '/results'
                       ? [
                           GoRoute(
                             path: ':key',
-                            builder: (_, state) => ResultDetailView(
-                              keyValue: Uri.decodeComponent(
-                                state.pathParameters['key']!,
-                              ),
-                              repository: ref.read(resultsRepositoryProvider),
-                            ),
+                            builder: (_, state) => usesMacosPresentation()
+                                ? MacosResultDetailView(
+                                    keyValue: Uri.decodeComponent(
+                                      state.pathParameters['key']!,
+                                    ),
+                                    repository: ref.read(
+                                      resultsRepositoryProvider,
+                                    ),
+                                  )
+                                : ResultDetailView(
+                                    keyValue: Uri.decodeComponent(
+                                      state.pathParameters['key']!,
+                                    ),
+                                    repository: ref.read(
+                                      resultsRepositoryProvider,
+                                    ),
+                                  ),
                           ),
                         ]
                       : destination.path == '/meetings'
                       ? [
                           GoRoute(
                             path: ':id',
-                            builder: (_, state) => MeetingDetailView(
-                              id: state.pathParameters['id']!,
-                              repository: ref.read(meetingsRepositoryProvider),
-                            ),
+                            builder: (_, state) => usesMacosPresentation()
+                                ? MacosMeetingDetailView(
+                                    id: state.pathParameters['id']!,
+                                    repository: ref.read(
+                                      meetingsRepositoryProvider,
+                                    ),
+                                  )
+                                : MeetingDetailView(
+                                    id: state.pathParameters['id']!,
+                                    repository: ref.read(
+                                      meetingsRepositoryProvider,
+                                    ),
+                                  ),
                           ),
                         ]
                       : destination.path == '/inbox'
