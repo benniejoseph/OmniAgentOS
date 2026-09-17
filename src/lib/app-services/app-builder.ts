@@ -121,7 +121,10 @@ import {
   hasPassingAppBuilderSentinelReview,
   parseAppBuilderSentinelVerdict,
 } from "@/lib/app-builder/sentinel-review";
-import { captureBuilderBrowserEvidence } from "@/lib/app-builder/verification";
+import {
+  createBuilderCheckpointReadinessEvidence,
+  createBuilderDeploymentReadinessEvidence,
+} from "@/lib/app-builder/verification";
 import { getOwnedProject } from "@/lib/projects/store";
 import { getAgentRun, getAgentRunExecutionScope } from "@/lib/runs/store";
 import { canonicalRequestActorBindingFromSecurityContext } from "@/lib/security/canonical-actor";
@@ -526,26 +529,14 @@ export async function runProjectBuilderVerificationService(
       outputSha256: createHash("sha256").update(`${result.stdout}\n${result.stderr}`).digest("hex"),
     });
   }
-  const previewUrl = await getBuilderPreviewUrl({
-    sandboxName: session.sandboxName,
-    tenantId: session.tenantId,
-    ownerActorId: session.ownerActorId,
-    projectId: session.projectId,
-    sessionId: session.id,
-  });
-  const browserEvidence = await captureBuilderBrowserEvidence({
-    tenantId: session.tenantId,
-    actorId: session.ownerActorId,
-    executionId: `app-builder-verification:${idempotencyKey}`,
-    previewUrl,
-  });
-  const status = checks.some((check) => check.status === "failed")
-    ? "failed" as const
-    : browserEvidence.status === "captured"
-      ? "passed" as const
-      : "incomplete" as const;
+  const retiredBrowserEvidence = createBuilderCheckpointReadinessEvidence(checks);
+  const readinessEvidence = retiredBrowserEvidence.replacement;
+  const status = readinessEvidence.status === "passed"
+    ? "passed" as const
+    : "failed" as const;
   const verification = await recordBuilderVerification({
-    ...owner(caller), session, checkpoint, idempotencyKey, status, checks, browserEvidence,
+    ...owner(caller), session, checkpoint, idempotencyKey, status, checks,
+    browserEvidence: retiredBrowserEvidence,
   });
   await recordBuilderActivity({
     ...owner(caller), session,
@@ -557,8 +548,10 @@ export async function runProjectBuilderVerificationService(
       workspaceSha256: checkpoint.workspaceSha256,
       status,
       checks: checks.map((check) => ({ command: check.command, status: check.status, exitCode: check.exitCode, outputSha256: check.outputSha256 })),
-      browserStatus: browserEvidence.status,
-      captureCount: browserEvidence.captures.length,
+      browserEvidenceStatus: retiredBrowserEvidence.status,
+      readinessMode: readinessEvidence.mode,
+      readinessStatus: readinessEvidence.status,
+      readinessSummary: readinessEvidence.summary,
     },
   });
   return completeAppServiceCall(authorized, { verification: publicVerification(verification), created: true });
@@ -1120,23 +1113,22 @@ export async function refreshProjectBuilderPreviewDeploymentService(
     ...owner(caller), deployment, status: "verifying", providerState: state,
   });
   const protectionBypassSecret = await ensureBuilderVercelProtectionBypass(deployment.providerProjectId);
-  const [logs, routeEvidence, browserEvidence] = await Promise.all([
+  const [logs, routeEvidence] = await Promise.all([
     getBuilderVercelLogEvidence(deployment.providerDeploymentId),
     runBuilderVercelRouteSmokes(deployment.deploymentUrl, deployment.smokeRoutes, { protectionBypassSecret }),
-    captureBuilderBrowserEvidence({
-      tenantId: session.tenantId,
-      actorId: session.ownerActorId,
-      executionId: `app-builder-deployment:${deployment.id}:${refreshIdempotencyKey}`,
-      previewUrl: deployment.deploymentUrl,
-      protectionBypassSecret,
-    }),
   ]);
-  const status = logs.status === "captured" && routeEvidence.status === "passed" && browserEvidence.status === "captured"
+  const retiredBrowserEvidence = createBuilderDeploymentReadinessEvidence({
+    phase: "preview",
+    logs,
+    routeEvidence,
+  });
+  const readinessEvidence = retiredBrowserEvidence.replacement;
+  const status = readinessEvidence.status === "passed"
     ? "ready" as const
     : "incomplete" as const;
   const current = await updateBuilderDeploymentEvidence({
     ...owner(caller), deployment: verifying, status, providerState: state,
-    logs, routeEvidence, browserEvidence,
+    logs, routeEvidence, browserEvidence: retiredBrowserEvidence,
   });
   await recordBuilderActivity({
     ...owner(caller), session,
@@ -1157,8 +1149,10 @@ export async function refreshProjectBuilderPreviewDeploymentService(
       logEventCount: logs.eventCount,
       routeStatus: routeEvidence.status,
       routeCount: routeEvidence.routes.length,
-      browserStatus: browserEvidence.status,
-      captureCount: browserEvidence.captures.length,
+      browserEvidenceStatus: retiredBrowserEvidence.status,
+      readinessMode: readinessEvidence.mode,
+      readinessStatus: readinessEvidence.status,
+      readinessSummary: readinessEvidence.summary,
     },
   });
   return completeAppServiceCall(authorized, { deployment: publicDeployment(current), changed: true });
@@ -1174,9 +1168,10 @@ export async function previewProjectBuilderProductionReleaseService(
   const deployment = await getBuilderDeployment(value.deploymentId, session.id, owner(caller));
   if (
     !deployment || deployment.status !== "ready" ||
+    deployment.logs.status !== "captured" || deployment.routeEvidence.status !== "passed" ||
     !deployment.providerDeploymentId || !deployment.providerProjectId
   ) {
-    throw new Error("Production review requires an exact preview with complete build, route, and visual evidence.");
+    throw new Error("Production review requires an exact preview with complete build-log and route-smoke evidence.");
   }
   const workspace = await getBuilderWorkspaceManifest(session.sandboxName);
   if (workspace.sha256 !== deployment.workspaceSha256) {
@@ -1195,6 +1190,14 @@ export async function previewProjectBuilderProductionReleaseService(
   const rollbackEvidence = currentProduction
     ? { status: "available" as const, providerDeploymentId: currentProduction.deploymentId, deploymentUrl: currentProduction.url }
     : { status: "first_release" as const };
+  const readinessEvidence = createBuilderDeploymentReadinessEvidence({
+    phase: "preview",
+    logs: deployment.logs,
+    routeEvidence: deployment.routeEvidence,
+  }).replacement;
+  if (readinessEvidence.status !== "passed") {
+    throw new Error("Production review requires passing deterministic preview evidence.");
+  }
   const previewEvidenceSha256 = canonicalJsonSha256({
     deploymentId: deployment.id,
     providerDeploymentId: deployment.providerDeploymentId,
@@ -1203,7 +1206,7 @@ export async function previewProjectBuilderProductionReleaseService(
     secretScanSha256: deployment.secretScanSha256,
     logs: deployment.logs,
     routeEvidence: deployment.routeEvidence,
-    browserEvidence: deployment.browserEvidence,
+    readinessEvidence,
   });
   const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
   const review = await beginBuilderReleaseReview({
@@ -1265,6 +1268,7 @@ export async function releaseProjectBuilderProductionService(
   const deployment = await getBuilderDeployment(release.deploymentId, session.id, owner(caller));
   if (
     !deployment || deployment.status !== "ready" ||
+    deployment.logs.status !== "captured" || deployment.routeEvidence.status !== "passed" ||
     deployment.providerDeploymentId !== release.previewProviderDeploymentId ||
     deployment.workspaceSha256 !== release.workspaceSha256
   ) {
@@ -1379,23 +1383,22 @@ export async function refreshProjectBuilderProductionReleaseService(
   if (!sourceDeployment) throw new Error("The reviewed preview receipt is missing from this release.");
   if (!release.providerProjectId) throw new Error("The production release has no confirmed Vercel project identity.");
   const protectionBypassSecret = await ensureBuilderVercelProtectionBypass(release.providerProjectId);
-  const [logs, routeEvidence, browserEvidence] = await Promise.all([
+  const [logs, routeEvidence] = await Promise.all([
     getBuilderVercelLogEvidence(release.providerDeploymentId),
     runBuilderVercelRouteSmokes(release.deploymentUrl, sourceDeployment.smokeRoutes, { protectionBypassSecret }),
-    captureBuilderBrowserEvidence({
-      tenantId: session.tenantId,
-      actorId: session.ownerActorId,
-      executionId: `app-builder-release:${release.id}:${refreshIdempotencyKey}`,
-      previewUrl: release.deploymentUrl,
-      protectionBypassSecret,
-    }),
   ]);
-  const status = logs.status === "captured" && routeEvidence.status === "passed" && browserEvidence.status === "captured"
+  const retiredBrowserEvidence = createBuilderDeploymentReadinessEvidence({
+    phase: "release",
+    logs,
+    routeEvidence,
+  });
+  const readinessEvidence = retiredBrowserEvidence.replacement;
+  const status = readinessEvidence.status === "passed"
     ? "healthy" as const
     : "incomplete" as const;
   const current = await updateBuilderReleaseEvidence({
     ...owner(caller), release, status, providerState: state,
-    logs, routeEvidence, browserEvidence,
+    logs, routeEvidence, browserEvidence: retiredBrowserEvidence,
   });
   await recordBuilderActivity({
     ...owner(caller), session,
@@ -1415,8 +1418,10 @@ export async function refreshProjectBuilderProductionReleaseService(
       logEventCount: logs.eventCount,
       routeStatus: routeEvidence.status,
       routeCount: routeEvidence.routes.length,
-      browserStatus: browserEvidence.status,
-      captureCount: browserEvidence.captures.length,
+      browserEvidenceStatus: retiredBrowserEvidence.status,
+      readinessMode: readinessEvidence.mode,
+      readinessStatus: readinessEvidence.status,
+      readinessSummary: readinessEvidence.summary,
       rollbackStatus: current.rollbackEvidence.status,
       rollbackProviderDeploymentId: current.rollbackEvidence.providerDeploymentId,
     },

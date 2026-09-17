@@ -79,6 +79,39 @@ export type AppBuilderActivity = Readonly<{
   occurredAt: string;
 }>;
 
+export type AppBuilderDeterministicReadinessEvidence = Readonly<{
+  mode: "deterministic";
+  version: 1;
+  phase: "checkpoint" | "preview" | "release";
+  status: "pending" | "passed" | "failed";
+  summary: string;
+  signals: ReadonlyArray<Readonly<{
+    name: "lint" | "typecheck" | "build_logs" | "route_smokes";
+    status: "pending" | "passed" | "failed";
+  }>>;
+}>;
+
+/**
+ * Historical visual evidence remains readable through this field. New records
+ * mark it as retired and carry the deterministic readiness receipt that
+ * replaced browser capture; visual evidence is not a readiness authority.
+ */
+export type AppBuilderBrowserEvidence = Readonly<{
+  status: "pending" | "captured" | "unavailable" | "failed" | "retired";
+  captures: ReadonlyArray<Readonly<{
+    viewport: "desktop" | "mobile";
+    width: number;
+    height: number;
+    screenshotSha256: string;
+    mimeType: string;
+    byteLength: number;
+  }>>;
+  errorCode?: string;
+  legacyField?: true;
+  summary?: string;
+  replacement?: AppBuilderDeterministicReadinessEvidence;
+}>;
+
 export type AppBuilderVerification = Readonly<{
   id: string;
   tenantId: string;
@@ -96,18 +129,7 @@ export type AppBuilderVerification = Readonly<{
     durationMs: number;
     outputSha256: string;
   }>>;
-  browserEvidence: Readonly<{
-    status: "captured" | "unavailable" | "failed";
-    captures: ReadonlyArray<Readonly<{
-      viewport: "desktop" | "mobile";
-      width: number;
-      height: number;
-      screenshotSha256: string;
-      mimeType: string;
-      byteLength: number;
-    }>>;
-    errorCode?: string;
-  }>;
+  browserEvidence: AppBuilderBrowserEvidence;
   createdAt: string;
 }>;
 
@@ -288,10 +310,7 @@ export type AppBuilderDeployment = Readonly<{
       errorCode?: string;
     }>>;
   }>;
-  browserEvidence: AppBuilderVerification["browserEvidence"] | Readonly<{
-    status: "pending";
-    captures: readonly [];
-  }>;
+  browserEvidence: AppBuilderBrowserEvidence;
   failureCode?: string;
   createdAt: string;
   updatedAt: string;

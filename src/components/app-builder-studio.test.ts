@@ -16,4 +16,13 @@ describe("App Builder live preview recovery", () => {
       'if (command === "start_preview") await loadSession();',
     );
   });
+
+  it("describes deterministic readiness without presenting legacy browser evidence as a gate", () => {
+    expect(source).toContain("Build logs and static route smokes must both pass");
+    expect(source).toContain("Readiness receipt");
+    expect(source).toContain("retired from readiness");
+    expect(source).not.toContain("Checks + visual evidence passed");
+    expect(source).not.toContain("desktop/mobile captures must all resolve");
+    expect(source).not.toContain("Visual smoke");
+  });
 });

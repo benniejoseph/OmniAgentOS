@@ -8,11 +8,15 @@ import {
 } from "@/lib/app-builder/contracts";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import {
+  createPendingBuilderReadinessEvidence,
+  normalizeBuilderBrowserEvidence,
+} from "@/lib/app-builder/verification";
 
 type BuilderOwner = Readonly<{ tenantId: string; actorId: string }>;
 const pendingLogs: AppBuilderDeployment["logs"] = { status: "pending", eventCount: 0 };
 const pendingRoutes: AppBuilderDeployment["routeEvidence"] = { status: "pending", routes: [] };
-const pendingBrowser: AppBuilderDeployment["browserEvidence"] = { status: "pending", captures: [] };
+const pendingBrowser = createPendingBuilderReadinessEvidence("release");
 
 export async function listBuilderReleases(sessionId: string, owner: BuilderOwner, limit = 20) {
   requireDatabase();
@@ -222,7 +226,7 @@ function releaseFromRow(row: Record<string, unknown>): AppBuilderRelease {
     providerState: optionalString(row.provider_state), deploymentUrl: optionalString(row.deployment_url),
     logs: asRecord(row.logs) as AppBuilderRelease["logs"],
     routeEvidence: asRecord(row.route_evidence) as AppBuilderRelease["routeEvidence"],
-    browserEvidence: asRecord(row.browser_evidence) as AppBuilderRelease["browserEvidence"],
+    browserEvidence: normalizeBuilderBrowserEvidence(row.browser_evidence),
     failureCode: optionalString(row.failure_code), createdAt: dateValue(row.created_at), updatedAt: dateValue(row.updated_at),
     expiresAt: dateValue(row.expires_at), releasedAt: row.released_at ? dateValue(row.released_at) : undefined,
   };

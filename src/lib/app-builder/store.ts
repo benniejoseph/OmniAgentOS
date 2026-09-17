@@ -15,6 +15,7 @@ import {
 } from "@/lib/app-builder/contracts";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
+import { normalizeBuilderBrowserEvidence } from "@/lib/app-builder/verification";
 
 type BuilderOwner = Readonly<{ tenantId: string; actorId: string }>;
 
@@ -549,23 +550,7 @@ function asVerificationChecks(value: unknown): AppBuilderVerification["checks"] 
 }
 
 function asBrowserEvidence(value: unknown): AppBuilderVerification["browserEvidence"] {
-  const record = asRecord(value);
-  const captures = Array.isArray(record.captures) ? record.captures.map((item) => {
-    const capture = asRecord(item);
-    return Object.freeze({
-      viewport: String(capture.viewport) as "desktop" | "mobile",
-      width: Number(capture.width),
-      height: Number(capture.height),
-      screenshotSha256: String(capture.screenshotSha256),
-      mimeType: String(capture.mimeType),
-      byteLength: Number(capture.byteLength),
-    });
-  }) : [];
-  return Object.freeze({
-    status: String(record.status) as AppBuilderVerification["browserEvidence"]["status"],
-    captures,
-    ...(typeof record.errorCode === "string" ? { errorCode: record.errorCode } : {}),
-  });
+  return normalizeBuilderBrowserEvidence(value);
 }
 
 function requireBuilderDatabase() {

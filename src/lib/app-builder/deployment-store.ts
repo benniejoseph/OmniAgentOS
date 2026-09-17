@@ -6,12 +6,16 @@ import {
   type AppBuilderDeployment,
 } from "@/lib/app-builder/contracts";
 import { ensureDatabaseSchema, getSql, hasDatabaseUrl } from "@/lib/db/client";
+import {
+  createPendingBuilderReadinessEvidence,
+  normalizeBuilderBrowserEvidence,
+} from "@/lib/app-builder/verification";
 
 type BuilderOwner = Readonly<{ tenantId: string; actorId: string }>;
 
 const pendingLogs: AppBuilderDeployment["logs"] = { status: "pending", eventCount: 0 };
 const pendingRoutes: AppBuilderDeployment["routeEvidence"] = { status: "pending", routes: [] };
-const pendingBrowser: AppBuilderDeployment["browserEvidence"] = { status: "pending", captures: [] };
+const pendingBrowser = createPendingBuilderReadinessEvidence("preview");
 
 export async function listBuilderDeployments(sessionId: string, owner: BuilderOwner, limit = 20) {
   requireDatabase();
@@ -227,13 +231,7 @@ function asRouteEvidence(value: unknown): AppBuilderDeployment["routeEvidence"] 
 }
 
 function asBrowserEvidence(value: unknown): AppBuilderDeployment["browserEvidence"] {
-  const record = asRecord(value);
-  const status = String(record.status || "pending") as AppBuilderDeployment["browserEvidence"]["status"];
-  return {
-    status,
-    captures: Array.isArray(record.captures) ? record.captures as never : [],
-    ...(typeof record.errorCode === "string" ? { errorCode: record.errorCode } : {}),
-  } as AppBuilderDeployment["browserEvidence"];
+  return normalizeBuilderBrowserEvidence(value);
 }
 
 function asRecord(value: unknown) {
