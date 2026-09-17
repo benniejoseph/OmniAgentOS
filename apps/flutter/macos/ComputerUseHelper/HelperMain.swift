@@ -346,7 +346,7 @@ private final class ComputerUseExecutor {
     let title = stringAttribute(element, kAXTitleAttribute as String)
       ?? stringAttribute(element, kAXDescriptionAttribute as String)
       ?? stringAttribute(element, kAXHelpAttribute as String)
-    let value = secure ? "[secure]" : safeValue(element, role: role)
+    let value = secure ? "[secure]" : safeValue(element)
     var attributes = ["id=\(identifier)", "role=\(bounded(role, limit: 80))"]
     if let subrole { attributes.append("subrole=\(bounded(subrole, limit: 80))") }
     if let title, !title.isEmpty { attributes.append("label=\(quoted(title))") }
@@ -598,8 +598,7 @@ private final class ComputerUseExecutor {
     return (value as! AXUIElement)
   }
 
-  private func safeValue(_ element: AXUIElement, role: String) -> String? {
-    if role.localizedCaseInsensitiveContains("text") { return nil }
+  private func safeValue(_ element: AXUIElement) -> String? {
     if let value = copyAttribute(element, kAXValueAttribute as String) as? String {
       return bounded(value, limit: 240)
     }

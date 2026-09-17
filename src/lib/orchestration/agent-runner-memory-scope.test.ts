@@ -430,6 +430,24 @@ describe("agent memory scope", () => {
     }));
   });
 
+  it("keeps one-turn This Mac evidence with the assigned agent", async () => {
+    const scopedRequest = request("session");
+    scopedRequest.computerUseTarget = "local_macos";
+    scopedRequest.specialistIds = ["sentinel"];
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(mocks.runCouncilRound).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "status",
+      label: "This Mac evidence isolated",
+    }));
+    expect(events).not.toContainEqual(expect.objectContaining({
+      type: "council_verdict",
+      status: "revised",
+    }));
+  });
+
   it("revalidates standing consent and isolates automatic personal context", async () => {
     const authority = buildPersonalContextConsentAuthorityV1({
       tenantId: privateOwnerContext.tenantId,

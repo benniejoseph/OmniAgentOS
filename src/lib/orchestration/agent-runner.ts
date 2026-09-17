@@ -1335,7 +1335,14 @@ export async function* runAgent(
     const councilAgentIds = [...new Set([primaryAgentId, ...(request.specialistIds || []).map(asCouncilAgentId)])];
     const councilRequested = hasModelProviderFeature("json_schema", "reasoning") &&
       councilAgentIds.length > 1;
-    const councilActive = councilRequested && !isolatedMemoryContext;
+    // Local Mac observations are deliberately disclosed to the assigned agent
+    // for one provider turn and are never added to durable council context.
+    // A sibling critic therefore cannot independently inspect the evidence and
+    // must not rewrite a completed Computer Use result as "unverified" after
+    // the native commands have succeeded.
+    const councilActive = councilRequested &&
+      !isolatedMemoryContext &&
+      !localComputerUseRequested;
     reserveBudget({
       agents: councilActive ? councilAgentIds.length : 1,
       fanOut: councilActive ? Math.max(0, councilAgentIds.length - 1) : 0,
@@ -1353,6 +1360,14 @@ export async function* runAgent(
           : personalPromptMemoryAccessScope
             ? "Personal memory stays with the assigned agent; tools and sibling council delegation are disabled for this run."
             : "Private memory stays with the assigned agent; sibling council delegation is disabled for this run.",
+      });
+    }
+    if (councilRequested && localComputerUseRequested) {
+      yield await emit({
+        type: "status",
+        label: "This Mac evidence isolated",
+        detail:
+          "The assigned agent receives each local observation once; sibling review cannot see or rewrite private screen evidence.",
       });
     }
     const councilCheckpointHooks: CouncilCheckpointHooks =
