@@ -259,10 +259,19 @@ terminate the helper and cancel pending work.
 
 The local screenshot and Accessibility snapshot are treated as untrusted, bounded
 one-turn model input. They may transit the command row while the governed call waits,
-then are stripped; tool ledgers, canonical conversations, approval continuations,
-and typed events retain only public metadata and digests. Source implementation does
-not by itself establish migration publication, signed installation, TCC grants, or a
-real installed-Mac canary.
+then are stripped; after consumption, command rows, tool ledgers, canonical
+conversations, approval continuations, and typed events retain only public metadata
+and digests. Local observations stay with the assigned agent for that turn; sibling
+council execution is skipped because those siblings cannot inspect the private
+evidence and must not rewrite a verified result. Bounded string values from non-secure
+Accessibility elements are readable, while secure elements remain redacted and
+Secure Event Input remains refused.
+
+Migration 179 and native v11 are production-published at exact revision
+`7a4bd41d0c42abad8f8da0911258ac341e2318f3`. Asael `1.6.1` build `8` is
+installed with both TCC permissions granted and its broker online. The exact
+owner-Mac activation/read canary and package evidence are recorded in the
+[Computer Use target decision](computer-use-migration.md).
 
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped

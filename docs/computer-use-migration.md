@@ -1,6 +1,6 @@
 # Computer Use targets
 
-Status: additive dual-target implementation; release proof pending · 2026-09-17
+Status: production-published and owner-Mac canary-proven · 2026-09-17
 
 ## Decision
 
@@ -59,9 +59,12 @@ Expired uncertain mutations are not replayed.
 
 Screen and Accessibility observations are bounded, untrusted, one-turn model
 input. They may exist briefly in the command row while the requesting executor
-is waiting, but the consumer strips them immediately; tool records,
-conversations, approval continuations, and typed events retain only bounded
-public metadata and digests.
+is waiting, but the consumer strips them immediately; after consumption,
+command rows, tool records, conversations, approval continuations, and typed
+events retain only bounded public metadata and digests. A `local_macos` run does
+not fan the private observation out to sibling council members. The assigned
+agent reports on the evidence it actually received rather than allowing an
+evidence-blind sibling to replace that completed result with an unverified one.
 
 Only the primary Flutter engine claims commands. Auxiliary workspace windows
 may display status and stop local control, but cannot race the primary window
@@ -117,22 +120,31 @@ stop. Permission loss makes the short device lease ineligible immediately, so
 the Mac cannot claim another command; any already queued work expires without
 execution.
 
-## Release gate
+## Owner-Mac release evidence
 
-The source implementation is additive and reversible. It is not a production
-or installed-Mac proof by itself. Complete these steps in order:
+The additive first slice is published and installed for the private owner-Mac
+scope:
 
-1. apply schema migration 179 and publish native contract v11 plus the courier
-   routes;
-2. build and strictly verify the host and embedded helper with stable signing;
-3. install that exact build and grant Accessibility and Screen Recording to the
-   helper when macOS prompts;
-4. prove status, observation, app activation, approval pause/resume, one bounded
-   input action, stale-observation refusal, secure-input refusal, stop, timeout,
-   reconnect, and idempotent completion on the owner's Mac; and
-5. confirm that local failures never switch to the isolated browser and that
-   neither local observation bytes nor credentials enter durable tool/event
-   projections.
+1. migration 179 is installed and production advertises native contract v11
+   with frozen v10 compatibility;
+2. commit `7a4bd41d0c42abad8f8da0911258ac341e2318f3` is live at the
+   canonical origin through Vercel deployment
+   `dpl_64Hw4o58FyC1hfB645oo2J6mXGeB`;
+3. Asael `1.6.1` build `8` is installed with the separately signed helper. The
+   private package is
+   `apps/flutter/build/distribution/macos/Asael-1.6.1-8-macOS.dmg`, SHA-256
+   `f1df4fc12ee31ecf112df004fdddf0db700b9fadff3fcc1c66b419b6c09568dd`;
+4. Accessibility and Screen Recording both report granted, and the local
+   command broker reports online; and
+5. live run `bc9b0b06-4af3-4de0-b86f-481f724444dc` explicitly selected
+   **This Mac**, activated TextEdit, and read the exact synthetic phrase
+   `ASAEL INSTALLED MAC CANARY 179`. It made no edit. Post-run inspection found
+   no observation payload in durable rows.
 
-Until those checks pass, documentation must describe **This Mac** as implemented
-in source but not deployed, installed, or canary-proven.
+The release fix keeps that one-turn local evidence with the assigned agent and
+bypasses evidence-blind sibling council rewriting for the local run. The helper
+also exposes bounded string values from non-secure Accessibility elements, which
+made the synthetic TextEdit content readable. Secure elements remain redacted,
+and Secure Event Input still fails closed. This live canary is deliberately a
+read-only activation and observation proof; it does not claim that this run
+performed a risk-two edit.

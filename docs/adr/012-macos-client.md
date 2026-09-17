@@ -188,6 +188,8 @@ intent quarantine, audit history, and server canonical state survive a client ro
 - Xcode and owner-Mac private signing are proven; Apple Developer signing, APNs, and
   notarization remain external distribution prerequisites rather than reasons to
   fork the product architecture.
-- Source availability of the native-v11 courier and helper does not prove deployment,
-  installation, TCC grants, or a real local-action canary; those remain separate
-  release evidence.
+- Native v11, migration 179, stable-signed installation, TCC grants, and the bounded
+  owner-Mac activation/read canary are proven for Asael `1.6.1` build `8`; exact
+  release and run evidence is retained in the
+  [Computer Use target decision](../computer-use-migration.md). That read-only
+  canary does not imply a consequential edit occurred.

@@ -1222,15 +1222,15 @@ build. Phase 13 is now active as the private macOS client sequence.
 | P13.4 | Add offline cache and state reconciliation. | Reuse native contract/events. | Server remains authoritative; conflicts are visible and recoverable. | macOS, mobile, and web converge on identical work, memory, approval, and run state after reconnect. |
 
 **Current status:** P13.1 and P13.4 are implemented for the private owner-Mac
-product, and P13.2 is code-complete. The prior P13.3 status described only the
-remote Playwright browser and therefore did not satisfy installed-Mac Computer
-Use. The real local implementation now exists in source, but its publication,
-signed installation, TCC grants, and installed-Mac canary remain open release
-evidence.
+product, P13.2 is code-complete, and the bounded P13.3 first slice is production-
+published, installed, permissioned, and owner-Mac canary-proven. The earlier P13.3
+status described only the remote Playwright browser and did not satisfy installed-
+Mac Computer Use; the explicit **This Mac** path now does.
 
 ADR 012 selects the shared Flutter client with a deliberately thin AppKit host,
 and migration 178 enrolls `macos` without adding a second backend. Production
-native contract v10 publishes the exact actor/run remote Computer Use frame read.
+native contract v11 retains frozen v10 and publishes both the exact actor/run
+remote Computer Use frame read and the macOS-only local device courier.
 The host provides persistent menu-bar and multi-window lifecycle, Today, Command,
 Quick Entry, Capture, and Inbox commands, configurable global shortcuts, a bounded
 editable prompt queue, and a richer artifact/file preview and save rail. A
@@ -1260,32 +1260,40 @@ actor/run-scoped Fly Playwright runtime. The local target resolves the same
 tenant-configured `computer_use` model but exposes only the governed
 `local.macos.*` action allowlist.
 
-Source migration 179 adds forced-RLS device, session, and command-routing ledgers,
-and source native contract v11 retains frozen v10 while adding macOS-only device
-readiness, claim, idempotent completion, and stop. The Flutter client keeps the
-native bearer and only its primary window engine may claim an exact governed
-command. A separately signed helper under `Contents/Helpers` is spawned over
-child-only pipes with no credential or server interface. It uses ScreenCaptureKit,
-Accessibility, `NSWorkspace`, and Quartz for bounded observation, app activation,
-press, click, type, key, and scroll. Terminal applications, System Settings,
-secure fields, Secure Event Input, shell, arbitrary AppleScript, general filesystem,
-Apple Events, and unbounded input are refused. Risk-two effects remain approval-
-gated, stale observations fail closed, one-turn visual/Accessibility data is stripped
-from durable ledgers, and a ready/active menu-bar indicator provides immediate stop.
+Installed migration 179 adds forced-RLS device, session, and command-routing
+ledgers. The Flutter client keeps the native bearer and only its primary window
+engine may claim an exact governed command. A separately signed helper under
+`Contents/Helpers` is spawned over child-only pipes with no credential or server
+interface. It uses ScreenCaptureKit, Accessibility, `NSWorkspace`, and Quartz for
+bounded observation, app activation, press, click, type, key, and scroll. Terminal
+applications, System Settings, secure fields, Secure Event Input, shell, arbitrary
+AppleScript, general filesystem, Apple Events, and unbounded input are refused.
+Risk-two effects remain approval-gated, stale observations fail closed, one-turn
+visual/Accessibility data is stripped from durable ledgers, and a ready/active
+menu-bar indicator provides immediate stop.
 
-P13.3 remains release-open until migration 179 and v11 are published, the stable-
-signed host/helper build is installed, the owner grants Accessibility and Screen
-Recording, and focused local action, approval, stop, timeout, reconnect, secure/
-stale refusal, and no-fallback canaries pass. No production deployment or installed
-canary is inferred from the source implementation.
+The final release fix at commit
+`7a4bd41d0c42abad8f8da0911258ac341e2318f3` makes bounded non-secure
+Accessibility string values available to the assigned agent while secure elements
+remain protected. A **This Mac** run keeps that private observation with the
+assigned agent for one turn and bypasses evidence-blind sibling council rewriting.
+Vercel deployment `dpl_64Hw4o58FyC1hfB645oo2J6mXGeB` is canonical at that exact
+revision. Asael `1.6.1` build `8` is installed from
+`apps/flutter/build/distribution/macos/Asael-1.6.1-8-macOS.dmg`, SHA-256
+`f1df4fc12ee31ecf112df004fdddf0db700b9fadff3fcc1c66b419b6c09568dd`.
+Accessibility and Screen Recording are granted and the local command broker is
+online. Live run `bc9b0b06-4af3-4de0-b86f-481f724444dc` selected **This Mac**,
+activated TextEdit, read `ASAEL INSTALLED MAC CANARY 179` exactly, and made no
+edit; post-run inspection found no observation payload in durable rows. This is a
+read-only activation/observation proof, not a claim that the run performed a risk-
+two edit.
 
 P13.4 now stores encrypted actor/tenant-bound offline projections, exposes
 freshness and stale state, preserves the user's conflicting edit for recovery,
 and performs one bounded full reconciliation when connectivity, focus, or the
-authenticated principal changes. Server truth remains authoritative. Xcode 27
-on macOS 27 built the prior owner release; production still serves native v10,
-and Asael `1.5.0` build `6` is the last installed release proof. That release has
-remote isolated-browser Computer Use only, not the new **This Mac** helper.
+authenticated principal changes. Server truth remains authoritative. Xcode 27 on
+macOS 27 built the current owner release; production serves native v11 and Asael
+`1.6.1` build `8` is the installed release proof with the **This Mac** helper.
 
 **Phase gate:** native clients are alternate interaction surfaces for one core—not independent products with divergent truth or policy.
 
@@ -3284,4 +3292,4 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1 and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. P13.3 installed-Mac Computer Use is implemented in source but remains open for migration 179/v11 publication, stable-signed packaging and installation, Accessibility and Screen Recording grants, and the focused installed-Mac canary. Developer ID/notarized distribution is outside the private-install scope.
+- [ ] **Phase 13 — macOS application:** P13.1 and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. The bounded P13.3 installed-Mac Computer Use first slice is complete: migration 179 and native v11 are live, Asael `1.6.1` build `8` is installed with Accessibility and Screen Recording granted, the broker is online, and the focused read-only installed-Mac canary passed without retaining observations in durable rows. Developer ID/notarized distribution is outside the private-install scope.

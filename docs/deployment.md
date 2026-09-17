@@ -109,13 +109,13 @@ The installed-Mac P13.3 slice additionally requires
 `20260917110000_p13_3_local_computer_runtime.sql` (internal schema version 179)
 before publishing native contract v11 or enabling **This Mac**. It installs
 actor-scoped forced-RLS device, session, and command routing tables; it stores no
-helper credential and grants no action-creation API to the native client. Contract
-v11 is current in source and retains frozen v10 as the supported previous version.
-Its four courier capabilities are macOS-only and have an independent v11 minimum.
-Publish migration 179 and the server contract/routes before distributing the v11
-macOS binary. Source availability does not mean production discovery already
-advertises v11. Vercel does not distribute or sign the binary, and this slice does
-not require a Fly worker or Playwright-service release.
+helper credential and grants no action-creation API to the native client. Migration
+179 is installed in production. Contract v11 is the production current contract and
+retains frozen v10 as the supported previous version; its four courier capabilities
+are macOS-only and have an independent v11 minimum. The canonical origin serves
+exact revision `7a4bd41d0c42abad8f8da0911258ac341e2318f3` through Vercel
+deployment `dpl_64Hw4o58FyC1hfB645oo2J6mXGeB`. Vercel does not distribute or
+sign the binary, and this slice required no Fly worker or Playwright-service release.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
@@ -147,13 +147,24 @@ stripped environment and no bearer, Keychain, App Group, connector, HTTP, shell,
 filesystem, or Apple Events interface. Stable signing is required because changing
 the helper's code identity can invalidate macOS TCC grants.
 
-After installing that exact build, open Asael Settings → Local Computer Use,
-choose **Grant macOS access**, complete the Accessibility and
-Screen Recording prompts, then explicitly enable **This Mac**. Confirm the persistent
-menu-bar indicator and its immediate stop action before running a local canary. Do not
-claim a completed release until an installed build proves permission denial, bounded
-observation, an approval-gated action, stale/secure-input refusal, idempotent
-completion, timeout/stop, reconnect, and no fallback to the isolated browser.
+For each installed build, open Asael Settings → Local Computer Use, choose
+**Grant macOS access**, complete the Accessibility and Screen Recording prompts,
+then explicitly enable **This Mac**. Confirm the persistent menu-bar indicator and
+its immediate stop action before running a local canary. Record the exact app build,
+package digest, server revision, target, run identity, action scope, and durable-data
+inspection; do not infer a consequential-action proof from a read-only canary.
+
+The current private owner-Mac proof installed Asael `1.6.1` build `8` from
+`apps/flutter/build/distribution/macos/Asael-1.6.1-8-macOS.dmg` (SHA-256
+`f1df4fc12ee31ecf112df004fdddf0db700b9fadff3fcc1c66b419b6c09568dd`).
+Accessibility and Screen Recording report granted and the command broker reports
+online. Live run `bc9b0b06-4af3-4de0-b86f-481f724444dc` selected **This Mac**,
+activated TextEdit, and read `ASAEL INSTALLED MAC CANARY 179` exactly without
+editing it. Post-run inspection found no observation payload in durable rows. The
+release keeps local observations within the assigned agent's one-turn evidence,
+without evidence-blind sibling council rewriting, and exposes bounded non-secure
+Accessibility text while retaining secure-field redaction and Secure Event Input
+refusal.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
