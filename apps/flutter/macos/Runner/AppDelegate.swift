@@ -2075,9 +2075,7 @@ private final class AsaelWorkspaceWindowController: NSWindowController, NSWindow
     window.title = "Asael Workspace"
     window.minSize = NSSize(width: 860, height: 620)
     window.contentViewController = flutterViewController
-    window.isReleasedWhenClosed = false
-    window.tabbingMode = .preferred
-    window.collectionBehavior.insert(.fullScreenPrimary)
+    configureAsaelWindowChrome(window, role: .workspace)
 
     super.init(window: window)
     window.delegate = self

@@ -3,8 +3,10 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/auth/native_client_info.dart';
 import '../brand/asael_mark.dart';
+import '../platform/macos_presentation.dart';
 import '../theme/daybook_backdrop.dart';
 import 'app_destination.dart';
+import 'macos_workspace_shell.dart';
 
 class AdaptiveShell extends StatelessWidget {
   const AdaptiveShell({super.key, required this.navigationShell});
@@ -34,6 +36,12 @@ class AdaptiveShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (usesMacosPresentation()) {
+      return MacosWorkspaceShell(
+        navigationShell: navigationShell,
+        onSelect: _select,
+      );
+    }
     final width = MediaQuery.sizeOf(context).width;
     return width < 840 ? _phone(context) : _wide(context, width);
   }

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'router/app_router.dart';
 import 'theme/app_theme.dart';
+import 'theme/macos_app_theme.dart';
 import '../core/platform/desktop_host_bridge.dart';
 import '../core/sync/reconnect_coordinator.dart';
 import '../features/auth/application/session_controller.dart';
@@ -99,13 +100,18 @@ class _AsaelAppState extends ConsumerState<AsaelApp>
     _desktopHostBridge.attachSharedCaptureHandler(
       captureController.owner == null ? null : _handleSharedCapture,
     );
+    final useMacosTheme = MacosAppTheme.shouldUse();
     return MaterialApp.router(
       title: 'Asael',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
-      highContrastTheme: AppTheme.light(highContrast: true),
-      highContrastDarkTheme: AppTheme.dark(highContrast: true),
+      theme: useMacosTheme ? MacosAppTheme.light() : AppTheme.light(),
+      darkTheme: useMacosTheme ? MacosAppTheme.dark() : AppTheme.dark(),
+      highContrastTheme: useMacosTheme
+          ? MacosAppTheme.light(highContrast: true)
+          : AppTheme.light(highContrast: true),
+      highContrastDarkTheme: useMacosTheme
+          ? MacosAppTheme.dark(highContrast: true)
+          : AppTheme.dark(highContrast: true),
       themeMode: ThemeMode.system,
       routerConfig: router,
       builder: (context, child) => _LocalComputerStatusLayer(

@@ -1,6 +1,30 @@
 import Cocoa
 import FlutterMacOS
 
+enum AsaelWindowRole {
+  case main
+  case workspace
+}
+
+/// Applies the native chrome shared by every full Asael workspace window.
+///
+/// Keep the standard titled-window controls and titlebar hit testing intact.
+/// Flutter does not yet provide a draggable region or titlebar safe-area, so
+/// content must not extend underneath this transparent system titlebar.
+func configureAsaelWindowChrome(_ window: NSWindow, role: AsaelWindowRole) {
+  window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
+  window.styleMask.remove(.fullSizeContentView)
+  window.titleVisibility = .hidden
+  window.titlebarAppearsTransparent = true
+  window.toolbarStyle = .unifiedCompact
+  window.backgroundColor = .windowBackgroundColor
+  window.isOpaque = true
+  window.hasShadow = true
+  window.isReleasedWhenClosed = false
+  window.tabbingMode = role == .main ? .disallowed : .preferred
+  window.collectionBehavior.insert(.fullScreenPrimary)
+}
+
 class MainFlutterWindow: NSWindow {
   private static let desktopChannelName = "app.omniagent.omniagent/desktop"
   private static let localComputerChannelName = "app.omniagent.omniagent/local-computer"
@@ -42,9 +66,6 @@ class MainFlutterWindow: NSWindow {
     setContentSize(NSSize(width: 1_360, height: 860))
     center()
 
-    isReleasedWhenClosed = false
-    tabbingMode = .disallowed
-    collectionBehavior.insert(.fullScreenPrimary)
-    styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable])
+    configureAsaelWindowChrome(self, role: .main)
   }
 }
