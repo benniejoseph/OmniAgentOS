@@ -391,12 +391,13 @@ packages:
     source: hosted
     version: "10.3.1"
   flutter_secure_storage_darwin:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: flutter_secure_storage_darwin
-      sha256: "82329fa5cdf343773b1b6897dea959105a29f092454259edff92f9f6637e8149"
-      url: "https://pub.dev"
-    source: hosted
+      path: flutter_secure_storage_darwin
+      ref: "8d1209c9debd56b176a2efe99c308ba47d2b56e8"
+      resolved-ref: "8d1209c9debd56b176a2efe99c308ba47d2b56e8"
+      url: "https://github.com/juliansteenbakker/flutter_secure_storage.git"
+    source: git
     version: "0.3.2"
   flutter_secure_storage_linux:
     dependency: transitive

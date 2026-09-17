@@ -32,6 +32,16 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+# Keep this pin until flutter_secure_storage publishes the macOS fix from
+# upstream commit 8d1209c. Without it, private-signed builds issue an invalid
+# synchronizable Keychain probe even when the data-protection Keychain is off.
+dependency_overrides:
+  flutter_secure_storage_darwin:
+    git:
+      url: https://github.com/juliansteenbakker/flutter_secure_storage.git
+      ref: 8d1209c9debd56b176a2efe99c308ba47d2b56e8
+      path: flutter_secure_storage_darwin
+
 flutter:
   uses-material-design: true
   assets:
