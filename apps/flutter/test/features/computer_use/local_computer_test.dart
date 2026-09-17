@@ -321,6 +321,72 @@ void main() {
     },
   );
 
+  test(
+    'an open URL stages its explicitly requested post-navigation screenshot',
+    () async {
+      final repository = _FakeRepository(
+        command: _claim(
+          action: 'open_url',
+          input: {
+            'browser': 'chrome',
+            'url': 'https://in.tradingview.com/chart/example',
+            'loadWaitSeconds': 8,
+          },
+          presentScreenshot: true,
+        ),
+      );
+      final host = _FakeHost(
+        result: LocalComputerCommandResult(
+          outcome: LocalComputerOutcome.succeeded,
+          summary: 'Opened the requested page in Google Chrome.',
+          observation: {
+            'snapshotRevision': 'b' * 64,
+            'frontmostApplication': {
+              'name': 'Google Chrome',
+              'bundleId': 'com.google.Chrome',
+              'pid': 456,
+            },
+            'screenshot': {
+              'mimeType': 'image/png',
+              'dataBase64': base64Encode(const [
+                0x89,
+                0x50,
+                0x4e,
+                0x47,
+                0x0d,
+                0x0a,
+                0x1a,
+                0x0a,
+              ]),
+            },
+          },
+        ),
+      );
+      final coordinator = LocalComputerCoordinator(
+        repository: repository,
+        host: host,
+        windowContext: const LocalComputerWindowContext(
+          role: LocalComputerWindowRole.primary,
+        ),
+        authenticated: true,
+        idleRefreshInterval: const Duration(milliseconds: 1),
+        heartbeatInterval: const Duration(milliseconds: 20),
+        failureRetryInterval: const Duration(milliseconds: 1),
+      );
+      addTearDown(coordinator.dispose);
+
+      await repository.completed.future.timeout(const Duration(seconds: 2));
+
+      final preview = coordinator.takePreview(
+        'run-local',
+        'run-local:execution-local',
+      );
+      expect(preview?.applicationName, 'Google Chrome');
+      expect(preview?.mediaType, 'image/png');
+      expect(preview?.bytes, hasLength(8));
+    },
+  );
+
   test('an unconsumed screenshot is erased at its hard expiry', () async {
     final repository = _FakeRepository(
       command: _claim(presentScreenshot: true),
@@ -557,14 +623,16 @@ class _NoopTalkRepository implements TalkRepository {
 LocalComputerClaim _claim({
   int claimGeneration = 1,
   bool presentScreenshot = false,
+  String action = 'observe',
+  Map<String, Object?> input = const {'includeScreenshot': false},
   Duration expiresAfter = const Duration(minutes: 1),
 }) => LocalComputerClaim.fromJson({
   'schemaVersion': localComputerProtocolVersion,
   'id': _commandId,
   'runId': 'run-local',
   'executionId': 'run-local:execution-local',
-  'action': 'observe',
-  'input': {'includeScreenshot': false},
+  'action': action,
+  'input': input,
   'presentScreenshot': presentScreenshot,
   'claimToken': _claimToken,
   'claimGeneration': claimGeneration,

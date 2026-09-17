@@ -116,14 +116,18 @@ describe("local computer protocol", () => {
         browser: "chrome",
         url: "https://in.tradingview.com/chart/example?symbol=OANDA%3AXAUUSD",
         loadWaitSeconds: 3,
+        presentScreenshot: true,
       },
-      presentScreenshot: false,
+      presentScreenshot: true,
       claimToken: "claim-token-that-is-long-enough-123456",
       claimGeneration: 1,
       expiresAt: "2026-09-17T08:00:30.000Z",
     } as const;
 
-    expect(localComputerCommandSchema.safeParse(command).success).toBe(true);
+    expect(localComputerCommandSchema.parse(command)).toMatchObject({
+      input: { presentScreenshot: true },
+      presentScreenshot: true,
+    });
     for (const input of [
       { ...command.input, browser: "terminal" },
       { ...command.input, url: "file:///etc/passwd" },

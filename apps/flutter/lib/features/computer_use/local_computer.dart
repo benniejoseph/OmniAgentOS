@@ -771,7 +771,7 @@ class LocalComputerCoordinator extends ChangeNotifier
     LocalComputerCommandResult result,
   ) {
     if (!claim.presentScreenshot ||
-        claim.action != 'observe' ||
+        (claim.action != 'observe' && claim.action != 'open_url') ||
         result.outcome != LocalComputerOutcome.succeeded) {
       return;
     }

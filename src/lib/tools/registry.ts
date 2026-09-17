@@ -847,7 +847,7 @@ function localMacComputerTools(): ToolDefinition[] {
       id: "local.macos.open_url",
       name: "Open a Web Page on This Mac",
       description:
-        "Open one absolute HTTP or HTTPS URL in an allowlisted browser on the explicitly selected installed Mac. This launches or activates the browser, waits for a short bounded settling period, and returns a fresh observation plus a closed effectVerdict; it does not claim that the page finished loading. URL credentials, arbitrary schemes, Terminal, and System Settings are refused.",
+        "Open one absolute HTTP or HTTPS URL in an allowlisted browser on the explicitly selected installed Mac. This launches or activates the browser, waits for a short bounded settling period, and returns a fresh observation plus a closed effectVerdict; it does not claim that the page finished loading. Set presentScreenshot only when the user explicitly asks to see the fresh post-navigation screenshot; the installed app then offers a short-lived in-memory preview without adding it to run history. URL credentials, arbitrary schemes, Terminal, and System Settings are refused.",
       riskLevel: 2,
       approvalRequired: true,
       operationClass: "mutation",
@@ -873,6 +873,12 @@ function localMacComputerTools(): ToolDefinition[] {
           default: 3,
           description:
             "A bounded delay before Asael takes the fresh post-navigation observation. This is not a page-load guarantee.",
+        },
+        presentScreenshot: {
+          type: "boolean",
+          default: false,
+          description:
+            "Show the fresh post-navigation screenshot to the user as a temporary private preview. Use only for an explicit request to see it.",
         },
       },
       required: ["browser", "url"],

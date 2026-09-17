@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   ensureDatabaseSchema: vi.fn(async () => undefined),
   getSql: vi.fn(),
   appendScopedDomainEvent: vi.fn(async () => ({ id: "event" })),
+  getToolExecution: vi.fn(),
+  openToolExecutionInput: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -18,11 +20,14 @@ vi.mock("@/lib/events/store", () => ({
   appendScopedDomainEvent: mocks.appendScopedDomainEvent,
 }));
 vi.mock("@/lib/tools/audit-store", () => ({
-  getToolExecution: vi.fn(),
-  openToolExecutionInput: vi.fn(),
+  getToolExecution: mocks.getToolExecution,
+  openToolExecutionInput: mocks.openToolExecutionInput,
 }));
 
-import { executeLocalComputerCommand } from "@/lib/local-computer/store";
+import {
+  claimLocalComputerCommand,
+  executeLocalComputerCommand,
+} from "@/lib/local-computer/store";
 import { createExecutionScope } from "@/lib/security/execution-scope";
 import { canonicalJsonSha256 } from "@/lib/tools/effect-receipt";
 
@@ -228,6 +233,50 @@ describe("local Computer Use command binding", () => {
     );
   });
 
+  it("claims an open URL preview without forwarding preview policy to the helper", async () => {
+    const toolInput = {
+      browser: "chrome",
+      url: "https://in.tradingview.com/chart/example?symbol=OANDA%3AXAUUSD",
+      loadWaitSeconds: 8,
+      presentScreenshot: true,
+    };
+    const expiresAt = new Date(Date.now() + 30_000).toISOString();
+    const sql = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        id: `local_computer_command_${"b".repeat(48)}`,
+        run_id: "run-open-url-preview",
+        execution_id: "run-open-url-preview:execution-open-url",
+        action: "open_url",
+        input_sha256: canonicalJsonSha256(toolInput),
+        claim_generation: 1,
+        expires_at: expiresAt,
+      }]);
+    mocks.getSql.mockReturnValue(sql);
+    mocks.getToolExecution.mockResolvedValueOnce({
+      toolId: "local.macos.open_url",
+    });
+    mocks.openToolExecutionInput.mockReturnValueOnce(toolInput);
+
+    const claimed = await claimLocalComputerCommand(nativeSecurityContext());
+
+    expect(claimed).toMatchObject({
+      command: {
+        action: "open_url",
+        presentScreenshot: true,
+        input: {
+          browser: "chrome",
+          url: toolInput.url,
+          loadWaitSeconds: 8,
+        },
+      },
+      pollAfterMs: 0,
+    });
+    expect(claimed.command?.input).not.toHaveProperty("presentScreenshot");
+  });
+
   it("requires v13 for an exact screenshot-pixel click", async () => {
     const transactionSql = vi.fn().mockResolvedValueOnce([]);
     const sql = Object.assign(vi.fn(), {
@@ -317,6 +366,26 @@ function boundExecutionScope(runId: string) {
     correlationId: runId,
     purpose: "agent.run",
   });
+}
+
+function nativeSecurityContext() {
+  return {
+    tenantId: "tenant-binding-test",
+    actorId: "actor-binding-test",
+    role: "admin" as const,
+    source: "mobile" as const,
+    auth: {
+      userId: "user-binding-test",
+      email: "owner@example.test",
+      sessionId: "session-binding-test",
+      tenantName: "Example",
+    },
+    native: {
+      deviceId: "device-v13-0001",
+      platform: "macos" as const,
+      clientContractVersion: 13,
+    },
+  };
 }
 
 function sqlText(strings: unknown) {

@@ -379,7 +379,8 @@ export async function claimLocalComputerCommand(context: SecurityContext) {
         commandInput,
       ),
       presentScreenshot:
-        row.action === "observe" && commandInput.presentScreenshot === true,
+        (row.action === "observe" || row.action === "open_url") &&
+        commandInput.presentScreenshot === true,
       claimToken,
       claimGeneration: Number(row.claim_generation),
       expiresAt: dateText(row.expires_at),
@@ -392,7 +393,7 @@ function localComputerHelperInput(
   action: LocalComputerAction,
   input: Record<string, unknown>,
 ) {
-  if (action !== "observe") return input;
+  if (action !== "observe" && action !== "open_url") return input;
   const { presentScreenshot: _presentScreenshot, ...helperInput } = input;
   void _presentScreenshot;
   return helperInput;

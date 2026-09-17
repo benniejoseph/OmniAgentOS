@@ -195,6 +195,52 @@ describe("governed local Mac tools", () => {
     expect(mocks.executeLocalComputerCommand).not.toHaveBeenCalled();
   });
 
+  it("carries an explicit post-navigation preview request into the native command", async () => {
+    const executor = await import("@/lib/tools/executor");
+    const store = await import("@/lib/tools/audit-store");
+    const pending = await executor.executeGovernedTool({
+      toolId: "local.macos.open_url",
+      input: {
+        browser: "chrome",
+        url: "https://in.tradingview.com/chart/example?symbol=OANDA%3AXAUUSD",
+        loadWaitSeconds: 8,
+        presentScreenshot: true,
+      },
+      dryRun: false,
+      context: securityContext(),
+      executionScope: executionScope("open-url-preview"),
+      agentRunId: "run-local",
+      idempotencyKey: "local-mac-open-url-preview",
+    });
+    const claimToken = "local-mac-open-url-preview-claim";
+    const claim = await store.approveAndClaimToolExecution({
+      id: pending.record.id,
+      tenantId: "tenant-local",
+      approvedBy: "owner-local",
+      approvedRole: "admin",
+      claimToken,
+    });
+    const result = await executor.executeGovernedTool({
+      toolId: pending.record.toolId,
+      input: store.openToolExecutionInput(claim.record!),
+      dryRun: false,
+      approved: true,
+      context: securityContext(),
+      agentRunId: "run-local",
+      existingRecord: claim.record,
+      executionClaimToken: claimToken,
+    });
+
+    expect(result.record.status).toBe("executed");
+    expect(mocks.executeLocalComputerCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "open_url",
+        toolInput: expect.objectContaining({ presentScreenshot: true }),
+      }),
+    );
+    expect(result.record.output).not.toHaveProperty("observation");
+  });
+
   it("fails closed when an idempotent observe call tries to replay consumed evidence", async () => {
     const { executeGovernedTool } = await import("@/lib/tools/executor");
     const input = {

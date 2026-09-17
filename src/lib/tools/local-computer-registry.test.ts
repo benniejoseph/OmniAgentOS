@@ -32,6 +32,12 @@ describe("local Mac browser navigation registry", () => {
       maximum: 15,
       default: 3,
     });
+    expect(properties?.presentScreenshot).toMatchObject({
+      type: "boolean",
+      default: false,
+      description: expect.stringContaining("explicit request"),
+    });
+    expect(tool?.description).toContain("fresh post-navigation screenshot");
     expect(tool?.description).toContain("does not claim that the page finished loading");
   });
 

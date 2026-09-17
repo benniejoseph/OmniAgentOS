@@ -71,6 +71,7 @@ export const localComputerOpenUrlInputSchema = z.object({
       }
     }),
   loadWaitSeconds: z.number().int().min(0).max(15).optional(),
+  presentScreenshot: z.boolean().default(false),
 }).strict();
 
 export const localComputerClickInputSchema = z.union([
