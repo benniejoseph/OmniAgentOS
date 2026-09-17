@@ -31,7 +31,17 @@ describe("isolated browser runtime retirement migration", () => {
         `GRANT SELECT ON TABLE public.${table} TO omni_runtime`,
       );
     }
+    expect(migration).toContain(
+      "ON public.omni_browser_profiles FROM omni_runtime",
+    );
+    expect(migration).toContain(
+      "ON public.omni_browser_takeovers FROM omni_maintenance",
+    );
+    expect(migration).toContain("has_any_column_privilege(");
     expect(migration).toContain("Isolated browser runtime authority is still granted");
+    expect(migration).toContain(
+      "Isolated browser maintenance mutation authority is still granted",
+    );
   });
 
   it("disables known browser connectors and scrubs sealed credentials", () => {

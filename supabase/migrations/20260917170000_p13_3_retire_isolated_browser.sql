@@ -99,6 +99,13 @@ BEGIN
     REVOKE ALL ON TABLE public.omni_browser_profiles FROM omni_runtime;
     REVOKE ALL ON TABLE public.omni_browser_profile_bindings FROM omni_runtime;
     REVOKE ALL ON TABLE public.omni_browser_takeovers FROM omni_runtime;
+    REVOKE UPDATE (
+      name, allowed_domains, state, lifecycle_revision,
+      last_used_at, revoked_at, updated_at
+    ) ON public.omni_browser_profiles FROM omni_runtime;
+    REVOKE UPDATE (
+      state, action_count, last_action_at, released_at
+    ) ON public.omni_browser_takeovers FROM omni_runtime;
     GRANT SELECT ON TABLE public.omni_browser_profiles TO omni_runtime;
     GRANT SELECT ON TABLE public.omni_browser_profile_bindings TO omni_runtime;
     GRANT SELECT ON TABLE public.omni_browser_takeovers TO omni_runtime;
@@ -107,6 +114,8 @@ BEGIN
     REVOKE ALL ON TABLE public.omni_browser_profiles FROM omni_maintenance;
     REVOKE ALL ON TABLE public.omni_browser_profile_bindings FROM omni_maintenance;
     REVOKE ALL ON TABLE public.omni_browser_takeovers FROM omni_maintenance;
+    REVOKE UPDATE (state, released_at)
+      ON public.omni_browser_takeovers FROM omni_maintenance;
     GRANT SELECT ON TABLE public.omni_browser_profiles TO omni_maintenance;
     GRANT SELECT ON TABLE public.omni_browser_profile_bindings TO omni_maintenance;
     GRANT SELECT ON TABLE public.omni_browser_takeovers TO omni_maintenance;
@@ -132,8 +141,40 @@ BEGIN
     OR has_table_privilege('omni_runtime', 'public.omni_browser_takeovers', 'INSERT')
     OR has_table_privilege('omni_runtime', 'public.omni_browser_takeovers', 'UPDATE')
     OR has_table_privilege('omni_runtime', 'public.omni_browser_takeovers', 'DELETE')
+    OR has_any_column_privilege(
+      'omni_runtime', 'public.omni_browser_profiles', 'UPDATE'
+    )
+    OR has_any_column_privilege(
+      'omni_runtime', 'public.omni_browser_profile_bindings', 'UPDATE'
+    )
+    OR has_any_column_privilege(
+      'omni_runtime', 'public.omni_browser_takeovers', 'UPDATE'
+    )
   ) THEN
     RAISE EXCEPTION 'Isolated browser runtime authority is still granted'
+      USING ERRCODE = '55000';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_maintenance') AND (
+    has_table_privilege('omni_maintenance', 'public.omni_browser_profiles', 'INSERT')
+    OR has_table_privilege('omni_maintenance', 'public.omni_browser_profiles', 'UPDATE')
+    OR has_table_privilege('omni_maintenance', 'public.omni_browser_profiles', 'DELETE')
+    OR has_table_privilege('omni_maintenance', 'public.omni_browser_profile_bindings', 'INSERT')
+    OR has_table_privilege('omni_maintenance', 'public.omni_browser_profile_bindings', 'UPDATE')
+    OR has_table_privilege('omni_maintenance', 'public.omni_browser_profile_bindings', 'DELETE')
+    OR has_table_privilege('omni_maintenance', 'public.omni_browser_takeovers', 'INSERT')
+    OR has_table_privilege('omni_maintenance', 'public.omni_browser_takeovers', 'UPDATE')
+    OR has_table_privilege('omni_maintenance', 'public.omni_browser_takeovers', 'DELETE')
+    OR has_any_column_privilege(
+      'omni_maintenance', 'public.omni_browser_profiles', 'UPDATE'
+    )
+    OR has_any_column_privilege(
+      'omni_maintenance', 'public.omni_browser_profile_bindings', 'UPDATE'
+    )
+    OR has_any_column_privilege(
+      'omni_maintenance', 'public.omni_browser_takeovers', 'UPDATE'
+    )
+  ) THEN
+    RAISE EXCEPTION 'Isolated browser maintenance mutation authority is still granted'
       USING ERRCODE = '55000';
   END IF;
   IF EXISTS (
