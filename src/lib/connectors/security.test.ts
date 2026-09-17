@@ -12,6 +12,10 @@ import {
 } from "@/lib/connectors/openapi-client";
 import { inferMcpToolRisk } from "@/lib/connectors/mcp-client";
 import {
+  assertMcpEndpointIsSupported,
+  isRemoteBrowserMcpTool,
+} from "@/lib/connectors/mcp-trust";
+import {
   ConnectorContractReviewConflictError,
   mcpContractReviewSummary,
   openApiContractReviewSummary,
@@ -126,49 +130,38 @@ describe("connector security", () => {
     expect(inferMcpToolRisk(1, { destructiveHint: true })).toBe(2);
   });
 
-  it("applies local Browser Use risk policy instead of trusting remote labels", () => {
-    const endpoint = "https://api.browser-use.com/v3/mcp";
-    const risk = (toolName: string, defaultRisk: 0 | 1 | 2 | 3 = 2) =>
-      inferMcpToolRisk(defaultRisk, { readOnlyHint: true }, {
-        endpoint,
-        toolName,
-        trustReadOnlyAnnotations: true,
-      });
-
-    expect(risk("browser_task")).toBe(2);
-    expect(risk("execute_skill")).toBe(2);
-    expect(risk("get_cookies")).toBe(3);
-    expect(risk("list_skills")).toBe(0);
-    expect(risk("list_browser_profiles")).toBe(0);
-    expect(risk("monitor_task")).toBe(0);
-    expect(risk("get_session")).toBe(0);
-    expect(risk("get_session_messages")).toBe(0);
-    expect(risk("list_sessions")).toBe(0);
-    expect(risk("run_session")).toBe(2);
-    expect(risk("send_task")).toBe(2);
-    expect(risk("stop_session")).toBe(2);
-    expect(risk("new_remote_tool", 0)).toBe(2);
+  it("retires known remote-browser endpoints instead of classifying their tools", () => {
+    expect(() =>
+      assertMcpEndpointIsSupported(
+        "https://asael.bennierichard.com/api/integrations/playwright/mcp",
+      )
+    ).toThrow(/retired/i);
+    expect(() =>
+      assertMcpEndpointIsSupported("https://omniagent-os-browser.fly.dev/mcp")
+    ).toThrow(/retired/i);
+    expect(() =>
+      assertMcpEndpointIsSupported("https://api.browser-use.com/v3/mcp")
+    ).toThrow(/retired/i);
+    expect(() =>
+      assertMcpEndpointIsSupported("https://mcp.example.test/mcp")
+    ).not.toThrow();
   });
 
-  it("applies a local Playwright risk policy instead of trusting remote labels", () => {
-    const endpoint = "https://asael.bennierichard.com/api/integrations/playwright/mcp";
-    const risk = (toolName: string, defaultRisk: 0 | 1 | 2 | 3 = 1) =>
-      inferMcpToolRisk(defaultRisk, { readOnlyHint: true }, {
-        endpoint,
-        toolName,
-        trustReadOnlyAnnotations: true,
-      });
-
-    expect(risk("browser_snapshot")).toBe(0);
-    expect(risk("browser_console_messages")).toBe(0);
-    expect(risk("browser_navigate")).toBe(1);
-    expect(risk("browser_click")).toBe(2);
-    expect(risk("browser_fill_form")).toBe(2);
-    expect(risk("browser_tabs")).toBe(1);
-    expect(risk("browser_evaluate")).toBe(3);
-    expect(risk("browser_file_upload")).toBe(3);
-    expect(risk("browser_run_code_unsafe")).toBe(3);
-    expect(risk("new_remote_tool", 0)).toBe(2);
+  it("treats remote tool metadata as untrusted when quarantining browser control", () => {
+    expect(isRemoteBrowserMcpTool({
+      name: "browser_snapshot",
+      annotations: { readOnlyHint: true },
+    })).toBe(true);
+    expect(isRemoteBrowserMcpTool({
+      name: "perform-action",
+      description: "Click a DOM selector in the current tab.",
+      annotations: { readOnlyHint: true },
+    })).toBe(true);
+    expect(isRemoteBrowserMcpTool({
+      name: "query-docs",
+      description: "Search product documentation.",
+      annotations: { readOnlyHint: true },
+    })).toBe(false);
   });
 
   it("keeps remote prompt text out of model-facing tool metadata", () => {

@@ -46,10 +46,10 @@ describe("truthful integrations overview", () => {
       }] },
       mcp: { state: "ready", value: {
         connectors: [{
-          id: "browser",
+          id: "knowledge-mcp",
           tenantId: "tenant:test",
-          name: "Playwright Browser",
-          endpoint: "https://asael.bennierichard.com/api/integrations/playwright/mcp",
+          name: "Knowledge MCP",
+          endpoint: "https://knowledge.example.test/mcp",
           transport: "streamable_http",
           authType: "bearer_vault",
           credentialConfigured: true,
@@ -65,9 +65,9 @@ describe("truthful integrations overview", () => {
         tools: [{
           id: "tool:read",
           tenantId: "tenant:test",
-          connectorId: "browser",
-          connectorName: "Playwright Browser",
-          name: "browser_snapshot",
+          connectorId: "knowledge-mcp",
+          connectorName: "Knowledge MCP",
+          name: "query_notes",
           inputSchema: {},
           annotations: { readOnlyHint: true },
           riskLevel: 0,
@@ -78,9 +78,9 @@ describe("truthful integrations overview", () => {
         }, {
           id: "tool:write",
           tenantId: "tenant:test",
-          connectorId: "browser",
-          connectorName: "Playwright Browser",
-          name: "browser_click",
+          connectorId: "knowledge-mcp",
+          connectorName: "Knowledge MCP",
+          name: "update_note",
           inputSchema: {},
           annotations: { readOnlyHint: false },
           riskLevel: 1,
@@ -113,7 +113,7 @@ describe("truthful integrations overview", () => {
         cursor: { state: "checkpointed", rawValueIncluded: false },
       },
     });
-    expect(overview.installed.find((item) => item.name === "Playwright Browser")).toMatchObject({
+    expect(overview.installed.find((item) => item.name === "Knowledge MCP")).toMatchObject({
       state: "working",
       permissions: {
         mode: "write_approval_required",
@@ -139,6 +139,39 @@ describe("truthful integrations overview", () => {
     });
     expect(overview.installed.every((item) => item.sync.cursor.rawValueIncluded === false)).toBe(true);
     expect(JSON.stringify(overview)).not.toContain("grant-google");
+  });
+
+  it("omits retired remote browser connectors from the integration projection", () => {
+    const overview = projectTruthfulIntegrationsOverview({
+      oauth: { state: "ready", value: [] },
+      mcp: { state: "ready", value: {
+        connectors: [{
+          id: "retired-browser",
+          tenantId: "tenant:test",
+          name: "Playwright Browser",
+          endpoint: "https://asael.bennierichard.com/api/integrations/playwright/mcp",
+          transport: "streamable_http",
+          authType: "none",
+          status: "active",
+          defaultRiskLevel: 1,
+          approvalRequired: false,
+          toolCount: 1,
+          lastDiscoveredAt: now,
+          createdAt: now,
+          updatedAt: now,
+        }],
+        tools: [],
+      } },
+      openapi: { state: "ready", value: { connectors: [], operations: [] } },
+      salesforce: { state: "ready", value: { health: salesforceHealth(false), writesConfigured: false } },
+      usage: { state: "ready", value: usageSummary() },
+      oauthConfigured: { google: true, salesforce: false },
+      catalog: connectionCatalog,
+      generatedAt: now,
+    });
+
+    expect(overview.installed).toEqual([]);
+    expect(overview.suggestions.some((item) => item.category === "browser")).toBe(false);
   });
 
   it("does not turn stale, failed, or unattributable telemetry into healthy or zero-cost claims", () => {

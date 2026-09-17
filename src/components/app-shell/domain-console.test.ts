@@ -51,11 +51,9 @@ describe("integration catalog presentation", () => {
   it("does not suggest connectors that are already installed", () => {
     const installed = [
       { id: "mcp-github", name: "GitHub", endpoint: "https://github.example/mcp" },
-      { id: "mcp-browser", name: "Playwright", endpoint: "https://browser.example/mcp" },
     ];
 
     expect(catalogConnectorInstalled({ id: "github" }, installed)).toBe(true);
-    expect(catalogConnectorInstalled({ id: "browser-automation" }, installed)).toBe(true);
     expect(catalogConnectorInstalled({ id: "slack" }, installed)).toBe(false);
   });
 });

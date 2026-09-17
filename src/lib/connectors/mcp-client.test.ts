@@ -14,51 +14,33 @@ vi.mock("@/lib/connectors/credential-store", () => credentialMocks);
 
 import {
   callMcpTool,
-  createPlaywrightProfileAuthority,
   discoverMcpTools,
 } from "@/lib/connectors/mcp-client";
 
-describe("discoverMcpTools", () => {
+describe("MCP client", () => {
   beforeEach(() => {
     networkMocks.assertPublicHttpUrl.mockReset().mockResolvedValue(undefined);
     networkMocks.fetchPublicHttpUrl.mockReset();
     credentialMocks.resolveMcpBearerCredential
       .mockReset()
-      .mockResolvedValue("browser-use-test-key");
+      .mockResolvedValue("generic-mcp-test-key");
   });
 
-  it("discovers paginated tools from Streamable HTTP SSE responses", async () => {
+  it("discovers paginated tools from a generic Streamable HTTP server", async () => {
     networkMocks.fetchPublicHttpUrl.mockImplementation(async (
       _input: RequestInfo | URL,
       init?: RequestInit,
     ) => {
       const method = init?.method || "GET";
-      if (method === "GET") {
-        return new Response(null, { status: 405 });
-      }
-      if (method === "DELETE") {
-        return new Response(null, { status: 204 });
-      }
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
 
-      const message = JSON.parse(String(init?.body || "{}")) as {
-        id?: string | number;
-        method?: string;
-        params?: { cursor?: string };
-      };
+      const message = parseMcpMessage(init);
       if (message.method === "notifications/initialized") {
         return new Response(null, { status: 202 });
       }
       if (message.method === "initialize") {
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: {
-            protocolVersion: "2025-03-26",
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "Mock MCP", version: "1.0.0" },
-            instructions: "Use the mock tools for tests.",
-          },
-        });
+        return initializationResponse(message.id);
       }
       if (message.method === "tools/list") {
         return sseResponse({
@@ -95,6 +77,146 @@ describe("discoverMcpTools", () => {
     expect(discovery.instructions).toBe("Use the mock tools for tests.");
   });
 
+  it("keeps generic and official GitHub MCP bearer authentication", async () => {
+    let initializeHeaders: Headers | undefined;
+    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const method = init?.method || "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      const message = parseMcpMessage(init);
+      if (message.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === "initialize") {
+        initializeHeaders = new Headers(init?.headers);
+        return initializationResponse(message.id);
+      }
+      if (message.method === "tools/list") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { tools: [] },
+        });
+      }
+      throw new Error(`Unexpected MCP method ${message.method || method}`);
+    });
+
+    await discoverMcpTools(connector({
+      endpoint: "https://api.githubcopilot.com/mcp/x/all",
+      authType: "bearer_vault",
+      approvalRequired: false,
+    }));
+
+    expect(initializeHeaders?.get("authorization")).toBe("Bearer generic-mcp-test-key");
+    expect(initializeHeaders?.has("x-browser-use-api-key")).toBe(false);
+    expect(initializeHeaders?.has("x-omniagent-browser-scope")).toBe(false);
+  });
+
+  it.each([
+    "https://asael.bennierichard.com/api/integrations/playwright/mcp",
+    "https://asael.bennierichard.com/api/integrations/playwright/mcp?transport=sse",
+    "https://omniagent-os-browser.fly.dev/mcp",
+    "https://api.browser-use.com/v3/mcp",
+    "https://api.browser-use.com/mcp",
+  ])("rejects retired remote browser endpoint %s before network access", async (endpoint) => {
+    await expect(discoverMcpTools(connector({ endpoint }))).rejects.toThrow(
+      "Remote browser automation MCP is retired",
+    );
+    expect(networkMocks.assertPublicHttpUrl).not.toHaveBeenCalled();
+    expect(networkMocks.fetchPublicHttpUrl).not.toHaveBeenCalled();
+  });
+
+  it("quarantines browser-control tools discovered through a generic MCP endpoint", async () => {
+    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const method = init?.method || "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      const message = parseMcpMessage(init);
+      if (message.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === "initialize") {
+        return initializationResponse(message.id);
+      }
+      if (message.method === "tools/list") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            tools: [{
+              name: "perform-action",
+              title: "Web page control",
+              description: "Click a DOM selector in the current tab.",
+              inputSchema: {
+                type: "object",
+                properties: { selector: { type: "string" } },
+              },
+              annotations: { readOnlyHint: true },
+            }],
+          },
+        });
+      }
+      throw new Error(`Unexpected MCP method ${message.method || method}`);
+    });
+
+    await expect(discoverMcpTools(connector())).rejects.toThrow(
+      /Discovery quarantined tool "perform-action"/,
+    );
+  });
+
+  it("rejects a previously stored browser-shaped tool before execution", async () => {
+    await expect(callMcpTool({
+      connector: connector(),
+      toolName: "browser_navigate",
+      args: { url: "https://example.com" },
+    })).rejects.toThrow("Remote browser automation MCP is retired");
+    expect(networkMocks.assertPublicHttpUrl).not.toHaveBeenCalled();
+    expect(networkMocks.fetchPublicHttpUrl).not.toHaveBeenCalled();
+  });
+
+  it("rejects MCP tool results that carry the protocol error flag", async () => {
+    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const method = init?.method || "GET";
+      if (method === "GET") return new Response(null, { status: 405 });
+      if (method === "DELETE") return new Response(null, { status: 204 });
+      const message = parseMcpMessage(init);
+      if (message.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (message.method === "initialize") {
+        return initializationResponse(message.id);
+      }
+      if (message.method === "tools/call") {
+        return sseResponse({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            isError: true,
+            content: [{ type: "text", text: "The document provider rejected this query." }],
+          },
+        });
+      }
+      throw new Error(`Unexpected MCP method ${message.method || method}`);
+    });
+
+    await expect(callMcpTool({
+      connector: connector(),
+      toolName: "query-docs",
+      args: { query: "contracts" },
+    })).rejects.toThrow(
+      "MCP tool reported an error: The document provider rejected this query.",
+    );
+  });
+
   it("turns a generic fetch failure into an actionable connection error", async () => {
     const cause = Object.assign(new Error("Connect Timeout Error"), {
       code: "UND_ERR_CONNECT_TIMEOUT",
@@ -107,278 +229,28 @@ describe("discoverMcpTools", () => {
       "MCP endpoint connection timed out.",
     );
   });
-
-  it("sends a vaulted Browser Use key in the provider-specific header", async () => {
-    let initializeHeaders: Headers | undefined;
-    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
-      _input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      const method = init?.method || "GET";
-      if (method === "GET") return new Response(null, { status: 405 });
-      if (method === "DELETE") return new Response(null, { status: 204 });
-
-      const message = JSON.parse(String(init?.body || "{}")) as {
-        id?: string | number;
-        method?: string;
-      };
-      if (message.method === "notifications/initialized") {
-        return new Response(null, { status: 202 });
-      }
-      if (message.method === "initialize") {
-        initializeHeaders = new Headers(init?.headers);
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: {
-            protocolVersion: "2025-03-26",
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "Browser Use", version: "1.0.0" },
-          },
-        });
-      }
-      if (message.method === "tools/list") {
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: { tools: [] },
-        });
-      }
-      throw new Error(`Unexpected MCP method ${message.method || method}`);
-    });
-
-    await discoverMcpTools(connector({
-      endpoint: "https://api.browser-use.com/v3/mcp",
-      authType: "bearer_vault",
-      approvalRequired: false,
-    }));
-
-    expect(initializeHeaders?.get("x-browser-use-api-key")).toBe(
-      "browser-use-test-key",
-    );
-    expect(initializeHeaders?.has("authorization")).toBe(false);
-  });
-
-  it("authenticates Playwright and sends only an opaque tenant-actor-run scope", async () => {
-    credentialMocks.resolveMcpBearerCredential.mockResolvedValue(
-      "playwright-service-token-for-tests",
-    );
-    let initializeHeaders: Headers | undefined;
-    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
-      _input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      const method = init?.method || "GET";
-      if (method === "GET") return new Response(null, { status: 405 });
-      if (method === "DELETE") return new Response(null, { status: 204 });
-
-      const message = JSON.parse(String(init?.body || "{}")) as {
-        id?: string | number;
-        method?: string;
-      };
-      if (message.method === "notifications/initialized") {
-        return new Response(null, { status: 202 });
-      }
-      if (message.method === "initialize") {
-        initializeHeaders = new Headers(init?.headers);
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: {
-            protocolVersion: "2025-03-26",
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "Playwright", version: "1.0.0" },
-          },
-        });
-      }
-      if (message.method === "tools/list") {
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: { tools: [] },
-        });
-      }
-      throw new Error(`Unexpected MCP method ${message.method || method}`);
-    });
-
-    await discoverMcpTools(connector({
-      endpoint: "https://omniagent-os-browser.fly.dev/mcp",
-      authType: "bearer_vault",
-      approvalRequired: false,
-    }), { actorId: "actor-a" });
-
-    expect(initializeHeaders?.get("authorization")).toBe(
-      "Bearer playwright-service-token-for-tests",
-    );
-    const scope = initializeHeaders?.get("x-omniagent-browser-scope") || "";
-    expect(scope).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(scope).not.toContain("actor-a");
-    expect(scope).not.toContain("test-tenant");
-  });
-
-  it("reuses one Playwright client session within a governed run", async () => {
-    credentialMocks.resolveMcpBearerCredential.mockResolvedValue(
-      "playwright-service-token-for-tests",
-    );
-    let initializeCount = 0;
-    let sessionMode: string | null = null;
-    const toolCalls: string[] = [];
-    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
-      _input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      const method = init?.method || "GET";
-      if (method === "GET") return new Response(null, { status: 405 });
-      if (method === "DELETE") return new Response(null, { status: 204 });
-
-      const message = JSON.parse(String(init?.body || "{}")) as {
-        id?: string | number;
-        method?: string;
-        params?: { name?: string };
-      };
-      if (message.method === "notifications/initialized") {
-        return new Response(null, { status: 202 });
-      }
-      if (message.method === "initialize") {
-        initializeCount += 1;
-        sessionMode = new Headers(init?.headers).get("x-omniagent-browser-session");
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: {
-            protocolVersion: "2025-03-26",
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "Playwright", version: "1.0.0" },
-          },
-        }, { "mcp-session-id": "browser-session-1" });
-      }
-      if (message.method === "tools/call") {
-        toolCalls.push(message.params?.name || "unknown");
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: {
-            content: [{ type: "text", text: "ok" }],
-          },
-        });
-      }
-      throw new Error(`Unexpected MCP method ${message.method || method}`);
-    });
-
-    const browserConnector = connector({
-      id: "playwright-session-reuse",
-      endpoint: "https://omniagent-os-browser.fly.dev/mcp",
-      authType: "bearer_vault",
-      approvalRequired: false,
-    });
-    const sessionScope = {
-      tenantId: "test-tenant",
-      actorId: "actor-a",
-      executionId: "agent:run-session-reuse",
-    };
-
-    await callMcpTool({
-      connector: browserConnector,
-      toolName: "browser_navigate",
-      args: { url: "https://example.com" },
-      sessionScope,
-    });
-    await callMcpTool({
-      connector: browserConnector,
-      toolName: "browser_snapshot",
-      args: {},
-      sessionScope,
-    });
-
-    expect(initializeCount).toBe(1);
-    expect(sessionMode).toBe("run");
-    expect(toolCalls).toEqual(["browser_navigate", "browser_snapshot"]);
-  });
-
-  it("creates a short-lived opaque profile grant bound to the browser scope", () => {
-    const authority = createPlaywrightProfileAuthority(
-      "playwright-service-token-for-tests",
-      "opaque-browser-scope",
-      {
-        tenantId: "test-tenant",
-        actorId: "actor-a",
-        executionId: "agent:run-profile",
-        browserProfile: {
-          id: "browser_profile:00000000-0000-4000-8000-000000000001",
-          revision: 3,
-          allowedDomains: ["login.example.com", "example.com"],
-        },
-      },
-      1_000,
-    );
-
-    expect(authority.locator).toMatch(/^[a-f0-9]{64}$/);
-    expect(authority.grant).toMatch(/^bpg1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
-    expect(authority.grant).not.toContain("actor-a");
-    expect(authority.grant).not.toContain("browser_profile");
-    const [, encoded] = authority.grant.split(".");
-    expect(JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"))).toEqual({
-      v: 1,
-      p: authority.locator,
-      r: 3,
-      d: ["example.com", "login.example.com"],
-      s: expect.stringMatching(/^[a-f0-9]{64}$/),
-      exp: 301_000,
-    });
-  });
-
-  it("rejects MCP tool results that carry the protocol error flag", async () => {
-    networkMocks.fetchPublicHttpUrl.mockImplementation(async (
-      _input: RequestInfo | URL,
-      init?: RequestInit,
-    ) => {
-      const method = init?.method || "GET";
-      if (method === "GET") return new Response(null, { status: 405 });
-      if (method === "DELETE") return new Response(null, { status: 204 });
-
-      const message = JSON.parse(String(init?.body || "{}")) as {
-        id?: string | number;
-        method?: string;
-      };
-      if (message.method === "notifications/initialized") {
-        return new Response(null, { status: 202 });
-      }
-      if (message.method === "initialize") {
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: {
-            protocolVersion: "2025-03-26",
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: "Mock MCP", version: "1.0.0" },
-          },
-        });
-      }
-      if (message.method === "tools/call") {
-        return sseResponse({
-          jsonrpc: "2.0",
-          id: message.id,
-          result: {
-            isError: true,
-            content: [{
-              type: "text",
-              text: "net::ERR_TUNNEL_CONNECTION_FAILED at https://example.com/private?token=hidden",
-            }],
-          },
-        });
-      }
-      throw new Error(`Unexpected MCP method ${message.method || method}`);
-    });
-
-    await expect(callMcpTool({
-      connector: connector(),
-      toolName: "browser_navigate",
-      args: { url: "https://example.com" },
-    })).rejects.toThrow(
-      "The browser network gateway could not establish a secure connection to the destination.",
-    );
-  });
 });
+
+function parseMcpMessage(init?: RequestInit) {
+  return JSON.parse(String(init?.body || "{}")) as {
+    id?: string | number;
+    method?: string;
+    params?: { cursor?: string };
+  };
+}
+
+function initializationResponse(id?: string | number) {
+  return sseResponse({
+    jsonrpc: "2.0",
+    id,
+    result: {
+      protocolVersion: "2025-03-26",
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: "Mock MCP", version: "1.0.0" },
+      instructions: "Use the mock tools for tests.",
+    },
+  });
+}
 
 function sseResponse(message: unknown, headers: Record<string, string> = {}) {
   return new Response(`event: message\ndata: ${JSON.stringify(message)}\n\n`, {

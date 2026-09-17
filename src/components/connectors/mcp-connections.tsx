@@ -7,7 +7,6 @@ import {
   ChevronDown,
   CircleAlert,
   GitBranch,
-  Globe2,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -21,10 +20,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
-import {
-  ASAEL_PLAYWRIGHT_MCP_ENDPOINT,
-  isAsaelPlaywrightMcpEndpoint,
-} from "@/lib/connectors/mcp-trust";
 import type { TrashActionPreviewV1 } from "@/lib/trash/contracts";
 
 type McpAuthType = "bearer_vault" | "bearer_env" | "none";
@@ -73,8 +68,6 @@ type Notice = {
 };
 
 const GITHUB_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/x/all";
-const BROWSER_USE_MCP_ENDPOINT = "https://api.browser-use.com/v3/mcp";
-const PLAYWRIGHT_MCP_ENDPOINT = ASAEL_PLAYWRIGHT_MCP_ENDPOINT;
 
 export function McpConnections({
   payload,
@@ -112,10 +105,6 @@ export function McpConnections({
     name.trim() === "GitHub" &&
     endpoint.trim() === GITHUB_MCP_ENDPOINT &&
     authType === "bearer_vault";
-  const playwrightPresetApplied =
-    ["Computer Use Runtime", "Playwright Browser"].includes(name.trim()) &&
-    endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT &&
-    authType === "bearer_vault";
 
   function resetAddForm() {
     setName("");
@@ -130,16 +119,6 @@ export function McpConnections({
   function applyGitHubPreset() {
     setName("GitHub");
     setEndpoint(GITHUB_MCP_ENDPOINT);
-    setAuthType("bearer_vault");
-    setAuthTokenEnv("");
-    setDiscoverOnAdd(true);
-    setAdvancedAuthOpen(false);
-    setNotice(undefined);
-  }
-
-  function applyPlaywrightPreset() {
-    setName("Computer Use Runtime");
-    setEndpoint(PLAYWRIGHT_MCP_ENDPOINT);
     setAuthType("bearer_vault");
     setAuthTokenEnv("");
     setDiscoverOnAdd(true);
@@ -164,17 +143,6 @@ export function McpConnections({
       setNotice({ tone: "error", text: "Enter the provider token to store." });
       return;
     }
-    if (
-      authType === "bearer_vault" &&
-      isAsaelPlaywrightMcpEndpoint(endpoint.trim()) &&
-      !/^[A-Za-z0-9._~-]{32,256}$/.test(bearerToken)
-    ) {
-      setNotice({
-        tone: "error",
-        text: "Enter the 32–256 character URL-safe token configured on the Playwright service.",
-      });
-      return;
-    }
     if (authType === "bearer_vault" && vaultUnavailable) {
       setNotice({
         tone: "error",
@@ -195,10 +163,6 @@ export function McpConnections({
     const submittedToken = bearerToken;
     const submittedEndpoint = endpoint.trim();
     const officialGitHubEndpoint = submittedEndpoint === GITHUB_MCP_ENDPOINT;
-    const officialBrowserUseEndpoint =
-      isOfficialBrowserUseMcpEndpoint(submittedEndpoint);
-    const asaelPlaywrightEndpoint =
-      isAsaelPlaywrightMcpEndpoint(submittedEndpoint);
     setBearerToken("");
     setPendingAction("create");
     setNotice(undefined);
@@ -218,11 +182,8 @@ export function McpConnections({
             ...(authType === "bearer_env"
               ? { authTokenEnv: authTokenEnv.trim() }
               : {}),
-            defaultRiskLevel: asaelPlaywrightEndpoint ? 1 : 2,
-            approvalRequired:
-              !officialGitHubEndpoint &&
-              !officialBrowserUseEndpoint &&
-              !asaelPlaywrightEndpoint,
+            defaultRiskLevel: 2,
+            approvalRequired: !officialGitHubEndpoint,
             discover: discoverOnAdd,
           }),
         },
@@ -267,16 +228,6 @@ export function McpConnections({
     }
     if (!credentialValue) {
       setNotice({ tone: "error", text: "Enter the replacement token." });
-      return;
-    }
-    if (
-      isAsaelPlaywrightMcpEndpoint(connector.endpoint) &&
-      !/^[A-Za-z0-9._~-]{32,256}$/.test(credentialValue)
-    ) {
-      setNotice({
-        tone: "error",
-        text: "Enter the 32–256 character Playwright service token configured on the browser worker.",
-      });
       return;
     }
     const submittedToken = credentialValue;
@@ -386,53 +337,6 @@ export function McpConnections({
           requestError instanceof Error
             ? requestError.message
             : "The GitHub connection could not be upgraded.",
-      });
-      await onRefresh();
-    } finally {
-      setPendingAction(undefined);
-    }
-  }
-
-  async function upgradeBrowserUseConnection(connector: McpConnector) {
-    if (disabledReason) {
-      setNotice({ tone: "error", text: disabledReason });
-      return;
-    }
-    const actionId = `upgrade-browser-use-${connector.id}`;
-    setPendingAction(actionId);
-    setNotice(undefined);
-    try {
-      await requestJson(
-        `/api/connectors/${encodeURIComponent(connector.id)}`,
-        {
-          method: "PATCH",
-          headers: requestHeaders(true),
-          body: JSON.stringify({
-            endpoint: BROWSER_USE_MCP_ENDPOINT,
-            defaultRiskLevel: 2,
-            approvalRequired: false,
-          }),
-        },
-        "The Browser Use connection could not be upgraded.",
-      );
-      await requestJson(
-        `/api/connectors/${encodeURIComponent(connector.id)}/discover`,
-        { method: "POST", headers: requestHeaders(false) },
-        "The Browser Use connection was upgraded, but its tools could not be rediscovered.",
-      );
-      setNotice({
-        tone: "success",
-        text:
-          "Browser Use v3 tools are available. Review the changed contracts below to activate them.",
-      });
-      await onRefresh();
-    } catch (requestError) {
-      setNotice({
-        tone: "error",
-        text:
-          requestError instanceof Error
-            ? requestError.message
-            : "The Browser Use connection could not be upgraded.",
       });
       await onRefresh();
     } finally {
@@ -684,10 +588,6 @@ export function McpConnections({
                 <p className="mt-1 text-xs leading-5 text-muted">
                   {endpoint.trim() === GITHUB_MCP_ENDPOINT
                     ? "GitHub read tools run directly; write and Actions operations pause for approval."
-                    : endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT
-                      ? "Playwright can inspect, navigate, and manage tabs directly. Clicks, typing, forms, selections, dialogs, and key actions stay approval-controlled because they can commit external changes; arbitrary code and file transfer stay high risk."
-                    : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
-                      ? "Browser profiles and task status can be read directly; browser actions pause for approval, and cookie access is high risk."
                     : "New tools use risk level 2 and require approval by default."}
                 </p>
               </div>
@@ -695,15 +595,11 @@ export function McpConnections({
                 <ShieldCheck size={13} aria-hidden="true" />
                 {endpoint.trim() === GITHUB_MCP_ENDPOINT
                   ? "Risk governed"
-                  : endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT
-                    ? "Isolated and governed"
-                  : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
-                    ? "Risk governed"
                   : "Approval protected"}
               </span>
             </div>
 
-            <div className="mt-4 grid gap-3 xl:grid-cols-2">
+            <div className="mt-4">
               <div className="flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/8 p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 items-start gap-3">
                   <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
@@ -743,53 +639,6 @@ export function McpConnections({
                 </button>
               </div>
 
-              <div className="flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/8 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex min-w-0 items-start gap-3">
-                  <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary/10 text-primary">
-                    <Globe2 size={17} aria-hidden="true" />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold">Connect Computer Use runtime</p>
-                    <p className="mt-1 max-w-3xl text-xs leading-5 text-muted">
-                      Use Asael&apos;s self-hosted Playwright runtime for governed
-                      Computer Use. Each task gets an isolated, persistent browser
-                      scope while the service token stays encrypted in this app.
-                      Remote screen and page content stays untrusted.{" "}
-                      <a
-                        href="https://github.com/microsoft/playwright-mcp"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-semibold text-primary hover:underline"
-                      >
-                        View Playwright MCP
-                      </a>
-                      .
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={applyPlaywrightPreset}
-                  disabled={
-                    busy ||
-                    Boolean(disabledReason) ||
-                    vaultUnavailable ||
-                    playwrightPresetApplied
-                  }
-                  title={
-                    disabledReason ||
-                    (vaultUnavailable
-                      ? "Encrypted credential storage is required for the Playwright service token."
-                      : undefined)
-                  }
-                  className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/35 bg-background px-3 text-xs font-semibold text-foreground transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-55"
-                >
-                  <Globe2 size={14} aria-hidden="true" />
-                  {playwrightPresetApplied
-                    ? "Computer Use preset applied"
-                    : "Use Computer Use preset"}
-                </button>
-              </div>
             </div>
 
             <div className="mt-4 grid gap-4 md:grid-cols-2">
@@ -858,13 +707,7 @@ export function McpConnections({
             {authType === "bearer_vault" ? (
               <div className="mt-4">
                 <Field
-                  label={
-                    endpoint.trim() === PLAYWRIGHT_MCP_ENDPOINT
-                      ? "Playwright service token"
-                      : endpoint.trim() === BROWSER_USE_MCP_ENDPOINT
-                        ? "Browser Use API key"
-                      : "Provider token"
-                  }
+                  label="Provider token"
                   htmlFor="mcp-bearer-token"
                 >
                   <input
@@ -1085,9 +928,6 @@ export function McpConnections({
                   onUpgradeGitHub={() =>
                     void upgradeGitHubConnection(connector)
                   }
-                  onUpgradeBrowserUse={() =>
-                    void upgradeBrowserUseConnection(connector)
-                  }
                   onToggleEnabled={() =>
                     void setConnectorEnabled(
                       connector,
@@ -1129,7 +969,6 @@ function ConnectionRow({
   onRemoveCredential,
   onRediscover,
   onUpgradeGitHub,
-  onUpgradeBrowserUse,
   onToggleEnabled,
   onToggleDelete,
   onDelete,
@@ -1151,7 +990,6 @@ function ConnectionRow({
   onRemoveCredential: () => void;
   onRediscover: () => void;
   onUpgradeGitHub: () => void;
-  onUpgradeBrowserUse: () => void;
   onToggleEnabled: () => void;
   onToggleDelete: () => void;
   onDelete: () => void;
@@ -1161,9 +999,6 @@ function ConnectionRow({
   const appManaged = connector.authType === "bearer_vault";
   const credentialConfigured = Boolean(connector.credentialConfigured);
   const legacyGitHubEndpoint = isLegacyGitHubMcpEndpoint(connector.endpoint);
-  const legacyBrowserUseEndpoint = isLegacyBrowserUseMcpEndpoint(
-    connector.endpoint,
-  );
   const credentialUnavailableReason =
     appManaged && credentialStorageUnavailable
       ? "Encrypted credential storage is unavailable."
@@ -1202,20 +1037,6 @@ function ConnectionRow({
               .
             </p>
           ) : null}
-          {isOfficialBrowserUseMcpEndpoint(connector.endpoint) ? (
-            <p className="mt-2 text-xs leading-5 text-muted">
-              Legacy Browser Use fallback. Keep this disabled after the Computer
-              Use runtime passes your canary tasks. Session mutations remain
-              approval-gated and remote page content remains untrusted.
-            </p>
-          ) : null}
-          {isAsaelPlaywrightMcpEndpoint(connector.endpoint) ? (
-            <p className="mt-2 text-xs leading-5 text-muted">
-              Primary Computer Use runtime. Browser state is isolated to the
-              current tenant, actor, and task. Navigation and inspection run
-              directly; interactive actions pause for approval.
-            </p>
-          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-2 xl:justify-end">
@@ -1229,18 +1050,6 @@ function ConnectionRow({
               }
               title={disabledReason || credentialUnavailableReason}
               onClick={onUpgradeGitHub}
-            />
-          ) : null}
-          {legacyBrowserUseEndpoint ? (
-            <ActionButton
-              label="Update to Browser Use v3"
-              icon={Globe2}
-              busy={pendingAction === `upgrade-browser-use-${connector.id}`}
-              disabled={
-                busy || Boolean(disabledReason) || Boolean(credentialUnavailableReason)
-              }
-              title={disabledReason || credentialUnavailableReason}
-              onClick={onUpgradeBrowserUse}
             />
           ) : null}
           <ActionButton
@@ -1697,9 +1506,6 @@ function connectorLabel(connector: McpConnector) {
 
 function displayEndpoint(endpoint?: string) {
   if (!endpoint) return "Endpoint unavailable";
-  if (isAsaelPlaywrightMcpEndpoint(endpoint)) {
-    return ASAEL_PLAYWRIGHT_MCP_ENDPOINT;
-  }
   try {
     const url = new URL(endpoint);
     return `${url.origin}${url.pathname}`;
@@ -1723,34 +1529,6 @@ function isOfficialGitHubMcpEndpoint(endpoint?: string) {
   } catch {
     return false;
   }
-}
-
-function isOfficialBrowserUseMcpEndpoint(endpoint?: string) {
-  if (!endpoint) return false;
-  try {
-    const url = new URL(endpoint);
-    return (
-      url.protocol === "https:" &&
-      url.hostname === "api.browser-use.com" &&
-      url.port === "" &&
-      url.username === "" &&
-      url.password === "" &&
-      (
-        url.pathname === "/v3/mcp" ||
-        url.pathname === "/v3/mcp/" ||
-        url.pathname === "/mcp" ||
-        url.pathname === "/mcp/"
-      )
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isLegacyBrowserUseMcpEndpoint(endpoint?: string) {
-  if (!isOfficialBrowserUseMcpEndpoint(endpoint) || !endpoint) return false;
-  const pathname = new URL(endpoint).pathname.replace(/\/+$/, "");
-  return pathname === "/mcp";
 }
 
 function isLegacyGitHubMcpEndpoint(endpoint?: string) {

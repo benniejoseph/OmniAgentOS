@@ -1,5 +1,3 @@
-import { ASAEL_PLAYWRIGHT_MCP_ENDPOINT } from "@/lib/connectors/mcp-trust";
-
 export type ConnectionCatalogItem = {
   id: string;
   name: string;
@@ -130,30 +128,6 @@ export const connectionCatalog: ConnectionCatalogItem[] = [
     capabilities: ["Redis", "Vector", "QStash", "Kafka"],
     riskLevel: 2,
     approvalRequired: true,
-  },
-  {
-    id: "browser-automation",
-    name: "Computer Use Runtime",
-    category: "browser",
-    adapter: "mcp",
-    status: "requires_credentials",
-    endpoint: ASAEL_PLAYWRIGHT_MCP_ENDPOINT,
-    authEnvVars: [],
-    credentialMode: "app_vault",
-    authHeaderName: "authorization",
-    capabilities: [
-      "configurable Computer Use agent",
-      "isolated page navigation",
-      "accessibility snapshots",
-      "clicking and form entry",
-      "tab management",
-      "console and network inspection",
-      "isolated run sessions",
-      "approval-gated consequential actions",
-      "private visual evidence",
-    ],
-    riskLevel: 1,
-    approvalRequired: false,
   },
   {
     id: "custom-mcp",

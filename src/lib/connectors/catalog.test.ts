@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { connectionCatalog } from "@/lib/connectors/catalog";
-import { ASAEL_PLAYWRIGHT_MCP_ENDPOINT } from "@/lib/connectors/mcp-trust";
 
 describe("connection catalog", () => {
   it("models Google personal sources as native read-only connectors", () => {
@@ -20,19 +19,15 @@ describe("connection catalog", () => {
     expect(googleSources.every((connector) => !connector.approvalRequired)).toBe(true);
   });
 
-  it("offers the self-hosted Playwright service through its governed MCP endpoint", () => {
-    const playwright = connectionCatalog.find(
-      (connector) => connector.id === "browser-automation",
-    );
-
-    expect(playwright).toMatchObject({
-      name: "Computer Use Runtime",
+  it("does not offer a remote browser automation connector", () => {
+    expect(
+      connectionCatalog.some((connector) =>
+        connector.id === "browser-automation" || connector.category === "browser"
+      ),
+    ).toBe(false);
+    expect(connectionCatalog.find((connector) => connector.id === "github")).toMatchObject({
       adapter: "mcp",
-      endpoint: ASAEL_PLAYWRIGHT_MCP_ENDPOINT,
       credentialMode: "app_vault",
-      authHeaderName: "authorization",
-      riskLevel: 1,
-      approvalRequired: false,
     });
   });
 });

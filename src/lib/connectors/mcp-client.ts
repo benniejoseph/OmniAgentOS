@@ -1,13 +1,14 @@
-import { createHash, createHmac } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { assertConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import { resolveMcpBearerCredential } from "@/lib/connectors/credential-store";
 import {
-  isOfficialBrowserUseMcpEndpoint,
+  assertMcpEndpointIsSupported,
   isOfficialGitHubMcpEndpoint,
-  isAsaelPlaywrightMcpEndpoint,
+  isRemoteBrowserMcpIdentity,
+  isRemoteBrowserMcpTool,
+  RETIRED_REMOTE_BROWSER_MCP_MESSAGE,
 } from "@/lib/connectors/mcp-trust";
 import type { McpConnectorRecord, McpToolRecord } from "@/lib/connectors/types";
 import { createMcpToolId } from "@/lib/connectors/store";
@@ -15,7 +16,6 @@ import { assertPublicHttpUrl, fetchPublicHttpUrl } from "@/lib/security/network"
 import { redactExactSecrets } from "@/lib/security/secret-redaction";
 import type { SecurityRole } from "@/lib/security/types";
 import type { ToolRiskLevel } from "@/lib/tools/types";
-import { recordAiUsageSafely } from "@/lib/usage/ledger";
 
 const CLIENT_INFO = {
   name: "asael",
@@ -30,11 +30,7 @@ const MCP_MAX_DISCOVERY_SCHEMA_BYTES = 1_000_000;
 const MCP_MAX_RESPONSE_BYTES = 2_000_000;
 const MCP_MAX_TOOL_ARGUMENT_BYTES = 256_000;
 const MCP_MAX_TOOL_RESULT_BYTES = 1_000_000;
-const MCP_MAX_EVIDENCE_RESPONSE_BYTES = 3_000_000;
-const MCP_MAX_EVIDENCE_RESULT_BYTES = 2_250_000;
 const MCP_MAX_INSTRUCTIONS_BYTES = 64_000;
-const PLAYWRIGHT_SESSION_IDLE_MS = 2 * 60_000;
-const PLAYWRIGHT_SESSION_POOL_MAX = 16;
 
 type McpRequestPolicy = {
   deadlineAt: number;
@@ -48,18 +44,6 @@ type McpConnectedSession = {
   transport: StreamableHTTPClientTransport;
   secretValues: string[];
 };
-
-type PlaywrightSessionEntry = {
-  key: string;
-  promise?: Promise<PlaywrightSessionEntry>;
-  session: McpConnectedSession;
-  requestPolicy: McpRequestPolicy;
-  tail: Promise<void>;
-  idleTimer?: ReturnType<typeof setTimeout>;
-  closed: boolean;
-};
-
-const playwrightSessions = new Map<string, Promise<PlaywrightSessionEntry>>();
 
 export type McpSessionScope = {
   tenantId: string;
@@ -81,22 +65,24 @@ export async function discoverMcpTools(
     actorRole?: SecurityRole;
   } = {},
 ) {
+  assertSupportedMcpConnector(connector);
   const deadlineAt = Date.now() + MCP_DISCOVERY_DEADLINE_MS;
   const session = await connectMcp(connector, {
     deadlineAt,
     abortSignal: options.abortSignal,
     actorRole: options.actorRole,
-    sessionScope: {
-      tenantId: normalizeTenantId(connector.tenantId),
-      actorId: options.actorId?.trim() || "connector-discovery",
-      executionId: `connector:${connector.id}:discovery`,
-    },
   });
   try {
     const discoveredTools = redactExactSecrets(
       await collectTools(session.client, deadlineAt, options.abortSignal),
       session.secretValues,
     );
+    const retiredTool = discoveredTools.find((tool) => isRemoteBrowserMcpTool(tool));
+    if (retiredTool) {
+      throw new Error(
+        `${RETIRED_REMOTE_BROWSER_MCP_MESSAGE} Discovery quarantined tool ${safeToolName(retiredTool.name)}.`,
+      );
+    }
     const now = new Date().toISOString();
     const tools = discoveredTools.map((tool) => toToolRecord(connector, tool, now));
     const instructions = redactExactSecrets(
@@ -145,11 +131,12 @@ export async function callMcpTool({
   /** Reserved for trusted server-side evidence capture. Model tool results omit image bytes. */
   includeImages?: boolean;
 }) {
-  const trustedBrowserScreenshot =
-    isAsaelPlaywrightMcpEndpoint(connector.endpoint) &&
-    toolName.trim().toLowerCase() === "browser_take_screenshot";
-  if (includeImages && !trustedBrowserScreenshot) {
-    throw new Error("Embedded MCP images are restricted to governed browser evidence capture.");
+  assertSupportedMcpConnector(connector);
+  if (isRemoteBrowserMcpTool({ name: toolName })) {
+    throw new Error(RETIRED_REMOTE_BROWSER_MCP_MESSAGE);
+  }
+  if (includeImages) {
+    throw new Error("Embedded remote MCP images are not accepted.");
   }
   assertSerializedBytes(args, MCP_MAX_TOOL_ARGUMENT_BYTES, "MCP tool arguments");
   const deadlineAt = Date.now() + MCP_TOOL_DEADLINE_MS;
@@ -159,32 +146,8 @@ export async function callMcpTool({
     abortSignal,
     actorRole,
     sessionScope,
-    responseMaxBytes: trustedBrowserScreenshot
-      ? MCP_MAX_EVIDENCE_RESPONSE_BYTES
-      : undefined,
   });
   let receivedToolResult = false;
-  const browserUseTask = isMeteredBrowserUseTool(connector.endpoint, toolName) && sessionScope
-    ? {
-        id: idempotencyKey
-          ? `browser-use:${createHash("sha256")
-              .update(`${connector.id}\u0000${toolName}\u0000${idempotencyKey}`)
-              .digest("hex")}`
-          : undefined,
-        tenantId: sessionScope.tenantId,
-        actorId: sessionScope.actorId,
-        sourceStreamId: `tool-execution:${sessionScope.executionId}`,
-        operation: "browser_automation" as const,
-        purpose: `browser_use.${toolName.trim().toLowerCase()}`,
-        correlationId: sessionScope.executionId,
-        credentialSource: connector.authType === "bearer_vault"
-          ? "tenant_vault" as const
-          : "deployment_environment" as const,
-      }
-    : undefined;
-  const browserUseServiceRoute = connector.name.trim().slice(0, 240) ||
-    connector.id;
-  const browserUseStartedAt = Date.now();
   try {
     const result = await lease.session.client.callTool(
       {
@@ -201,10 +164,8 @@ export async function callMcpTool({
     receivedToolResult = true;
     const safeResult = redactExactSecrets(
       toBoundedJsonValue(
-        includeImages || !isAsaelPlaywrightMcpEndpoint(connector.endpoint)
-          ? result
-          : omitMcpImageContent(result),
-        includeImages ? MCP_MAX_EVIDENCE_RESULT_BYTES : MCP_MAX_TOOL_RESULT_BYTES,
+        result,
+        MCP_MAX_TOOL_RESULT_BYTES,
         "MCP tool result",
       ),
       lease.session.secretValues,
@@ -213,36 +174,8 @@ export async function callMcpTool({
     if (failure) {
       throw new Error(failure);
     }
-    if (browserUseTask) {
-      await recordAiUsageSafely({
-        ...browserUseTask,
-        status: "completed",
-        provider: "browser_use",
-        model: browserUseServiceRoute,
-        usage: { browserTaskCount: 1 },
-        providerCallCount: 1,
-        attemptCount: 1,
-        failedAttemptCount: 0,
-        latencyMs: Date.now() - browserUseStartedAt,
-      });
-    }
     return safeResult;
   } catch (error) {
-    if (browserUseTask) {
-      await recordAiUsageSafely({
-        ...browserUseTask,
-        status: "failed",
-        provider: "browser_use",
-        model: browserUseServiceRoute,
-        usage: { browserTaskCount: 1 },
-        providerCallCount: 1,
-        attemptCount: 1,
-        failedAttemptCount: 1,
-        latencyMs: Date.now() - browserUseStartedAt,
-        failureKind: abortSignal?.aborted ? "abort" : "provider_error",
-        retryable: !abortSignal?.aborted,
-      });
-    }
     if (!receivedToolResult) {
       lease.invalidate();
     }
@@ -250,16 +183,6 @@ export async function callMcpTool({
   } finally {
     await lease.release();
   }
-}
-
-function isMeteredBrowserUseTool(endpoint: string | undefined, toolName: string) {
-  if (!isOfficialBrowserUseMcpEndpoint(endpoint)) return false;
-  return new Set([
-    "browser_task",
-    "execute_skill",
-    "run_session",
-    "send_task",
-  ]).has(toolName.trim().toLowerCase());
 }
 
 async function acquireToolSession(
@@ -277,93 +200,11 @@ async function acquireToolSession(
   invalidate: () => void;
   release: () => Promise<void>;
 }> {
-  if (
-    !isAsaelPlaywrightMcpEndpoint(connector.endpoint) ||
-    !options.sessionScope
-  ) {
-    const session = await connectMcp(connector, options);
-    return {
-      session,
-      invalidate: () => undefined,
-      release: () => closeMcp(session),
-    };
-  }
-
-  const key = playwrightSessionKey(connector, options.sessionScope);
-  let pending = playwrightSessions.get(key);
-  if (!pending && playwrightSessions.size >= PLAYWRIGHT_SESSION_POOL_MAX) {
-    const session = await connectMcp(connector, options);
-    return {
-      session,
-      invalidate: () => undefined,
-      release: () => closeMcp(session),
-    };
-  }
-  if (!pending) {
-    const requestPolicy = mcpRequestPolicy(options);
-    const sessionPromise: Promise<PlaywrightSessionEntry> = connectMcp(connector, {
-      ...options,
-      requestPolicy,
-      persistentPlaywrightSession: true,
-    }).then((session) => ({
-      key,
-      session,
-      requestPolicy,
-      tail: Promise.resolve(),
-      closed: false,
-    }));
-    pending = sessionPromise;
-    playwrightSessions.set(key, sessionPromise);
-    void sessionPromise.then((entry) => {
-      entry.promise = sessionPromise;
-    }).catch(() => {
-      if (playwrightSessions.get(key) === sessionPromise) {
-        playwrightSessions.delete(key);
-      }
-    });
-  }
-
-  const entry = await pending;
-  if (entry.closed) {
-    if (playwrightSessions.get(key) === pending) {
-      playwrightSessions.delete(key);
-    }
-    return acquireToolSession(connector, options);
-  }
-  if (entry.idleTimer) {
-    clearTimeout(entry.idleTimer);
-    entry.idleTimer = undefined;
-  }
-
-  const previous = entry.tail;
-  let unlock: () => void = () => undefined;
-  entry.tail = new Promise<void>((resolve) => {
-    unlock = resolve;
-  });
-  await previous;
-  if (entry.closed) {
-    unlock();
-    return acquireToolSession(connector, options);
-  }
-  updateMcpRequestPolicy(entry.requestPolicy, options);
-
-  let invalidated = false;
-  let released = false;
+  const session = await connectMcp(connector, options);
   return {
-    session: entry.session,
-    invalidate: () => {
-      invalidated = true;
-    },
-    release: async () => {
-      if (released) return;
-      released = true;
-      unlock();
-      if (invalidated) {
-        await closePlaywrightSession(entry);
-        return;
-      }
-      schedulePlaywrightSessionClose(entry);
-    },
+    session,
+    invalidate: () => undefined,
+    release: () => closeMcp(session),
   };
 }
 
@@ -381,107 +222,6 @@ function mcpRequestPolicy(options: {
   };
 }
 
-function updateMcpRequestPolicy(
-  policy: McpRequestPolicy,
-  options: {
-    deadlineAt: number;
-    idempotencyKey?: string;
-    abortSignal?: AbortSignal;
-    responseMaxBytes?: number;
-  },
-) {
-  policy.deadlineAt = options.deadlineAt;
-  policy.idempotencyKey = options.idempotencyKey;
-  policy.abortSignal = options.abortSignal;
-  policy.responseMaxBytes = options.responseMaxBytes || MCP_MAX_RESPONSE_BYTES;
-}
-
-function playwrightSessionKey(
-  connector: McpConnectorRecord,
-  scope: McpSessionScope,
-) {
-  return createHash("sha256")
-    .update("omniagent-playwright-client-session-v1\u0000", "utf8")
-    .update(connector.id, "utf8")
-    .update("\u0000", "utf8")
-    .update(connector.endpoint, "utf8")
-    .update("\u0000", "utf8")
-    .update(String(connector.credentialVersion || 0), "utf8")
-    .update("\u0000", "utf8")
-    .update(normalizeTenantId(scope.tenantId), "utf8")
-    .update("\u0000", "utf8")
-    .update(scope.actorId.trim(), "utf8")
-    .update("\u0000", "utf8")
-    .update(scope.executionId.trim(), "utf8")
-    .update("\u0000", "utf8")
-    .update(scope.browserProfile?.id || "temporary", "utf8")
-    .update("\u0000", "utf8")
-    .update(String(scope.browserProfile?.revision || 0), "utf8")
-    .digest("base64url");
-}
-
-function schedulePlaywrightSessionClose(entry: PlaywrightSessionEntry) {
-  if (entry.closed) return;
-  if (entry.idleTimer) clearTimeout(entry.idleTimer);
-  entry.idleTimer = setTimeout(() => {
-    void closePlaywrightSession(entry);
-  }, PLAYWRIGHT_SESSION_IDLE_MS);
-  entry.idleTimer.unref?.();
-}
-
-async function closePlaywrightSession(entry: PlaywrightSessionEntry) {
-  if (entry.closed) return;
-  entry.closed = true;
-  if (entry.idleTimer) {
-    clearTimeout(entry.idleTimer);
-    entry.idleTimer = undefined;
-  }
-  if (entry.promise && playwrightSessions.get(entry.key) === entry.promise) {
-    playwrightSessions.delete(entry.key);
-  }
-  entry.requestPolicy.deadlineAt = Date.now() + 15_000;
-  entry.requestPolicy.idempotencyKey = undefined;
-  entry.requestPolicy.abortSignal = undefined;
-  entry.requestPolicy.responseMaxBytes = MCP_MAX_RESPONSE_BYTES;
-  await closeMcp(entry.session);
-}
-
-function omitMcpImageContent(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return value;
-  }
-  const result = value as Record<string, unknown>;
-  if (!Array.isArray(result.content)) {
-    return result;
-  }
-  let omitted = 0;
-  const content = result.content.flatMap((item) => {
-    if (
-      item &&
-      typeof item === "object" &&
-      !Array.isArray(item) &&
-      (item as { type?: unknown }).type === "image"
-    ) {
-      omitted += 1;
-      return [];
-    }
-    return [item];
-  });
-  if (!omitted) {
-    return result;
-  }
-  return {
-    ...result,
-    content: [
-      ...content,
-      {
-        type: "text",
-        text: `[${omitted} browser ${omitted === 1 ? "frame was" : "frames were"} retained as governed run evidence.]`,
-      },
-    ],
-  };
-}
-
 async function connectMcp(
   connector: McpConnectorRecord,
   options: {
@@ -492,9 +232,9 @@ async function connectMcp(
     sessionScope?: McpSessionScope;
     responseMaxBytes?: number;
     requestPolicy?: McpRequestPolicy;
-    persistentPlaywrightSession?: boolean;
   },
 ): Promise<McpConnectedSession> {
+  assertSupportedMcpConnector(connector);
   if (connector.transport !== "streamable_http") {
     throw new Error(`Unsupported MCP transport: ${connector.transport}`);
   }
@@ -511,8 +251,6 @@ async function connectMcp(
   const auth = await createRequestInit(
     connector,
     options.actorRole,
-    options.sessionScope,
-    options.persistentPlaywrightSession,
   );
   const transport = new StreamableHTTPClientTransport(endpoint, {
     requestInit: auth.requestInit,
@@ -586,12 +324,9 @@ async function closeMcp(session: {
 async function createRequestInit(
   connector: McpConnectorRecord,
   actorRole?: SecurityRole,
-  sessionScope?: McpSessionScope,
-  persistentPlaywrightSession = false,
 ): Promise<{ requestInit: RequestInit; secretValues: string[] }> {
   const headers = new Headers();
   const secretValues: string[] = [];
-  let bearerToken: string | undefined;
   if (connector.authType === "bearer_env") {
     const envName = connector.authTokenEnv?.trim().toUpperCase();
     if (!envName) {
@@ -609,39 +344,10 @@ async function createRequestInit(
     }
     headers.set("authorization", `Bearer ${token}`);
     secretValues.push(token);
-    bearerToken = token;
   } else if (connector.authType === "bearer_vault") {
     const token = await resolveMcpBearerCredential(connector);
-    if (isOfficialBrowserUseMcpEndpoint(connector.endpoint)) {
-      headers.set("x-browser-use-api-key", token);
-    } else {
-      headers.set("authorization", `Bearer ${token}`);
-    }
+    headers.set("authorization", `Bearer ${token}`);
     secretValues.push(token);
-    bearerToken = token;
-  }
-  if (isAsaelPlaywrightMcpEndpoint(connector.endpoint)) {
-    if (!bearerToken) {
-      throw new Error("The Playwright browser service requires an app-managed service token.");
-    }
-    if (!sessionScope) {
-      throw new Error("Playwright browser requests require an explicit tenant, actor, and execution scope.");
-    }
-    const browserScope = createPlaywrightScope(connector, bearerToken, sessionScope);
-    headers.set("x-omniagent-browser-scope", browserScope);
-    if (sessionScope.browserProfile) {
-      const profileAuthority = createPlaywrightProfileAuthority(
-        bearerToken,
-        browserScope,
-        sessionScope,
-      );
-      headers.set("x-omniagent-browser-profile", profileAuthority.locator);
-      headers.set("x-omniagent-browser-profile-grant", profileAuthority.grant);
-      secretValues.push(profileAuthority.grant, profileAuthority.locator);
-    }
-    if (persistentPlaywrightSession) {
-      headers.set("x-omniagent-browser-session", "run");
-    }
   }
   return {
     requestInit: {
@@ -689,12 +395,6 @@ export function inferMcpToolRisk(
 ): ToolRiskLevel {
   const destructive = annotations?.destructiveHint === true;
   const readOnly = annotations?.readOnlyHint === true;
-  if (isAsaelPlaywrightMcpEndpoint(options.endpoint)) {
-    return inferAsaelPlaywrightToolRisk(defaultRisk, options.toolName);
-  }
-  if (isOfficialBrowserUseMcpEndpoint(options.endpoint)) {
-    return inferOfficialBrowserUseToolRisk(defaultRisk, options.toolName);
-  }
   if (
     isOfficialGitHubMcpEndpoint(options.endpoint) &&
     isKnownGitHubMutation(options.toolName)
@@ -719,191 +419,6 @@ export function inferMcpToolRisk(
     remoteFloor = 2;
   }
   return Math.max(defaultRisk, remoteFloor) as ToolRiskLevel;
-}
-
-function inferAsaelPlaywrightToolRisk(
-  defaultRisk: ToolRiskLevel,
-  toolName?: string,
-): ToolRiskLevel {
-  const name = toolName?.trim().toLowerCase();
-  if (
-    name === "browser_evaluate" ||
-    name === "browser_run_code" ||
-    name === "browser_run_code_unsafe" ||
-    name === "browser_file_upload" ||
-    name === "browser_drop" ||
-    name === "browser_network_request"
-  ) {
-    return 3;
-  }
-  if (
-    name === "browser_snapshot" ||
-    name === "browser_take_screenshot" ||
-    name === "browser_console_messages" ||
-    name === "browser_network_requests" ||
-    name === "browser_wait_for" ||
-    name === "browser_find"
-  ) {
-    return 0;
-  }
-  if (
-    name === "browser_navigate" ||
-    name === "browser_navigate_back" ||
-    name === "browser_hover" ||
-    name === "browser_resize" ||
-    name === "browser_tabs" ||
-    name === "browser_close"
-  ) {
-    return Math.max(defaultRisk, 1) as ToolRiskLevel;
-  }
-  if (
-    name === "browser_click" ||
-    name === "browser_type" ||
-    name === "browser_fill_form" ||
-    name === "browser_select_option" ||
-    name === "browser_press_key" ||
-    name === "browser_drag" ||
-    name === "browser_handle_dialog"
-  ) {
-    return Math.max(defaultRisk, 2) as ToolRiskLevel;
-  }
-
-  // The upstream server can add tools independently. Unknown browser powers
-  // remain approval-gated until Asael classifies their exact contract.
-  return Math.max(defaultRisk, 2) as ToolRiskLevel;
-}
-
-function createPlaywrightScope(
-  connector: McpConnectorRecord,
-  token: string,
-  scope?: McpSessionScope,
-) {
-  const tenantId = normalizeTenantId(scope?.tenantId || connector.tenantId);
-  if (tenantId !== normalizeTenantId(connector.tenantId)) {
-    throw new Error("Playwright browser scope does not match the connector tenant.");
-  }
-  const actorId = normalizeScopePart(scope?.actorId || "", "actor");
-  const executionId = normalizeScopePart(
-    scope?.executionId || "",
-    "execution",
-  );
-  const connectorId = normalizeScopePart(connector.id, "connector");
-  return createHmac("sha256", token)
-    .update("omniagent-playwright-scope-v1\u0000", "utf8")
-    .update(tenantId, "utf8")
-    .update("\u0000", "utf8")
-    .update(actorId, "utf8")
-    .update("\u0000", "utf8")
-    .update(executionId, "utf8")
-    .update("\u0000", "utf8")
-    .update(connectorId, "utf8")
-    .update("\u0000", "utf8")
-    .update(scope?.browserProfile?.id || "temporary", "utf8")
-    .update("\u0000", "utf8")
-    .update(String(scope?.browserProfile?.revision || 0), "utf8")
-    .digest("base64url");
-}
-
-export function createPlaywrightProfileAuthority(
-  token: string,
-  browserScope: string,
-  scope: McpSessionScope,
-  now = Date.now(),
-) {
-  const profile = scope.browserProfile;
-  if (!profile) {
-    throw new Error("A consented browser profile is required.");
-  }
-  if (!Number.isSafeInteger(profile.revision) || profile.revision < 1) {
-    throw new Error("Browser profile revision is invalid.");
-  }
-  const domains = normalizeProfileAuthorityDomains(profile.allowedDomains);
-  const locator = createHmac("sha256", token)
-    .update("omniagent-playwright-profile-locator-v1\u0000", "utf8")
-    .update(normalizeTenantId(scope.tenantId), "utf8")
-    .update("\u0000", "utf8")
-    .update(normalizeScopePart(scope.actorId, "actor"), "utf8")
-    .update("\u0000", "utf8")
-    .update(normalizeScopePart(profile.id, "profile"), "utf8")
-    .digest("hex");
-  const payload = Buffer.from(JSON.stringify({
-    v: 1,
-    p: locator,
-    r: profile.revision,
-    d: domains,
-    s: createHash("sha256").update(browserScope, "utf8").digest("hex"),
-    exp: Math.trunc(now + 5 * 60_000),
-  }), "utf8").toString("base64url");
-  const signingKey = createHmac("sha256", token)
-    .update("omniagent-playwright-profile-grant-key-v1", "utf8")
-    .digest();
-  const signature = createHmac("sha256", signingKey)
-    .update(`bpg1.${payload}`, "utf8")
-    .digest("base64url");
-  return { locator, grant: `bpg1.${payload}.${signature}` };
-}
-
-function normalizeProfileAuthorityDomains(values: readonly string[]) {
-  const domains = [...new Set(values.map((value) => value.trim().toLowerCase()))].sort();
-  if (
-    domains.length < 1 ||
-    domains.length > 20 ||
-    domains.some((domain) =>
-      domain.length > 253 ||
-      !domain.includes(".") ||
-      !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])$/.test(domain)
-    )
-  ) {
-    throw new Error("Browser profile domains are invalid.");
-  }
-  return domains;
-}
-
-function normalizeScopePart(value: string, label: string) {
-  const normalized = value.trim();
-  if (!normalized || normalized.length > 240 || /[\u0000-\u001f\u007f]/.test(normalized)) {
-    throw new Error(`Playwright browser ${label} scope is invalid.`);
-  }
-  return normalized;
-}
-
-function normalizeTenantId(value?: string) {
-  return (value || process.env.OMNIAGENT_DEFAULT_TENANT || "default")
-    .trim()
-    .slice(0, 120) || "default";
-}
-
-function inferOfficialBrowserUseToolRisk(
-  defaultRisk: ToolRiskLevel,
-  toolName?: string,
-): ToolRiskLevel {
-  const normalizedToolName = toolName?.trim().toLowerCase();
-  if (normalizedToolName === "get_cookies") {
-    return 3;
-  }
-  if (
-    normalizedToolName === "list_skills" ||
-    normalizedToolName === "list_browser_profiles" ||
-    normalizedToolName === "monitor_task" ||
-    normalizedToolName === "get_session" ||
-    normalizedToolName === "get_session_messages" ||
-    normalizedToolName === "list_sessions"
-  ) {
-    return 0;
-  }
-  if (
-    normalizedToolName === "browser_task" ||
-    normalizedToolName === "execute_skill" ||
-    normalizedToolName === "run_session" ||
-    normalizedToolName === "send_task" ||
-    normalizedToolName === "stop_session"
-  ) {
-    return Math.max(defaultRisk, 2) as ToolRiskLevel;
-  }
-
-  // Browser Use can add tools over time. Until a new contract is reviewed and
-  // classified locally, an unknown browser operation must remain approval-gated.
-  return Math.max(defaultRisk, 2) as ToolRiskLevel;
 }
 
 function isKnownGitHubMutation(toolName?: string) {
@@ -1029,19 +544,26 @@ function connectorErrorMessage(error: unknown) {
     return "MCP request timed out or was cancelled.";
   }
 
-  const errorMessages = errors.map((item) => item.message);
-  if (errorMessages.some((message) => message.includes("ERR_TUNNEL_CONNECTION_FAILED"))) {
-    return "The browser network gateway could not establish a secure connection to the destination.";
-  }
-  if (errorMessages.some((message) => /socket path too long/i.test(message))) {
-    return "The isolated browser runtime could not start.";
-  }
-
   const primary = errors[0]?.message.trim();
   if (primary?.toLowerCase() === "fetch failed") {
     return "MCP endpoint request failed before receiving a response.";
   }
   return primary || "MCP connector request failed.";
+}
+
+function assertSupportedMcpConnector(connector: McpConnectorRecord) {
+  assertMcpEndpointIsSupported(connector.endpoint);
+  if (isRemoteBrowserMcpIdentity(connector)) {
+    throw new Error(RETIRED_REMOTE_BROWSER_MCP_MESSAGE);
+  }
+}
+
+function safeToolName(value: string | undefined) {
+  const normalized = (value || "unnamed")
+    .replace(/[^A-Za-z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+  return JSON.stringify(normalized || "unnamed");
 }
 
 function createValidatedMcpFetch(

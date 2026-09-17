@@ -17,6 +17,7 @@ import {
   saveMcpDiscovery,
 } from "@/lib/connectors/store";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
+import { assertMcpEndpointIsSupported } from "@/lib/connectors/mcp-trust";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry } from "@/lib/observability/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
@@ -175,6 +176,7 @@ async function POSTHandler(request: Request) {
   }
 
   try {
+    assertMcpEndpointIsSupported(parsed.data.endpoint);
     await assertPublicHttpUrl(parsed.data.endpoint, "MCP endpoint");
   } catch (error) {
     return Response.json(

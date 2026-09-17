@@ -14,8 +14,12 @@ import type {
   McpConnectorRecord,
   McpToolRecord,
 } from "@/lib/connectors/types";
+import {
+  isRemoteBrowserMcpIdentity,
+  isRemoteBrowserMcpTool,
+} from "@/lib/connectors/mcp-trust";
 import type { SalesforceSyncHealth } from "@/lib/customer-success/salesforce-contracts";
-import type { UsageSummary, UsageTotals } from "@/lib/usage/summary";
+import type { UsageSummary } from "@/lib/usage/summary";
 
 export const TRUTHFUL_INTEGRATIONS_VERSION =
   "p11.7-truthful-integrations:1" as const;
@@ -274,11 +278,18 @@ export function projectTruthfulIntegrationsOverview(
 
   if (input.mcp.state === "ready") {
     for (const connector of input.mcp.value.connectors) {
+      const connectorTools = input.mcp.value.tools.filter(
+        (tool) => tool.connectorId === connector.id,
+      );
+      if (
+        isRemoteBrowserMcpIdentity(connector) ||
+        connectorTools.some((tool) => isRemoteBrowserMcpTool(tool))
+      ) continue;
       const catalogItem = matchCatalog(connector, "mcp", input.catalog);
       if (catalogItem) matchedCatalogIds.add(catalogItem.id);
       installed.push(projectMcpConnector(
         connector,
-        input.mcp.value.tools.filter((tool) => tool.connectorId === connector.id),
+        connectorTools,
         catalogItem,
         input.usage,
         nowMs,
@@ -622,7 +633,7 @@ function projectMcpConnector(
     },
     sync: contractSync(connectorRecord.lastDiscoveredAt, freshness, "tool discovery"),
     failure,
-    cost: connectorCost(connectorRecord.endpoint, usage),
+    cost: connectorCost(usage),
     nextAction,
     updatedAt: connectorRecord.updatedAt,
     manageHref: "/app/connectors",
@@ -699,7 +710,7 @@ function projectOpenApiConnector(
     },
     sync: contractSync(connectorRecord.lastImportedAt, freshness, "OpenAPI import"),
     failure,
-    cost: connectorCost(connectorRecord.baseUrl, usage),
+    cost: connectorCost(usage),
     nextAction,
     updatedAt: connectorRecord.updatedAt,
     manageHref: "/app/connectors",
@@ -914,48 +925,9 @@ function contractSync(
   };
 }
 
-function connectorCost(location: string, usage: IntegrationSource<UsageSummary>) {
+function connectorCost(usage: IntegrationSource<UsageSummary>) {
   if (usage.state === "unavailable") return unavailableCost();
-  if (!/api\.browser-use\.com/i.test(location)) {
-    return unknownCost("This provider does not report attributable charges into Asael; configured subscriptions and external billing are not inferred.");
-  }
-  const provider = usage.value.periods.month.providers.find((item) => item.id === "browser_use");
-  if (!provider) {
-    return {
-      periodDays: 30 as const,
-      state: "no_recorded_activity" as const,
-      knownEstimatedCostMicrousd: 0,
-      knownCalls: 0,
-      unknownCalls: 0,
-      detail: "No Browser Use calls were recorded in Asael during the last 30 days; this does not assert a zero subscription bill.",
-    };
-  }
-  return usageCost(provider.totals);
-}
-
-function usageCost(totals: UsageTotals) {
-  const knownEstimatedCostMicrousd = Math.round(totals.knownEstimatedCostUsd * 1_000_000);
-  const state = totals.knownCostCalls && totals.unknownCostCalls
-    ? "partial" as const
-    : totals.knownCostCalls
-      ? "known" as const
-      : totals.unknownCostCalls
-        ? "unknown" as const
-        : "no_recorded_activity" as const;
-  return {
-    periodDays: 30 as const,
-    state,
-    knownEstimatedCostMicrousd,
-    knownCalls: totals.knownCostCalls,
-    unknownCalls: totals.unknownCostCalls,
-    detail: state === "known"
-      ? "All recorded Browser Use calls in the last 30 days have an estimated provider cost."
-      : state === "partial"
-        ? "Only part of the recorded Browser Use activity has an estimated provider cost."
-        : state === "unknown"
-          ? "Browser Use activity was recorded, but its provider cost is unavailable."
-          : "No attributable Browser Use activity was recorded; external subscription charges are not inferred.",
-  };
+  return unknownCost("This provider does not report attributable charges into Asael; configured subscriptions and external billing are not inferred.");
 }
 
 function unknownCost(detail: string) {

@@ -77,6 +77,31 @@ describe("POST /api/connectors", () => {
       tools: [],
     });
   });
+
+  it.each([
+    "https://asael.bennierichard.com/api/integrations/playwright/mcp",
+    "https://asael.bennierichard.com/api/integrations/playwright/mcp?transport=sse",
+    "https://omniagent-os-browser.fly.dev/mcp",
+    "https://api.browser-use.com/v3/mcp",
+  ])("rejects retired remote browser endpoint %s before registration", async (endpoint) => {
+    const response = await POST(new Request("http://localhost/api/connectors", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Remote browser",
+        endpoint,
+        discover: false,
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid MCP endpoint",
+      message: expect.stringMatching(/retired/i),
+    });
+    expect(mocks.assertPublicHttpUrl).not.toHaveBeenCalled();
+    expect(mocks.saveMcpConnector).not.toHaveBeenCalled();
+  });
 });
 
 function connector(): McpConnectorRecord {

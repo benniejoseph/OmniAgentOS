@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import {
+  assertMcpEndpointIsSupported,
+  isRetiredRemoteBrowserMcpEndpoint,
+  RETIRED_REMOTE_BROWSER_MCP_MESSAGE,
+} from "@/lib/connectors/mcp-trust";
+import {
   getMcpConnector,
   listMcpTools,
   updateMcpConnector,
@@ -81,6 +86,7 @@ async function PATCHHandler(
 
   try {
     if (parsed.data.endpoint) {
+      assertMcpEndpointIsSupported(parsed.data.endpoint);
       await assertPublicHttpUrl(parsed.data.endpoint, "MCP endpoint");
     }
   } catch (error) {
@@ -96,6 +102,18 @@ async function PATCHHandler(
       return Response.json({ error: "MCP connector not found." }, { status: 404 });
     }
     const nextEndpoint = parsed.data.endpoint || existing.endpoint;
+    if (
+      isRetiredRemoteBrowserMcpEndpoint(nextEndpoint) &&
+      !(Object.keys(parsed.data).length === 1 && parsed.data.status === "disabled")
+    ) {
+      return Response.json(
+        {
+          error: "Invalid MCP endpoint",
+          message: RETIRED_REMOTE_BROWSER_MCP_MESSAGE,
+        },
+        { status: 400 },
+      );
+    }
     const nextAuthType = parsed.data.authType || existing.authType;
     const vaultOriginMatch = existing.credentialConfigured && existing.credentialOriginMatch &&
       new URL(nextEndpoint).origin === new URL(existing.endpoint).origin;
