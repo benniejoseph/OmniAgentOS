@@ -38,13 +38,7 @@ export function isOfficialBrowserUseMcpEndpoint(endpoint?: string) {
       url.hostname === "api.browser-use.com" &&
       url.port === "" &&
       url.username === "" &&
-      url.password === "" &&
-      (
-        url.pathname === "/v3/mcp" ||
-        url.pathname === "/v3/mcp/" ||
-        url.pathname === "/mcp" ||
-        url.pathname === "/mcp/"
-      )
+      url.password === ""
     );
   } catch {
     return false;
@@ -58,6 +52,16 @@ export function isRetiredRemoteBrowserMcpEndpoint(endpoint?: string) {
 
 export function assertMcpEndpointIsSupported(endpoint?: string) {
   if (isRetiredRemoteBrowserMcpEndpoint(endpoint)) {
+    throw new Error(RETIRED_REMOTE_BROWSER_MCP_MESSAGE);
+  }
+}
+
+export function assertMcpConnectorIsSupported(input: {
+  name?: string;
+  endpoint?: string;
+}) {
+  assertMcpEndpointIsSupported(input.endpoint);
+  if (isRemoteBrowserMcpIdentity(input)) {
     throw new Error(RETIRED_REMOTE_BROWSER_MCP_MESSAGE);
   }
 }
@@ -114,9 +118,9 @@ export function isAsaelPlaywrightMcpEndpoint(endpoint?: string) {
       url.username ||
       url.password
     ) return false;
+    if (url.hostname === "omniagent-os-browser.fly.dev") return true;
     const normalized = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
-    return normalized === ASAEL_PLAYWRIGHT_MCP_ENDPOINT ||
-      normalized === LEGACY_PLAYWRIGHT_MCP_ENDPOINT;
+    return normalized === ASAEL_PLAYWRIGHT_MCP_ENDPOINT;
   } catch {
     return false;
   }

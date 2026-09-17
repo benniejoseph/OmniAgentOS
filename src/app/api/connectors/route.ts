@@ -17,7 +17,10 @@ import {
   saveMcpDiscovery,
 } from "@/lib/connectors/store";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
-import { assertMcpEndpointIsSupported } from "@/lib/connectors/mcp-trust";
+import {
+  assertMcpConnectorIsSupported,
+  isRemoteBrowserMcpIdentity,
+} from "@/lib/connectors/mcp-trust";
 import { jsonBodyErrorResponse, parseJsonBody } from "@/lib/http/body";
 import { createRequestTelemetry } from "@/lib/observability/store";
 import { executionScopeFromSecurityContext } from "@/lib/security/execution-scope";
@@ -94,11 +97,16 @@ async function GETHandler(request: Request) {
     listMcpConnectors(100, { tenantId: context.tenantId }),
     listMcpTools(undefined, { tenantId: context.tenantId }),
   ]);
-  const reviewConnectorIds = new Set(
-    tools.filter((tool) => tool.status === "pending_review").map((tool) => tool.connectorId),
+  const visibleConnectors = allConnectors.filter(
+    (connector) => !isRemoteBrowserMcpIdentity(connector),
   );
-  const reviewConnectors = allConnectors.filter((connector) => reviewConnectorIds.has(connector.id));
-  const recentConnectors = allConnectors.slice(0, 20);
+  const visibleConnectorIds = new Set(visibleConnectors.map((connector) => connector.id));
+  const visibleTools = tools.filter((tool) => visibleConnectorIds.has(tool.connectorId));
+  const reviewConnectorIds = new Set(
+    visibleTools.filter((tool) => tool.status === "pending_review").map((tool) => tool.connectorId),
+  );
+  const reviewConnectors = visibleConnectors.filter((connector) => reviewConnectorIds.has(connector.id));
+  const recentConnectors = visibleConnectors.slice(0, 20);
   const connectors = [
     ...new Map(
       [...reviewConnectors, ...recentConnectors].map((connector) => [
@@ -108,14 +116,14 @@ async function GETHandler(request: Request) {
     ).values(),
   ];
   const activeConnectorIds = new Set(
-    allConnectors.filter((connector) => connector.status === "active").map((connector) => connector.id),
+    visibleConnectors.filter((connector) => connector.status === "active").map((connector) => connector.id),
   );
   const stats = {
-    total: allConnectors.length,
+    total: visibleConnectors.length,
     active: activeConnectorIds.size,
-    error: allConnectors.filter((connector) => connector.status === "error").length,
-    toolCount: tools.filter((tool) => tool.status === "active" && activeConnectorIds.has(tool.connectorId)).length,
-    latest: allConnectors.slice(0, 5),
+    error: visibleConnectors.filter((connector) => connector.status === "error").length,
+    toolCount: visibleTools.filter((tool) => tool.status === "active" && activeConnectorIds.has(tool.connectorId)).length,
+    latest: visibleConnectors.slice(0, 5),
   };
 
   const vaultStatus = credentialVaultStatus();
@@ -127,7 +135,7 @@ async function GETHandler(request: Request) {
         connector,
       ),
     })),
-    tools,
+    tools: visibleTools,
     stats: {
       ...stats,
       latest: stats.latest.map(redactMcpConnector),
@@ -176,7 +184,10 @@ async function POSTHandler(request: Request) {
   }
 
   try {
-    assertMcpEndpointIsSupported(parsed.data.endpoint);
+    assertMcpConnectorIsSupported({
+      name: parsed.data.name,
+      endpoint: parsed.data.endpoint,
+    });
     await assertPublicHttpUrl(parsed.data.endpoint, "MCP endpoint");
   } catch (error) {
     return Response.json(

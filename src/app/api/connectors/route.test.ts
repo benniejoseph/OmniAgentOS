@@ -3,6 +3,8 @@ import type { McpConnectorRecord } from "@/lib/connectors/types";
 
 const mocks = vi.hoisted(() => ({
   discoverMcpTools: vi.fn(),
+  listMcpConnectors: vi.fn(),
+  listMcpTools: vi.fn(),
   saveMcpConnector: vi.fn(),
   recordMcpConnectorError: vi.fn(),
   assertPublicHttpUrl: vi.fn(),
@@ -19,8 +21,8 @@ vi.mock("@/lib/db/client", () => ({
 }));
 vi.mock("@/lib/connectors/store", () => ({
   createMcpConnectorRecord: vi.fn(() => connector()),
-  listMcpConnectors: vi.fn(async () => []),
-  listMcpTools: vi.fn(async () => []),
+  listMcpConnectors: mocks.listMcpConnectors,
+  listMcpTools: mocks.listMcpTools,
   recordMcpConnectorError: mocks.recordMcpConnectorError,
   saveMcpConnector: mocks.saveMcpConnector,
   saveMcpDiscovery: vi.fn(),
@@ -40,12 +42,14 @@ vi.mock("@/lib/security/network", () => ({
   assertPublicHttpUrl: mocks.assertPublicHttpUrl,
 }));
 
-import { POST } from "@/app/api/connectors/route";
+import { GET, POST } from "@/app/api/connectors/route";
 
 describe("POST /api/connectors", () => {
   beforeEach(() => {
     const saved = connector();
     mocks.assertPublicHttpUrl.mockReset().mockResolvedValue(undefined);
+    mocks.listMcpConnectors.mockReset().mockResolvedValue([]);
+    mocks.listMcpTools.mockReset().mockResolvedValue([]);
     mocks.saveMcpConnector.mockReset().mockResolvedValue(saved);
     mocks.recordMcpConnectorError.mockReset().mockResolvedValue({
       ...saved,
@@ -55,6 +59,35 @@ describe("POST /api/connectors", () => {
     mocks.discoverMcpTools.mockReset().mockRejectedValue(
       new Error("MCP endpoint connection timed out."),
     );
+  });
+
+  it("omits retired browser connectors and their tools from every list projection", async () => {
+    const retired = connector({
+      id: "retired-browser",
+      name: "Playwright Browser",
+      endpoint: "https://mcp.example.test/mcp",
+      status: "disabled",
+    });
+    const supported = connector({ id: "supported" });
+    mocks.listMcpConnectors.mockResolvedValue([retired, supported]);
+    mocks.listMcpTools.mockResolvedValue([
+      { id: "retired-tool", connectorId: retired.id, status: "disabled" },
+      { id: "supported-tool", connectorId: supported.id, status: "active" },
+    ]);
+
+    const response = await GET(new Request("http://localhost/api/connectors"));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.connectors).toEqual([
+      expect.objectContaining({ id: "supported" }),
+    ]);
+    expect(body.tools).toEqual([
+      expect.objectContaining({ id: "supported-tool" }),
+    ]);
+    expect(body.stats).toMatchObject({ total: 1, active: 1, toolCount: 1 });
+    expect(JSON.stringify(body)).not.toContain("retired-browser");
+    expect(JSON.stringify(body)).not.toContain("retired-tool");
   });
 
   it("returns an upstream failure status instead of reporting a completed action", async () => {
@@ -104,7 +137,7 @@ describe("POST /api/connectors", () => {
   });
 });
 
-function connector(): McpConnectorRecord {
+function connector(overrides: Partial<McpConnectorRecord> = {}): McpConnectorRecord {
   const now = new Date().toISOString();
   return {
     id: "connector-1",
@@ -119,5 +152,6 @@ function connector(): McpConnectorRecord {
     toolCount: 0,
     createdAt: now,
     updatedAt: now,
+    ...overrides,
   };
 }

@@ -62,12 +62,18 @@ describe("isolated browser runtime retirement migration", () => {
   it("disables known browser connectors and scrubs sealed credentials", () => {
     expect(migration).toContain("UPDATE public.omni_mcp_tools tool");
     expect(migration).toContain("UPDATE public.omni_mcp_connectors");
-    expect(migration).toContain("omniagent-os-browser[.]fly[.]dev/mcp");
-    expect(migration).toContain("api[.]browser-use[.]com/(v3/)?mcp");
+    expect(migration).toContain("omniagent-os-browser[.]fly[.]dev(:443)?");
+    expect(migration).toContain("api[.]browser-use[.]com(:443)?");
     expect(migration).toContain("([?#].*)?$");
     expect(migration).toContain("sealed_credential = NULL");
+    expect(migration).toContain("OR auth_token_env IS NOT NULL");
+    expect(migration).toContain("OR credential_version IS NOT NULL");
+    expect(migration).toContain("OR credential_origin IS NOT NULL");
     expect(migration).toContain("status = 'disabled'");
     expect(migration).toContain("Retired browser connector authority or credential remains");
+    expect(migration).toContain("Retired browser tool authority remains active");
+    expect(migration).toContain("tool.input_schema::text");
+    expect(migration).toContain("computer[._[:space:]-]*use");
   });
 
   it("records the exact ordered schema marker", () => {

@@ -6,6 +6,7 @@ import {
   storeMcpBearerCredential,
 } from "@/lib/connectors/credential-store";
 import { discoverMcpTools } from "@/lib/connectors/mcp-client";
+import { assertMcpConnectorIsSupported } from "@/lib/connectors/mcp-trust";
 import {
   getMcpConnector,
   recordMcpConnectorError,
@@ -75,6 +76,7 @@ async function POSTHandler(
     return Response.json({ error: "MCP connector not found." }, { status: 404 });
   }
   try {
+    assertMcpConnectorIsSupported(existing);
     await assertPublicHttpUrl(existing.endpoint, "MCP endpoint");
   } catch (error) {
     return Response.json(

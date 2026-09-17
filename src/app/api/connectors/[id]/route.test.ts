@@ -96,6 +96,33 @@ describe("PATCH /api/connectors/[id]", () => {
       expect.any(Object),
     );
   });
+
+  it("rejects converting a generic connector into a browser controller by name", async () => {
+    mocks.getMcpConnector.mockResolvedValue({
+      ...retiredConnector(),
+      name: "Records MCP",
+      endpoint: "https://mcp.example.test/mcp",
+      status: "disabled",
+    });
+
+    const response = await patch({ name: "Playwright Browser" });
+
+    expect(response.status).toBe(400);
+    expect(mocks.updateMcpConnector).not.toHaveBeenCalled();
+  });
+
+  it("rejects renaming a retired browser connector to evade quarantine", async () => {
+    mocks.getMcpConnector.mockResolvedValue({
+      ...retiredConnector(),
+      endpoint: "https://mcp.example.test/mcp",
+      status: "disabled",
+    });
+
+    const response = await patch({ name: "Records MCP" });
+
+    expect(response.status).toBe(400);
+    expect(mocks.updateMcpConnector).not.toHaveBeenCalled();
+  });
 });
 
 function patch(body: Record<string, unknown>) {

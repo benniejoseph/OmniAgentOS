@@ -274,6 +274,47 @@ describe("P9.3 restorable resources", () => {
     await expect(getMcpConnector(connector.id, { tenantId: "tenant-a" }))
       .resolves.toMatchObject({ authType: "none", status: "disabled" });
   });
+
+  it("refuses to restore a retired remote-browser connector from trash", async () => {
+    const executionScope = scope();
+    const connector = mcpConnector({
+      id: "retired-browser",
+      name: "Playwright Browser",
+      endpoint: "https://mcp.example.test/mcp",
+      status: "disabled",
+    });
+    await saveMcpConnector(connector, { executionScope });
+    const snapshot = await captureRestorableResource(
+      "mcp_connector",
+      connector.id,
+      executionScope,
+    );
+    const target = { kind: "mcp", connector, operationIds: [] };
+    const moved = await moveRestorableResourceToTrash({
+      preview: createTrashPreview({
+        resourceType: "mcp_connector",
+        resourceId: connector.id,
+        target,
+        effectSummary: "Move retired browser connector to trash.",
+      }),
+      displayLabel: connector.name,
+      target,
+      snapshot: snapshot!,
+      executionScope,
+    });
+    const restorePreview = await createTrashLifecyclePreview(
+      moved.item.trashId,
+      "restore",
+      { executionScope },
+    );
+
+    await expect(restoreTrashResource({
+      preview: restorePreview!,
+      executionScope,
+    })).rejects.toThrow(/retired/i);
+    await expect(getMcpConnector(connector.id, { tenantId: "tenant-a" }))
+      .resolves.toBeNull();
+  });
 });
 
 async function restore(trashId: string, executionScope: ReturnType<typeof scope>) {

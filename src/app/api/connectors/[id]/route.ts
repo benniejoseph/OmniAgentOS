@@ -2,7 +2,7 @@ import { z } from "zod";
 import { evaluateConnectorSecretBinding } from "@/lib/connectors/secret-binding";
 import {
   assertMcpEndpointIsSupported,
-  isRetiredRemoteBrowserMcpEndpoint,
+  isRemoteBrowserMcpIdentity,
   RETIRED_REMOTE_BROWSER_MCP_MESSAGE,
 } from "@/lib/connectors/mcp-trust";
 import {
@@ -103,7 +103,13 @@ async function PATCHHandler(
     }
     const nextEndpoint = parsed.data.endpoint || existing.endpoint;
     if (
-      isRetiredRemoteBrowserMcpEndpoint(nextEndpoint) &&
+      (
+        isRemoteBrowserMcpIdentity(existing) ||
+        isRemoteBrowserMcpIdentity({
+          name: parsed.data.name || existing.name,
+          endpoint: nextEndpoint,
+        })
+      ) &&
       !(Object.keys(parsed.data).length === 1 && parsed.data.status === "disabled")
     ) {
       return Response.json(

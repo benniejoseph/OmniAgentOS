@@ -12,6 +12,7 @@ import {
 } from "@/lib/connectors/openapi-client";
 import { inferMcpToolRisk } from "@/lib/connectors/mcp-client";
 import {
+  assertMcpConnectorIsSupported,
   assertMcpEndpointIsSupported,
   isRemoteBrowserMcpTool,
 } from "@/lib/connectors/mcp-trust";
@@ -141,6 +142,23 @@ describe("connector security", () => {
     ).toThrow(/retired/i);
     expect(() =>
       assertMcpEndpointIsSupported("https://api.browser-use.com/v3/mcp")
+    ).toThrow(/retired/i);
+    expect(() =>
+      assertMcpEndpointIsSupported("https://api.browser-use.com:443/anything")
+    ).toThrow(/retired/i);
+    expect(() =>
+      assertMcpEndpointIsSupported("https://omniagent-os-browser.fly.dev:443/status")
+    ).toThrow(/retired/i);
+    expect(() =>
+      assertMcpEndpointIsSupported(
+        "https://asael.bennierichard.com/api/other/../integrations/playwright/mcp",
+      )
+    ).toThrow(/retired/i);
+    expect(() =>
+      assertMcpConnectorIsSupported({
+        name: "Playwright Browser",
+        endpoint: "https://mcp.example.test/mcp",
+      })
     ).toThrow(/retired/i);
     expect(() =>
       assertMcpEndpointIsSupported("https://mcp.example.test/mcp")

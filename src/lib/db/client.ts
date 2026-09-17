@@ -13490,18 +13490,42 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
       SELECT id, tenant_id
       FROM omni_mcp_connectors
       WHERE lower(btrim(endpoint)) ~
-          '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+          '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
         OR lower(btrim(endpoint)) ~
-          '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+          '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
         OR lower(btrim(endpoint)) ~
-          '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$'
+          '^https://api[.]browser-use[.]com(:443)?(/[^?#]*)?([?#].*)?$'
+        OR lower(btrim(name)) ~
+          '(^|[._:/[:space:]-])(browser|playwright|chromium|webdriver|puppeteer|computer[._[:space:]-]*use|remote[._[:space:]-]*desktop)($|[._:/[:space:]-])'
     )
     UPDATE omni_mcp_tools tool
     SET status = 'disabled',
         updated_at = clock_timestamp()
-    FROM retired_connectors connector
-    WHERE tool.connector_id = connector.id
-      AND tool.tenant_id = connector.tenant_id;
+    WHERE EXISTS (
+        SELECT 1
+        FROM retired_connectors connector
+        WHERE tool.connector_id = connector.id
+          AND tool.tenant_id = connector.tenant_id
+      )
+      OR lower(btrim(tool.name)) IN (
+        'execute_skill', 'get_cookies', 'get_session', 'get_session_messages',
+        'list_browser_profiles', 'list_sessions', 'monitor_task', 'run_session',
+        'send_task', 'stop_session'
+      )
+      OR lower(btrim(tool.name)) ~
+        '(^|[._:/-])(browser|playwright|chromium|webdriver|puppeteer|cdp|computer[._-]*use|remote[._-]*desktop)($|[._:/-])'
+      OR (
+        lower(concat_ws(
+          ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
+          tool.output_schema::text, tool.annotations::text
+        )) ~
+          '(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinate)'
+        AND lower(concat_ws(
+          ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
+          tool.output_schema::text, tool.annotations::text
+        )) ~
+          '(navigate|click|type|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)'
+      );
 
     UPDATE omni_mcp_connectors
     SET status = 'disabled',
@@ -13518,11 +13542,13 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         last_error = 'Remote browser automation was retired in schema version 181.',
         updated_at = clock_timestamp()
     WHERE lower(btrim(endpoint)) ~
-        '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+        '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
       OR lower(btrim(endpoint)) ~
-        '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+        '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
       OR lower(btrim(endpoint)) ~
-        '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$';
+        '^https://api[.]browser-use[.]com(:443)?(/[^?#]*)?([?#].*)?$'
+      OR lower(btrim(name)) ~
+        '(^|[._:/[:space:]-])(browser|playwright|chromium|webdriver|puppeteer|computer[._[:space:]-]*use|remote[._[:space:]-]*desktop)($|[._:/[:space:]-])';
 
     COMMENT ON TABLE omni_browser_profiles IS
       'Historical audit records for the retired isolated-browser runtime. New runtime mutations are disabled.';
@@ -13624,19 +13650,53 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         FROM omni_mcp_connectors
         WHERE (
           lower(btrim(endpoint)) ~
-            '^https://asael[.]bennierichard[.]com/api/integrations/playwright/mcp/?([?#].*)?$'
+            '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
           OR lower(btrim(endpoint)) ~
-            '^https://omniagent-os-browser[.]fly[.]dev/mcp/?([?#].*)?$'
+            '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
           OR lower(btrim(endpoint)) ~
-            '^https://api[.]browser-use[.]com/(v3/)?mcp/?([?#].*)?$'
+            '^https://api[.]browser-use[.]com(:443)?(/[^?#]*)?([?#].*)?$'
+          OR lower(btrim(name)) ~
+            '(^|[._:/[:space:]-])(browser|playwright|chromium|webdriver|puppeteer|computer[._[:space:]-]*use|remote[._[:space:]-]*desktop)($|[._:/[:space:]-])'
         ) AND (
           status <> 'disabled'
           OR sealed_credential IS NOT NULL
           OR credential_key_id IS NOT NULL
           OR credential_fingerprint IS NOT NULL
+          OR auth_token_env IS NOT NULL
+          OR credential_version IS NOT NULL
+          OR credential_origin IS NOT NULL
         )
       ) THEN
         RAISE EXCEPTION 'Retired browser connector authority or credential remains'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_mcp_tools tool
+        WHERE tool.status = 'active'
+          AND (
+            lower(btrim(tool.name)) IN (
+              'execute_skill', 'get_cookies', 'get_session', 'get_session_messages',
+              'list_browser_profiles', 'list_sessions', 'monitor_task', 'run_session',
+              'send_task', 'stop_session'
+            )
+            OR lower(btrim(tool.name)) ~
+              '(^|[._:/-])(browser|playwright|chromium|webdriver|puppeteer|cdp|computer[._-]*use|remote[._-]*desktop)($|[._:/-])'
+            OR (
+              lower(concat_ws(
+                ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
+                tool.output_schema::text, tool.annotations::text
+              )) ~
+                '(browser|webpage|web page|page dom|dom selector|css selector|xpath|tab|chromium|playwright|webdriver|puppeteer|accessibility snapshot|remote desktop|screen coordinate)'
+              AND lower(concat_ws(
+                ' ', tool.name, tool.title, tool.description, tool.input_schema::text,
+                tool.output_schema::text, tool.annotations::text
+              )) ~
+                '(navigate|click|type|fill|press key|hover|drag|scroll|select option|handle dialog|take screenshot|capture screen|snapshot|upload file|evaluate javascript|run code|open url|mouse|keyboard)'
+            )
+          )
+      ) THEN
+        RAISE EXCEPTION 'Retired browser tool authority remains active'
           USING ERRCODE = '55000';
       END IF;
     END

@@ -7,6 +7,10 @@ import {
 import { getAppServiceOperationContract } from "@/lib/app-services/registry";
 import { mcpContractReviewSummary, openApiContractReviewSummary } from "@/lib/connectors/contract-review";
 import { discoverMcpTools } from "@/lib/connectors/mcp-client";
+import {
+  assertMcpConnectorIsSupported,
+  isRemoteBrowserMcpIdentity,
+} from "@/lib/connectors/mcp-trust";
 import { importOpenApiSpec, loadOpenApiSpec } from "@/lib/connectors/openapi-importer";
 import {
   createOpenApiConnectorRecord,
@@ -81,8 +85,11 @@ export async function listConnectorsService(caller: AppServiceCaller, input: z.i
     value.kind === "mcp" ? Promise.resolve([]) : listOpenApiConnectors(value.limit, owner),
     value.kind === "mcp" ? Promise.resolve([]) : listOpenApiOperations(undefined, owner),
   ]);
+  const visibleMcpConnectors = mcpConnectors.filter(
+    (connector) => !isRemoteBrowserMcpIdentity(connector),
+  );
   const connectors = [
-    ...mcpConnectors.map((connector) => ({ kind: "mcp" as const, connector: redactConnector(connector), review: mcpContractReviewSummary(mcpTools.filter((tool) => tool.connectorId === connector.id), connector) })),
+    ...visibleMcpConnectors.map((connector) => ({ kind: "mcp" as const, connector: redactConnector(connector), review: mcpContractReviewSummary(mcpTools.filter((tool) => tool.connectorId === connector.id), connector) })),
     ...openApiConnectors.map((connector) => ({ kind: "openapi" as const, connector: redactConnector(connector), review: openApiContractReviewSummary(openApiOperations.filter((operation) => operation.connectorId === connector.id), connector) })),
   ];
   return completeAppServiceCall(authorized, { connectors }, { resourceCount: connectors.length });
@@ -94,6 +101,9 @@ export async function showConnectorService(caller: AppServiceCaller, input: z.in
   const owner = { tenantId: caller.context.tenantId };
   if (value.kind === "mcp") {
     const [connector, tools] = await Promise.all([getMcpConnector(value.connectorId, owner), listMcpTools(value.connectorId, owner)]);
+    if (connector && isRemoteBrowserMcpIdentity(connector)) {
+      return completeAppServiceCall(authorized, { kind: value.kind, connector: null, operations: [] }, { resourceCount: 0 });
+    }
     return completeAppServiceCall(authorized, { kind: value.kind, connector: connector ? redactConnector(connector) : null, operations: tools }, { resourceCount: connector ? 1 : 0 });
   }
   const [connector, operations] = await Promise.all([getOpenApiConnector(value.connectorId, owner), listOpenApiOperations(value.connectorId, owner)]);
@@ -104,6 +114,9 @@ export async function registerConnectorService(caller: AppServiceCaller, input: 
   const value = registerSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.connectors.register"));
   const targetUrl = value.kind === "mcp" ? value.endpoint! : value.baseUrl!;
+  if (value.kind === "mcp") {
+    assertMcpConnectorIsSupported({ name: value.name, endpoint: value.endpoint });
+  }
   await assertPublicHttpUrl(targetUrl, `${value.kind} connector URL`);
   if (value.specUrl) await assertPublicHttpUrl(value.specUrl, "OpenAPI spec URL");
   assertSecretBinding(caller, value.authType === "none" ? undefined : value.authTokenEnv, targetUrl);
@@ -130,6 +143,11 @@ export async function updateConnectorService(caller: AppServiceCaller, input: z.
   if (value.kind === "mcp") {
     const current = await getMcpConnector(value.connectorId, owner);
     if (!current) return completeAppServiceCall(authorized, { kind: value.kind, connector: null }, { resourceCount: 0 });
+    assertMcpConnectorIsSupported(current);
+    assertMcpConnectorIsSupported({
+      name: value.name || current.name,
+      endpoint: value.endpoint || current.endpoint,
+    });
     if (value.endpoint) await assertPublicHttpUrl(value.endpoint, "MCP endpoint");
     if (value.status === "active") {
       const tools = await listMcpTools(value.connectorId, owner);
@@ -161,6 +179,7 @@ export async function refreshConnectorService(caller: AppServiceCaller, input: z
   if (value.kind === "mcp") {
     const connector = await getMcpConnector(value.connectorId, owner);
     if (!connector) return completeAppServiceCall(authorized, { kind: value.kind, connector: null, operations: [] }, { resourceCount: 0 });
+    assertMcpConnectorIsSupported(connector);
     const discovery = await discoverMcpTools(connector, { actorId: caller.context.actorId, actorRole: caller.context.role });
     const saved = await saveMcpDiscovery({ connector, tools: discovery.tools, capabilities: discovery.capabilities, instructions: discovery.instructions, serverVersion: discovery.serverVersion }, { executionScope: caller.executionScope! });
     return completeAppServiceCall(authorized, { kind: value.kind, connector: redactConnector(saved.connector), operations: saved.tools, review: mcpContractReviewSummary(saved.tools, saved.connector) });
@@ -182,6 +201,15 @@ export async function reviewConnectorService(caller: AppServiceCaller, input: z.
   const value = reviewSchema.parse(input);
   const authorized = authorizeAppServiceCall(caller, getAppServiceOperationContract("app.connectors.review"));
   const options = { executionScope: caller.executionScope! };
+  if (value.kind === "mcp") {
+    const connector = await getMcpConnector(value.connectorId, {
+      tenantId: caller.context.tenantId,
+    });
+    if (!connector) {
+      return completeAppServiceCall(authorized, { kind: value.kind, result: null }, { resourceCount: 0 });
+    }
+    assertMcpConnectorIsSupported(connector);
+  }
   const result = value.kind === "mcp"
     ? await promoteMcpContracts({ connectorId: value.connectorId, expectedFingerprint: value.expectedFingerprint }, options)
     : await promoteOpenApiContracts({ connectorId: value.connectorId, expectedFingerprint: value.expectedFingerprint }, options);
