@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../app/brand/asael_mark.dart';
+import '../../../app/macos/macos_page_scaffold.dart';
+import '../../../app/platform/macos_presentation.dart';
+import '../../../app/theme/macos_workspace_backdrop.dart';
 import '../../../core/auth/biometric_gate.dart';
 import '../../../core/storage/secure_session_store.dart';
 import '../application/session_controller.dart';
@@ -14,6 +18,24 @@ class SessionBootstrapScreen extends ConsumerWidget {
     final biometricLocked = session.error is BiometricGateException;
     final migrationRequired =
         session.error is SecureStoreMigrationRequiredException;
+    if (usesMacosPresentation()) {
+      return _MacosSessionBootstrap(
+        session: session,
+        biometricLocked: biometricLocked,
+        migrationRequired: migrationRequired,
+        onPrimary: () {
+          final controller = ref.read(sessionControllerProvider.notifier);
+          if (migrationRequired) {
+            controller.migrateLegacyCredentials();
+          } else {
+            controller.retry();
+          }
+        },
+        onClear: migrationRequired
+            ? null
+            : () => ref.read(sessionControllerProvider.notifier).signOut(),
+      );
+    }
     return Scaffold(
       body: Center(
         child: AnimatedSwitcher(
@@ -122,6 +144,128 @@ class SessionBootstrapScreen extends ConsumerWidget {
                     ),
                   ],
                 ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MacosSessionBootstrap extends StatelessWidget {
+  const _MacosSessionBootstrap({
+    required this.session,
+    required this.biometricLocked,
+    required this.migrationRequired,
+    required this.onPrimary,
+    required this.onClear,
+  });
+
+  final AsyncValue<Object?> session;
+  final bool biometricLocked;
+  final bool migrationRequired;
+  final VoidCallback onPrimary;
+  final VoidCallback? onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final failed = session.hasError;
+    final title = migrationRequired
+        ? 'Upgrade your protected session'
+        : biometricLocked
+        ? 'Unlock Asael'
+        : 'This session needs attention';
+    final detail = migrationRequired
+        ? 'Move the previous credential into this Mac’s protected storage before continuing.'
+        : biometricLocked
+        ? 'Use the enrolled biometric on this Mac to release your workspace credential.'
+        : 'Asael could not confirm the saved session. Retry the secure check or clear it and sign in again.';
+    return Scaffold(
+      body: MacosWorkspaceBackdrop(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: MacosPane(
+              padding: const EdgeInsets.all(24),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 140),
+                child: failed
+                    ? Column(
+                        key: const ValueKey('macos-bootstrap-error'),
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const AsaelMark(size: 34),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  title,
+                                  style: Theme.of(context).textTheme.titleLarge,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Text(detail),
+                          const SizedBox(height: 20),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              if (onClear != null)
+                                TextButton(
+                                  onPressed: onClear,
+                                  child: const Text('Sign in again'),
+                                ),
+                              const SizedBox(width: 8),
+                              FilledButton.icon(
+                                onPressed: onPrimary,
+                                icon: Icon(
+                                  migrationRequired
+                                      ? Icons.upgrade_rounded
+                                      : biometricLocked
+                                      ? Icons.fingerprint_rounded
+                                      : Icons.refresh_rounded,
+                                ),
+                                label: Text(
+                                  migrationRequired
+                                      ? 'Upgrade securely'
+                                      : biometricLocked
+                                      ? 'Unlock'
+                                      : 'Retry session',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      )
+                    : Column(
+                        key: const ValueKey('macos-bootstrap-loading'),
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const AsaelMark(size: 42),
+                          const SizedBox(height: 20),
+                          Text(
+                            'Opening your private workspace',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Verifying this Mac and reconciling protected session state.',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                          ),
+                          const SizedBox(height: 20),
+                          const LinearProgressIndicator(minHeight: 2),
+                        ],
+                      ),
+              ),
+            ),
+          ),
         ),
       ),
     );

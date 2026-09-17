@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/brand/asael_mark.dart';
+import '../../../app/macos/macos_page_scaffold.dart';
+import '../../../app/platform/macos_presentation.dart';
+import '../../../app/theme/macos_workspace_backdrop.dart';
 import '../application/session_controller.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -34,6 +37,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(sessionControllerProvider);
+    if (usesMacosPresentation()) {
+      return _buildMacosLogin(context, session);
+    }
     return Scaffold(
       body: LayoutBuilder(
         builder: (context, constraints) {
@@ -90,6 +96,287 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       ),
     );
   }
+
+  Widget _buildMacosLogin(
+    BuildContext context,
+    AsyncValue<Object?> session,
+  ) => Scaffold(
+    body: MacosWorkspaceBackdrop(
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 18, 22, 0),
+              child: Row(
+                children: [
+                  const AsaelMark(size: 30),
+                  const SizedBox(width: 9),
+                  const AsaelWordmark(compact: true),
+                  const Spacer(),
+                  Icon(
+                    Icons.lock_outline_rounded,
+                    size: 15,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Private workspace',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final showsContext = constraints.maxWidth >= 820;
+                  return Center(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.all(28),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          if (showsContext) ...[
+                            const SizedBox(
+                              width: 260,
+                              child: _MacLoginContext(),
+                            ),
+                            const SizedBox(width: 24),
+                          ],
+                          SizedBox(
+                            width: constraints.maxWidth < 520
+                                ? constraints.maxWidth - 56
+                                : 420,
+                            child: MacosPane(
+                              padding: const EdgeInsets.all(24),
+                              child: AutofillGroup(
+                                child: Form(
+                                  key: _formKey,
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Text(
+                                        'Sign in to Asael',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .headlineSmall,
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'Continue to your encrypted personal workspace on this Mac.',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurfaceVariant,
+                                            ),
+                                      ),
+                                      const SizedBox(height: 22),
+                                      TextFormField(
+                                        key: const ValueKey(
+                                          'macos-login-email',
+                                        ),
+                                        controller: _email,
+                                        autofocus: true,
+                                        keyboardType:
+                                            TextInputType.emailAddress,
+                                        autofillHints: const [
+                                          AutofillHints.email,
+                                        ],
+                                        textInputAction: TextInputAction.next,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Email',
+                                          prefixIcon: Icon(
+                                            Icons.alternate_email_rounded,
+                                          ),
+                                        ),
+                                        validator: (value) =>
+                                            value != null && value.contains('@')
+                                            ? null
+                                            : 'Enter a valid email',
+                                      ),
+                                      const SizedBox(height: 12),
+                                      TextFormField(
+                                        key: const ValueKey(
+                                          'macos-login-password',
+                                        ),
+                                        controller: _password,
+                                        obscureText: _obscure,
+                                        autofillHints: const [
+                                          AutofillHints.password,
+                                        ],
+                                        onFieldSubmitted: (_) => _submit(),
+                                        decoration: InputDecoration(
+                                          labelText: 'Password',
+                                          prefixIcon: const Icon(
+                                            Icons.lock_outline_rounded,
+                                          ),
+                                          suffixIcon: IconButton(
+                                            tooltip: _obscure
+                                                ? 'Show password'
+                                                : 'Hide password',
+                                            onPressed: () => setState(
+                                              () => _obscure = !_obscure,
+                                            ),
+                                            icon: Icon(
+                                              _obscure
+                                                  ? Icons.visibility_outlined
+                                                  : Icons
+                                                        .visibility_off_outlined,
+                                            ),
+                                          ),
+                                        ),
+                                        validator: (value) =>
+                                            (value?.length ?? 0) >= 8
+                                            ? null
+                                            : 'Use at least 8 characters',
+                                      ),
+                                      AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 140,
+                                        ),
+                                        child: session.hasError
+                                            ? Padding(
+                                                key: ValueKey(session.error),
+                                                padding: const EdgeInsets.only(
+                                                  top: 12,
+                                                ),
+                                                child: Semantics(
+                                                  liveRegion: true,
+                                                  child: Text(
+                                                    'Sign-in could not be completed. Check your details and connection, then try again.',
+                                                    style: TextStyle(
+                                                      color: Theme.of(context)
+                                                          .colorScheme
+                                                          .error,
+                                                    ),
+                                                  ),
+                                                ),
+                                              )
+                                            : const SizedBox.shrink(),
+                                      ),
+                                      const SizedBox(height: 18),
+                                      FilledButton.icon(
+                                        key: const ValueKey(
+                                          'macos-login-submit',
+                                        ),
+                                        onPressed: session.isLoading
+                                            ? null
+                                            : _submit,
+                                        icon: session.isLoading
+                                            ? const SizedBox.square(
+                                                dimension: 16,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              )
+                                            : const Icon(Icons.login_rounded),
+                                        label: Text(
+                                          session.isLoading
+                                              ? 'Securing session…'
+                                              : 'Sign in',
+                                        ),
+                                      ),
+                                      const SizedBox(height: 14),
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            Icons.enhanced_encryption_outlined,
+                                            size: 14,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .onSurfaceVariant,
+                                          ),
+                                          const SizedBox(width: 6),
+                                          Flexible(
+                                            child: Text(
+                                              'Credentials protected by this Mac',
+                                              textAlign: TextAlign.center,
+                                              style: Theme.of(context)
+                                                  .textTheme
+                                                  .bodySmall,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _MacLoginContext extends StatelessWidget {
+  const _MacLoginContext();
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        'Your workspace, on this Mac',
+        style: Theme.of(context).textTheme.titleLarge,
+      ),
+      const SizedBox(height: 9),
+      Text(
+        'Conversation, files, approvals, and computer use stay connected to the same governed account.',
+        style: Theme.of(context).textTheme.bodyMedium
+            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+      ),
+      const SizedBox(height: 18),
+      const _MacLoginFact(
+        icon: Icons.lock_outline_rounded,
+        text: 'Encrypted native session storage',
+      ),
+      const SizedBox(height: 10),
+      const _MacLoginFact(
+        icon: Icons.shield_outlined,
+        text: 'Governed actions and explicit approvals',
+      ),
+      const SizedBox(height: 10),
+      const _MacLoginFact(
+        icon: Icons.sync_rounded,
+        text: 'Offline-safe reconnect and reconciliation',
+      ),
+    ],
+  );
+}
+
+class _MacLoginFact extends StatelessWidget {
+  const _MacLoginFact({required this.icon, required this.text});
+
+  final IconData icon;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Icon(icon, size: 17, color: Theme.of(context).colorScheme.primary),
+      const SizedBox(width: 8),
+      Expanded(child: Text(text)),
+    ],
+  );
 }
 
 class _DesktopStory extends StatelessWidget {
