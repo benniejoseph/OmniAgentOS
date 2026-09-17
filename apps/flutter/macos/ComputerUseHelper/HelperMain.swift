@@ -11,8 +11,51 @@ private enum HelperFailure: Error {
   case rejected(String)
 }
 
+enum FocusSafeSnapshotDisposition: Equatable {
+  case alreadyFocused
+  case restoreFromTrustedHost
+  case stale
+}
+
+enum FocusSafeSnapshotPolicy {
+  // Approval may put the verified Asael parent in front. No other foreground
+  // process is allowed to trigger automatic focus restoration.
+  static func disposition(
+    expectedPID: pid_t,
+    expectedBundleIdentifier: String?,
+    currentPID: pid_t?,
+    currentBundleIdentifier: String?,
+    focusedWindowMatches: Bool,
+    trustedHostPID: pid_t,
+    trustedHostBundleIdentifier: String
+  ) -> FocusSafeSnapshotDisposition {
+    if currentPID == expectedPID {
+      guard currentBundleIdentifier == expectedBundleIdentifier else { return .stale }
+      if focusedWindowMatches {
+        return .alreadyFocused
+      }
+      return (expectedPID == trustedHostPID
+          && expectedBundleIdentifier == trustedHostBundleIdentifier)
+        ? .restoreFromTrustedHost
+        : .stale
+    }
+    return (currentPID == trustedHostPID
+        && currentBundleIdentifier == trustedHostBundleIdentifier)
+      ? .restoreFromTrustedHost
+      : .stale
+  }
+}
+
+struct SnapshotElementIdentity: Equatable {
+  let role: String
+  let subrole: String?
+  let label: String?
+  let value: String?
+  let frame: CGRect?
+}
+
 private enum ParentVerifier {
-  private static let parentIdentifier = "app.omniagent.omniagent"
+  static let parentIdentifier = "app.omniagent.omniagent"
   private static let helperIdentifier = "app.omniagent.omniagent.computer-use-helper"
 
   static func verify() -> Bool {
@@ -127,13 +170,22 @@ private final class ComputerUseExecutor {
   private static let maximumSnapshotBytes = 96 * 1_024
   private static let maximumScreenshotBytes = 1_500_000
 
+  private let trustedHostPID = getppid()
   private let snapshotNonce = UUID().uuidString.lowercased()
   private var snapshotCounter = 0
   private var snapshotRevision = ""
+  private var snapshotTargetApplication: NSRunningApplication?
   private var snapshotFrontmostPID: pid_t?
+  private var snapshotFrontmostBundleIdentifier: String?
   private var snapshotFocusedWindow: AXUIElement?
+  private var snapshotFocusedElement: AXUIElement?
+  private var snapshotFocusedElementIdentity: SnapshotElementIdentity?
+  private var snapshotWindowIdentity: SnapshotElementIdentity?
   private var snapshotDisplayBounds: [CGRect] = []
+  // Accessibility references and identities live only for this helper process.
+  // They are never included in a command completion or persisted by the host.
   private var elements: [String: AXUIElement] = [:]
+  private var elementIdentities: [String: SnapshotElementIdentity] = [:]
   private var completed: [String: [String: Any]] = [:]
   private var completionOrder: [String] = []
 
@@ -272,18 +324,26 @@ private final class ComputerUseExecutor {
     snapshotCounter += 1
     snapshotRevision = revisionToken(counter: snapshotCounter)
     elements.removeAll(keepingCapacity: true)
+    elementIdentities.removeAll(keepingCapacity: true)
     let app = NSWorkspace.shared.frontmostApplication
     if let bundleId = app?.bundleIdentifier,
        Self.restrictedAutomationBundleIdentifiers.contains(bundleId) {
       throw HelperFailure.rejected("restricted_application_refused")
     }
+    snapshotTargetApplication = app
     snapshotFrontmostPID = app?.processIdentifier
-    snapshotFocusedWindow = app.flatMap { application in
-      axElementAttribute(
-        AXUIElementCreateApplication(application.processIdentifier),
-        kAXFocusedWindowAttribute as String
-      )
+    snapshotFrontmostBundleIdentifier = app?.bundleIdentifier
+    let applicationElement = app.map {
+      AXUIElementCreateApplication($0.processIdentifier)
     }
+    snapshotFocusedWindow = applicationElement.flatMap {
+      axElementAttribute($0, kAXFocusedWindowAttribute as String)
+    }
+    snapshotFocusedElement = applicationElement.flatMap {
+      axElementAttribute($0, kAXFocusedUIElementAttribute as String)
+    }
+    snapshotFocusedElementIdentity = snapshotFocusedElement.flatMap(elementIdentity)
+    snapshotWindowIdentity = snapshotFocusedWindow.flatMap(elementIdentity)
     snapshotDisplayBounds = activeDisplayBounds()
     let frontmost = app.map(frontmostApplication)
     let accessibility = app.map { accessibilitySnapshot(pid: $0.processIdentifier) }
@@ -340,13 +400,13 @@ private final class ComputerUseExecutor {
 
     let identifier = "e:\(snapshotRevision.prefix(12)):\(elements.count + 1)"
     elements[identifier] = element
-    let role = stringAttribute(element, kAXRoleAttribute as String) ?? "AXElement"
-    let subrole = stringAttribute(element, kAXSubroleAttribute as String)
+    let identity = elementIdentity(element)
+    if let identity { elementIdentities[identifier] = identity }
+    let role = identity?.role ?? "AXElement"
+    let subrole = identity?.subrole
     let secure = isSecure(role: role, subrole: subrole)
-    let title = stringAttribute(element, kAXTitleAttribute as String)
-      ?? stringAttribute(element, kAXDescriptionAttribute as String)
-      ?? stringAttribute(element, kAXHelpAttribute as String)
-    let value = secure ? "[secure]" : safeValue(element)
+    let title = identity?.label
+    let value = secure ? "[secure]" : identity?.value
     var attributes = ["id=\(identifier)", "role=\(bounded(role, limit: 80))"]
     if let subrole { attributes.append("subrole=\(bounded(subrole, limit: 80))") }
     if let title, !title.isEmpty { attributes.append("label=\(quoted(title))") }
@@ -373,9 +433,14 @@ private final class ComputerUseExecutor {
           let elementId = input["elementId"] as? String,
           let revision = input["snapshotRevision"] as? String,
           elementId.hasPrefix("e:\(revision.prefix(12)):"),
-          let element = elements[elementId]
+          let element = elements[elementId],
+          let identity = elementIdentities[elementId]
     else { throw HelperFailure.rejected("stale_or_invalid_element") }
-    try verifyObservedTarget(revision: revision)
+    try verifyObservedTarget(
+      revision: revision,
+      expectedElement: element,
+      expectedIdentity: identity
+    )
     let status = AXUIElementPerformAction(element, kAXPressAction as CFString)
     guard status == .success else { throw HelperFailure.rejected("press_failed") }
     return result(summary: "Pressed the approved accessibility element.")
@@ -386,22 +451,34 @@ private final class ComputerUseExecutor {
     guard let revision = input["snapshotRevision"] as? String else {
       throw HelperFailure.rejected("invalid_input")
     }
-    try verifyObservedTarget(revision: revision)
     let point: CGPoint
+    let expectedElement: AXUIElement
+    let expectedIdentity: SnapshotElementIdentity
     if let elementId = input["elementId"] as? String,
        input.keys.allSatisfy({ $0 == "elementId" || $0 == "snapshotRevision" }),
        elementId.hasPrefix("e:\(revision.prefix(12)):"),
        let element = elements[elementId],
+       let identity = elementIdentities[elementId],
        let targetFrame = frame(element) {
       point = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
+      expectedElement = element
+      expectedIdentity = identity
     } else if let x = number(input["x"]),
               let y = number(input["y"]),
               input.keys.allSatisfy({ $0 == "x" || $0 == "y" || $0 == "snapshotRevision" }),
-              pointIsOnActiveDisplay(CGPoint(x: x, y: y)) {
+              pointIsOnActiveDisplay(CGPoint(x: x, y: y)),
+              let observedTarget = observedTarget(at: CGPoint(x: x, y: y)) {
       point = CGPoint(x: x, y: y)
+      expectedElement = observedTarget.element
+      expectedIdentity = observedTarget.identity
     } else {
       throw HelperFailure.rejected("invalid_input")
     }
+    try verifyObservedTarget(
+      revision: revision,
+      expectedElement: expectedElement,
+      expectedIdentity: expectedIdentity
+    )
     guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
                              mouseCursorPosition: point, mouseButton: .left),
           let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
@@ -419,7 +496,12 @@ private final class ComputerUseExecutor {
           !text.isEmpty,
           text.utf16.count <= Self.maximumTextUnits
     else { throw HelperFailure.rejected("invalid_input") }
-    try verifyObservedTarget(revision: revision)
+    let focusTarget = try observedFocusTarget(requireFocusedElement: true)
+    try verifyObservedTarget(
+      revision: revision,
+      expectedElement: focusTarget.element,
+      expectedIdentity: focusTarget.identity
+    )
     try verifyKeyboardTarget()
     let units = Array(text.utf16)
     var offset = 0
@@ -447,7 +529,12 @@ private final class ComputerUseExecutor {
           let modifierNames = input["modifiers"] as? [String],
           modifierNames.count <= 4
     else { throw HelperFailure.rejected("invalid_input") }
-    try verifyObservedTarget(revision: revision)
+    let focusTarget = try observedFocusTarget(requireFocusedElement: true)
+    try verifyObservedTarget(
+      revision: revision,
+      expectedElement: focusTarget.element,
+      expectedIdentity: focusTarget.identity
+    )
     try verifyKeyboardTarget()
     var flags: CGEventFlags = []
     for modifier in modifierNames {
@@ -488,7 +575,12 @@ private final class ComputerUseExecutor {
             wheel3: 0
           )
     else { throw HelperFailure.rejected("invalid_input") }
-    try verifyObservedTarget(revision: revision)
+    let focusTarget = try observedFocusTarget()
+    try verifyObservedTarget(
+      revision: revision,
+      expectedElement: focusTarget.element,
+      expectedIdentity: focusTarget.identity
+    )
     event.post(tap: .cghidEventTap)
     return result(summary: "Scrolled the active application.")
   }
@@ -608,6 +700,64 @@ private final class ComputerUseExecutor {
     return nil
   }
 
+  private func elementIdentity(_ element: AXUIElement) -> SnapshotElementIdentity? {
+    guard let role = stringAttribute(element, kAXRoleAttribute as String) else { return nil }
+    let subrole = stringAttribute(element, kAXSubroleAttribute as String)
+    let secure = isSecure(role: role, subrole: subrole)
+    let label = stringAttribute(element, kAXTitleAttribute as String)
+      ?? stringAttribute(element, kAXDescriptionAttribute as String)
+      ?? stringAttribute(element, kAXHelpAttribute as String)
+    return SnapshotElementIdentity(
+      role: bounded(role, limit: 80),
+      subrole: subrole.map { bounded($0, limit: 80) },
+      label: label.map { bounded($0, limit: 240) },
+      value: secure ? "[secure]" : safeValue(element),
+      frame: frame(element)
+    )
+  }
+
+  private func observedFocusTarget(
+    requireFocusedElement: Bool = false
+  ) throws -> (element: AXUIElement, identity: SnapshotElementIdentity) {
+    if let snapshotFocusedElement, let snapshotFocusedElementIdentity {
+      return (snapshotFocusedElement, snapshotFocusedElementIdentity)
+    }
+    guard !requireFocusedElement,
+          let snapshotFocusedWindow,
+          let snapshotWindowIdentity
+    else { throw HelperFailure.rejected("stale_observation") }
+    return (snapshotFocusedWindow, snapshotWindowIdentity)
+  }
+
+  private func observedTarget(
+    at point: CGPoint
+  ) -> (element: AXUIElement, identity: SnapshotElementIdentity)? {
+    var selected: (
+      element: AXUIElement,
+      identity: SnapshotElementIdentity,
+      area: CGFloat,
+      order: Int
+    )?
+    for (identifier, element) in elements {
+      guard let identity = elementIdentities[identifier],
+            let candidateFrame = identity.frame,
+            candidateFrame.contains(point)
+      else { continue }
+      let candidateArea = max(1, candidateFrame.width * candidateFrame.height)
+      let candidateOrder = Int(identifier.split(separator: ":").last ?? "0") ?? 0
+      if let current = selected {
+        if candidateArea < current.area
+          || (candidateArea == current.area && candidateOrder > current.order) {
+          selected = (element, identity, candidateArea, candidateOrder)
+        }
+      } else {
+        selected = (element, identity, candidateArea, candidateOrder)
+      }
+    }
+    guard let selected else { return nil }
+    return (selected.element, selected.identity)
+  }
+
   private func frame(_ element: AXUIElement) -> CGRect? {
     guard let rawPosition = copyAttribute(element, kAXPositionAttribute as String),
           CFGetTypeID(rawPosition) == AXValueGetTypeID(),
@@ -664,25 +814,149 @@ private final class ComputerUseExecutor {
       .joined()
   }
 
-  private func verifyObservedTarget(revision: String) throws {
+  private func verifyObservedTarget(
+    revision: String,
+    expectedElement: AXUIElement,
+    expectedIdentity: SnapshotElementIdentity
+  ) throws {
     guard revision.count == 64,
           revision == snapshotRevision,
           revision.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil,
+          let targetApplication = snapshotTargetApplication,
           let expectedPID = snapshotFrontmostPID,
-          let frontmost = NSWorkspace.shared.frontmostApplication,
-          frontmost.processIdentifier == expectedPID,
+          targetApplication.processIdentifier == expectedPID,
+          !targetApplication.isTerminated,
+          targetApplication.bundleIdentifier == snapshotFrontmostBundleIdentifier,
           activeDisplayBounds() == snapshotDisplayBounds,
-          !Self.restrictedAutomationBundleIdentifiers.contains(frontmost.bundleIdentifier ?? "")
+          !Self.restrictedAutomationBundleIdentifiers.contains(
+            snapshotFrontmostBundleIdentifier ?? ""
+          )
     else { throw HelperFailure.rejected("stale_observation") }
-    if let snapshotFocusedWindow {
-      let application = AXUIElementCreateApplication(expectedPID)
-      guard let currentWindow = axElementAttribute(
+
+    let frontmost = NSWorkspace.shared.frontmostApplication
+    let focusedWindowMatches = currentFocusedWindow(pid: expectedPID).map { currentWindow in
+      snapshotFocusedWindow.map { CFEqual($0, currentWindow) } ?? true
+    } ?? (snapshotFocusedWindow == nil)
+    let disposition = FocusSafeSnapshotPolicy.disposition(
+      expectedPID: expectedPID,
+      expectedBundleIdentifier: snapshotFrontmostBundleIdentifier,
+      currentPID: frontmost?.processIdentifier,
+      currentBundleIdentifier: frontmost?.bundleIdentifier,
+      focusedWindowMatches: focusedWindowMatches,
+      trustedHostPID: trustedHostPID,
+      trustedHostBundleIdentifier: ParentVerifier.parentIdentifier
+    )
+    switch disposition {
+    case .alreadyFocused:
+      break
+    case .restoreFromTrustedHost:
+      try restoreObservedTarget(targetApplication)
+    case .stale:
+      throw HelperFailure.rejected("stale_observation")
+    }
+
+    guard revision == snapshotRevision,
+          let currentFrontmost = NSWorkspace.shared.frontmostApplication,
+          currentFrontmost.processIdentifier == expectedPID,
+          currentFrontmost.bundleIdentifier == snapshotFrontmostBundleIdentifier,
+          activeDisplayBounds() == snapshotDisplayBounds,
+          observedWindowIsCurrent(pid: expectedPID)
+    else { throw HelperFailure.rejected("stale_observation") }
+
+    let application = AXUIElementCreateApplication(expectedPID)
+    let refreshedIdentity: SnapshotElementIdentity?
+    if let snapshotFocusedElement,
+       CFEqual(snapshotFocusedElement, expectedElement) {
+      guard let currentFocusedElement = axElementAttribute(
         application,
-        kAXFocusedWindowAttribute as String
-      ), CFEqual(snapshotFocusedWindow, currentWindow) else {
+        kAXFocusedUIElementAttribute as String
+      ), CFEqual(currentFocusedElement, expectedElement) else {
         throw HelperFailure.rejected("stale_observation")
       }
+      refreshedIdentity = elementIdentity(currentFocusedElement)
+    } else {
+      let root = currentFocusedWindow(pid: expectedPID) ?? application
+      var visited = 0
+      refreshedIdentity = findRefreshedIdentity(
+        for: expectedElement,
+        in: root,
+        depth: 0,
+        visited: &visited
+      )
     }
+    guard refreshedIdentity == expectedIdentity else {
+      throw HelperFailure.rejected("stale_observation")
+    }
+  }
+
+  private func restoreObservedTarget(_ application: NSRunningApplication) throws {
+    guard application.activationPolicy == .regular,
+          !application.isTerminated,
+          application.processIdentifier == snapshotFrontmostPID,
+          application.bundleIdentifier == snapshotFrontmostBundleIdentifier
+    else { throw HelperFailure.rejected("stale_observation") }
+
+    _ = application.activate(options: [.activateAllWindows])
+    let accessibilityApplication = AXUIElementCreateApplication(application.processIdentifier)
+    if let snapshotFocusedWindow {
+      _ = AXUIElementPerformAction(snapshotFocusedWindow, kAXRaiseAction as CFString)
+      _ = AXUIElementSetAttributeValue(
+        accessibilityApplication,
+        kAXFocusedWindowAttribute as CFString,
+        snapshotFocusedWindow
+      )
+    }
+
+    let deadline = Date().addingTimeInterval(0.75)
+    repeat {
+      if NSWorkspace.shared.frontmostApplication?.processIdentifier
+          == application.processIdentifier,
+         observedWindowIsCurrent(pid: application.processIdentifier) {
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.025)
+    } while Date() < deadline
+    throw HelperFailure.rejected("stale_observation")
+  }
+
+  private func currentFocusedWindow(pid: pid_t) -> AXUIElement? {
+    axElementAttribute(
+      AXUIElementCreateApplication(pid),
+      kAXFocusedWindowAttribute as String
+    )
+  }
+
+  private func observedWindowIsCurrent(pid: pid_t) -> Bool {
+    guard let snapshotFocusedWindow else { return true }
+    guard let currentWindow = currentFocusedWindow(pid: pid) else { return false }
+    return CFEqual(snapshotFocusedWindow, currentWindow)
+  }
+
+  private func findRefreshedIdentity(
+    for target: AXUIElement,
+    in element: AXUIElement,
+    depth: Int,
+    visited: inout Int
+  ) -> SnapshotElementIdentity? {
+    guard depth <= Self.maximumSnapshotDepth,
+          visited < Self.maximumSnapshotNodes
+    else { return nil }
+    visited += 1
+    if CFEqual(target, element) { return elementIdentity(element) }
+    guard let children = copyAttribute(element, kAXChildrenAttribute as String) as? [AXUIElement]
+    else { return nil }
+    for child in children.prefix(80) {
+      if let identity = findRefreshedIdentity(
+        for: target,
+        in: child,
+        depth: depth + 1,
+        visited: &visited
+      ) {
+        return identity
+      }
+      if visited >= Self.maximumSnapshotNodes { break }
+    }
+    return nil
   }
 
   private func parseDate(_ value: String) -> Date? {
@@ -722,6 +996,7 @@ private extension CGRect {
   var center: CGPoint { CGPoint(x: midX, y: midY) }
 }
 
+#if !ASAEL_COMPUTER_USE_HELPER_TESTING
 @main
 private enum AsaelComputerUseHelper {
   static func main() async {
@@ -752,3 +1027,4 @@ private enum AsaelComputerUseHelper {
     FileHandle.standardOutput.write(Data([0x0a]))
   }
 }
+#endif
