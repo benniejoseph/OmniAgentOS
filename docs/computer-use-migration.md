@@ -1,8 +1,8 @@
 # Computer Use targets
 
-Status: native-only source, data-plane, web, and signed owner-Mac checkpoints
-are released; migration 182 promotion, the new owner-Mac canary, and Fly
-browser-service decommission remain pending · 2026-09-17
+Status: native-only source, data-plane, web, signed owner-Mac, and schema-repair
+checkpoints are released; the new owner-Mac canary and Fly browser-service
+decommission remain pending · 2026-09-17
 
 ## Decision
 
@@ -220,8 +220,8 @@ historical canary:
 
 1. migration 181 is installed and its authority audit reports zero active
    isolated-browser authority while retaining read-only history;
-2. commit `3274b0b0f723333a6fa936941e8176c1e9b20de6` is canonical through
-   Vercel deployment `dpl_323u9VRxYSWc4hvU9S1hhzZPkafs`; contract discovery
+2. commit `b2736075b1e799cb5b18e90515d5ef73e0d9c056` is canonical through
+   Vercel deployment `dpl_ADbmrbWVowwnqY7T1SsTGqVCKDM4`; contract discovery
    reports v14 current and v13 previous, and retired product routes return
    `410`;
 3. signed owner-only Asael `1.6.6` build `13` is installed at
@@ -231,28 +231,29 @@ historical canary:
    the installed host CDHash is `c8bfdca6ea87724596750f63aa39865a2020141e`
    and its embedded frozen broker retains CDHash
    `056b6bc5ce0709b430fd48dfb38f8d7d01b380e0`; and
-4. the source-only migration 182 repair adds `open_url` as the sole new allowed
-   database command action. It is not yet installed or promoted, so no live
-   Chrome navigation is claimed from this checkpoint.
+4. migration 182 is installed with checksum
+   `46a2975c9099d954bc7f7ff6aa537076f14f8dce274e53f33826a38471d1f5e4`.
+   It adds `open_url` as the sole new allowed database command action; the
+   replacement constraint is validated. Its pre-change logical backup is
+   137,605,166 bytes with SHA-256
+   `a51ef0adf76a0cf50540991d27175746fc1a1ce6e778ed7e9c7dd28a669e81bd`.
 
 ## Native-only release gate
 
 The source cutover is not operationally complete until the remaining release
 evidence proves all of the following together:
 
-1. migration 182 is installed after verified migration 181 and reports its
-   exact marker/checksum while changing only the local command-action check;
-2. the matching signed macOS build reports v14, **This Mac** is explicitly
+1. the matching signed macOS build reports v14, **This Mac** is explicitly
    enabled, and one natural-language Chrome navigation produces a fresh bounded
    screenshot plus grounded analysis through the governed approval path;
-3. durable inspection finds no screenshot bytes, Accessibility content, prompt,
+2. durable inspection finds no screenshot bytes, Accessibility content, prompt,
    or private reasoning in command, run, approval, event, or conversation rows;
    and
-4. the obsolete Fly browser app, its persistent volume, and its secrets are
+3. the obsolete Fly browser app, its persistent volume, and its secrets are
    removed only after rollback evidence is captured. The worker/OpenAI egress
    Fly app remains a separate required service.
 
-Migration 181, canonical v14/v13 promotion, source/runtime Playwright removal,
-and the signed 1.6.6+13 install are proven checkpoints. Until the remaining
-checks are recorded, migration 182 promotion, Fly decommission, and the new live
-canary must be reported as pending rather than inferred from those checkpoints.
+Migrations 181-182, canonical v14/v13 promotion, source/runtime Playwright
+removal, and the signed 1.6.6+13 install are proven checkpoints. Until the
+remaining checks are recorded, Fly decommission and the new live canary must be
+reported as pending rather than inferred from those checkpoints.

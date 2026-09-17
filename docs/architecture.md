@@ -282,13 +282,15 @@ Migration 181 is the installed retirement boundary. Production records checksum
 zero active remote-browser profile, takeover, connector, or tool authority, and
 read-only runtime access to retained profile/takeover history. It does not delete
 historical browsing rows or transfer their authority to **This Mac**. Canonical
-Vercel deployment `dpl_323u9VRxYSWc4hvU9S1hhzZPkafs` advertises v14 current/v13
+Vercel deployment `dpl_ADbmrbWVowwnqY7T1SsTGqVCKDM4` advertises v14 current/v13
 previous at revision
-`3274b0b0f723333a6fa936941e8176c1e9b20de6`; the v14 surface removes the
+`b2736075b1e799cb5b18e90515d5ef73e0d9c056`; the v14 surface removes the
 retired remote-frame operation while retaining local `open_url` and screenshot
-presentation. Source migration 182 repairs the local command-action constraint
-by adding only `open_url`; its production installation, the new owner-Mac
-navigation/screenshot canary, and Fly browser-service decommission remain pending.
+presentation. Installed migration 182 repairs the local command-action constraint
+by adding only `open_url`; its validated checksum is
+`46a2975c9099d954bc7f7ff6aa537076f14f8dce274e53f33826a38471d1f5e4`.
+The new owner-Mac navigation/screenshot canary and Fly browser-service
+decommission remain pending.
 The earlier migration-179/native-v11 read-only canary remains historical evidence
 only.
 

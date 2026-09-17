@@ -144,16 +144,20 @@ bytes with SHA-256
 Ordered source migration
 `20260917193000_p13_3_local_computer_open_url_action.sql` (internal schema version
 182) repairs the validated local-command action constraint by adding only `open_url`.
-It is prepared at commit `b2736075b1e799cb5b18e90515d5ef73e0d9c056` but is not
-installed or promoted. The owner-Mac navigation canary and
-Fly browser-app/volume/secret decommission remain pending behind that repair. Do not
-delete the Fly app before the canary and historical-read evidence are captured.
+Production installed it with checksum
+`46a2975c9099d954bc7f7ff6aa537076f14f8dce274e53f33826a38471d1f5e4`; the
+replacement constraint is validated and explicitly permits `open_url`. Its fresh
+pre-change logical backup is 137,605,166 bytes with SHA-256
+`a51ef0adf76a0cf50540991d27175746fc1a1ce6e778ed7e9c7dd28a669e81bd`.
+The owner-Mac navigation canary and Fly browser-app/volume/secret decommission
+remain pending. Do not delete the Fly app before the canary and historical-read
+evidence are captured.
 
-Canonical Vercel deployment `dpl_323u9VRxYSWc4hvU9S1hhzZPkafs` serves exact
-revision `3274b0b0f723333a6fa936941e8176c1e9b20de6`. Health reports database,
+Canonical Vercel deployment `dpl_ADbmrbWVowwnqY7T1SsTGqVCKDM4` serves exact
+revision `b2736075b1e799cb5b18e90515d5ef73e0d9c056`. Health reports database,
 OpenAI, and cron configured; native discovery reports v14 current/v13 previous;
 the retired profile route returns `410`; and the licensed TradingView asset returns
-HTTP 200. This web checkpoint predates the source-only migration 182 repair.
+HTTP 200.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
@@ -490,10 +494,10 @@ read-only runtime authority, and source contains no Playwright development or
 product runtime. The dedicated Fly browser app may still exist only until the
 release operator performs the remaining decommission gate. Record its app and
 machine identity, persistent-volume identity, rollback release, and secret
-inventory without printing secret values; install migration 182; complete the
-owner-Mac canary; then remove the browser app, its volume, and its secrets
+inventory without printing secret values; complete the owner-Mac canary; then
+remove the browser app, its volume, and its secrets
 explicitly. Recheck that the separate worker/OpenAI egress Fly app remains healthy.
-This document does not claim migration 182, the canary, or Fly deletion completed.
+This document does not claim the canary or Fly deletion completed.
 
 App Builder no longer captures product browser evidence. Checkpoint readiness
 requires deterministic lint and typecheck results. Preview and production

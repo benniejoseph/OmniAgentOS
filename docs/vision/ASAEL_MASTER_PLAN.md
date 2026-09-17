@@ -1225,9 +1225,10 @@ build. Phase 13 is now active as the private macOS client sequence.
 product and P13.2 is code-complete. P13.3 has released source, data-plane, web,
 and signed owner-Mac checkpoints: migration 181 is installed, canonical Vercel
 advertises v14/v13, and Asael 1.6.6+13 is installed with the native helper and
-frozen credential broker. Migration 182 promotion, the new credential-migration/
-restart plus natural-language Chrome screenshot canary, durable-data inspection,
-and Fly browser teardown remain open. The earlier native-v11 TextEdit canary is
+frozen credential broker. Migration 182 and its corrected canonical release are
+also installed. The new credential-migration/restart plus natural-language Chrome
+screenshot canary, durable-data inspection, and Fly browser teardown remain open.
+The earlier native-v11 TextEdit canary is
 valid historical first-slice evidence, not proof of this final cutover.
 
 ADR 012 selects the shared Flutter client with a deliberately thin AppKit host,
@@ -1271,7 +1272,8 @@ its aggregate reports zero active remote profile, takeover, matching connector,
 or tool authority while retaining read-only audit history. The Playwright product
 and development source, package, CI, benchmark, visual-smoke, and deployment paths
 are removed. Source migration 182 adds only `open_url` to the validated local
-command-action constraint and remains pending production promotion.
+command-action constraint. Production validates it with checksum
+`46a2975c9099d954bc7f7ff6aa537076f14f8dce274e53f33826a38471d1f5e4`.
 
 The Flutter client keeps the native bearer and only its primary window engine may
 claim an exact governed command. A separately signed Computer Use helper under
@@ -1311,13 +1313,13 @@ read-only activation/observation proof, not a claim that the run performed a ris
 two edit and does not complete the new Chrome canary.
 
 The current release checkpoint serves exact revision
-`3274b0b0f723333a6fa936941e8176c1e9b20de6` through Vercel deployment
-`dpl_323u9VRxYSWc4hvU9S1hhzZPkafs`; discovery reports v14 current/v13 previous
+`b2736075b1e799cb5b18e90515d5ef73e0d9c056` through Vercel deployment
+`dpl_ADbmrbWVowwnqY7T1SsTGqVCKDM4`; discovery reports v14 current/v13 previous
 and retired product routes return `410`. Signed owner-only Asael `1.6.6` build
 `13` is installed from `Asael-1.6.6-13-macOS.dmg`, SHA-256
 `bfe7eb3d8d5cce2125d927926bc45a97a1dce63a2d9d399e3491832c00d91a8b`.
-Migration 182 promotion, the credential-migration/restart and natural-language
-Chrome navigation/screenshot canary, durable private-observation inspection, and
+The credential-migration/restart and natural-language Chrome navigation/screenshot
+canary, durable private-observation inspection, and
 destruction of the obsolete Fly browser app/volume/secrets remain open.
 
 P13.4 now stores encrypted actor/tenant-bound offline projections, exposes
@@ -3325,7 +3327,7 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1 and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migration 181 with zero active remote-browser authority, canonical native v14/v13 at `3274b0b`, and signed Asael `1.6.6` build `13` with the frozen credential broker. Migration 182 promotion, the live credential-migration/restart and natural-language Chrome screenshot canary with durable-data inspection, and obsolete Fly browser app/volume/secret deletion remain open. Developer ID/notarized distribution is outside the private-install scope.
+- [ ] **Phase 13 — macOS application:** P13.1 and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migrations 181-182 with zero active remote-browser authority and the repaired `open_url` action boundary, canonical native v14/v13 at `b273607`, and signed Asael `1.6.6` build `13` with the frozen credential broker. The live credential-migration/restart and natural-language Chrome screenshot canary with durable-data inspection, and obsolete Fly browser app/volume/secret deletion remain open. Developer ID/notarized distribution is outside the private-install scope.
 
 ## 16. Native-only Computer Use cutover addendum
 
@@ -3360,13 +3362,13 @@ and the verified active-authority aggregate is zero. The `computer_use` assignme
 stays tenant-configurable and must resolve a single runtime that supports both
 tools and vision.
 
-Canonical Vercel deployment `dpl_323u9VRxYSWc4hvU9S1hhzZPkafs` serves v14/v13 at
-exact revision `3274b0b0f723333a6fa936941e8176c1e9b20de6`. Signed owner-only
+Canonical Vercel deployment `dpl_ADbmrbWVowwnqY7T1SsTGqVCKDM4` serves v14/v13 at
+exact revision `b2736075b1e799cb5b18e90515d5ef73e0d9c056`. Signed owner-only
 Asael `1.6.6` build `13` is installed from `Asael-1.6.6-13-macOS.dmg`, SHA-256
 `bfe7eb3d8d5cce2125d927926bc45a97a1dce63a2d9d399e3491832c00d91a8b`, with
 the verified frozen credential broker v1.0.0 build 1. Ordered migration 182 is
-source-prepared to add only `open_url` to the local command-action constraint but
-is not yet installed or promoted. The live credential-migration/restart and
+installed and validates `open_url` as the sole addition to the local command-action
+constraint. The live credential-migration/restart and
 natural-language owner-Mac navigation/screenshot canary, durable-data inspection,
 and removal of the obsolete Fly browser app/volume/secrets remain pending until
 exact evidence is recorded. The worker/OpenAI egress Fly service remains part of
