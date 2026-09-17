@@ -36,13 +36,12 @@ Set these through the platform secret/configuration store, never in source contr
 - `NEXT_PUBLIC_APP_URL`: canonical HTTPS origin. Set it to exactly `https://asael.bennierichard.com`. It is public and build-inlined, not a secret.
 - `OMNIAGENT_NATIVE_MIN_ANDROID_VERSION`, `OMNIAGENT_NATIVE_MIN_IOS_VERSION`, and `OMNIAGENT_NATIVE_MIN_MACOS_VERSION`: optional stable `major.minor.patch` minimums for native compatibility telemetry. An absent or empty value defaults to `1.0.0`; a malformed configured value invalidates the policy and holds adoption unavailable. These settings do not authorize Agent enrollment.
 
-Native contract artifacts are committed immutable release inputs. Contract v13 is
-source-current and v12 is the one supported previous version; older versions remain
-historical archives and a published version is never regenerated in place. Canonical
-v13 promotion remains pending until its release evidence is recorded. Run
+Native contract artifacts are committed immutable release inputs. Contract v14 is
+canonical-current and v13 is the one supported previous version; older versions remain
+historical archives and a published version is never regenerated in place. Run
 `npm run check:native-contracts` before a native-contract release; the check
 fails if the generated OpenAPI, event schema, fixtures, integrity manifests,
-Dart SDK, or frozen v7-v12 document hashes drift. Removing an archived version
+Dart SDK, or frozen v7-v13 document hashes drift. Removing an archived version
 requires a separately reviewed adoption decision and is not implied by a
 Vercel deployment.
 
@@ -118,26 +117,43 @@ helper credential and grants no action-creation API to the native client. Migrat
 179 is installed in production. Migration
 `20260917150000_p13_3_local_computer_run_binding.sql` (internal version 180) is
 also installed and binds each local session to one exact run while indexing bounded
-observation expiry. Contract v13 is the source-current contract and retains published
-v12 byte-for-byte as the supported previous version. V12 added exact run/execution
-screenshot-preview routing; v13 adds the approval-gated `local.macos.open_url`
-command plus snapshot-bound `screenshot_pixel` metadata and requires an exact active
-v13 Mac session for those actions. The four courier capabilities remain macOS-only
+observation expiry. Contract v14 is canonical-current and retains published v13
+byte-for-byte as the supported previous version. V13 added the approval-gated
+`local.macos.open_url` command, exact run/execution screenshot presentation, and
+snapshot-bound `screenshot_pixel` metadata; v14 removes the retired remote-frame read
+while retaining those local capabilities. The four courier capabilities remain macOS-only
 with their original v11 capability floor. The original owner-Mac production proof serves
 exact revision `7a4bd41d0c42abad8f8da0911258ac341e2318f3` through Vercel
 deployment `dpl_64Hw4o58FyC1hfB645oo2J6mXGeB`. Vercel does not distribute or
-sign the binary. This historical proof predates v13 and does not prove the current
+sign the binary. This historical proof predates v14 and does not prove the current
 native-only release gate.
 
-The source-ready retirement requires
+The data-plane retirement uses
 `20260917170000_p13_3_retire_isolated_browser.sql` (internal schema version 181).
 It revokes active browser profiles and takeovers, disables known Playwright and
 Browser Use connectors, scrubs their sealed credential material, and retains the
-profile/takeover tables as read-only audit for runtime roles. Migration 181 is not
-recorded as installed here. Canonical v13 promotion, the matching signed native
-build, Fly browser-app/volume/secret decommission, and a new owner-Mac canary also
-remain pending until their exact evidence is appended. Do not delete the Fly app
-before rollback coordinates and historical-read smoke evidence are captured.
+profile/takeover tables as read-only audit for runtime roles. Production installed
+migration 181 with checksum
+`2d8bfc80ac843fe49ca79024022b873f5046a68822892ace7ff78d393025cf4d`;
+the post-install authority aggregate reports zero active profiles, takeovers,
+matching connectors, or remote-browser tools. Historical rows remain readable under
+the intended runtime restrictions. The pre-cutover logical backup is 137,576,294
+bytes with SHA-256
+`b8d6768acbd85876d4f126b7dd5163cbd900997481b333c985ba066d729661ea`.
+
+Ordered source migration
+`20260917193000_p13_3_local_computer_open_url_action.sql` (internal schema version
+182) repairs the validated local-command action constraint by adding only `open_url`.
+It is prepared at commit `b2736075b1e799cb5b18e90515d5ef73e0d9c056` but is not
+installed or promoted. The owner-Mac navigation canary and
+Fly browser-app/volume/secret decommission remain pending behind that repair. Do not
+delete the Fly app before the canary and historical-read evidence are captured.
+
+Canonical Vercel deployment `dpl_323u9VRxYSWc4hvU9S1hhzZPkafs` serves exact
+revision `3274b0b0f723333a6fa936941e8176c1e9b20de6`. Health reports database,
+OpenAI, and cron configured; native discovery reports v14 current/v13 previous;
+the retired profile route returns `410`; and the licensed TradingView asset returns
+HTTP 200. This web checkpoint predates the source-only migration 182 repair.
 
 macOS development and private packaging require the full Xcode application, not
 only Command Line Tools. Run `flutter run -d macos` for the signed development
@@ -169,6 +185,19 @@ stripped environment and no bearer, Keychain, App Group, connector, HTTP, shell,
 filesystem, or Apple Events interface. Stable signing is required because changing
 the helper's code identity can invalidate macOS TCC grants.
 
+The owner-only package also embeds an independently signed, frozen
+`AsaelCredentialBroker.app` to keep ordinary Keychain ownership stable across app
+rebuilds. Provision it with `apps/flutter/tool/install_macos_credential_broker.sh`
+and verify it before every package; do not rebuild it as an incidental part of an
+app release. Broker v1.0.0 build 1 is universal and currently pins CDHash
+`056b6bc5ce0709b430fd48dfb38f8d7d01b380e0` plus signing-certificate SHA-256
+`ccf2035e163285b723bf1196cf57abc5a304d9580ab42d5f089ddd0dfbdd455e`.
+The broker accepts only the bounded Asael credential contract over direct child
+pipes and has no network, shell, general Keychain, Computer Use, or arbitrary-
+storage interface. The explicit one-time legacy migration must write, read back,
+and mark the broker copy before deleting only a verified source; ordinary startup
+remains non-interactive and fails closed on conflict or an unknown key.
+
 For each installed build, open Asael Settings → Local Computer Use, choose
 **Grant macOS access**, complete the Accessibility and Screen Recording prompts,
 then explicitly enable **This Mac**. Confirm the persistent menu-bar indicator and
@@ -176,7 +205,7 @@ its immediate stop action before running a local canary. Record the exact app bu
 package digest, server revision, target, run identity, action scope, and durable-data
 inspection; do not infer a consequential-action proof from a read-only canary.
 
-The current private owner-Mac proof installed Asael `1.6.1` build `8` from
+The historical first-slice owner-Mac proof installed Asael `1.6.1` build `8` from
 `apps/flutter/build/distribution/macos/Asael-1.6.1-8-macOS.dmg` (SHA-256
 `f1df4fc12ee31ecf112df004fdddf0db700b9fadff3fcc1c66b419b6c09568dd`).
 Accessibility and Screen Recording report granted and the command broker reports
@@ -187,6 +216,17 @@ release keeps local observations within the assigned agent's one-turn evidence,
 without evidence-blind sibling council rewriting, and exposes bounded non-secure
 Accessibility text while retaining secure-field redaction and Secure Event Input
 refusal.
+
+The current signed install checkpoint is Asael `1.6.6` build `13` at
+`/Applications/Asael.app`, packaged as
+`apps/flutter/build/distribution/macos/Asael-1.6.6-13-macOS.dmg` with SHA-256
+`bfe7eb3d8d5cce2125d927926bc45a97a1dce63a2d9d399e3491832c00d91a8b`.
+Strict nested signing passes. The installed host CDHash is
+`c8bfdca6ea87724596750f63aa39865a2020141e`; the embedded broker CDHash is the
+frozen `056b6bc5ce0709b430fd48dfb38f8d7d01b380e0`, and both designated
+requirements match. Installation alone does not prove the one-time credential
+migration, a restart without a Keychain prompt, local readiness, or the requested
+Chrome navigation/screenshot; those remain part of the pending live canary.
 
 Distribution to another Mac sets `ASAEL_MACOS_SIGNING_IDENTITY` and
 `ASAEL_MACOS_NOTARY_PROFILE`, which enables Hardened Runtime and makes Developer ID
@@ -444,15 +484,16 @@ metadata, and reduces the profile/takeover tables to read-only access for runtim
 roles. The migration retains rows; it does not synthesize replacement authority
 or erase audit history.
 
-The dedicated Fly browser app may still exist until the release operator performs
-the decommission gate. Record its app and machine identity, persistent-volume
-identity, rollback release, and secret inventory without printing secret values;
-apply and verify migration 181; promote the compatible web/native release; verify
-that new remote requests and retired product routes fail closed, database audit
-rows remain, and legacy App Builder evidence still parses; then remove the browser
-app, its volume, and its secrets explicitly. Recheck that the separate
-worker/OpenAI egress Fly app remains healthy. This document does not claim those
-operations have completed.
+Migration 181 and canonical v14/v13 are now verified checkpoints. New remote
+requests and retired product routes fail closed, database history remains under
+read-only runtime authority, and source contains no Playwright development or
+product runtime. The dedicated Fly browser app may still exist only until the
+release operator performs the remaining decommission gate. Record its app and
+machine identity, persistent-volume identity, rollback release, and secret
+inventory without printing secret values; install migration 182; complete the
+owner-Mac canary; then remove the browser app, its volume, and its secrets
+explicitly. Recheck that the separate worker/OpenAI egress Fly app remains healthy.
+This document does not claim migration 182, the canary, or Fly deletion completed.
 
 App Builder no longer captures product browser evidence. Checkpoint readiness
 requires deterministic lint and typecheck results. Preview and production

@@ -197,8 +197,8 @@ target records the bounded typed run event `execution_target_retired` and fails
 without executing or redirecting the work. This compatibility shape is not an
 execution target.
 
-`local_macos` requires an authenticated compatible macOS client (source-current
-native v13 or frozen previous v12), a current device lease, and both Accessibility
+`local_macos` requires an authenticated compatible macOS client (current native
+v14 or frozen previous v13), a current device lease, and both Accessibility
 and Screen Recording. Its assigned `computer_use` model is tenant-configurable;
 the resolver requires one configured runtime that supports both governed tools
 and vision. No hard-coded provider/model fallback may split those requirements
@@ -247,7 +247,21 @@ screen/Accessibility revisions fail closed. Risk-two browser navigation, press,
 click, type, and key actions remain approval-gated. A persistent ready/active
 menu-bar indicator and immediate stop terminate the helper and cancel pending work.
 
-For image-based clicks, v13 binds each screenshot's exact pixel dimensions,
+Private-release credential continuity uses a different separately signed child,
+`AsaelCredentialBroker.app`. The Computer Use helper remains credential-free and
+cannot call the broker. Broker v1.0.0 build 1 is provisioned once as a frozen,
+universal owner-local artifact; each app build embeds the verified bytes instead
+of rebuilding its Keychain identity. The current frozen CDHash is
+`056b6bc5ce0709b430fd48dfb38f8d7d01b380e0`, and its signing-certificate SHA-256
+is `ccf2035e163285b723bf1196cf57abc5a304d9580ab42d5f089ddd0dfbdd455e`.
+It validates its direct parent and matching signing certificate and accepts only
+the closed Asael credential-key/action protocol. It has no network, shell,
+general Keychain, Computer Use, or arbitrary-storage interface. Ordinary startup
+is non-interactive; the explicit legacy migration copies and verifies broker
+values before deleting only verified legacy sources, with conflict and unknown
+keys failing closed.
+
+For image-based clicks, v13 and v14 bind each screenshot's exact pixel dimensions,
 display provenance, snapshot revision, and `screenshot_pixel` coordinate space.
 The helper privately maps the top-left image point to current macOS global logical
 coordinates and refuses missing, stale, out-of-bounds, display-drifted, or raw
@@ -263,15 +277,20 @@ evidence and must not rewrite a verified result. Bounded string values from non-
 Accessibility elements are readable, while secure elements remain redacted and
 Secure Event Input remains refused.
 
-Migration 181 is the retirement boundary. When promoted, it revokes every active
-remote browser profile and takeover, disables the known Playwright/Browser Use
-connector endpoints, scrubs their sealed credential material, and reduces the
-historical profile/takeover tables to read-only audit for runtime roles. It does
-not delete historical browsing rows or transfer their authority to **This Mac**.
-Its production installation, the native-v13 server/app release, Fly browser-service
-decommission, and a new owner-Mac navigation/screenshot canary remain pending until
-their release evidence is recorded. The earlier migration-179/native-v11 read-only
-canary remains historical evidence only.
+Migration 181 is the installed retirement boundary. Production records checksum
+`2d8bfc80ac843fe49ca79024022b873f5046a68822892ace7ff78d393025cf4d`,
+zero active remote-browser profile, takeover, connector, or tool authority, and
+read-only runtime access to retained profile/takeover history. It does not delete
+historical browsing rows or transfer their authority to **This Mac**. Canonical
+Vercel deployment `dpl_323u9VRxYSWc4hvU9S1hhzZPkafs` advertises v14 current/v13
+previous at revision
+`3274b0b0f723333a6fa936941e8176c1e9b20de6`; the v14 surface removes the
+retired remote-frame operation while retaining local `open_url` and screenshot
+presentation. Source migration 182 repairs the local command-action constraint
+by adding only `open_url`; its production installation, the new owner-Mac
+navigation/screenshot canary, and Fly browser-service decommission remain pending.
+The earlier migration-179/native-v11 read-only canary remains historical evidence
+only.
 
 App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness

@@ -1218,19 +1218,22 @@ build. Phase 13 is now active as the private macOS client sequence.
 |---|---|---|---|---|
 | P13.1 | Choose native Swift versus a shared shell through an ADR and prototype only device-specific risks. | Reuse native API/design tokens; create macOS client foundation. | Choice cannot fork domain logic or security policy. | Architecture documents and supports the Apple-issued sandbox path, owner-only signing exception, Accessibility, updates, Keychain, and required capture/browser integrations. |
 | P13.2 | Add menu-bar Today, global capture, share extension, drag/drop, microphone, file intake, and notification actions. | Reuse Workspace/Capture/voice/outbox; create macOS surfaces. | Every local permission is opt-in, scoped, visible, and revocable. | User can capture and supervise work without giving unrestricted filesystem or microphone access. |
-| P13.3 | Add consented Computer Use for the Mac where Asael is installed, while retaining the remote isolated browser as a separate target. | Reuse the governed executor, approvals, native device identity, and one-turn observations; create a signed credential-free local helper and v11 device courier. | Explicit target, actor/device/session binding, closed action allowlist, stable signing, user-granted Accessibility and Screen Recording, visible indicator, kill switch, no silent fallback, and session isolation are mandatory. | Asael can operate an approved non-secure local app through the governed executor; stale/secure targets fail closed, stop is immediate, and a signed installed-Mac canary proves the boundary. |
+| P13.3 | Keep **This Mac** as the sole consented Computer Use target and retire the remote isolated browser. | Reuse the governed executor, approvals, native device identity, and one-turn observations; keep the signed credential-free local helper and remove Playwright product/development runtime. | Explicit target, actor/device/session/run binding, closed action allowlist, stable signing, user-granted Accessibility and Screen Recording, visible indicator, kill switch, no silent fallback, and session isolation are mandatory. | Asael operates an approved non-secure local app through the governed executor; the natural-language Chrome screenshot canary passes without durable private observations, and the obsolete Fly browser app/volume/secrets are removed. |
 | P13.4 | Add offline cache and state reconciliation. | Reuse native contract/events. | Server remains authoritative; conflicts are visible and recoverable. | macOS, mobile, and web converge on identical work, memory, approval, and run state after reconnect. |
 
 **Current status:** P13.1 and P13.4 are implemented for the private owner-Mac
-product, P13.2 is code-complete, and the bounded P13.3 first slice is production-
-published, installed, permissioned, and owner-Mac canary-proven. The earlier P13.3
-status described only the remote Playwright browser and did not satisfy installed-
-Mac Computer Use; the explicit **This Mac** path now does.
+product and P13.2 is code-complete. P13.3 has released source, data-plane, web,
+and signed owner-Mac checkpoints: migration 181 is installed, canonical Vercel
+advertises v14/v13, and Asael 1.6.6+13 is installed with the native helper and
+frozen credential broker. Migration 182 promotion, the new credential-migration/
+restart plus natural-language Chrome screenshot canary, durable-data inspection,
+and Fly browser teardown remain open. The earlier native-v11 TextEdit canary is
+valid historical first-slice evidence, not proof of this final cutover.
 
 ADR 012 selects the shared Flutter client with a deliberately thin AppKit host,
 and migration 178 enrolls `macos` without adding a second backend. Production
-native contract v11 retains frozen v10 and publishes both the exact actor/run
-remote Computer Use frame read and the macOS-only local device courier.
+native contract v14 retains frozen v13 and publishes only the macOS local-device
+courier; the retired remote Computer Use frame read is absent.
 The host provides persistent menu-bar and multi-window lifecycle, Today, Command,
 Quick Entry, Capture, and Inbox commands, configurable global shortcuts, a bounded
 editable prompt queue, and a richer artifact/file preview and save rail. A
@@ -1253,26 +1256,45 @@ retry. The only remaining operational proof is one provider-delivered APNs
 notification: the owner-only self-signed identity has no Apple Team Identifier
 or `aps-environment`, and no APNs provider credential is available.
 
-P13.3 now separates **Isolated browser** from **This Mac**. Native Talk defaults
+P13.3 now has one product Computer Use target: **This Mac**. Native Talk defaults
 to no local control, preserves an explicit target through queue and retry, and
-never switches targets after a failure. The isolated target retains the existing
-actor/run-scoped Fly Playwright runtime. The local target resolves the same
-tenant-configured `computer_use` model but exposes only the governed
-`local.macos.*` action allowlist.
+never infers local authority or switches after a failure. Transition-compatible
+isolated-browser input fails with `410`; the already deployed Fly browser service
+has no product authority and remains only for the final canary-gated teardown.
+The tenant-configured `computer_use` assignment must resolve one runtime with both
+tools and vision and exposes only the governed `local.macos.*` action allowlist.
 
-Installed migration 179 adds forced-RLS device, session, and command-routing
-ledgers. The Flutter client keeps the native bearer and only its primary window
-engine may claim an exact governed command. A separately signed helper under
+Migrations 179 and 180 install the forced-RLS device, session, command, exact-run,
+and bounded-observation routing boundaries. Migration 181 is installed with
+checksum `2d8bfc80ac843fe49ca79024022b873f5046a68822892ace7ff78d393025cf4d`;
+its aggregate reports zero active remote profile, takeover, matching connector,
+or tool authority while retaining read-only audit history. The Playwright product
+and development source, package, CI, benchmark, visual-smoke, and deployment paths
+are removed. Source migration 182 adds only `open_url` to the validated local
+command-action constraint and remains pending production promotion.
+
+The Flutter client keeps the native bearer and only its primary window engine may
+claim an exact governed command. A separately signed Computer Use helper under
 `Contents/Helpers` is spawned over child-only pipes with no credential or server
 interface. It uses ScreenCaptureKit, Accessibility, `NSWorkspace`, and Quartz for
-bounded observation, app activation, press, click, type, key, and scroll. Terminal
-applications, System Settings, secure fields, Secure Event Input, shell, arbitrary
-AppleScript, general filesystem, Apple Events, and unbounded input are refused.
-Risk-two effects remain approval-gated, stale observations fail closed, one-turn
-visual/Accessibility data is stripped from durable ledgers, and a ready/active
-menu-bar indicator provides immediate stop.
+bounded observation, allowlisted Chrome URL delivery, app activation, press,
+click, type, key, and scroll. Terminal applications, System Settings, secure
+fields, Secure Event Input, shell, arbitrary AppleScript, general filesystem,
+Apple Events, and unbounded input are refused. Risk-two effects remain approval-
+gated, stale observations fail closed, one-turn visual/Accessibility data is
+stripped from durable ledgers, and a ready/active menu-bar indicator provides
+immediate stop.
 
-The final release fix at commit
+A different separately signed frozen `AsaelCredentialBroker.app` keeps the
+private-release Keychain owner stable and grants no Computer Use authority.
+Broker v1.0.0 build 1 is universal, retains CDHash
+`056b6bc5ce0709b430fd48dfb38f8d7d01b380e0`, validates its direct parent and
+matching signing certificate, and accepts only the bounded Asael credential
+protocol with no network, shell, general Keychain, or arbitrary-storage surface.
+Its explicit one-time migration reads back each broker copy before deleting only
+a verified legacy source; the live migration/restart proof remains pending.
+
+The historical first-slice release fix at commit
 `7a4bd41d0c42abad8f8da0911258ac341e2318f3` makes bounded non-secure
 Accessibility string values available to the assigned agent while secure elements
 remain protected. A **This Mac** run keeps that private observation with the
@@ -1286,14 +1308,25 @@ online. Live run `bc9b0b06-4af3-4de0-b86f-481f724444dc` selected **This Mac**,
 activated TextEdit, read `ASAEL INSTALLED MAC CANARY 179` exactly, and made no
 edit; post-run inspection found no observation payload in durable rows. This is a
 read-only activation/observation proof, not a claim that the run performed a risk-
-two edit.
+two edit and does not complete the new Chrome canary.
+
+The current release checkpoint serves exact revision
+`3274b0b0f723333a6fa936941e8176c1e9b20de6` through Vercel deployment
+`dpl_323u9VRxYSWc4hvU9S1hhzZPkafs`; discovery reports v14 current/v13 previous
+and retired product routes return `410`. Signed owner-only Asael `1.6.6` build
+`13` is installed from `Asael-1.6.6-13-macOS.dmg`, SHA-256
+`bfe7eb3d8d5cce2125d927926bc45a97a1dce63a2d9d399e3491832c00d91a8b`.
+Migration 182 promotion, the credential-migration/restart and natural-language
+Chrome navigation/screenshot canary, durable private-observation inspection, and
+destruction of the obsolete Fly browser app/volume/secrets remain open.
 
 P13.4 now stores encrypted actor/tenant-bound offline projections, exposes
 freshness and stale state, preserves the user's conflicting edit for recovery,
 and performs one bounded full reconciliation when connectivity, focus, or the
 authenticated principal changes. Server truth remains authoritative. Xcode 27 on
-macOS 27 built the current owner release; production serves native v11 and Asael
-`1.6.1` build `8` is the installed release proof with the **This Mac** helper.
+macOS 27 built the current owner release; production serves native v14 with frozen
+v13 compatibility and Asael `1.6.6` build `13` is the installed release checkpoint
+with the **This Mac** helper and frozen credential broker.
 
 **Phase gate:** native clients are alternate interaction surfaces for one core—not independent products with divergent truth or policy.
 
@@ -3292,7 +3325,7 @@ The task tables above are the source of truth. A phase is checked only after eve
 - [x] **Phase 10 — Workspaces and Salesforce-connected CSM:** P10.1–P10.14 complete; live Salesforce activation remains external configuration, not implementation.
 - [x] **Phase 11 — cohesive product projections:** P11.1–P11.9 complete.
 - [x] **Phase 12 — mobile application:** P12.1–P12.6 and the private Android operational gate are complete; iOS and app-store publication are owner-excluded.
-- [ ] **Phase 13 — macOS application:** P13.1 and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. The bounded P13.3 installed-Mac Computer Use first slice is complete: migration 179 and native v11 are live, Asael `1.6.1` build `8` is installed with Accessibility and Screen Recording granted, the broker is online, and the focused read-only installed-Mac canary passed without retaining observations in durable rows. Developer ID/notarized distribution is outside the private-install scope.
+- [ ] **Phase 13 — macOS application:** P13.1 and P13.4 are complete for the private owner-Mac product. P13.2 is code-complete with bulk Capture, drag/drop, registered Share Extension/App Group intake, native notification actions, APNs token/environment/receipt handling, and governed acknowledgement; one real provider-delivered APNs receipt remains externally blocked by the absent Apple Team push entitlement and APNs provider credential. P13.3 has proven source/runtime Playwright removal, installed migration 181 with zero active remote-browser authority, canonical native v14/v13 at `3274b0b`, and signed Asael `1.6.6` build `13` with the frozen credential broker. Migration 182 promotion, the live credential-migration/restart and natural-language Chrome screenshot canary with durable-data inspection, and obsolete Fly browser app/volume/secret deletion remain open. Developer ID/notarized distribution is outside the private-install scope.
 
 ## 16. Native-only Computer Use cutover addendum
 
@@ -3303,28 +3336,38 @@ Playwright browser beside **This Mac**. Asael's product Computer Use target is n
 connector metadata, a saved remote target, or a model cannot grant or redirect
 local authority.
 
-The source-ready cutover removes the Playwright Fly gateway/proxy and Browser Use
+The source cutover removes the Playwright Fly gateway/proxy and Browser Use
 product connector paths, returns `410 computer_use_target_retired` for new
 transition-compatible remote requests, and fails saved remote continuations with
 a bounded typed event. Former browser profile, takeover, activity, frame,
 snapshot, and stream product routes return `410`; retained database rows remain
 audit history but non-authoritative. App Builder now uses
 deterministic lint/typecheck, build-log, and route-smoke evidence; legacy browser
-evidence is readable history and no longer a release gate. Playwright may remain
-only in CI or operator release/visual smoke tests, with no Agent tool or product
-runtime authority.
+evidence is readable history and no longer a release gate. No Playwright remains
+in the repository runtime or development toolchain: its package, executable
+test suite, CI job, benchmark, visual-smoke scripts, proxy, connector presets,
+container, and Fly source definition are removed. Historical compatibility and
+audit readers are not executable browser authority.
 
-Native v13 retains immutable v12 and adds governed Chrome `open_url`, screenshot
-presentation, and snapshot-bound `screenshot_pixel` mapping. Migration 180 binds
-the native session to its exact run. Prepared migration 181 revokes active remote
-profiles/takeovers, disables and credential-scrubs known remote-browser connectors,
-and preserves their tables as read-only audit. The `computer_use` assignment stays
-tenant-configurable and must resolve a single runtime that supports both tools and
-vision.
+Native v14 retains immutable v13, removes the retired remote-frame operation, and
+keeps governed Chrome `open_url`, screenshot presentation, and snapshot-bound
+`screenshot_pixel` mapping. Migration 180 binds the native session to its exact
+run. Installed migration 181 revokes active remote profiles/takeovers, disables
+and credential-scrubs known remote-browser connectors, and preserves their tables
+as read-only audit. Its checksum is
+`2d8bfc80ac843fe49ca79024022b873f5046a68822892ace7ff78d393025cf4d`,
+and the verified active-authority aggregate is zero. The `computer_use` assignment
+stays tenant-configurable and must resolve a single runtime that supports both
+tools and vision.
 
-This addendum records source readiness only. Migration 181 installation,
-canonical v13/v12 promotion, the matching signed macOS client, removal of the
-obsolete Fly browser app/volume/secrets, and the natural-language owner-Mac
-navigation/screenshot canary remain pending until exact release evidence is
-recorded. The worker/OpenAI egress Fly service remains part of the production
-topology and is not part of the browser-runtime retirement.
+Canonical Vercel deployment `dpl_323u9VRxYSWc4hvU9S1hhzZPkafs` serves v14/v13 at
+exact revision `3274b0b0f723333a6fa936941e8176c1e9b20de6`. Signed owner-only
+Asael `1.6.6` build `13` is installed from `Asael-1.6.6-13-macOS.dmg`, SHA-256
+`bfe7eb3d8d5cce2125d927926bc45a97a1dce63a2d9d399e3491832c00d91a8b`, with
+the verified frozen credential broker v1.0.0 build 1. Ordered migration 182 is
+source-prepared to add only `open_url` to the local command-action constraint but
+is not yet installed or promoted. The live credential-migration/restart and
+natural-language owner-Mac navigation/screenshot canary, durable-data inspection,
+and removal of the obsolete Fly browser app/volume/secrets remain pending until
+exact evidence is recorded. The worker/OpenAI egress Fly service remains part of
+the production topology and is not part of the browser-runtime retirement.
