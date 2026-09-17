@@ -162,6 +162,47 @@ describe("local macOS Computer Use native routes", () => {
     );
   });
 
+  it("long-polls under one authorization instead of auditing a tight idle loop", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.claimCommand
+        .mockResolvedValueOnce({
+          schemaVersion: 1,
+          command: null,
+          pollAfterMs: 600,
+        })
+        .mockResolvedValueOnce({
+          schemaVersion: 1,
+          command: {
+            schemaVersion: 1,
+            id: commandId,
+            action: "observe",
+            input: { includeScreenshot: true },
+            claimToken: "claim-token-that-is-long-enough-123456",
+            claimGeneration: 1,
+            expiresAt: "2026-09-17T08:00:30.000Z",
+          },
+          pollAfterMs: 0,
+        });
+      const responsePromise = claimCommand(request(
+        "/commands/claim",
+        "POST",
+        { schemaVersion: 1, waitSeconds: 15 },
+      ));
+      await vi.advanceTimersByTimeAsync(1_250);
+      const response = await responsePromise;
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        command: { id: commandId, action: "observe" },
+      });
+      expect(mocks.claimCommand).toHaveBeenCalledTimes(2);
+      expect(mocks.authorizeRequest).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("completes an exact claimed command with a bounded receipt", async () => {
     const response = await completeCommand(
       request(`/commands/${commandId}/complete`, "POST", {

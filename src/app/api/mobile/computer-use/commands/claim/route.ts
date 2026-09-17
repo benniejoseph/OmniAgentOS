@@ -22,7 +22,8 @@ async function POSTHandler(request: Request) {
       "The local Computer Use claim request is invalid.",
     );
   }
-  if (!localComputerClaimRequestSchema.safeParse(body).success) {
+  const parsed = localComputerClaimRequestSchema.safeParse(body);
+  if (!parsed.success) {
     return localComputerInvalidRequest(
       "The local Computer Use claim request is invalid.",
     );
@@ -34,13 +35,21 @@ async function POSTHandler(request: Request) {
       resourceType: "local_computer_command",
       nativeMutationCapability: "computer.use.command.claim",
     });
-    return Response.json(
-      nativeLocalComputerClaimResponseSchema.parse(
+    const deadline = Date.now() + (parsed.data.waitSeconds || 0) * 1_000;
+    for (;;) {
+      const claimed = nativeLocalComputerClaimResponseSchema.parse(
         await claimLocalComputerCommand(context),
-      ),
-      { headers: mobileNoStoreHeaders },
-    );
+      );
+      if (claimed.command || Date.now() >= deadline || request.signal.aborted) {
+        return Response.json(claimed, { headers: mobileNoStoreHeaders });
+      }
+      await waitForCommand(Math.min(1_250, Math.max(0, deadline - Date.now())));
+    }
   } catch (error) {
     return localComputerErrorResponse(error);
   }
+}
+
+function waitForCommand(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
