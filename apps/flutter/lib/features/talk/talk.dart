@@ -96,19 +96,6 @@ int _boundedCount(
   return count >= 0 && count <= maximum ? count : fallback;
 }
 
-String? _validatedWebOrigin(String value) {
-  if (value.isEmpty) return null;
-  final uri = Uri.tryParse(value);
-  if (uri == null ||
-      !const {'http', 'https'}.contains(uri.scheme) ||
-      uri.host.isEmpty ||
-      uri.userInfo.isNotEmpty ||
-      uri.origin != value) {
-    return null;
-  }
-  return uri.origin;
-}
-
 class SseEvent {
   const SseEvent({required this.event, required this.data});
   final String event;
@@ -360,7 +347,6 @@ class TalkRunInspection {
     required this.grounding,
     required this.agentIdentity,
     required this.mediaArtifacts,
-    required this.computerUseArtifacts,
     this.threadId,
     this.response,
     this.error,
@@ -376,7 +362,6 @@ class TalkRunInspection {
   final TalkGroundingSummary grounding;
   final TalkAgentIdentitySummary agentIdentity;
   final List<TalkMediaArtifactSummary> mediaArtifacts;
-  final List<TalkMediaArtifactSummary> computerUseArtifacts;
 
   bool get terminal =>
       const {'completed', 'failed', 'canceled'}.contains(status);
@@ -523,74 +508,6 @@ class TalkRunInspection {
       }
     }
 
-    final computerUseArtifacts = <TalkMediaArtifactSummary>[];
-    final rawComputerUseEvidence = payload['computerUseEvidence'];
-    if (rawComputerUseEvidence is List) {
-      for (final candidate in rawComputerUseEvidence.take(24)) {
-        final evidence = _jsonRecord(candidate);
-        final frame = _jsonRecord(evidence['frame']);
-        final frameId = _boundedDisplayText(frame['id'], 200);
-        final operation = _boundedDisplayText(
-          evidence['operation'],
-          80,
-        ).toLowerCase();
-        final action = _boundedDisplayText(evidence['action'], 120);
-        final evidenceStatus = _boundedDisplayText(
-          evidence['status'],
-          30,
-        ).toLowerCase();
-        final filename = _boundedDisplayText(frame['filename'], 240);
-        final mediaType = _boundedDisplayText(
-          frame['mediaType'],
-          160,
-        ).toLowerCase();
-        final byteCount = _boundedCount(
-          frame['byteCount'],
-          fallback: -1,
-          maximum: 1500000,
-        );
-        final targetOrigin = _validatedWebOrigin(
-          _boundedDisplayText(evidence['targetOrigin'], 500),
-        );
-        if (frameId.isEmpty ||
-            !RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(frameId) ||
-            !seenAssetIds.add(frameId) ||
-            !RegExp(r'^browser_[a-z_]{1,80}$').hasMatch(operation) ||
-            action.isEmpty ||
-            !const {
-              'executed',
-              'dry_run',
-              'failed',
-              'blocked',
-            }.contains(evidenceStatus) ||
-            !RegExp(r'^computer-use-[0-9]{4}\.(png|jpg|webp)$')
-                .hasMatch(filename) ||
-            !const {
-              'image/png',
-              'image/jpeg',
-              'image/webp',
-            }.contains(mediaType) ||
-            byteCount <= 0) {
-          continue;
-        }
-        computerUseArtifacts.add(
-          TalkMediaArtifactSummary(
-            assetId: frameId,
-            kind: 'computer',
-            operation: operation,
-            filename: filename,
-            mediaType: mediaType,
-            byteCount: byteCount,
-            status: evidenceStatus == 'executed' ? 'stored' : evidenceStatus,
-            sourceRunId: runId,
-            contextLabel: targetOrigin == null
-                ? action
-                : '$action · $targetOrigin',
-          ),
-        );
-      }
-    }
-
     return TalkRunInspection(
       runId: runId,
       status: status,
@@ -627,7 +544,6 @@ class TalkRunInspection {
         definitionVersion: definitionVersion > 0 ? definitionVersion : null,
       ),
       mediaArtifacts: List.unmodifiable(mediaArtifacts),
-      computerUseArtifacts: List.unmodifiable(computerUseArtifacts),
     );
   }
 }
@@ -1782,11 +1698,9 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _projectAgentIdentity(inspection, route);
     _projectGrounding(inspection, route);
     _projectMediaArtifacts(inspection, route);
-    _projectComputerUseArtifacts(inspection, route);
     artifacts
       ..clear()
       ..addAll(inspection.mediaArtifacts)
-      ..addAll(inspection.computerUseArtifacts)
       ..addAll(_localPreviewArtifacts);
     if (artifacts.isEmpty) {
       selectedArtifact = null;
@@ -1991,22 +1905,6 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         actionRoute: route,
       );
     }
-  }
-
-  void _projectComputerUseArtifacts(
-    TalkRunInspection inspection,
-    String route,
-  ) {
-    if (inspection.computerUseArtifacts.isEmpty) return;
-    _recordActivity(
-      key: 'computer-evidence:${inspection.runId}',
-      title: 'Computer Use evidence captured',
-      detail:
-          '${inspection.computerUseArtifacts.length} private visual checkpoint${inspection.computerUseArtifacts.length == 1 ? '' : 's'} available in Artifacts.',
-      state: TalkActivityState.succeeded,
-      actionLabel: 'Open result',
-      actionRoute: route,
-    );
   }
 
   static String _resultRoute(String kind, String id) =>

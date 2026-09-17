@@ -934,7 +934,7 @@ void main() {
     expect(activity.state, TalkActivityState.waiting);
   });
 
-  test('fetches terminal run evidence without projecting raw source or tool output', () async {
+  test('projects supported terminal evidence and ignores legacy isolated-browser evidence', () async {
     final repository = _TerminalTalkRepository();
     final controller = TalkController(repository);
 
@@ -943,12 +943,7 @@ void main() {
     expect(repository.inspectedRunIds, ['run-terminal-123456']);
     expect(
       controller.activities.map((activity) => activity.title),
-      containsAll([
-        'Atlas',
-        'Evidence verified',
-        'Image Generate',
-        'Computer Use evidence captured',
-      ]),
+      containsAll(['Atlas', 'Evidence verified', 'Image Generate']),
     );
     final projection = controller.activities
         .map((activity) => '${activity.title} ${activity.detail}')
@@ -960,12 +955,13 @@ void main() {
     expect(projection, isNot(contains('private source content')));
     expect(projection, isNot(contains('untrusted.example')));
     expect(projection, isNot(contains('private tool payload')));
+    expect(projection, isNot(contains('Computer Use evidence captured')));
+    expect(projection, isNot(contains('Open website')));
+    expect(projection, isNot(contains('example.com')));
     await _settleAsync();
-    expect(controller.artifacts.map((item) => item.filename), [
-      'portrait.png',
-      'computer-use-0007.png',
-    ]);
+    expect(controller.artifacts.map((item) => item.filename), ['portrait.png']);
     expect(repository.loadedAssetIds, ['capture_asset_portrait']);
+    expect(repository.loadedAssetIds, isNot(contains('computer_frame_1')));
     expect(controller.selectedArtifactContent?.bytes, [1, 2, 3]);
   });
 
