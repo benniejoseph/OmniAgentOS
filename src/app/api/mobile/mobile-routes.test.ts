@@ -54,7 +54,7 @@ describe("mobile auth route contract", () => {
     );
     expect(response.status).toBe(400);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(response.headers.get("x-asael-native-contract-version")).toBe("9");
+    expect(response.headers.get("x-asael-native-contract-version")).toBe("11");
     await expect(response.json()).resolves.toEqual({
       error: {
         code: "invalid_request",
@@ -70,7 +70,7 @@ describe("mobile auth route contract", () => {
     );
     expect(response.status).toBe(401);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(response.headers.get("x-asael-native-contract-version")).toBe("9");
+    expect(response.headers.get("x-asael-native-contract-version")).toBe("11");
     await expect(response.json()).resolves.toEqual({
       error: {
         code: "unauthorized",

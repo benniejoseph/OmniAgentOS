@@ -1,8 +1,16 @@
 import { z } from "zod";
+import {
+  LOCAL_COMPUTER_PROTOCOL_VERSION,
+  localComputerClaimRequestSchema,
+  localComputerCommandSchema,
+  localComputerCompletionRequestSchema,
+  localComputerDeviceUpdateSchema,
+  localComputerStopRequestSchema,
+} from "@/lib/local-computer/contracts";
 
 export const NATIVE_API_CONTRACT_ID = "asael.native-api" as const;
-export const NATIVE_API_CURRENT_VERSION = 10 as const;
-export const NATIVE_API_PREVIOUS_VERSION = 9 as const;
+export const NATIVE_API_CURRENT_VERSION = 11 as const;
+export const NATIVE_API_PREVIOUS_VERSION = 10 as const;
 export const NATIVE_API_SUPPORTED_VERSIONS = [
   NATIVE_API_CURRENT_VERSION,
   NATIVE_API_PREVIOUS_VERSION,
@@ -282,7 +290,55 @@ export const nativeConversationRequestSchema = z.object({
   threadId: z.string().uuid().optional(),
   mode: z.enum(["orchestrate", "research", "execute", "learn"]).optional(),
   strategy: z.enum(["auto", "direct", "durable"]).optional(),
+  computerUseTarget: z.enum(["local_macos", "isolated_browser"]).optional(),
   requestId: z.string().min(1).max(200).regex(/^[A-Za-z0-9._:-]+$/),
+}).strict();
+
+const localComputerPermissionStateSchema = z.enum([
+  "granted",
+  "denied",
+  "unknown",
+]);
+
+export const nativeLocalComputerDeviceResponseSchema = z.object({
+  schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
+  deviceId: z.string().trim().min(8).max(200).regex(/^[A-Za-z0-9._:-]+$/),
+  enabled: z.boolean(),
+  online: z.boolean(),
+  helperVersion: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/),
+  permissions: z.object({
+    accessibility: localComputerPermissionStateSchema,
+    screenRecording: localComputerPermissionStateSchema,
+  }).strict(),
+  activityState: z.enum(["idle", "active", "stopped", "error"]),
+  lifecycleRevision: positiveDatabaseInteger,
+  lastSeenAt: isoDateTime,
+  leaseExpiresAt: isoDateTime,
+}).strict();
+
+export const nativeLocalComputerDeviceReadResponseSchema =
+  nativeLocalComputerDeviceResponseSchema.nullable();
+
+export const nativeLocalComputerClaimResponseSchema = z.object({
+  schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
+  command: localComputerCommandSchema.nullable(),
+  pollAfterMs: z.number().int().min(0).max(5_000),
+}).strict();
+
+export const nativeLocalComputerCompletionResponseSchema = z.object({
+  schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
+  accepted: z.literal(true),
+  commandId: z.string().regex(/^local_computer_command_[a-f0-9]{48}$/),
+  outcome: z.enum(["succeeded", "failed", "canceled"]),
+  resultSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  completedAt: isoDateTime,
+}).strict();
+
+export const nativeLocalComputerStopResponseSchema = z.object({
+  schemaVersion: z.literal(LOCAL_COMPUTER_PROTOCOL_VERSION),
+  stopped: z.literal(true),
+  reason: z.enum(["user_stop", "app_exit", "sign_out", "permission_lost"]),
+  canceledCommands: z.number().int().min(0).max(10_000),
 }).strict();
 
 const agentEventSchemas = [
@@ -570,6 +626,61 @@ const v10Operations: readonly NativeOperation[] = [
   ),
 ];
 
+// Contract v11 adds only the device-bound courier path between the governed
+// agent executor and the separately signed helper on the authenticated Mac.
+// The native client may advertise readiness, claim an exact queued command,
+// return its bounded receipt, or stop the local executor. Agent actions still
+// originate in the governed tool loop; these routes grant no general-purpose
+// shell, filesystem, Apple Events, or network authority.
+const v11Operations: readonly NativeOperation[] = [
+  ...v10Operations,
+  operation(
+    "localComputer.device",
+    "GET",
+    "/api/mobile/computer-use/device",
+    "Read this authenticated Mac installation's local Computer Use readiness.",
+    "bearer",
+    undefined,
+    "NativeLocalComputerDeviceReadResponse",
+  ),
+  operation(
+    "localComputer.device.update",
+    "PUT",
+    "/api/mobile/computer-use/device",
+    "Publish this authenticated Mac helper's short-lived readiness lease.",
+    "bearer",
+    "NativeLocalComputerDeviceUpdateRequest",
+    "NativeLocalComputerDeviceResponse",
+  ),
+  operation(
+    "localComputer.command.claim",
+    "POST",
+    "/api/mobile/computer-use/commands/claim",
+    "Claim one exact governed local Computer Use command for this Mac installation.",
+    "bearer",
+    "NativeLocalComputerClaimRequest",
+    "NativeLocalComputerClaimResponse",
+  ),
+  operation(
+    "localComputer.command.complete",
+    "POST",
+    "/api/mobile/computer-use/commands/{id}/complete",
+    "Return the bounded idempotent completion receipt for one claimed local command.",
+    "bearer",
+    "NativeLocalComputerCompletionRequest",
+    "NativeLocalComputerCompletionResponse",
+  ),
+  operation(
+    "localComputer.stop",
+    "POST",
+    "/api/mobile/computer-use/stop",
+    "Disable this Mac installation and cancel its queued or claimed local commands.",
+    "bearer",
+    "NativeLocalComputerStopRequest",
+    "NativeLocalComputerStopResponse",
+  ),
+];
+
 export const nativeContractSchemas = Object.freeze({
   JsonObject: jsonObject,
   NativeClientAttestation: nativeClientAttestationSchema,
@@ -595,6 +706,15 @@ export const nativeContractSchemas = Object.freeze({
   NativePushAcknowledgementResponse: nativePushAcknowledgementResponseSchema,
   NativeConversationRequest: nativeConversationRequestSchema,
   NativeConversationEvent: nativeConversationEventSchema,
+  NativeLocalComputerDeviceUpdateRequest: localComputerDeviceUpdateSchema,
+  NativeLocalComputerDeviceResponse: nativeLocalComputerDeviceResponseSchema,
+  NativeLocalComputerDeviceReadResponse: nativeLocalComputerDeviceReadResponseSchema,
+  NativeLocalComputerClaimRequest: localComputerClaimRequestSchema,
+  NativeLocalComputerClaimResponse: nativeLocalComputerClaimResponseSchema,
+  NativeLocalComputerCompletionRequest: localComputerCompletionRequestSchema,
+  NativeLocalComputerCompletionResponse: nativeLocalComputerCompletionResponseSchema,
+  NativeLocalComputerStopRequest: localComputerStopRequestSchema,
+  NativeLocalComputerStopResponse: nativeLocalComputerStopResponseSchema,
   NativeContractDiscovery: z.object({
     schemaVersion: z.literal(1),
     contractId: z.literal(NATIVE_API_CONTRACT_ID),
@@ -626,6 +746,7 @@ export function nativeOperationsForVersion(version: number): readonly NativeOper
   if (version === 8) return v8Operations;
   if (version === 9) return v9Operations;
   if (version === 10) return v10Operations;
+  if (version === 11) return v11Operations;
   return undefined;
 }
 
@@ -635,7 +756,7 @@ export function nativeContractDiscovery() {
     contractId: NATIVE_API_CONTRACT_ID,
     currentVersion: NATIVE_API_CURRENT_VERSION,
     previousVersion: NATIVE_API_PREVIOUS_VERSION,
-    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [10, 9],
+    supportedVersions: [...NATIVE_API_SUPPORTED_VERSIONS] as [11, 10],
     versions: NATIVE_API_SUPPORTED_VERSIONS.map((version) => ({
       version,
       state: version === NATIVE_API_CURRENT_VERSION ? "current" as const : "previous" as const,

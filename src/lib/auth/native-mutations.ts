@@ -19,6 +19,10 @@ export const NATIVE_MUTATION_CAPABILITIES = [
   "evidence.cancel",
   "push.registration.update",
   "push.delivery.acknowledge",
+  "computer.use.device.update",
+  "computer.use.command.claim",
+  "computer.use.command.complete",
+  "computer.use.stop",
 ] as const;
 
 export type NativeMutationCapability =
@@ -42,6 +46,15 @@ export function nativeMutationEnrollment(
     return held("An authenticated native session is required.");
   }
   const minimumContractVersion = minimumVersion(capability);
+  if (
+    capability.startsWith("computer.use.") &&
+    context.native.platform !== "macos"
+  ) {
+    return held(
+      "Local Computer Use is available only to the authenticated macOS installation.",
+      minimumContractVersion,
+    );
+  }
   if (
     (context.native.clientContractVersion || 0) < minimumContractVersion ||
     evaluateNativeClientCompatibility(context.native) !== "compatible" ||
@@ -72,6 +85,7 @@ export function nativeMutationCapabilityPolicy(
 }
 
 function minimumVersion(capability: NativeMutationCapability) {
+  if (capability.startsWith("computer.use.")) return 11;
   // Backtests were enrolled in v7. Keep that capability floor stable when the
   // current document advances; compatibility still independently limits calls
   // to the current and immediately previous native contracts.

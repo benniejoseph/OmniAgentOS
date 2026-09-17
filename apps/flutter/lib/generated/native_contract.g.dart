@@ -3,9 +3,9 @@
 
 abstract final class NativeContract {
   static const id = 'asael.native-api';
-  static const currentVersion = 10;
-  static const previousVersion = 9;
-  static const supportedVersions = <int>[10, 9];
+  static const currentVersion = 11;
+  static const previousVersion = 10;
+  static const supportedVersions = <int>[11, 10];
   static const discoveryPath = '/api/mobile/contracts';
   static const operationIds = <String>{
     'auth.login',
@@ -115,6 +115,11 @@ abstract final class NativeContract {
     'threads.get',
     'capture.asset.get',
     'evidence.run.computerFrame',
+    'localComputer.device',
+    'localComputer.device.update',
+    'localComputer.command.claim',
+    'localComputer.command.complete',
+    'localComputer.stop',
   };
 
   static bool supports(int version) => supportedVersions.contains(version);
@@ -276,6 +281,11 @@ abstract final class NativePaths {
     return '$path?$encoded';
   }
   static String evidenceRunComputerFrame(String id, String frameId) => '/api/runs/${Uri.encodeComponent(id)}/activity/frames/${Uri.encodeComponent(frameId)}';
+  static const localComputerDevice = '/api/mobile/computer-use/device';
+  static const localComputerDeviceUpdate = '/api/mobile/computer-use/device';
+  static const localComputerCommandClaim = '/api/mobile/computer-use/commands/claim';
+  static String localComputerCommandComplete(String id) => '/api/mobile/computer-use/commands/${Uri.encodeComponent(id)}/complete';
+  static const localComputerStop = '/api/mobile/computer-use/stop';
 }
 
 abstract final class NativeConversationEvents {
