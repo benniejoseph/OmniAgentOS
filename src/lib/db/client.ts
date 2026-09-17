@@ -13486,6 +13486,46 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         updated_at = clock_timestamp()
     WHERE state = 'active';
 
+    WITH retired_connectors AS (
+      SELECT id, tenant_id
+      FROM omni_mcp_connectors
+      WHERE regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
+          'https://asael.bennierichard.com/api/integrations/playwright/mcp',
+          'https://omniagent-os-browser.fly.dev/mcp',
+          'https://api.browser-use.com/v3/mcp',
+          'https://api.browser-use.com/mcp'
+        )
+        OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%'
+    )
+    UPDATE omni_mcp_tools tool
+    SET status = 'disabled',
+        updated_at = clock_timestamp()
+    FROM retired_connectors connector
+    WHERE tool.connector_id = connector.id
+      AND tool.tenant_id = connector.tenant_id;
+
+    UPDATE omni_mcp_connectors
+    SET status = 'disabled',
+        auth_token_env = NULL,
+        credential_version = NULL,
+        credential_key_id = NULL,
+        credential_fingerprint = NULL,
+        credential_origin = NULL,
+        sealed_credential = NULL,
+        credential_created_by = NULL,
+        credential_rotated_by = NULL,
+        credential_created_at = NULL,
+        credential_rotated_at = NULL,
+        last_error = 'Remote browser automation was retired in schema version 181.',
+        updated_at = clock_timestamp()
+    WHERE regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
+        'https://asael.bennierichard.com/api/integrations/playwright/mcp',
+        'https://omniagent-os-browser.fly.dev/mcp',
+        'https://api.browser-use.com/v3/mcp',
+        'https://api.browser-use.com/mcp'
+      )
+      OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%';
+
     COMMENT ON TABLE omni_browser_profiles IS
       'Historical audit records for the retired isolated-browser runtime. New runtime mutations are disabled.';
     COMMENT ON TABLE omni_browser_profile_bindings IS
@@ -13538,6 +13578,27 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         OR has_table_privilege('omni_runtime', 'omni_browser_takeovers', 'DELETE')
       ) THEN
         RAISE EXCEPTION 'Isolated browser runtime authority is still granted'
+          USING ERRCODE = '55000';
+      END IF;
+      IF EXISTS (
+        SELECT 1
+        FROM omni_mcp_connectors
+        WHERE (
+          regexp_replace(lower(btrim(endpoint)), '/+$', '') IN (
+            'https://asael.bennierichard.com/api/integrations/playwright/mcp',
+            'https://omniagent-os-browser.fly.dev/mcp',
+            'https://api.browser-use.com/v3/mcp',
+            'https://api.browser-use.com/mcp'
+          )
+          OR lower(btrim(endpoint)) LIKE 'https://api.browser-use.com/%'
+        ) AND (
+          status <> 'disabled'
+          OR sealed_credential IS NOT NULL
+          OR credential_key_id IS NOT NULL
+          OR credential_fingerprint IS NOT NULL
+        )
+      ) THEN
+        RAISE EXCEPTION 'Retired browser connector authority or credential remains'
           USING ERRCODE = '55000';
       END IF;
     END

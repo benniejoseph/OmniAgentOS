@@ -34,6 +34,16 @@ describe("isolated browser runtime retirement migration", () => {
     expect(migration).toContain("Isolated browser runtime authority is still granted");
   });
 
+  it("disables known browser connectors and scrubs sealed credentials", () => {
+    expect(migration).toContain("UPDATE public.omni_mcp_tools tool");
+    expect(migration).toContain("UPDATE public.omni_mcp_connectors");
+    expect(migration).toContain("https://omniagent-os-browser.fly.dev/mcp");
+    expect(migration).toContain("https://api.browser-use.com/%");
+    expect(migration).toContain("sealed_credential = NULL");
+    expect(migration).toContain("status = 'disabled'");
+    expect(migration).toContain("Retired browser connector authority or credential remains");
+  });
+
   it("records the exact ordered schema marker", () => {
     expect(migration).toContain("latest_version IS DISTINCT FROM 180");
     expect(migration).toContain("181,");
