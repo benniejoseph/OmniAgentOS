@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/macos/macos_page_scaffold.dart';
+import '../../app/platform/macos_presentation.dart';
+import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_client.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../core/platform/local_computer_bridge.dart';
@@ -67,6 +70,8 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
   DesktopShortcutState? desktopShortcut;
   Object? desktopError;
   bool desktopSaving = false;
+  int macosSection = 0;
+  String macosQuery = '';
 
   @override
   void initState() {
@@ -200,6 +205,19 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
         .length;
     final platform = _map(snapshot?['platform']);
     final vault = _map(snapshot?['vault']);
+    if (usesMacosPresentation()) {
+      return _buildMacosSettings(
+        context,
+        localComputer: localComputer,
+        providers: providers,
+        models: models,
+        assignments: assignments,
+        activeProviders: activeProviders,
+        configured: configured,
+        platform: platform,
+        vault: vault,
+      );
+    }
     return RefreshIndicator(
       onRefresh: _load,
       child: CustomScrollView(
@@ -527,6 +545,608 @@ class _ModelSettingsViewState extends ConsumerState<ModelSettingsView> {
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMacosSettings(
+    BuildContext context, {
+    required LocalComputerCoordinator localComputer,
+    required List<Json> providers,
+    required List<Json> models,
+    required List<Json> assignments,
+    required int activeProviders,
+    required int configured,
+    required Json platform,
+    required Json vault,
+  }) {
+    final normalizedQuery = macosQuery.trim().toLowerCase();
+    final visibleAssignments = _assignmentOrder
+        .where((scope) {
+          if (normalizedQuery.isEmpty) return true;
+          final assignment = assignments
+              .where((item) => item['scope'] == scope)
+              .firstOrNull;
+          return _humanize(scope).toLowerCase().contains(normalizedQuery) ||
+              (_assignmentDescriptions[scope] ?? '').toLowerCase().contains(
+                normalizedQuery,
+              ) ||
+              assignment.toString().toLowerCase().contains(normalizedQuery);
+        })
+        .toList(growable: false);
+    final visibleProviders = providers
+        .where((provider) {
+          if (normalizedQuery.isEmpty) return true;
+          return provider.toString().toLowerCase().contains(normalizedQuery);
+        })
+        .toList(growable: false);
+
+    final section = switch (macosSection) {
+      0 => _buildMacosGeneral(platform: platform, vault: vault),
+      1 => _buildMacosRoutes(assignments, visibleAssignments),
+      2 => _buildMacosProviders(visibleProviders),
+      _ => _buildMacosComputer(localComputer),
+    };
+
+    return MacosPageScaffold(
+      title: 'Settings',
+      description: 'Configure every provider, model route, and native workspace capability.',
+      icon: Icons.tune_rounded,
+      actions: [
+        IconButton(
+          key: const ValueKey('macos-settings-refresh'),
+          tooltip: loading ? 'Refreshing settings' : 'Refresh settings',
+          onPressed: loading ? null : _load,
+          icon: loading
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh_rounded),
+        ),
+      ],
+      toolbar: Row(
+        children: [
+          SizedBox(
+            width: 300,
+            child: TextField(
+              key: ValueKey('macos-settings-search-$macosSection'),
+              enabled: macosSection == 1 || macosSection == 2,
+              onChanged: (value) => setState(() => macosQuery = value),
+              decoration: InputDecoration(
+                hintText: macosSection == 1
+                    ? 'Search model routes'
+                    : macosSection == 2
+                    ? 'Search providers'
+                    : 'Select Models or Providers to search',
+                prefixIcon: const Icon(Icons.search_rounded, size: 17),
+              ),
+            ),
+          ),
+          const Spacer(),
+          _MacSettingsToolbarMetric(
+            label: 'Providers',
+            value: '$activeProviders',
+          ),
+          const SizedBox(width: 18),
+          _MacSettingsToolbarMetric(
+            label: 'Routes',
+            value: '$configured / ${_assignmentOrder.length}',
+          ),
+          const SizedBox(width: 18),
+          _MacSettingsToolbarMetric(
+            label: 'Models',
+            value:
+                '${models.where((item) => item['selectable'] == true).length}',
+          ),
+        ],
+      ),
+      inspectorWidth: 310,
+      inspector: _MacSettingsInspector(
+        activeProviders: activeProviders,
+        configuredRoutes: configured,
+        totalRoutes: _assignmentOrder.length,
+        selectableModels: models
+            .where((item) => item['selectable'] == true)
+            .length,
+        platform: platform,
+        vault: vault,
+      ),
+      body: Column(
+        children: [
+          if (error != null)
+            _MacSettingsErrorBanner(error: error!, retry: _load),
+          Expanded(
+            child: loading && snapshot == null
+                ? const MacosLoadingList(rows: 8)
+                : Row(
+                    children: [
+                      SizedBox(
+                        width: 210,
+                        child: _MacSettingsNavigation(
+                          selected: macosSection,
+                          onSelected: (value) => setState(() {
+                            macosSection = value;
+                            macosQuery = '';
+                          }),
+                        ),
+                      ),
+                      VerticalDivider(
+                        width: 1,
+                        color: MacosThemeColors.of(context).divider,
+                      ),
+                      Expanded(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 140),
+                          child: KeyedSubtree(
+                            key: ValueKey('macos-settings-$macosSection'),
+                            child: section,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMacosGeneral({
+    required Json platform,
+    required Json vault,
+  }) => ListView(
+    key: const ValueKey('macos-settings-general'),
+    padding: const EdgeInsets.all(22),
+    children: [
+      const MacosSectionHeader(
+        title: 'Workspace foundation',
+        description: 'Authentication, storage, and credential boundaries for this private workspace.',
+      ),
+      const SizedBox(height: 10),
+      _Surface(
+        child: Column(
+          children: [
+            _StatusRow(
+              icon: Icons.lock_outline_rounded,
+              title: 'Authentication',
+              value: platform['authEnforced'] == true
+                  ? 'Enforced'
+                  : 'Development mode',
+              ok: platform['authEnforced'] == true,
+            ),
+            const Divider(height: 1),
+            _StatusRow(
+              icon: Icons.storage_outlined,
+              title: 'Storage',
+              value:
+                  '${platform['storageBackend'] ?? 'unknown'} · ${platform['databaseConfigured'] == true ? 'database configured' : 'database missing'}',
+              ok: platform['databaseConfigured'] == true,
+            ),
+            const Divider(height: 1),
+            _StatusRow(
+              icon: Icons.key_outlined,
+              title: 'Credential vault',
+              value: vault['configured'] == true
+                  ? 'Ready · ${vault['activeKeyId'] ?? 'active key'}'
+                  : 'Setup required',
+              ok: vault['configured'] == true,
+            ),
+          ],
+        ),
+      ),
+      if (appDesktopHostBridge.supported) ...[
+        const SizedBox(height: 24),
+        const MacosSectionHeader(
+          title: 'Desktop experience',
+          description:
+              'Quick Entry and independent windows are native to this Mac.',
+        ),
+        const SizedBox(height: 10),
+        _Surface(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.keyboard_command_key_rounded),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Quick Entry shortcut',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Open Asael from anywhere without changing windows.',
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    SizedBox(
+                      width: 230,
+                      child: DropdownButtonFormField<DesktopQuickEntryShortcut>(
+                        key: ValueKey(desktopShortcut?.shortcut),
+                        initialValue: desktopShortcut?.shortcut,
+                        isExpanded: true,
+                        items: DesktopQuickEntryShortcut.values
+                            .map(
+                              (shortcut) => DropdownMenuItem(
+                                value: shortcut,
+                                child: Text(
+                                  shortcut.label,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: desktopSaving || desktopShortcut == null
+                            ? null
+                            : (value) {
+                                if (value != null) {
+                                  _setDesktopShortcut(value);
+                                }
+                              },
+                      ),
+                    ),
+                  ],
+                ),
+                if (desktopShortcut case final shortcut?) ...[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      shortcut.shortcut == DesktopQuickEntryShortcut.disabled
+                          ? 'Global shortcut disabled. Quick Entry remains available from the Asael menu.'
+                          : shortcut.registered
+                          ? 'Shortcut is active system-wide.'
+                          : 'That shortcut is owned by another application. Choose another preset.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color:
+                            shortcut.shortcut !=
+                                    DesktopQuickEntryShortcut.disabled &&
+                                !shortcut.registered
+                            ? Theme.of(context).colorScheme.error
+                            : null,
+                      ),
+                    ),
+                  ),
+                ],
+                if (desktopError != null) ...[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Desktop preferences could not be updated.',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+                const Divider(height: 28),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Independent workspaces',
+                            style: TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Open another signed window using the same governed backend.',
+                          ),
+                        ],
+                      ),
+                    ),
+                    FilledButton.tonalIcon(
+                      onPressed: () =>
+                          appDesktopHostBridge.openWorkspaceWindow('/talk'),
+                      icon: const Icon(Icons.open_in_new_rounded),
+                      label: const Text('New conversation'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    ],
+  );
+
+  Widget _buildMacosRoutes(
+    List<Json> assignments,
+    List<String> visibleScopes,
+  ) => ListView(
+    key: const ValueKey('macos-settings-routes'),
+    padding: const EdgeInsets.all(22),
+    children: [
+      MacosSectionHeader(
+        title: 'Model routes',
+        description:
+            '${visibleScopes.length} of ${_assignmentOrder.length} roles. Every AI capability is configured here instead of hard-coded.',
+      ),
+      const SizedBox(height: 10),
+      if (visibleScopes.isEmpty)
+        const SizedBox(
+          height: 280,
+          child: MacosEmptyState(
+            icon: Icons.route_outlined,
+            title: 'No matching model routes',
+            message: 'Try a role, capability, provider, or model name.',
+          ),
+        )
+      else
+        _Surface(
+          child: Column(
+            children: [
+              for (var index = 0; index < visibleScopes.length; index++) ...[
+                _AssignmentRow(
+                  scope: visibleScopes[index],
+                  assignment: assignments
+                      .where((item) => item['scope'] == visibleScopes[index])
+                      .firstOrNull,
+                  saving: saving == visibleScopes[index],
+                  onTap: () => _edit(visibleScopes[index]),
+                ),
+                if (index != visibleScopes.length - 1) const Divider(height: 1),
+              ],
+            ],
+          ),
+        ),
+    ],
+  );
+
+  Widget _buildMacosProviders(List<Json> providers) => ListView(
+    key: const ValueKey('macos-settings-providers'),
+    padding: const EdgeInsets.all(22),
+    children: [
+      MacosSectionHeader(
+        title: 'Provider connections',
+        description:
+            '${providers.length} connections match this view. Keys remain in the tenant credential vault.',
+      ),
+      const SizedBox(height: 10),
+      if (providers.isEmpty)
+        const SizedBox(
+          height: 280,
+          child: MacosEmptyState(
+            icon: Icons.hub_outlined,
+            title: 'No matching providers',
+            message: 'Change the search to see another connection.',
+          ),
+        )
+      else
+        _Surface(
+          child: Column(
+            children: [
+              for (var index = 0; index < providers.length; index++) ...[
+                _ProviderRow(provider: providers[index]),
+                if (index != providers.length - 1) const Divider(height: 1),
+              ],
+            ],
+          ),
+        ),
+    ],
+  );
+
+  Widget _buildMacosComputer(LocalComputerCoordinator localComputer) =>
+      ListView(
+        key: const ValueKey('macos-settings-computer'),
+        padding: const EdgeInsets.all(22),
+        children: [
+          const MacosSectionHeader(
+            title: 'Computer use on this Mac',
+            description: 'Permission state, signed helper, command broker, and the immediate kill switch.',
+          ),
+          const SizedBox(height: 10),
+          _LocalComputerControl(coordinator: localComputer),
+        ],
+      );
+}
+
+const _macSettingsSections = <({String label, IconData icon})>[
+  (label: 'General', icon: Icons.settings_outlined),
+  (label: 'Models & roles', icon: Icons.route_outlined),
+  (label: 'Providers', icon: Icons.hub_outlined),
+  (label: 'This Mac', icon: Icons.laptop_mac_outlined),
+];
+
+class _MacSettingsNavigation extends StatelessWidget {
+  const _MacSettingsNavigation({
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final int selected;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final mac = MacosThemeColors.of(context);
+    return ListView(
+      key: const ValueKey('macos-settings-navigation'),
+      padding: const EdgeInsets.all(10),
+      children: [
+        for (var index = 0; index < _macSettingsSections.length; index++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 3),
+            child: Material(
+              color: index == selected ? mac.selection : Colors.transparent,
+              borderRadius: BorderRadius.circular(7),
+              child: InkWell(
+                key: ValueKey('macos-settings-section-$index'),
+                borderRadius: BorderRadius.circular(7),
+                onTap: () => onSelected(index),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 11,
+                    vertical: 9,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(_macSettingsSections[index].icon, size: 17),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          _macSettingsSections[index].label,
+                          style: Theme.of(context).textTheme.labelLarge,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _MacSettingsToolbarMetric extends StatelessWidget {
+  const _MacSettingsToolbarMetric({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(label, style: Theme.of(context).textTheme.bodySmall),
+      const SizedBox(width: 6),
+      Text(value, style: Theme.of(context).textTheme.labelLarge),
+    ],
+  );
+}
+
+class _MacSettingsInspector extends StatelessWidget {
+  const _MacSettingsInspector({
+    required this.activeProviders,
+    required this.configuredRoutes,
+    required this.totalRoutes,
+    required this.selectableModels,
+    required this.platform,
+    required this.vault,
+  });
+
+  final int activeProviders;
+  final int configuredRoutes;
+  final int totalRoutes;
+  final int selectableModels;
+  final Json platform;
+  final Json vault;
+
+  @override
+  Widget build(BuildContext context) => ListView(
+    key: const ValueKey('macos-settings-inspector'),
+    padding: const EdgeInsets.all(16),
+    children: [
+      const MacosSectionHeader(
+        title: 'Configuration summary',
+        description: 'Current server truth for this private workspace.',
+      ),
+      const SizedBox(height: 14),
+      _MacSettingsFact(label: 'Active providers', value: '$activeProviders'),
+      _MacSettingsFact(
+        label: 'Configured routes',
+        value: '$configuredRoutes / $totalRoutes',
+      ),
+      _MacSettingsFact(label: 'Selectable models', value: '$selectableModels'),
+      _MacSettingsFact(
+        label: 'Authentication',
+        value: platform['authEnforced'] == true ? 'Enforced' : 'Review',
+      ),
+      _MacSettingsFact(
+        label: 'Database',
+        value: platform['databaseConfigured'] == true
+            ? 'Connected'
+            : 'Not configured',
+      ),
+      _MacSettingsFact(
+        label: 'Credential vault',
+        value: vault['configured'] == true ? 'Ready' : 'Setup required',
+      ),
+      const SizedBox(height: 20),
+      const MacosPane(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.memory_outlined, size: 18),
+            SizedBox(width: 9),
+            Expanded(
+              child: Text(
+                'Agent roles resolve their provider and model from these settings. Native UI code does not choose a hidden model.',
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+class _MacSettingsFact extends StatelessWidget {
+  const _MacSettingsFact({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 6),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        const SizedBox(width: 8),
+        Text(value, style: Theme.of(context).textTheme.labelLarge),
+      ],
+    ),
+  );
+}
+
+class _MacSettingsErrorBanner extends StatelessWidget {
+  const _MacSettingsErrorBanner({required this.error, required this.retry});
+
+  final Object error;
+  final VoidCallback retry;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.error;
+    return Container(
+      constraints: const BoxConstraints(minHeight: 42),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .08),
+        border: Border(bottom: BorderSide(color: color.withValues(alpha: .18))),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.cloud_off_rounded, color: color, size: 17),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              error.toString(),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          TextButton(onPressed: retry, child: const Text('Retry')),
         ],
       ),
     );
@@ -1133,11 +1753,10 @@ class _Surface extends StatelessWidget {
   const _Surface({required this.child});
   final Widget child;
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surfaceContainerLowest,
-      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+  Widget build(BuildContext context) => Material(
+    color: Theme.of(context).colorScheme.surfaceContainerLowest,
+    shape: RoundedRectangleBorder(
+      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
       borderRadius: BorderRadius.circular(12),
     ),
     clipBehavior: Clip.antiAlias,
