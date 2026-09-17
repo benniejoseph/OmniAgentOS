@@ -393,3 +393,87 @@ export async function ensureLocalComputerRuntimeV2(
     $verify$
   `;
 }
+
+/**
+ * Aligns the durable command action whitelist with native contract v13. This
+ * replaces only the original row check's action set; all other row invariants
+ * remain identical to the v1 table contract.
+ */
+export async function ensureLocalComputerOpenUrlActionV1(
+  sql: LocalComputerSchemaSqlClient,
+) {
+  await sql.query(`
+    ALTER TABLE omni_local_computer_commands
+      DROP CONSTRAINT IF EXISTS omni_local_computer_commands_row_check;
+    ALTER TABLE omni_local_computer_commands
+      ADD CONSTRAINT omni_local_computer_commands_row_check CHECK (COALESCE(
+        schema_version = 1
+        AND id ~ '^local_computer_command_[0-9a-f]{48}$'
+        AND btrim(tenant_id) <> ''
+        AND btrim(owner_actor_id) <> ''
+        AND device_id ~ '^[A-Za-z0-9._:-]{8,200}$'
+        AND char_length(btrim(execution_id)) BETWEEN 1 AND 240
+        AND action IN (
+          'observe', 'list_apps', 'activate_app', 'press', 'click',
+          'type', 'key', 'scroll', 'open_url'
+        )
+        AND input_sha256 ~ '^[0-9a-f]{64}$'
+        AND state IN (
+          'queued', 'claimed', 'completed', 'failed', 'canceled',
+          'expired', 'consumed'
+        )
+        AND claim_generation >= 0
+        AND (
+          (state = 'queued' AND claim_token_sha256 IS NULL)
+          OR state <> 'queued'
+        )
+        AND (
+          claim_token_sha256 IS NULL
+          OR claim_token_sha256 ~ '^[0-9a-f]{64}$'
+        )
+        AND (
+          (claimed_at IS NULL AND claim_expires_at IS NULL)
+          OR (claimed_at IS NOT NULL AND claim_expires_at > claimed_at)
+        )
+        AND (outcome IS NULL OR outcome IN ('succeeded', 'failed', 'canceled'))
+        AND (result IS NULL OR (
+          jsonb_typeof(result) = 'object' AND pg_column_size(result) <= 2097152
+        ))
+        AND (result_sha256 IS NULL OR result_sha256 ~ '^[0-9a-f]{64}$')
+        AND (error_code IS NULL OR char_length(error_code) BETWEEN 1 AND 160)
+        AND expires_at > created_at
+        AND created_at <= updated_at
+        AND (completed_at IS NULL OR completed_at >= created_at)
+        AND (consumed_at IS NULL OR completed_at IS NOT NULL)
+      , FALSE)) NOT VALID;
+    ALTER TABLE omni_local_computer_commands
+      VALIDATE CONSTRAINT omni_local_computer_commands_row_check;
+  `);
+  await sql`
+    DO $verify$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'omni_local_computer_commands'::regclass
+          AND conname = 'omni_local_computer_commands_row_check'
+          AND contype = 'c'
+          AND convalidated
+          AND position(
+            '''open_url''' IN pg_get_constraintdef(oid, true)
+          ) > 0
+      ) OR EXISTS (
+        SELECT 1
+        FROM omni_local_computer_commands
+        WHERE action NOT IN (
+          'observe', 'list_apps', 'activate_app', 'press', 'click',
+          'type', 'key', 'scroll', 'open_url'
+        )
+      ) THEN
+        RAISE EXCEPTION 'Local Computer Use command action boundary is invalid'
+          USING ERRCODE = '55000';
+      END IF;
+    END
+    $verify$
+  `;
+}

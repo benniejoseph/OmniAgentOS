@@ -19,6 +19,7 @@ import {
 } from "@/lib/db/app-builder-repository-schema";
 import { ensureMarketDeterministicBacktestsV1 } from "@/lib/db/market-backtest-schema";
 import {
+  ensureLocalComputerOpenUrlActionV1,
   ensureLocalComputerRuntimeV1,
   ensureLocalComputerRuntimeV2,
 } from "@/lib/db/local-computer-schema";
@@ -1610,6 +1611,10 @@ function schemaMigrations(): SchemaMigration[] {
     {
       ...databaseSchemaMigrations[180],
       up: ensureIsolatedBrowserRuntimeRetirementV1,
+    },
+    {
+      ...databaseSchemaMigrations[181],
+      up: ensureLocalComputerOpenUrlActionV1,
     },
   ];
 }
