@@ -2472,12 +2472,22 @@ export function parseAgentRunContinuation(
   ) {
     return undefined;
   }
+  if (
+    candidate.computerUseTarget !== undefined &&
+    candidate.computerUseTarget !== "isolated_browser" &&
+    candidate.computerUseTarget !== "local_macos"
+  ) {
+    return undefined;
+  }
   const canonicalConversation = candidate.canonicalConversation === undefined
     ? undefined
     : modelConversationSchema.safeParse(candidate.canonicalConversation);
   if (canonicalConversation && !canonicalConversation.success) return undefined;
 
   return {
+    computerUseTarget: candidate.computerUseTarget as
+      | AgentRunContinuation["computerUseTarget"]
+      | undefined,
     executionScope,
     runContractEnvelope,
     checkpointShadowEnrollment,

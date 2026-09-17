@@ -84,6 +84,12 @@ export async function resolveRuntimeModelAssignment(input: {
   scope: ModelAssignmentScope;
   tier: ModelTier;
   requiredFeature: ModelFeature;
+  /**
+   * Additional capabilities that must be present on the same runtime target.
+   * This is intentionally conjunctive: a tools-only fallback must not be used
+   * for a visual Computer Use turn.
+   */
+  requiredFeatures?: readonly ModelFeature[];
   deploymentFallback?: DeploymentModelFallback;
 }): Promise<RuntimeModelResolution> {
   const tenantId = input.tenantId.trim();
@@ -208,12 +214,16 @@ export async function resolveRuntimeModelAssignment(input: {
     }
   }
 
+  const requiredFeatures = modelFeatureRequirements(input);
   const capableTargets = targets.filter((target) =>
-    target.features.includes(input.requiredFeature)
+    requiredFeatures.every((feature) => target.features.includes(feature))
   );
-  if (!targets[0]?.features.includes(input.requiredFeature)) {
+  const primaryMissingFeatures = requiredFeatures.filter((feature) =>
+    !targets[0]?.features.includes(feature)
+  );
+  if (primaryMissingFeatures.length) {
     warnings.push(
-      `The assigned primary provider runtime does not advertise ${input.requiredFeature} support for this path.`,
+      `The assigned primary provider runtime does not advertise ${primaryMissingFeatures.join(" and ")} support for this path.`,
     );
   }
   const context: ModelRuntimeContext = { targets, credentials };
@@ -277,11 +287,18 @@ function deploymentResolution(input: {
   scope: ModelAssignmentScope;
   tier: ModelTier;
   requiredFeature: ModelFeature;
+  requiredFeatures?: readonly ModelFeature[];
   deploymentFallback?: DeploymentModelFallback;
 }): RuntimeModelResolution {
   const first = input.deploymentFallback || deploymentTarget(input.tier, input.requiredFeature);
-  const configured = input.deploymentFallback?.configured ??
-    hasModelProviderFeature(input.requiredFeature, input.tier);
+  const requiredFeatures = modelFeatureRequirements(input);
+  const firstFeatures = first
+    ? modelTarget(first.provider, first.model, input.tier).features
+    : [];
+  const configured = (
+    input.deploymentFallback?.configured ??
+      hasModelProviderFeature(input.requiredFeature, input.tier)
+  ) && requiredFeatures.every((feature) => firstFeatures.includes(feature));
   const usageReceipt: RuntimeModelResolution["usageReceipt"] = {
     credentialSource: "deployment_environment",
   };
@@ -312,6 +329,16 @@ function deploymentResolution(input: {
       return operation(undefined);
     },
   };
+}
+
+function modelFeatureRequirements(input: {
+  requiredFeature: ModelFeature;
+  requiredFeatures?: readonly ModelFeature[];
+}): readonly ModelFeature[] {
+  return [...new Set([
+    input.requiredFeature,
+    ...(input.requiredFeatures || []),
+  ])];
 }
 
 function deploymentTarget(

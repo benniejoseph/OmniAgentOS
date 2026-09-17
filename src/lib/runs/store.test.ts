@@ -74,6 +74,24 @@ describe("agent run approval continuations (file mode)", () => {
     });
   });
 
+  it("retains only a closed Computer Use target across approval pauses", async () => {
+    const store = await import("@/lib/runs/store");
+    const local = store.parseAgentRunContinuation({
+      ...continuationFor("exec-local-target"),
+      computerUseTarget: "local_macos",
+    });
+    const legacy = store.parseAgentRunContinuation(
+      continuationFor("exec-no-target"),
+    );
+
+    expect(local?.computerUseTarget).toBe("local_macos");
+    expect(legacy?.computerUseTarget).toBeUndefined();
+    expect(store.parseAgentRunContinuation({
+      ...continuationFor("exec-invalid-target"),
+      computerUseTarget: "prompt_selected_local",
+    })).toBeUndefined();
+  });
+
   it("keeps validated continuation token budgets numeric when reading a parked run", async () => {
     const store = await import("@/lib/runs/store");
     const run = await store.createAgentRun({

@@ -200,6 +200,10 @@ describe("agent prompt provenance", () => {
     expect(instructions).toContain("Computer Use — This Mac:");
     expect(instructions).toContain("where Asael is installed");
     expect(instructions).toContain("local.macos.observe");
+    expect(instructions).toContain("prefer local.macos.open_url");
+    expect(instructions).toContain("fresh post-action observation");
+    expect(instructions).toContain("structured effect verdict");
+    expect(instructions).toContain("rather than blindly replaying");
     expect(instructions).toContain("never switch targets or fall back silently");
     expect(instructions).toContain("secure fields or Terminal");
     expect(instructions).toContain("Screenshots stay private and temporary");

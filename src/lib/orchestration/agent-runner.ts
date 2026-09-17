@@ -371,6 +371,7 @@ export async function* runAgent(
     scope: modelAssignmentScopeForAgent(request.agentId, computerUseRequested),
     tier: deploymentModelRoute.tier,
     requiredFeature: "tools",
+    requiredFeatures: computerUseRequested ? ["vision"] : undefined,
     deploymentFallback: {
       provider: deploymentModelRoute.provider,
       model: deploymentModelRoute.model,
@@ -1029,6 +1030,7 @@ export async function* runAgent(
       "local.macos.observe",
       "local.macos.list_apps",
       "local.macos.activate_app",
+      "local.macos.open_url",
       "local.macos.press",
       "local.macos.click",
       "local.macos.type",
@@ -1685,7 +1687,19 @@ export async function* runAgent(
 
     let response = "";
 
-    if (!providerConfigured) {
+    if (!providerConfigured && computerUseRequested) {
+      const unavailable =
+        "Computer Use needs a configured model that supports both tool calling and vision. Select a compatible Computer Use model in Settings, then retry this request.";
+      yield await emit({
+        type: "status",
+        label: "Computer Use model unavailable",
+        detail: unavailable,
+      });
+      response = unavailable;
+      persistDelta(unavailable);
+      yield { type: "delta", text: unavailable };
+      await flushDeltas();
+    } else if (!providerConfigured) {
       yield await emit({ type: "status", label: "dev fallback", detail: "No model provider is configured. This is a simulated response, not model output." });
       const fallback = fallbackResponse(query, retrieval.results.length).join("");
       response = fallback;
@@ -1828,6 +1842,7 @@ export async function* runAgent(
         if (result.waitingApproval) {
           const waiting = result.waitingApproval;
           const continuation: AgentRunContinuation = {
+            computerUseTarget,
             executionScope,
             runContractEnvelope: shadowRunContract?.envelope,
             checkpointShadowEnrollment,
@@ -2245,6 +2260,7 @@ export async function* runAgent(
 
           if (execution.record.status === "approval_required") {
             const continuation: AgentRunContinuation = {
+              computerUseTarget,
               executionScope,
               runContractEnvelope: shadowRunContract?.envelope,
               checkpointShadowEnrollment,
@@ -3499,15 +3515,18 @@ async function resumeAgentRunAfterToolApprovalInScope({
   });
   const resumeTier = resumeDeploymentRoute.tier;
   const resumeModel = run.model || resumeDeploymentRoute.model;
+  const resumeComputerUseRequested = Boolean(continuation.computerUseTarget) ||
+    analyzeBrowserCapabilityIntent(run.prompt).requiredOperationNames.length > 0;
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
     scope: modelAssignmentScopeForAgent(
       run.agentId,
-      analyzeBrowserCapabilityIntent(run.prompt).requiredOperationNames.length > 0,
+      resumeComputerUseRequested,
     ),
     tier: resumeTier,
     requiredFeature: "tools",
+    requiredFeatures: resumeComputerUseRequested ? ["vision"] : undefined,
     deploymentFallback: {
       provider: "openai",
       model: resumeModel,
@@ -3722,6 +3741,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
           response,
           message: waitingMessage,
           continuation: {
+            computerUseTarget: continuation.computerUseTarget,
             executionScope,
             runContractEnvelope: continuation.runContractEnvelope,
             checkpointShadowEnrollment:
@@ -4036,6 +4056,7 @@ async function resumeAgentRunAfterToolApprovalInScope({
             response,
             message: waitingMessage,
             continuation: {
+              computerUseTarget: continuation.computerUseTarget,
               executionScope,
               runContractEnvelope: continuation.runContractEnvelope,
               checkpointShadowEnrollment:
@@ -4405,15 +4426,18 @@ async function resumeProviderBoundAgentRunAfterApproval({
     run.model ||
     deploymentAdapter?.targets(providerState.tier)[0]?.model ||
     "provider-continuation";
+  const resumeComputerUseRequested = Boolean(continuation.computerUseTarget) ||
+    analyzeBrowserCapabilityIntent(run.prompt).requiredOperationNames.length > 0;
   const resumeRuntimeModel = await resolveRuntimeModelAssignment({
     tenantId: normalizeTenantId(tenantId),
     actorId: continuation.context.actorId,
     scope: modelAssignmentScopeForAgent(
       run.agentId,
-      analyzeBrowserCapabilityIntent(run.prompt).requiredOperationNames.length > 0,
+      resumeComputerUseRequested,
     ),
     tier: providerState.tier,
     requiredFeature: "tools",
+    requiredFeatures: resumeComputerUseRequested ? ["vision"] : undefined,
     deploymentFallback: {
       provider: providerState.provider,
       model: resumeModel,
@@ -4429,7 +4453,13 @@ async function resumeProviderBoundAgentRunAfterApproval({
       resumeRuntimeModel.allowCrossProviderFallback &&
       resumeRuntimeModel.fallbackProvider === providerState.provider
     );
-  const deploymentProviderAvailable = deploymentAdapter?.configured() || false;
+  const deploymentProviderAvailable = Boolean(
+    deploymentAdapter?.configured() &&
+      deploymentAdapter.targets(providerState.tier).some((target) =>
+        target.features.includes("tools") &&
+        (!resumeComputerUseRequested || target.features.includes("vision"))
+      ),
+  );
   if (
     (!runtimeCarriesProvider || !resumeRuntimeModel.configured) &&
     !deploymentProviderAvailable
@@ -4555,6 +4585,7 @@ async function resumeProviderBoundAgentRunAfterApproval({
     waiting: NonNullable<NonOpenAIProviderLoopResult["waitingApproval"]>,
   ) {
     const nextContinuation: AgentRunContinuation = {
+      computerUseTarget: continuation.computerUseTarget,
       executionScope,
       runContractEnvelope: continuation.runContractEnvelope,
       checkpointShadowEnrollment: continuation.checkpointShadowEnrollment,

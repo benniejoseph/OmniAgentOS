@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   enqueueMemoryConsolidationJob: vi.fn(),
   getActiveAgentAdaptationGuidance: vi.fn(),
   loadProgressiveAgentTools: vi.fn(),
+  markAgentRunWaitingForApproval: vi.fn(),
   recordRuntimeEventSafely: vi.fn(),
   resolvePersonalContextMemoryAccess: vi.fn(),
   runCouncilRound: vi.fn(),
@@ -59,10 +60,22 @@ vi.mock("@/lib/capabilities/toolbox", () => ({
 
 vi.mock("@/lib/models/registry", () => ({
   hasModelProviderFeature: (feature: string) =>
-    feature === "text" || feature === "json_schema",
+    feature === "text" || feature === "json_schema" ||
+    feature === "tools" || feature === "vision",
+  getModelProvider: () => ({
+    configured: () => true,
+    targets: (tier: "fast" | "reasoning") => [{
+      provider: "openai",
+      model: "gpt-test",
+      tier,
+      features: ["text", "streaming", "tools", "json_schema", "vision"],
+    }],
+  }),
+  modelTargets: () => [],
 }));
 
 vi.mock("@/lib/openai/client", () => ({
+  canonicalConversationFromOpenAIItems: () => [],
   streamResponseTurn: mocks.streamResponseTurn,
 }));
 
@@ -131,7 +144,7 @@ vi.mock("@/lib/runs/store", () => ({
   getAgentRun: vi.fn(),
   listAgentRunSummaries: vi.fn(),
   markAgentRunResuming: vi.fn(),
-  markAgentRunWaitingForApproval: vi.fn(),
+  markAgentRunWaitingForApproval: mocks.markAgentRunWaitingForApproval,
   updateRunContextCount: mocks.updateRunContextCount,
 }));
 
@@ -165,6 +178,7 @@ describe("agent memory scope", () => {
     mocks.enqueueMemoryConsolidationJob.mockResolvedValue(null);
     mocks.getActiveAgentAdaptationGuidance.mockResolvedValue([]);
     mocks.loadProgressiveAgentTools.mockResolvedValue({ definitions: [] });
+    mocks.markAgentRunWaitingForApproval.mockResolvedValue({ parked: true });
     mocks.recordRuntimeEventSafely.mockResolvedValue(undefined);
     mocks.executeGovernedTool.mockReset();
     mocks.resolvePersonalContextMemoryAccess.mockImplementation(async (value) =>
@@ -459,6 +473,53 @@ describe("agent memory scope", () => {
       type: "council_verdict",
       status: "revised",
     }));
+  });
+
+  it("retains the exact This Mac target when a governed action pauses", async () => {
+    const scopedRequest = request("session");
+    scopedRequest.computerUseTarget = "local_macos";
+    scopedRequest.agentProfile!.toolIds = ["local.macos.open_url"];
+    scopedRequest.agentProfile!.approvalPolicy = "risk_based";
+    scopedRequest.agentProfile!.autonomy = "governed";
+    mocks.loadProgressiveAgentTools.mockResolvedValue({
+      definitions: [{
+        ...localToolDefinition("local.macos.open_url"),
+        riskLevel: 2,
+        approvalRequired: true,
+        operationClass: "mutation",
+        reversible: false,
+      }],
+    });
+    mocks.executeGovernedTool.mockResolvedValue({
+      record: {
+        ...localExecutionRecord(
+          "local.macos.open_url",
+          "execution-local-open-url",
+        ),
+        riskLevel: 2,
+        status: "approval_required",
+        approvalRequired: true,
+      },
+    });
+    mocks.streamResponseTurn.mockResolvedValue(openAITurn({
+      callId: "call-open-url",
+      name: "local.macos.open_url",
+    }));
+
+    const events = await collectRequest(scopedRequest);
+
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "waiting_approval",
+      toolId: "local.macos.open_url",
+    }));
+    expect(mocks.markAgentRunWaitingForApproval).toHaveBeenCalledWith(
+      "run-memory-scope",
+      expect.objectContaining({
+        continuation: expect.objectContaining({
+          computerUseTarget: "local_macos",
+        }),
+      }),
+    );
   });
 
   it("carries direct OpenAI local evidence through one immediate app list without persisting it", async () => {

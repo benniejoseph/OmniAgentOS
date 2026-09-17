@@ -1,4 +1,8 @@
-import type { AgentMode, ChatMessage } from "@/lib/orchestration/types";
+import type {
+  AgentMode,
+  ChatMessage,
+  ComputerUseTarget,
+} from "@/lib/orchestration/types";
 import type { GroundingReport } from "@/lib/rag/citations";
 import type { ExecutionScope } from "@/lib/security/execution-scope";
 import type {
@@ -45,6 +49,8 @@ export type AgentProviderToolContinuation = {
 };
 
 export type AgentRunContinuation = {
+  /** Server-selected execution surface retained across governed approvals. */
+  computerUseTarget?: ComputerUseTarget;
   /** Canonical root attribution retained across approval pauses. */
   executionScope?: ExecutionScope;
   /** P0.2 shadow snapshot retained only while an approval-paused run resumes. */

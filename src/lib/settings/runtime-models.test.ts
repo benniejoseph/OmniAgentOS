@@ -79,6 +79,38 @@ beforeEach(() => {
 });
 
 describe("functional model runtime routing", () => {
+  it("requires every declared capability on the same visual Computer Use target", async () => {
+    const visualRuntime = await resolveRuntimeModelAssignment({
+      tenantId: "",
+      actorId: "",
+      scope: "computer_use",
+      tier: "reasoning",
+      requiredFeature: "tools",
+      requiredFeatures: ["vision"],
+      deploymentFallback: {
+        provider: "openai",
+        model: "deployment-vision-model",
+        configured: true,
+      },
+    });
+    const toolsOnlyRuntime = await resolveRuntimeModelAssignment({
+      tenantId: "",
+      actorId: "",
+      scope: "computer_use",
+      tier: "reasoning",
+      requiredFeature: "tools",
+      requiredFeatures: ["vision"],
+      deploymentFallback: {
+        provider: "aws_bedrock",
+        model: "deployment-tools-only-model",
+        configured: true,
+      },
+    });
+
+    expect(visualRuntime.configured).toBe(true);
+    expect(toolsOnlyRuntime.configured).toBe(false);
+  });
+
   it("binds the exact active assignment revision to every metered request", async () => {
     const runtime = await resolveRuntimeModelAssignment({
       tenantId: "tenant-a",
