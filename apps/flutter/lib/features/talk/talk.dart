@@ -10,6 +10,8 @@ import 'package:go_router/go_router.dart';
 import 'package:record/record.dart';
 
 import '../../app/brand/asael_mark.dart';
+import '../../app/platform/macos_presentation.dart';
+import '../../app/theme/macos_app_theme.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/platform/desktop_host_bridge.dart';
 import '../../generated/native_contract.g.dart';
@@ -2294,6 +2296,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
 
   Widget _buildQuickEntry(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final macos = usesMacosPresentation();
+    final mac = MacosThemeColors.of(context);
     return Scaffold(
       backgroundColor: scheme.surface,
       body: CallbackShortcuts(
@@ -2311,9 +2315,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   constraints: const BoxConstraints(maxWidth: 760),
                   child: Material(
                     color: scheme.surfaceContainerLow,
-                    elevation: 10,
+                    elevation: macos ? 0 : 10,
                     shadowColor: Colors.black.withValues(alpha: .16),
-                    borderRadius: BorderRadius.circular(22),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(macos ? 10 : 22),
+                      side: macos
+                          ? BorderSide(color: mac.divider)
+                          : BorderSide.none,
+                    ),
                     clipBehavior: Clip.antiAlias,
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(18, 14, 14, 14),
@@ -2433,8 +2442,12 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     if (widget.quickEntry) return _buildQuickEntry(context);
+    final macos = usesMacosPresentation();
+    final mac = MacosThemeColors.of(context);
     return Scaffold(
       appBar: AppBar(
+        toolbarHeight: macos ? 52 : null,
+        titleSpacing: macos ? 18 : null,
         title: ListenableBuilder(
           listenable: widget.controller,
           builder: (_, _) => Text(
@@ -2482,7 +2495,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 ),
                 decoration: BoxDecoration(
                   color: Theme.of(context).colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(99),
+                  borderRadius: BorderRadius.circular(macos ? 6 : 99),
+                  border: macos ? Border.all(color: mac.divider) : null,
                 ),
                 child: const Row(
                   mainAxisSize: MainAxisSize.min,
@@ -2545,7 +2559,10 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                         )
                       : ListView.builder(
                           controller: scroll,
-                          padding: const EdgeInsets.all(16),
+                          padding: EdgeInsets.symmetric(
+                            horizontal: macos ? 24 : 16,
+                            vertical: 16,
+                          ),
                           itemCount: widget.controller.messages.length,
                           itemBuilder: (_, i) {
                             final m = widget.controller.messages[i];
@@ -2566,12 +2583,14 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                   : Alignment.centerLeft,
                               child: Container(
                                 constraints: const BoxConstraints(
-                                  maxWidth: 680,
+                                  maxWidth: 760,
                                 ),
-                                margin: const EdgeInsets.only(bottom: 14),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 14,
+                                margin: EdgeInsets.only(
+                                  bottom: macos ? 10 : 14,
+                                ),
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: macos ? 14 : 16,
+                                  vertical: macos ? 11 : 14,
                                 ),
                                 decoration: BoxDecoration(
                                   color: m.role == TalkRole.user
@@ -2582,13 +2601,17 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                             .colorScheme
                                             .surfaceContainerHigh,
                                   borderRadius: BorderRadius.only(
-                                    topLeft: const Radius.circular(20),
-                                    topRight: const Radius.circular(20),
+                                    topLeft: Radius.circular(macos ? 9 : 20),
+                                    topRight: Radius.circular(macos ? 9 : 20),
                                     bottomLeft: Radius.circular(
-                                      m.role == TalkRole.user ? 20 : 6,
+                                      macos
+                                          ? (m.role == TalkRole.user ? 9 : 4)
+                                          : (m.role == TalkRole.user ? 20 : 6),
                                     ),
                                     bottomRight: Radius.circular(
-                                      m.role == TalkRole.user ? 6 : 20,
+                                      macos
+                                          ? (m.role == TalkRole.user ? 4 : 9)
+                                          : (m.role == TalkRole.user ? 6 : 20),
                                     ),
                                   ),
                                   border: m.failed
@@ -2597,6 +2620,8 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                                               .colorScheme
                                               .error,
                                         )
+                                      : macos
+                                      ? Border.all(color: mac.divider)
                                       : null,
                                 ),
                                 child: m.streaming && m.text.isEmpty
@@ -2648,18 +2673,31 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                 SafeArea(
                   top: false,
                   child: Container(
-                    margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+                    margin: EdgeInsets.fromLTRB(
+                      macos ? 16 : 10,
+                      0,
+                      macos ? 16 : 10,
+                      macos ? 12 : 8,
+                    ),
+                    padding: EdgeInsets.fromLTRB(
+                      macos ? 12 : 14,
+                      macos ? 10 : 12,
+                      macos ? 12 : 14,
+                      macos ? 12 : 14,
+                    ),
                     decoration: BoxDecoration(
                       color: Theme.of(context).colorScheme.surface,
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: .07),
-                          blurRadius: 24,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
+                      borderRadius: BorderRadius.circular(macos ? 10 : 24),
+                      border: macos ? Border.all(color: mac.divider) : null,
+                      boxShadow: macos
+                          ? const []
+                          : [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: .07),
+                                blurRadius: 24,
+                                offset: const Offset(0, 8),
+                              ),
+                            ],
                     ),
                     child: Center(
                       child: ConstrainedBox(
@@ -2817,7 +2855,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               return Row(
                 children: [
                   SizedBox(
-                    width: 272,
+                    width: macos ? 252 : 272,
                     child: TalkHistoryPane(
                       controller: widget.controller,
                       onNew: () {
@@ -2830,7 +2868,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
                   ),
                   Expanded(child: conversation),
                   SizedBox(
-                    width: 328,
+                    width: macos ? 318 : 328,
                     child: _TalkActivityPane(controller: widget.controller),
                   ),
                 ],
@@ -2841,7 +2879,7 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
               children: [
                 Expanded(child: conversation),
                 SizedBox(
-                  width: 348,
+                  width: macos ? 328 : 348,
                   child: _TalkActivityPane(controller: widget.controller),
                 ),
               ],

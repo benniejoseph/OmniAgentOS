@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mime/mime.dart';
 
+import '../../app/macos/macos_page_scaffold.dart';
 import 'capture_batch_view.dart';
 import 'capture_controller.dart';
 import 'capture_drop_intake.dart';
@@ -439,22 +440,21 @@ class _CaptureViewState extends State<CaptureView> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Capture')),
-    body: ListenableBuilder(
+  Widget build(BuildContext context) {
+    final body = ListenableBuilder(
       listenable: widget.controller,
       builder: (_, _) => LayoutBuilder(
         builder: (context, constraints) {
           final wide = constraints.maxWidth >= 800;
           final form = <Widget>[
             Text(
-              'Capture what matters',
+              _isMacOS ? 'New capture' : 'Capture what matters',
               style: Theme.of(context).textTheme.headlineSmall,
             ),
             const SizedBox(height: 8),
             Text(
               _isMacOS
-                  ? 'Capture a thought or queue a transcript collection. Every document keeps its source and real processing status.'
+                  ? 'Add context for one thought, file, or an entire document collection.'
                   : 'Notes are queued, indexed, and kept searchable with their source.',
               style: Theme.of(context).textTheme.bodyLarge,
             ),
@@ -609,12 +609,12 @@ class _CaptureViewState extends State<CaptureView> {
                 padding: EdgeInsets.only(top: 12),
                 child: LinearProgressIndicator(),
               ),
-            if (widget.controller.batchItems.isNotEmpty)
+            if (!_isMacOS && widget.controller.batchItems.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 16),
                 child: CaptureBatchProgressPanel(controller: widget.controller),
               ),
-            if (widget.controller.pendingWithoutBatch.isNotEmpty)
+            if (!_isMacOS && widget.controller.pendingWithoutBatch.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 16),
                 child: _CaptureOutboxPanel(controller: widget.controller),
@@ -675,11 +675,25 @@ class _CaptureViewState extends State<CaptureView> {
                     receipt: widget.controller.receipt!,
                   ),
           );
+          if (_isMacOS) {
+            return SingleChildScrollView(
+              padding: const EdgeInsets.all(22),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 860),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: form,
+                  ),
+                ),
+              ),
+            );
+          }
           return SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: Center(
               child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: _isMacOS ? 1320 : 1080),
+                constraints: const BoxConstraints(maxWidth: 1080),
                 child: wide
                     ? Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -708,7 +722,128 @@ class _CaptureViewState extends State<CaptureView> {
           );
         },
       ),
+    );
+
+    if (!_isMacOS) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Capture')),
+        body: body,
+      );
+    }
+
+    return MacosPageScaffold(
+      title: 'Capture',
+      description:
+          'Send notes, media, and document collections into indexed knowledge.',
+      icon: Icons.add_box_outlined,
+      actions: [
+        ListenableBuilder(
+          listenable: widget.controller,
+          builder: (context, _) => IconButton(
+            tooltip: 'Sync encrypted captures',
+            onPressed:
+                widget.controller.pending.isEmpty || widget.controller.syncing
+                ? null
+                : widget.controller.syncPending,
+            icon: widget.controller.syncing
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.sync_rounded),
+          ),
+        ),
+      ],
+      primaryAction: ListenableBuilder(
+        listenable: widget.controller,
+        builder: (context, _) => FilledButton.tonalIcon(
+          onPressed:
+              picking ||
+                  widget.controller.submitting ||
+                  widget.controller.batchQueueing
+              ? null
+              : pickBatchDocuments,
+          icon: const Icon(Icons.library_add_outlined),
+          label: const Text('Add documents'),
+        ),
+      ),
+      inspectorWidth: 360,
+      body: body,
+      inspector: _MacosCaptureInspector(controller: widget.controller),
+    );
+  }
+}
+
+class _MacosCaptureInspector extends StatelessWidget {
+  const _MacosCaptureInspector({required this.controller});
+
+  final CaptureController controller;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: controller,
+    builder: (context, _) => ListView(
+      key: const ValueKey('macos-capture-processing-inspector'),
+      padding: const EdgeInsets.all(16),
+      children: [
+        const MacosSectionHeader(
+          title: 'Processing',
+          description:
+              'Encrypted intake, background indexing, and source status.',
+        ),
+        const SizedBox(height: 14),
+        _CaptureInspectorMetric(
+          icon: Icons.pending_actions_outlined,
+          label: 'Waiting to sync',
+          value: '${controller.pending.length}',
+        ),
+        const SizedBox(height: 7),
+        _CaptureInspectorMetric(
+          icon: Icons.account_tree_outlined,
+          label: 'Active batches',
+          value: '${controller.batchItems.length}',
+        ),
+        const SizedBox(height: 18),
+        if (controller.receipt != null) ...[
+          _CaptureSuccess(receipt: controller.receipt!),
+          const SizedBox(height: 14),
+        ],
+        if (controller.batchItems.isNotEmpty) ...[
+          CaptureBatchProgressPanel(controller: controller),
+          const SizedBox(height: 14),
+        ],
+        if (controller.pendingWithoutBatch.isNotEmpty) ...[
+          _CaptureOutboxPanel(controller: controller),
+          const SizedBox(height: 14),
+        ],
+        if (controller.receipt == null &&
+            controller.batchItems.isEmpty &&
+            controller.pendingWithoutBatch.isEmpty)
+          const _CaptureGuide(),
+      ],
     ),
+  );
+}
+
+class _CaptureInspectorMetric extends StatelessWidget {
+  const _CaptureInspectorMetric({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Icon(icon, size: 17),
+      const SizedBox(width: 8),
+      Expanded(child: Text(label)),
+      Text(value, style: Theme.of(context).textTheme.labelLarge),
+    ],
   );
 }
 
