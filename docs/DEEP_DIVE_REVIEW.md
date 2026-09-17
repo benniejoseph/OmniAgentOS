@@ -102,7 +102,7 @@ flowchart TD
 | 9 | **Web-search trigger is a regex.** Freshness keywords miss paraphrases ("what's the Fed rate situation") and false-positive on others; the model is the right decision-maker. | `web-search/search.ts:25` | Make `web.search` a model-invocable tool in the tool loop; keep the regex only as a pre-fetch hint. |
 | 10 | **`getAppBaseUrl()` defaults to localhost** — signed links, webhooks, and report URLs generated server-side are wrong on Vercel unless `NEXT_PUBLIC_APP_URL` is set. | `config.ts:41` | Fall back to `VERCEL_PROJECT_PRODUCTION_URL`/`VERCEL_URL` before localhost. |
 | 11 | **Fixed importance `0.42` for every episode memory** and consolidation on every run regardless of substance → memory fills with low-value episodes that dilute retrieval. | `agent-runner.ts:114` | Let the consolidator score importance; skip episode saves for trivial exchanges; add decay/dedup (Section 5.6). |
-| 12 | **Resolved after this review.** The current suite has unit coverage, guarded Postgres/pgvector integration coverage, and local Playwright smoke coverage. | `package.json`, `tests/` | Keep `CI / quality`, `CI / integration`, and `CI / e2e` required. |
+| 12 | **Resolved after this review.** The current suite has unit coverage, guarded Postgres/pgvector integration coverage, focused presentation contracts, and signed native canaries. | `package.json`, `tests/` | Keep `CI / quality`, `CI / integration`, and the native release gate required. |
 
 ### P2 — polish
 

@@ -212,6 +212,6 @@ intent quarantine, audit history, and server canonical state survive a client ro
   automation. Migration 181 installation, canonical deployment, the matching signed
   client, Fly browser-service decommission, and a new local navigation/screenshot
   canary remain pending release evidence.
-- Playwright may remain in focused CI or operator release/visual smoke tests. Test
-  code is not an Agent tool, connector, profile service, or product Computer Use
-  authority.
+- The repository carries no browser-automation dependency, CI job, benchmark, or
+  visual-smoke runtime. Focused component/contract tests cover web behavior and the
+  signed native canary verifies installed-Mac control.

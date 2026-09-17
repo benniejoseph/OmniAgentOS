@@ -3,7 +3,7 @@
 Date: 2026-06-10 · Scope: full repository (~44.5k lines TS/TSX, 61 commits over 5 days) · Supersedes `docs/DEEP_DIVE_REVIEW.md`
 Method: 4 phases — Discovery, Evidence-Based Audit, Improvement Strategy, Task Plan.
 
-> Historical snapshot: this audit records the 2026-06-10 repository and is not a current operations reference. The agent tool loop, bounded request/rate controls, production storage guard, worker, and automated suites have since shipped. The current inventory includes unit coverage, guarded Postgres integration coverage, and local Playwright smoke coverage; run the documented commands for the live count. Use the main README and `docs/architecture.md` / `docs/deployment.md` for current behavior.
+> Historical snapshot: this audit records the 2026-06-10 repository and is not a current operations reference. The agent tool loop, bounded request/rate controls, production storage guard, worker, and automated suites have since shipped. The current inventory includes unit coverage, guarded Postgres integration coverage, focused presentation contracts, and signed native canaries; run the documented commands for the live count. Use the main README and `docs/architecture.md` / `docs/deployment.md` for current behavior.
 
 ---
 
@@ -14,7 +14,7 @@ Method: 4 phases — Discovery, Evidence-Based Audit, Improvement Strategy, Task
 ### Top 3 Risks
 
 1. **The product cannot do what it claims.** The "agent" streams a single LLM completion with no tool-calling loop; the system prompt advertises tools and specialist agents the model has no way to invoke, so it will *hallucinate having done work*. For a product whose pitch is "do any task it's given," this is existential, and it is also a trust/honesty defect: users will catch the model claiming actions that never happened. (`src/lib/orchestration/agent-runner.ts`, `prompts.ts:32-36`)
-2. **At review time, there were no automated tests.** This finding is resolved by the current unit, integration, Playwright, and fail-closed production-smoke suites. (`package.json`, `tests/`)
+2. **At review time, there were no automated tests.** This finding is resolved by the current unit, integration, focused presentation-contract, native-canary, and fail-closed production-smoke suites. (`package.json`, `tests/`)
 3. **Cost and abuse exposure on the LLM path.** `/api/agent` accepts unbounded message content, has no rate limit, no token budget, and persists **one store write per streamed token**, multiplying both latency and database cost per response. (`api/agent/route.ts:8-16`, `agent-runner.ts:33-36,100`)
 
 ### Top 3 Opportunities

@@ -62,14 +62,13 @@ npm run test:unit          # deterministic unit suite
 npm run test:coverage      # V8 text, JSON summary, and lcov reports
 npm run test:integration   # skips unless an isolated DATABASE_URL is explicitly enabled
 npm run build              # production build
-npm run test:e2e           # managed local server + Chromium smoke tests
 npm run verify             # typecheck, lint, coverage/integration, scripts, build, production audit
 npm run worker             # dedicated queue/SLO/alert worker
 npm run db:backup          # owner-only pg_dump + checksum manifest
 npm run db:restore-drill   # destructive isolated restore + validation evidence
 ```
 
-CI exposes the required checks `CI / quality`, `CI / build`, `CI / audit`, `CI / integration`, `CI / e2e`, and `CI / worker`. The scheduled/manual production workflow requires an explicit target plus smoke credentials, runs each critical gate with a bounded timeout, and fails when release evidence is absent.
+CI exposes the required checks `CI / quality`, `CI / build`, `CI / audit`, `CI / integration`, and `CI / worker`. The scheduled/manual production workflow requires an explicit target plus smoke credentials, runs each critical gate with a bounded timeout, and fails when release evidence is absent.
 
 ## Security notes
 

@@ -70,8 +70,9 @@ For internal calls, the secret and identity headers must be sent together. Never
 
 Synthetic smoke requests carry correlation IDs and are marked SLO-excluded. Search those IDs in observability when diagnosing a gate.
 
-## Playwright fails locally
+## Web presentation regression
 
-Run `npx playwright install chromium`, then `npm run test:e2e`. The managed server uses port 3100; stop another process on that port or set `PLAYWRIGHT_PORT`. Set `PLAYWRIGHT_BASE_URL` only when intentionally testing an already-running compatible instance.
-
-`npm run test:e2e:list` must list only files under `tests/e2e`; Vitest files are excluded by both the Playwright test directory and filename rules.
+Run the focused component or contract test for the changed surface, followed by
+`npm run build`. For installed-Mac Computer Use, use the signed native canary and
+verify the governed command receipt rather than adding a browser-automation test
+runtime back to the repository.

@@ -3,7 +3,7 @@
 ## Before deployment
 
 - [ ] Use Node 24.x/npm 11.x and a lockfile-clean `npm ci`.
-- [ ] Require `CI / quality`, `CI / build`, `CI / audit`, `CI / integration`, `CI / e2e`, and `CI / worker`.
+- [ ] Require `CI / quality`, `CI / build`, `CI / audit`, `CI / integration`, and `CI / worker`.
 - [ ] Record the release commit, image digest, migration versions, owner, rollback decision-maker, RPO, and RTO.
 - [ ] Run `npm run db:backup` and verify that the latest isolated `npm run db:restore-drill` evidence passed.
 - [ ] Confirm `DATABASE_URL`, canonical app URL (`https://asael.bennierichard.com` exactly), OpenAI key, cron secret, internal secret, bootstrap/admin state, and report-signing key.

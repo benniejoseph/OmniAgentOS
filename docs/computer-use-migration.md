@@ -49,10 +49,9 @@ volume/secrets, promoting the compatible web/native release, and recording a
 new local canary are separate release operations and remain pending until their
 exact evidence is appended here.
 
-Playwright can remain a development dependency for CI, release, benchmark, or
-visual smoke tests. Those tests run outside Agent authority and are not a
-product connector, user-facing Computer Use target, persistent profile service,
-or fallback runtime.
+The browser-automation development dependency, CI job, benchmark, and visual-smoke
+scripts are removed as well. Focused component/contract tests and the production
+build cover web changes; the signed native canary covers installed-Mac control.
 
 ## This Mac
 

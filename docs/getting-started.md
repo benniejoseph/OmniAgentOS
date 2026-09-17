@@ -78,10 +78,9 @@ npm run test:unit       # deterministic unit suite
 npm run test:coverage
 npm run test:integration
 npm run build
-npm run test:e2e
 ```
 
-`test:integration` is skipped unless it receives an isolated `DATABASE_URL` and `OMNIAGENT_INTEGRATION_DATABASE_RESET=true`; that guard prevents accidental schema deletion. Playwright starts a controlled local/demo instance and uses only synthetic local credentials.
+`test:integration` is skipped unless it receives an isolated `DATABASE_URL` and `OMNIAGENT_INTEGRATION_DATABASE_RESET=true`; that guard prevents accidental schema deletion. Web presentation behavior is covered by focused component/contract tests and the production build; installed-Mac Computer Use is verified through its signed native canary.
 
 For a disposable local Postgres instance that has neither TLS nor pgvector, append
 `?sslmode=disable` to its URL and set

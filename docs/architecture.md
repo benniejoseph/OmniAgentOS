@@ -277,9 +277,10 @@ App Builder no longer depends on browser automation. New checkpoint readiness is
 derived deterministically from lint and typecheck; preview and production readiness
 are derived from captured build logs and route smokes. The legacy `browserEvidence`
 field remains readable for old receipts and is marked retired for new records; it
-does not participate in a readiness decision. Playwright may remain in CI or
-operator-run release/visual smoke tests, but test code has no Agent tool authority,
-connector credential, persistent browser profile, or product runtime path.
+does not participate in a readiness decision. The repository no longer includes a
+browser-automation development runtime; presentation changes use focused component
+and contract tests, while installed-Mac control is verified through the signed native
+canary and governed receipts.
 
 P0.2 builds and validates a versioned run-contract envelope in shadow mode
 while the legacy run record stays authoritative. The envelope binds the scoped

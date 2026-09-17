@@ -460,10 +460,10 @@ readiness require captured build logs and passing route smokes. The legacy
 `browserEvidence` field stays readable on historical checkpoints/deployments and
 is written as retired compatibility metadata for new records; it is not a gate.
 
-The `@playwright/test` development dependency and focused Playwright scripts may
-remain for CI, benchmarks, release smoke, or operator-run visual regression. They
-run outside the Agent/tool executor and have no connector credential, browser
-profile, takeover lease, or product Computer Use authority.
+The browser-automation development dependency, CI job, benchmark, and visual-smoke
+scripts are removed. Use focused component/contract tests and the production build
+for web changes, and the signed native canary plus governed receipts for installed-
+Mac Computer Use.
 
 ### Two-phase gateway token rotation
 
@@ -789,7 +789,6 @@ Configure branch protection externally to require these exact checks:
 - `CI / build`
 - `CI / audit`
 - `CI / integration`
-- `CI / e2e`
 - `CI / worker`
 
 Also require the scheduled/manual `Production Smoke / production-smoke` result in the deployment promotion system. Repository code cannot enforce GitHub branch protection by itself.
