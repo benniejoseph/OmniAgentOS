@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../app/macos/macos_page_scaffold.dart';
+import '../../app/platform/macos_presentation.dart';
 import '../../core/network/api_client.dart';
 import '../../generated/native_contract.g.dart';
 
@@ -310,6 +312,9 @@ class _MarketsViewState extends State<MarketsView> {
         .whereType<Map>()
         .map(Json.from)
         .toList();
+    if (usesMacosPresentation()) {
+      return _buildMacosWorkspace(context, instruments);
+    }
     return RefreshIndicator(
       onRefresh: _refreshCurrent,
       child: CustomScrollView(
@@ -513,6 +518,426 @@ class _MarketsViewState extends State<MarketsView> {
                 ),
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMacosWorkspace(BuildContext context, List<Json> instruments) {
+    final content = switch (tab) {
+      0 => _OverviewTab(
+        key: const ValueKey('macos-market-overview'),
+        overview: overview,
+        bars: bars,
+      ),
+      1 => _EventsTab(
+        key: const ValueKey('macos-market-events'),
+        events: events,
+        loading: loading,
+      ),
+      2 => _TechnicalTab(
+        key: const ValueKey('macos-market-technicals'),
+        bars: bars,
+        features: features,
+        loading: loading,
+      ),
+      3 => _BacktestTab(
+        key: const ValueKey('macos-market-backtests'),
+        bars: bars,
+        backtests: backtests,
+        job: backtestJobInstrumentId == instrumentId ? backtestJob : null,
+        loading: loading,
+        running:
+            action == 'backtest' && backtestJobInstrumentId == instrumentId,
+        onRun: _runBacktest,
+      ),
+      _ => _JournalTab(
+        key: const ValueKey('macos-market-journal'),
+        journal: journal,
+        loading: loading,
+        action: action,
+        onAction: _journalAction,
+      ),
+    };
+
+    return MacosPageScaffold(
+      title: 'Market Intelligence',
+      description: 'Evidence-led macro research, ICT structure, backtests, and forecast accountability.',
+      icon: Icons.candlestick_chart_outlined,
+      actions: [
+        _PhaseBadge(phase: overview?['phase']?.toString(), loading: loading),
+        IconButton(
+          key: const ValueKey('macos-market-refresh'),
+          tooltip: loading ? 'Refreshing market evidence' : 'Refresh evidence',
+          onPressed: loading ? null : _refreshCurrent,
+          icon: loading
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh_rounded),
+        ),
+      ],
+      toolbar: LayoutBuilder(
+        builder: (context, constraints) => _MacMarketToolbar(
+          compact: constraints.maxWidth < 930,
+          instruments: instruments,
+          instrumentId: instrumentId,
+          interval: interval,
+          tab: tab,
+          loading: loading,
+          onInstrument: _selectInstrument,
+          onInterval: _selectInterval,
+          onTab: _selectTab,
+        ),
+      ),
+      inspectorWidth: 320,
+      inspector: _MacMarketInspector(
+        overview: overview,
+        bars: bars,
+        events: events,
+        loading: loading,
+        error: error,
+      ),
+      body: Column(
+        children: [
+          if (error != null)
+            _MacMarketErrorBanner(error: error!, retry: _refreshCurrent),
+          Expanded(
+            child: loading && overview == null
+                ? const MacosLoadingList(rows: 7)
+                : SingleChildScrollView(
+                    key: const ValueKey('macos-market-scroll-view'),
+                    padding: const EdgeInsets.all(20),
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 1280),
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 150),
+                          child: content,
+                        ),
+                      ),
+                    ),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+const _marketTabs = <({String label, IconData icon})>[
+  (label: 'Overview', icon: Icons.show_chart_rounded),
+  (label: 'News impact', icon: Icons.calendar_month_outlined),
+  (label: 'ICT + Quarterly', icon: Icons.layers_outlined),
+  (label: 'Backtests', icon: Icons.science_outlined),
+  (label: 'Forecasts', icon: Icons.auto_awesome_outlined),
+];
+
+class _MacMarketToolbar extends StatelessWidget {
+  const _MacMarketToolbar({
+    required this.compact,
+    required this.instruments,
+    required this.instrumentId,
+    required this.interval,
+    required this.tab,
+    required this.loading,
+    required this.onInstrument,
+    required this.onInterval,
+    required this.onTab,
+  });
+
+  final bool compact;
+  final List<Json> instruments;
+  final String instrumentId;
+  final String interval;
+  final int tab;
+  final bool loading;
+  final ValueChanged<String> onInstrument;
+  final ValueChanged<String> onInterval;
+  final ValueChanged<int> onTab;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasSelected = instruments.any(
+      (instrument) => instrument['id']?.toString() == instrumentId,
+    );
+    return Row(
+      children: [
+        SizedBox(
+          width: compact ? 142 : 174,
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              key: const ValueKey('macos-market-instrument'),
+              value: hasSelected ? instrumentId : null,
+              hint: const Text('Instrument'),
+              isExpanded: true,
+              items: [
+                for (final item in instruments)
+                  DropdownMenuItem(
+                    value: item['id']?.toString(),
+                    child: Text(
+                      item['symbol']?.toString() ??
+                          item['name']?.toString() ??
+                          item['id']?.toString() ??
+                          'Instrument',
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+              onChanged: loading
+                  ? null
+                  : (value) {
+                      if (value != null) onInstrument(value);
+                    },
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(value: '5min', label: Text('5m')),
+            ButtonSegment(value: '15min', label: Text('15m')),
+            ButtonSegment(value: '1h', label: Text('1h')),
+          ],
+          selected: {interval},
+          showSelectedIcon: false,
+          onSelectionChanged: loading
+              ? null
+              : (value) => onInterval(value.first),
+        ),
+        const SizedBox(width: 12),
+        if (!compact)
+          Expanded(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: SegmentedButton<int>(
+                segments: [
+                  for (var index = 0; index < _marketTabs.length; index++)
+                    ButtonSegment(
+                      value: index,
+                      label: Text(_marketTabs[index].label),
+                    ),
+                ],
+                selected: {tab},
+                showSelectedIcon: false,
+                onSelectionChanged: (value) => onTab(value.first),
+              ),
+            ),
+          )
+        else ...[
+          const Spacer(),
+          SizedBox(
+            width: 178,
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                key: const ValueKey('macos-market-section'),
+                value: tab,
+                isExpanded: true,
+                items: [
+                  for (var index = 0; index < _marketTabs.length; index++)
+                    DropdownMenuItem(
+                      value: index,
+                      child: Row(
+                        children: [
+                          Icon(_marketTabs[index].icon, size: 16),
+                          const SizedBox(width: 7),
+                          Expanded(
+                            child: Text(
+                              _marketTabs[index].label,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value != null) onTab(value);
+                },
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _MacMarketInspector extends StatelessWidget {
+  const _MacMarketInspector({
+    required this.overview,
+    required this.bars,
+    required this.events,
+    required this.loading,
+    required this.error,
+  });
+
+  final Json? overview;
+  final Json? bars;
+  final Json? events;
+  final bool loading;
+  final Object? error;
+
+  @override
+  Widget build(BuildContext context) {
+    final agent = _map(overview?['agent']);
+    final eventItems = (events?['events'] as List? ?? const [])
+        .whereType<Map>()
+        .take(3)
+        .toList(growable: false);
+    final values = _barCloses(bars);
+    return ListView(
+      key: const ValueKey('macos-market-inspector'),
+      padding: const EdgeInsets.all(16),
+      children: [
+        const MacosSectionHeader(
+          title: 'Research context',
+          description: 'Source, freshness, model assignment, and boundaries.',
+        ),
+        const SizedBox(height: 14),
+        _MacMarketFact(
+          label: 'Engine',
+          value: agent['name']?.toString() ?? 'Meridian',
+        ),
+        _MacMarketFact(
+          label: 'Model',
+          value: agent['model']?.toString() ?? 'Not assigned',
+        ),
+        _MacMarketFact(
+          label: 'Snapshot',
+          value: bars?['snapshotSource']?.toString() ?? 'Not loaded',
+        ),
+        _MacMarketFact(
+          label: 'Bars',
+          value: values.isEmpty ? '—' : '${values.length}',
+        ),
+        _MacMarketFact(
+          label: 'As of',
+          value: bars?['asOf']?.toString() ?? 'Not available',
+        ),
+        const SizedBox(height: 18),
+        MacosSectionHeader(
+          title: 'High-impact calendar',
+          description: eventItems.isEmpty
+              ? 'Open News impact to load indexed releases.'
+              : '${events?['total'] ?? eventItems.length} indexed releases.',
+        ),
+        const SizedBox(height: 9),
+        if (eventItems.isEmpty)
+          Text(
+            'No release context loaded.',
+            style: Theme.of(context).textTheme.bodySmall,
+          )
+        else
+          for (final event in eventItems)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 9),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.bolt_rounded, size: 16),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      event['title']?.toString() ??
+                          event['name']?.toString() ??
+                          'High-impact release',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        const SizedBox(height: 18),
+        MacosPane(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                error == null
+                    ? Icons.shield_outlined
+                    : Icons.warning_amber_rounded,
+                size: 18,
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  error != null
+                      ? 'Some research evidence is currently unavailable.'
+                      : loading
+                      ? 'Refreshing evidence…'
+                      : 'Research only. Forecasts remain probabilistic and evidence-bounded.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MacMarketFact extends StatelessWidget {
+  const _MacMarketFact({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 5),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 74,
+          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.labelLarge,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _MacMarketErrorBanner extends StatelessWidget {
+  const _MacMarketErrorBanner({required this.error, required this.retry});
+
+  final Object error;
+  final VoidCallback retry;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.error;
+    return Container(
+      constraints: const BoxConstraints(minHeight: 42),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .08),
+        border: Border(bottom: BorderSide(color: color.withValues(alpha: .18))),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.cloud_off_rounded, color: color, size: 17),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              error.toString(),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          TextButton(onPressed: retry, child: const Text('Retry')),
         ],
       ),
     );
