@@ -30,6 +30,23 @@ String _boundedDisplayText(Object? value, int maximum) {
   return normalized.length <= maximum ? normalized : '';
 }
 
+String _boundedRunText(Object? value, int maximum) {
+  if (value is! String || maximum < 1) return '';
+  final normalized = value
+      .replaceAll(
+        RegExp(r'[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]'),
+        ' ',
+      )
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
+      .trim();
+  if (normalized.isEmpty) return '';
+  final runes = normalized.runes;
+  return runes.length <= maximum
+      ? normalized
+      : '${String.fromCharCodes(runes.take(maximum - 1))}\u2026';
+}
+
 ({String message, String detail}) _talkFailure(Object error) {
   if (error is ApiException) {
     final code = _boundedDisplayText(error.diagnosticCode, 80);
@@ -120,7 +137,10 @@ Stream<SseEvent> parseSse(Stream<List<int>> bytes) async* {
     );
   }
 
-  await for (final chunk in bytes.transform(utf8.decoder)) {
+  // Dio exposes ResponseBody.stream as Stream<Uint8List>. Cast each chunk to
+  // the decoder's List<int> contract so generic runtime checks do not reject
+  // a valid Uint8List stream before the first SSE event is delivered.
+  await for (final chunk in bytes.cast<List<int>>().transform(utf8.decoder)) {
     buffer += chunk;
     while (true) {
       final newline = buffer.indexOf('\n');
@@ -301,6 +321,18 @@ class TalkArtifactContent {
   final Uint8List bytes;
 }
 
+class TalkWaitingApprovalSummary {
+  const TalkWaitingApprovalSummary({
+    required this.executionId,
+    required this.toolId,
+    required this.toolName,
+  });
+
+  final String executionId;
+  final String toolId;
+  final String toolName;
+}
+
 class TalkQueuedPrompt {
   const TalkQueuedPrompt({
     required this.id,
@@ -333,22 +365,70 @@ class TalkRunInspection {
     required this.agentIdentity,
     required this.mediaArtifacts,
     required this.computerUseArtifacts,
+    this.threadId,
+    this.response,
+    this.error,
+    this.waitingApproval,
   });
 
   final String runId;
   final String status;
+  final String? threadId;
+  final String? response;
+  final String? error;
+  final TalkWaitingApprovalSummary? waitingApproval;
   final TalkGroundingSummary grounding;
   final TalkAgentIdentitySummary agentIdentity;
   final List<TalkMediaArtifactSummary> mediaArtifacts;
   final List<TalkMediaArtifactSummary> computerUseArtifacts;
 
+  bool get terminal =>
+      const {'completed', 'failed', 'canceled'}.contains(status);
+
   factory TalkRunInspection.fromJson(Json payload) {
     final run = _jsonRecord(payload['run']);
     final runId = _boundedDisplayText(run['id'], 200);
     final status = _boundedDisplayText(run['status'], 40).toLowerCase();
-    if (runId.isEmpty || status.isEmpty) {
+    if (runId.isEmpty ||
+        !const {
+          'queued',
+          'running',
+          'waiting_clarification',
+          'waiting_approval',
+          'resuming',
+          'completed',
+          'failed',
+          'canceled',
+        }.contains(status)) {
       throw const FormatException('Invalid run evidence projection.');
     }
+    final projectedThreadId = safeTalkHistoryId(run['threadId']);
+    final response = _boundedRunText(run['response'], 40000);
+    final error = _boundedRunText(run['error'], 2000);
+    final rawWaitingApproval = _jsonRecord(run['waitingApproval']);
+    final waitingExecutionId = safeTalkHistoryId(
+      rawWaitingApproval['executionId'],
+    );
+    final waitingToolId = _boundedDisplayText(
+      rawWaitingApproval['toolId'],
+      200,
+    );
+    final waitingToolName = _boundedDisplayText(
+      rawWaitingApproval['toolName'],
+      200,
+    );
+    final waitingApproval =
+        status == 'waiting_approval' &&
+            waitingExecutionId.isNotEmpty &&
+            waitingToolId.isNotEmpty
+        ? TalkWaitingApprovalSummary(
+            executionId: waitingExecutionId,
+            toolId: waitingToolId,
+            toolName: waitingToolName.isEmpty
+                ? 'A governed action'
+                : waitingToolName,
+          )
+        : null;
 
     final grounding = _jsonRecord(run['grounding']);
     final groundingStatus = _boundedDisplayText(
@@ -518,6 +598,10 @@ class TalkRunInspection {
     return TalkRunInspection(
       runId: runId,
       status: status,
+      threadId: projectedThreadId.isEmpty ? null : projectedThreadId,
+      response: response.isEmpty ? null : response,
+      error: error.isEmpty ? null : error,
+      waitingApproval: waitingApproval,
       grounding: TalkGroundingSummary(
         status:
             const {
@@ -594,11 +678,16 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     this.repository, {
     this.workflowPollInterval = const Duration(seconds: 3),
     this.workflowPollLimit = 20,
-  }) : assert(workflowPollLimit > 0 && workflowPollLimit <= 120);
+    this.runRecoveryPollInterval = const Duration(seconds: 3),
+    this.runRecoveryPollLimit = 200,
+  }) : assert(workflowPollLimit > 0 && workflowPollLimit <= 120),
+       assert(runRecoveryPollLimit > 0 && runRecoveryPollLimit <= 200);
 
   final TalkRepository repository;
   final Duration workflowPollInterval;
   final int workflowPollLimit;
+  final Duration runRecoveryPollInterval;
+  final int runRecoveryPollLimit;
   final messages = <TalkMessage>[];
   final activities = <TalkActivity>[];
   final artifacts = <TalkMediaArtifactSummary>[];
@@ -606,6 +695,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   final _workflowIds = <String>[];
   final _workflowMonitorTokens = <String, Object>{};
   final _inspectedRunIds = <String>{};
+  Object? _runMonitorToken;
+  String? _runLifecycleStatus;
   String? runId;
   String? status;
   bool sending = false;
@@ -624,6 +715,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   List<String> get workflowIds => List.unmodifiable(_workflowIds);
   Set<String> get monitoringWorkflowIds =>
       Set.unmodifiable(_workflowMonitorTokens.keys);
+  bool get monitoringAcceptedRun => _runMonitorToken != null;
 
   @override
   TalkHistoryRepository? get talkHistoryRepository =>
@@ -636,6 +728,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   @override
   void applyHistoryThreadProjection(TalkThreadDetail detail) {
+    _abandonAcceptedRun();
     messages.clear();
     messages.addAll(
       detail.turns.map(
@@ -657,13 +750,13 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryMode = null;
     _retryStrategy = null;
     _retryExecutionTarget = null;
-    runId = null;
     status = null;
     canceling = false;
   }
 
   @override
   void clearHistoryThreadProjection() {
+    _abandonAcceptedRun();
     messages.clear();
     activities.clear();
     _clearArtifacts();
@@ -675,7 +768,6 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     _retryMode = null;
     _retryStrategy = null;
     _retryExecutionTarget = null;
-    runId = null;
     status = null;
   }
 
@@ -837,6 +929,21 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   TalkExecutionTarget? _retryExecutionTarget;
 
   bool get canRetry => !sending && _retryInput != null;
+  bool get _acceptedRunIsTerminal =>
+      const {'completed', 'failed', 'canceled'}.contains(_runLifecycleStatus);
+
+  void _clearRetry() {
+    _retryInput = null;
+    _retryMode = null;
+    _retryStrategy = null;
+    _retryExecutionTarget = null;
+  }
+
+  void _abandonAcceptedRun() {
+    _runMonitorToken = null;
+    _runLifecycleStatus = null;
+    runId = null;
+  }
 
   Future<void> cancel() async {
     final id = runId;
@@ -912,7 +1019,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     final text = input.trim();
     if (text.isEmpty || sending) return;
     activities.clear();
-    runId = null;
+    _abandonAcceptedRun();
     if (replaceFailedResponse && messages.lastOrNull?.failed == true) {
       messages[messages.length - 1] = const TalkMessage(
         role: TalkRole.assistant,
@@ -940,7 +1047,15 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         adoptConversationThreadId(event.data['threadId']);
         switch (event.event) {
           case 'run':
-            runId = event.data['runId'] as String?;
+            final acceptedRunId = safeTalkHistoryId(event.data['runId']);
+            if (acceptedRunId.isEmpty) {
+              throw const FormatException(
+                'The governed run identity was invalid.',
+              );
+            }
+            runId = acceptedRunId;
+            _runLifecycleStatus = 'running';
+            _clearRetry();
             _recordActivity(
               key: 'run',
               title: 'Main agent',
@@ -1033,6 +1148,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               state: _toolActivityState(toolStatus),
             );
           case 'clarification':
+            _runLifecycleStatus = 'waiting_clarification';
             queuePaused = true;
             final message =
                 event.data['message'] as String? ??
@@ -1080,6 +1196,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             );
           case 'done':
             terminalInspectionRunId = runId;
+            _runLifecycleStatus = 'completed';
             messages[messages.length - 1] = messages.last.copyWith(
               text: event.data['response'] as String? ?? messages.last.text,
               streaming: false,
@@ -1098,6 +1215,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
               state: TalkActivityState.succeeded,
             );
           case 'waiting_approval':
+            _runLifecycleStatus = 'waiting_approval';
             queuePaused = true;
             status = 'Waiting for approval';
             final message =
@@ -1120,6 +1238,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
                   : '/inbox',
             );
           case 'budget_exhausted':
+            _runLifecycleStatus = null;
             queuePaused = true;
             final message =
                 event.data['message'] as String? ??
@@ -1137,6 +1256,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             );
           case 'canceled':
             terminalInspectionRunId = runId;
+            _runLifecycleStatus = 'canceled';
             final message =
                 event.data['message'] as String? ?? 'The run was canceled.';
             messages[messages.length - 1] = messages.last.copyWith(
@@ -1152,34 +1272,67 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
             );
           case 'error':
             terminalInspectionRunId = runId;
-            throw StateError(
-              event.data['message'] as String? ?? 'Agent failed',
+            _runLifecycleStatus = 'failed';
+            final message =
+                event.data['message'] as String? ?? 'The governed run failed.';
+            messages[messages.length - 1] = messages.last.copyWith(
+              text: message,
+              streaming: false,
+              failed: true,
+            );
+            status = null;
+            queuePaused = true;
+            _clearRetry();
+            _recordActivity(
+              key: 'run',
+              title: 'Main agent',
+              detail: message,
+              state: TalkActivityState.failed,
             );
         }
         notifyListeners();
       }
-      _retryInput = null;
-      _retryMode = null;
-      _retryStrategy = null;
-      _retryExecutionTarget = null;
+      _clearRetry();
     } catch (error) {
-      final failure = _talkFailure(error);
-      queuePaused = true;
-      messages[messages.length - 1] = messages.last.copyWith(
-        text: messages.last.text.isEmpty ? failure.message : messages.last.text,
-        streaming: false,
-        failed: true,
-      );
-      _retryInput = text;
-      _retryMode = mode;
-      _retryStrategy = strategy;
-      _retryExecutionTarget = executionTarget;
-      _recordActivity(
-        key: 'run',
-        title: 'Main agent',
-        detail: failure.detail,
-        state: TalkActivityState.failed,
-      );
+      final acceptedRunId = runId;
+      if (acceptedRunId != null) {
+        queuePaused = true;
+        final current = messages.last.text;
+        messages[messages.length - 1] = messages.last.copyWith(
+          text: current.isEmpty
+              ? 'Asael is reconnecting to this governed run.'
+              : current,
+          streaming: false,
+          failed: false,
+        );
+        _clearRetry();
+        _recordActivity(
+          key: 'run',
+          title: 'Main agent',
+          detail: 'The live view disconnected. Following the accepted run without sending it again.',
+          state: TalkActivityState.active,
+        );
+      } else {
+        final failure = _talkFailure(error);
+        queuePaused = true;
+        messages[messages.length - 1] = messages.last.copyWith(
+          text: messages.last.text.isEmpty
+              ? failure.message
+              : messages.last.text,
+          streaming: false,
+          failed: true,
+        );
+        _retryInput = text;
+        _retryMode = mode;
+        _retryStrategy = strategy;
+        _retryExecutionTarget = executionTarget;
+        _recordActivity(
+          key: 'run',
+          title: 'Main agent',
+          detail: failure.detail,
+          state: TalkActivityState.failed,
+        );
+      }
     } finally {
       sending = false;
       status = null;
@@ -1187,6 +1340,8 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
     }
     if (terminalInspectionRunId case final id?) {
       await _inspectTerminalRun(id);
+    } else if (runId != null && !_acceptedRunIsTerminal) {
+      reconcileAcceptedRun();
     }
     if (conversationHistorySupported && !_disposed) {
       unawaited(loadRecentThreads(force: true));
@@ -1210,6 +1365,219 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
       }
     } finally {
       _drainingQueue = false;
+    }
+  }
+
+  /// Re-enters the exact accepted run through its actor-private read surface.
+  /// This is safe to call on reconnect, app focus, and Conversation re-entry;
+  /// a current monitor is reused and no command submission is repeated.
+  void reconcileAcceptedRun() {
+    final id = runId;
+    if (_disposed ||
+        id == null ||
+        _acceptedRunIsTerminal ||
+        _runMonitorToken != null) {
+      return;
+    }
+    final token = Object();
+    _runMonitorToken = token;
+    unawaited(_monitorAcceptedRun(id, token));
+  }
+
+  Future<void> _monitorAcceptedRun(String id, Object token) async {
+    var receivedProjection = false;
+    for (var attempt = 0; attempt < runRecoveryPollLimit; attempt += 1) {
+      if (attempt > 0 && runRecoveryPollInterval > Duration.zero) {
+        await Future<void>.delayed(runRecoveryPollInterval);
+      }
+      if (!_runMonitorIsCurrent(id, token)) return;
+      try {
+        final inspection = await repository.inspectRun(id);
+        if (!_runMonitorIsCurrent(id, token)) return;
+        if (inspection.runId != id) {
+          throw const FormatException('Run identity did not match.');
+        }
+        receivedProjection = true;
+        _applyRecoveredRun(inspection);
+        if (!_disposed) notifyListeners();
+        if (inspection.terminal) {
+          _runMonitorToken = null;
+          _inspectedRunIds.add(id);
+          _projectTerminalRunEvidence(inspection);
+          if (!_disposed) {
+            notifyListeners();
+            if (conversationHistorySupported) {
+              unawaited(loadRecentThreads(force: true));
+            }
+            unawaited(_drainPromptQueue());
+          }
+          return;
+        }
+      } catch (_) {
+        if (!_runMonitorIsCurrent(id, token)) return;
+        _recordActivity(
+          key: 'run-recovery:$id',
+          title: receivedProjection
+              ? 'Keeping this run in sync'
+              : 'Reconnecting to this run',
+          detail: 'The next bounded status check will follow the same accepted run.',
+          state: TalkActivityState.active,
+        );
+        if (!_disposed) notifyListeners();
+      }
+    }
+    if (!_runMonitorIsCurrent(id, token)) return;
+    _runMonitorToken = null;
+    _recordActivity(
+      key: 'run-recovery:$id',
+      title: 'This run is still in progress',
+      detail: 'Asael will check this accepted run again after reconnect, app focus, or Conversation re-entry.',
+      state: TalkActivityState.waiting,
+    );
+    if (!_disposed) notifyListeners();
+  }
+
+  bool _runMonitorIsCurrent(String id, Object token) =>
+      !_disposed && runId == id && identical(_runMonitorToken, token);
+
+  void _applyRecoveredRun(TalkRunInspection inspection) {
+    _runLifecycleStatus = inspection.status;
+    adoptConversationThreadId(inspection.threadId);
+    _clearRetry();
+    switch (inspection.status) {
+      case 'queued':
+        status = 'Queued';
+        _recordActivity(
+          key: 'run',
+          title: 'Main agent',
+          detail: 'The accepted run is queued.',
+          state: TalkActivityState.active,
+        );
+      case 'running':
+        status = 'Working';
+        _recordActivity(
+          key: 'run',
+          title: 'Main agent',
+          detail: 'The accepted governed run is in progress.',
+          state: TalkActivityState.active,
+        );
+      case 'resuming':
+        status = 'Resuming';
+        _resolveWaitingApprovalActivity();
+        _recordActivity(
+          key: 'run',
+          title: 'Main agent',
+          detail: 'Approval was recorded. The same governed run is resuming.',
+          state: TalkActivityState.active,
+        );
+      case 'waiting_approval':
+        queuePaused = true;
+        status = 'Waiting for approval';
+        final approval = inspection.waitingApproval;
+        final message =
+            inspection.response ??
+            '${approval?.toolName ?? 'A governed action'} needs approval before the task can continue.';
+        _replaceCurrentAssistantWhenRecovering(message);
+        _recordActivity(
+          key: 'approval:${approval?.executionId ?? 'pending'}',
+          title: 'Approval required',
+          detail: message,
+          state: TalkActivityState.waiting,
+          actionLabel: 'Review approval',
+          actionRoute: approval == null
+              ? '/inbox'
+              : '/inbox/approvals/${Uri.encodeComponent(approval.executionId)}',
+        );
+      case 'waiting_clarification':
+        queuePaused = true;
+        status = 'Needs your input';
+        final message =
+            inspection.response ??
+            'Asael needs one detail before this run can continue.';
+        _replaceCurrentAssistantWhenRecovering(message);
+        _recordActivity(
+          key: 'clarification',
+          title: 'Clarification needed',
+          detail: message,
+          state: TalkActivityState.waiting,
+        );
+      case 'completed':
+        queuePaused = false;
+        status = null;
+        _replaceCurrentAssistant(
+          inspection.response ?? 'The governed run completed.',
+        );
+        _resolveWaitingApprovalActivity();
+        _recordActivity(
+          key: 'run',
+          title: 'Main agent',
+          detail: 'Response completed.',
+          state: TalkActivityState.succeeded,
+        );
+        _recordActivity(
+          key: 'status',
+          title: 'Response ready',
+          detail: 'The governed run reached a terminal response.',
+          state: TalkActivityState.succeeded,
+        );
+      case 'failed':
+        queuePaused = true;
+        status = null;
+        final message = inspection.error ?? 'The governed run failed.';
+        _replaceCurrentAssistant(message, failed: true);
+        _recordActivity(
+          key: 'run',
+          title: 'Main agent',
+          detail: message,
+          state: TalkActivityState.failed,
+        );
+      case 'canceled':
+        queuePaused = true;
+        status = null;
+        final message = inspection.error ?? 'The governed run was canceled.';
+        _replaceCurrentAssistant(message, failed: true);
+        _recordActivity(
+          key: 'run',
+          title: 'Main agent',
+          detail: message,
+          state: TalkActivityState.failed,
+        );
+    }
+  }
+
+  void _replaceCurrentAssistantWhenRecovering(String text) {
+    final current = messages.lastOrNull;
+    if (current == null || current.role != TalkRole.assistant) return;
+    if (current.text.isNotEmpty &&
+        current.text != 'Asael is reconnecting to this governed run.') {
+      return;
+    }
+    _replaceCurrentAssistant(text);
+  }
+
+  void _replaceCurrentAssistant(String text, {bool failed = false}) {
+    final current = messages.lastOrNull;
+    if (current == null || current.role != TalkRole.assistant) return;
+    messages[messages.length - 1] = current.copyWith(
+      text: text,
+      streaming: false,
+      failed: failed,
+    );
+  }
+
+  void _resolveWaitingApprovalActivity() {
+    for (var index = 0; index < activities.length; index += 1) {
+      final activity = activities[index];
+      if (!activity.key.startsWith('approval:') ||
+          activity.state != TalkActivityState.waiting) {
+        continue;
+      }
+      activities[index] = TalkActivity(
+        key: activity.key,
+        title: 'Approval resolved',
+        detail: 'The original governed run continued.',
+        state: TalkActivityState.succeeded,
+      );
     }
   }
 
@@ -1331,28 +1699,13 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
 
   Future<void> _inspectTerminalRun(String id) async {
     if (_disposed || !_inspectedRunIds.add(id)) return;
-    final route = _resultRoute('agent', id);
     try {
       final inspection = await repository.inspectRun(id);
       if (_disposed) return;
       if (inspection.runId != id) {
         throw const FormatException('Run identity did not match.');
       }
-      _projectAgentIdentity(inspection, route);
-      _projectGrounding(inspection, route);
-      _projectMediaArtifacts(inspection, route);
-      _projectComputerUseArtifacts(inspection, route);
-      artifacts
-        ..clear()
-        ..addAll(inspection.mediaArtifacts)
-        ..addAll(inspection.computerUseArtifacts);
-      if (artifacts.isEmpty) {
-        selectedArtifact = null;
-        selectedArtifactContent = null;
-        artifactError = null;
-      } else {
-        unawaited(selectArtifact(artifacts.first));
-      }
+      _projectTerminalRunEvidence(inspection);
     } catch (_) {
       if (_disposed) return;
       _recordActivity(
@@ -1361,10 +1714,29 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
         detail: 'The compact evidence summary could not refresh.',
         state: TalkActivityState.info,
         actionLabel: 'Open result',
-        actionRoute: route,
+        actionRoute: _resultRoute('agent', id),
       );
     }
     if (!_disposed) notifyListeners();
+  }
+
+  void _projectTerminalRunEvidence(TalkRunInspection inspection) {
+    final route = _resultRoute('agent', inspection.runId);
+    _projectAgentIdentity(inspection, route);
+    _projectGrounding(inspection, route);
+    _projectMediaArtifacts(inspection, route);
+    _projectComputerUseArtifacts(inspection, route);
+    artifacts
+      ..clear()
+      ..addAll(inspection.mediaArtifacts)
+      ..addAll(inspection.computerUseArtifacts);
+    if (artifacts.isEmpty) {
+      selectedArtifact = null;
+      selectedArtifactContent = null;
+      artifactError = null;
+    } else {
+      unawaited(selectArtifact(artifacts.first));
+    }
   }
 
   void _projectAgentIdentity(TalkRunInspection inspection, String route) {
@@ -1539,6 +1911,7 @@ class TalkController extends ChangeNotifier with TalkHistoryControllerMixin {
   @override
   void dispose() {
     _disposed = true;
+    _runMonitorToken = null;
     disposeTalkHistory();
     _workflowMonitorTokens.clear();
     super.dispose();
@@ -1623,9 +1996,13 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onQuickEntryReady?.call();
       });
-    } else if (widget.controller.conversationHistorySupported) {
+    } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(widget.controller.loadRecentThreads());
+        if (!mounted) return;
+        widget.controller.reconcileAcceptedRun();
+        if (widget.controller.conversationHistorySupported) {
+          unawaited(widget.controller.loadRecentThreads());
+        }
       });
     }
   }
@@ -1638,16 +2015,22 @@ class _TalkViewState extends State<TalkView> with WidgetsBindingObserver {
         if (mounted) widget.onQuickEntryReady?.call();
       });
     } else if (!widget.quickEntry &&
-        oldWidget.controller != widget.controller &&
-        widget.controller.conversationHistorySupported) {
+        oldWidget.controller != widget.controller) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(widget.controller.loadRecentThreads());
+        if (!mounted) return;
+        widget.controller.reconcileAcceptedRun();
+        if (widget.controller.conversationHistorySupported) {
+          unawaited(widget.controller.loadRecentThreads());
+        }
       });
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      widget.controller.reconcileAcceptedRun();
+    }
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||

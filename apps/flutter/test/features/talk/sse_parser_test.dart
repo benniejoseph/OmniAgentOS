@@ -328,6 +328,180 @@ class _QueuedTalkRepository implements TalkRepository {
   Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
 }
 
+TalkRunInspection _runInspection(
+  String runId,
+  String status, {
+  String? response,
+  String? error,
+  Map<String, dynamic>? waitingApproval,
+}) => TalkRunInspection.fromJson({
+  'run': {
+    'id': runId,
+    'threadId': 'thread-$runId',
+    'status': status,
+    'response': ?response,
+    'error': ?error,
+    'waitingApproval': ?waitingApproval,
+  },
+});
+
+class _DisconnectedAcceptedRunRepository implements TalkRepository {
+  final inspections = <TalkRunInspection>[
+    _runInspection('run-recovery', 'running'),
+    _runInspection(
+      'run-recovery',
+      'completed',
+      response: 'The exact accepted run completed.',
+    ),
+  ];
+  int sends = 0;
+  int reads = 0;
+
+  @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async {
+    reads += 1;
+    return inspections.length == 1
+        ? inspections.single
+        : inspections.removeAt(0);
+  }
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SseEvent> send({
+    required String message,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+  }) async* {
+    sends += 1;
+    yield const SseEvent(
+      event: 'run',
+      data: {
+        'type': 'run',
+        'runId': 'run-recovery',
+        'threadId': 'thread-run-recovery',
+      },
+    );
+    throw StateError('live transport ended');
+  }
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
+class _ApprovalRecoveryRepository implements TalkRepository {
+  final approved = Completer<void>();
+  int sends = 0;
+  int reads = 0;
+
+  @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async {
+    reads += 1;
+    if (reads == 1) {
+      return _runInspection(
+        runId,
+        'waiting_approval',
+        response: 'Review the exact click before continuing.',
+        waitingApproval: {
+          'executionId': 'execution-exact-click',
+          'toolId': 'local.macos.click',
+          'toolName': 'Click chart',
+        },
+      );
+    }
+    if (reads == 2) {
+      await approved.future;
+      return _runInspection(runId, 'resuming');
+    }
+    return _runInspection(
+      runId,
+      'completed',
+      response: 'Chrome is open on the requested chart.',
+    );
+  }
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SseEvent> send({
+    required String message,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+  }) async* {
+    sends += 1;
+    yield const SseEvent(
+      event: 'run',
+      data: {'type': 'run', 'runId': 'run-approval-recovery'},
+    );
+    yield const SseEvent(
+      event: 'waiting_approval',
+      data: {
+        'type': 'waiting_approval',
+        'executionId': 'execution-exact-click',
+        'toolId': 'local.macos.click',
+        'message': 'Review the exact click before continuing.',
+      },
+    );
+  }
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
+class _ReentryRecoveryRepository implements TalkRepository {
+  int reads = 0;
+
+  @override
+  Future<void> cancelRun(String runId) async {}
+
+  @override
+  Future<TalkRunInspection> inspectRun(String runId) async {
+    reads += 1;
+    return reads == 1
+        ? _runInspection(runId, 'running')
+        : _runInspection(
+            runId,
+            'completed',
+            response: 'Recovered after returning to Conversation.',
+          );
+  }
+
+  @override
+  Future<TalkWorkflowSnapshot> inspectWorkflow(String workflowId) async =>
+      throw UnimplementedError();
+
+  @override
+  Stream<SseEvent> send({
+    required String message,
+    String? threadId,
+    String mode = 'orchestrate',
+    String strategy = 'auto',
+    TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
+  }) async* {
+    yield const SseEvent(
+      event: 'run',
+      data: {'type': 'run', 'runId': 'run-reentry'},
+    );
+  }
+
+  @override
+  Future<String> transcribeVoice(Uint8List bytes) async => 'Unused';
+}
+
 Future<void> _settleAsync([int turns = 12]) async {
   for (var index = 0; index < turns; index += 1) {
     await Future<void>.delayed(Duration.zero);
@@ -411,6 +585,78 @@ void main() {
     },
   );
 
+  test(
+    'recovers the exact accepted run without exposing a duplicate retry',
+    () async {
+      final repository = _DisconnectedAcceptedRunRepository();
+      final controller = TalkController(
+        repository,
+        runRecoveryPollInterval: Duration.zero,
+        runRecoveryPollLimit: 4,
+      );
+
+      await controller.send('Open the chart');
+      await _settleAsync(20);
+
+      expect(repository.sends, 1);
+      expect(repository.reads, 2);
+      expect(controller.canRetry, isFalse);
+      expect(controller.messages.last.failed, isFalse);
+      expect(
+        controller.messages.last.text,
+        'The exact accepted run completed.',
+      );
+      expect(
+        controller.activities
+            .singleWhere((activity) => activity.key == 'run')
+            .state,
+        TalkActivityState.succeeded,
+      );
+    },
+  );
+
+  test(
+    'keeps one accepted approval-paused run until its response completes',
+    () async {
+      final repository = _ApprovalRecoveryRepository();
+      final controller = TalkController(
+        repository,
+        runRecoveryPollInterval: Duration.zero,
+        runRecoveryPollLimit: 6,
+      );
+
+      await controller.send('Open the chart');
+      await _settleAsync(10);
+
+      expect(repository.sends, 1);
+      expect(controller.canRetry, isFalse);
+      expect(controller.status, 'Waiting for approval');
+      expect(
+        controller.activities
+            .singleWhere((item) => item.key == 'approval:execution-exact-click')
+            .actionRoute,
+        '/inbox/approvals/execution-exact-click',
+      );
+
+      repository.approved.complete();
+      await _settleAsync(20);
+
+      expect(repository.sends, 1);
+      expect(repository.reads, 3);
+      expect(controller.canRetry, isFalse);
+      expect(
+        controller.messages.last.text,
+        'Chrome is open on the requested chart.',
+      );
+      expect(
+        controller.activities
+            .singleWhere((item) => item.key == 'approval:execution-exact-click')
+            .state,
+        TalkActivityState.succeeded,
+      );
+    },
+  );
+
   test('queues prompts during a run and drains them in order', () async {
     final repository = _QueuedTalkRepository();
     final controller = TalkController(repository);
@@ -455,7 +701,10 @@ void main() {
   });
 
   test('pauses queued prompts behind a governed approval', () async {
-    final controller = TalkController(_ActivityTalkRepository());
+    final controller = TalkController(
+      _ActivityTalkRepository(),
+      runRecoveryPollLimit: 1,
+    );
 
     await controller.send('Prepare an email');
     controller.enqueuePrompt('Continue after approval');
@@ -468,7 +717,10 @@ void main() {
   test(
     'projects tools, specialists, and approvals as observable activity',
     () async {
-      final controller = TalkController(_ActivityTalkRepository());
+      final controller = TalkController(
+        _ActivityTalkRepository(),
+        runRecoveryPollLimit: 1,
+      );
 
       await controller.send('Research and prepare the result');
 
@@ -597,7 +849,10 @@ void main() {
   ) async {
     await tester.binding.setSurfaceSize(const Size(1400, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    final controller = TalkController(_ActivityTalkRepository());
+    final controller = TalkController(
+      _ActivityTalkRepository(),
+      runRecoveryPollLimit: 1,
+    );
     await controller.send('Research and prepare the result');
 
     await tester.pumpWidget(
@@ -614,6 +869,39 @@ void main() {
     expect(find.text('Approval required'), findsOneWidget);
     expect(find.text('Review approval'), findsOneWidget);
     expect(find.textContaining('Governed run run-observab'), findsOneWidget);
+  });
+
+  testWidgets('Conversation re-entry resumes an accepted exact run', (
+    tester,
+  ) async {
+    final repository = _ReentryRecoveryRepository();
+    final controller = TalkController(
+      repository,
+      runRecoveryPollInterval: Duration.zero,
+      runRecoveryPollLimit: 1,
+    );
+    await controller.send('Continue the accepted run');
+    await tester.pump();
+    expect(repository.reads, 1);
+    expect(controller.monitoringAcceptedRun, isFalse);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TalkView(
+          controller: controller,
+          voiceRecorder: _VoiceDraftRecorder(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    expect(repository.reads, 2);
+    expect(
+      controller.messages.last.text,
+      'Recovered after returning to Conversation.',
+    );
+    expect(controller.canRetry, isFalse);
   });
 
   testWidgets(

@@ -11,12 +11,22 @@ final talkRepositoryProvider = Provider<TalkRepository>(
 );
 final talkControllerProvider = ChangeNotifierProvider<TalkController>((ref) {
   final controller = TalkController(ref.watch(talkRepositoryProvider));
-  final unregister = ref
+  final unregisterHistory = ref
       .read(reconnectCoordinatorProvider)
       .register(
         'talk-history',
         () => controller.loadRecentThreads(force: true),
       );
-  ref.onDispose(unregister);
+  final unregisterRun = ref
+      .read(reconnectCoordinatorProvider)
+      .register(
+        'talk-accepted-run',
+        () async => controller.reconcileAcceptedRun(),
+        priority: 9,
+      );
+  ref.onDispose(() {
+    unregisterRun();
+    unregisterHistory();
+  });
   return controller;
 });

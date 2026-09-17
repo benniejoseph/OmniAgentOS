@@ -104,8 +104,9 @@ class ApiTalkRepository
     String strategy = 'auto',
     TalkExecutionTarget executionTarget = TalkExecutionTarget.agent,
   }) async* {
-    final recoveryAnchor = await _captureRecoveryAnchor(threadId);
+    final recoveryAnchor = _captureRecoveryAnchor(threadId);
     String? observedThreadId = threadId;
+    String? observedRunId;
     var receivedTerminalEvent = false;
     try {
       final body = await api.postStream(
@@ -126,6 +127,15 @@ class ApiTalkRepository
       await for (final event in parseSse(body.stream)) {
         final projectedThreadId = safeTalkHistoryId(event.data['threadId']);
         if (projectedThreadId.isNotEmpty) observedThreadId = projectedThreadId;
+        if (event.event == 'run') {
+          final projectedRunId = safeTalkHistoryId(event.data['runId']);
+          if (projectedRunId.isEmpty) {
+            throw const FormatException(
+              'The governed run identity was invalid.',
+            );
+          }
+          observedRunId = projectedRunId;
+        }
         receivedTerminalEvent =
             receivedTerminalEvent ||
             _terminalConversationEvents.contains(event.event);
@@ -137,11 +147,28 @@ class ApiTalkRepository
         diagnosticCode: 'stream_ended_without_terminal_event',
       );
     } catch (error, stackTrace) {
+      // A streamed run identity proves that the server accepted this exact
+      // actor-owned operation. Never turn a transport loss after acceptance
+      // into a second POST; the controller continues through GET /api/runs/:id.
+      if (!receivedTerminalEvent && observedRunId != null) {
+        yield SseEvent(
+          event: 'status',
+          data: {
+            'type': 'status',
+            'label': 'Reconnecting to this run',
+            'detail': 'The live view disconnected. Asael is following the original governed run.',
+            'runId': observedRunId,
+            'threadId': ?observedThreadId,
+          },
+        );
+        return;
+      }
       // Some production proxies close long-lived response bodies after the
-      // governed action has already started. Reconcile only an exact owned
-      // thread (or one unambiguous newly-created owned thread) and never rerun
-      // the command, which could duplicate a consequential tool action.
-      if (!receivedTerminalEvent && recoveryAnchor != null) {
+      // governed action has already started but before the run event arrived.
+      // Only this no-run-id branch may use actor-scoped thread history, and it
+      // remains fail-closed if a single exact turn cannot be identified.
+      final fallbackAnchor = await recoveryAnchor;
+      if (!receivedTerminalEvent && fallbackAnchor != null) {
         yield SseEvent(
           event: 'status',
           data: {
@@ -152,7 +179,7 @@ class ApiTalkRepository
           },
         );
         final recovered = await _recoverCompletedTurn(
-          recoveryAnchor,
+          fallbackAnchor,
           observedThreadId: observedThreadId,
           message: message,
           mode: mode,

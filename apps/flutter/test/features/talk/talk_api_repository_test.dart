@@ -43,6 +43,59 @@ void main() {
       expect(history.threadReads, 1);
     },
   );
+
+  test(
+    'anchors a disconnected accepted request to its exact streamed run',
+    () async {
+      final api = _AcceptedRunDisconnectingApiClient();
+      final history = _RecoveryHistoryRepository();
+      final repository = ApiTalkRepository(api, history: history);
+
+      final events = await repository
+          .send(message: 'Open the chart', mode: 'orchestrate')
+          .toList();
+
+      expect(api.sendCount, 1);
+      expect(events.map((event) => event.event), ['run', 'status']);
+      expect(events.first.data['runId'], 'run-accepted-exact');
+      expect(events.last.data, containsPair('runId', 'run-accepted-exact'));
+      expect(events.last.data['label'], 'Reconnecting to this run');
+      expect(history.threadReads, 0);
+    },
+  );
+
+  test('parses bounded exact-run recovery state', () async {
+    final api = _RunProjectionApiClient({
+      'run': {
+        'id': 'run-waiting',
+        'threadId': 'thread-waiting',
+        'status': 'waiting_approval',
+        'response': 'Review this exact action.\nNothing was sent twice.',
+        'error': List.filled(3000, 'x').join(),
+        'waitingApproval': {
+          'executionId': 'execution-waiting',
+          'toolId': 'local.macos.click',
+          'toolName': 'Click chart',
+        },
+      },
+    });
+    final repository = ApiTalkRepository(api);
+
+    final inspection = await repository.inspectRun('run-waiting');
+
+    expect(api.readPaths, ['/api/runs/run-waiting']);
+    expect(inspection.threadId, 'thread-waiting');
+    expect(
+      inspection.response,
+      'Review this exact action.\nNothing was sent twice.',
+    );
+    expect(inspection.error, hasLength(2000));
+    expect(inspection.error, endsWith('\u2026'));
+    expect(inspection.waitingApproval?.executionId, 'execution-waiting');
+    expect(inspection.waitingApproval?.toolId, 'local.macos.click');
+    expect(inspection.waitingApproval?.toolName, 'Click chart');
+    expect(inspection.terminal, isFalse);
+  });
 }
 
 class _DisconnectingStreamApiClient extends ApiClient {
@@ -66,6 +119,47 @@ class _DisconnectingStreamApiClient extends ApiClient {
       type: DioExceptionType.connectionError,
     );
     return ResponseBody(Stream<Uint8List>.error(error), 200);
+  }
+}
+
+class _AcceptedRunDisconnectingApiClient extends ApiClient {
+  _AcceptedRunDisconnectingApiClient()
+    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+
+  int sendCount = 0;
+
+  @override
+  Future<ResponseBody> postStream(
+    String path, {
+    Map<String, dynamic>? data,
+    Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
+  }) async {
+    sendCount += 1;
+    return ResponseBody.fromString(
+      'event: run\ndata: {"type":"run","runId":"run-accepted-exact","threadId":"thread-accepted"}\n\n',
+      200,
+      headers: {
+        Headers.contentTypeHeader: ['text/event-stream'],
+      },
+    );
+  }
+}
+
+class _RunProjectionApiClient extends ApiClient {
+  _RunProjectionApiClient(this.projection)
+    : super(Dio(), Dio(), SecureSessionStore(const FlutterSecureStorage()));
+
+  final Map<String, dynamic> projection;
+  final readPaths = <String>[];
+
+  @override
+  Future<Map<String, dynamic>> getJson(
+    String path, {
+    Map<String, dynamic>? query,
+  }) async {
+    readPaths.add(path);
+    return projection;
   }
 }
 
