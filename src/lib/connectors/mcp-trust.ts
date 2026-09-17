@@ -134,7 +134,9 @@ function collectMetadataSignals(value: unknown) {
     const current = queue.shift();
     visited += 1;
     if (typeof current === "string") {
-      const signal = normalizeSignal(current).slice(0, 1_000);
+      const signal = normalizeSignal(current)
+        .replace(/_+/g, " ")
+        .slice(0, 1_000);
       parts.push(signal);
       bytes += signal.length;
       continue;
@@ -145,7 +147,9 @@ function collectMetadataSignals(value: unknown) {
     }
     if (!current || typeof current !== "object") continue;
     for (const [key, item] of Object.entries(current as Record<string, unknown>).slice(0, 100)) {
-      const signal = normalizeSignal(key).slice(0, 240);
+      const signal = normalizeSignal(key)
+        .replace(/_+/g, " ")
+        .slice(0, 240);
       parts.push(signal);
       bytes += signal.length;
       queue.push(item);

@@ -13490,7 +13490,7 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
       SELECT id, tenant_id
       FROM omni_mcp_connectors
       WHERE lower(btrim(endpoint)) ~
-          '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
+          '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/*([?#].*)?$'
         OR lower(btrim(endpoint)) ~
           '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
         OR lower(btrim(endpoint)) ~
@@ -13537,7 +13537,7 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         last_error = 'Remote browser automation was retired in schema version 181.',
         updated_at = clock_timestamp()
     WHERE lower(btrim(endpoint)) ~
-        '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
+        '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/*([?#].*)?$'
       OR lower(btrim(endpoint)) ~
         '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
       OR lower(btrim(endpoint)) ~
@@ -13645,7 +13645,7 @@ async function ensureIsolatedBrowserRuntimeRetirementV1(sql: SqlClient) {
         FROM omni_mcp_connectors
         WHERE (
           lower(btrim(endpoint)) ~
-            '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
+            '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/*([?#].*)?$'
           OR lower(btrim(endpoint)) ~
             '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
           OR lower(btrim(endpoint)) ~

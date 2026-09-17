@@ -46,7 +46,7 @@ WITH retired_connectors AS (
   SELECT id, tenant_id
   FROM public.omni_mcp_connectors
   WHERE lower(btrim(endpoint)) ~
-      '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
+      '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/*([?#].*)?$'
     OR lower(btrim(endpoint)) ~
       '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
     OR lower(btrim(endpoint)) ~
@@ -93,7 +93,7 @@ SET status = 'disabled',
     last_error = 'Remote browser automation was retired in schema version 181.',
     updated_at = clock_timestamp()
 WHERE lower(btrim(endpoint)) ~
-    '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
+    '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/*([?#].*)?$'
   OR lower(btrim(endpoint)) ~
     '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
   OR lower(btrim(endpoint)) ~
@@ -201,7 +201,7 @@ BEGIN
     FROM public.omni_mcp_connectors
     WHERE (
       lower(btrim(endpoint)) ~
-        '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/?([?#].*)?$'
+        '^https://asael[.]bennierichard[.]com(:443)?/[^?#]*playwright[^?#]*/mcp/*([?#].*)?$'
       OR lower(btrim(endpoint)) ~
         '^https://omniagent-os-browser[.]fly[.]dev(:443)?(/[^?#]*)?([?#].*)?$'
       OR lower(btrim(endpoint)) ~

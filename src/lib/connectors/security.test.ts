@@ -156,6 +156,11 @@ describe("connector security", () => {
       )
     ).toThrow(/retired/i);
     expect(() =>
+      assertMcpEndpointIsSupported(
+        "https://asael.bennierichard.com/api/integrations/playwright/mcp//",
+      )
+    ).toThrow(/retired/i);
+    expect(() =>
       assertMcpConnectorIsSupported({
         name: "Playwright Browser",
         endpoint: "https://mcp.example.test/mcp",
@@ -196,6 +201,16 @@ describe("connector security", () => {
       description: "Read browser compatibility metadata.",
       inputSchema: { type: "object" },
     })).toBe(false);
+    expect(isRemoteBrowserMcpTool({
+      name: "perform",
+      inputSchema: {
+        type: "object",
+        properties: {
+          browser_tab: { type: "string" },
+          click_target: { type: "string" },
+        },
+      },
+    })).toBe(true);
   });
 
   it("keeps remote prompt text out of model-facing tool metadata", () => {

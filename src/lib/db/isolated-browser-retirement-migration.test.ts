@@ -64,6 +64,7 @@ describe("isolated browser runtime retirement migration", () => {
     expect(migration).toContain("UPDATE public.omni_mcp_connectors");
     expect(migration).toContain("omniagent-os-browser[.]fly[.]dev(:443)?");
     expect(migration).toContain("api[.]browser-use[.]com(:443)?");
+    expect(migration).toContain("playwright[^?#]*/mcp/*([?#].*)?$");
     expect(migration).toContain("([?#].*)?$");
     expect(migration).toContain("sealed_credential = NULL");
     expect(migration).toContain("OR auth_token_env IS NOT NULL");
